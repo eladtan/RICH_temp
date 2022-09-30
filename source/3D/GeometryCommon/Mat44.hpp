@@ -48,22 +48,22 @@ public:
 	Mat44();
 
   /*! \brief Constructs a matrix and fills all its values. An intializer_list is better, but C++ 11 isn't always supported
-    \param d00 Term in in position 0,0
-    \param d01 Term in in position 0,1
-    \param d02 Term in in position 0,2
-    \param d03 Term in in position 0,3
-    \param d10 Term in in position 1,0
-    \param d11 Term in in position 1,1
-    \param d12 Term in in position 1,2
-    \param d13 Term in in position 1,3
-    \param d20 Term in in position 2,0
-    \param d21 Term in in position 2,1
-    \param d22 Term in in position 2,2
-    \param d23 Term in in position 2,3
-    \param d30 Term in in position 3,0
-    \param d31 Term in in position 3,1
-    \param d32 Term in in position 3,2
-    \param d33 Term in in position 3,3
+    \param d00 Term in position 0,0
+    \param d01 Term in position 0,1
+    \param d02 Term in position 0,2
+    \param d03 Term in position 0,3
+    \param d10 Term in position 1,0
+    \param d11 Term in position 1,1
+    \param d12 Term in position 1,2
+    \param d13 Term in position 1,3
+    \param d20 Term in position 2,0
+    \param d21 Term in position 2,1
+    \param d22 Term in position 2,2
+    \param d23 Term in position 2,3
+    \param d30 Term in position 3,0
+    \param d31 Term in position 3,1
+    \param d32 Term in position 3,2
+    \param d33 Term in position 3,3
    */
 	Mat44(T d00, T d01, T d02, T d03,
 		T d10, T d11, T d12, T d13,
@@ -73,6 +73,17 @@ public:
 	//! \brief Returns the matrix's determinant
   //! \return Value of the determinant 
 	T determinant() const;
+
+	//! \brief Assignment operator
+	//! \param other the other matrix which its values should be copied into self
+	//! \return self
+	Mat44<T> &operator=(const Mat44<T> &other);
+
+	//! \brief copy constructor
+	Mat44(const Mat44 &other): Mat44(other._data[0][0], other._data[0][1], other._data[0][2], other._data[0][3],
+							other._data[1][0], other._data[1][1], other._data[1][2], other._data[1][3],
+							other._data[2][0], other._data[2][1], other._data[2][2], other._data[2][3],
+							other._data[3][0], other._data[3][1], other._data[3][2], other._data[3][3]){};
 };
 
 template <typename T>
@@ -123,7 +134,28 @@ Mat44<T>::Mat44()
 {
 	for (int i = 0; i < 4; i++)
 		for (int j = 0; j < 4; j++)
-			_data[i][j] = 0;
+			_data[i][j] = T(); // in integers and floats, for example, applying T() returns 0
 }
 
+template<typename T>
+Mat44<T> &Mat44<T>::operator=(const Mat44<T> &other);
+{
+	_data[0][0] = other._data[0][0];
+	_data[0][1] = other._data[0][1];
+	_data[0][2] = other._data[0][2];
+	_data[0][3] = other._data[0][3];
+	_data[1][0] = other._data[1][0];
+	_data[1][1] = other._data[1][1];
+	_data[1][2] = other._data[1][2];
+	_data[1][3] = other._data[1][3];
+	_data[2][0] = other._data[2][0];
+	_data[2][1] = other._data[2][1];
+	_data[2][2] = other._data[2][2];
+	_data[2][3] = other._data[2][3];
+	_data[3][0] = other._data[3][0];
+	_data[3][1] = other._data[3][1];
+	_data[3][2] = other._data[3][2];
+	_data[3][3] = other._data[3][3];
+	return *this;
+}
 #endif // MAT44_HPP

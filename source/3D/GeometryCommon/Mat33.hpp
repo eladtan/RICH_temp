@@ -33,46 +33,56 @@ public:
 	}
 
 	//! \brief Return the element at (row, col)
-  //! \param row Row
-  //! \param col Column
-  //! \return Entry
+	//! \param row Row
+	//! \param col Column
+	//! \return Entry
 	inline T& operator()(int row, int col) { return at(row, col); }
 
 	//! \brief Return the element at (row, col)
-  //! \param row Row
-  //! \param col Column
-  //! \return Entry
+	//! \param row Row
+	//! \param col Column
+	//! \return Entry
 	inline const T& operator()(int row, int col) const { return at(row, col); }
 
 	//! \brief Constructs a zeroed out matrix
 	Mat33();
 
 	//! \brief Constructs a matrix and fills all its values. An intializer_list is better, but C++ 11 isn't always supported
-  /*! \param d00 Term in position 0,0
-    \param d01 Term in position 0,1
-    \param d02 Term in position 0,2
-    \param d10 Term in position 1,0
-    \param d11 Term in position 1,1
-    \param d12 Term in position 1,2
-    \param d20 Term in position 2,0
-    \param d21 Term in position 2,1
-    \param d22 Term in position 2,2
+	/*! \param d00 Term in position 0,0
+		\param d01 Term in position 0,1
+		\param d02 Term in position 0,2
+		\param d10 Term in position 1,0
+		\param d11 Term in position 1,1
+		\param d12 Term in position 1,2
+		\param d20 Term in position 2,0
+		\param d21 Term in position 2,1
+		\param d22 Term in position 2,2
    */
 	Mat33(T d00, T d01, T d02,
 		T d10, T d11, T d12,
 		T d20, T d21, T d22);
 
 	//! \brief Returns the matrix's determinant
-  //! \return Determinant of the matrix
+	//! \return Determinant of the matrix
 	T determinant() const;
 
-  //! \brief Return the inverse matrix
-  //! \return Inverse matrix
-	Mat33<T> inverse()const;
+	//! \brief Return the inverse matrix
+	//! \return Inverse matrix
+	Mat33<T> inverse() const;
 
-  //! \brief Returns the transpose matrix
-  //! \return Transposed matrix
-	Mat33<T> transpose()const;
+	//! \brief Returns the transpose matrix
+	//! \return Transposed matrix
+	Mat33<T> transpose() const;
+
+	//! \brief Assignment operator
+	//! \param other the other matrix which its values should be copied into self
+	//! \return self
+	Mat33<T> &operator=(const Mat33<T> &other);
+
+	//! \brief copy constructor
+	Mat33(const Mat33 &other): Mat33(other._data[0][0], other._data[0][1], other._data[0][2],
+							other._data[1][0], other._data[1][1], other._data[1][2],
+							other._data[2][0], other._data[2][1], other._data[2][2]){};
 };
 
 template <typename T>
@@ -130,7 +140,23 @@ Mat33<T>::Mat33()
 {
 	for (int i = 0; i < 3; i++)
 		for (int j = 0; j < 3; j++)
-			_data[i][j] = 0;
+			_data[i][j] = T(); // in integers and floats, for example, applying T() returns 0
+}
+
+
+template<typename T>
+Mat33<T> &Mat33<T>::operator=(const Mat33<T> &other);
+{
+	_data[0][0] = other._data[0][0];
+	_data[0][1] = other._data[0][1];
+	_data[0][2] = other._data[0][2];
+	_data[1][0] = other._data[1][0];
+	_data[1][1] = other._data[1][1];
+	_data[1][2] = other._data[1][2];
+	_data[2][0] = other._data[2][0];
+	_data[2][1] = other._data[2][1];
+	_data[2][2] = other._data[2][2];
+	return *this;
 }
 
 #endif // MAT33_HPP

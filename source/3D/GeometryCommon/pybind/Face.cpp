@@ -1,0 +1,25 @@
+#include "../../../../pybind/include.h"
+#include "../Face.hpp"
+
+#define MODULE_NAME face
+#define CLASS_NAME "Face"
+#define MODULE_VERSION "1.0"
+
+static void __exportFace(py::module &module)
+{
+    module.doc() = "A class describing a face between cells";
+    py::class_<Face>(module, CLASS_NAME)
+            .def(py::init<>(), "Default constructor")
+            .def(py::init<const point_vec_v&, std::size_t, std::size_t>(), "Constructor")
+            .def(py::init<const Face&>(), "Copy constructor")
+            .def("GetArea", &Face::GetArea, "Returns the area of the face")
+            .def(PYTHON_ASSIGN_OPERATOR, py::overload_cast<const Face&>(&Face::operator=), "Assignment");
+}
+
+PYBIND11_MODULE(MODULE_NAME, module)
+{
+    module.doc() = std::string("This module contains the class '") + CLASS_NAME + std::string("'.");
+    __exportFace(module);
+    module.def("calc_centroid", &calc_centroid, "Calculates the centroid of a face");
+    module.attr(PYTHON_VERSION_ATTR) = (PYBIND_DEVELOPING == 1)? "dev" : std::string(MODULE_VERSION);
+}

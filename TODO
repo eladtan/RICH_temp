@@ -1,0 +1,11 @@
+- source/3D/GeometryCommon/pybind/Tetrahedron.h - what about destructor? (suggestion: pybind11 does it by itself)
+- source/3D/GeometryCommon/pybind/Tetrahedron.h - assignment operator
+- source/3D/GeometryCommon/pybind/Face.h - todo all
+- source/3D/GeometryCommon/Tetrahedron.cpp - 4 is a magic number (number of vertices)
+- source/3D/GeometryCommon/Mat33.cpp - added copy constructor and assignment operator, ok?
+- source/3D/GeometryCommon/Mat33.cpp - changed in default constructor a line (T() insted of 0, added a note)
+- source/3D/GeometryCommon/Mat44.cpp - added copy constructor and assignment operator, ok?
+- source/3D/GeometryCommon/Mat44.cpp - changed in default constructor a line (T() insted of 0, added a note)
+- source/3D/GeometryCommon/pybind/Mat33.hpp - missing functions
+- source/3D/GeometryCommon/pybind/Mat33.hpp - assignment operator
+- 
