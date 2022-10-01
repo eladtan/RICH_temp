@@ -28,3 +28,4 @@ def test_at():
 if __name__ == "__main__":
     print("Mat33's version:", mat33.__version__)
     test_utils.test_runner(test_determinant, test_at)
+    # help(mat33.Mat33_int)

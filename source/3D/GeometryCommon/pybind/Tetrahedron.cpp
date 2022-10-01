@@ -5,10 +5,9 @@
 #define CLASS_NAME "Tetrahedron"
 #define MODULE_VERSION "1.0"
 
-static void __exportTetrahedron(py::module &module)
+void __exportTetrahedron(py::module &module)
 {
-    module.doc() = "A class describing tetrahedra";
-    py::class_<Tetrahedron>(module, CLASS_NAME)
+    py::class_<Tetrahedron>(module, CLASS_NAME, "A class describing tetrahedra")
         .def(py::init<>(), "Null constructor")
         .def(py::init<Tetrahedron const&>(), "Copy constructor")
         .def(PYTHON_ASSIGN_OPERATOR, &Tetrahedron::operator=, py::is_operator(), "Copy assignment");

@@ -10,7 +10,8 @@ void __templatedExportMat44(py::module &module, std::string &&name)
 {
     using Matrix = Mat44<T>;
     std::string className = CLASS_NAME + std::string("_") + name;
-    py::class_<Matrix>(module, className.c_str())
+    std::string classDoc = std::string("A very simple class for a 4x4 matrix of ") + name;
+    py::class_<Matrix>(module, className.c_str(), classDoc.c_str())
         .def(py::init<>(), "Null constructor")
         .def(py::init<T, T, T, T, T, T, T, T, T, T, T, T, T, T, T, T>(), "Default constructor")
         .def(py::init<const Matrix&>(), "Copy constructor")

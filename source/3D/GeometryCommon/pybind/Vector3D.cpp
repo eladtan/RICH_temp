@@ -7,7 +7,8 @@
 
 void __ExportVector3D(py::module &module)
 {
-    py::class_<Vector3D/*, Serializable*/>(module, CLASS_NAME)
+    // todo - serializable
+    py::class_<Vector3D/*, Serializable*/>(module, CLASS_NAME, "A class representing a 3D Mathematical vector")
         .def(py::init<>(), "Null constructor")
         .def(py::init<double, double, double>(), "Default constructor")
         .def(py::init<const Vector3D&>(), "Copy constructor")

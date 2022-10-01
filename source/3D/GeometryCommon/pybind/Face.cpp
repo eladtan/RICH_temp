@@ -5,10 +5,9 @@
 #define CLASS_NAME "Face"
 #define MODULE_VERSION "1.0"
 
-static void __ExportFace(py::module &module)
+void __ExportFace(py::module &module)
 {
-    module.doc() = "A class describing a face between cells";
-    py::class_<Face>(module, CLASS_NAME)
+    py::class_<Face>(module, CLASS_NAME, "A class describing a face between cells")
             .def(py::init<>(), "Default constructor")
             .def(py::init<const point_vec_v&, std::size_t, std::size_t>(), "Default constructor")
             .def(py::init<const Face&>(), "Copy constructor")
