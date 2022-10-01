@@ -1,0 +1,43 @@
+CMAKE=cmake
+PYTHON=python3
+
+DIRECTORY=../source/3D/GeometryCommon/pybind
+BUILD_DIR=${DIRECTORY}/build
+TESTS_DIR=${DIRECTORY}/tests
+MODULE_EXTENSION=.cpython-39-x86_64-linux-gnu.so
+
+MAT33_MODULE_NAME=mat33
+MAT33_TEST_FILE_NAME=Mat33.py
+
+VECTOR3D_MODULE_NAME=vector3D
+VECTOR3D_TEST_FILE_NAME=Vector3D.py
+
+FACE_MODULE_NAME=face
+FACE_TEST_FILE_NAME=Face.py
+
+TETRAHEDRON_MODULE_NAME=tetrahedron
+TETRAHEDRON_TEST_FILE_NAME=Tetrahedron.py
+
+
+compile:
+	mkdir -p ${BUILD_DIR}
+	${CMAKE} -S ${DIRECTORY} -B ${BUILD_DIR}
+	${CMAKE} --build ${BUILD_DIR}
+
+test_mat33: compile
+	cp ${BUILD_DIR}/${MAT33_MODULE_NAME}${MODULE_EXTENSION} ${TESTS_DIR}
+	${PYTHON} ${TESTS_DIR}/${MAT33_TEST_FILE_NAME}
+
+test_vector3D: compile
+	cp ${BUILD_DIR}/${VECTOR3D_MODULE_NAME}${MODULE_EXTENSION} ${TESTS_DIR}
+	${PYTHON} ${TESTS_DIR}/${VECTOR3D_TEST_FILE_NAME}
+
+test_face: compile
+	cp ${BUILD_DIR}/${FACE_MODULE_NAME}${MODULE_EXTENSION} ${TESTS_DIR}
+	${PYTHON} ${TESTS_DIR}/${FACE_TEST_FILE_NAME}
+
+test_tetrahedron: compile
+	cp ${BUILD_DIR}/${TETRAHEDRON_MODULE_NAME}${MODULE_EXTENSION} ${TESTS_DIR}
+	${PYTHON} ${TESTS_DIR}/${TETRAHEDRON_TEST_FILE_NAME}
+
+test_all: test_mat33 test_vector3D test_face test_tetrahedron

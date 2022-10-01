@@ -1,7 +1,6 @@
 #include "Tetrahedron.hpp"
 
-Tetrahedron::Tetrahedron():
-  points(), neighbors()  {}
+Tetrahedron::Tetrahedron(): points(), neighbors()  {}
 
 Tetrahedron::Tetrahedron(Tetrahedron const & other)
 {
@@ -16,8 +15,7 @@ Tetrahedron::Tetrahedron(Tetrahedron const & other)
 	}
 }
 
-Tetrahedron::~Tetrahedron()
-{}
+Tetrahedron::~Tetrahedron() {}
 
 Tetrahedron & Tetrahedron::operator=(Tetrahedron const & other)
 {

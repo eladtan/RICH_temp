@@ -8,4 +8,5 @@
 - source/3D/GeometryCommon/Mat44.cpp - changed in default constructor a line (T() insted of 0, added a note)
 - source/3D/GeometryCommon/pybind/Mat33.hpp - missing functions
 - source/3D/GeometryCommon/pybind/Mat33.hpp - assignment operator
-- 
+- source/3D/GeometryCommon/Vector3D.hpp - changed *= operator documentation
+- source/3D/GeometryCommon/pybind/Vector3D.hpp - add base class Serializable to the class declaration
