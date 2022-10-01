@@ -1,6 +1,5 @@
 #include "Intersections.hpp"
 
-
 namespace
 {
 	bool PointInPolygon(Face const& face, Vector3D const& point)
