@@ -10,3 +10,4 @@
 - source/3D/GeometryCommon/pybind/Mat33.hpp - assignment operator
 - source/3D/GeometryCommon/Vector3D.hpp - changed *= operator documentation
 - source/3D/GeometryCommon/pybind/Vector3D.hpp - add base class Serializable to the class declaration
+- source/3D/GeometryCommon/Tessellation3D.hpp - method GetDuplicatedProcs has wrong documentation (the same as the function above it, GetDuplicatedPoints)
