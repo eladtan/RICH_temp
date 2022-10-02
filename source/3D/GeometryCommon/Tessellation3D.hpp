@@ -125,7 +125,6 @@ public:
    */
   virtual const vector<Vector3D>& getMeshPoints(void) const = 0;
   
-
   /*!
     \brief Returns a reference to the points composing the faces vector
     \returns The reference
@@ -155,14 +154,14 @@ public:
     \param index The cell to check
     \return The neighbors
   */
-  virtual vector<size_t> GetNeighbors(size_t index)const = 0;
+  virtual vector<size_t> GetNeighbors(size_t index) const = 0;
 
   /*!
     \brief Returns a list of the neighbors of a cell
     \param index The cell to check
     \param res The neighbors, returned
   */
-  virtual void GetNeighbors(size_t index,vector<size_t> &res)const = 0;
+  virtual void GetNeighbors(size_t index, vector<size_t> &res) const = 0;
 
   /*!
     \brief Cloning function
@@ -196,49 +195,49 @@ public:
     \brief Returns the indeces of the points that were sent to other processors as ghost points
     \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
   */
-  virtual vector<vector<size_t> >const& GetDuplicatedPoints(void)const = 0;
+  virtual vector<vector<size_t> >const& GetDuplicatedPoints(void) const = 0;
 
   /*!
     \brief Returns the indeces of the points that were sent to other processors as ghost points
     \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
   */
-  virtual vector<int> GetDuplicatedProcs(void)const = 0;
-
-  /*! \brief Gets the list of parallel process to which points have been sent
-    \return List of process indices
-   */
-  virtual vector<int> GetSentProcs(void)const = 0;
-
-  /*! \brief Get Indices of points sent to other parallel processes
-    \return List of indices of cells sent to other processes, partitioned by process
-   */
-  virtual vector<vector<size_t> > const& GetSentPoints(void)const = 0;
-
-  /*! \brief Get real index of points
-    \return List of real indices
-   */
-  virtual vector<size_t> const& GetSelfIndex(void) const = 0;
+  virtual vector<int> GetDuplicatedProcs(void) const = 0;
 
   /*! \brief Gets the list of parallel process to which points have been sent
     \return List of process indices
    */
   virtual vector<int>& GetSentProcs(void) = 0;
 
+  /*! \brief Gets the list of parallel process to which points have been sent
+    \return List of process indices
+   */
+  virtual vector<int> GetSentProcs(void) const = 0;
+
   /*! \brief Get Indices of points sent to other parallel processes
     \return List of indices of cells sent to other processes, partitioned by process
    */
-  virtual vector<vector<size_t> > & GetSentPoints(void) = 0;
+  virtual vector<vector<size_t>>& GetSentPoints(void) = 0;
+
+  /*! \brief Get Indices of points sent to other parallel processes
+    \return List of indices of cells sent to other processes, partitioned by process
+   */
+  virtual vector<vector<size_t> > const& GetSentPoints(void) const = 0;
 
   /*! \brief Get self inidices of points
     \return List of all indices
    */
-  virtual vector<size_t> & GetSelfIndex(void) = 0;
+  virtual vector<size_t>& GetSelfIndex(void) = 0;
+
+  /*! \brief Get real index of points
+    \return List of real indices
+   */
+  virtual vector<size_t> const& GetSelfIndex(void) const = 0;
 
   /*!
     \brief Returns the total number of points (including ghost)
     \return The total number of points
   */
-  virtual size_t GetTotalPointNumber(void)const = 0;
+  virtual size_t GetTotalPointNumber(void) const = 0;
 
   /*!
     \brief Returns the center of masses of the cells
@@ -262,39 +261,39 @@ public:
     \brief Returns the volumes of the cells
     \return The volumes
   */
-  virtual vector<double> GetAllVolumes(void)const = 0;
+  virtual vector<double> GetAllVolumes(void) const = 0;
 
   /*!
     \brief Returns the neighbors and neighbors of the neighbors of a cell
     \param point The index of the cell to calculate for
     \param result The neighbors and their neighbors indeces
   */
-  virtual void GetNeighborNeighbors(vector<size_t> &result,size_t point)const = 0;
+  virtual void GetNeighborNeighbors(vector<size_t> &result, size_t point) const = 0;
 
   /*! \brief Get the indices of neighbours of a face
     \param face_index Index of the face
     \return Pair of indices of cells on the two sides of the face
    */
-  virtual std::pair<size_t,size_t> GetFaceNeighbors(size_t face_index)const = 0;
+  virtual std::pair<size_t,size_t> GetFaceNeighbors(size_t face_index) const = 0;
 
   /*! \brief Retrieve all neighbouring points who share a face
     \return List of pairs of indices of all neighbouring points
    */
-  virtual std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) = 0;
+  virtual std::vector<std::pair<size_t, size_t>>& GetAllFaceNeighbors(void) = 0;
 
   /*!
     \brief Returns a vector normal to the face whose magnitude is the seperation between the neighboring points
     \param faceindex The index of the face
     \return The vector normal to the face whose magnitude is the seperation between the neighboring points pointing from the first neighbor to the second
   */
-  virtual Vector3D Normal(size_t faceindex)const=0;
+  virtual Vector3D Normal(size_t faceindex) const = 0;
 
   /*!
     \brief Checks if a point is a ghost point or not
     \param index Point index
     \return True if is a ghost point, false otherwise
   */
-  virtual bool IsGhostPoint(size_t index)const=0;
+  virtual bool IsGhostPoint(size_t index)const = 0;
 
   /*!
     \brief Calculates the velocity of a face
@@ -314,29 +313,29 @@ public:
     \param index Face index
     \return Position of the face centre of mass
    */
-  virtual Vector3D FaceCM(size_t index)const=0;
+  virtual Vector3D FaceCM(size_t index) const = 0;
 
   /*! \brief Get indices of ghost points
     \return List of list of ghost point indices
    */
-  virtual vector<vector<size_t> > const& GetGhostIndeces(void) const = 0;
+  virtual vector<vector<size_t>> const& GetGhostIndeces(void) const = 0;
 
   /*! \brief Get indices of ghost points
     \return List of indices of ghost points
    */
-  virtual vector<vector<size_t> > & GetGhostIndeces(void) = 0;
+  virtual vector<vector<size_t>>& GetGhostIndeces(void) = 0;
 
   /*! \brief Get the coordinate of opposite corners of the boundary
     \return Pair of coordiantes of opposite corners
    */
-  virtual std::pair<Vector3D, Vector3D> GetBoxCoordinates(void)const = 0;
+  virtual std::pair<Vector3D, Vector3D> GetBoxCoordinates(void) const = 0;
 
   /*! \brief Build tessellatoin without a box
     \param points Mesh generating points
     \param ghosts Ghost points
     \param toduplicate List of duplicate points
    */
-  virtual void BuildNoBox(vector<Vector3D> const& points, vector<vector<Vector3D> > const& ghosts, vector<size_t> toduplicate) = 0;
+  virtual void BuildNoBox(vector<Vector3D> const& points, vector<vector<Vector3D>> const& ghosts, vector<size_t> toduplicate) = 0;
 
   /*! \brief Checks if a point is inside the box
     \param index Point index
@@ -354,15 +353,17 @@ public:
     \param ur Upper right
    */
   virtual void SetBox(Vector3D const& ll, Vector3D const& ur) = 0;
-/*!
-\brief Access method to box faces
-\return The box faces
-*/
+
+  /*!
+  \brief Access method to box faces
+  \return The box faces
+  */
   virtual std::vector<Face>& ModifyBoxFaces(void) = 0;
-/*!
-\brief Access method to box faces
-\return The box faces
-*/
+  
+  /*!
+  \brief Access method to box faces
+  \return The box faces
+  */
   virtual std::vector<Face> GetBoxFaces(void) const = 0;
 };
 
@@ -372,4 +373,5 @@ public:
   \return Points selected according to list of indices
  */
 point_vec_v VectorValues(std::vector<Vector3D> const&v, point_vec const &index);
+
 #endif // TESSELLATION3D_HPP
