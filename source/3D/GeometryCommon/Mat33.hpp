@@ -165,7 +165,12 @@ public:
 	*/
 	bool operator==(Mat33 const& A) const;
 
-	double J2(Mat33 const&A) const;
+
+	/*! \brief Computes second invariant
+	\param A Matrix
+	\return double - J2
+	*/
+	double J2(Mat33 const&A);
 };
 
 template <typename T>

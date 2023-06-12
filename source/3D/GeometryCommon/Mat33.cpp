@@ -152,7 +152,7 @@ Mat33<T> operator*(Mat33<T> const& A1, Mat33<T> const& A2)
 
 
 template <typename T>
-double J2(Matt33<T> const& A) const
+double J2(Mat33<T> const&A)
 {
     return A(0,0)*A(0,0)+A(0,1)*A(0,1)+A(0,2)*A(0,2)+A(1,0)*A(1,0)+A(1,1)*A(1,1)+A(1,2)*A(1,2)+A(2,0)*A(2,0)+A(2,1)*A(2,1)+A(2,2)*A(2,2);
 }
