@@ -164,6 +164,8 @@ public:
 	\return True/False - according to the comparison results.
 	*/
 	bool operator==(Mat33 const& A) const;
+
+	double J2(Mat33 const&A) const;
 };
 
 template <typename T>
