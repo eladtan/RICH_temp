@@ -73,6 +73,97 @@ public:
   //! \brief Returns the transpose matrix
   //! \return Transposed matrix
 	Mat33<T> transpose()const;
+
+	/*! \brief Term by term addition
+	\param A1 First Matrix
+	\param A2 Second Matrix
+	\return Sum
+	*/
+	Mat33 operator+(Mat33 const& A1, Mat33 const& A2);
+
+	/*! \brief Term by term subtraction
+	\param A1 First Matrix
+	\param A2 Second Matrix
+	\return Difference
+	*/
+	Mat33 operator-(Mat33 const& A1, Mat33 const& A2);
+
+	/*! \brief Scalar product
+	\param d Scalar
+	\param A Matrix
+	\return Three dimensional Matrix
+	*/
+	Mat33 operator*(double d, Mat33 const& A);
+
+	/*! \brief Scalar product
+	\param d Scalar
+	\param A Matrix
+	\return Three dimensional Matrix
+	*/
+	Mat33 operator*(Mat33 const& A1, Mat33 const& A2);
+
+	/*! \brief Scalar product
+	\param d Scalar
+	\param A Matrix
+	\return Three dimensional Matrix
+	*/
+	Vector3D operator*(Mat33 const& A,  Vector3D const& v);
+
+	/*! \brief Scalar product
+	\param A Matrix
+	\param d Scalar
+	\return Three dimensional Matrix
+	*/
+	Mat33 operator*(Mat33 const& A, double d);
+
+	/*! \brief Scalar division
+	\param A Matrix
+	\param d Scalar
+	\return Three dimensional Matrix
+	*/
+	Mat33 operator/(Mat33 const& A, double d);
+
+	/*! \brief Addition
+	\param A Matrix to be added
+	\return Reference to sum
+	*/
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+	Mat33& operator+=(Mat33 const& A);
+
+	/*! \brief Subtraction
+	\param A Matrix to be subtracted
+	\return Difference
+	*/
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+	Mat33& operator-=(Mat33 const& A);
+
+	/*! \brief Assignment operator
+	\param A Matrix to be copied
+	\return The assigned value
+	*/
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+	Mat33& operator=(Mat33 const& A);
+	
+	/*! \brief Scalar product
+	\param s Scalar
+	\return Reference to the Matrix multiplied by scalar
+	*/
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+	Mat33& operator*=(double s);
+
+	/*! \brief Compare 3D-Vectors (up to an arbitrary precision)
+	\param A Matrix to be compared to
+	\return True/False - according to the comparison results.
+	*/
+	bool operator==(Mat33 const& A) const;
 };
 
 template <typename T>
