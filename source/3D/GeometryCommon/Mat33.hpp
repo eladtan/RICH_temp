@@ -74,55 +74,6 @@ public:
   //! \return Transposed matrix
 	Mat33<T> transpose()const;
 
-	/*! \brief Term by term addition
-	\param A1 First Matrix
-	\param A2 Second Matrix
-	\return Sum
-	*/
-	Mat33 operator+(Mat33 const& A1, Mat33 const& A2);
-
-	/*! \brief Term by term subtraction
-	\param A1 First Matrix
-	\param A2 Second Matrix
-	\return Difference
-	*/
-	Mat33 operator-(Mat33 const& A1, Mat33 const& A2);
-
-	/*! \brief Scalar product
-	\param d Scalar
-	\param A Matrix
-	\return Three dimensional Matrix
-	*/
-	Mat33 operator*(double d, Mat33 const& A);
-
-	/*! \brief Scalar product
-	\param d Scalar
-	\param A Matrix
-	\return Three dimensional Matrix
-	*/
-	Mat33 operator*(Mat33 const& A1, Mat33 const& A2);
-
-	/*! \brief Scalar product
-	\param d Scalar
-	\param A Matrix
-	\return Three dimensional Matrix
-	*/
-	Vector3D operator*(Mat33 const& A,  Vector3D const& v);
-
-	/*! \brief Scalar product
-	\param A Matrix
-	\param d Scalar
-	\return Three dimensional Matrix
-	*/
-	Mat33 operator*(Mat33 const& A, double d);
-
-	/*! \brief Scalar division
-	\param A Matrix
-	\param d Scalar
-	\return Three dimensional Matrix
-	*/
-	Mat33 operator/(Mat33 const& A, double d);
-
 	/*! \brief Addition
 	\param A Matrix to be added
 	\return Reference to sum
@@ -166,12 +117,75 @@ public:
 	bool operator==(Mat33 const& A) const;
 
 
-	/*! \brief Computes second invariant
-	\param A Matrix
+	/*! \brief Computes the second invariant of the matrix (J2)
 	\return double - J2
 	*/
-	double J2(Mat33 const&A);
+	double J2();
+
+
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+	~Mat33(void) override {}
 };
+
+/*! \brief Term by term addition
+	\param A1 First Matrix
+	\param A2 Second Matrix
+	\return Sum
+	*/
+	template <typename T>
+	Mat33<T> operator+(Mat33<T> const& A1, Mat33<T> const& A2);
+
+	/*! \brief Term by term subtraction
+	\param A1 First Matrix
+	\param A2 Second Matrix
+	\return Difference
+	*/
+	template <typename T>
+	Mat33<T> operator-(Mat33<T> const& A1, Mat33<T> const& A2);
+
+	/*! \brief Scalar product
+	\param d Scalar
+	\param A Matrix
+	\return Three dimensional Matrix
+	*/
+	template <typename T>
+	Mat33<T> operator*(double d, Mat33<T> const& A);
+
+	/*! \brief Matrix Matrix product
+	\param A1 Matrix
+	\param A2 Matrix
+	\return Three dimensional Matrix
+	*/
+	template <typename T>
+	Mat33<T> operator*(Mat33<T> const& A1, Mat33<T> const& A2);
+
+	/*! \brief Matrix Vector product
+	\param A Matrix
+	\param v Vector
+	\return Three dimensional Matrix
+	*/
+	template <typename T>
+	Vector3D operator*(Mat33<T> const& A,  Vector3D const& v);
+
+	/*! \brief Scalar product
+	\param A Matrix
+	\param d Scalar
+	\return Three dimensional Matrix
+	*/
+	template <typename T>
+	Mat33<T> operator*(Mat33<T> const& A, double d);
+
+	/*! \brief Scalar division
+	\param A Matrix
+	\param d Scalar
+	\return Three dimensional Matrix
+	*/
+	template <typename T>
+	Mat33<T> operator/(Mat33<T> const& A, double d);
+
+
 
 template <typename T>
 inline T Mat33<T>::determinant() const
@@ -230,5 +244,14 @@ Mat33<T>::Mat33()
 		for (int j = 0; j < 3; j++)
 			_data[i][j] = 0;
 }
+
+template <typename T>
+inline double Mat33<T>::J2()
+{
+    return _data[0][0]*_data[0][0] + _data[0][1]*_data[0][1] + _data[0][2]*_data[0][2] 
+	     + _data[1][0]*_data[1][0] + _data[1][1]*_data[1][1] + _data[1][2]*_data[1][2]
+	     + _data[2][0]*_data[2][0] + _data[2][1]*_data[2][1] + _data[2][2]*_data[2][2];
+}
+
 
 #endif // MAT33_HPP

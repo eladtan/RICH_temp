@@ -129,9 +129,8 @@ bool Mat33<T>::operator==(Mat33<T> const& A) const
     return res;
 }
 
-
 template <typename T>
-Vector3D operator*(Mat33<T> const& A, Vector3D v)
+Vector3D operator*(Mat33<T> const& A, Vector3D const& v)
 {
     Vector3D res(A.at(0,0)*v[0]+A.at(0, 1)*v[1]+A.at(0,2)*v[2],
                  A.at(1,0)*v[0]+A.at(1, 1)*v[1]+A.at(1,2)*v[2],
@@ -148,11 +147,4 @@ Mat33<T> operator*(Mat33<T> const& A1, Mat33<T> const& A2)
               A1(2, 1)*A2(1, 1) + A1(2, 2)*A2(2, 1) + A1(2, 3)*A2(3, 1),    A1(2, 1)*A2(1, 2) + A1(2, 2)*A2(2, 2) + A1(2, 3)*A2(3, 2),      A1(2, 1)*A2(1, 3) + A1(2, 2)*A2(2, 3) + A1(2, 3)*A2(3, 3),
               A1(3, 1)*A2(1, 1) + A1(3, 2)*A2(2, 1) + A1(3, 3)*A2(3, 1),    A1(3, 1)*A2(1, 2) + A1(3, 2)*A2(2, 2) + A1(3, 3)*A2(3, 2),      A1(3, 1)*A2(1, 3) + A1(3, 2)*A2(2, 3) + A1(3, 3)*A2(3, 3));
     return res;
-}
-
-
-template <typename T>
-double J2(Mat33<T> const&A)
-{
-    return A(0,0)*A(0,0)+A(0,1)*A(0,1)+A(0,2)*A(0,2)+A(1,0)*A(1,0)+A(1,1)*A(1,1)+A(1,2)*A(1,2)+A(2,0)*A(2,0)+A(2,1)*A(2,1)+A(2,2)*A(2,2);
 }
