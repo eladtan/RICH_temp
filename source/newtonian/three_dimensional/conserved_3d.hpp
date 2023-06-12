@@ -3,6 +3,7 @@
 
 #include <array>
 #include "../../3D/GeometryCommon/Vector3D.hpp"
+#include "../../3D/GeometryCommon/Mat33.hpp"
 #include "../common/equation_of_state.hpp"
 #include "computational_cell.hpp"
 
@@ -25,6 +26,9 @@ public:
 
 	//! \brief Radiation energy
 	double Erad;
+	
+	//! \brief mass*stress tensor
+	Mat33<double> mass_stress; 
 
 	//! \brief Tracers
 	std::array<double,MAX_TRACERS> tracers;

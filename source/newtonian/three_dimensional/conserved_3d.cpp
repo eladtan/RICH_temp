@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), mass_stress(), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), tracers() {}
+	Erad(0), mass_stress(), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), mass_stress(), tracers(tracers_i) {}
 
 namespace
 {
@@ -47,6 +47,7 @@ Conserved3D& Conserved3D::operator-=(const Conserved3D& diff)
 	energy -= diff.energy;
 	internal_energy -= diff.internal_energy;
 	Erad -= diff.Erad;
+	mass_stress -= diff.mass_stress;
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		tracers[i] -= diff.tracers[i];
 	return *this;
@@ -58,7 +59,8 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 	momentum += diff.momentum;
 	energy += diff.energy;
 	internal_energy += diff.internal_energy;
-	Erad += diff.Erad;
+	Erad += diff.Erad;	
+	mass_stress += diff.mass_stress;
 	for (size_t i = 0; i < tracers.size(); ++i)
 		tracers[i] += diff.tracers[i];
 	return *this;
@@ -111,6 +113,7 @@ Conserved3D operator*(double s, const Conserved3D& c)
 		s*c.energy, s*c.internal_energy,
 		s*c.tracers);
 	res.Erad = s * c.Erad;
+	res.mass_stress = s*c.mass_stress;
 	return res;
 }
 
@@ -128,6 +131,7 @@ Conserved3D operator/(const Conserved3D& c, double s)
 		c.energy * s_1, c.internal_energy * s_1,
 		s_1 * c.tracers);
 	res.Erad = c.Erad * s_1;
+	res.mass_stress = s_1*c.mass_stress;
 	return res;
 }
 
@@ -139,6 +143,7 @@ void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved
 	res.internal_energy = res.mass*cell.internal_energy;
 	res.energy = res.mass*0.5*ScalarProd(cell.velocity, cell.velocity) + res.internal_energy;
 	res.Erad = cell.Erad * res.mass;
+	res.mass_stress = cell.stress * res.mass;
 	//size_t N = cell.tracers.size();
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
@@ -152,6 +157,7 @@ void PrimitiveToConservedSR(ComputationalCell3D const& cell, double vol, Conserv
 	const double enthalpy = eos.dp2e(cell.density, cell.pressure, cell.tracers, ComputationalCell3D::tracerNames);
 	res.internal_energy = enthalpy * res.mass;
 	res.Erad = res.mass * cell.Erad;
+	res.mass_stress = res.mass * cell.stress;
 	if (fastabs(cell.velocity) < 1e-5)
 		res.energy = (gamma*enthalpy + 0.5*ScalarProd(cell.velocity, cell.velocity))* res.mass - cell.pressure*vol;
 	else
@@ -184,6 +190,7 @@ Conserved3D& Conserved3D::operator*=(double s)
 	this->energy *= s;
 	this->internal_energy *= s;
 	this->Erad *= s;
+	this->mass_stress *= s;
 	size_t N = this->tracers.size();
 	for (size_t j = 0; j < N; ++j)
 		this->tracers[j] *= s;
