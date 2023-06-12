@@ -8,7 +8,7 @@ ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i,double internal_energy_i,size_t ID_i,
 				     const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), tracers(),stickers() {}
+  velocity(velocity_i), Erad(0), stress(), tracers(),stickers() {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i, double internal_energy_i,size_t ID_i,
@@ -16,7 +16,7 @@ ComputationalCell3D::ComputationalCell3D(double density_i,
 				     const std::array<double,MAX_TRACERS>& tracers_i,
 					 const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), tracers(tracers_i),stickers(stickers_i) {}
+  velocity(velocity_i), Erad(0), stress(), tracers(tracers_i),stickers(stickers_i) {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -26,6 +26,7 @@ temperature(other.temperature),
 ID(other.ID),
 velocity(other.velocity),
 Erad(other.Erad),
+stress(other.stress),
 tracers(other.tracers),
 stickers(other.stickers) {}
 
@@ -38,6 +39,7 @@ ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& o
 	temperature = other.temperature;
 	velocity = other.velocity;
 	Erad = other.Erad;
+	stress = other.stress;
 	tracers = other.tracers;
 	stickers = other.stickers;
 	ID = other.ID;
@@ -52,6 +54,7 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 	this->velocity += other.velocity;
 	this->temperature += other.temperature;
 	this->Erad += other.Erad;
+	this->stress += other.stress;
 	//assert(this->tracers.size() == other.tracers.size());
 	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
@@ -70,6 +73,7 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 	this->velocity -= other.velocity;
 	this->temperature -= other.temperature;
 	this->Erad -= other.Erad;
+	this->stress -= other.stress;
 	//assert(this->tracers.size() == other.tracers.size());
 	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
@@ -88,6 +92,7 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->velocity *= s;
 	this->temperature *= s;
 	this->Erad *= s;
+	this->stress *= s;
 	//size_t N = this->tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] *= s;
@@ -196,6 +201,7 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	res.velocity += other.velocity*scalar;
 	res.temperature += other.temperature*scalar;
 	res.Erad += other.Erad*scalar;
+	res.stress += other.stress*scalar;
 	//assert(res.tracers.size() == other.tracers.size());
 	//size_t N = res.tracers.size();
 #ifdef __INTEL_COMPILER
@@ -228,6 +234,7 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 	res.internal_energy *= s_1;
 	res.temperature *= s_1;
 	res.Erad *= s_1;
+	res.stress *= s_1;
 	//size_t N = res.tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] *= s_1;
@@ -243,6 +250,7 @@ ComputationalCell3D operator*(ComputationalCell3D const& p, double s)
 	res.internal_energy *= s;
 	res.temperature *= s;
 	res.Erad *= s;
+	res.stress *= s;
 	//size_t N = res.tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] *= s;
@@ -264,6 +272,7 @@ void ReplaceComputationalCell(ComputationalCell3D & cell, ComputationalCell3D co
 	cell.velocity = other.velocity;
 	cell.temperature = other.temperature;
 	cell.Erad = other.Erad;
+	cell.stress = other.stress;
 	//size_t N = other.tracers.size();
 	//cell.tracers.resize(N);
 #ifdef __INTEL_COMPILER

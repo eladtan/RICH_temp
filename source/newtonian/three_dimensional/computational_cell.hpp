@@ -8,6 +8,7 @@
 
 #include <array>
 #include "../../3D/GeometryCommon/Vector3D.hpp"
+#include "../../3D/GeometryCommon/Mat33.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #ifdef RICH_MPI
 #include "../../misc/serializable.hpp"
@@ -38,6 +39,9 @@ public:
 
 	//! \brief Radiation enregy per unit mass
 	double Erad;
+
+	//! \brief stress tensor
+	Mat33<double> stress;
 
   static vector<string> tracerNames;
   static vector<string> stickerNames;
