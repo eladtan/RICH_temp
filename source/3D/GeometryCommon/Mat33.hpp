@@ -185,7 +185,13 @@ public:
 	template <typename T>
 	Mat33<T> operator/(Mat33<T> const& A, double d);
 
-
+	/*! \brief Sum_{i,j} A1ij*A2ij
+	\param A1 Matrix
+	\param A2 Matrix
+	\return double
+	*/
+	template <typename T>
+	double operator%(Mat33<T> const& A1, Mat33<T> const& A2);
 
 template <typename T>
 inline T Mat33<T>::determinant() const

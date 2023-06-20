@@ -51,6 +51,12 @@ Mat33<T> operator/(Mat33<T> const& A, double d)
     return res;
 }
 
+template <typename T>
+double operator%(Mat33<T> const &A1, Mat33<T> const &A2)
+{
+    return A1(0,0)*A2(0,0)+A1(0,1)*A2(0,1)+A1(0,2)*A2(0,2)+A1(1,0)*A2(1,0)+A1(1,1)*A2(1,1)+A1(1,2)*A2(1,2)+A1(2,0)*A2(2,0)+A1(2,1)*A2(2,1)+A1(2,2)*A2(2,2);
+}
+
 #ifdef __INTEL_COMPILER
 #pragma omp declare simd
 #endif
