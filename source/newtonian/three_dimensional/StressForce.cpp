@@ -39,6 +39,10 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
             {
                 force += 0.5 * sigmap1[neighbor_j] *  r_ij * (tess.GetArea(faces[j]));
             }
+            else
+            {
+                force += 0.5 * sigmap1[i] *  r_ij * (tess.GetArea(faces[j]));
+            }
         }
 
         extensives[i].momentum += force*dt;
