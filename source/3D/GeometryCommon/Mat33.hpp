@@ -32,6 +32,21 @@ public:
 		return _data[row][col];
 	}
 
+	inline void Set(T d00, T d01, T d02, T d10, T d11, T d12, T d20, T d21, T d22)
+	{
+		_data[0][0] = d00;
+		_data[0][1] = d01;
+		_data[0][2] = d02;
+		_data[1][0] = d10;
+		_data[1][1] = d11;
+		_data[1][2] = d12;
+		_data[2][0] = d20;
+		_data[2][1] = d21;
+		_data[2][2] = d22;
+	}
+
+
+
 	//! \brief Return the element at (row, col)
   //! \param row Row
   //! \param col Column
@@ -120,7 +135,7 @@ public:
 	/*! \brief Computes the second invariant of the matrix (J2)
 	\return double - J2
 	*/
-	double J2();
+	T J2();
 
 
 #ifdef __INTEL_COMPILER
@@ -191,7 +206,15 @@ public:
 	\return double
 	*/
 	template <typename T>
-	double operator%(Mat33<T> const& A1, Mat33<T> const& A2);
+	T operator%(Mat33<T> const& A1, Mat33<T> const& A2);
+
+
+	/*! \brief retrun the deviatoric part
+	\param A Matrix
+	\return A-1/3tr(A)*I
+	*/
+	template <typename T>
+	Mat33<T> deviator(Mat33<T> A);
 
 template <typename T>
 inline T Mat33<T>::determinant() const
@@ -252,7 +275,7 @@ Mat33<T>::Mat33()
 }
 
 template <typename T>
-inline double Mat33<T>::J2()
+inline T Mat33<T>::J2()
 {
     return _data[0][0]*_data[0][0] + _data[0][1]*_data[0][1] + _data[0][2]*_data[0][2] 
 	     + _data[1][0]*_data[1][0] + _data[1][1]*_data[1][1] + _data[1][2]*_data[1][2]

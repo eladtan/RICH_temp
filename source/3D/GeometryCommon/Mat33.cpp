@@ -52,7 +52,7 @@ Mat33<T> operator/(Mat33<T> const& A, double d)
 }
 
 template <typename T>
-double operator%(Mat33<T> const &A1, Mat33<T> const &A2)
+T operator%(Mat33<T> const &A1, Mat33<T> const &A2)
 {
     return A1(0,0)*A2(0,0)+A1(0,1)*A2(0,1)+A1(0,2)*A2(0,2)+A1(1,0)*A2(1,0)+A1(1,1)*A2(1,1)+A1(1,2)*A2(1,2)+A1(2,0)*A2(2,0)+A1(2,1)*A2(2,1)+A1(2,2)*A2(2,2);
 }
@@ -153,4 +153,12 @@ Mat33<T> operator*(Mat33<T> const& A1, Mat33<T> const& A2)
               A1(2, 1)*A2(1, 1) + A1(2, 2)*A2(2, 1) + A1(2, 3)*A2(3, 1),    A1(2, 1)*A2(1, 2) + A1(2, 2)*A2(2, 2) + A1(2, 3)*A2(3, 2),      A1(2, 1)*A2(1, 3) + A1(2, 2)*A2(2, 3) + A1(2, 3)*A2(3, 3),
               A1(3, 1)*A2(1, 1) + A1(3, 2)*A2(2, 1) + A1(3, 3)*A2(3, 1),    A1(3, 1)*A2(1, 2) + A1(3, 2)*A2(2, 2) + A1(3, 3)*A2(3, 2),      A1(3, 1)*A2(1, 3) + A1(3, 2)*A2(2, 3) + A1(3, 3)*A2(3, 3));
     return res;
+}
+
+template <typename T>
+Mat33<T> deviator(Mat33<T> A)
+{
+    T trace3 = (A(1,1)+A(2,2)+A(3,3))*1/3.;
+    Mat33<T> res(A(1,1)-trace3, A(1,2),A(1,3), A(2,1), A(2,2)-trace3, A(2,3), A(3,1), A(3,2), A(3,3)-trace3)
+    return res
 }
