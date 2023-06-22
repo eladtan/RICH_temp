@@ -43,6 +43,12 @@ public:
 	//! \brief stress tensor
 	Mat33<double> stress;
 
+	//! \brief Shear modulus
+	double G;
+
+	//! \brief von Mises yield
+	double Y0;
+
   static vector<string> tracerNames;
   static vector<string> stickerNames;
 
@@ -64,7 +70,7 @@ public:
 	  */
 	ComputationalCell3D(double density_i,
 		double pressure_i,double internal_energy_i, size_t ID_i,
-		const Vector3D& velocity_i);
+		const Vector3D& velocity_i, double G_i, double Y0_i);
 
 	/*! \brief Class constructor
 	  \param density_i Density
@@ -79,7 +85,7 @@ public:
 		double pressure_i,
 		double internal_energy_i,
 		size_t ID_i,
-		const Vector3D& velocity_i,
+		const Vector3D& velocity_i, double G_i, double Y0_i,
 		const std::array<double, MAX_TRACERS>& tracers_i,
 		const std::array<bool, MAX_STICKERS>& stickers_i);
 

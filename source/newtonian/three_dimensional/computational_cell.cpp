@@ -1,22 +1,22 @@
 #include "computational_cell.hpp"
 
 ComputationalCell3D::ComputationalCell3D(void):
-  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0),
+  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), G(0), Y0(0),
   	tracers(),stickers() {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i,double internal_energy_i,size_t ID_i,
-				     const Vector3D& velocity_i):
-  density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
+				     const Vector3D& velocity_i, double G_i, double Y0_i):
+  density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i), G(G_i), Y0(Y0_i),
   velocity(velocity_i), Erad(0), stress(), tracers(),stickers() {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i, double internal_energy_i,size_t ID_i,
-				     const Vector3D& velocity_i,
+				     const Vector3D& velocity_i, double G_i, double Y0_i,
 				     const std::array<double,MAX_TRACERS>& tracers_i,
 					 const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), stress(), tracers(tracers_i),stickers(stickers_i) {}
+  velocity(velocity_i), Erad(0), stress(), tracers(tracers_i),stickers(stickers_i),G(G_i), Y0(Y0_i) {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -27,6 +27,7 @@ ID(other.ID),
 velocity(other.velocity),
 Erad(other.Erad),
 stress(other.stress),
+G(other.G),
 tracers(other.tracers),
 stickers(other.stickers) {}
 
@@ -39,6 +40,8 @@ ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& o
 	temperature = other.temperature;
 	velocity = other.velocity;
 	Erad = other.Erad;
+	G = other.G;
+	Y0 = other.Y0;
 	stress = other.stress;
 	tracers = other.tracers;
 	stickers = other.stickers;
