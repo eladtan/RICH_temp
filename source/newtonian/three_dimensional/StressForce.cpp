@@ -4,11 +4,11 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
 		const vector<Conserved3D>& fluxes, const vector<Vector3D>& point_velocities, const double t, double dt,
 			vector<Conserved3D> &extensives) const
 {
-    int N = tess.GetPointNo();
+    size_t const N = tess.GetPointNo();
     vector<Mat33<double>> velocity_derivatives(N), strain_rate(N), omega(N), sigma_star(N), sigmap1(N);
     vector<double> beta(N);
 
-    for (int i=0; i<N; i++)
+    for (size_t i=0; i<N; i++)
     {
         velocity_derivatives[i].Set(lg.GetSlopesUnlimited()[i].xderivative.velocity.x, lg.GetSlopesUnlimited()[i].yderivative.velocity.x, lg.GetSlopesUnlimited()[i].zderivative.velocity.x, lg.GetSlopesUnlimited()[i].xderivative.velocity.y, lg.GetSlopesUnlimited()[i].yderivative.velocity.y, lg.GetSlopesUnlimited()[i].zderivative.velocity.y,lg.GetSlopesUnlimited()[i].xderivative.velocity.z, lg.GetSlopesUnlimited()[i].yderivative.velocity.z, lg.GetSlopesUnlimited()[i].zderivative.velocity.z);
         strain_rate[i] = 0.5*(velocity_derivatives[i] + velocity_derivatives[i].transpose());
@@ -22,7 +22,7 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
     std::vector<size_t> neighbors;
     face_vec faces;
 
-    for (int i=0; i<N; i++)
+    for (size_t i=0; i<N; i++)
     {
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
