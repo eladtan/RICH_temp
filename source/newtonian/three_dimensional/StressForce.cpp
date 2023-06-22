@@ -47,7 +47,7 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
 
         extensives[i].momentum += force*dt;
         extensives[i].energy += ScalarProd(force, point_velocities[i]) * dt;
-        extensives[i].internal_energy += (1-beta[i])*strain_rate[i]%sigmap1[i]*dt + (1.-beta[i])*1./(2.*cells[i].G)*(sigmap1[i]%sigmap1[i]);
+        extensives[i].internal_energy += strain_rate[i]%sigmap1[i]*dt + 1./(4.*cells[i].G)*(sigmap1[i]%sigmap1[i]-cells[i].stress%cells[i].stress);
     }
 
 } 
