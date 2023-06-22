@@ -9,45 +9,45 @@
 template <typename T>
 Mat33<T> operator+(Mat33<T> const& A1, Mat33<T> const& A2)
 {
-    Mat33 res(A1(0,0)+A2(0,0), A1(0,1)+A2(0,1), A1(0,2)+A2(0,2),
-              A1(1,0)+A2(1,0), A1(1,1)+A2(1,1), A1(1,2)+A2(1,2),
-              A1(2,0)+A2(2,0), A1(2,1)+A2(2,1), A1(2,2)+A2(2,2));
+    Mat33<T> res(A1.at(0,0)+A2.at(0,0), A1.at(0,1)+A2.at(0,1), A1.at(0,2)+A2.at(0,2),
+                 A1.at(1,0)+A2.at(1,0), A1.at(1,1)+A2.at(1,1), A1.at(1,2)+A2.at(1,2),
+                 A1.at(2,0)+A2.at(2,0), A1.at(2,1)+A2.at(2,1), A1.at(2,2)+A2.at(2,2));
     return res;
 }
 
 template <typename T>
 Mat33<T> operator-(Mat33<T> const& A1, Mat33<T> const& A2)
 {
-    Mat33 res(A1(0,0)-A2(0,0), A1(0,1)-A2(0,1), A1(0,2)-A2(0,2),
-              A1(1,0)-A2(1,0), A1(1,1)-A2(1,1), A1(1,2)-A2(1,2),
-              A1(2,0)-A2(2,0), A1(2,1)-A2(2,1), A1(2,2)-A2(2,2));
+    Mat33<T> res(A1.at(0,0)-A2.at(0,0), A1.at(0,1)-A2.at(0,1), A1.at(0,2)-A2.at(0,2),
+                 A1.at(1,0)-A2.at(1,0), A1.at(1,1)-A2.at(1,1), A1.at(1,2)-A2.at(1,2),
+                 A1.at(2,0)-A2.at(2,0), A1.at(2,1)-A2.at(2,1), A1.at(2,2)-A2.at(2,2));
     return res;
 }
 
 template <typename T>
 Mat33<T> operator*(double d, Mat33<T> const& A)
 {
-    Mat33 res(A1(0,0)*d, A1(0,1)*d, A1(0,2)*d,
-              A1(1,0)*d, A1(1,1)*d, A1(1,2)*d,
-              A1(2,0)*d, A1(2,1)*d, A1(2,2)*d);
+    Mat33<T> res(A.at(0,0)*d, A.at(0,1)*d, A.at(0,2)*d,
+                 A.at(1,0)*d, A.at(1,1)*d, A.at(1,2)*d,
+                 A.at(2,0)*d, A.at(2,1)*d, A.at(2,2)*d);
     return res;
 }
 
 template <typename T>
 Mat33<T> operator*(Mat33<T> const& A, double d)
 {
-    Mat33 res(A1(0,0)*d, A1(0,1)*d, A1(0,2)*d,
-              A1(1,0)*d, A1(1,1)*d, A1(1,2)*d,
-              A1(2,0)*d, A1(2,1)*d, A1(2,2)*d);
+    Mat33<T> res(A.at(0,0)*d, A.at(0,1)*d, A.at(0,2)*d,
+                 A.at(1,0)*d, A.at(1,1)*d, A.at(1,2)*d,
+                 A.at(2,0)*d, A.at(2,1)*d, A.at(2,2)*d);
     return res;
 }
 
 template <typename T>
 Mat33<T> operator/(Mat33<T> const& A, double d)
 {
-    Mat33 res(A1(0,0)/d, A1(0,1)/d, A1(0,2)/d,
-              A1(1,0)/d, A1(1,1)/d, A1(1,2)/d,
-              A1(2,0)/d, A1(2,1)/d, A1(2,2)/d);
+    Mat33<T> res(A.at(0,0)/d, A.at(0,1)/d, A.at(0,2)/d,
+                 A.at(1,0)/d, A.at(1,1)/d, A.at(1,2)/d,
+                 A.at(2,0)/d, A.at(2,1)/d, A.at(2,2)/d);
     return res;
 }
 
@@ -65,7 +65,7 @@ Mat33<T>& Mat33<T>::operator+=(Mat33<T> const& A)
 {
     for (int i=0; i<3; i++)
     {
-        for (int j=0; <3; j++)
+        for (int j=0; j<3; j++)
         {
             _data[i][j] += A(i, j);
         }
@@ -81,7 +81,7 @@ Mat33<T>& Mat33<T>::operator-=(Mat33<T> const& A)
 {
     for (int i=0; i<3; i++)
     {
-        for (int j=0; <3; j++)
+        for (int j=0; j<3; j++)
         {
             _data[i][j] -= A(i, j);
         }
@@ -97,7 +97,7 @@ Mat33<T>& Mat33<T>::operator*=(double d)
 {
     for (int i=0; i<3; i++)
     {
-        for (int j=0; <3; j++)
+        for (int j=0; j<3; j++)
         {
             _data[i][j] *= d;
         }
@@ -149,7 +149,7 @@ Vector3D operator*(Mat33<T> const& A, Vector3D const& v)
 template <typename T>
 Mat33<T> operator*(Mat33<T> const& A1, Mat33<T> const& A2)
 {
-    Mat33 res(A1(1, 1)*A2(1, 1) + A1(1, 2)*A2(2, 1) + A1(1, 3)*A2(3, 1),    A1(1, 1)*A2(1, 2) + A1(1, 2)*A2(2, 2) + A1(1, 3)*A2(3, 2),      A1(1, 1)*A2(1, 3) + A1(1, 2)*A2(2, 3) + A1(1, 3)*A2(3, 3),
+    Mat33<T> res(A1(1, 1)*A2(1, 1) + A1(1, 2)*A2(2, 1) + A1(1, 3)*A2(3, 1),    A1(1, 1)*A2(1, 2) + A1(1, 2)*A2(2, 2) + A1(1, 3)*A2(3, 2),      A1(1, 1)*A2(1, 3) + A1(1, 2)*A2(2, 3) + A1(1, 3)*A2(3, 3),
               A1(2, 1)*A2(1, 1) + A1(2, 2)*A2(2, 1) + A1(2, 3)*A2(3, 1),    A1(2, 1)*A2(1, 2) + A1(2, 2)*A2(2, 2) + A1(2, 3)*A2(3, 2),      A1(2, 1)*A2(1, 3) + A1(2, 2)*A2(2, 3) + A1(2, 3)*A2(3, 3),
               A1(3, 1)*A2(1, 1) + A1(3, 2)*A2(2, 1) + A1(3, 3)*A2(3, 1),    A1(3, 1)*A2(1, 2) + A1(3, 2)*A2(2, 2) + A1(3, 3)*A2(3, 2),      A1(3, 1)*A2(1, 3) + A1(3, 2)*A2(2, 3) + A1(3, 3)*A2(3, 3));
     return res;
@@ -159,6 +159,6 @@ template <typename T>
 Mat33<T> deviator(Mat33<T> A)
 {
     T trace3 = (A(1,1)+A(2,2)+A(3,3))*1/3.;
-    Mat33<T> res(A(1,1)-trace3, A(1,2),A(1,3), A(2,1), A(2,2)-trace3, A(2,3), A(3,1), A(3,2), A(3,3)-trace3)
-    return res
+    Mat33<T> res(A(1,1)-trace3, A(1,2),A(1,3), A(2,1), A(2,2)-trace3, A(2,3), A(3,1), A(3,2), A(3,3)-trace3);
+    return res;
 }

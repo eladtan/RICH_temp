@@ -141,7 +141,7 @@ public:
 #ifdef __INTEL_COMPILER
 #pragma omp declare simd
 #endif
-	~Mat33(void) override {}
+	~Mat33(void) {}
 };
 
 /*! \brief Term by term addition
