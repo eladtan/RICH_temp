@@ -18,13 +18,13 @@ namespace fs = std::filesystem;
 int main(void)
 {
     // READ HERE POINTS
-    std::vector<double> in_seeds_x = read_vector("/home/itamarg/workspace/RICH/VoroCrust/astroid/astroid_in_seeds_x.txt");
-    std::vector<double> in_seeds_y = read_vector("/home/itamarg/workspace/RICH/VoroCrust/astroid/astroid_in_seeds_y.txt");
-    std::vector<double> in_seeds_z = read_vector("/home/itamarg/workspace/RICH/VoroCrust/astroid/astroid_in_seeds_z.txt");
+    std::vector<double> in_seeds_x = read_vector("/home/itamarg/workspace/RICH/VoroCrust/output/astroid/dump/zone_in_volume_seeds/x.txt");
+    std::vector<double> in_seeds_y = read_vector("/home/itamarg/workspace/RICH/VoroCrust/output/astroid/dump/zone_in_volume_seeds/y.txt");
+    std::vector<double> in_seeds_z = read_vector("/home/itamarg/workspace/RICH/VoroCrust/output/astroid/dump/zone_in_volume_seeds/z.txt");
 
-    std::vector<double> out_seeds_x = read_vector("/home/itamarg/workspace/RICH/VoroCrust/astroid/astroid_out_seeds_x.txt");
-    std::vector<double> out_seeds_y = read_vector("/home/itamarg/workspace/RICH/VoroCrust/astroid/astroid_out_seeds_y.txt");
-    std::vector<double> out_seeds_z = read_vector("/home/itamarg/workspace/RICH/VoroCrust/astroid/astroid_out_seeds_z.txt");
+    std::vector<double> out_seeds_x = read_vector("/home/itamarg/workspace/RICH/VoroCrust/output/astroid/dump/zone_out_seeds/x.txt");
+    std::vector<double> out_seeds_y = read_vector("/home/itamarg/workspace/RICH/VoroCrust/output/astroid/dump/zone_out_seeds/y.txt");
+    std::vector<double> out_seeds_z = read_vector("/home/itamarg/workspace/RICH/VoroCrust/output/astroid/dump/zone_out_seeds/z.txt");
 
     size_t const out_size = out_seeds_x.size();
     size_t const in_size = in_seeds_x.size();
@@ -103,7 +103,7 @@ int main(void)
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false
 		, true);
 	vector<DiagnosticAppendix3D *> appendices;
-	WriteSnapshot3D(sim, "init.h5", appendices, true);
+	WriteSnapshot3D(sim, "astroid.h5", appendices, true);
 
 	return 0;
 }
