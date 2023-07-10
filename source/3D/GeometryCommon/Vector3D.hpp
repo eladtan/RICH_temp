@@ -62,6 +62,27 @@ public:
 	//! \brief Component in the z direction
 	double z;
 
+	/*! \brief return the i-th component
+	\param the index
+	*/
+	inline double operator()(size_t i)
+	{
+		if (i==0)
+		 return x;
+		if (i==1)
+		 return y;
+		return z;
+	}
+
+	inline double operator()(size_t i) const
+	{
+		if (i==0)
+		 return x;
+		if (i==1)
+		 return y;
+		return z;
+	}
+
   /*! \brief Indexed access to member
     \param index Member index
     \return Reference to member
