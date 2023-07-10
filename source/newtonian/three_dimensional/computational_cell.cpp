@@ -28,6 +28,7 @@ velocity(other.velocity),
 Erad(other.Erad),
 stress(other.stress),
 G(other.G),
+Y0(other.Y0),
 tracers(other.tracers),
 stickers(other.stickers) {}
 
