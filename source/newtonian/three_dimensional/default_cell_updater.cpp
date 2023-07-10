@@ -115,7 +115,8 @@ namespace
 				}
 				if(includes_temperature)
 					res[i].temperature = eos.de2T(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
-				if (!(res[i].density > 0) || !(res[i].pressure > 0) || (!std::isfinite(fastabs(extensives[i].momentum))))
+				res[i].stress = extensive.mass_stress / extensive.mass;
+				if (!(res[i].density > 0) || (!std::isfinite(fastabs(extensives[i].momentum))))
 				{
 					UniversalError eo("Negative quantity in cell update");
 					eo.addEntry("Cell index", static_cast<double>(i));
