@@ -54,16 +54,20 @@ void RigidWallGenerator3D::operator()(const Tessellation3D& tess,
 	auto itr = res.begin();
 	for (size_t i = 0; i < N; ++i)
 	{
-		res.insert(itr, temp[indeces2[i]]);
+		auto insert_place = res.insert(itr, temp[indeces2[i]]);
 		++itr;
 		if(itr != res.end())
 		{
-			UniversalError eo("bad insert in rigidghost");
-			if(ghosts[indeces2[i]].second == 1)
-				eo.addEntry("ID", cells[tess.GetFaceNeighbors(ghosts[indeces2[i]].first).second].ID);
-			else
-				eo.addEntry("ID", cells[tess.GetFaceNeighbors(ghosts[indeces2[i]].first).first].ID);
-			throw eo;
+			--itr;
+			size_t const other_insert_location = static_cast<size_t>(insert_place - res.begin());
+			if(tess.GetArea(ghosts[indeces2[i]].first) > tess.GetArea(ghosts[indeces2[other_insert_location]].first))
+				res[temp[indeces2[i]].first] = temp[indeces2[i]].second;
+			// UniversalError eo("bad insert in rigidghost");
+			// if(ghosts[indeces2[i]].second == 1)
+			// 	eo.addEntry("ID", cells[tess.GetFaceNeighbors(ghosts[indeces2[i]].first).second].ID);
+			// else
+			// 	eo.addEntry("ID", cells[tess.GetFaceNeighbors(ghosts[indeces2[i]].first).first].ID);
+			// throw eo;
 		}
 	}
 }

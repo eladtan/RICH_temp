@@ -19,6 +19,7 @@
 #include <boost/multiprecision/cpp_dec_float.hpp>
 #include <boost/container/static_vector.hpp>
 #include <omp.h>
+#include <limits>
 
 bool PointInPoly(Tessellation3D const &tess, Vector3D const &point, std::size_t index)
 {
@@ -320,7 +321,7 @@ namespace
     return bigtet;
   }
 
-void CleanSameLine(boost::container::small_vector<size_t, 8> &indeces, vector<Vector3D> const& face_points, std::array<double, 128> &area_vec_temp)
+bool CleanSameLine(boost::container::small_vector<size_t, 8> &indeces, vector<Vector3D> const& face_points, std::array<double, 128> &area_vec_temp)
   {
     point_vec old;
     size_t const N = indeces.size();
@@ -337,7 +338,7 @@ void CleanSameLine(boost::container::small_vector<size_t, 8> &indeces, vector<Ve
     double const area_scale = *std::max_element(area_vec_temp.begin(), area_vec_temp.begin() + N);
     good_normal = CrossProduct(face_points[indeces[0]] - face_points[indeces[N - 1]], face_points[indeces[1]] 
       - face_points[indeces[N - 1]]);
-    good_normal *= 1.0 / fastabs(good_normal);
+    good_normal *= 1.0 / (100 * std::numeric_limits<double>::min() + fastabs(good_normal));
     for(size_t i = 1; i < N; ++i)
     {
       if(area_vec_temp[i] > area_scale * medium_fraction)
@@ -351,10 +352,9 @@ void CleanSameLine(boost::container::small_vector<size_t, 8> &indeces, vector<Ve
     size_t Nindeces = indeces.size();
     for(size_t i = 0; i < Nindeces; ++i)
     {
-      Vector3D normal_temp = CrossProduct(face_points[indeces[i]] - face_points[indeces[(N + i - 1) % N]], face_points[indeces[(i + 1) % N]] 
-        - face_points[indeces[(N + i - 1) % N]]);
+      Vector3D normal_temp = CrossProduct(face_points[indeces[i]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]], face_points[indeces[(i + 1) % Nindeces]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]]);
       double const area = fastabs(normal_temp);
-      normal_temp *= 1.0 / area;
+      normal_temp *= 1.0 / (100 * std::numeric_limits<double>::min() + area);
       if(area < area_scale * small_fraction || ScalarProd(normal_temp, good_normal) < 0.99998)
       {
         indeces.erase(indeces.begin() + i);
@@ -365,30 +365,9 @@ void CleanSameLine(boost::container::small_vector<size_t, 8> &indeces, vector<Ve
       }
     }
     if(Nindeces < 3)
-    {
-      UniversalError eo("Not enough point in face in CleanSameLine");
-      eo.addEntry("original size", old.size());
-      eo.addEntry("Area scale", area_scale);
-      std::cout<<std::setprecision(15)<<std::endl;
-      eo.addEntry("Normal x", good_normal.x);
-      eo.addEntry("Normal y", good_normal.y);
-      eo.addEntry("Normal z", good_normal.z);
-      eo.addEntry("Point0 x", face_points[old[0]].x);
-      eo.addEntry("Point0 y", face_points[old[0]].y);
-      eo.addEntry("Point0 z", face_points[old[0]].z);
-      for(size_t i = 1; i < old.size(); ++i)
-      {
-        Vector3D normal_temp = CrossProduct(face_points[old[i]] - face_points[old[i - 1]], face_points[old[(i + 1) % old.size()]] - face_points[old[i - 1]]);
-        normal_temp *= 1.0 /fastabs(normal_temp);
-        double const s = ScalarProd(normal_temp, good_normal);
-        eo.addEntry("Point" + std::to_string(i) + " x", face_points[old[i]].x);
-        eo.addEntry("Point" + std::to_string(i) + " y", face_points[old[i]].y);
-        eo.addEntry("Point" + std::to_string(i) + " z", face_points[old[i]].z);
-        eo.addEntry("Area", area_vec_temp[i]);
-        eo.addEntry("s", s);
-      }
-      throw eo;
-    }
+      return false;
+    else
+      return true;
   }
 
   void MakeRightHandFace(boost::container::small_vector<size_t, 8> &indeces, Vector3D const &point, vector<Vector3D> const &face_points,
@@ -1558,7 +1537,8 @@ void Voronoi3D::BuildVoronoi(std::vector<size_t> const &order)
             }
             // Make faces right handed
             MakeRightHandFace(*temp_points_in_face, del_.points_[point], tetra_centers_, temp3, area_[FaceCounter]);
-            CleanSameLine(*temp_points_in_face, tetra_centers_, area_vec_temp);
+            if(not CleanSameLine(*temp_points_in_face, tetra_centers_, area_vec_temp))
+              continue;
             FaceNeighbors_[FaceCounter].first = point;
             FaceNeighbors_[FaceCounter].second = point_other;
 

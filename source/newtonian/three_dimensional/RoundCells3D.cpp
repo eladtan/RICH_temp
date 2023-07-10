@@ -81,8 +81,8 @@ namespace
 						Vector3D const diff = tess.GetMeshPoint(neighbor) - point;
 						double const R_diff = fastabs(diff);
 						double const v_diff = ScalarProd(v[i] * dt, diff) / R_diff;
-						if(v_diff > 0.3 * R_diff)
-							v[i] *= R_diff * 0.3 / v_diff;
+						if(v_diff > 0.25 * R_diff)
+							v[i] *= R_diff * 0.25 / v_diff;
 					}
 				}
 			}
@@ -104,7 +104,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	  c =std::max(eos_.dp2c(cells[i].density, cells[i].pressure,cells[i].tracers, ComputationalCell3D::tracerNames), min_dw_);
+	  c =std::max(eos_.de2c(cells[i].density, cells[i].pressure,cells[i].tracers, ComputationalCell3D::tracerNames), min_dw_);
 #ifdef RICH_DEBUG
 	}
 	catch (UniversalError &eo)
@@ -114,6 +114,32 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		throw eo;
 	}
 #endif
+	vector<size_t> neigh = tess.GetNeighbors(i);
+	size_t N = neigh.size();
+	for (size_t j = 0; j < N; ++j)
+	{
+		if (tess.IsPointOutsideBox(neigh[j]))
+			continue;
+#ifdef RICH_DEBUG
+		try
+		{
+#endif
+			c = std::max(c, eos_.de2c(cells[neigh[j]].density, cells[neigh[j]].internal_energy,
+							cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
+			c = std::max(c, fastabs(cells[neigh[j]].velocity-cells[i].velocity));
+#ifdef RICH_DEBUG
+			if (!std::isfinite(c))
+				throw UniversalError("Bad cs in roundcells");
+		}
+		catch (UniversalError &eo)
+		{
+			eo.addEntry("Error RoundCells3D::calc_dw", 2);
+			eo.addEntry("Neigh Cell number", neigh[j]);
+			eo.addEntry("Neigh index", j);
+			throw eo;
+		}
+#endif	
+	}
 	velocity += chi_ * c*(s - r) / std::max(R, d);
 	SlowDown(velocity, tess, R, i, velocities, nomove);
 }
@@ -134,7 +160,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	  cs = eos_.dp2c(cells[i].density, cells[i].pressure,	cells[i].tracers, ComputationalCell3D::tracerNames);
+	  cs = eos_.de2c(cells[i].density, cells[i].internal_energy,	cells[i].tracers, ComputationalCell3D::tracerNames);
 #ifdef RICH_DEBUG
 	}
 	catch (UniversalError &eo)
@@ -152,7 +178,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		try
 		{
 #endif
-			cs = std::max(cs, eos_.dp2c(cells[neigh[j]].density, cells[neigh[j]].pressure,
+			cs = std::max(cs, eos_.de2c(cells[neigh[j]].density, cells[neigh[j]].internal_energy,
 						    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
 			cs = std::max(cs, fastabs(cells[neigh[j]].velocity-cells[i].velocity));
 #ifdef RICH_DEBUG

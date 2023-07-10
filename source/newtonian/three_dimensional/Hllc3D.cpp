@@ -27,7 +27,7 @@ namespace
 		try
 		{
 #endif
-		  cl = eos.dp2c(dl, pl, left.tracers, ComputationalCell3D::tracerNames);
+		  cl = eos.de2c(dl, left.internal_energy, left.tracers, ComputationalCell3D::tracerNames);
 #ifdef RICH_DEBUG
 		}
 		catch (UniversalError &eo)
@@ -43,7 +43,7 @@ namespace
 		try
 		{
 #endif
-		  cr = eos.dp2c(dr, pr, right.tracers, ComputationalCell3D::tracerNames);
+		  cr = eos.de2c(dr, right.internal_energy, right.tracers, ComputationalCell3D::tracerNames);
 #ifdef RICH_DEBUG
 		}
 		catch (UniversalError &eo)
