@@ -284,6 +284,21 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
     temp[i] = cells[i].temperature;
   write_std_vector_to_hdf5(writegroup, temp, "Temperature");
 
+  for (size_t i = 0; i < Ncells; ++i)
+    temp[i] = cells[i].Y0;
+  write_std_vector_to_hdf5(writegroup, temp, "Y0");
+
+  for (size_t i = 0; i < Ncells; ++i)
+    temp[i] = cells[i].G;
+  write_std_vector_to_hdf5(writegroup, temp, "G");
+
+  temp.resize(Ncells * 9);
+  for (size_t i = 0; i < Ncells; ++i)
+    for(size_t j = 0; j < 3; ++j)
+      for(size_t k = 0; k < 3; ++k)
+        temp[9 * i + 3 * j + k] = cells[i].stress(j, k);
+  write_std_vector_to_hdf5(writegroup, temp, "Stress");
+
   Group tracers, stickers;
 #ifdef RICH_MPI
   if (mpi_write)
@@ -415,6 +430,10 @@ Snapshot3D ReadSnapshot3D(const string& fname
     const vector<double> temperature = read_double_vector_from_hdf5(read_location, "Temperature");
     const vector<double> pressure = read_double_vector_from_hdf5(read_location, "Pressure");
     const vector<double> energy = read_double_vector_from_hdf5(read_location, "InternalEnergy");
+    const vector<double> Y0 = read_double_vector_from_hdf5(read_location, "Y0");
+    const vector<double> G = read_double_vector_from_hdf5(read_location, "G");
+    const vector<double> stress = read_double_vector_from_hdf5(read_location, "Stress");
+
     vector<size_t> IDs(density.size(), 0);
     hsize_t objcount = read_location.getNumObjs();
     for (hsize_t i = 0; i < objcount; ++i)
@@ -459,6 +478,11 @@ Snapshot3D ReadSnapshot3D(const string& fname
 	res.cells.at(i).velocity.x = x_velocity.at(i);
 	res.cells.at(i).velocity.y = y_velocity.at(i);
 	res.cells.at(i).velocity.z = z_velocity.at(i);
+  res.cells.at(i).Y0 = Y0.at(i);
+  res.cells.at(i).G = G.at(i);
+  for(size_t j = 0; j < 3; ++j)
+    for(size_t k = 0; k < 3; ++k)
+      res.cells.at(i).stress(j, k) = stress[9 * i + 3 * j + k];
 	for (size_t j = 0; j < tracernames.size(); ++j)
 	  res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
 	for (size_t j = 0; j < stickernames.size(); ++j)
