@@ -103,6 +103,8 @@ std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > ConditionActio
 			eo.addEntry("Face vz", face_velocities[i].z);
 			throw eo;
 		}
+		size_t N0 = tess.GetFaceNeighbors(i).first;
+		size_t N1 = tess.GetFaceNeighbors(i).second;
 		choose_action(i, tess, cells, eos, face_velocities[i], sequence_, fluxes[i], time, face_values[i]);
 	}
 	return face_values;

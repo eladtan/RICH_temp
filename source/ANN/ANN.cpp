@@ -48,9 +48,9 @@ ANNdist annDist(						// interpoint squared distance
 	ANNpoint const&			p,
 	ANNpoint const&			q)
 {
-	register int d;
-	register ANNcoord dist;
-	register ANNcoord diff;
+	 int d;
+	 ANNcoord dist;
+	 ANNcoord diff;
 
 	dist = 0;
 //#ifdef __INTEL_COMPILER

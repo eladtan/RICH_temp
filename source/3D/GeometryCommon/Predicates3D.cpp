@@ -460,7 +460,7 @@ namespace
 		return Q;
 	}
 
-
+ATTRIBUTE_NO_SANITIZE_ADDRESS
 	double orient3dadapt(std::array<Vector3D, 4> const& points, double permanent)
 	{
 		double pa[3], pb[3], pc[3], pd[3];

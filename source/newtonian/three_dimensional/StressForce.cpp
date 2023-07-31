@@ -1,5 +1,7 @@
 #include "StressForce.hpp"
-
+#ifdef RICH_MPI
+#include "../../mpi/mpi_commands.hpp"
+#endif
 void StressForce::calc_velocity_derivatives(size_t i, Mat33<double> &res, const vector<ComputationalCell3D>& cells, const Tessellation3D& tess) const
 {
     Mat33<double> tmp;
@@ -14,16 +16,16 @@ void StressForce::calc_velocity_derivatives(size_t i, Mat33<double> &res, const 
     face_vec faces = tess.GetCellFaces(i);
     double tracers_dot = 0;
     size_t N = tess.GetPointNo();
-
-    for (size_t j=0; j<Nneigh; j++)
+    for (size_t j=0; j<Nneigh; ++j)
     {
         size_t neigh_j = neighbors[j];
-        if (neigh_j < N)
+        if (neigh_j < N || not tess.IsPointOutsideBox(neigh_j))
         {
+            tracers_dot = 0;
             for (size_t t=0; t < cells[i].tracerNames.size(); t++)
             tracers_dot += cells[i].tracers[t] * cells[neigh_j].tracers[t];
 
-            if (tracers_dot > .25) /////////////////////////
+            if (cells[neigh_j].G > 1e10) 
             {
                 c_ij[j] = tess.GetCellCM(neigh_j);
                 c_ij[j] += cell_cm;
@@ -91,12 +93,25 @@ void StressForce::calc_velocity_derivatives(size_t i, Mat33<double> &res, const 
             m[7] -= c_ij[j].y*r_ij.z*A;
             m[8] -= c_ij[j].z*r_ij.z*A;
 
-            double perp_velocity = 2*ScalarProd(cells[i].velocity, r_ij);
-            for(int k=0; k<3; k++)
+            double perp_velocity = ScalarProd(cells[i].velocity, r_ij);
+            if (tess.GetCellCM(i).x > 0.)
             {
-                for (int l=0; l<3; l++)
+                for(int k=0; k<3; k++)
                 {
-                    tmp.AddAt((cells[i].velocity(k)-perp_velocity*r_ij(k)) * r_ij(l)*A, k, l);
+                    for (int l=0; l<3; l++)
+                    {
+                        tmp.AddAt(2.*(cells[i].velocity(k)) * r_ij(l)*A, k, l);
+                    }
+                }
+            }
+            else
+            {
+                for(int k=0; k<3; k++)
+                {
+                    for (int l=0; l<3; l++)
+                    {
+                        tmp.AddAt(2.*(cells[i].velocity(k)-perp_velocity*r_ij(k)) * r_ij(l)*A, k, l);
+                    }
                 }
             }
         }
@@ -129,47 +144,121 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
     size_t const N = tess.GetPointNo();
     vector<Mat33<double>> velocity_derivatives(N), strain_rate(N), omega(N), sigma_star(N), sigmap1(N);
     vector<double> beta(N);
+    Mat33<double> zeros_mat;
+    force_vec.resize(N);
+    G_cells_arr_.resize(N);
+    Y_cells_arr_.resize(N);
+    // for (size_t i=0; i<N; ++i)
+    // {
+    //     double sumG = 0;
+    //     double sumf = 0;
+    //     double sumY = 0;
+    //     for (size_t j=0; j<ComputationalCell3D::tracerNames.size(); ++j)
+    //     {
+    //         if (G0_arr_[j] > 1e10)
+    //         {
+    //             sumG += cells[i].tracers[j]/G0_arr_[j];
+    //             sumY += cells[i].tracers[j]/Y0_arr_[j];
+    //             sumf += cells[i].tracers[j];
+    //         }
+    //     }
+    //     if (sumG > 0.)
+    //     {
+    //         G_cells_arr_[i] = cells[i].G;  //sumf*sumf/sumG;
+    //         Y_cells_arr_[i] = sumf/sumY;
+    //     }
+    //     else
+    //     {
+    //         G_cells_arr_[i] = 0.;
+    //         Y_cells_arr_[i] = 0.;
+    //     }
+    // }
 
-    for (size_t i=0; i<N; i++)
+
+    for (size_t i=0; i<N; ++i)
     {
-        calc_velocity_derivatives(i, velocity_derivatives[i], cells, tess);
-        strain_rate[i] = 0.5*(velocity_derivatives[i] + velocity_derivatives[i].transpose());
-        omega[i] = velocity_derivatives[i]-strain_rate[i];
-        sigma_star[i] = cells[i].stress + dt*(2*cells[i].G*deviator(strain_rate[i]) + cells[i].stress*omega[i] - omega[i]*cells[i].stress);
-        beta[i] = std::min(sqrt(2./(1.0e-33+3.*sigma_star[i].J2()))*cells[i].Y0, 1.0e0);
-        sigmap1[i] = beta[i]*sigma_star[i];
-        extensives[i].mass_stress = extensives[i].mass*sigmap1[i];
+            if (cells[i].G > 1e10)
+        {
+            calc_velocity_derivatives(i, velocity_derivatives[i], cells, tess);
+            strain_rate[i] = 0.5*(velocity_derivatives[i] + velocity_derivatives[i].transpose());
+            omega[i] = velocity_derivatives[i]-strain_rate[i];
+            sigma_star[i] = cells[i].stress + dt*(2*cells[i].G*deviator(strain_rate[i]) - cells[i].stress*omega[i] + omega[i]*cells[i].stress);
+            beta[i] = std::min(sqrt(2./(1.0e-33+3.*sigma_star[i].J2()))*cells[i].Y0, 1.0e0);
+            sigmap1[i] = beta[i]*sigma_star[i];
+            extensives[i].mass_stress = extensives[i].mass*sigmap1[i];
+        }
+        else
+        {
+            sigmap1[i] = zeros_mat;
+            extensives[i].mass_stress = zeros_mat;
+        }
+        // if (cells[i].ID == 9950)
+        // {
+        //     Mat33<double> test;
+        //     std::cout << std::endl;
+        //     std::cout<<"point velocity "<<point_velocities[i].x<<" "<<point_velocities[i].y<<" "<<point_velocities[i].z<<std::endl;
+        //     std::cout << "old " << cells[i].stress(0,0) << "  " << cells[i].stress(0,1) << "  " << cells[i].stress(0,2) << "  " << std::endl;
+        //     std::cout << "    " << cells[i].stress(1,0) << "  " << cells[i].stress(1,1) << "  " << cells[i].stress(1,2) << "  " << std::endl;
+        //     std::cout << "    " << cells[i].stress(2,0) << "  " << cells[i].stress(2,1) << "  " << cells[i].stress(2,2) << "  " << std::endl;
+        //     test = dt*(2*5e11*deviator(strain_rate[i]));
+        //     std::cout << "1st " << test(0,0) << "  " << test(0,1) << "  " << test(0,2) << "  " << std::endl;
+        //     std::cout << "    " << test(1,0) << "  " << test(1,1) << "  " << test(1,2) << "  " << std::endl;
+        //     std::cout << "    " << test(2,0) << "  " << test(2,1) << "  " << test(2,2) << "  " << std::endl;
+        //     test = dt*cells[i].stress*omega[i];
+        //     std::cout << "2nd " << test(0,0) << "  " << test(0,1) << "  " << test(0,2) << "  " << std::endl;
+        //     std::cout << "    " << test(1,0) << "  " << test(1,1) << "  " << test(1,2) << "  " << std::endl;
+        //     std::cout << "    " << test(2,0) << "  " << test(2,1) << "  " << test(2,2) << "  " << std::endl;
+        //     test = dt*omega[i]*cells[i].stress;
+        //     std::cout << "3rd " << test(0,0) << "  " << test(0,1) << "  " << test(0,2) << "  " << std::endl;
+        //     std::cout << "    " << test(1,0) << "  " << test(1,1) << "  " << test(1,2) << "  " << std::endl;
+        //     std::cout << "    " << test(2,0) << "  " << test(2,1) << "  " << test(2,2) << "  " << std::endl << std::endl;
+        // }
     }
-
+#ifdef RICH_MPI
+    Mat33<double> mat_dummy;
+    MPI_exchange_data(tess, sigmap1, true, &mat_dummy);
+#endif
     std::vector<size_t> neighbors;
     face_vec faces;
+    Vector3D zeros_vec;
 
-    for (size_t i=0; i<N; i++)
+    for (size_t i=0; i<N; ++i)
     {
-        faces = tess.GetCellFaces(i);
-        tess.GetNeighbors(i, neighbors);
-        size_t const Nneigh = neighbors.size();
-        Vector3D const point = tess.GetMeshPoint(i);
-        Vector3D force(0, 0, 0);
-        for(size_t j = 0; j < Nneigh; ++j)
+        if (cells[i].G > 1e10)
         {
-            size_t const neighbor_j = neighbors[j];
-            Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
-            r_ij *= 1.0 / abs(r_ij);
-            double Emid = 0;           
-            if(!tess.IsPointOutsideBox(neighbor_j))
+            faces = tess.GetCellFaces(i);
+            tess.GetNeighbors(i, neighbors);
+            size_t const Nneigh = neighbors.size();
+            Vector3D const point = tess.GetMeshPoint(i);
+            force_vec[i] = zeros_vec;
+            double energy_rate = 0;
+            for(size_t j = 0; j < Nneigh; ++j)
             {
-                force += 0.5 * sigmap1[neighbor_j] *  r_ij * (tess.GetArea(faces[j]));
+                size_t const neigh_j = neighbors[j];
+                Vector3D r_ij = tess.GetMeshPoint(neigh_j) - point;
+                r_ij *= 1.0 / abs(r_ij);
+                if (neigh_j < N || !tess.IsPointOutsideBox(neigh_j))
+                {
+                    force_vec[i] += 0.5 * sigmap1[neigh_j] * r_ij * (tess.GetArea(faces[j]));
+                    energy_rate += 0.5 * (tess.GetArea(faces[j])) * ScalarProd(r_ij, (sigmap1[neigh_j] * cells[neigh_j].velocity + sigmap1[i] * cells[i].velocity)); // 
+                }
+                else
+                {
+                    force_vec[i] += 0.5 * sigmap1[i] * r_ij * (tess.GetArea(faces[j]));
+                    energy_rate += (tess.GetArea(faces[j])) * ScalarProd(r_ij, (sigmap1[i] * (cells[i].velocity - ScalarProd(cells[i].velocity, r_ij) * r_ij))); //
+                }
             }
-            else
-            {
-                force += 0.5 * sigmap1[i] *  r_ij * (tess.GetArea(faces[j]));
-            }
+
+            // double energy_strain = sigmap1[i]%strain_rate[i]*dt*tess.GetVolume(i);
+            // double energy_work = (ScalarProd(force_vec[i], cells[i].velocity))*dt;
+            extensives[i].momentum += force_vec[i]*dt;
+            extensives[i].energy +=  energy_rate*dt;//energy_strain + energy_work ;
+            extensives[i].internal_energy += (energy_rate - ScalarProd(force_vec[i], cells[i].velocity))*dt; //energy_strain;// -1./(4*cells[i].G) * (sigmap1[i]%sigmap1[i] - cells[i].stress%cells[i].stress); //
         }
-
-        extensives[i].momentum += force*dt;
-        extensives[i].energy += ScalarProd(force, point_velocities[i]) * dt + strain_rate[i]%sigmap1[i]*dt;
-        extensives[i].internal_energy += strain_rate[i]%sigmap1[i]*dt - 1./(4.*cells[i].G)*(sigmap1[i]%sigmap1[i]-cells[i].stress%cells[i].stress);
+        // if (cells[i].ID == 9950)
+        // {
+        //     std::cout << "force elast" << force_vec[i].x << "  " << force_vec[i].y << "  " << force_vec[i].z << "  " << std::endl;
+        //     std::cout << "rho " << cells[i].density << "  " << "P" << "  " << cells[i].pressure << " dt " <<dt<< std::endl;
+        // }
     }
-
 } 

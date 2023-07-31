@@ -820,6 +820,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 					eo.addEntry("dslope_z",  rslopes_[i].zderivative.density);
 					eo.addEntry("Old density", new_cells[i].density);
 					eo.addEntry("Old internal energy", new_cells[i].internal_energy);
+					eo.addEntry("Old G", new_cells[i].G);
 					eo.addEntry("Face", static_cast<double>(faces[j]));
 					eo.addEntry("Cell", static_cast<double>(i));
 					eo.addEntry("Vx", new_cells[i].velocity.x);

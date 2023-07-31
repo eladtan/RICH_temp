@@ -156,7 +156,7 @@ public:
 	*/
 	void Round();
 
-  size_t getChunkSize(void) const override;
+  	size_t getChunkSize(void) const override;
 	
 	vector<double> serialize(void) const override;
 

@@ -109,7 +109,7 @@ vector<string> ComputationalCell3D::stickerNames;
 #ifdef RICH_MPI
 size_t ComputationalCell3D::getChunkSize(void) const
 {
-	return 9 + tracers.size() + stickers.size();
+	return 9 + tracers.size() + stickers.size() + 11;
 }
 
 vector<double> ComputationalCell3D::serialize(void) const
@@ -137,6 +137,11 @@ vector<double> ComputationalCell3D::serialize(void) const
 #endif
 	for (size_t j = 0; j < MAX_STICKERS; ++j)
 		res[j + counter + MAX_TRACERS] = stickers[j] ? 1 : 0;
+	counter += MAX_TRACERS + MAX_STICKERS;
+	for (size_t j = 0; j < 9; ++j)
+		res[j + counter] = stress(j % 3, j / 3);
+	res[counter + 9] = G;
+	res[counter + 10] = Y0;
 	return res;
 }
 
@@ -166,6 +171,12 @@ void ComputationalCell3D::unserialize
 #endif
 	for (size_t i = 0; i < MAX_STICKERS; ++i)
 		stickers[i] = data.at(counter + MAX_TRACERS + i)>0.5;
+	counter += MAX_TRACERS + MAX_STICKERS;
+	for (size_t j = 0; j < 9; ++j)
+		stress.SetAt(data.at(counter + j), j % 3, j / 3);
+	G = data[counter + 9];
+	Y0 = data[counter + 10];
+
 }
 
 size_t Slope3D::getChunkSize(void) const

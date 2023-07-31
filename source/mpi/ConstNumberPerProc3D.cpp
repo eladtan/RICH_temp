@@ -532,7 +532,7 @@ void ConstNumberPerProc3D::Update(Tessellation3D& tproc, Tessellation3D const& t
 	for (size_t i = 0; i < Nneigh; ++i)
 	{
 		size_t const neighbor = neigh[i];
-		if(neighbor >= nproc)
+		if(static_cast<int>(neighbor) >= nproc)
 		{
 			Vector3D const diff = tproc.GetMeshPoint(neighbor) - point;
 			double const R_diff = fastabs(diff);

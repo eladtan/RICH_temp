@@ -18,12 +18,13 @@ import gen_version
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definitionOfReal=8):
 
-    common_cxx_flags = " -std=c++14 -Wextra -Wshadow -fno-common -fstack-protector-all -rdynamic -Werror "
+    common_cxx_flags = " -std=c++17 -Wextra -Wshadow -fno-common -fstack-protector-all -rdynamic -Werror "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
-    common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX "
+    common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX -g "
 
     hdf5_lib_dir = SysLibsDict["hdf5_lib_dir"]
     hdf5_include_dir = SysLibsDict["hdf5_include"]
+    boost_include_dir = SysLibsDict["boost_include"]
 
     if config.startswith("gnu"):
         fortran_compiler = SysLibsDict["gfortran"]
@@ -35,8 +36,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
         c_compiler = SysLibsDict["gcc"]
         cxx_compiler = SysLibsDict["g++"]
 
-        cmake_cxx_standard = "14"
-        cmake_cxx_flags = " -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy "
+        cmake_cxx_standard = "17"
+        cmake_cxx_flags = " -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy "# -fsanitize=address -Wno-maybe-uninitialized "
         cmake_cxx_flags_debug = " -D_GLIBCXX_DEBUG "
         cmake_cxx_flags_release = " "
     elif config.startswith("intel"):
@@ -50,7 +51,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
         cxx_compiler = SysLibsDict["icpc"]
        
         common_cxx_flags += " -diag-remark=13397,13401,15552 -pedantic-errors -Wall "
-        cmake_cxx_standard = "14"
+        cmake_cxx_standard = "17"
         cmake_cxx_flags = " -ansi-alias -fimf-arch-consistency=true "
         cmake_cxx_flags_debug = " -fp-model consistent -diag-disable=openmp -Wno-unknown-pragmas "
         cmake_cxx_flags_release = " -fp-model precise -march=core-avx2 -qopenmp "
@@ -86,6 +87,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DEXE_NAME={exe_name}',
             f'-DHDF5_LIB_DIRECTORY={hdf5_lib_dir}',
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
+            f'-DBOOST_INCLUDE={boost_include_dir}',
             f'-DTEST_DIR={test_dir}',
             '-DCMAKE_VERBOSE_MAKEFILE=on',
             f'-DPROJECT_ROOT_DIR={root_dir}',
@@ -159,14 +161,14 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         make = run_make.main(make_dir, config)
         assert make.returncode == 0, f"Running make for {config} failed"
         
-        exe_suffix = "_" + git_version.project_hash[:8] + "_"
-        if git_version.has_diff:
-            exe_suffix += "with_diff"
-        if git_version.has_untracked_files:
-            exe_suffix += "with_untracked_files"
-        exe_suffix += config
+        exe_suffix = ""#"_" + git_version.project_hash[:8] + "_"
+        # if git_version.has_diff:
+        #     exe_suffix += "with_diff"
+        # if git_version.has_untracked_files:
+        #     exe_suffix += "with_untracked_files"
+        # exe_suffix += config
 
         exe_path_with_suffix = os.path.join(config_dir, exe_name + exe_suffix)
         os.rename(short_exe_path, exe_path_with_suffix)
-        os.symlink(exe_path_with_suffix, short_exe_path)
+        # os.symlink(exe_path_with_suffix, short_exe_path)
     

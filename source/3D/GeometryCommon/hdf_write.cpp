@@ -174,6 +174,7 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
       if (rank > 0)
 	{
 	  MPI_Recv(&dummy, 1, MPI_INT, rank - 1, 343, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    std::cout<<"rank "<<rank<<" is starting write"<<std::endl;
 	  file.openFile(H5std_string(filename), H5F_ACC_RDWR);
 	}
       file.createGroup("/rank" + int2str(rank));
@@ -298,7 +299,9 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
       for(size_t k = 0; k < 3; ++k)
         temp[9 * i + 3 * j + k] = cells[i].stress(j, k);
   write_std_vector_to_hdf5(writegroup, temp, "Stress");
-
+  
+  temp.resize(Ncells);
+  
   Group tracers, stickers;
 #ifdef RICH_MPI
   if (mpi_write)
@@ -482,7 +485,13 @@ Snapshot3D ReadSnapshot3D(const string& fname
   res.cells.at(i).G = G.at(i);
   for(size_t j = 0; j < 3; ++j)
     for(size_t k = 0; k < 3; ++k)
-      res.cells.at(i).stress(j, k) = stress[9 * i + 3 * j + k];
+      {
+        res.cells.at(i).stress(j, k) = stress[9 * i + 3 * j + k];
+        if (res.cells[i].ID == 9950)
+        {
+          std::cout << stress[9 * i + 3 * j + k] << std::endl;
+        }
+      }
 	for (size_t j = 0; j < tracernames.size(); ++j)
 	  res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
 	for (size_t j = 0; j < stickernames.size(); ++j)

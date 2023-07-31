@@ -3,12 +3,15 @@
 \author Elad Steinberg
 */
 
+#include "../../misc/serializable.hpp"
+#include <iostream>
+
 #ifndef MAT3_HPP
 #define MAT3_HPP 1
 
 //! \brief A 3x3 matrix
 template <typename T>
-class Mat33
+class Mat33 : public Serializable
 {
 private:
 	T _data[3][3];
@@ -20,6 +23,8 @@ public:
   //! \return Entry
 	inline T& at(int row, int col)
 	{
+		if (row < 0 || row > 2 || col < 0 || col > 2)
+			std::cout << row << " " << col << std::endl;
 		return _data[row][col];
 	}
 
@@ -28,7 +33,9 @@ public:
   //! \param col Column
   //! \return Entry
 	inline const T& at(int row, int col) const
-	{
+	{		
+		if (row < 0 || row > 2 || col < 0 || col > 2)
+			std::cout << row << " " << col << std::endl;
 		return _data[row][col];
 	}
 
@@ -151,6 +158,40 @@ public:
 #pragma omp declare simd
 #endif
 	~Mat33(void) {}
+
+	inline size_t getChunkSize(void) const override
+	{
+		return 9;
+	};
+	
+	inline vector<double> serialize(void) const override
+	{
+		vector<double> res(9);
+		res[0] = _data[0][0];
+		res[1] = _data[0][1];
+		res[2] = _data[0][2];
+		res[3] = _data[1][0];
+		res[4] = _data[1][1];
+		res[5] = _data[1][2];
+		res[6] = _data[2][0];
+		res[7] = _data[2][1];
+		res[8] = _data[2][2];
+		return res;
+	};
+
+	inline void unserialize(const vector<double>& data) override
+	{
+		_data[0][0] = data[0];
+		_data[0][1] = data[1];
+		_data[0][2] = data[2];
+		_data[1][0] = data[3];
+		_data[1][1] = data[4];
+		_data[1][2] = data[5];
+		_data[2][0] = data[6];
+		_data[2][1] = data[7];
+		_data[2][2] = data[8];
+	};
+
 };
 
 /*! \brief Term by term addition
@@ -278,8 +319,8 @@ inline Mat33<T>::Mat33(T d00, T d01, T d02,
 template<typename T>
 Mat33<T>::Mat33()
 {
-	for (int i = 0; i < 3; i++)
-		for (int j = 0; j < 3; j++)
+	for (int i = 0; i < 3; ++i)
+		for (int j = 0; j < 3; ++j)
 			_data[i][j] = 0;
 }
 
@@ -351,9 +392,9 @@ T operator%(Mat33<T> const &A1, Mat33<T> const &A2)
 template <typename T>
 Mat33<T>& Mat33<T>::operator+=(Mat33<T> const& A)
 {
-    for (int i=0; i<3; i++)
+    for (int i=0; i<3; ++i)
     {
-        for (int j=0; j<3; j++)
+        for (int j=0; j<3; ++j)
         {
             _data[i][j] += A(i, j);
         }
@@ -367,9 +408,9 @@ Mat33<T>& Mat33<T>::operator+=(Mat33<T> const& A)
 template <typename T>
 Mat33<T>& Mat33<T>::operator-=(Mat33<T> const& A)
 {
-    for (int i=0; i<3; i++)
+    for (int i=0; i<3; ++i)
     {
-        for (int j=0; j<3; j++)
+        for (int j=0; j<3; ++j)
         {
             _data[i][j] -= A(i, j);
         }
@@ -383,9 +424,9 @@ Mat33<T>& Mat33<T>::operator-=(Mat33<T> const& A)
 template <typename T>
 Mat33<T>& Mat33<T>::operator*=(double d)
 {
-    for (int i=0; i<3; i++)
+    for (int i=0; i<3; ++i)
     {
-        for (int j=0; j<3; j++)
+        for (int j=0; j<3; ++j)
         {
             _data[i][j] *= d;
         }
@@ -399,9 +440,9 @@ Mat33<T>& Mat33<T>::operator*=(double d)
 template <typename T>
 Mat33<T>& Mat33<T>::operator=(Mat33<T> const& A)
 {
-    for (int i =0; i<3; i++)
+    for (int i =0; i<3; ++i)
     {
-        for (int j=0; j<3; j++)
+        for (int j=0; j<3; ++j)
         {
             _data[i][j] = A.at(i, j);
         }
@@ -413,9 +454,9 @@ template <typename T>
 bool Mat33<T>::operator==(Mat33<T> const& A) const
 {
     bool res;
-    for (int i =0; i<3; i++)
+    for (int i =0; i<3; ++i)
     {
-        for (int j=0; j<3; j++)
+        for (int j=0; j<3; ++j)
         {
             res = res && std::abs(_data[i][j] - A.at(i, j)) < EPSILON;
         }

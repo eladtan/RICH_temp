@@ -69,7 +69,7 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 #ifdef RICH_MPI
 size_t Conserved3D::getChunkSize(void) const
 {
-	return 7 + tracers.size();
+	return 7 + tracers.size() + 9;
 }
 
 vector<double> Conserved3D::serialize(void) const
@@ -86,6 +86,9 @@ vector<double> Conserved3D::serialize(void) const
 	//size_t N = tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res[j + counter] = tracers[j];
+	counter += MAX_TRACERS;
+	for (size_t j = 0; j < 9; ++j)
+		res[j + counter] = mass_stress(j % 3, j / 3);
 	return res;
 }
 
@@ -103,6 +106,9 @@ void Conserved3D::unserialize(const vector<double>& data)
 	//size_t N = tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		tracers[j] = data.at(counter + j);
+	counter += MAX_TRACERS ;
+	for (size_t j = 0; j < 9; ++j)
+		mass_stress.SetAt(data.at(counter + j), j % 3, j / 3);
 }
 #endif
 
