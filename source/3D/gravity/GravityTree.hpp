@@ -2,15 +2,17 @@
 #define _GRAVITY_TREE_HPP
 
 #include "GravityTypes.h"
-#include "3D/elementary/Vector3D.hpp"
 #include "ds/OctTree/OctTree.hpp"
 
 namespace
 {
-    double GetAngleBoxPoint(const Vector3D &point, const _BoundingBox<Vector3D> boundingBox, const Vector3D &centerOfMass)
+    template<typename T>
+    double GetAngleBoxPoint(const T &point, const _BoundingBox<T> boundingBox, const T &centerOfMass)
     {
-        typename Vector3D::coord_type L = ScalarProd(boundingBox.ur - boundingBox.ll, boundingBox.ur - boundingBox.ll);
-        typename Vector3D::coord_type D = ScalarProd(point - centerOfMass, point - centerOfMass);
+        T urMll = boundingBox.ur - boundingBox.ll;
+        typename T::coord_type L = (urMll.x * urMll.x) + (urMll.y * urMll.y) + (urMll.z * urMll.z);
+        T dist = point - centerOfMass;
+        typename T::coord_type D = (dist.x * dist.x) + (dist.y * dist.y) + (dist.z * dist.z);
         // std::cout << "point = " << point << ", boundingBox = (" << boundingBox.ll << " x " << boundingBox.ur << "), centerOfMass = " << centerOfMass << ", L = " << L << ", D = " << D << ", L/D = " << (L / D) << std::endl;
         /*
         const Vector3D diff = point - centerOfMass;
@@ -29,153 +31,135 @@ namespace
     }
 }
 
-struct _Massed3DPoint
+template<typename T>
+class GravityTree
 {
-    Vector3D point;
-    gravity_result_t mass;
 
-    explicit _Massed3DPoint(const Vector3D &point, gravity_result_t mass): point(point), mass(mass){};
-};
-
-class GravityTree : public OctTree<Vector3D>
-{
-private:
-    class GravityTreeNode : public OctTree<Vector3D>::OctTreeNode
+public:
+    struct _MassedNodeInfo
     {
-    public:
-        inline GravityTreeNode(const Vector3D &ll, const Vector3D &ur): OctTreeNode(ll, ur), mass(0), centerOfMass(Vector3D(0, 0, 0)){};
-
-        inline GravityTreeNode(const Vector3D &point, gravity_result_t mass): OctTreeNode(point), mass(mass), centerOfMass(point){};
-
-        inline GravityTreeNode(const Vector3D &point): GravityTreeNode(point, 0){};
-
-        GravityTreeNode(GravityTreeNode *parent, int childNumber): OctTreeNode(parent, childNumber), mass(0), centerOfMass(Vector3D(0, 0, 0)){};
-
-        inline OctTreeNode *addLeafChild(int childIndex, const Vector3D &point) override
-        {
-            GravityTreeNode *node = new GravityTreeNode(point);
-            node->parent = this;
-            node->fixHeightsRecursively();
-            this->children[childIndex] = node;
-            return node;
-        }
-
-        inline OctTreeNode *createChild(int childIndex) override
-        {
-            assert(this->children[childIndex] == nullptr);
-            this->children[childIndex] = new GravityTreeNode(this, childIndex);
-            return this->children[childIndex];
-        }
-
-        inline void setMass(gravity_result_t mass)
-        {
-            assert(this->isValue);
-            this->mass = mass;
-            this->centerOfMass = this->value;
-            this->updateGravityFieldsRecursively();
-        };
-
+        T value;
+        T CM; // center of mass
         gravity_result_t mass;
-        Vector3D centerOfMass; // CM
-    
-        void updateGravityFieldsRecursively();
 
-        inline void print() const override
-        {
-            std::cout << "BB: " << this->boundingBox.ll << ", " << this->boundingBox.ur << " (depth: " << this->depth << ", height: " << this->height << "), (Mass: " << this->mass << ", CM: " << this->centerOfMass << ")" << std::endl;
-        }
+        typename T::coord_type operator[](size_t idx) const{return this->value[idx];};
+        typename T::coord_type &operator[](size_t idx){return this->value[idx];};
+        inline _MassedNodeInfo operator+(const _MassedNodeInfo &other) const{return _MassedNodeInfo(this->value + other.value);};
+        inline _MassedNodeInfo operator-(const _MassedNodeInfo &other) const{return _MassedNodeInfo(this->value - other.value);};
+        inline _MassedNodeInfo operator*(typename T::coord_type scalar) const{return _MassedNodeInfo(this->value * scalar);};
+        inline _MassedNodeInfo operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
+        inline bool operator==(const _MassedNodeInfo &other) const{return this->value == other.value;};
+        inline bool operator!=(const _MassedNodeInfo &other) const{return !this->operator==(other);};
+        inline friend std::ostream &operator<<(std::ostream &stream, const _MassedNodeInfo &value){return operator<<(stream, value.value);};
+        inline _MassedNodeInfo(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass){};
+        inline _MassedNodeInfo(const T &value): _MassedNodeInfo(value, 0){};
+        inline _MassedNodeInfo(): _MassedNodeInfo(T(), 0){};
     };
 
-    GravityTreeNode *newRoot;
+    using Node = typename OctTree<_MassedNodeInfo>::OctTreeNode;
+
+    static inline bool ShouldOpenBox(const T &point, const Node *node, double theta)
+    {
+        if(node == nullptr)
+        {
+            return false;
+        }
+        const _BoundingBox<T> boundingBox(node->boundingBox.ll.value, node->boundingBox.ur.value);
+        return (!node->isValue) and (boundingBox.contains(point) or (std::abs(GetAngleBoxPoint(point, boundingBox, node->value.CM) - theta) >= EPSILON));
+    }
+
+private:
+    void calculateMassHelper(Node *node);
+
+    OctTree<_MassedNodeInfo> *octTree;
     double theta;
 
 public:
-    GravityTree(const Vector3D &ll, const Vector3D &ur, double theta): newRoot(nullptr), theta(theta){this->setBounds(ll, ur);};
+    GravityTree(const T &ll, const T &ur, double theta): octTree(new OctTree<_MassedNodeInfo>(_MassedNodeInfo(ll), _MassedNodeInfo(ur))){};
 
-    ~GravityTree() override{this->deleteSubtree(this->getRoot());};
+    ~GravityTree(){delete this->octTree;};
 
-    bool insert(const Vector3D &point, gravity_result_t mass)
+    inline void calculateMasses(){this->calculateMassHelper(this->octTree->getRoot());};
+
+    inline bool build(const std::vector<MassedPoint<T>> &points)
     {
-        GravityTreeNode *node = dynamic_cast<GravityTreeNode*>(this->tryInsert(point));
-        if(node == nullptr)
+        for(const MassedPoint<T> &_point : points)
         {
-            std::cerr << "Error, could not insert node" << std::endl;
-            return false;
+            if(!this->octTree->insert(_MassedNodeInfo(_point.point, _point.mass)))
+            {
+                return false; // todo: something else?
+            }
         }
-        this->treeSize++;
-        node->setMass(mass);
+        this->calculateMasses();
         return true;
     }
 
-    inline bool insert(const _Massed3DPoint &massedPoint){return this->insert(massedPoint.point, massedPoint.mass);};
+    inline bool find(const T &point){return this->octTree->find(point);};
 
-    inline bool find(const Vector3D &point){return OctTree<Vector3D>::find(point);}
+    T gravityHelper(const T &point, const Node *node) const;
 
-    Vector3D gravityHelper(const Vector3D &point, const GravityTreeNode *node) const;
-
-    inline Vector3D gravity(gravity_result_t mass, const Vector3D &point, const std::vector<int> &directions) const
+    inline T gravity(gravity_result_t mass, const T &point, const direction_t *directions) const
     {
-        return mass * this->gravityHelper(point, dynamic_cast<const GravityTreeNode*>(this->getNodeByDirections(directions)));
+        return this->gravityHelper(point, this->octTree->getNodeByDirections(directions)) * mass;
     }
 
-    void setBounds(const Vector3D &ll, const Vector3D &ur) override
-    {
-        assert(this->getRoot() == nullptr);
-        this->setRoot(new GravityTreeNode(ll, ur));
-        this->getRoot()->parent = nullptr;
-    }
-
-    OctTreeNode *getRoot() override{return this->newRoot;};
-    const OctTreeNode *getRoot() const override{return this->newRoot;};
-    void setRoot(OctTreeNode *newRoot) override{this->newRoot = dynamic_cast<GravityTreeNode*>(newRoot);};
+    const OctTree<_MassedNodeInfo> *getOctTree() const{return this->octTree;};
 };
 
-void GravityTree::GravityTreeNode::updateGravityFieldsRecursively()
+template<typename T>
+void GravityTree<T>::calculateMassHelper(Node *node)
 {
-    if(!this->isValue)
+    if(node == nullptr)
+    {
+        return;
+    }
+    if(!node->isValue)
     {
         // mass is the accumulative mass
-        this->mass = 0;
-        this->centerOfMass = Vector3D(0, 0, 0);
+        node->value.mass = 0;
+        node->value.CM = T();
         for(int i = 0; i < CHILDREN; i++)
         {
-            const GravityTreeNode *node = dynamic_cast<const GravityTreeNode*>(this->children[i]);
-            if(node != nullptr)
+            Node *child = node->children[i];
+            if(child != nullptr)
             {
-                this->centerOfMass += (node->mass) * (node->centerOfMass);
-                this->mass += node->mass;
+                this->calculateMassHelper(child);
+                node->value.CM += (child->value.CM) * (child->value.mass);
+                node->value.mass += child->value.mass;
             }
         }
-        this->centerOfMass = this->centerOfMass  / this->mass;
+        node->value.CM = node->value.CM  / node->value.mass;
     }
-    if(this->parent != nullptr)
+    else
     {
-        dynamic_cast<GravityTreeNode*>(parent)->updateGravityFieldsRecursively();
+        node->value.CM = node->value.value;
     }
 }
 
-Vector3D GravityTree::gravityHelper(const Vector3D &point, const GravityTreeNode *node) const
+template<typename T>
+T GravityTree<T>::gravityHelper(const T &point, const Node *node) const
 {
-    Vector3D gravity(0, 0, 0);
+    T gravity;
     if(node == nullptr)
     {
         return gravity;
     }
-    if((!node->isValue) and (node->boundingBox.contains(point) or (GetAngleBoxPoint(point, node->boundingBox, node->centerOfMass) >= this->theta)))
+
+    if(GravityTree<T>::ShouldOpenBox(point, node, this->theta))
     {
         // open the box
         for(int i = 0; i < CHILDREN; i++)
         {
-            const GravityTreeNode *child = dynamic_cast<const GravityTreeNode*>(node->children[i]);
+            const Node *child = node->children[i];
             gravity += this->gravityHelper(point, child);
         }
     }
     else
     {
         // do not open the box
-        const Vector3D temp(node->centerOfMass - point);
+        const T temp(node->value.CM - point);
         gravity_result_t sizeOfForce = 1 / (std::pow(abs(temp), 3));
-        gravity = (temp * sizeOfForce) * node->mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
+        gravity = (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
     }
     return gravity;
 }

@@ -33,12 +33,12 @@ class _Sphere
 {
 public:
     T center;
-    coord_t radius;
+    typename T::coord_type radius;
 
-    _Sphere(const T &center, coord_t radius): center(center), radius(radius){};
+    _Sphere(const T &center, typename T::coord_type radius): center(center), radius(radius){};
     inline bool contains(const T &point) const
     {
-        coord_t distance = 0;
+        typename T::coord_type distance = 0;
         for(int i = 0; i < DIM; i++)
         {
             double _distance = (point[i] - this->center[i]);
@@ -52,7 +52,7 @@ template<typename T>
 bool SphereBoxIntersection(const _BoundingBox<T> &box, const _Sphere<T> &sphere)
 {
     T closestPoint;
-    coord_t distance = 0;
+    typename T::coord_type distance = 0;
     for(int i = 0; i < DIM /*sphere.dim*/; i++)
     {
         typename T::coord_type centerCoord = sphere.center[i];

@@ -8,9 +8,10 @@
 
 #define DIM 3
 #define CHILDREN 8 // 2^DIM
+#define PATH_END_DIRECTION (-1)
 #define DEBUG_MODE
 
-typedef double coord_t;
+typedef int direction_t;
 
 template<typename T>
 class OctTree
@@ -149,13 +150,19 @@ public:
     inline size_t getSize() const{return this->treeSize;};
     inline std::vector<T> range(const _Sphere<T> &sphere) const{std::vector<T> result; this->rangeHelper(this->getRoot(), sphere, result); return result;};
 
-    inline const OctTreeNode *getNodeByDirections(const std::vector<int> &directions) const
+    inline const OctTreeNode *getNodeByDirections(const direction_t *directions) const
     {
+        if(directions == nullptr)
+        {
+            return nullptr;
+        }
         const OctTreeNode *current = this->getRoot();
-        for(size_t i = 0; i < directions.size(); i++)
+        size_t i = 0;
+        while(directions[i] != PATH_END_DIRECTION)
         {
             if(current == nullptr) return nullptr;
             current = current->children[directions[i]];
+            i++;
         }
         return current;
     }
