@@ -5,10 +5,12 @@
 #include <assert.h>
 #include <utility>
 #include "../geometry_utils.hpp"
+#include <mpi.h> // todo: remove
 
 #define DIM 3
 #define CHILDREN 8 // 2^DIM
 #define PATH_END_DIRECTION (-1)
+#define MAX_DEPTH 50
 #define DEBUG_MODE
 
 typedef int direction_t;
@@ -65,7 +67,7 @@ public:
 
         virtual inline void print() const
         {
-            std::cout << "BB: " << this->boundingBox.ll << ", " << this->boundingBox.ur << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
+            std::cout << this->value << ", BB: " << this->boundingBox.ll << ", " << this->boundingBox.ur << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
         }
 
         bool isValue;
@@ -156,13 +158,27 @@ public:
         {
             return nullptr;
         }
+        int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         const OctTreeNode *current = this->getRoot();
         size_t i = 0;
         while(directions[i] != PATH_END_DIRECTION)
         {
-            if(current == nullptr) return nullptr;
+            if(current == nullptr)
+            {
+                break;
+            };
             current = current->children[directions[i]];
             i++;
+        }
+
+        assert(current != nullptr);
+        if(current == nullptr)
+        {
+            std::cerr << "Illegal path in rank " << rank << std::endl;
+            size_t j = 0;
+            std::cout << "path is ";
+            while(directions[j] != PATH_END_DIRECTION){std::cout << directions[j++] << " ";};  std::cout << std::endl;
+            exit(8200);
         }
         return current;
     }

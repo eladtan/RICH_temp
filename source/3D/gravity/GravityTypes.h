@@ -10,6 +10,7 @@ struct MassedPoint
     gravity_result_t mass;
 
     MassedPoint(const T &point, gravity_result_t mass): point(point), mass(mass){};
+    MassedPoint(): MassedPoint(T(), 0){};
 };
 
 #endif // _GRAVITY_TYPES_H

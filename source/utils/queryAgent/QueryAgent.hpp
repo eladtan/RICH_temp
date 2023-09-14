@@ -164,6 +164,7 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
             AnswerType* base = reinterpret_cast<AnswerType*>(buffer.data() + 2 * sizeof(long int));
             for(size_t i = 0; i < static_cast<size_t>(length); i++)
             {
+                queries[id].finalResults[i] = base[i];
                 batch.dataByRanks[status.MPI_SOURCE].emplace_back(base[i]);
             }
         }
@@ -228,12 +229,11 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
                 AnswerType *toSendData = reinterpret_cast<AnswerType*>(to_send.data() + sizeof(id) + sizeof(resultSize));
                 std::memcpy(toSendData, result.data(), resultSize * sizeof(AnswerType));
             }
-
-            /*
+           // /*
             this->requests.push_back(MPI_REQUEST_NULL);
             MPI_Isend(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, &this->requests[requests.size() - 1]);
-            */
-            MPI_Send(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm);
+            //*/
+           // MPI_Send(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm);
         }
         MPI_Iprobe(MPI_ANY_SOURCE,  TAG_REQUEST, this->comm, &arrivedNew, &status);
     }
