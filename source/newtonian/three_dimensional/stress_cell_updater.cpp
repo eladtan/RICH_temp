@@ -46,7 +46,7 @@ namespace
 	void regular_update(std::vector<ComputationalCell3D> &res, std::vector<Conserved3D> & extensives,
 		Tessellation3D const& tess, size_t entropy_index,
 		EquationOfState const& eos, bool const includes_temperature,
-		std::vector<double> G0_arr, std::vector<double> Y0_arr, std::vector<double> dens0_arr)
+		std::vector<StrengthModel*> const& strength_arr, std::vector<bool> const& is_strength_arr, std::vector<double> const& dens0_arr)
 	{
 		size_t Nloop = tess.GetPointNo();
 		size_t Ntracers = ComputationalCell3D::tracerNames.size();
@@ -117,18 +117,21 @@ namespace
 				if(includes_temperature)
 					res[i].temperature = eos.de2T(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
 				res[i].stress = extensive.mass_stress / extensive.mass;
+				res[i].strain_pl = extensive.mass_eps / extensive.mass;
+				res[i].strain_pl_dot = extensive.mass_eps_dot / extensive.mass;
 				
 				double sumG = 0;
 				double sumf = 0;
 				double sumY = 0;
 				for (size_t j=0; j<ComputationalCell3D::tracerNames.size(); ++j)
 				{
-					if (G0_arr[j] > 1e10 && res[i].tracers[j] > 0.9*dens0_arr[j]/res[i].density)
+					if (is_strength_arr[j] && res[i].tracers[j] > 0.5*dens0_arr[j]/res[i].density)  //// TODO: think on a more efficient method
 					{
-						sumG += res[i].tracers[j]/G0_arr[j];
-						sumY += res[i].tracers[j]/Y0_arr[j];
+						sumG += res[i].tracers[j]/strength_arr[j]->getG(res[i], j);
+						sumY += res[i].tracers[j]/strength_arr[j]->getY(res[i], j);
 						sumf += res[i].tracers[j];
 					}
+
 				}
 				if (sumG > 0.)
 				{
@@ -137,8 +140,8 @@ namespace
 				}
 				else
 				{
-					res[i].G = 0.;
-					res[i].Y0 = 0.;
+					res[i].G = 50.;
+					res[i].Y0 = 50.;
 				}
 
 				if (!(res[i].density > 0) || (!std::isfinite(fastabs(extensives[i].momentum))))
@@ -257,7 +260,7 @@ namespace
 
 }
 
-StressCellUpdater::StressCellUpdater(vector<double> G0_arr, vector<double> Y0_arr, vector<double> dens0_arr, bool SR, double G, bool const includes_temperature) : G0_arr_(G0_arr), Y0_arr_(Y0_arr), dens0_arr_(dens0_arr), SR_(SR), G_(G), includes_temperature_(includes_temperature), entropy_index_(9999999) {}
+StressCellUpdater::StressCellUpdater(vector<bool> is_strength_arr, vector<StrengthModel*> strength_arr, vector<double> dens0_arr, bool SR, double G, bool const includes_temperature) : is_strength_arr_(is_strength_arr), strength_arr_(strength_arr), dens0_arr_(dens0_arr), SR_(SR), G_(G), includes_temperature_(includes_temperature), entropy_index_(9999999) {}
 
 void StressCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
 	const Tessellation3D& tess, vector<Conserved3D>& extensives) const
@@ -275,7 +278,7 @@ void StressCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOfS
 	}
 #endif
 	if (!SR_)
-		regular_update(res, extensives, tess, entropy_index_, eos, includes_temperature_, G0_arr_, Y0_arr_, dens0_arr_);
+		regular_update(res, extensives, tess, entropy_index_, eos, includes_temperature_, strength_arr_, is_strength_arr_, dens0_arr_);
 	else
 		regular_updateSR(res, extensives, tess, entropy_index_, eos, G_);
 #ifdef RICH_MPI

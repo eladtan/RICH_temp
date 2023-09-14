@@ -54,6 +54,7 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 		}
 	}
 
+
 	for (size_t i = 0; i < N; ++i)
 	{
 		// double dEtherm = extensives[i].internal_energy - oldEtherm[i];

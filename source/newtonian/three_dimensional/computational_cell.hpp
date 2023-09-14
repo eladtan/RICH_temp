@@ -49,6 +49,12 @@ public:
 	//! \brief von Mises yield
 	double Y0;
 
+	//! \brief effective plastic starin
+	double strain_pl;
+
+	//! \brief effective plastic starin change rate
+	double strain_pl_dot;
+
   static vector<string> tracerNames;
   static vector<string> stickerNames;
 

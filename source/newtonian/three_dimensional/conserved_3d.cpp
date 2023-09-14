@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), mass_stress(), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), mass_stress(), mass_eps(0), mass_eps_dot(0), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), mass_stress(), tracers() {}
+	Erad(0), mass_stress(), mass_eps(0), mass_eps_dot(0), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), mass_stress(), tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), mass_stress(), mass_eps(0), mass_eps_dot(0), tracers(tracers_i) {}
 
 namespace
 {
@@ -48,6 +48,8 @@ Conserved3D& Conserved3D::operator-=(const Conserved3D& diff)
 	internal_energy -= diff.internal_energy;
 	Erad -= diff.Erad;
 	mass_stress -= diff.mass_stress;
+	mass_eps -= diff.mass_eps;
+	mass_eps_dot -= diff.mass_eps_dot;
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		tracers[i] -= diff.tracers[i];
 	return *this;
@@ -61,6 +63,8 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 	internal_energy += diff.internal_energy;
 	Erad += diff.Erad;	
 	mass_stress += diff.mass_stress;
+	mass_eps += diff.mass_eps;
+	mass_eps_dot += diff.mass_eps_dot;
 	for (size_t i = 0; i < tracers.size(); ++i)
 		tracers[i] += diff.tracers[i];
 	return *this;
@@ -69,7 +73,7 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 #ifdef RICH_MPI
 size_t Conserved3D::getChunkSize(void) const
 {
-	return 7 + tracers.size() + 9;
+	return 7 + tracers.size() + 9 + 2;
 }
 
 vector<double> Conserved3D::serialize(void) const
@@ -89,6 +93,8 @@ vector<double> Conserved3D::serialize(void) const
 	counter += MAX_TRACERS;
 	for (size_t j = 0; j < 9; ++j)
 		res[j + counter] = mass_stress(j % 3, j / 3);
+	res[counter + 9] = mass_eps;
+	res[counter + 10] = mass_eps_dot;
 	return res;
 }
 
@@ -109,6 +115,8 @@ void Conserved3D::unserialize(const vector<double>& data)
 	counter += MAX_TRACERS ;
 	for (size_t j = 0; j < 9; ++j)
 		mass_stress.SetAt(data.at(counter + j), j % 3, j / 3);
+	mass_eps = data.at(counter + 9);
+	mass_eps_dot = data.at(counter + 10);
 }
 #endif
 
@@ -138,6 +146,8 @@ Conserved3D operator/(const Conserved3D& c, double s)
 		s_1 * c.tracers);
 	res.Erad = c.Erad * s_1;
 	res.mass_stress = s_1*c.mass_stress;
+	res.mass_eps = s_1*c.mass_eps;
+	res.mass_eps_dot = s_1*c.mass_eps_dot;
 	return res;
 }
 
@@ -150,6 +160,8 @@ void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved
 	res.energy = res.mass*0.5*ScalarProd(cell.velocity, cell.velocity) + res.internal_energy;
 	res.Erad = cell.Erad * res.mass;
 	res.mass_stress = cell.stress * res.mass;
+	res.mass_eps = cell.strain_pl * res.mass;
+	res.mass_eps_dot = cell.strain_pl_dot *res.mass;
 	//size_t N = cell.tracers.size();
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
@@ -197,6 +209,8 @@ Conserved3D& Conserved3D::operator*=(double s)
 	this->internal_energy *= s;
 	this->Erad *= s;
 	this->mass_stress *= s;
+	this->mass_eps *= s;
+	this->mass_eps_dot *= s;
 	size_t N = this->tracers.size();
 	for (size_t j = 0; j < N; ++j)
 		this->tracers[j] *= s;

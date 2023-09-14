@@ -9,6 +9,8 @@ namespace
 		size_t ntracers = left.tracers.size();
 		res.Erad = (res.mass > 0 ? left.Erad : right.Erad) * res.mass;
 		res.mass_stress = (res.mass > 0 ? left.stress : right.stress) * res.mass;
+		res.mass_eps = (res.mass > 0 ? left.strain_pl : right.strain_pl) * res.mass;
+		res.mass_eps_dot = (res.mass > 0 ? left.strain_pl_dot : right.strain_pl_dot) * res.mass;
 		for (size_t i = 0; i < ntracers; ++i)
 			res.tracers[i] = (res.mass>0 ? left.tracers[i] : right.tracers[i])*res.mass;
 	}

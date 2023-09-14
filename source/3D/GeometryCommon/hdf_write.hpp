@@ -93,7 +93,7 @@ public:
 #endif // RICH_MPI
 Snapshot3D ReadSnapshot3D(const string& fname
 #ifdef RICH_MPI
-	,bool mpi_write = false,int fake_rank=-1
+	, bool mpi_write = false, int fake_rank = -1
 #endif
 );
 

@@ -30,6 +30,13 @@ public:
 	//! \brief mass*stress tensor
 	Mat33<double> mass_stress; 
 
+
+	//! \brief mass*EPS
+	double mass_eps;
+
+	//! \brief mass*EPS_dot
+	double mass_eps_dot;
+
 	//! \brief Tracers
 	std::array<double,MAX_TRACERS> tracers;
 

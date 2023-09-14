@@ -190,7 +190,6 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
   Tessellation3D const& tess = sim.getTesselation();
 
   size_t Ncells = tess.GetPointNo();
-
   std::vector<double> box(6);
   box[0] = tess.GetBoxCoordinates().first.x;
   box[1] = tess.GetBoxCoordinates().first.y;
@@ -293,6 +292,14 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
     temp[i] = cells[i].G;
   write_std_vector_to_hdf5(writegroup, temp, "G");
 
+  for (size_t i = 0; i < Ncells; ++i)
+    temp[i] = cells[i].strain_pl;
+  write_std_vector_to_hdf5(writegroup, temp, "EPS");
+
+  for (size_t i = 0; i < Ncells; ++i)
+    temp[i] = cells[i].strain_pl_dot;
+  write_std_vector_to_hdf5(writegroup, temp, "EPS_rate");
+
   temp.resize(Ncells * 9);
   for (size_t i = 0; i < Ncells; ++i)
     for(size_t j = 0; j < 3; ++j)
@@ -369,6 +376,7 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
 #else
   file.close();
 #endif
+
 }
 
 std::vector<Vector3D> ReadVoronoiPoints(std::string const& filename)
@@ -393,14 +401,14 @@ Snapshot3D ReadSnapshot3D(const string& fname
 {
   Snapshot3D res;
   H5File file(fname, H5F_ACC_RDONLY);
-  Group read_location = file.openGroup("/");
+  Group read_location = file.openGroup("/");  
 #ifdef RICH_MPI
   if (mpi_write)
     {
       int rank = 0;
       MPI_Comm_rank(MPI_COMM_WORLD, &rank);
       if (fake_rank >= 0)
-	rank = fake_rank;
+	      rank = fake_rank;
       read_location = file.openGroup("/rank" + int2str(rank));
     }
 #endif
@@ -435,16 +443,18 @@ Snapshot3D ReadSnapshot3D(const string& fname
     const vector<double> energy = read_double_vector_from_hdf5(read_location, "InternalEnergy");
     const vector<double> Y0 = read_double_vector_from_hdf5(read_location, "Y0");
     const vector<double> G = read_double_vector_from_hdf5(read_location, "G");
+    const vector<double> strain_pl = read_double_vector_from_hdf5(read_location, "EPS");
+    const vector<double> strain_pl_dot = read_double_vector_from_hdf5(read_location, "EPS_rate");
     const vector<double> stress = read_double_vector_from_hdf5(read_location, "Stress");
 
     vector<size_t> IDs(density.size(), 0);
     hsize_t objcount = read_location.getNumObjs();
     for (hsize_t i = 0; i < objcount; ++i)
-      {
-	std::string name = read_location.getObjnameByIdx(i);
-	if (name.compare(std::string("ID"))==0)
-	  IDs = read_sizet_vector_from_hdf5(read_location, "ID");
-      }
+    {
+	    std::string name = read_location.getObjnameByIdx(i);
+	    if (name.compare(std::string("ID"))==0)
+	      IDs = read_sizet_vector_from_hdf5(read_location, "ID");
+    }
     const vector<double> x_velocity = read_double_vector_from_hdf5(read_location, "Vx");
     const vector<double> y_velocity = read_double_vector_from_hdf5(read_location, "Vy");
     const vector<double> z_velocity = read_double_vector_from_hdf5(read_location, "Vz");
@@ -454,49 +464,47 @@ Snapshot3D ReadSnapshot3D(const string& fname
     vector<vector<double> > tracers(g_tracers.getNumObjs());
     vector<string> tracernames(tracers.size());
     for (hsize_t n = 0; n < g_tracers.getNumObjs(); ++n)
-      {
-	const H5std_string name = g_tracers.getObjnameByIdx(n);
-	tracernames[n] = name;
-	tracers[n] = read_double_vector_from_hdf5(g_tracers, name);
-      }
+    {
+	    const H5std_string name = g_tracers.getObjnameByIdx(n);
+	    tracernames[n] = name;
+	    tracers[n] = read_double_vector_from_hdf5(g_tracers, name);
+    }
 
     vector<vector<int> > stickers(g_stickers.getNumObjs());
     vector<string> stickernames(stickers.size());
     for (hsize_t n = 0; n < g_stickers.getNumObjs(); ++n)
-      {
-	const H5std_string name = g_stickers.getObjnameByIdx(n);
-	stickernames[n] = name;
-	stickers[n] = read_int_vector_from_hdf5(g_stickers, name);
-      }
+    {
+      const H5std_string name = g_stickers.getObjnameByIdx(n);
+      stickernames[n] = name;
+      stickers[n] = read_int_vector_from_hdf5(g_stickers, name);
+    }
     res.tracerstickernames.first = tracernames;
     res.tracerstickernames.second = stickernames;
     res.cells.resize(density.size());
-    for (size_t i = 0; i < res.cells.size(); ++i)
-      {
-	res.cells.at(i).density = density.at(i);
-  res.cells.at(i).temperature = temperature.at(i);
-	res.cells.at(i).pressure = pressure.at(i);
-	res.cells.at(i).internal_energy = energy.at(i);
-	res.cells.at(i).ID = IDs[i];
-	res.cells.at(i).velocity.x = x_velocity.at(i);
-	res.cells.at(i).velocity.y = y_velocity.at(i);
-	res.cells.at(i).velocity.z = z_velocity.at(i);
-  res.cells.at(i).Y0 = Y0.at(i);
-  res.cells.at(i).G = G.at(i);
-  for(size_t j = 0; j < 3; ++j)
-    for(size_t k = 0; k < 3; ++k)
-      {
-        res.cells.at(i).stress(j, k) = stress[9 * i + 3 * j + k];
-        if (res.cells[i].ID == 9950)
+    for (size_t i = 0; i < density.size(); ++i)
+    {
+      res.cells.at(i).density = density.at(i);
+      res.cells.at(i).temperature = temperature.at(i);
+      res.cells.at(i).pressure = pressure.at(i);
+      res.cells.at(i).internal_energy = energy.at(i);
+      res.cells.at(i).ID = IDs[i];
+      res.cells.at(i).velocity.x = x_velocity.at(i);
+      res.cells.at(i).velocity.y = y_velocity.at(i);
+      res.cells.at(i).velocity.z = z_velocity.at(i);
+      res.cells.at(i).Y0 = Y0.at(i);
+      res.cells.at(i).G = G.at(i);
+      res.cells.at(i).strain_pl = strain_pl.at(i);
+      res.cells.at(i).strain_pl_dot = strain_pl_dot.at(i);
+      for(size_t j = 0; j < 3; ++j)
+        for(size_t k = 0; k < 3; ++k)
         {
-          std::cout << stress[9 * i + 3 * j + k] << std::endl;
+          res.cells.at(i).stress(j, k) = stress[9 * i + 3 * j + k];
         }
-      }
-	for (size_t j = 0; j < tracernames.size(); ++j)
-	  res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
-	for (size_t j = 0; j < stickernames.size(); ++j)
-	  res.cells.at(i).stickers.at(j) = stickers.at(j).at(i) == 1;
-      }
+      for (size_t j = 0; j < tracernames.size(); ++j)
+        res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
+      for (size_t j = 0; j < stickernames.size(); ++j)
+        res.cells.at(i).stickers.at(j) = stickers.at(j).at(i) == 1;
+    }
   }
 
   // Misc
