@@ -11,7 +11,12 @@ public:
                 points(std::vector<Vector3D>()){this->points.insert(this->points.begin(), first, last); this->pointsSize = this->points.size();};
     BruteForceFinder(const std::vector<Vector3D> &points): BruteForceFinder(points.begin(), points.end()){};
 
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
+    {
+        return std::vector<size_t>();
+    }
+
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t maxPointsToGet) const override
     {
         std::vector<size_t> result;
         const Vector3D *_points = this->points.data();

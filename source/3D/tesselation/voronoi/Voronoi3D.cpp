@@ -778,14 +778,6 @@ namespace
     #endif // VORONOI_DEBUG
 }
 
-bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
-{
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    assert(this->envAgent != nullptr);
-    return this->envAgent->getOwner(point) == rank;
-}
-
 /**
  * \author Maor Mizrachi
  * \brief Initializes data structures, for the voronoi build
@@ -816,11 +808,25 @@ void Voronoi3D::BuildInitialize(size_t num_points)
 
 /**
  * \author Maor Mizrachi
+ * \brief Checks if a certain point is under my responsibility
+*/
+bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
+{
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    assert(this->envAgent != nullptr);
+    return (this->envAgent->getOwner(point) == rank);
+}
+
+
+/**
+ * \author Maor Mizrachi
  * \brief Gets a point, its radius, a box and the normals to the box's faces, and returns the faces indices that the sphere (around `point`, in the given `radius`) intersects
 */
-std::vector<size_t> Voronoi3D::CheckToMirror(const Vector3D &point, double radius, std::vector<Face> &box, std::vector<Vector3D> &normals)
+std::vector<size_t> Voronoi3D::CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
 {
     std::vector<size_t> facesItCuts;
+    // std::cout << "point = " << point << ", radius = " << radius << std::endl;
     for(size_t i = 0; i < box.size(); i++)
     {
         // check for intersecting the sphere with radius `radius` around `point`, with the `i`th face of `box`
@@ -832,6 +838,192 @@ std::vector<size_t> Voronoi3D::CheckToMirror(const Vector3D &point, double radiu
         }
     }
     return facesItCuts;
+}
+
+/**
+ * \author Maor Mizrachi
+ * \brief Creates a batch for a cycle (iteration) in the ghost points bringing loop
+*/
+std::queue<RangeQueryData> Voronoi3D::CreateBatches(std::vector<size_t> &pointsToCheck, std::vector<double> &maxAllowedRadiuses, const std::vector<tetra_vec> &lastPointTetras, const std::vector<Tetrahedron> &lastTetras, int iterations)
+{
+    // _BoundingBox<Vector3D> domain(this->ll_, this->ur_);
+    std::vector<size_t> newPointsToCheck;
+    std::queue<RangeQueryData> queries;
+
+    for(const size_t &pointIdx : pointsToCheck)  // index in this->del_.points_
+    {
+        if(iterations == 1)
+        {
+            // at the first iteration, "get familiar" with the environment - bring close ghost point
+            newPointsToCheck.push_back(pointIdx); // continue with the default algorithm, currently everything is fine
+            const Vector3D &center = this->del_.points_[pointIdx];
+            double radius = this->radiuses[pointIdx]; // use the radius from the previous build as a hint
+            RangeQueryData query = {pointIdx, {center.x, center.y, center.z}, {center.x, center.y, center.z}, radius, NO_MAX_POINTS};
+            queries.push(query);
+            continue;
+        }
+        // iterate over tetras containing that point
+        std::vector<std::pair<Vector3D, double>> bigTetras, smallTetras;
+
+        double maxSmallTetraRadius = 0;
+        const double delta = maxAllowedRadiuses[pointIdx];
+
+        // classify big and small tetras
+        for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
+        {
+            if(std::find(lastPointTetras[pointIdx].begin(), lastPointTetras[pointIdx].end(), tetraIdx) != lastPointTetras[pointIdx].end())
+            {
+                // tetrahedron exists in the last iteration, just check if it was indded changed
+                const Tetrahedron &oldTet = lastTetras[tetraIdx];
+                const Tetrahedron &newTet = this->del_.tetras_[tetraIdx];
+
+                bool theSame = true;
+                for(int i = 0; i < 4; i++)
+                {
+                    // todo: check neighbors?
+                    theSame = theSame and oldTet.points[i] == newTet.points[i] and oldTet.neighbors[i] == newTet.neighbors[i];
+                }
+                if(theSame)
+                {
+                    // stayed the same - we have finished for this one
+                    continue;
+                }
+            }
+            // new tetrahedron, or a changed one
+            const Vector3D &tetraCenter = this->tetra_centers_[tetraIdx];
+            double tetraRadius = this->GetRadius(tetraIdx);
+            if(tetraRadius >= delta)
+            {
+                bigTetras.push_back({tetraCenter, tetraRadius});
+            }
+            else
+            {
+                smallTetras.push_back({tetraCenter, tetraRadius});
+                maxSmallTetraRadius = std::max(maxSmallTetraRadius, tetraRadius);
+            }
+        }
+        
+        // check if there are any queries to run
+        if(!bigTetras.empty() or !smallTetras.empty())
+        {
+            // change to split queries method
+            // queries for big tetra:
+            newPointsToCheck.push_back(pointIdx); // continue with the default algorithm, currently everything is fine
+            const Vector3D &point = this->del_.points_[pointIdx];
+
+            if(!bigTetras.empty())
+            {
+                for(const std::pair<Vector3D, double> &tetrahedron : bigTetras)
+                {
+                    const Vector3D &center = tetrahedron.first;
+                    double radius = tetrahedron.second;
+                    // from each big tetrahedron, ask each one of the intersecting ranks to give us the closest point it has to our point
+                    RangeQueryData query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, MAX_POINTS_IN_BIG_TETRA_QUERY /*NO_MAX_POINTS*/};
+                    queries.push(query);
+                }
+            }
+            // merge queries for small tetra:
+            if(!smallTetras.empty())
+            {
+                // the sphere of radius 2 * `maxSmallTetraRadius`, around the point with index `pointIdx`
+                // contains all the spheres of the small tetras, so just send it as a query, instead of a lot of small queries
+                double radius = 2 * maxSmallTetraRadius;
+                this->radiuses[pointIdx] = std::min(radius, this->radiuses[pointIdx]);
+                RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, radius, NO_MAX_POINTS};
+                queries.push(query);
+            }
+        }/*
+        else
+        {
+            // the original method (increase the circle)
+            // a diameter of a circle C around `PointIdx` to ensure all the circles containing the point `PointIdx`, are included in C 
+            double diameter = 2 * maxSmallTetraRadius;
+            if(this->radiuses[pointIdx] < diameter)
+            {
+                this->radiuses[pointIdx] = std::min(this->radiuses[pointIdx] * RADIUSES_GROWING_FACTOR, diameter);
+                newPointsToCheck.push_back(pointIdx); // continue with the default algorithm, currently everything is fine
+                const Vector3D &center = this->del_.points_[pointIdx];
+                double radius = this->radiuses[pointIdx];
+                RangeQueryData query = {pointIdx, {center.x, center.y, center.z}, radius, NO_MAX_POINTS};
+                queries.push(query);
+            }
+        }*/
+    }
+    pointsToCheck = std::move(newPointsToCheck);
+    // std::cout << "total of " << queries.size() << " queries" << std::endl;
+    return queries;
+}
+
+/**
+ * \author Maor Mizrachi
+ * \brief Gets a list of query, and tests for creating mirror points. In the end of this procedure, `mirroredPoints` contains pairs of <faceIdx, pointIdx>, of points that should be mirrored, in relative to which faces
+*/
+void Voronoi3D::MirrorPoints(std::queue<RangeQueryData> &queries, std::vector<std::pair<size_t, size_t>> &mirroredPoints, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
+{
+    std::queue<RangeQueryData> queriesBackup;
+    while(!queries.empty())
+    {
+        RangeQueryData query = queries.front();
+        queries.pop();
+        queriesBackup.push(query);
+
+        // check for mirroring:
+        const Vector3D point(query.center.x, query.center.y, query.center.z);
+        double radius = query.radius;
+        size_t pointIdx = query.pointIndex;
+
+        std::vector<size_t> facesItCuts = this->CheckToMirror(this->del_.points_[pointIdx], radius, box, normals);
+        for(const size_t &faceIdx : facesItCuts)
+        {
+            mirroredPoints.push_back(std::make_pair(faceIdx, pointIdx));
+        }
+    }
+    queries = std::move(queriesBackup);
+}
+
+/**
+ * \author Maor Mizrachi
+ * \brief Updates the duplicated points array
+*/
+void Voronoi3D::UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints)
+{
+    for(size_t i = 0; i < sentProc.size(); i++)
+    {
+      int _rank = sentProc[i];
+      size_t rankIdx = std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank) - this->duplicatedprocs_.begin();
+      if(rankIdx == this->duplicatedprocs_.size())
+      {
+        // TODO: necessary? If `rankIdx` didn't appear in `this->duplicatedprocs_`, we will delete it in the next part
+        // new rank in this->duplicatedprocs_, initialize it
+        this->duplicatedprocs_.push_back(_rank);
+        this->duplicated_points_.emplace_back(std::vector<size_t>());
+        this->Nghost_.emplace_back(std::vector<size_t>());
+      }
+      for(const size_t &pointIdx : sentPoints[i])
+      {
+        this->duplicated_points_[rankIdx].push_back(pointIdx);
+      }
+    }
+}
+
+/**
+ * \author Maor Mizrachi
+ * \brief Ensures that the duplicated and ghost arrays contain only the points from/to ranks which are intersecting (sent iff received)
+*/
+void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc)
+{
+    for(size_t i = 0; i < this->duplicatedprocs_.size(); i++)
+    {
+        int _rank =  this->duplicatedprocs_[i];
+        if((std::find(sentProc.begin(), sentProc.end(), _rank) == sentProc.end()) or (std::find(recvProc.begin(), recvProc.end(), _rank) == recvProc.end()))
+        {
+            // not in the intersection, remove the rank
+            this->duplicatedprocs_.erase(this->duplicatedprocs_.begin() + i);
+            this->duplicated_points_.erase(this->duplicated_points_.begin() + i);
+            this->Nghost_.erase(this->Nghost_.begin() + i);
+            i--;
+        }
+    }
 }
 
 /**
@@ -868,29 +1060,20 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     RangeAgent rangeAgent(this->envAgent, &rangeFinder);
 
     std::vector<std::pair<size_t, size_t>> allMirrored;
+    int iterations = 0;
+
+    std::vector<double> maxAllowedRadiuses = this->radiuses;
+
+    std::vector<Tetrahedron> lastTetras;
+    std::vector<tetra_vec> lastPointTetras;
 
     while(finished != size)
     {
-        std::queue<RangeQueryData> queries;
+        iterations++;
+        if(rank == 0) std::cout << "iteration " << iterations << std::endl;
+        std::queue<RangeQueryData> queries = this->CreateBatches(current, maxAllowedRadiuses, lastPointTetras, lastTetras, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints;
-
-        for(const size_t &pointIdx : current)  // index in this->del_.points_
-        {
-            const Vector3D &point = this->del_.points_[pointIdx];
-            const double &radius = this->radiuses[pointIdx];
-            std::vector<size_t> facesItCuts = this->CheckToMirror(point, radius, box, normals);
-            for(const size_t &faceIdx : facesItCuts)
-            {
-                mirroredPoints.push_back(std::make_pair(faceIdx, pointIdx));
-            }
-            queries.push({{point.x, point.y, point.z}, radius});
-        }
-    
-        if(current.empty() and !sent_finished)
-        {
-            sendFinished();
-            sent_finished = true;
-        }
+        this->MirrorPoints(queries, mirroredPoints, box, normals);
 
         QueryBatchInfo batchInfo = rangeAgent.runBatch(queries);
 
@@ -900,8 +1083,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
         const std::vector<int> &recvProc = rangeAgent.getRecvProc();
         const std::vector<std::vector<size_t>> &recvPoints = rangeAgent.getRecvPoints();
-
-        int last = -1;
 
         for(size_t i = 0; i < recvProc.size(); i++)
         {
@@ -917,12 +1098,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             }
             for(const size_t &RelativePointIdx : receivedFromRank)
             {
-                if(static_cast<int>(RelativePointIdx) <= last)
-                {
-                    std::cout << "rank " << rank << ", error! " << RelativePointIdx << std::endl;
-                    MPI_Abort(MPI_COMM_WORLD, 2004);
-                }
-                last = static_cast<int>(RelativePointIdx);
                 // batchInfo.pointsFromRanks[_rank][i] holds an index of point, but this point will be added to my delaunay, so
                 // its index there will be this->del_.points_.size() + batchInfo.pointsFromRanks[_rank][i]
                 this->Nghost_[rankIdx].push_back(this->del_.points_.size() + RelativePointIdx);
@@ -930,7 +1105,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         }
 
         // mirror points:
-
         for(const std::pair<size_t, size_t> &pairFacePoint : mirroredPoints)
         {
             // check if we have already mirrored this point with this face
@@ -941,89 +1115,32 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             }
         }
 
+        lastTetras = this->del_.tetras_;
+        lastPointTetras = this->PointTetras_; // copy for next iteration
+
         // performs internal tesselation:
         this->del_.BuildExtra(newPoints);
-
-        /*
-        // VALIDATE
-        for(size_t i = 0; i < batchInfo.queriesAnswers.size(); i++)
-        {
-            Vector3D point_(batchInfo.queriesAnswers[i].data.center.x, batchInfo.queriesAnswers[i].data.center.y, batchInfo.queriesAnswers[i].data.center.z);
-            double radius_ = batchInfo.queriesAnswers[i].data.radius;
-            validate(point_, radius_, this->del_.points_, allPoints, this->envAgent);
-            std::cout << "Passed point " << i << " out of " << batchInfo.queriesAnswers.size() << ", of rank " << rank << std::endl;
-        }
-        */
-
-        // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
 
         this->R_.resize(this->del_.tetras_.size());
         std::fill(this->R_.begin(), this->R_.end(), -1);
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
-        std::vector<size_t> newCurrent;
-
-        for(const size_t &PointIdx : current)
+        if(current.empty() and !sent_finished)
         {
-            // a diameter of a circle C around `PointIdx` to ensure all the circles containing the point `PointIdx`, are included in C 
-            double diameter = 2 * this->GetMaxRadius(PointIdx);
-
-            if(this->radiuses[PointIdx] >= diameter)
-            {
-                // we know the radius we have just searched (`this->radiuses[PointIdx]`) contains C
-                continue;
-            }
-            else
-            {
-                // update radius
-                this->radiuses[PointIdx] = std::min(this->radiuses[PointIdx] * RADIUSES_GROWING_FACTOR, diameter);
-                newCurrent.push_back(PointIdx);
-            }
+            sendFinished();
+            sent_finished = true;
         }
-
-        current = std::move(newCurrent);
     }
-
-    // calculate this->duplicated_points_
 
     const std::vector<std::vector<size_t>> &sentPoints = rangeAgent.getSentPoints();
     const std::vector<int> &sentProc = rangeAgent.getSentProc();
-
-    for(size_t i = 0; i < sentProc.size(); i++)
-    {
-      int _rank = sentProc[i];
-      size_t rankIdx = std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank) - this->duplicatedprocs_.begin();
-      if(rankIdx == this->duplicatedprocs_.size())
-      {
-        // TODO: necessary? If `rankIdx` didn't appear in `this->duplicatedprocs_`, we will delete it in the next part
-        // new rank in this->duplicatedprocs_, initialize it
-        this->duplicatedprocs_.push_back(_rank);
-        this->duplicated_points_.emplace_back(std::vector<size_t>());
-        this->Nghost_.emplace_back(std::vector<size_t>());
-      }
-      for(const size_t &pointIdx : sentPoints[i])
-      {
-        this->duplicated_points_[rankIdx].push_back(pointIdx);
-      }
-    }
-
-    // remove whomever that does not appear both in my sent vector and receive vector (because if one appears in only one, it means that we either sent it a point, or received one, but has no used of it at all (otherwise it would require a symetric call))
-
     const std::vector<int> &recvProc = rangeAgent.getRecvProc();
 
-    for(size_t i = 0; i < this->duplicatedprocs_.size(); i++)
-    {
-        int _rank =  this->duplicatedprocs_[i];
-        if((std::find(sentProc.begin(), sentProc.end(), _rank) == sentProc.end()) or (std::find(recvProc.begin(), recvProc.end(), _rank) == recvProc.end()))
-        {
-            // not in the intersection, remove the rank
-            this->duplicatedprocs_.erase(this->duplicatedprocs_.begin() + i);
-            this->duplicated_points_.erase(this->duplicated_points_.begin() + i);
-            this->Nghost_.erase(this->Nghost_.begin() + i);
-            i--;
-        }
-    }
+    // calculate this->duplicated_points_
+    this->UpdateDuplicatedPoints(sentProc, sentPoints);
+    // remove whomever that does not appear both in my sent vector and receive vector (because if one appears in only one, it means that we either sent it a point, or received one, but has no used of it at all (otherwise it would require a symetric call))
+    this->EnsureSymmetry(sentProc, recvProc);
 }
 
 /**
@@ -1063,7 +1180,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 
     PointsExchangeResult exchangeResult;
 
-    if(pointsManager.checkForRebalance(points) or (this->firstCall == true))
+    if(pointsManager.checkForRebalance(points) or (this->firstCall == true) or (this->envAgent == nullptr))
     {
         // calculate the first and initial order, and set it to the deepest hilbert order we have
         OctTree<Vector3D> tree(this->ll_, this->ur_, points);
@@ -1089,7 +1206,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
     this->self_index_ = std::move(exchangeResult.indicesToSelf);
     this->BuildInitialize(new_points.size());
 
-    if(this->firstCall)
+    if(this->firstCall or (this->envAgent == nullptr))
     {
         // create new environment agent
         this->envAgent = new DistributedOctEnvironmentAgent(this->ll_, this->ur_, new_points, this->responsibilityRange, this->hilbertOrder);

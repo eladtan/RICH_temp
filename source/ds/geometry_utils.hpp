@@ -26,6 +26,30 @@ public:
         }
         return true;
     }
+
+    inline T closestPoint(const T &point) const
+    {
+        T closestPoint;
+        for(int i = 0; i < DIM; i++)
+        {
+            if(point[i] < this->ll[i])
+            {
+                closestPoint[i] = this->ll[i];
+            }
+            else
+            {
+                if(point[i] <= this->ur[i])
+                {
+                    closestPoint[i] = point[i];
+                }
+                else
+                {
+                    closestPoint[i] = this->ur[i];
+                }
+            }
+        }
+        return closestPoint;
+    }
 };
 
 template<typename T>

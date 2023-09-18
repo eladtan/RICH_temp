@@ -32,10 +32,15 @@
 #define MAX_RECEIVE_IN_CYCLE 20
 #define MAX_ANSWER_IN_CYCLE 20
 
+#define NO_MAX_POINTS 1000000000
+
 typedef struct RangeQueryData
 {
+    size_t pointIndex;
     _3DPoint center;
+    _3DPoint extraPoint;
     coord_t radius;
+    size_t maxPointsToGet;
 } RangeQueryData;
 
 typedef struct SubQueryData

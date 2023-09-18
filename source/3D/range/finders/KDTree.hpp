@@ -14,7 +14,13 @@ public:
     KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
     inline KDTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): KDTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
     ~KDTreeFinder();
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
+    
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
+    {
+        return std::vector<size_t>();
+    }
+
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t maxPointsToGet) const override{
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->kdTree->range(_Sphere<IndexedVector3D>(IndexedVector3D(center.x, center.y, center.z, ILLEGAL_IDX), radius)))
         {

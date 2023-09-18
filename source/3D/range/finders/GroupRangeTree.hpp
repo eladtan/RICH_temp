@@ -18,7 +18,13 @@ public:
     GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last);
     inline GroupRangeTreeFinder(std::vector<Vector3D> &myPoints): GroupRangeTreeFinder(myPoints.begin(), myPoints.end()){};
     ~GroupRangeTreeFinder();
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
+
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
+    {
+        return std::vector<size_t>();
+    }
+
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t maxPointsToGet) const override{
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius))
         {

@@ -30,6 +30,7 @@
 #ifdef RICH_MPI
 #include "PointsManager.hpp"
 #define RICH_TESELLATION_FINISHED_TAG 505
+#define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.618 // 1.618
 #endif 
 
@@ -39,6 +40,11 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
+#ifdef RICH_MPI
+public:
+  const EnvironmentAgent *GetEnvAgent() const{return this->envAgent;}; // todo: remove!
+#endif // RICH_MPI
+
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -84,12 +90,17 @@ private:
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   #ifdef RICH_MPI
-  void Build(std::vector<Vector3D> const &points, Tessellation3D const &tproc); // old implementation
+
+  void MirrorPoints(std::queue<RangeQueryData> &queries, std::vector<std::pair<size_t, size_t>> &mirroredPoints, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
+  std::queue<RangeQueryData> CreateBatches(std::vector<size_t> &pointsToCheck, std::vector<double> &maxAllowedRadiuses, const std::vector<tetra_vec> &lastPointTetras, const std::vector<Tetrahedron> &lastTetras, int iterations);
   void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);
   void BuildInitialize(size_t num_points);
-  std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, std::vector<Face> &box, std::vector<Vector3D> &normals);
+  std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
+  void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
+  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
+  
   #endif // RICH_MPI
 
   Delaunay3D del_;

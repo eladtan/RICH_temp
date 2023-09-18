@@ -78,7 +78,17 @@ std::vector<Vector3D> RangeAgent::getRangeResult(const SubQueryData &query, int 
 {
     std::vector<Vector3D> result;
     // get the real results, and filter it (do not send points you sent before)
-    std::vector<size_t> nonFilteredResult = this->rangeFinder->range(Vector3D(query.data.center.x, query.data.center.y, query.data.center.z), query.data.radius);
+    std::vector<size_t> nonFilteredResult;
+    if(query.data.maxPointsToGet == 1)
+    {
+        size_t rankIndex = std::find(this->sentProcessorsRanks.begin(), this->sentProcessorsRanks.end(), rank) - this->sentProcessorsRanks.begin();
+        const _set<size_t> &ignore = (rankIndex == this->sentProcessorsRanks.size())? _set<size_t>() : this->sentPointsSet[rankIndex];
+        nonFilteredResult = this->rangeFinder->closestPointInSphere(Vector3D(query.data.center.x, query.data.center.y, query.data.center.z), query.data.radius, Vector3D(query.data.extraPoint.x, query.data.extraPoint.y, query.data.extraPoint.z), ignore);
+    }
+    else
+    {
+        nonFilteredResult = this->rangeFinder->range(Vector3D(query.data.center.x, query.data.center.y, query.data.center.z), query.data.radius, query.data.maxPointsToGet);
+    }
     if(!nonFilteredResult.empty())
     {
         // get what is the right index of `node` inside the sentProcessors vector. If it isn't there, create it
@@ -136,7 +146,6 @@ void RangeAgent::answerQueries()
             // calculate the result
             std::vector<Vector3D> result = this->getRangeResult(query, status.MPI_SOURCE);
             long int resultSize = static_cast<long int>(result.size());
-
             this->buffers.push_back(std::vector<char>());
             std::vector<char> &to_send = this->buffers[this->buffers.size() - 1];
             size_t msg_size = 2 * sizeof(long int) + resultSize * sizeof(_3DPoint);
@@ -254,7 +263,7 @@ QueryBatchInfo RangeAgent::runBatch(std::queue<RangeQueryData> &queries)
 
     this->buffers.clear();
     size_t originalQueriesNum = queries.size();
-    this->buffers.reserve(4 * originalQueriesNum); // heuristic
+    this->buffers.reserve(10 * originalQueriesNum); // heuristic
     this->requests.clear();
     QueryBatchInfo queriesBatch;
     std::vector<QueryInfo> &queriesInfo = queriesBatch.queriesAnswers;
@@ -268,7 +277,6 @@ QueryBatchInfo RangeAgent::runBatch(std::queue<RangeQueryData> &queries)
     {
         if(notEmpty)
         {
-
             RangeQueryData queryData = queries.front();
             queries.pop();
             queriesInfo.push_back({queryData, i, std::vector<_3DPoint>()});
@@ -294,6 +302,7 @@ QueryBatchInfo RangeAgent::runBatch(std::queue<RangeQueryData> &queries)
         }
         if(this->shouldReceiveInTotal > this->receivedUntilNow)
         {
+            // std::cout << "recieved " << this->receivedUntilNow << " out of " << this->shouldReceiveInTotal << std::endl;
             this->receiveQueries(queriesBatch);
         }
 
@@ -303,9 +312,9 @@ QueryBatchInfo RangeAgent::runBatch(std::queue<RangeQueryData> &queries)
         }
         ++i;
     }
-    if(this->requests.size() > 0)
+    if(!this->requests.empty())
     {
-        MPI_Waitall(this->requests.size(), &(*(this->requests.begin())), MPI_STATUSES_IGNORE); // make sure any query was indeed received
+        MPI_Waitall(this->requests.size(), &this->requests[0], MPI_STATUSES_IGNORE); // make sure any query was indeed received
     }
 
     // add to the list the processors that sent us a message for the first time
