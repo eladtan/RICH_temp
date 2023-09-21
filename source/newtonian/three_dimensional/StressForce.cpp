@@ -99,18 +99,18 @@ void StressForce::calc_velocity_derivatives(size_t i, Mat33<double> &res, const 
             m[8] -= c_ij[j].z*r_ij.z*A;
 
             double perp_velocity = ScalarProd(cells[i].velocity, r_ij);
-            if (tess.GetCellCM(i).x > 0.)
-            {
-                for(int k=0; k<3; k++)
-                {
-                    for (int l=0; l<3; l++)
-                    {
-                        tmp.AddAt(2.*(cells[i].velocity[k]) * r_ij[l]*A, l, k);
-                    }
-                }
-            }
-            else
-            {
+            // if (tess.GetCellCM(i).x > 0.)
+            // {
+            //     for(int k=0; k<3; k++)
+            //     {
+            //         for (int l=0; l<3; l++)
+            //         {
+            //             tmp.AddAt(2.*(cells[i].velocity[k]) * r_ij[l]*A, l, k);
+            //         }
+            //     }
+            // }
+            // else
+            // {
                 for(int k=0; k<3; k++)
                 {
                     for (int l=0; l<3; l++)
@@ -118,7 +118,7 @@ void StressForce::calc_velocity_derivatives(size_t i, Mat33<double> &res, const 
                         tmp.AddAt(2.*(cells[i].velocity[k]-perp_velocity*r_ij[k]) * r_ij[l]*A, l, k);
                     }
                 }
-            }
+            // }
         }
     }
 
@@ -132,13 +132,13 @@ void StressForce::calc_velocity_derivatives(size_t i, Mat33<double> &res, const 
 		const double det = -m[2] * m[4] * m[6] + m[1] * m[5] * m[6] + m[2] * m[3] * m[7] - m[0] * m[5] * m[7] -
 			m[1] * m[3] * m[8] + m[0] * m[4] * m[8];
 
-    Mat33<double> m_invT;
-    m_invT.Set(m[4] * m[8] - m[5] * m[7], m[5] * m[6] - m[3] * m[8], m[3] * m[7] - m[6] * m[4],
-               m[2] * m[7] - m[1] * m[8], m[0] * m[8] - m[2] * m[6], m[6] * m[1] - m[0] * m[7],
-               m[1] * m[5] - m[2] * m[4], m[2] * m[3] - m[5] * m[0], m[4] * m[0] - m[1] * m[3]);
-    m_invT *= 1/(2 * tess.GetVolume(i) * det);
+    Mat33<double> m_inv;
+    m_inv.Set(m[4] * m[8] - m[5] * m[7], m[2] * m[7] - m[1] * m[8], m[1] * m[5] - m[2] * m[4],
+              m[5] * m[6] - m[3] * m[8], m[0] * m[8] - m[2] * m[6], m[2] * m[3] - m[5] * m[0],
+              m[3] * m[7] - m[6] * m[4], m[6] * m[1] - m[0] * m[7], m[4] * m[0] - m[1] * m[3]);
+    m_inv *= 1./(2. * tess.GetVolume(i) * det);
 
-    res = tmp*m_invT;
+    res = m_inv*tmp;
 }
 
 
@@ -147,7 +147,7 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
 			vector<Conserved3D> &extensives) const
 {
     size_t const N = tess.GetPointNo();
-    vector<Mat33<double>> strain_rate(N), omega(N), sigma_star(N), sigmap1(N), velocity_derivatives(N);
+    vector<Mat33<double>> dstrain(N), omega(N), sigma_star(N), sigmap1(N), velocity_derivatives(N), sigma_rot(N);
     Mat33<double> zeros_mat;
     double dstrain_pl;
     vector<double> beta(N), dEPS(N);
@@ -158,12 +158,16 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
         if (cells[i].G > 1e10)
         {
             calc_velocity_derivatives(i, velocity_derivatives[i], cells, tess);
-            strain_rate[i] = 0.5*(velocity_derivatives[i] + velocity_derivatives[i].transpose());
-            omega[i] = velocity_derivatives[i]-strain_rate[i];
-            sigma_star[i] = cells[i].stress + dt*(2*cells[i].G*deviator(strain_rate[i]) - cells[i].stress*omega[i] + omega[i]*cells[i].stress);
-            beta[i] = std::min(sqrt(2./(1.0e-33+3.*sigma_star[i].J2()))*cells[i].Y0, 1.);
+            dstrain[i] = 0.5*(velocity_derivatives[i] + velocity_derivatives[i].transpose())*dt;
+            omega[i] = velocity_derivatives[i]*dt-dstrain[i];
+            
+            sigma_rot[i] = cells[i].stress - cells[i].stress*omega[i] + omega[i]*cells[i].stress;
+            sigma_rot[i] *= std::sqrt((cells[i].stress.J2())/(1e-12 + sigma_rot[i].J2()));
+            sigma_star[i] = sigma_rot[i] + 2*cells[i].G*deviator(dstrain[i]);
+
+            beta[i] = std::min(sqrt(2./(1.0e-33+3.*(sigma_star[i].J2())))*cells[i].Y0, 1.);
             sigmap1[i] = beta[i]*sigma_star[i];
-            dEPS[i] = sqrt((dt * strain_rate[i]  - (sigmap1[i]-cells[i].stress)/(2.*cells[i].G)).J2());
+            dEPS[i] = sqrt((dstrain[i] - (sigmap1[i]-sigma_rot[i])/(2.*cells[i].G)).J2());
             extensives[i].mass_stress = extensives[i].mass*sigmap1[i];
             extensives[i].mass_eps += extensives[i].mass*dEPS[i];
             extensives[i].mass_eps_dot = extensives[i].mass * dEPS[i]/dt;
@@ -189,7 +193,6 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
             tess.GetNeighbors(i, neighbors);
             size_t const Nneigh = neighbors.size();
             Vector3D const point = tess.GetMeshPoint(i);
-            // double energy_rate = 0;
             for(size_t j = 0; j < Nneigh; ++j)
             {
                 size_t const neigh_j = neighbors[j];
@@ -205,8 +208,25 @@ void StressForce::operator()(const Tessellation3D& tess, const vector<Computatio
                 }
             }
             extensives[i].momentum += force_vec[i]*dt;
-            extensives[i].energy += sigmap1[i]%strain_rate[i]*dt*tess.GetVolume(i);
-            extensives[i].internal_energy += sigmap1[i]%(strain_rate[i]*dt-1/(2*cells[i].G) * (sigmap1[i]-cells[i].stress))*tess.GetVolume(i);
+            extensives[i].energy += 0.5*(sigmap1[i]+sigma_rot[i])%dstrain[i]*tess.GetVolume(i);
+            extensives[i].internal_energy += std::max(0.5*(sigmap1[i]+sigma_rot[i])%(dstrain[i]-1/(2*cells[i].G) * (sigmap1[i]-sigma_rot[i]))*tess.GetVolume(i), 0.);
+        }
+
+        if (extensives[i].internal_energy < 0 || extensives[i].energy < 0)
+        {
+            UniversalError eo("negative energy after stress");
+            std::cout << "Bad cell in stress, cell " << i <<" dt "<<dt<<" ID "<<cells[i].ID<< std::endl;
+                std::cout << "mass " << extensives[i].mass << " energy " << extensives[i].energy << " internalE " <<
+                    extensives[i].internal_energy << " momentum" << abs(extensives[i].momentum) << " volume " << tess.GetVolume(i)
+                    << std::endl;
+                std::cout << "Old cell, density " << cells[i].density << " pressure " << cells[i].pressure << " vx " <<
+                    cells[i].velocity.x << " vy " << cells[i].velocity.y << " vz " << cells[i].velocity.z << std::endl;
+                for (size_t j = 0; j < ComputationalCell3D::tracerNames.size(); ++j)
+                {
+                std::cout << ComputationalCell3D::tracerNames[j] << " old cell " << cells[i].tracers[j] << 
+                        " extensive "<<extensives[i].tracers[j]<<std::endl;
+                }
+            throw eo;
         }
     }
 } 

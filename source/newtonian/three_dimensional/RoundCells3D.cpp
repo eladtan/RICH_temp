@@ -104,7 +104,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	  c =std::max(eos_.de2c(cells[i].density, cells[i].pressure,cells[i].tracers, ComputationalCell3D::tracerNames), min_dw_);
+	  c =std::max(eos_.de2c(cells[i].density, cells[i].internal_energy,cells[i].tracers, ComputationalCell3D::tracerNames), min_dw_);
 #ifdef RICH_DEBUG
 	}
 	catch (UniversalError &eo)
@@ -160,7 +160,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	  cs = eos_.de2c(cells[i].density, cells[i].internal_energy,	cells[i].tracers, ComputationalCell3D::tracerNames);
+	  cs = eos_.de2c(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
 #ifdef RICH_DEBUG
 	}
 	catch (UniversalError &eo)

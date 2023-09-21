@@ -487,8 +487,8 @@ Mat33<T> operator*(Mat33<T> const& A1, Mat33<T> const& A2)
 template <typename T>
 Mat33<T> deviator(Mat33<T> const& A)
 {
-    T trace3 = (A(0,0)+A(1,1)+A(2,2))*1/3.;
-    Mat33<T> res(A(0,0)-trace3, A(0,1),A(0,2), A(1,0), A(1,1)-trace3, A(1,2), A(2,0), A(2,1), A(2,2)-trace3);
+    T trace3 = (A(0,0)+A(1,1)+A(2,2))*1./3.;
+    Mat33<T> res(A(0,0)-trace3, A(0,1), A(0,2), A(1,0), A(1,1)-trace3, A(1,2), A(2,0), A(2,1), A(2,2)-trace3);
     return res;
 }
 
