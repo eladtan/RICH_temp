@@ -17,7 +17,7 @@
 #include <set>
 #include <array>
 #include "3D/hilbert/HilbertOrder3D.hpp"
-#include "3D/range/RangeAgent.h"
+#include "3D/range/RangeAgent.hpp" // "3D/range/RangeAgent.h"
 #include "../Tessellation3D.hpp"
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
@@ -30,8 +30,10 @@
 #ifdef RICH_MPI
 #include "PointsManager.hpp"
 #define RICH_TESELLATION_FINISHED_TAG 505
+#define INITIAL_SENDRECV_TAG 1105
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.618 // 1.618
+#define MAX_ALLOWED_HILBERT_ORDER 19
 #endif 
 
 typedef std::array<std::size_t, 4> b_array_4;
@@ -92,7 +94,7 @@ private:
   #ifdef RICH_MPI
 
   void MirrorPoints(std::queue<RangeQueryData> &queries, std::vector<std::pair<size_t, size_t>> &mirroredPoints, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
-  std::queue<RangeQueryData> CreateBatches(std::vector<size_t> &pointsToCheck, std::vector<double> &maxAllowedRadiuses, const std::vector<tetra_vec> &lastPointTetras, const std::vector<Tetrahedron> &lastTetras, int iterations);
+  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &pointsToCheck, int iterations, const std::vector<double> &maxSmallRadiuses);
   void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);
@@ -100,7 +102,8 @@ private:
   std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
-  
+  void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
+
   #endif // RICH_MPI
 
   Delaunay3D del_;

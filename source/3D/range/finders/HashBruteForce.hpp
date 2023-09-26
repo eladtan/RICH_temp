@@ -40,7 +40,7 @@ public:
         return std::vector<size_t>();
     }
 
-    std::vector<size_t> range(const Vector3D &center, double radius, size_t maxPointsToGet) const override
+    std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
         boost::container::flat_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(center, radius);
         std::vector<size_t> result;

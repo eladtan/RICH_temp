@@ -24,7 +24,7 @@ public:
         return std::vector<size_t>();
     }
 
-    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t maxPointsToGet) const override{
+    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius))
         {

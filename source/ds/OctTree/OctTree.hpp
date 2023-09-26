@@ -10,6 +10,10 @@
 #define CHILDREN 8 // 2^DIM
 #define DEBUG_MODE
 
+#ifdef DEBUG_MODE
+#include <iostream>
+#endif // DEBUG_MODE
+
 typedef double coord_t;
 
 template<typename T>
@@ -95,6 +99,8 @@ private:
     };
 
     void rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const;
+    void getClosestPointHelper(const T &point, const OctTreeNode *node, T &closestPoint, typename T::coord_type &cloesestDistance) const;
+    
     OctTreeNode *root;
     size_t treeSize;
 
@@ -135,7 +141,28 @@ public:
 
     inline int getDepth() const{assert(this->getRoot() != nullptr); return this->getRoot()->height;};
     inline size_t getSize() const{return this->treeSize;};
-    inline std::vector<T> range(const _Sphere<T> &sphere) const{std::vector<T> result; this->rangeHelper(this->getRoot(), sphere, result); return result;};
+    inline std::vector<T> range(const _Sphere<T> &sphere) const
+    {
+        std::vector<T> result;
+        this->rangeHelper(this->getRoot(), sphere, result);
+        return result;
+    };
+
+    inline T closestPoint(const T &point) const
+    {
+        T closestPoint;
+        typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+        this->getClosestPointHelper(point, this->getRoot(), closestPoint, closestDistance);
+        return closestPoint;
+    }
+
+    inline double closestPointDistance(const T &point) const
+    {
+        T closestPoint;
+        typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+        this->getClosestPointHelper(point, this->getRoot(), closestPoint, closestDistance);
+        return closestDistance;
+    }
 };
 
 template<typename T>
@@ -456,6 +483,45 @@ void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, 
     for(int i = 0; i < CHILDREN; i++)
     {
         this->rangeHelper(node->children[i], sphere, result);
+    }
+}
+
+#define EPSILON 1e-12
+
+template<typename T>
+void OctTree<T>::getClosestPointHelper(const T &point, const OctTreeNode *node, T &closestPoint, typename T::coord_type &closestDistance) const
+{
+    if(node == nullptr)
+    {
+        return;
+    }
+    T closestPointInBox = node->boundingBox.closestPoint(point);
+    // calculate distance squared
+    typename T::coord_type dist = 0;
+    for(int i = 0; i < DIM; i++)
+    {
+        dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
+    }
+    if(dist >= closestDistance)
+    {
+        return;
+    }
+    // there might be a closer point in the subtrees
+    if(node->isValue)
+    {
+        if(node->value == point)
+        {
+            return;
+        }
+        closestPoint = node->value;
+        closestDistance = dist;
+    }
+    else
+    {
+        for(int i = 0; i < CHILDREN; i++)
+        {
+            this->getClosestPointHelper(point, node->children[i], closestPoint, closestDistance);
+        }
     }
 }
 

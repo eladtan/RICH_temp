@@ -50,6 +50,23 @@ public:
         }
         return closestPoint;
     }
+
+    inline T furthestPoint(const T &point) const
+    {
+        T furthestPoint;
+        for(int i = 0; i < DIM; i++)
+        {
+            if(2 * point[i] > (this->ll[i] + this->ur[i]))
+            {
+                furthestPoint[i] = this->ll[i];
+            }
+            else
+            {
+                furthestPoint[i] = this->ur[i];
+            }
+        }
+        return furthestPoint;
+    }
 };
 
 template<typename T>

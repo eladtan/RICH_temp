@@ -42,6 +42,8 @@ public:
         return; // nothing to do
     }
 
+    const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};
+
 private:
     DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
     std::vector<hilbert_index_t> range;
