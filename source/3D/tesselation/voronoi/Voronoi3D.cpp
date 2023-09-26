@@ -825,7 +825,7 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
         if(iterations == 1)
         {
             newPointsToCheck.insert(pointIdx); 
-            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, this->radiuses[pointIdx], NO_MAX_POINTS /*MAX_POINTS_IN_BIG_TETRA_QUERY /*NO_MAX_POINTS*/};
+            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, this->radiuses[pointIdx], NO_MAX_POINTS};
             queries.push(query);
             continue;
         }
@@ -838,7 +838,10 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
         {
             delta *= this->GetRadius(tetraIdx);
         }
-        delta = std::min(std::pow(delta, 2.0 / this->PointTetras_[pointIdx].size()), maxSmallRadiuses[pointIdx]);
+        delta = std::min(std::pow(delta, 2.0 / this->PointTetras_[pointIdx].size()), maxSmallRadiuses[pointIdx] * maxSmallRadiuses[pointIdx]);
+        // delta = std::pow(delta, 2.0 / this->PointTetras_[pointIdx].size()); // std::min(std::pow(delta, 2.0 / this->PointTetras_[pointIdx].size()), maxSmallRadiuses[pointIdx]);
+        // std::cout << "delta is " << delta << std::endl;
+        // std::cout << "threshold is " << delta << ", last unified radius is " << this->radiuses[pointIdx] << std::endl;
         
         // classify big and small tetras
         for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
@@ -849,15 +852,17 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
             const Vector3D &tetraCenter = this->tetra_centers_[tetraIdx];
             double tetraRadius = this->GetRadius(tetraIdx);
 
-            if((tetraRadius * tetraRadius) >= delta and (iterations > 1))
+            if((2 * tetraRadius) < this->radiuses[pointIdx])
+            {
+                // radius of this tetra is contained in the unified sphere we checked last iteration
+                continue;
+            }
+            if((tetraRadius * tetraRadius) >= delta)
             {
                 bigTetras.push_back({tetraCenter, tetraRadius});
             }
             else
             {
-                // std::cout << "tetra radius: " << tetraRadius << ", points of tetra: " << this->del_.points_[newTet.points[0]] << " (idx: " << newTet.points[0] << "), " <<
-                //             this->del_.points_[newTet.points[1]] << " (idx: " << newTet.points[1] << "), " << this->del_.points_[newTet.points[2]] << " (idx: " << newTet.points[2] << "), " <<
-                //             this->del_.points_[newTet.points[3]] << " (idx: " << newTet.points[3] << ")" <<  std::endl;
                 smallTetras.push_back({tetraCenter, tetraRadius});
                 maxSmallTetraRadius = std::max(maxSmallTetraRadius, tetraRadius);
             }
@@ -889,7 +894,7 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
                 // the sphere of radius 2 * `maxSmallTetraRadius`, around the point with index `pointIdx`
                 // contains all the spheres of the small tetras, so just send it as a query, instead of a lot of small queries
                 double radius = 2 * maxSmallTetraRadius;
-                // this->radiuses[pointIdx] = std::min(radius, this->radiuses[pointIdx]);
+                this->radiuses[pointIdx] = radius; // std::min(radius, this->radiuses[pointIdx]);
                 RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, radius, NO_MAX_POINTS};
                 queries.push(query);
             }
@@ -1192,7 +1197,8 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     while(true /*size != finished*/ /*true /* size != finished */)
     {
         iterations++;
-        
+        if(rank == 0) std::cout << "iteration " << iterations << std::endl;
+
         std::queue<RangeQueryData> queries = this->CreateBatches(current, iterations, maxSmallRadiuses);
 
         std::vector<std::pair<size_t, size_t>> mirroredPoints;
@@ -1206,23 +1212,27 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
         boost::container::flat_set<size_t> newCurrent;
         
-        if(iterations > 1)
+        for(const QueryInfo<RangeQueryData, _3DPoint> &ans : batchInfo.queriesAnswers)
         {
-            for(const QueryInfo<RangeQueryData, _3DPoint> &ans : batchInfo.queriesAnswers)
+            if(iterations > 1)
             {
+                // after the first iteration, points with no [new] answers should not be checked again
                 if(ans.finalResults.empty())
                 {
                     continue;
                 }
-                size_t queryPointIdx = ans.data.pointIndex;
-                newCurrent.insert(queryPointIdx);
-                if(ans.data.maxPointsToGet > 1 and ans.finalResults.size() <= 100)
+            }
+            size_t queryPointIdx = ans.data.pointIndex;
+            newCurrent.insert(queryPointIdx);
+            if((ans.data.maxPointsToGet > 1))
+            {
+                if(ans.finalResults.size() <= 50)
                 {
                     maxSmallRadiuses[queryPointIdx] = std::max(maxSmallRadiuses[queryPointIdx], ans.data.radius);
                 }
             }
-            current = std::move(newCurrent);
         }
+        current = std::move(newCurrent);
         
         std::vector<_3DPoint> &_newPoints = batchInfo.result;
         std::vector<Vector3D> newPoints;
