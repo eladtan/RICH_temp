@@ -1,11 +1,11 @@
 #include "Tetrahedron.hpp"
 
-Tetrahedron::Tetrahedron():
-  points(), neighbors(), toCheck(true)  {}
+Tetrahedron::Tetrahedron(): points(), neighbors(), newTetra(true)
+{}
 
 Tetrahedron::Tetrahedron(Tetrahedron const & other)
 {
-	this->toCheck = other.toCheck;
+	this->newTetra = other.newTetra;
 #ifdef __INTEL_COMPILER
 #pragma omp simd
 #endif
@@ -19,9 +19,9 @@ Tetrahedron::Tetrahedron(Tetrahedron const & other)
 Tetrahedron::~Tetrahedron()
 {}
 
-Tetrahedron & Tetrahedron::operator=(Tetrahedron const & other)
+Tetrahedron &Tetrahedron::operator=(Tetrahedron const & other)
 {
-	this->toCheck = other.toCheck;
+	this->newTetra = other.newTetra;
 	if (&other == this)
 		return *this;
 #ifdef __INTEL_COMPILER

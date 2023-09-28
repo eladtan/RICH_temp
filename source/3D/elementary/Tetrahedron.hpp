@@ -15,7 +15,7 @@ public:
 	std::size_t points[4];
   //! \brief Indices of neighbours
 	std::size_t neighbors[4];
-  bool toCheck;
+  bool newTetra;
   
 	Tetrahedron();
 

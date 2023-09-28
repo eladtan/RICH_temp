@@ -10,6 +10,9 @@
 #include "3D/environment/EnvironmentAgent.h"
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 
+#define ASK_ONLY_CLOSE 0
+#define ASK_ALL 1
+
 typedef struct RangeQueryData
 {
     size_t pointIndex;
@@ -17,6 +20,7 @@ typedef struct RangeQueryData
     _3DPoint extraPoint;
     coord_t radius;
     size_t maxPointsToGet;
+    char whoToAsk;
 
     friend std::ostream &operator<<(std::ostream &stream, const RangeQueryData &query)
     {
@@ -87,11 +91,6 @@ private:
                 size_t rankIndex = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
                 const RangeFinder::_set<size_t> &ignore = (rankIndex == this->sentProc.size())? RangeFinder::_set<size_t>() : sentDataSet[rankIndex];
                 indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z), ignore);
-                // if(!indicesResult.empty() and (indicesResult = clearDuplication(indicesResult, _rank)).empty())
-                // {
-                //     std::cout << "error!" << std::endl;
-                //     exit(50);
-                // }
             }
             else
             {
@@ -137,9 +136,15 @@ private:
             {
                 return intersectingRanks;
             }
-            return intersectingRanks;
-            /*
+            // if the query requests to ask all the intersecting ranks, return all the intersecting ranks
+            if(query.whoToAsk == ASK_ALL)
+            {
+                return intersectingRanks;
+            }
+            // otherwise, the queries requests to ask only the close ranks
+            // we calculate the closest distances from the point, to all the other ranks.
             std::vector<std::pair<double, double>> distances;
+            // maybe the distances were already computed (check in a cache)
             auto it = this->resultCache.find(query.pointIndex);
             if(it != this->resultCache.end())
             {
@@ -147,17 +152,19 @@ private:
             }
             else
             {
+                // not in cache, calculate it and insert to the cache
                 Vector3D point(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z);
                 distances = distributedOctAgent->getOctTree()->closestFurthestPoints(point);
                 this->resultCache.insert({query.pointIndex, distances});
             }
+            // get the closest rank
             double minDist = std::numeric_limits<double>::max();
             size_t minDistRank = std::numeric_limits<size_t>::max();
             for(const int &_rank : intersectingRanks)
             {
                 if(static_cast<int>(_rank) == this->rank)
                 {
-                    continue;
+                    continue; // don't count myself
                 }
                 if(distances[_rank].first < minDist)
                 {
@@ -171,8 +178,10 @@ private:
                 // in fact, should not reach here, if intersectingRanks.size() > 1
                 throw UniversalError("In range talk agent, should not reach here (no rank found)");
             }
+            // consider the closest rank, and its furthest distance from the point, denoted as `closestDistThreshold`
             double closestDistThreshold = distances[minDistRank].second;
 
+            // return all the ranks which their closest point to us is in distance of at most `closestDistThreshold`
             EnvironmentAgent::_set<int> result;
             for(const int &_rank : intersectingRanks)
             {
@@ -181,9 +190,7 @@ private:
                     result.insert(_rank);
                 }
             }
-            // std::cout << "closest dist: " << minDist << ", and threshold " << closestDistThreshold << ", result.size() is " << result.size() << std::endl;
             return result;
-            */
         }
 
     private:

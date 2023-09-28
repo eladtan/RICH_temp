@@ -43,7 +43,6 @@ public:
 
     bool checkForRebalance(const std::vector<Vector3D> &points) const
     {
-        if(this->rank == 0) std::cout << "doing rebalance" << std::endl;
         // checks if I have too many points, and notify other ranks
         size_t mySize = points.size();
         size_t N;
@@ -52,6 +51,10 @@ public:
         int I_say = (mySize >= (BALANCE_FACTOR * static_cast<double>(ideal)))? 1 : 0; // if I say 'rebalance' or not
         int rebalance = 0; // if someone says 'rebalance' or not
         MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(rebalance > 0 and this->rank == 0)
+        {
+            std::cout << "doing rebalance" << std::endl;
+        }
         return (rebalance > 0);
     };
 

@@ -833,14 +833,12 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
 
     if(iterations == 1)
     {
-        double maxPrint = std::numeric_limits<double>::min();
         // at first iteration, run an initial query
         for(const size_t &pointIdx : smallPoints)
         {
-            maxPrint = std::max(maxPrint, currentRadiuses[pointIdx]);
             newSmallPoints.insert(pointIdx);
             const Vector3D &point = this->del_.points_[pointIdx];
-            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, currentRadiuses[pointIdx], NO_MAX_POINTS};
+            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, currentRadiuses[pointIdx], NO_MAX_POINTS, ASK_ALL};
             queries.push(query);
         }
     }
@@ -879,14 +877,25 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
             const Vector3D &point = this->del_.points_[pointIdx];
             for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
             {
-                if(!this->del_.tetras_[tetraIdx].toCheck)
+                if(!this->del_.tetras_[tetraIdx].newTetra)
                 {
                     continue; // tetra does not need to be checked
                 }
                 const Vector3D &center = this->tetra_centers_[tetraIdx];
                 double radius = this->GetRadius(tetraIdx);
                 // from each big tetrahedron, ask each one of the intersecting ranks to give us the closest point it has to our point
-                RangeQueryData query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, MAX_POINTS_IN_BIG_TETRA_QUERY};
+                RangeQueryData query;
+                // for a large point queries, if the iteration number is 2, we ask only the near ranks to give their closest point.
+                // From the 3rd iteration, we ask all the intersecting ranks to give their closest point.
+                if(iterations == 2)
+                {
+                    query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, MAX_POINTS_IN_BIG_TETRA_QUERY, ASK_ONLY_CLOSE};
+                }
+                else
+                {
+                    query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, MAX_POINTS_IN_BIG_TETRA_QUERY, ASK_ALL};
+                }
+                // add the tetra to the list of tetrahedra to clear (mark as 'not new')
                 tetraToCancel.insert(tetraIdx);
                 queries.push(query);
             }
@@ -897,16 +906,19 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
         {
             // submit one query which is a union of the others
             const Vector3D &point = this->del_.points_[pointIdx];
-            double radius = currentRadiuses[pointIdx] *= 1.1; // increase radius by 1.1
+            double radius = currentRadiuses[pointIdx] *= RADIUSES_GROWING_FACTOR; // increase radius by 'RADIUSES_GROWING_FACTOR'
             // from each big tetrahedron, ask each one of the intersecting ranks to give us the closest point it has to our point
-            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, radius, NO_MAX_POINTS};
+            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, radius, NO_MAX_POINTS, ASK_ALL};
             queries.push(query);
         }
     }
 
-    for(const size_t &tetraIdx : tetraToCancel)
+    if(iterations != 2)
     {
-        this->del_.tetras_[tetraIdx].toCheck = false;
+        for(const size_t &tetraIdx : tetraToCancel)
+        {
+            this->del_.tetras_[tetraIdx].newTetra = false;
+        }
     }
     smallPoints = std::move(newSmallPoints);
     largePoints = std::move(newLargePoints);
@@ -1232,7 +1244,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             else
             {
                 // query is large, check if it returned non empty. If yes, we are not yet done
-                if(!ans.finalResults.empty())
+                if(!ans.finalResults.empty() or iterations == 2)
                 {
                     newLargePoints.insert(pointIdx);
                 }
@@ -1295,8 +1307,15 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         // performs internal tesselation:
         this->del_.BuildExtra(newPoints);
 
-        this->R_.resize(this->del_.tetras_.size());
-        std::fill(this->R_.begin(), this->R_.end(), -1);
+        this->R_.resize(this->del_.tetras_.size(), -1);
+        for(size_t tetraIdx = 0; tetraIdx < this->R_.size(); tetraIdx++)
+        {
+            if(this->del_.tetras_[tetraIdx].newTetra)
+            {
+                this->R_[tetraIdx] = -1;
+            }
+        }
+        // std::fill(this->R_.begin(), this->R_.end(), -1);
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
