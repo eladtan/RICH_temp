@@ -11,7 +11,7 @@
 template<typename T, int D>
 class KDTree
 {
-public:
+private:
     class KDTreeNode
     {
     friend class KDTree;
@@ -48,13 +48,14 @@ public:
         } 
     };
 
+public:
     explicit inline KDTree(const T &ll, const T &ur): root(nullptr), size(0), boundingBox(_BoundingBox<T>(ll, ur)){};
     inline ~KDTree(){this->deleteTree();};
 
     inline std::vector<T> range(const _Sphere<T> &sphere) const
     {
         std::vector<T> result;
-        this->rangeHelper(sphere, this->getRoot(), result);
+        this->rangeHelper(this->getRoot(), sphere, result);
         return result;
     }
     inline bool find(const T &value) const{return this->tryFind(value) != nullptr;};
@@ -76,7 +77,7 @@ private:
     inline KDTreeNode *tryFindParent(const T &point){return const_cast<KDTreeNode*>(std::as_const(*this).tryFindParent(point));};
     KDTreeNode *tryInsert(const T &value);
     void deleteHelper(KDTreeNode *root);
-    void rangeHelper(const _Sphere<T> &sphere, const KDTreeNode *node, std::vector<T> &result) const;
+    void rangeHelper(const KDTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const;
 
     inline KDTreeNode *getRoot(){return this->root;};
     inline const KDTreeNode *getRoot() const{return this->root;};
@@ -228,8 +229,8 @@ void KDTree<T, D>::deleteHelper(typename KDTree<T, D>::KDTreeNode *root)
     delete root;
 }
 
-template<typename T, int N>
-void KDTree<T, N>::rangeHelper(const _Sphere<T> &sphere, const typename KDTree<T, N>::KDTreeNode *node, std::vector<T> &result) const
+template<typename T, int D>
+void KDTree<T, D>::rangeHelper(const KDTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const
 {
     if(node == nullptr)
     {
@@ -244,14 +245,14 @@ void KDTree<T, N>::rangeHelper(const _Sphere<T> &sphere, const typename KDTree<T
                 result.push_back(node->value);
             }
         }
-        rangeHelper(sphere, node->left, result);
-        rangeHelper(sphere, node->right, result);
+        rangeHelper(node->left, sphere, result);
+        rangeHelper(node->right, sphere, result);
     }
 }
 
 #ifdef KD_DEBUG_MODE
-template<typename T, int N>
-void KDTree<T, N>::printHelper(const KDTreeNode *node, int tabs) const
+template<typename T, int D>
+void KDTree<T, D>::printHelper(const KDTreeNode *node, int tabs) const
 {
     if(node == nullptr)
     {

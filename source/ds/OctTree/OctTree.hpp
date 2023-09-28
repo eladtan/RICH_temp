@@ -5,9 +5,12 @@
 #include <assert.h>
 #include <utility>
 #include "../geometry_utils.hpp"
+#include <mpi.h> // todo: remove
 
 #define DIM 3
 #define CHILDREN 8 // 2^DIM
+#define PATH_END_DIRECTION (-1)
+#define MAX_DEPTH 50
 #define DEBUG_MODE
 
 #ifdef DEBUG_MODE
@@ -59,11 +62,18 @@ public:
         }
 
         OctTreeNode(OctTreeNode *parent, int childNumber);
+        virtual ~OctTreeNode() = default;
 
-        OctTreeNode *createChild(int childNumber);
         int getChildNumberContaining(const T &point) const;
         const OctTreeNode *getChildContaining(const T &point) const{return this->children[this->getChildNumberContaining(point)];};
-        
+        virtual OctTreeNode *addLeafChild(int childIndex, const T &point);
+        virtual OctTreeNode *createChild(int childNumber);
+
+        virtual inline void print() const
+        {
+            std::cout << this->value << ", BB: " << this->boundingBox.ll << ", " << this->boundingBox.ur << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
+        }
+
         bool isValue;
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
         _BoundingBox<T> boundingBox; // the bounding box this node induces
@@ -72,19 +82,19 @@ public:
         int height; // height of a leaf is 0
         int depth; // depth of the root is 0
     
-    private:
+    protected:
         void fixHeightsRecursively();
         void splitNode();
     };
 
-private:
+protected:
     void deleteSubtree(OctTreeNode *node);
 
     const OctTreeNode *tryFind(const T &point) const;
     inline OctTreeNode *tryFind(const T &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFind(point));};
     const OctTreeNode *tryFindParent(const T &point) const;
     inline OctTreeNode *tryFindParent(const T &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
-    OctTreeNode *tryInsert(const T &point);
+    virtual OctTreeNode *tryInsert(const T &point);
 
     #ifdef DEBUG_MODE
     void printHelper(const OctTreeNode *node, int indent) const;
@@ -105,9 +115,9 @@ private:
     size_t treeSize;
 
 public:
-    OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0){this->setBounds(ll, ur);};
+    explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0){this->setBounds(ll, ur);};
     template<typename InputIterator>
-    OctTree(const T &ll, const T &ur, const InputIterator &first, const InputIterator &last): OctTree(ll, ur)
+    explicit OctTree(const T &ll, const T &ur, const InputIterator &first, const InputIterator &last): OctTree(ll, ur)
     {
         for(InputIterator it = first; it != last; it++)
         {
@@ -117,7 +127,7 @@ public:
     template<typename Container>
     inline OctTree(const T &ll, const T &ur, Container container): OctTree(ll, ur, container.begin(), container.end()){};
     inline explicit OctTree(): root(nullptr), treeSize(0){};
-    inline ~OctTree(){this->deleteSubtree(this->root);};
+    virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
     inline bool insert(const T &point)
     {
@@ -130,10 +140,15 @@ public:
     };
     inline bool find(const T &point) const{return this->tryFind(point) != nullptr;};
 
-    inline OctTreeNode *getRoot(){return this->root;};
-    inline const OctTreeNode *getRoot() const{return this->root;};
-    inline void setRoot(OctTreeNode *other){this->root = other;};
-    void setBounds(const T &ll, const T &ur);
+    virtual inline OctTreeNode *getRoot(){return this->root;};
+    virtual inline const OctTreeNode *getRoot() const{return this->root;};
+    virtual inline void setRoot(OctTreeNode *other){this->root = other;};
+    virtual void setBounds(const T &ll, const T &ur)
+    {
+        assert(this->getRoot() == nullptr);
+        this->setRoot(new OctTreeNode(ll, ur));
+        this->getRoot()->parent = nullptr;
+    }
 
     #ifdef DEBUG_MODE
     void print() const{this->printHelper(this->getRoot(), 0);};
@@ -208,6 +223,15 @@ OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isVa
 }
 
 template<typename T>
+typename OctTree<T>::OctTreeNode *OctTree<T>::OctTreeNode::addLeafChild(int childIndex, const T &point)
+{
+    this->children[childIndex] = new OctTreeNode(point);
+    this->children[childIndex]->parent = this;
+    this->children[childIndex]->fixHeightsRecursively();
+    return this->children[childIndex];
+}
+
+template<typename T>
 typename OctTree<T>::OctTreeNode *OctTree<T>::OctTreeNode::createChild(int childNumber)
 {
     assert(this->children[childNumber] == nullptr);
@@ -270,14 +294,6 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const T &point) cons
         current = current->getChildContaining(point);
     }
     return nullptr;
-}
-
-template<typename T>
-void OctTree<T>::setBounds(const T &ll, const T &ur)
-{
-    assert(this->getRoot() == nullptr);
-    this->setRoot(new OctTreeNode(ll, ur));
-    this->getRoot()->parent = nullptr;
 }
 
 template<typename T>
@@ -350,7 +366,7 @@ void OctTree<T>::printHelper(const OctTreeNode *node, int indent) const
     }
     else
     {
-    std::cout << "BB: " << node->boundingBox.ll << ", " << node->boundingBox.ur << " (depth: " << node->depth << ", height: " << node->height << ")" << std::endl;
+        node->print();
     }
     int minNull = -1;
     for(int i = 0; i < CHILDREN - 1; i++)
@@ -408,6 +424,10 @@ template<typename T>
 typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
 {
     assert(this->getRoot() != nullptr);
+    if(!this->getRoot()->boundingBox.contains(point))
+    {
+        return nullptr;
+    }
 
     OctTreeNode *current = this->getRoot();
     while(current != nullptr)
@@ -433,10 +453,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
         int childIndex = current->getChildNumberContaining(point);
         if(current->children[childIndex] == nullptr)
         {
-            current->children[childIndex] = new OctTreeNode(point);
-            current->children[childIndex]->parent = current;
-            current->children[childIndex]->fixHeightsRecursively();
-            return current->children[childIndex];
+            return current->addLeafChild(childIndex, point);
         }
         current = current->children[childIndex];
     }

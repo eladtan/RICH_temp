@@ -28,12 +28,10 @@ public:
         }
         return toReturn;
     };
-    inline size_t size() const override{return this->myPoints.size();};
-    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
+    inline size_t size() const override{return this->kdTree->getSize();};
 
 private:
     KDTree<IndexedVector3D, DIMENSIONS> *kdTree;
-    std::vector<Vector3D> myPoints;
 };
 
 template<typename RandomAccessIterator>
@@ -47,7 +45,6 @@ KDTreeFinder::KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last
         const Vector3D &vec = *it;
         IndexedVector3D idx_vec = IndexedVector3D(vec.x, vec.y, vec.z, index);
         this->kdTree->insert(idx_vec);
-        this->myPoints.push_back(vec);
         index++;
     }
 }

@@ -13,9 +13,9 @@ class HashBruteForceFinder : public RangeFinder
 {
 public:
     template<typename RandomAccessIterator>
-    HashBruteForceFinder(const EnvironmentAgent *envAgent, RandomAccessIterator first, RandomAccessIterator last): envAgent(envAgent)
+    HashBruteForceFinder(const EnvironmentAgent *envAgent, RandomAccessIterator first, RandomAccessIterator last): envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent))
     {
-        this->cellsPointsSize = static_cast<size_t>(std::pow(2, 1.4 * this->envAgent->getOrder()));
+        this->cellsPointsSize = static_cast<size_t>(std::pow(2, 1.4 * this->envAgent->getOrder())); // heuristic
         this->cellsPoints.resize(this->cellsPointsSize);
 
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
@@ -32,7 +32,7 @@ public:
     };
 
     template<typename Container>
-    inline HashBruteForceFinder(const EnvironmentAgent *envAgent, Container points): HashBruteForceFinder(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent), points.begin(), points.end()){};
+    inline HashBruteForceFinder(const EnvironmentAgent *envAgent, Container points): HashBruteForceFinder(envAgent, points.begin(), points.end()){};
     inline ~HashBruteForceFinder() = default;
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
@@ -42,8 +42,8 @@ public:
 
     std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
-        boost::container::flat_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(center, radius);
-        std::vector<size_t> result;
+        boost::container::flat_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
+        std::vector<IndexedVector3D> result;
         for(hilbert_index_t cell : intersectingCells)
         {
             if(this->envAgent->getCellOwner(cell) == this->rank)
@@ -57,15 +57,13 @@ public:
                     double distanceSquared = (point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y) + (point.z - center.z) * (point.z - center.z);
                     if(distanceSquared <= radius * radius)
                     {
-                        result.push_back(_points[i]);
+                        result.emplace_back(IndexedVector3D(point.x, point.y, point.z, _points[i]));
                     }
                 }
             }
         }
         return result;
     }
-
-    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
     inline size_t size() const override{return this->pointsSize;};
 

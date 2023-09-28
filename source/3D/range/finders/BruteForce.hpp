@@ -53,7 +53,7 @@ public:
 
     inline std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
-        std::vector<size_t> result;
+        std::vector<IndexedVector3D> result;
         const Vector3D *_points = this->points.data();
         for(size_t i = 0; i < this->pointsSize; i++)
         {
@@ -67,13 +67,11 @@ public:
             dz *= dz;
             if((dx + dy + dz) <= ((radius * radius) + EPSILON))
             {
-                result.push_back(i);
+                result.emplace_back(IndexedVector3D(point.x, point.y, point.z, i));
             }
         }
         return result;
     }
-
-    inline const Vector3D &getPoint(size_t index) const override{return this->points[index];};
 
     inline size_t size() const override{return this->pointsSize;};
 

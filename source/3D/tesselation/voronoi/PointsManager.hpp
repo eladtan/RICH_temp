@@ -70,7 +70,7 @@ public:
         {
             const Vector3D &point = points[i];
             const double radius = radiuses[i];
-            data.push_back({{point.x, point.y, point.z}, radius});
+            data.push_back({_3DPoint(point.x, point.y, point.z), radius});
         }
 
         ExchangeAnswer<_3DPointRadius> answer = dataExchange(data, func, this->comm);

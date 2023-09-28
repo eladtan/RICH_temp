@@ -12,6 +12,8 @@
 template class BinaryTree<IndexedVector3D>;
 template class RangeTree<IndexedVector3D>;
 
+#define DIMENSIONS 3
+
 class RangeTreeFinder : public RangeFinder
 {
 public:
@@ -34,11 +36,9 @@ public:
         return toReturn;
     };
     inline size_t size() const override{return this->rangeTree->size();};
-    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
 private:
     RangeTree<IndexedVector3D> *rangeTree;
-    std::vector<Vector3D> myPoints;
 };
 
 template<typename RandomAccessIterator>
@@ -50,10 +50,9 @@ RangeTreeFinder::RangeTreeFinder(RandomAccessIterator first, RandomAccessIterato
     {
         const Vector3D &vec = *it;
         data.push_back(IndexedVector3D(vec.x, vec.y, vec.z, index));
-        this->myPoints.push_back(vec);
         index++;
     }
-    this->rangeTree = new RangeTree<IndexedVector3D>(3);
+    this->rangeTree = new RangeTree<IndexedVector3D>(DIMENSIONS);
     this->rangeTree->build(data.begin(), data.end());
 }
 
