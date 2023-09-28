@@ -17,7 +17,11 @@
 #include <set>
 #include <array>
 #include "3D/hilbert/HilbertOrder3D.hpp"
+<<<<<<< 302da4010b79597897e5df0520e1bbdbefc9c59e
+#include "3D/range/RangeAgent.hpp" // "3D/range/RangeAgent.h"
+=======
 #include "3D/range/RangeAgent.hpp"
+>>>>>>> f832fde9823f987cb8e3ddae82329483d242e16e
 #include "../Tessellation3D.hpp"
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
@@ -30,7 +34,10 @@
 #ifdef RICH_MPI
 #include "PointsManager.hpp"
 #define RICH_TESELLATION_FINISHED_TAG 505
-#define RADIUSES_GROWING_FACTOR 1.618 // 1.618
+#define INITIAL_SENDRECV_TAG 1105
+#define MAX_POINTS_IN_BIG_TETRA_QUERY 1
+#define RADIUSES_GROWING_FACTOR 1.1 // 1.618
+#define MAX_ALLOWED_HILBERT_ORDER 19
 #endif 
 
 typedef std::array<std::size_t, 4> b_array_4;
@@ -39,6 +46,11 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
+#ifdef RICH_MPI
+public:
+  const EnvironmentAgent *GetEnvAgent() const{return this->envAgent;}; // todo: remove!
+#endif // RICH_MPI
+
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -81,15 +93,22 @@ private:
   void BuildVoronoi(std::vector<size_t> const& order);
 
   double GetMaxRadius(std::size_t index);
+  double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   #ifdef RICH_MPI
-  void Build(std::vector<Vector3D> const &points, Tessellation3D const &tproc); // old implementation
+
+  std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
+  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
   void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);
   void BuildInitialize(size_t num_points);
-  std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, std::vector<Face> &box, std::vector<Vector3D> &normals);
+  std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
+  void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
+  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
+  void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
+
   #endif // RICH_MPI
 
   Delaunay3D del_;

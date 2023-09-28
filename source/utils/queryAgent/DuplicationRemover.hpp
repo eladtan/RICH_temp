@@ -1,3 +1,4 @@
+#if 0
 #ifndef _DUPLICATOR_REMOVER_HPP
 #define _DUPLICATOR_REMOVER_HPP
 
@@ -17,6 +18,9 @@ public:
     
     std::vector<AnswerType> answer(const QueryData &query, int _rank) override
     {
+        std::vector<int> &sentProc = this->agent->getSentProc();
+        std::vector<std::vector<size_t>> &sentData = this->agent->getSentData();
+
         std::vector<IndexedAnswerType> unfilteredResult = this->agent->answer(query, _rank);
         std::vector<AnswerType> result;
 
@@ -24,28 +28,27 @@ public:
         {
             return result;
         }
-        size_t rankIdx = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
-        if(rankIdx == this->sentProc.size())
+        size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
+        if(rankIdx == sentProc.size())
         {
             // `_rank` is new
-            this->sentProc.push_back(_rank);
+            sentProc.push_back(_rank);
+            sentData.emplace_back(std::vector<size_t>());
             this->sentDataSet.emplace_back(_set<size_t>());
-            this->sentData.emplace_back(std::vector<size_t>());
         }
-        _set<size_t> &_rankSet = this->sentDataSet[rankIdx];
+        RangeFinder::_set<size_t> &_rankSet = this->sentDataSet[rankIdx];
 
         for(const IndexedAnswerType &_data : unfilteredResult)
         {
             size_t idx = _data.getIndex();
             AnswerType data = _data.getData();
-            // std::cout << "idx is " << idx << " (data is " << data << ")" << std::endl;
 
             if(_rankSet.find(idx) == _rankSet.end())
             {
                 // `_data` was not sent before
                 result.push_back(data);
                 _rankSet.insert(idx);
-                this->sentData[rankIdx].push_back(idx);
+                sentData[rankIdx].push_back(idx);
             }
         }
         return result;
@@ -53,7 +56,8 @@ public:
 
 private:
     AnswerAgent<QueryData, IndexedAnswerType> *agent;
-    std::vector<_set<size_t>> sentDataSet;
+    std::vector<RangeFinder::_set<size_t>> sentDataSet;
 };
 
 #endif // _DUPLICATOR_REMOVER_HPP
+#endif // 0

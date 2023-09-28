@@ -1,10 +1,13 @@
 #ifndef _HILBERT_TYPES_H
 #define _HILBERT_TYPES_H
 
+#include <iostream>
+#include <cmath>
+#include "3D/elementary/Vector3D.hpp"
+
 typedef double coord_t;
 typedef unsigned long int hilbert_index_t;
 
-#include <cmath>
 
 #define EPSILON 1e-12
 
@@ -12,13 +15,14 @@ typedef struct _3DPoint
 {
     using coord_type = coord_t;
 
-    _3DPoint(coord_type x, coord_type y, coord_type z): x(x), y(y), z(z){};
-    _3DPoint(): _3DPoint(coord_type(), coord_type(), coord_type()){};
-    _3DPoint(const _3DPoint &other): _3DPoint(other.x, other.y, other.z){};
-
     coord_type x;
     coord_type y;
     coord_type z;
+
+    _3DPoint(coord_type x, coord_type y, coord_type z): x(x), y(y), z(z){};
+    _3DPoint(): _3DPoint(coord_type(), coord_type(), coord_type()){};
+    _3DPoint(const _3DPoint &other): _3DPoint(other.x, other.y, other.z){};
+    _3DPoint(const Vector3D &vector): _3DPoint(vector.x, vector.y, vector.z){};
 
     inline _3DPoint operator+(const _3DPoint &other) const{return _3DPoint(this->x + other.x, this->y + other.y, this->z + other.z);};
     inline _3DPoint operator-(const _3DPoint &other) const{return _3DPoint(this->x - other.x, this->y - other.y, this->z - other.z);};

@@ -24,11 +24,11 @@
 #define TAG_FINISHED 202
 
 #define UNDEFINED_BUFFER_IDX -1
-#define FLUSH_QUERIES_NUM 80
+#define FLUSH_QUERIES_NUM 50
 
-#define QUERY_AUTOFLUSH_NUM 100
-#define RECEIVE_AUTOFLUSH_NUM 15
-#define FINISH_AUTOFLUSH_NUM 100
+#define QUERY_AUTOFLUSH_NUM 16
+#define RECEIVE_AUTOFLUSH_NUM 32
+#define FINISH_AUTOFLUSH_NUM 128
 #define MAX_RECEIVE_IN_CYCLE 20
 #define MAX_ANSWER_IN_CYCLE 20
 
@@ -92,6 +92,8 @@ private:
     AnswerAgent<QueryData, AnswerType> *answerAgent; // an answer agent
     const TalkAgent<QueryData> *talkAgent; // answers to whom we should talk to, given a query
     bool sendToSelf; // should send queries to self
+    bool finishedMyQueries; // if finished to answer my queries
+    int finishedReceived; // number of 'finish' messages received
 
     std::vector<int> recvProcessorsRanks;  // a vector of ranks, that we received data from
     std::vector<std::vector<size_t>> recvData; // a vector of vectors. The vector in index `i` contains the data indices (relatively to my final answer of the batch) that sent to `this->sentProcessorsRanks[i]`.
@@ -101,13 +103,13 @@ private:
 
     void sendFinish();
     int checkForFinishMessages() const;
-    void flushBuffer(int node);
+    void flushBuffer(int _rank);
     inline void flushAll(){for(int i = 0; i < this->size; i++) this->flushBuffer(i);};
 };
 
 template<typename QueryData, typename AnswerType>
 QueryAgent<QueryData, AnswerType>::QueryAgent(const TalkAgent<QueryData> *talkAgent, AnswerAgent<QueryData, AnswerType> *answerAgent, bool sendToSelf, const MPI_Comm &comm):
-        comm(comm), talkAgent(talkAgent), answerAgent(answerAgent), sendToSelf(sendToSelf)
+        comm(comm), talkAgent(talkAgent), answerAgent(answerAgent), sendToSelf(sendToSelf), finishedReceived(0)
 {
     MPI_Comm_rank(this->comm, &this->rank);
     MPI_Comm_size(this->comm, &this->size);
@@ -173,6 +175,11 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
             assert(length >= 0);
         }
         MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
+    }
+
+    if(this->finishedMyQueries and this->shouldReceiveInTotal == this->receivedUntilNow)
+    {
+        this->sendFinish();
     }
 }
 
@@ -242,29 +249,29 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
 template<typename QueryData, typename AnswerType>
 void QueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo &query)
 {
-    typename TalkAgent<QueryData>::_set<int> possibleNodes = this->talkAgent->getTalkList(query.data);
-    for(const int &node : possibleNodes)
+    typename TalkAgent<QueryData>::_set<int> talkingRanks = this->talkAgent->getTalkList(query.data);
+    for(const int &_rank : talkingRanks)
     {
-        if((node == this->rank) and (!this->sendToSelf))
+        if((_rank == this->rank) and (!this->sendToSelf))
         {
             continue; // unnecessary to send
         }
-        int bufferIdx = this->ranksBufferIdx[node];
+        int bufferIdx = this->ranksBufferIdx[_rank];
         // check if a flush is needed
 
         if((bufferIdx != UNDEFINED_BUFFER_IDX) and ((this->buffers[bufferIdx].size() / sizeof(_subQueryData)) >= FLUSH_QUERIES_NUM))
         {
             // send buffer
-            this->flushBuffer(node);
+            this->flushBuffer(_rank);
         }
-        bufferIdx = this->ranksBufferIdx[node];
+        bufferIdx = this->ranksBufferIdx[_rank];
         if(bufferIdx == UNDEFINED_BUFFER_IDX)
         {
             this->buffers.push_back(std::vector<char>());
             this->buffers[this->buffers.size() - 1].reserve(sizeof(_subQueryData) * FLUSH_QUERIES_NUM);
-            this->ranksBufferIdx[node] = this->buffers.size() - 1;
+            this->ranksBufferIdx[_rank] = this->buffers.size() - 1;
         }
-        bufferIdx = this->ranksBufferIdx[node];
+        bufferIdx = this->ranksBufferIdx[_rank];
         this->buffers[bufferIdx].resize(this->buffers[bufferIdx].size() + sizeof(_subQueryData));
         _subQueryData &subQuery = *reinterpret_cast<_subQueryData*>(&(*(this->buffers[bufferIdx].end() - sizeof(_subQueryData))));
         subQuery.data = query.data;
@@ -300,9 +307,9 @@ int QueryAgent<QueryData, AnswerType>::checkForFinishMessages() const
 }
 
 template<typename QueryData, typename AnswerType>
-void QueryAgent<QueryData, AnswerType>::flushBuffer(int node)
+void QueryAgent<QueryData, AnswerType>::flushBuffer(int _rank)
 {
-    int bufferIdx = this->ranksBufferIdx[node];
+    int bufferIdx = this->ranksBufferIdx[_rank];
     if(bufferIdx == UNDEFINED_BUFFER_IDX)
     {
         return;
@@ -310,9 +317,9 @@ void QueryAgent<QueryData, AnswerType>::flushBuffer(int node)
     if(this->buffers[bufferIdx].size() > 0)
     {
         this->requests.push_back(MPI_REQUEST_NULL);
-        MPI_Isend(&this->buffers[bufferIdx][0], this->buffers[bufferIdx].size(), MPI_BYTE, node, TAG_REQUEST, this->comm, &this->requests[this->requests.size() - 1]);
+        MPI_Isend(&this->buffers[bufferIdx][0], this->buffers[bufferIdx].size(), MPI_BYTE, _rank, TAG_REQUEST, this->comm, &this->requests[this->requests.size() - 1]);
     }
-    this->ranksBufferIdx[node] = UNDEFINED_BUFFER_IDX;
+    this->ranksBufferIdx[_rank] = UNDEFINED_BUFFER_IDX;
 }
 
 template<typename QueryData, typename AnswerType>
@@ -323,7 +330,7 @@ void QueryAgent<QueryData, AnswerType>::rearrangeResult(_queryBatchInfo &queries
     {
         int _rank = this->recvProcessorsRanks[i];
         std::vector<size_t> &rankRecvData = this->recvData[i]; // indices vector
-        std::vector<AnswerType> &newDataFromRank = queriesBatch.dataByRanks[_rank]; // the data itself
+        const std::vector<AnswerType> &newDataFromRank = queriesBatch.dataByRanks[_rank]; // the data itself
         rankRecvData.reserve(newDataFromRank.size());
 
         queriesBatch.result.reserve(queriesBatch.result.size() + rankRecvData.size());
@@ -347,52 +354,82 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
 
     this->buffers.clear();
     size_t originalQueriesNum = queries.size();
-    this->buffers.reserve(4 * originalQueriesNum); // heuristic
+    this->buffers.reserve(10 * originalQueriesNum); // heuristic
     this->requests.clear();
     _queryBatchInfo queriesBatch;
     std::vector<_queryInfo> &queriesInfo = queriesBatch.queriesAnswers;
     queriesBatch.dataByRanks.resize(this->size);
-    int finishedReceived = 0;
-    bool sentFinished = false;
+    this->finishedMyQueries = queries.empty();
+    this->finishedReceived = 0;
     size_t i = 0;
     bool notEmpty = false;
-
-    while((notEmpty = (i < originalQueriesNum)) or (finishedReceived < this->size))
+    
+    // if doesn't have any queries, send a finish message
+    if(this->finishedMyQueries)
     {
-        if(notEmpty)
+        this->sendFinish();
+    }
+    while((!this->finishedMyQueries) or (this->finishedReceived < this->size))
+    {
+        if(!this->finishedMyQueries)
         {
-
             QueryData queryData = queries.front();
             queries.pop();
             queriesInfo.push_back({queryData, i, std::vector<AnswerType>()});
             _queryInfo &query = queriesInfo[queriesInfo.size() - 1];
+
             this->sendQuery(query);
             if(i == (originalQueriesNum - 1))
             {
                 // send the rest of the waiting (buffered) requests
                 this->flushAll();
-            }
-        }
-        else
-        {
-            if(i % FINISH_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal == this->receivedUntilNow)
-            {
-                if(!sentFinished)
+                this->finishedMyQueries = true;
+                // if had several queries, but no communication was needed, send a finish message
+                if(this->shouldReceiveInTotal == 0)
                 {
-                    sentFinished = true;
                     this->sendFinish();
                 }
-                finishedReceived += this->checkForFinishMessages();
             }
         }
-        if(this->shouldReceiveInTotal > this->receivedUntilNow)
-        {
-            this->receiveQueries(queriesBatch);
-        }
 
-        if(i % QUERY_AUTOFLUSH_NUM == 0)
+        // if(i % RECEIVE_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal > this->receivedUntilNow)
+        // {
+        //     this->receiveQueries(queriesBatch);
+        // }
+        // if(i % QUERY_AUTOFLUSH_NUM == 0)
+        // {
+        //     this->answerQueries();
+        // }
+
+        MPI_Status status;
+        int arrived;
+        MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, this->comm, &arrived, &status);
+        
+        if(arrived)
         {
-            this->answerQueries();
+            switch(status.MPI_TAG)
+            {
+                case TAG_RESPONSE:
+                    this->receiveQueries(queriesBatch);
+                    break;
+                case TAG_REQUEST:
+                    this->answerQueries();
+                    break;
+                case TAG_FINISHED:
+                    this->finishedReceived += this->checkForFinishMessages();
+                    break;
+                default:
+                    std::cerr << "Rank " << this->rank << " received unrecognized tag: " << status.MPI_TAG << ", from rank " << status.MPI_SOURCE << std::endl;
+            }
+
+            // if(i % RECEIVE_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal > this->receivedUntilNow)
+            // {
+            //     this->receiveQueries(queriesBatch);
+            // }
+            // if(i % QUERY_AUTOFLUSH_NUM == 0)
+            // {
+            //     this->answerQueries();
+            // }
         }
         ++i;
     }
@@ -422,6 +459,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
         }
     }
 
+    this->finishedReceived -= this->size;
     this->rearrangeResult(queriesBatch);
     return queriesBatch;
 }

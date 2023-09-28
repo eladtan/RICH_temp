@@ -96,7 +96,10 @@ void MPI_Synchronoize(int seconds, const MPI_Comm &comm = MPI_COMM_WORLD)
         MPI_Recv(&dummy, 1, MPI_BYTE, status.MPI_SOURCE, MPI_SYNC_TAG, comm, MPI_STATUS_IGNORE);
         MPI_Iprobe(MPI_ANY_SOURCE, MPI_SYNC_TAG, comm, &arrived, &status);
     }
-    MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+    if(!requests.empty())
+    {    
+        MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+    }
 }
 
 #endif // RICH_MPI

@@ -7,7 +7,6 @@
 #ifndef _RICH_BALANCE2_HPP
 #define _RICH_BALANCE2_HPP
 
-#include <iostream> // todo: remove
 #include <vector>
 #include <algorithm>
 #include <functional>
@@ -45,7 +44,7 @@ namespace
 
         if(mediansByRanks.empty())
         {
-            std::cerr << "Error! Requested stat-orders are too high" << std::endl;
+            throw UniversalError("The requested stat orders are too high");
         }
 
         auto newComp = [comp](const std::pair<T, int> &lhs, const std::pair<T, int> &rhs)
@@ -153,11 +152,16 @@ std::vector<T> getBorders(std::vector<T> &input, const Comparator &comp = [](con
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     // stage 0: calculate the order statistics of the necessary bounds
+
     std::vector<size_t> currLengths(size);
     size_t mySize = input.size();
-    MPI_Allgather(&mySize, sizeof(size_t), MPI_BYTE, &currLengths[0], sizeof(size_t), MPI_BYTE, MPI_COMM_WORLD);
     size_t totalSize = 0;
-    for(int i = 0; i < size; i++) totalSize += currLengths[i];
+    MPI_Allreduce(&mySize, &totalSize, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+
+    if(static_cast<size_t>(size) > totalSize)
+    {
+        throw UniversalError("Too many ranks were given compared to the number of points");
+    }
     std::vector<size_t> stats(size);
     for(int i = 0; i < size - 1; i++)
     {

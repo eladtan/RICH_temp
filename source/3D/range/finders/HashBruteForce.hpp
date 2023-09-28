@@ -35,7 +35,12 @@ public:
     inline HashBruteForceFinder(const EnvironmentAgent *envAgent, Container points): HashBruteForceFinder(envAgent, points.begin(), points.end()){};
     inline ~HashBruteForceFinder() = default;
 
-    std::vector<IndexedVector3D> range(const _3DPoint &center, double radius) const override
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
+    {
+        return std::vector<size_t>();
+    }
+
+    std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
         boost::container::flat_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<IndexedVector3D> result;

@@ -21,9 +21,19 @@ public:
     RangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last);
     inline RangeTreeFinder(std::vector<Vector3D> &myPoints): RangeTreeFinder(myPoints.begin(), myPoints.end()){};
     ~RangeTreeFinder();
-    inline std::vector<IndexedVector3D> range(const _3DPoint &center, double radius) const override
+
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return this->rangeTree->circularRange(Vector3D(center.x, center.y, center.z), radius);
+        return std::vector<size_t>();
+    }
+    
+    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
+        std::vector<size_t> toReturn;
+        for(const IndexedVector3D &vec : this->rangeTree->circularRange(center, radius))
+        {
+            toReturn.push_back(vec.index);
+        }
+        return toReturn;
     };
     inline size_t size() const override{return this->rangeTree->size();};
 

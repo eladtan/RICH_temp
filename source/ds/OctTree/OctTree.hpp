@@ -13,7 +13,11 @@
 #define MAX_DEPTH 50
 #define DEBUG_MODE
 
-typedef int direction_t;
+#ifdef DEBUG_MODE
+#include <iostream>
+#endif // DEBUG_MODE
+
+typedef double coord_t;
 
 template<typename T>
 class OctTree
@@ -105,6 +109,8 @@ protected:
     };
 
     void rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const;
+    void getClosestPointHelper(const T &point, const OctTreeNode *node, T &closestPoint, typename T::coord_type &cloesestDistance) const;
+    
     OctTreeNode *root;
     size_t treeSize;
 
@@ -150,37 +156,27 @@ public:
 
     inline int getDepth() const{assert(this->getRoot() != nullptr); return this->getRoot()->height;};
     inline size_t getSize() const{return this->treeSize;};
-    inline std::vector<T> range(const _Sphere<T> &sphere) const{std::vector<T> result; this->rangeHelper(this->getRoot(), sphere, result); return result;};
-
-    inline const OctTreeNode *getNodeByDirections(const direction_t *directions) const
+    inline std::vector<T> range(const _Sphere<T> &sphere) const
     {
-        if(directions == nullptr)
-        {
-            return nullptr;
-        }
-        int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        const OctTreeNode *current = this->getRoot();
-        size_t i = 0;
-        while(directions[i] != PATH_END_DIRECTION)
-        {
-            if(current == nullptr)
-            {
-                break;
-            };
-            current = current->children[directions[i]];
-            i++;
-        }
+        std::vector<T> result;
+        this->rangeHelper(this->getRoot(), sphere, result);
+        return result;
+    };
 
-        assert(current != nullptr);
-        if(current == nullptr)
-        {
-            std::cerr << "Illegal path in rank " << rank << std::endl;
-            size_t j = 0;
-            std::cout << "path is ";
-            while(directions[j] != PATH_END_DIRECTION){std::cout << directions[j++] << " ";};  std::cout << std::endl;
-            exit(8200);
-        }
-        return current;
+    inline T closestPoint(const T &point) const
+    {
+        T closestPoint;
+        typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+        this->getClosestPointHelper(point, this->getRoot(), closestPoint, closestDistance);
+        return closestPoint;
+    }
+
+    inline double closestPointDistance(const T &point) const
+    {
+        T closestPoint;
+        typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+        this->getClosestPointHelper(point, this->getRoot(), closestPoint, closestDistance);
+        return closestDistance;
     }
 };
 
@@ -504,6 +500,46 @@ void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, 
     for(int i = 0; i < CHILDREN; i++)
     {
         this->rangeHelper(node->children[i], sphere, result);
+    }
+}
+
+#define EPSILON 1e-12
+
+template<typename T>
+void OctTree<T>::getClosestPointHelper(const T &point, const OctTreeNode *node, T &closestPoint, typename T::coord_type &closestDistance) const
+{
+    if(node == nullptr)
+    {
+        return;
+    }
+    T closestPointInBox = node->boundingBox.closestPoint(point);
+    // calculate distance squared
+    typename T::coord_type dist = 0;
+    for(int i = 0; i < DIM; i++)
+    {
+        dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
+    }
+    if(dist >= closestDistance)
+    {
+        return;
+    }
+    // there might be a closer point in the subtrees
+    if(node->isValue)
+    {
+        if(node->value == point)
+        {
+            // don't check that point (otherwise the distance is 0...)
+            return;
+        }
+        closestPoint = node->value;
+        closestDistance = dist;
+    }
+    else
+    {
+        for(int i = 0; i < CHILDREN; i++)
+        {
+            this->getClosestPointHelper(point, node->children[i], closestPoint, closestDistance);
+        }
     }
 }
 
