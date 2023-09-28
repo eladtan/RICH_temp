@@ -43,6 +43,8 @@ public:
     };
     inline size_t size() const override{return this->octTree->getSize();};
 
+    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
+
     inline Vector3D closestPoint(const Vector3D &point) const
     {
         _3DPoint res = this->octTree->closestPoint(IndexedVector3D(point, ILLEGAL_IDX)).getData();
@@ -94,6 +96,7 @@ private:
         }
     }
 
+    std::vector<Vector3D> myPoints;
     OctTree<IndexedVector3D> *octTree;
 };
 
@@ -102,10 +105,12 @@ OctTreeFinder::OctTreeFinder(RandomAccessIterator first, RandomAccessIterator la
 {
     size_t index = 0;
     this->octTree = new OctTree<IndexedVector3D>(ll, ur);
-
+    
+    myPoints.reserve(last - first);
     for(RandomAccessIterator it = first; it != last; it++)
     {
         const Vector3D &vec = *it;
+        this->myPoints.push_back(vec);
         IndexedVector3D idx_vec = IndexedVector3D(vec.x, vec.y, vec.z, index);
         this->octTree->insert(idx_vec);
         index++;

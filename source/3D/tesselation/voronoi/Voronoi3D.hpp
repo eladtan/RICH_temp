@@ -17,11 +17,7 @@
 #include <set>
 #include <array>
 #include "3D/hilbert/HilbertOrder3D.hpp"
-<<<<<<< 302da4010b79597897e5df0520e1bbdbefc9c59e
 #include "3D/range/RangeAgent.hpp" // "3D/range/RangeAgent.h"
-=======
-#include "3D/range/RangeAgent.hpp"
->>>>>>> f832fde9823f987cb8e3ddae82329483d242e16e
 #include "../Tessellation3D.hpp"
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>

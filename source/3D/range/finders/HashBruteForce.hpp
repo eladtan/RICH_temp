@@ -43,7 +43,7 @@ public:
     std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
         boost::container::flat_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
-        std::vector<IndexedVector3D> result;
+        std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
         {
             if(this->envAgent->getCellOwner(cell) == this->rank)
@@ -55,9 +55,9 @@ public:
                     //__builtin_prefetch(&this->myPoints[_points[i]]);
                     const Vector3D &point = this->myPoints[_points[i]];
                     double distanceSquared = (point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y) + (point.z - center.z) * (point.z - center.z);
-                    if(distanceSquared <= radius * radius)
+                    if(distanceSquared <= ((radius * radius) + EPSILON))
                     {
-                        result.emplace_back(IndexedVector3D(point.x, point.y, point.z, _points[i]));
+                        result.push_back(i);
                     }
                 }
             }

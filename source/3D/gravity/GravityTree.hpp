@@ -145,13 +145,9 @@ void GravityTree<T>::calculateMassHelper(Node *node)
     }
 }
 
-#include <mpi.h> // todo remove
-
 template<typename T>
 T GravityTree<T>::gravityHelper(const T &point, const Node *node) const
 {
-    int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
     T gravity;
     if(node == nullptr)
     {
@@ -170,7 +166,8 @@ T GravityTree<T>::gravityHelper(const T &point, const Node *node) const
     {
         // do not open the box
         const T temp = node->value.CM - point;
-        gravity_result_t sizeOfForce = 1 / (std::pow(abs(temp), 3));
+        gravity_result_t length = fastabs(temp);
+        gravity_result_t sizeOfForce = 1 / (length * length * length);
         gravity = (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
     }
     return gravity;

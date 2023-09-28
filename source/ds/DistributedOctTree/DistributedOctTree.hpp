@@ -60,6 +60,8 @@ public:
     inline boost::container::flat_set<int> getIntersectingRanks(const T &center, const typename T::coord_type radius) const{return this->getIntersectingRanks(_Sphere(center, radius));};
     int getOwnerRank(const T &point) const;
     int getDepth() const{return this->octTree->getDepth();};
+    OctTree<RankedValue> *getOctTree(){return this->octTree;};
+
     inline int getClosestRank(const T &point) const
     {
         int minRank = this->rank;
@@ -83,43 +85,15 @@ public:
     #endif // DEBUG_MODE
 
 private:
-    class _Wrapper
-    {
-        friend class DistributedOctTree;
-    public:
-        using coord_type = typename T::coord_type;
-
-        T value;
-        int owner; // rank of the owner
-
-        _Wrapper(const T &value, int owner): value(value), owner(owner){};
-        _Wrapper(): _Wrapper(T(), UNDEFINED_OWNER){};
-        _Wrapper(const _Wrapper &other): _Wrapper(other.value, other.owner){};
-        _Wrapper &operator=(const _Wrapper &other){this->value = other.value; this->owner = other.owner; return (*this);};
-        inline typename T::coord_type operator[](size_t idx) const{return this->value[idx];};
-        inline typename T::coord_type &operator[](size_t idx){return this->value[idx];};
-        inline _Wrapper operator+(const _Wrapper &other) const{int owner = (this->owner == other.owner)? this->owner : UNDEFINED_OWNER; return _Wrapper(this->value + other.value, owner);};
-        inline _Wrapper operator-(const _Wrapper &other) const{int owner = (this->owner == other.owner)? this->owner : UNDEFINED_OWNER; return _Wrapper(this->value - other.value, owner);};
-        inline _Wrapper operator*(typename T::coord_type constant) const{return _Wrapper(this->value * constant, owner);};
-        inline _Wrapper operator/(typename T::coord_type constant) const{return this->operator*(1/constant);};
-        inline bool operator==(const _Wrapper &other) const{return this->value == other.value;};
-        inline bool operator!=(const _Wrapper &other) const{return this->value != other.value;};
-        friend std::ostream &operator<<(std::ostream &stream, const _Wrapper &wrapper)
-        {
-            return stream << wrapper.value << " [owner: " << wrapper.owner << "]";
-        }
-
-    };
-
-    OctTree<_Wrapper> *octTree = nullptr;
+    OctTree<RankedValue> *octTree = nullptr;
     MPI_Comm comm;
     int rank, size;
     bool detailedNodeInfo;
 
     void buildTreeHelper(typename OctTree<RankedValue>::OctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree);
     void buildTree(const OctTree<T> *tree);
-    void getClosestRankHelper(const typename OctTree<_Wrapper>::OctTreeNode *node, const T &point, int &closestRank, typename T::coord_type &closestRankDistance) const;
-    void closestFurthestPointsHelper(const typename OctTree<_Wrapper>::OctTreeNode *node, const T &point, std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &distances) const;
+    void getClosestRankHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, int &closestRank, typename T::coord_type &closestRankDistance) const;
+    void closestFurthestPointsHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &distances) const;
 
     #ifdef DEBUG_MODE
     bool validateHelper(const typename OctTree<RankedValue>::OctTreeNode *node) const;
@@ -317,13 +291,13 @@ boost::container::flat_set<int> DistributedOctTree<T>::getIntersectingRanks(cons
 }
 
 template<typename T>
-void DistributedOctTree<T>::getClosestRankHelper(const typename OctTree<_Wrapper>::OctTreeNode *node, const T &point, int &closestRank, typename T::coord_type &closestRankDistance) const
+void DistributedOctTree<T>::getClosestRankHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, int &closestRank, typename T::coord_type &closestRankDistance) const
 {
     if(node == nullptr)
     {
         return;
     }
-    _Wrapper closestPoint = node->boundingBox.closestPoint(_Wrapper(point, UNDEFINED_OWNER));
+    RankedValue closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER));
     typename T::coord_type distance = 0;
     for(int i = 0; i < DIM; i++)
     {
@@ -352,7 +326,7 @@ void DistributedOctTree<T>::getClosestRankHelper(const typename OctTree<_Wrapper
 }
 
 template<typename T>
-void DistributedOctTree<T>::closestFurthestPointsHelper(const typename OctTree<_Wrapper>::OctTreeNode *node, const T &point, std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &distances) const
+void DistributedOctTree<T>::closestFurthestPointsHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &distances) const
 {
     if(node == nullptr)
     {
@@ -368,8 +342,8 @@ void DistributedOctTree<T>::closestFurthestPointsHelper(const typename OctTree<_
     }
     // node is a value node
     int owner = node->value.owner;
-    T closestPoint = node->boundingBox.closestPoint(_Wrapper(point, UNDEFINED_OWNER)).value;
-    T furthestPoint = node->boundingBox.furthestPoint(_Wrapper(point, UNDEFINED_OWNER)).value;
+    T closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
+    T furthestPoint = node->boundingBox.furthestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
     typename T::coord_type closestDist = 0, furthestDist = 0;
     for(int i = 0; i < DIM; i++)
     {
@@ -388,4 +362,3 @@ void DistributedOctTree<T>::closestFurthestPointsHelper(const typename OctTree<_
 #endif // RICH_MPI
 
 #endif // _DISTRIBUTED_OCTTREE_HPP
-

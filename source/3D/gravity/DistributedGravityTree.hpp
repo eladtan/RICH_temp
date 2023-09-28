@@ -141,8 +141,8 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
         // do not open the box
         gravity_result_t mass = node->value.value.mass;
         const T temp = node->value.value.CM - point;
-        gravity_result_t sizeCubed = std::pow(abs(temp), 3);
-        gravity_result_t sizeOfForce = 1 / sizeCubed;
+        gravity_result_t length = fastabs(temp);
+        gravity_result_t sizeOfForce = 1 / (length * length * length);
         unopenedGravity += (temp * sizeOfForce) * mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
     }
 }

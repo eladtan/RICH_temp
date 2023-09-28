@@ -24,6 +24,8 @@ public:
         return std::vector<size_t>();
     }
 
+    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
+
     inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius))
@@ -35,6 +37,7 @@ public:
     inline size_t size() const override{return this->myPoints.size();};
 
 private:
+    std::vector<Vector3D> myPoints;
     GroupRangeTree<IndexedVector3D, N> *groupRangeTree;
 };
 
@@ -42,12 +45,14 @@ template<int N>
 template<typename RandomAccessIterator>
 GroupRangeTreeFinder<N>::GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
 {
-    std::vector<IndexedVector3D> data;
     size_t index = 0;
+    std::vector<IndexedVector3D> data;
     for(RandomAccessIterator it = first; it != last; it++)
     {
         const Vector3D &vec = *it;
-        data.push_back(IndexedVector3D(vec.x, vec.y, vec.z, index));
+        this->myPoints.push_back(vec);
+        IndexedVector3D idx_vec = IndexedVector3D(vec.x, vec.y, vec.z, index);
+        data.push_back(idx_vec);
         index++;
     }
     this->groupRangeTree = new GroupRangeTree<IndexedVector3D, N>(DIMENSIONS);

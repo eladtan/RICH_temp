@@ -17,7 +17,7 @@
 #include <iostream>
 #endif // DEBUG_MODE
 
-typedef double coord_t;
+typedef char direction_t;
 
 template<typename T>
 class OctTree
@@ -162,6 +162,37 @@ public:
         this->rangeHelper(this->getRoot(), sphere, result);
         return result;
     };
+
+    inline const OctTreeNode *getNodeByDirections(const direction_t *directions) const
+    {
+        if(directions == nullptr)
+        {
+            return nullptr;
+        }
+        int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        const OctTreeNode *current = this->getRoot();
+        size_t i = 0;
+        while(directions[i] != PATH_END_DIRECTION)
+        {
+            if(current == nullptr)
+            {
+                break;
+            };
+            current = current->children[directions[i]];
+            i++;
+        }
+
+        assert(current != nullptr);
+        if(current == nullptr)
+        {
+            std::cerr << "Illegal path in rank " << rank << std::endl;
+            size_t j = 0;
+            std::cout << "path is ";
+            while(directions[j] != PATH_END_DIRECTION){std::cout << directions[j++] << " ";};  std::cout << std::endl;
+            exit(8200);
+        }
+        return current;
+    }
 
     inline T closestPoint(const T &point) const
     {

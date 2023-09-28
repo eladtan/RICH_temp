@@ -20,6 +20,8 @@ public:
         return std::vector<size_t>();
     }
 
+    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
+
     inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->kdTree->range(_Sphere<IndexedVector3D>(IndexedVector3D(center.x, center.y, center.z, ILLEGAL_IDX), radius)))
@@ -31,6 +33,7 @@ public:
     inline size_t size() const override{return this->kdTree->getSize();};
 
 private:
+    std::vector<Vector3D> myPoints;
     KDTree<IndexedVector3D, DIMENSIONS> *kdTree;
 };
 
@@ -40,10 +43,12 @@ KDTreeFinder::KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last
     size_t index = 0;
     this->kdTree = new KDTree<IndexedVector3D, DIMENSIONS>(ll, ur);
 
+    myPoints.reserve(last - first);
     for(RandomAccessIterator it = first; it != last; it++)
     {
         const Vector3D &vec = *it;
         IndexedVector3D idx_vec = IndexedVector3D(vec.x, vec.y, vec.z, index);
+        this->myPoints.push_back(idx_vec);
         this->kdTree->insert(idx_vec);
         index++;
     }

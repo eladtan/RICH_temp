@@ -35,17 +35,34 @@ typedef struct _3DPoint
     inline coord_type &operator[](size_t idx){if(idx == 0) return this->x; if(idx == 1) return this->y; return this->z;};
     inline coord_type operator[](size_t idx) const{if(idx == 0) return this->x; if(idx == 1) return this->y; return this->z;};
 
-	friend std::ostream &operator<<(std::ostream &stream, const _3DPoint &vec)
-	{
-		stream << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
-		return stream;
-	}
+    inline coord_type fastabs() const{return fastsqrt((this->x * this->x) + (this->y * this->y) + (this->z * this->z));}
+    friend inline std::ostream &operator<<(std::ostream &stream, const _3DPoint &point)
+    {
+        return stream << "(" << point.x << ", " << point.y << ", " << point.z << ")";
+    }
+    friend inline std::istream &operator>>(std::istream &stream, _3DPoint &point)
+    {
+        std::string str;
+        std::getline(stream, str, '(');
+        std::getline(stream, str, ',');
+        point.x = std::stod(str);
+        std::getline(stream, str, ',');
+        point.y = std::stod(str);
+        std::getline(stream, str, ')');
+        point.z = std::stod(str);
+        return stream;
+    }
 
 } _3DPoint;
 
-inline double abs(_3DPoint const& v)
+inline typename _3DPoint::coord_type abs(_3DPoint const& v)
 {
-	return std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+	return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+inline typename _3DPoint::coord_type fastabs(_3DPoint const& v)
+{
+	return fastsqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
 }
 
 typedef struct _3DPointRadius
