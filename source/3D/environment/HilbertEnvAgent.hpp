@@ -15,7 +15,11 @@
 class HilbertEnvironmentAgent : public EnvironmentAgent
 {
 public:
-    inline HilbertEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD): EnvironmentAgent(ll, ur, comm), dx(ur - ll){this->setOrder(order);};
+    inline HilbertEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD): EnvironmentAgent(ll, ur, comm)
+    {
+        this->dx = std::max(std::max((ur.x - ll.x), (ur.y - ll.y)), (ur.z - ll.z));
+        this->setOrder(order);
+    };
     inline HilbertEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): EnvironmentAgent(ll, ur, comm), order(NULL_ORDER){};
     _set<int> getIntersectingRanks(const Vector3D &center, double radius) const override;
     _set<hilbert_index_t> getIntersectingCells(const Vector3D &center, double radius) const;
@@ -26,7 +30,7 @@ public:
     };
     inline int getOrder() const{return this->order;};
     inline hilbert_index_t xyz2d(const Vector3D &point) const{
-        return EnvironmentAgent::curve.Hilbert3D_xyz2d(Vector3D((point.x - this->ll.x) / this->dx.x, (point.y - this->ll.y) / this->dx.y, (point.z - this->ll.z) / this->dx.z), this->order);
+        return EnvironmentAgent::curve.Hilbert3D_xyz2d(Vector3D((point.x - this->ll.x) / dx, (point.y - this->ll.y) / dx, (point.z - this->ll.z) / dx), this->order);
     };
     inline void update(const std::vector<Vector3D> &points) override
     {
@@ -39,7 +43,8 @@ public:
     }
 
 private:
-    Vector3D myll, myur, dx, sidesLengths;
+    Vector3D myll, myur, sidesLengths;
+    double dx;
     int order;
     int rank, size;
     std::vector<hilbert_index_t> range;
@@ -51,7 +56,7 @@ private:
             return;
         }
         this->order = std::min<int>(order, MAX_HILBERT_ORDER);
-        this->sidesLengths = this->dx / pow(2, this->order);
+        this->sidesLengths = (this->ur - this->ll) / pow(2, this->order);
     }
 };
 

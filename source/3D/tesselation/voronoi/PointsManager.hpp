@@ -43,6 +43,7 @@ public:
 
     bool checkForRebalance(const std::vector<Vector3D> &points) const
     {
+        if(this->rank == 0) std::cout << "doing rebalance" << std::endl;
         // checks if I have too many points, and notify other ranks
         size_t mySize = points.size();
         size_t N;

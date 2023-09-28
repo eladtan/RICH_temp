@@ -137,7 +137,8 @@ private:
             {
                 return intersectingRanks;
             }
-
+            return intersectingRanks;
+            /*
             std::vector<std::pair<double, double>> distances;
             auto it = this->resultCache.find(query.pointIndex);
             if(it != this->resultCache.end())
@@ -168,20 +169,21 @@ private:
             {
                 // std::cout << "here, size of intersecting is " << intersectingRanks.size() << ", min dist is " << minDist << ", min rank is " << minDistRank << ", size is " << this->size << std::endl;
                 // in fact, should not reach here, if intersectingRanks.size() > 1
-                return intersectingRanks;
+                throw UniversalError("In range talk agent, should not reach here (no rank found)");
             }
             double closestDistThreshold = distances[minDistRank].second;
 
             EnvironmentAgent::_set<int> result;
             for(const int &_rank : intersectingRanks)
             {
-                if(distances[_rank].first <= closestDistThreshold)
+                if(distances[_rank].first <= (closestDistThreshold * (1 + EPSILON)))
                 {
-                    result.insert(static_cast<int>(_rank));
+                    result.insert(_rank);
                 }
             }
             // std::cout << "closest dist: " << minDist << ", and threshold " << closestDistThreshold << ", result.size() is " << result.size() << std::endl;
             return result;
+            */
         }
 
     private:

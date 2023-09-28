@@ -32,7 +32,7 @@
 #define RICH_TESELLATION_FINISHED_TAG 505
 #define INITIAL_SENDRECV_TAG 1105
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
-#define RADIUSES_GROWING_FACTOR 1.618 // 1.618
+#define RADIUSES_GROWING_FACTOR 1.1 // 1.618
 #define MAX_ALLOWED_HILBERT_ORDER 19
 #endif 
 
@@ -89,12 +89,13 @@ private:
   void BuildVoronoi(std::vector<size_t> const& order);
 
   double GetMaxRadius(std::size_t index);
+  double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   #ifdef RICH_MPI
 
-  void MirrorPoints(std::queue<RangeQueryData> &queries, std::vector<std::pair<size_t, size_t>> &mirroredPoints, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
-  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &pointsToCheck, int iterations, const std::vector<double> &maxSmallRadiuses);
+  std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
+  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
   void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);

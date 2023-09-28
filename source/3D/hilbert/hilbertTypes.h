@@ -1,10 +1,13 @@
 #ifndef _HILBERT_TYPES_H
 #define _HILBERT_TYPES_H
 
+#include <iostream>
+#include <cmath>
+#include "3D/elementary/Vector3D.hpp"
+
 typedef double coord_t;
 typedef unsigned long int hilbert_index_t;
 
-#include <cmath>
 
 #define EPSILON 1e-12
 

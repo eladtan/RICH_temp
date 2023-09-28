@@ -511,6 +511,7 @@ void OctTree<T>::getClosestPointHelper(const T &point, const OctTreeNode *node, 
     {
         if(node->value == point)
         {
+            // don't check that point (otherwise the distance is 0...)
             return;
         }
         closestPoint = node->value;
