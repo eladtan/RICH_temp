@@ -1,18 +1,30 @@
 #ifndef _GRAVITY_TREE_HPP
 #define _GRAVITY_TREE_HPP
 
+#include <vectorclass.h>
 #include <stack>
-
 #include "GravityTypes.h"
 #include "ds/OctTree/OctTree.hpp"
 
 template<typename T>
 double GetAngleBoxPoint(const T &point, const _BoundingBox<T> boundingBox, const T &centerOfMass)
 {
+    T dist = point - centerOfMass;
+    Vec8d vec1(boundingBox.ur.x, boundingBox.ur.y, boundingBox.ur.z, dist.x, dist.y, dist.z, 0, 0);
+    Vec8d vec2(boundingBox.ll.x, boundingBox.ll.y, boundingBox.ll.z, 0, 0, 0, 0, 0);
+    Vec8d diff = vec1 - vec2;
+    Vec8d squared = diff * diff;
+    typename T::coord_type L = squared[0] + squared[1] + squared[2];
+    typename T::coord_type D = squared[3] + squared[4] + squared[5];
+    return L / D;
+
+    /*
     T urMll = boundingBox.ur - boundingBox.ll;
     typename T::coord_type L = (urMll.x * urMll.x) + (urMll.y * urMll.y) + (urMll.z * urMll.z);
     T dist = point - centerOfMass;
     typename T::coord_type D = (dist.x * dist.x) + (dist.y * dist.y) + (dist.z * dist.z);
+    return L / D;
+    */
     // std::cout << "point = " << point << ", boundingBox = (" << boundingBox.ll << " x " << boundingBox.ur << "), centerOfMass = " << centerOfMass << ", L = " << L << ", D = " << D << ", L/D = " << (L / D) << std::endl;
     /*
     const Vector3D diff = point - centerOfMass;
@@ -27,7 +39,6 @@ double GetAngleBoxPoint(const T &point, const _BoundingBox<T> boundingBox, const
     }
     return ((_max * _max) / ScalarProd(diff, diff));
     */
-    return L / D;
 }
 
 template<typename T>

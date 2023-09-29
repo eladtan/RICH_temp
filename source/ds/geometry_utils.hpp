@@ -1,6 +1,8 @@
 #ifndef _GEOMETRY_UTILS_RICH_HPP
 #define _GEOMETRY_UTILS_RICH_HPP
 
+#include <vectorclass.h>
+
 typedef double coord_t;
 
 #define DIM 3
@@ -29,17 +31,22 @@ public:
 
     inline T closestPoint(const T &point) const
     {
+        Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
+        Vec8d _boundaries(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
+        Vec8db cmp = _point < _boundaries;
         T closestPoint;
         for(int i = 0; i < DIM; i++)
         {
-            if(point[i] < this->ll[i])
+            if(cmp[i])
             {
+                // that means point[i] < this->ll[i]
                 closestPoint[i] = this->ll[i];
             }
             else
             {
-                if(point[i] <= this->ur[i])
+                if(cmp[i + DIM])
                 {
+                    // that means point[i] < this->ur[i]
                     closestPoint[i] = point[i];
                 }
                 else
@@ -53,11 +60,16 @@ public:
 
     inline T furthestPoint(const T &point) const
     {
+        Vec4d _point(point[0], point[1], point[2], 0);
+        Vec4d _ll(this->ll[0], this->ll[1], this->ll[2], 0);
+        Vec4d _ur(this->ur[0], this->ur[1], this->ur[2], 0);
+        Vec4db cmp = (2 * _point) > (_ll + _ur);
         T furthestPoint;
         for(int i = 0; i < DIM; i++)
         {
-            if(2 * point[i] > (this->ll[i] + this->ur[i]))
+            if(cmp[i])
             {
+                // that means point[i] > (this->ll[i] + this->ur[i]) / 2
                 furthestPoint[i] = this->ll[i];
             }
             else
@@ -94,7 +106,7 @@ bool SphereBoxIntersection(const _BoundingBox<T> &box, const _Sphere<T> &sphere)
 {
     T closestPoint;
     typename T::coord_type distance = 0;
-    for(int i = 0; i < DIM /*sphere.dim*/; i++)
+    for(int i = 0; i < DIM; i++)
     {
         typename T::coord_type centerCoord = sphere.center[i];
         if(centerCoord < box.ll[i])

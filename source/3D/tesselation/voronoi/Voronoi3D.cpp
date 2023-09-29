@@ -2,6 +2,7 @@
 #ifdef RICH_MPI
 #include <mpi.h>
 #endif
+#include <vectorclass.h>
 #include <algorithm>
 #include <cfloat>
 #include <stack>
@@ -297,6 +298,8 @@ namespace
         PointTetras.clear();
         PointTetras.resize(Norg);
 
+        Vec4uq _Norg(Norg, Norg, Norg, Norg);
+
         size_t Ntetra = tetras.size();
         size_t bigtet(0);
         bool has_good, has_big;
@@ -317,6 +320,28 @@ namespace
         {
             has_good = false;
             has_big = false;
+
+            const Tetrahedron &tet = tetras[i];
+            Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
+            Vec4qb cmp = (_points < _Norg);
+
+            for(int j = 0; j < 4; ++j)
+            {
+                if(cmp[j])
+                {
+                    has_good = true;
+                    PointTetras[_points[j]].push_back(i);
+                }
+                else
+                {
+                    has_big = true;
+                }
+            }
+            if(has_big and has_good)
+            {
+                bigtet = i;
+            }
+            /*
             for (size_t j = 0; j < 4; ++j)
             {
                 size_t temp = tetras[i].points[j];
@@ -330,6 +355,7 @@ namespace
             }
             if (has_big && has_good)
                 bigtet = i;
+            */
         }
         return bigtet;
     }
