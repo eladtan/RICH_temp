@@ -154,7 +154,7 @@ private:
             {
                 // not in cache, calculate it and insert to the cache
                 Vector3D point(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z);
-                distances = distributedOctAgent->getOctTree()->closestFurthestPoints(point);
+                distances = distributedOctAgent->getOctTree()->getClosestFurthestPointsByRanks(point);
                 this->resultCache.insert({query.pointIndex, distances});
             }
             // get the closest rank

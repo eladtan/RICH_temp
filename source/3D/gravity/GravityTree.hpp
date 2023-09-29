@@ -1,6 +1,8 @@
 #ifndef _GRAVITY_TREE_HPP
 #define _GRAVITY_TREE_HPP
 
+#include <stack>
+
 #include "GravityTypes.h"
 #include "ds/OctTree/OctTree.hpp"
 
@@ -105,7 +107,40 @@ public:
 
     inline T gravity(gravity_result_t mass, const T &point, const direction_t *directions) const
     {
-        return this->gravityHelper(point, this->octTree->getNodeByDirections(directions)) * mass;
+        T gravity;
+        std::stack<const Node*> nodes;
+        nodes.push(this->octTree->getNodeByDirections(directions));
+
+        while(!nodes.empty())
+        {
+            const Node *node = nodes.top();
+            nodes.pop();
+
+            if(node == nullptr)
+            {
+                continue;
+            }
+            if(this->shouldOpenBox(point, node))
+            {
+                // open the box
+                for(int i = 0; i < CHILDREN; i++)
+                {
+                    nodes.push(node->children[i]);
+                }
+            }
+            else
+            {
+                // do not open the box
+                const T temp = node->value.CM - point;
+                gravity_result_t length = fastabs(temp);
+                gravity_result_t sizeOfForce = 1 / (length * length * length);
+                gravity += (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
+            }
+        }
+
+        return gravity;
+
+        // return this->gravityHelper(point, this->octTree->getNodeByDirections(directions)) * mass;
     }
 
     inline const OctTree<_MassedNodeInfo> *getOctTree() const{return this->octTree;};
@@ -145,33 +180,33 @@ void GravityTree<T>::calculateMassHelper(Node *node)
     }
 }
 
-template<typename T>
-T GravityTree<T>::gravityHelper(const T &point, const Node *node) const
-{
-    T gravity;
-    if(node == nullptr)
-    {
-        return gravity;
-    }
-    if(this->shouldOpenBox(point, node))
-    {
-        // open the box
-        for(int i = 0; i < CHILDREN; i++)
-        {
-            const Node *child = node->children[i];
-            gravity += this->gravityHelper(point, child);
-        }
-    }
-    else
-    {
-        // do not open the box
-        const T temp = node->value.CM - point;
-        gravity_result_t length = fastabs(temp);
-        gravity_result_t sizeOfForce = 1 / (length * length * length);
-        gravity = (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
-    }
-    return gravity;
-}
+// template<typename T>
+// T GravityTree<T>::gravityHelper(const T &point, const Node *node) const
+// {
+//     T gravity;
+//     if(node == nullptr)
+//     {
+//         return gravity;
+//     }
+//     if(this->shouldOpenBox(point, node))
+//     {
+//         // open the box
+//         for(int i = 0; i < CHILDREN; i++)
+//         {
+//             const Node *child = node->children[i];
+//             gravity += this->gravityHelper(point, child);
+//         }
+//     }
+//     else
+//     {
+//         // do not open the box
+//         const T temp = node->value.CM - point;
+//         gravity_result_t length = fastabs(temp);
+//         gravity_result_t sizeOfForce = 1 / (length * length * length);
+//         gravity = (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
+//     }
+//     return gravity;
+// }
 
 
 #endif // _GRAVITY_TREE_HPP

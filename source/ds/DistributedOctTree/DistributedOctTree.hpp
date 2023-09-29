@@ -52,33 +52,20 @@ public:
         int getRank() const{return this->owner;};
     };
 
+    using DistributedOctTreeNode = typename OctTree<RankedValue>::OctTreeNode;
+
     DistributedOctTree(const OctTree<T> *tree, bool detailedNodeInfo = false, const MPI_Comm &comm = MPI_COMM_WORLD);
     ~DistributedOctTree(){delete this->octTree;};
 
     void print() const{this->octTree->print();};
     boost::container::flat_set<int> getIntersectingRanks(const _Sphere<T> &sphere) const;
     inline boost::container::flat_set<int> getIntersectingRanks(const T &center, const typename T::coord_type radius) const{return this->getIntersectingRanks(_Sphere(center, radius));};
-    int getOwnerRank(const T &point) const;
     int getDepth() const{return this->octTree->getDepth();};
     OctTree<RankedValue> *getOctTree(){return this->octTree;};
 
-    inline int getClosestRank(const T &point) const
-    {
-        int minRank = this->rank;
-        typename T::coord_type minDistance = std::numeric_limits<typename T::coord_type>::max();
-        this->getClosestRankHelper(this->octTree->getRoot(), point, minRank, minDistance);
-        return minRank;
-    }
+    int getClosestRank(const T &point) const;
 
-    inline std::vector<std::pair<typename T::coord_type, typename T::coord_type>> closestFurthestPoints(const T &point) const
-    {
-        const typename T::coord_type &maxVal = std::numeric_limits<typename T::coord_type>::max();
-        const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::min();
-        std::pair<T, T> initialPair = std::make_pair<T, T>(T(maxVal, maxVal, maxVal), T(minVal, minVal, minVal));
-        std::vector<std::pair<typename T::coord_type, typename T::coord_type>> distances(size, {maxVal, minVal});
-        this->closestFurthestPointsHelper(this->octTree->getRoot(), point, distances);
-        return distances;
-    }
+    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const T &point) const;
 
     #ifdef DEBUG_MODE
     inline bool validate() const{if(this->octTree != nullptr) return this->validateHelper(this->octTree->getRoot()); return true;};
@@ -90,13 +77,11 @@ private:
     int rank, size;
     bool detailedNodeInfo;
 
-    void buildTreeHelper(typename OctTree<RankedValue>::OctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree);
+    void buildTreeHelper(DistributedOctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree);
     void buildTree(const OctTree<T> *tree);
-    void getClosestRankHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, int &closestRank, typename T::coord_type &closestRankDistance) const;
-    void closestFurthestPointsHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &distances) const;
 
     #ifdef DEBUG_MODE
-    bool validateHelper(const typename OctTree<RankedValue>::OctTreeNode *node) const;
+    bool validateHelper(const DistributedOctTreeNode *node) const;
     #endif // DEBUG_MODE
 };
 
@@ -109,7 +94,7 @@ DistributedOctTree<T>::DistributedOctTree(const OctTree<T> *tree, bool detailedN
 }
 
 template<typename T>
-void DistributedOctTree<T>::buildTreeHelper(typename OctTree<RankedValue>::OctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree)
+void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree)
 {
     assert(newNode != nullptr);
     unsigned char valueToSend = 0; // assumes `CHILDREN` is 8. this variable contains 1 in the `i`th bit iff child `i` exists
@@ -233,7 +218,7 @@ void DistributedOctTree<T>::buildTreeHelper(typename OctTree<RankedValue>::OctTr
 
 #ifdef DEBUG_MODE
 template<typename T>
-bool DistributedOctTree<T>::validateHelper(const typename OctTree<RankedValue>::OctTreeNode *node) const
+bool DistributedOctTree<T>::validateHelper(const DistributedOctTreeNode *node) const
 {
     if(node == nullptr)
     {
@@ -291,74 +276,107 @@ boost::container::flat_set<int> DistributedOctTree<T>::getIntersectingRanks(cons
 }
 
 template<typename T>
-void DistributedOctTree<T>::getClosestRankHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, int &closestRank, typename T::coord_type &closestRankDistance) const
+int DistributedOctTree<T>::getClosestRank(const T &point) const
 {
-    if(node == nullptr)
+    int closestRank = this->rank;
+    typename T::coord_type closestRankDistance = std::numeric_limits<typename T::coord_type>::max();
+
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
     {
-        return;
-    }
-    RankedValue closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER));
-    typename T::coord_type distance = 0;
-    for(int i = 0; i < DIM; i++)
-    {
-        distance += (closestPoint[i] - point[i]) * (closestPoint[i] - point[i]);
-    }
-    if(distance >= closestRankDistance)
-    {
-        return;
-    }
-    if(node->isValue)
-    {
-        if(node->value.owner == this->rank)
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
         {
-            return;
+            continue;
         }
-        closestRank = node->value.owner;
-        closestRankDistance = distance;
-    }
-    else
-    {
-        for(int i = 0; i < CHILDREN; i++)
+        RankedValue closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER));
+        typename T::coord_type distance = 0;
+        for(int i = 0; i < DIM; i++)
         {
-            this->getClosestRankHelper(node->children[i], point, closestRank, closestRankDistance);
+            distance += (closestPoint[i] - point[i]) * (closestPoint[i] - point[i]);
+        }
+        if(distance >= closestRankDistance)
+        {
+            continue;
+        }
+        if(node->isValue)
+        {
+            if(node->value.owner == this->rank)
+            {
+                continue; // do not count
+            }
+            closestRank = node->value.owner;
+            closestRankDistance = distance;
+        }
+        else
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
         }
     }
+    return closestRank;
 }
 
 template<typename T>
-void DistributedOctTree<T>::closestFurthestPointsHelper(const typename OctTree<RankedValue>::OctTreeNode *node, const T &point, std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &distances) const
+std::vector<std::pair<typename T::coord_type, typename T::coord_type>> DistributedOctTree<T>::getClosestFurthestPointsByRanks(const T &point) const
 {
-    if(node == nullptr)
+    const typename T::coord_type &maxVal = std::numeric_limits<typename T::coord_type>::max();
+    const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::min();
+    std::pair<T, T> initialPair = std::make_pair<T, T>(T(maxVal, maxVal, maxVal), T(minVal, minVal, minVal));
+    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> distances(size, {maxVal, minVal});
+
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+    nodes.push_back(this->octTree->getRoot());
+
+    T closestPoint, furthestPoint;
+    while(!nodes.empty())
     {
-        return;
-    }
-    if(!node->isValue)
-    {
-        for(int i = 0; i < CHILDREN; i++)
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
         {
-            this->closestFurthestPointsHelper(node->children[i], point, distances);
+            continue;
         }
-        return;
+        if(!node->isValue)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+            continue;
+        }
+        // node is a value node
+        int owner = node->value.owner;
+        closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
+        furthestPoint = node->boundingBox.furthestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
+        typename T::coord_type closestDist = 0, furthestDist = 0;
+        for(int i = 0; i < DIM; i++)
+        {
+            closestDist += (closestPoint[i] - point[i]) * (closestPoint[i] - point[i]);
+            furthestDist += (furthestPoint[i] - point[i]) * (furthestPoint[i] - point[i]);
+        }
+        if(distances[owner].first > closestDist)
+        {
+            distances[owner].first = closestDist;
+        }
+        if(distances[owner].second < furthestDist)
+        {
+            distances[owner].second = furthestDist;
+        }
     }
-    // node is a value node
-    int owner = node->value.owner;
-    T closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
-    T furthestPoint = node->boundingBox.furthestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
-    typename T::coord_type closestDist = 0, furthestDist = 0;
-    for(int i = 0; i < DIM; i++)
-    {
-        closestDist += (closestPoint[i] - point[i]) * (closestPoint[i] - point[i]);
-        furthestDist += (furthestPoint[i] - point[i]) * (furthestPoint[i] - point[i]);
-    }
-    if(distances[owner].first > closestDist)
-    {
-        distances[owner].first = closestDist;
-    }
-    if(distances[owner].second < furthestDist)
-    {
-        distances[owner].second = furthestDist;
-    }
+    return distances;
 }
+
 #endif // RICH_MPI
 
 #endif // _DISTRIBUTED_OCTTREE_HPP

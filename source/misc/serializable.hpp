@@ -31,7 +31,7 @@ public:
   virtual void unserialize(const vector<double>& data) = 0;
 
   //! \brief Class destructor
-  virtual ~Serializable(void);
+  inline virtual ~Serializable(void) = default;
 };
 
 namespace {

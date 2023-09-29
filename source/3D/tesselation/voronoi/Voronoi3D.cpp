@@ -296,6 +296,7 @@ namespace
     {
         PointTetras.clear();
         PointTetras.resize(Norg);
+
         size_t Ntetra = tetras.size();
         size_t bigtet(0);
         bool has_good, has_big;
@@ -1038,7 +1039,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
         }
         int closestRank = std::numeric_limits<int>::max();
         double closestDistance = std::numeric_limits<double>::max();
-        auto distances = octTree->closestFurthestPoints(points[pointIdx]);
+        auto distances = octTree->getClosestFurthestPointsByRanks(points[pointIdx]);
         for(int _rank = 0; _rank < size; _rank++)
         {
             if(_rank == rank)
@@ -1294,6 +1295,8 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             }
         }
         // mirror points:
+        allMirrored.reserve(allMirrored.size() + mirroredPoints.size());
+        newPoints.reserve(newPoints.size() + mirroredPoints.size());
         for(const std::pair<size_t, size_t> &pairFacePoint : mirroredPoints)
         {
             // check if we have already mirrored this point with this face
