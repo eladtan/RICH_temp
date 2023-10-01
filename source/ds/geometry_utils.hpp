@@ -3,8 +3,6 @@
 
 #include <vectorclass.h>
 
-typedef double coord_t;
-
 #define DIM 3
 
 template<typename T>
@@ -25,16 +23,12 @@ private:
         this->llVec = Vec4d(this->ll[0], this->ll[1], this->ll[2], 0);
         this->urVec = Vec4d(this->ur[0], this->ur[1], this->ur[2], 0);
         this->llPlusUrVec = this->llVec + this->urVec;
-        this->boundariesVec = Vec8d(ll[0], ll[1], ll[2], ur[0], ur[1], ur[2], 0, 0);
+        this->boundariesVec = Vec8d(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
     }
 
 public:
     inline _BoundingBox(const T &ll, const T &ur):
-        ll(ll), ur(ur)/*,
-        llVec(ll[0], ll[1], ll[2], 0),
-        urVec(ur[0], ur[1], ur[2], 0),
-        llPlusUrVec(ll[0] + ur[0], ll[1] + ur[1], ll[2] + ur[2], 0),
-        boundariesVec(ll[0], ll[1], ll[2], ur[0], ur[1], ur[2], 0, 0)*/
+        ll(ll), ur(ur)
     {
         this->recalculateFields();
     };
@@ -97,7 +91,6 @@ public:
     inline T closestPoint(const T &point) const
     {
         Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
-        // Vec8d _boundaries(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
         Vec8db cmp = _point < this->boundariesVec; // _point < _boundaries;
         T closestPoint;
         for(int i = 0; i < DIM; i++)
@@ -126,11 +119,7 @@ public:
     inline T furthestPoint(const T &point) const
     {
         Vec4d _point(point[0], point[1], point[2], 0);
-        /*
-        Vec4d _ll(this->ll[0], this->ll[1], this->ll[2], 0);
-        Vec4d _ur(this->ur[0], this->ur[1], this->ur[2], 0);
-        */
-        Vec4db cmp = (2 * _point) > this->llPlusUrVec; // (2 * _point) > (_ll + _ur);
+        Vec4db cmp = (2 * _point) > this->llPlusUrVec;
         T furthestPoint;
         for(int i = 0; i < DIM; i++)
         {

@@ -30,6 +30,7 @@ typedef struct _3DPoint
     inline _3DPoint operator/(coord_type scalar) const{return this->operator*(1 / scalar);};
     inline _3DPoint &operator=(const _3DPoint &other){this->x = other.x; this->y = other.y; this->z = other.z; return *this;};
     inline _3DPoint &operator+=(const _3DPoint &other){this->x += other.x; this->y += other.y; this->z += other.z; return *this;};
+    inline _3DPoint &operator-=(const _3DPoint &other){this->x -= other.x; this->y -= other.y; this->z -= other.z; return *this;};
     inline bool operator==(const _3DPoint &other) const{return (std::abs(this->x - other.x) <= EPSILON) and (std::abs(this->y - other.y) <= EPSILON) and (std::abs(this->z - other.z) <= EPSILON);};
     inline bool operator!=(const _3DPoint &other) const{return !this->operator==(other);};
     inline coord_type &operator[](size_t idx){if(idx == 0) return this->x; if(idx == 1) return this->y; return this->z;};

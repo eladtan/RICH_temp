@@ -56,7 +56,7 @@ public:
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
         this->gravityTree = gravityTree;
-        this->distributedGravityTree = new DistributedGravityTree(gravityTree, comm);
+        this->distributedGravityTree = new DistributedGravityTree(gravityTree, gravityTree->getQuadpole(), comm);
         this->ansAgent = new GravityAnswerAgent(gravityTree);
         this->talkAgent = new GravityTalkAgent();
         this->queryAgent = new QueryAgent<GravityQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false, comm);
