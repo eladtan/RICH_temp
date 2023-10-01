@@ -1337,14 +1337,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         this->del_.BuildExtra(newPoints);
 
         this->R_.resize(this->del_.tetras_.size(), -1);
-        for(size_t tetraIdx = 0; tetraIdx < this->R_.size(); tetraIdx++)
-        {
-            if(this->del_.tetras_[tetraIdx].newTetra)
-            {
-                this->R_[tetraIdx] = -1;
-            }
-        }
-        // std::fill(this->R_.begin(), this->R_.end(), -1);
+        std::fill(this->R_.begin(), this->R_.end(), -1);
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 

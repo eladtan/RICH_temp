@@ -10,14 +10,65 @@ typedef double coord_t;
 template<typename T>
 class _BoundingBox
 {
-public:
+private:
     T ll; // leftmost point of the box
     T ur; // rightmost point of the box
+    Vec4d llVec, urVec;
+    Vec4d llPlusUrVec;
+    Vec8d boundariesVec;
+    typename T::coord_type widthSquared;
 
-    inline _BoundingBox(const T &ll, const T &ur): ll(ll), ur(ur){};
-    inline _BoundingBox(): _BoundingBox(T(), T()){};
+    void recalculateFields()
+    {
+        typename T::coord_type width = std::max(this->ur[0] - this->ll[0], std::max(this->ur[1] - this->ll[1], this->ur[2] - this->ll[2]));
+        this->widthSquared = width * width;
+        this->llVec = Vec4d(this->ll[0], this->ll[1], this->ll[2], 0);
+        this->urVec = Vec4d(this->ur[0], this->ur[1], this->ur[2], 0);
+        this->llPlusUrVec = this->llVec + this->urVec;
+        this->boundariesVec = Vec8d(ll[0], ll[1], ll[2], ur[0], ur[1], ur[2], 0, 0);
+    }
+
+public:
+    inline _BoundingBox(const T &ll, const T &ur):
+        ll(ll), ur(ur)/*,
+        llVec(ll[0], ll[1], ll[2], 0),
+        urVec(ur[0], ur[1], ur[2], 0),
+        llPlusUrVec(ll[0] + ur[0], ll[1] + ur[1], ll[2] + ur[2], 0),
+        boundariesVec(ll[0], ll[1], ll[2], ur[0], ur[1], ur[2], 0, 0)*/
+    {
+        this->recalculateFields();
+    };
+    inline _BoundingBox(): _BoundingBox(T(), T()){}
+
+    const T &getLL() const{return this->ll;};
+    const T &getUR() const{return this->ur;};
+
+    inline void setLL(const T &newLL)
+    {
+        this->ll = newLL;
+        this->recalculateFields();
+    }
+
+    inline void setUR(const T &newUR)
+    {
+        this->ur = newUR;
+        this->recalculateFields();
+    }
     
-    inline bool contains(const T &point) const
+    inline void setBounds(const T &newLL, const T &newUR)
+    {
+        this->ll = newLL;
+        this->ur = newUR;
+        this->recalculateFields();
+    }
+
+    inline typename T::coord_type getWidthSquared() const
+    {
+        return this->widthSquared;
+    }
+
+    template<typename U>
+    inline bool contains(const U &point) const
     {
         for(int i = 0; i < DIM; i++)
         {
@@ -27,13 +78,27 @@ public:
             }
         }
         return true;
+        /*
+        Vec8d _point(point[0], point[1], point[2], -point[0], -point[1], -point[2], 0, 0);
+        Vec8d _boundaries(this->ll[0], this->ll[1], this->ll[2], -this->ur[0], -this->ur[1], -this->ur[2], 1, 1);
+        Vec8db cmp = _point < _boundaries;
+
+        for(int i = 0; i < DIM; i++)
+        {
+            if((!cmp[i]) or (!cmp[i + DIM]))
+            {
+                return false;
+            }
+        }
+        return true;
+        */
     }
 
     inline T closestPoint(const T &point) const
     {
         Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
-        Vec8d _boundaries(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
-        Vec8db cmp = _point < _boundaries;
+        // Vec8d _boundaries(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
+        Vec8db cmp = _point < this->boundariesVec; // _point < _boundaries;
         T closestPoint;
         for(int i = 0; i < DIM; i++)
         {
@@ -61,9 +126,11 @@ public:
     inline T furthestPoint(const T &point) const
     {
         Vec4d _point(point[0], point[1], point[2], 0);
+        /*
         Vec4d _ll(this->ll[0], this->ll[1], this->ll[2], 0);
         Vec4d _ur(this->ur[0], this->ur[1], this->ur[2], 0);
-        Vec4db cmp = (2 * _point) > (_ll + _ur);
+        */
+        Vec4db cmp = (2 * _point) > this->llPlusUrVec; // (2 * _point) > (_ll + _ur);
         T furthestPoint;
         for(int i = 0; i < DIM; i++)
         {
@@ -106,25 +173,25 @@ bool SphereBoxIntersection(const _BoundingBox<T> &box, const _Sphere<T> &sphere)
 {
     T closestPoint;
     typename T::coord_type distance = 0;
+    const T &boxLL = box.getLL(), &boxUR = box.getUR();
     for(int i = 0; i < DIM; i++)
     {
         typename T::coord_type centerCoord = sphere.center[i];
-        if(centerCoord < box.ll[i])
+        if(centerCoord < boxLL[i])
         {
-            closestPoint[i] = box.ll[i];
+            closestPoint[i] = boxLL[i];
         }
         else
         {
-            if(centerCoord <= box.ur[i])
+            if(centerCoord <= boxUR[i])
             {
                 closestPoint[i] = centerCoord;
             }
             else
             {
-                closestPoint[i] = box.ur[i];
+                closestPoint[i] = boxUR[i];
             }
         }
-        // closestPoint[i] = (sphere.center[i] < box.ll[i])? box.ll[i] : ((sphere.center[i] > box.ur[i])? box.ur[i] : sphere.center[i]);
         typename T::coord_type _distance = (closestPoint[i] - sphere.center[i]);
         _distance *= _distance;
         distance += _distance;

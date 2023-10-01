@@ -26,9 +26,12 @@ private:
 public:
     DistributedGravityTree(const GravityTree<T> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm)
     {
+        MPI_Comm_size(this->comm, &this->size);
+        MPI_Comm_rank(this->comm, &this->rank);
         this->distributedTree = new DistributedOctTree<Mass<T>>(gravityTree->getOctTree(), true /* copy data */, this->comm);
         this->fixGravityValues();
         this->theta = gravityTree->getTheta();
+        this->thetaSquared = this->theta * this->theta;
     }
 
     ~DistributedGravityTree()
@@ -57,8 +60,8 @@ private:
             return false;
         }
         const Mass<T> massedPoint = node->value.value;
-        const _BoundingBox<T> boundingBox(node->boundingBox.ll.value.value, node->boundingBox.ur.value.value);
-        return /*(!node->isValue) and */(boundingBox.contains(point) or (std::abs(GetAngleBoxPoint(point, boundingBox, massedPoint.CM)) >= this->theta));
+        const _BoundingBox<T> boundingBox(node->boundingBox.getLL().value.value, node->boundingBox.getUR().value.value);
+        return /*(!node->isValue) and */(boundingBox.contains(point) or (std::abs(GetAngleBoxPoint(point, boundingBox, massedPoint.CM)) >= this->thetaSquared));
     }
 
     void fixGravityValuesHelper(OctNode *node);
@@ -66,8 +69,9 @@ private:
     inline void fixGravityValues(){this->fixGravityValuesHelper(this->distributedTree->getOctTree()->getRoot());};
 
     MPI_Comm comm;
+    int rank, size;
     DistributedOctTree<Mass<T>> *distributedTree;
-    double theta;
+    double theta, thetaSquared;
 };
 
 template<typename T>
@@ -108,16 +112,15 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
         return;
     }
 
-    int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
+    if(node->value.owner == this->rank)
+    {
+        return; // self gravity will be dealt with later
+    }
     if(this->shouldOpenBox(point, node))
     {
-        //if(rank == 0) std::cout << "rank " << rank << " opens the box " << node->value << std::endl;
         // open the box            
         if(node->value.owner != UNDEFINED_OWNER)
         {
-            // if(rank == 0) std::cout << "owner is " << node->value.owner << std::endl;
-
             // one owner, to just add it to locations
             locations.push_back({});
             GravityTreeLocation &currLoc = locations[locations.size() - 1];
@@ -126,11 +129,9 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
         }
         else
         {
-            // if(rank == 0) std::cout << "no owner, calling recursively" << std::endl;
             // several ranks holding values in this node's subtree, so we should go even deeper
             for(int i = 0; i < CHILDREN; i++)
             {
-                // if(rank == 0) std::cout << "child " << i << std::endl;
                 this->getLocationListHelper(node->children[i], point, locations, unopenedGravity);
             }
         }

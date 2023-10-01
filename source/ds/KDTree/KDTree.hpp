@@ -125,7 +125,7 @@ KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(
         this->depth = this->parent->depth + 1;
 
         // hang on parent correct size
-        T my_ll = this->parent->boundingBox.ll, my_ur = this->parent->boundingBox.ur;
+        T my_ll = this->parent->boundingBox.getLL(), my_ur = this->parent->boundingBox.getUR();
     
         if(this->parent->getChildSide(value) == _ChildSide::LEFT)
         {
@@ -156,7 +156,7 @@ typename KDTree<T, D>::KDTreeNode *KDTree<T, D>::tryInsert(const T &value)
     if(parent == nullptr)
     {
         // root insertion
-        node = new KDTreeNode(value, this->boundingBox.ll, this->boundingBox.ur);
+        node = new KDTreeNode(value, this->boundingBox.getLL(), this->boundingBox.getUR());
         this->setRoot(node);
     }
     else
@@ -265,7 +265,7 @@ void KDTree<T, D>::printHelper(const KDTreeNode *node, int tabs) const
     {
         std::cout << "\033[1;34m";
     }
-    std::cout << node->value << " (height: " << node->height << ", height: " << node->height << ", [bounding box " << node->boundingBox.ll << " x " << node->boundingBox.ur << "])";
+    std::cout << node->value << " (height: " << node->height << ", height: " << node->height << ", [bounding box " << node->boundingBox.getLL() << " x " << node->boundingBox.getUR() << "])";
     std::cout << "\033[1;0m" << std::endl;
     for(int i = 0; i < tabs; i++){std::cout << "\t";}
     std::cout << "[L]" << std::endl;

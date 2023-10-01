@@ -65,15 +65,17 @@ public:
 
         OctTreeNode(OctTreeNode *parent, int childNumber);
         virtual ~OctTreeNode() = default;
-
-        int getChildNumberContaining(const T &point) const;
-        const OctTreeNode *getChildContaining(const T &point) const{return this->children[this->getChildNumberContaining(point)];};
+        
+        template<typename U>
+        int getChildNumberContaining(const U &point) const;
+        template<typename U>
+        const OctTreeNode *getChildContaining(const U &point) const{return this->children[this->getChildNumberContaining(point)];};
         virtual OctTreeNode *addLeafChild(int childIndex, const T &point);
         virtual OctTreeNode *createChild(int childNumber);
 
         virtual inline void print() const
         {
-            std::cout << this->value << ", BB: " << this->boundingBox.ll << ", " << this->boundingBox.ur << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
+            std::cout << this->value << ", BB: " << this->boundingBox.getLL() << ", " << this->boundingBox.getUR() << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
         }
 
         bool isValue;
@@ -164,11 +166,11 @@ public:
         return result;
     };
 
-    inline const OctTreeNode *getNodeByDirections(const direction_t *directions) const
+    inline const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const
     {
         if(directions == nullptr)
         {
-            return nullptr;
+            return this->getRoot();
         }
         int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         const OctTreeNode *current = this->getRoot();
@@ -222,20 +224,24 @@ OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isVa
     assert(parent != nullptr);
 
     // determine box:
+    T new_ll, new_ur;
+    const T &parentLL = parent->boundingBox.getLL(), &parentUR = parent->boundingBox.getUR();
     for(int i = 0; i < DIM; i++)
     {
         if((childNumber >> ((DIM - 1) - i)) & 1)
         {
-            this->boundingBox.ll[i] = (parent->boundingBox.ll[i] + parent->boundingBox.ur[i]) / 2;
-            this->boundingBox.ur[i] = parent->boundingBox.ur[i];
+            new_ll[i] = (parentLL[i] + parentUR[i]) / 2;
+            new_ur[i] = parentUR[i];
         }
         else
         {
-            this->boundingBox.ll[i] = parent->boundingBox.ll[i];
-            this->boundingBox.ur[i] = (parent->boundingBox.ll[i] + parent->boundingBox.ur[i]) / 2;
+            new_ll[i] = parentLL[i];
+            new_ur[i] = (parentLL[i] + parentUR[i]) / 2;
         }
-        this->value[i] = (this->boundingBox.ll[i] + this->boundingBox.ur[i]) / 2;
+        this->value[i] = (new_ll[i] + new_ur[i]) / 2;
     }
+
+    this->boundingBox.setBounds(new_ll, new_ur);
 
     for(int i = 0; i < CHILDREN; i++)
     {
@@ -262,7 +268,8 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::OctTreeNode::createChild(int child
 }
 
 template<typename T>
-int OctTree<T>::OctTreeNode::getChildNumberContaining(const T &point) const
+template<typename U>
+int OctTree<T>::OctTreeNode::getChildNumberContaining(const U &point) const
 {
     assert(this->boundingBox.contains(point));
     int direction = 0;

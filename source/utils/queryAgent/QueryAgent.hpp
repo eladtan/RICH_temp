@@ -357,6 +357,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     this->buffers.reserve(10 * originalQueriesNum); // heuristic
     this->requests.clear();
     _queryBatchInfo queriesBatch;
+    queriesBatch.queriesAnswers.reserve(originalQueriesNum);
     std::vector<_queryInfo> &queriesInfo = queriesBatch.queriesAnswers;
     queriesBatch.dataByRanks.resize(this->size);
     this->finishedMyQueries = queries.empty();

@@ -169,7 +169,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     directionsInMyTree.pop_back();
                 }
                 newNode->children[i]->value.owner = UNDEFINED_OWNER; // several owners
-                newNode->children[i]->boundingBox.ll.owner = newNode->children[i]->boundingBox.ur.owner = UNDEFINED_OWNER;
+                // newNode->children[i]->boundingBox.ll.owner = newNode->children[i]->boundingBox.ur.owner = UNDEFINED_OWNER;
                 newNode->children[i]->isValue = false;
             }
             else
@@ -205,7 +205,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     MPI_Bcast(newNode->children[i]->value.directions, sizeof(direction_t) * MAX_DIRECTIONS_SIZE, MPI_BYTE, containingValue, this->comm);
                 }
                 newNode->children[i]->value.owner = containingValue;
-                newNode->children[i]->boundingBox.ll.owner = newNode->children[i]->boundingBox.ur.owner = containingValue;
+                // newNode->children[i]->boundingBox.ll.owner = newNode->children[i]->boundingBox.ur.owner = containingValue;
                 newNode->children[i]->isValue = true;
             }
         }
@@ -236,9 +236,9 @@ bool DistributedOctTree<T>::validateHelper(const DistributedOctTreeNode *node) c
     if(hasChildren)
     {
         assert(node->isValue);
-        assert(node->boundingBox.ll.owner != UNDEFINED_OWNER);
-        assert(node->boundingBox.ur.owner != UNDEFINED_OWNER);
-        assert(node->boundingBox.ll.owner == node->boundingBox.ur.owner);
+        // assert(node->boundingBox.ll.owner != UNDEFINED_OWNER);
+        // assert(node->boundingBox.ur.owner != UNDEFINED_OWNER);
+        // assert(node->boundingBox.ll.owner == node->boundingBox.ur.owner);
     }
     for(int i = 0; i < CHILDREN; i++)
     {
@@ -259,7 +259,7 @@ void DistributedOctTree<T>::buildTree(const OctTree<T> *tree)
     std::vector<direction_t> directions;
     directions.reserve(MAX_DIRECTIONS_SIZE);
     // tree->print();
-    this->octTree = new OctTree<RankedValue>(RankedValue(tree->getRoot()->boundingBox.ll, UNDEFINED_OWNER), RankedValue(tree->getRoot()->boundingBox.ur, UNDEFINED_OWNER));
+    this->octTree = new OctTree<RankedValue>(RankedValue(tree->getRoot()->boundingBox.getLL(), UNDEFINED_OWNER), RankedValue(tree->getRoot()->boundingBox.getUR(), UNDEFINED_OWNER));
     this->buildTreeHelper(this->octTree->getRoot(), tree->getRoot(), directions);
     // this->octTree->print();
 }

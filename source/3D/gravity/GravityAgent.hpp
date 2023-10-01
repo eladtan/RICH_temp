@@ -9,6 +9,8 @@
 
 #include "GravityTree.hpp"
 
+#define MAX_IN_BATCH 1000000
+
 struct GravityQueryData
 {
     _3DPoint point;
@@ -27,7 +29,7 @@ private:
 
         inline std::vector<_3DPoint> answer(const GravityQueryData &query, int _rank) override
         {
-            return std::vector<_3DPoint>({this->gravityTree->gravity(query.mass, query.point, query.location.directions)});
+            return std::vector<_3DPoint>({this->gravityTree->gravity(query.point, query.location.directions)});
         }
 
     private:
@@ -49,12 +51,15 @@ public:
     template<typename T>
     using _set = boost::container::flat_set<T>;
 
-    GravityAgent(const GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD)
+    GravityAgent(const GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm)
     {
+        MPI_Comm_size(this->comm, &this->size);
+        MPI_Comm_rank(this->comm, &this->rank);
+        this->gravityTree = gravityTree;
         this->distributedGravityTree = new DistributedGravityTree(gravityTree, comm);
         this->ansAgent = new GravityAnswerAgent(gravityTree);
         this->talkAgent = new GravityTalkAgent();
-        this->queryAgent = new QueryAgent<GravityQueryData, _3DPoint>(this->talkAgent, this->ansAgent, true /*consider self gravity*/, comm);
+        this->queryAgent = new QueryAgent<GravityQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false, comm);
     }
 
     ~GravityAgent() override
@@ -70,6 +75,9 @@ public:
     std::vector<Vector3D> getForces(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const;
 
 private:
+    MPI_Comm comm;
+    int rank, size;
+    const GravityTree<_3DPoint> *gravityTree;
     DistributedGravityTree<_3DPoint> *distributedGravityTree;
     AnswerAgent<GravityQueryData, _3DPoint> *ansAgent;
     QueryAgent<GravityQueryData, _3DPoint> *queryAgent;
@@ -78,36 +86,67 @@ private:
 
 std::vector<Vector3D> GravityAgent::getForces(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const
 {
-    std::queue<GravityQueryData> queries;
+    size_t pointsSize = points.size();
     std::vector<Vector3D> res(points.size(), Vector3D(0, 0, 0));
 
-    for(size_t i = 0; i < points.size(); i++)
+    MPI_Request moreRoundRequest;
+    size_t pointIdx = 0;
+
+    // the number of queries can be extremly large, so divide the batches into smaller sub-batches
+    while(true)
     {
-        _3DPoint point(points[i].x, points[i].y, points[i].z);
-        // get the list of locations (pairs of <rank, directions in its tree>) we should talk to
-        auto forceCalcData = this->distributedGravityTree->getLocationList(point);
-        res[i] = Vector3D(forceCalcData.first.x, forceCalcData.first.y, forceCalcData.first.z); // initial force (from unopened boxes)
-        for(const GravityTreeLocation &location : forceCalcData.second)
+        std::queue<GravityQueryData> queries;
+        size_t numQueries = 0;
+
+        while((numQueries < MAX_IN_BATCH) and (pointIdx < pointsSize))
         {
-            // add a query to this point
-            GravityQueryData data;
-            data.point = point;
-            data.mass = masses[i];
-            data.pointIdx = i;
-            data.location = location;
-            queries.emplace(data);
+            _3DPoint point(points[pointIdx].x, points[pointIdx].y, points[pointIdx].z);
+            // get the list of locations (pairs of <rank, directions in its tree>) we should talk to
+            auto forceCalcData = this->distributedGravityTree->getLocationList(point);
+            res[pointIdx] = Vector3D(forceCalcData.first.x, forceCalcData.first.y, forceCalcData.first.z); // initial force (from unopened boxes)
+            for(const GravityTreeLocation &location : forceCalcData.second)
+            {
+                // add a query to this point
+                GravityQueryData data;
+                data.point = point;
+                data.mass = masses[pointIdx];
+                data.pointIdx = pointIdx;
+                data.location = location;
+                queries.emplace(data);
+                numQueries++;
+            }
+            pointIdx++;
+        }
+        
+        // submit the batch, and get the answer
+        QueryBatchInfo<GravityQueryData, _3DPoint> batchInfo = this->queryAgent->runBatch(queries);
+        std::vector<QueryInfo<GravityQueryData, _3DPoint>> &answers = batchInfo.queriesAnswers;
+        int I_finished = (pointIdx == pointsSize);
+        int finishedNumber;
+        MPI_Iallreduce(&I_finished, &finishedNumber, 1, MPI_INT, MPI_SUM, this->comm, &moreRoundRequest);
+        
+        for(const QueryInfo<GravityQueryData, _3DPoint> &query : answers)
+        {
+            size_t pointIdx = query.data.pointIdx;
+            const _3DPoint &force =  query.finalResults[0];
+            res[pointIdx] += Vector3D(force.x, force.y, force.z); 
+        }
+        
+        // check if someone hasn't finished
+        MPI_Wait(&moreRoundRequest, MPI_STATUS_IGNORE);
+        if(finishedNumber == this->size)
+        {
+            break;
         }
     }
-    
-    // submit the batch, and get the answer
-    QueryBatchInfo<GravityQueryData, _3DPoint> batchInfo = this->queryAgent->runBatch(queries);
-    std::vector<QueryInfo<GravityQueryData, _3DPoint>> &answers = batchInfo.queriesAnswers;
 
-    for(const QueryInfo<GravityQueryData, _3DPoint> &query : answers)
+    for(size_t pointIdx = 0; pointIdx < res.size(); pointIdx++)
     {
-        size_t pointIdx = query.data.pointIdx;
-        const _3DPoint &force =  query.finalResults[0];
-        res[pointIdx] += Vector3D(force.x, force.y, force.z); 
+        // consider also self gravity
+        const _3DPoint &selfGravity = this->gravityTree->gravity(_3DPoint(points[pointIdx].x, points[pointIdx].y, points[pointIdx].z));
+        res[pointIdx] += Vector3D(selfGravity.x, selfGravity.y, selfGravity.z);
+        // multiply by the point mass
+        res[pointIdx] *= masses[pointIdx];
     }
     return res;
 }

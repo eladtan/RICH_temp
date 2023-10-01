@@ -2,21 +2,28 @@
 #define _GRAVITY_TREE_HPP
 
 #include <vectorclass.h>
-#include <stack>
+#include <vector>
 #include "GravityTypes.h"
 #include "ds/OctTree/OctTree.hpp"
 
-template<typename T>
-double GetAngleBoxPoint(const T &point, const _BoundingBox<T> boundingBox, const T &centerOfMass)
+template<typename T, typename BB>
+double GetAngleBoxPoint(const T &point, const BB &boundingBox, const T &centerOfMass)
 {
+    typename T::coord_type width = boundingBox.getWidthSquared(); // std::max(boundingBox.ur[0] - boundingBox.ll[0], std::max(boundingBox.ur[1] - boundingBox.ll[1], boundingBox.ur[2] - boundingBox.ll[2]));
+    Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
+    Vec4d squared = diff * diff;
+    typename T::coord_type distance = squared[0] + squared[1] + squared[2];
+    return width / distance; // todo: avoid division!
+    /*
     T dist = point - centerOfMass;
-    Vec8d vec1(boundingBox.ur.x, boundingBox.ur.y, boundingBox.ur.z, dist.x, dist.y, dist.z, 0, 0);
-    Vec8d vec2(boundingBox.ll.x, boundingBox.ll.y, boundingBox.ll.z, 0, 0, 0, 0, 0);
+    Vec8d vec1(boundingBox.ur[0], boundingBox.ur[1], boundingBox.ur[2], dist.x, dist.y, dist.z, 0, 0);
+    Vec8d vec2(boundingBox.ll[0], boundingBox.ll[1], boundingBox.ll[2], 0, 0, 0, 0, 0);
     Vec8d diff = vec1 - vec2;
     Vec8d squared = diff * diff;
     typename T::coord_type L = squared[0] + squared[1] + squared[2];
     typename T::coord_type D = squared[3] + squared[4] + squared[5];
     return L / D;
+    */
 
     /*
     T urMll = boundingBox.ur - boundingBox.ll;
@@ -67,9 +74,9 @@ public:
             stream << "[Point: " << value.value << ", Mass: " << value.mass << ", CM: " << value.CM << "]";
             return stream;
         };
-        inline _MassedNodeInfo(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass){};
-        inline _MassedNodeInfo(const T &value): _MassedNodeInfo(value, 0){};
-        inline _MassedNodeInfo(): _MassedNodeInfo(T(), 0){};
+        explicit inline _MassedNodeInfo(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass){};
+        explicit inline _MassedNodeInfo(const T &value): _MassedNodeInfo(value, 0){};
+        explicit inline _MassedNodeInfo(): _MassedNodeInfo(T(), 0){};
     };
 
     using Node = typename OctTree<_MassedNodeInfo>::OctTreeNode;
@@ -77,21 +84,21 @@ public:
 
 private:
     void calculateMassHelper(Node *node);
-    inline bool shouldOpenBox(const T &point, const Node *node) const
+    /*inline*/ bool shouldOpenBox(const T &point, const Node *node) const
     {
         if(node == nullptr)
         {
             return false;
         }
-        const _BoundingBox<T> boundingBox(node->boundingBox.ll.value, node->boundingBox.ur.value);
-        return (!node->isValue) and (boundingBox.contains(point) or (std::abs(GetAngleBoxPoint(point, boundingBox, node->value.CM)) >= this->theta));
+        return /* boundingBox.contains(point) or  */(std::abs(GetAngleBoxPoint(point, node->boundingBox, node->value.CM)) >= this->thetaSquared);
     }
 
     OctTree<_MassedNodeInfo> *octTree;
-    double theta;
+    mutable std::vector<std::pair<const Node*, bool>> nodes_stack_;
+    double theta, thetaSquared;
 
 public:
-    GravityTree(const T &ll, const T &ur, double theta): octTree(new OctTree<_MassedNodeInfo>(_MassedNodeInfo(ll), _MassedNodeInfo(ur))), theta(theta){};
+    GravityTree(const T &ll, const T &ur, double theta): octTree(new OctTree<_MassedNodeInfo>(_MassedNodeInfo(ll), _MassedNodeInfo(ur))), theta(theta), thetaSquared(theta * theta){};
 
     ~GravityTree(){delete this->octTree;};
 
@@ -99,7 +106,6 @@ public:
 
     inline bool build(const std::vector<MassedPoint<T>> &points)
     {
-        int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         for(const MassedPoint<T> &_point : points)
         {
             // std::cout << "rank " << rank << " inserts point " << _point.point << " with mass " << _point.mass << std::endl;
@@ -116,27 +122,39 @@ public:
 
     T gravityHelper(const T &point, const Node *node) const;
 
-    inline T gravity(gravity_result_t mass, const T &point, const direction_t *directions) const
+    inline T gravity(const T &point, const direction_t *directions = nullptr) const
     {
         T gravity;
-        std::stack<const Node*> nodes;
-        nodes.push(this->octTree->getNodeByDirections(directions));
+        const Node *startingNode = this->octTree->getNodeByDirections(directions);
+        this->nodes_stack_.push_back({startingNode, startingNode->boundingBox.contains(point)});
 
-        while(!nodes.empty())
+        while(!this->nodes_stack_.empty())
         {
-            const Node *node = nodes.top();
-            nodes.pop();
+            const Node *node = this->nodes_stack_[this->nodes_stack_.size() - 1].first;
+            bool containsPoint = this->nodes_stack_[this->nodes_stack_.size() - 1].second;
+            this->nodes_stack_.pop_back();
 
             if(node == nullptr)
             {
                 continue;
             }
-            if(this->shouldOpenBox(point, node))
+            // always push the child that contains the node
+            if(!node->isValue and (containsPoint or this->shouldOpenBox(point, node)))
             {
+                int childContains = -1;
                 // open the box
+                if(containsPoint)
+                {
+                    childContains = node->getChildNumberContaining(point); // child index that contains that node
+                    this->nodes_stack_.push_back({node->children[childContains], true});
+                }
                 for(int i = 0; i < CHILDREN; i++)
                 {
-                    nodes.push(node->children[i]);
+                    if(i == childContains)
+                    {
+                        continue;
+                    }
+                    this->nodes_stack_.push_back({node->children[i], false});
                 }
             }
             else
@@ -144,14 +162,15 @@ public:
                 // do not open the box
                 const T temp = node->value.CM - point;
                 gravity_result_t length = fastabs(temp);
-                gravity_result_t sizeOfForce = 1 / (length * length * length);
-                gravity += (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
+                if(length >= EPSILON)
+                {
+                    // otherwise, this leaf is the point itself. gravity sould not be calculated
+                    gravity_result_t sizeOfForce = 1 / (length * length * length);
+                    gravity += (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
+                }
             }
         }
-
         return gravity;
-
-        // return this->gravityHelper(point, this->octTree->getNodeByDirections(directions)) * mass;
     }
 
     inline const OctTree<_MassedNodeInfo> *getOctTree() const{return this->octTree;};
@@ -190,34 +209,5 @@ void GravityTree<T>::calculateMassHelper(Node *node)
         node->value.CM = node->value.value;
     }
 }
-
-// template<typename T>
-// T GravityTree<T>::gravityHelper(const T &point, const Node *node) const
-// {
-//     T gravity;
-//     if(node == nullptr)
-//     {
-//         return gravity;
-//     }
-//     if(this->shouldOpenBox(point, node))
-//     {
-//         // open the box
-//         for(int i = 0; i < CHILDREN; i++)
-//         {
-//             const Node *child = node->children[i];
-//             gravity += this->gravityHelper(point, child);
-//         }
-//     }
-//     else
-//     {
-//         // do not open the box
-//         const T temp = node->value.CM - point;
-//         gravity_result_t length = fastabs(temp);
-//         gravity_result_t sizeOfForce = 1 / (length * length * length);
-//         gravity = (temp * sizeOfForce) * node->value.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
-//     }
-//     return gravity;
-// }
-
 
 #endif // _GRAVITY_TREE_HPP
