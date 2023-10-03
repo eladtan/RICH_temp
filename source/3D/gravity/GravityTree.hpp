@@ -20,12 +20,12 @@ double GetAngleBoxPoint(const T &point, const BB &boundingBox, const T &centerOf
 }
 
 template<typename T>
-T CalculateLeafGravityContribution(const typename GravityTree<T>::_MassedNodeInfo &nodeValue, const T &point, double distanceToCM, bool quadpole = false)
+T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &nodeValue, const T &point, double distanceToCM, bool quadrupole = false)
 {
     T gravity;
     const T &CM = nodeValue.CM;
-    const T &temp = CM - point;
-    gravity_result_t length = fastabs(temp);
+    const T &temp = point - CM;
+    gravity_result_t length = fastabs(temp); // abs(temp);
     if(length < EPSILON)
     {
         // this leaf is the point itself. Gravity should not be calculated
@@ -33,22 +33,26 @@ T CalculateLeafGravityContribution(const typename GravityTree<T>::_MassedNodeInf
     }
     gravity_result_t sizeOfForce = 1 / (length * length * length);
     gravity -= (temp * sizeOfForce) * nodeValue.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
-    if((distanceToCM > 0) and (quadpole))
+    
+    T quadrupoleAddition;
+    if((distanceToCM > 0) and (quadrupole))
     {
-        double Qfactor = sizeOfForce / distanceToCM;
+        typename T::coord_type Qfactor = sizeOfForce / distanceToCM;
         const typename T::coord_type *Q = nodeValue.Q;
-        double dx = point[0] - CM[0];
-        double dy = point[1] - CM[1];
-        double dz = point[2] - CM[2];
-        gravity[0] += Qfactor * (dx * Q[0] + dy * Q[1] + dz * Q[2]);
-        gravity[1] += Qfactor * (dx * Q[1] + dy * Q[3] + dz * Q[4]);
-        gravity[2] += Qfactor * (dx * Q[2] + dy * Q[4] + dz * Q[5]);
-        double mrr = dx * dx * Q[0] + dy * dy * Q[3] + dz * dz * Q[5] + 2 * dx * dy * Q[1] + 2 * dx * dz * Q[2] + 2 * dy * dz * Q[4];
+        typename T::coord_type dx = point[0] - CM[0];
+        typename T::coord_type dy = point[1] - CM[1];
+        typename T::coord_type dz = point[2] - CM[2];
+        quadrupoleAddition[0] += Qfactor * (dx * Q[0] + dy * Q[1] + dz * Q[2]);
+        quadrupoleAddition[1] += Qfactor * (dx * Q[1] + dy * Q[3] + dz * Q[4]);
+        quadrupoleAddition[2] += Qfactor * (dx * Q[2] + dy * Q[4] + dz * Q[5]);
+        typename T::coord_type mrr = dx * dx * Q[0] + dy * dy * Q[3] + dz * dz * Q[5] + 2 * dx * dy * Q[1] + 2 * dx * dz * Q[2] + 2 * dy * dz * Q[4];
         Qfactor *= -5 * mrr / (2 * distanceToCM);
-        gravity[0] += Qfactor * dx;
-        gravity[1] += Qfactor * dy;
-        gravity[2] += Qfactor * dz;
+        quadrupoleAddition[0] += Qfactor * dx;
+        quadrupoleAddition[1] += Qfactor * dy;
+        quadrupoleAddition[2] += Qfactor * dz;
+        // std::cout << "gravity is " << gravity << ", quadrupole adds " << quadrupoleAddition << std::endl;
     }
+    gravity += quadrupoleAddition;
     return gravity;
 }
 
@@ -56,7 +60,7 @@ template<typename T>
 class GravityTree
 {
 public:
-    struct _MassedNodeInfo
+    struct MassedValue
     {
         using coord_type = typename T::coord_type;
 
@@ -67,23 +71,23 @@ public:
 
         typename T::coord_type operator[](size_t idx) const{return this->value[idx];};
         typename T::coord_type &operator[](size_t idx){return this->value[idx];};
-        inline _MassedNodeInfo operator+(const _MassedNodeInfo &other) const{return _MassedNodeInfo(this->value + other.value);};
-        inline _MassedNodeInfo operator-(const _MassedNodeInfo &other) const{return _MassedNodeInfo(this->value - other.value);};
-        inline _MassedNodeInfo operator*(typename T::coord_type scalar) const{return _MassedNodeInfo(this->value * scalar);};
-        inline _MassedNodeInfo operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
-        inline bool operator==(const _MassedNodeInfo &other) const{return this->value == other.value;};
-        inline bool operator!=(const _MassedNodeInfo &other) const{return !this->operator==(other);};
-        inline friend std::ostream &operator<<(std::ostream &stream, const _MassedNodeInfo &value)
+        inline MassedValue operator+(const MassedValue &other) const{return MassedValue(this->value + other.value);};
+        inline MassedValue operator-(const MassedValue &other) const{return MassedValue(this->value - other.value);};
+        inline MassedValue operator*(typename T::coord_type scalar) const{return MassedValue(this->value * scalar);};
+        inline MassedValue operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
+        inline bool operator==(const MassedValue &other) const{return this->value == other.value;};
+        inline bool operator!=(const MassedValue &other) const{return !this->operator==(other);};
+        inline friend std::ostream &operator<<(std::ostream &stream, const MassedValue &value)
         {
-            stream << "[Point: " << value.value << ", Mass: " << value.mass << ", CM: " << value.CM << "]";
+            stream << "[Point: " << value.value << ", Mass: " << value.mass << ", CM: " << value.CM << ", Q: (" << value.Q[0] << ", " << value.Q[1] << ", " << value.Q[2] << ", " << value.Q[3] << ", " << value.Q[4] << ", " << value.Q[5] << ")]";
             return stream;
         };
-        explicit inline _MassedNodeInfo(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass){};
-        explicit inline _MassedNodeInfo(const T &value): _MassedNodeInfo(value, 0){};
-        explicit inline _MassedNodeInfo(): _MassedNodeInfo(T(), 0){};
+        explicit inline MassedValue(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass){};
+        explicit inline MassedValue(const T &value): MassedValue(value, 0){};
+        explicit inline MassedValue(): MassedValue(T(), 0){};
     };
 
-    using Node = typename OctTree<_MassedNodeInfo>::OctTreeNode;
+    using Node = typename OctTree<MassedValue>::OctTreeNode;
 
 
 private:
@@ -94,19 +98,19 @@ private:
         {
             return false;
         }
-        return /* boundingBox.contains(point) or  */(std::abs(GetAngleBoxPoint(point, node->boundingBox, node->value.CM, distanceToCM)) >= this->thetaSquared);
+        return ((std::abs(GetAngleBoxPoint(point, node->boundingBox, node->value.CM, distanceToCM)) >= this->thetaSquared) or (node->boundingBox.contains(point)));
     }
 
-    OctTree<_MassedNodeInfo> *octTree;
+    OctTree<MassedValue> *octTree;
     mutable std::vector<std::pair<const Node*, bool>> nodes_stack_;
     double theta, thetaSquared;
-    bool quadpole;
+    bool quadrupole;
 
 public:
-    GravityTree(const T &ll, const T &ur, double theta, bool quadpole = false): 
-            octTree(new OctTree<_MassedNodeInfo>(_MassedNodeInfo(ll), _MassedNodeInfo(ur))),
+    GravityTree(const T &ll, const T &ur, double theta, bool quadrupole = false): 
+            octTree(new OctTree<MassedValue>(MassedValue(ll), MassedValue(ur))),
             theta(theta), thetaSquared(theta * theta),
-            quadpole(quadpole){};
+            quadrupole(quadrupole){};
 
     ~GravityTree(){delete this->octTree;};
 
@@ -117,7 +121,7 @@ public:
         for(const MassedPoint<T> &_point : points)
         {
             // std::cout << "rank " << rank << " inserts point " << _point.point << " with mass " << _point.mass << std::endl;
-            if(!this->octTree->insert(_MassedNodeInfo(_point.point, _point.mass)))
+            if(!this->octTree->insert(MassedValue(_point.point, _point.mass)))
             {
                 continue; // todo: something else?
             }
@@ -147,7 +151,7 @@ public:
                 continue;
             }
 
-            double distanceToCM = -1;
+            double distanceToCM;
             // always push the child that contains the node
             if(!node->isValue and (containsPoint or this->shouldOpenBox(point, node, distanceToCM)))
             {
@@ -169,16 +173,20 @@ public:
             }
             else
             {
+                if(node->isValue)
+                {
+                    distanceToCM = -1;
+                }
                 // do not open the box
-                gravity += CalculateLeafGravityContribution(node->value, point, distanceToCM, this->quadpole);
+                gravity += CalculateLeafGravityContribution(node->value, point, distanceToCM, this->quadrupole);
             }
         }
         return gravity;
     }
 
-    inline bool getQuadpole() const{return this->quadpole;};
+    inline bool getQuadrupole() const{return this->quadrupole;};
 
-    inline const OctTree<_MassedNodeInfo> *getOctTree() const{return this->octTree;};
+    inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;}; // todo: can remove?
 
     inline double getTheta() const{return this->theta;};
 };
@@ -190,7 +198,7 @@ void GravityTree<T>::calculateMassHelper(Node *node)
     {
         return;
     }
-    _MassedNodeInfo &value = node->value;
+    MassedValue &value = node->value;
     typename T::coord_type *Q = value.Q;
     // reset Q
     for(int i = 0; i < 6; i++)
@@ -209,7 +217,7 @@ void GravityTree<T>::calculateMassHelper(Node *node)
             Node *child = node->children[i];
             if(child != nullptr)
             {
-                const _MassedNodeInfo &childValue = child->value;
+                const MassedValue &childValue = child->value;
                 this->calculateMassHelper(child);
                 value.CM += (childValue.CM) * (childValue.mass);
                 value.mass += childValue.mass;
@@ -218,25 +226,28 @@ void GravityTree<T>::calculateMassHelper(Node *node)
         value.CM = value.CM  / value.mass;
 
         // calculate Q
-        for(int i = 0; i < CHILDREN; i++)
+        if(this->quadrupole)
         {
-            const Node *child = node->children[i];
-            if(child != nullptr)
+            for(int i = 0; i < CHILDREN; i++)
             {
-                const _MassedNodeInfo &childValue = child->value;
-                const gravity_result_t &childMass = childValue.mass;
-                double qx = childValue.CM[0] - value.CM[0];
-                double qy = childValue.CM[1] - value.CM[1];
-                double qz = childValue.CM[2] - value.CM[2];
-                double qr2 = (qx * qx) + (qy * qy) + (qz * qz);
-                Q[0] += childValue.Q[0] + childMass * (3 * (qx * qx) - qr2);
-                Q[1] += childValue.Q[1] + (3 * childMass) * (qx * qy);
-                Q[2] += childValue.Q[2] + (3 * childMass) * (qx * qz);
-                Q[3] += childValue.Q[3] + childMass * (3 * (qy * qy) - qr2);
-                Q[4] += childValue.Q[4] + (3 * childMass) * (qz * qy);
+                const Node *child = node->children[i];
+                if(child != nullptr)
+                {
+                    const MassedValue &childValue = child->value;
+                    const gravity_result_t &childMass = childValue.mass;
+                    double qx = childValue.CM[0] - value.CM[0];
+                    double qy = childValue.CM[1] - value.CM[1];
+                    double qz = childValue.CM[2] - value.CM[2];
+                    double qr2 = (qx * qx) + (qy * qy) + (qz * qz);
+                    Q[0] += childValue.Q[0] + childMass * (3 * (qx * qx) - qr2);
+                    Q[1] += childValue.Q[1] + (3 * childMass) * (qx * qy);
+                    Q[2] += childValue.Q[2] + (3 * childMass) * (qx * qz);
+                    Q[3] += childValue.Q[3] + childMass * (3 * (qy * qy) - qr2);
+                    Q[4] += childValue.Q[4] + (3 * childMass) * (qz * qy);
+                }
             }
+            Q[5] = -Q[0] - Q[3];
         }
-		Q[5] = -Q[0] - Q[3];
     }
     else
     {

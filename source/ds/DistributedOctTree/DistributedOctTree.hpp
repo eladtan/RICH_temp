@@ -103,8 +103,6 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
         for(int i = 0; i < CHILDREN; i++)
         {
             bool bit = (node->children[i] != nullptr || (node->isValue and newNode->getChildNumberContaining(RankedValue(node->value, UNDEFINED_OWNER)) == i));
-            // if(bit) std::cout << "rank " << rank << " has " << i << "th child, nullchild: " << (node->children[i] != nullptr) << " is value: " << (node->isValue) << std::endl;
-            // if(node->children[i] != nullptr) std::cout << "child " << i << " is " << node->children[i]->value << std::endl;
             valueToSend |= (bit << i);
         }
     }
@@ -169,7 +167,6 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     directionsInMyTree.pop_back();
                 }
                 newNode->children[i]->value.owner = UNDEFINED_OWNER; // several owners
-                // newNode->children[i]->boundingBox.ll.owner = newNode->children[i]->boundingBox.ur.owner = UNDEFINED_OWNER;
                 newNode->children[i]->isValue = false;
             }
             else
@@ -194,8 +191,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                         std::memcpy(newNode->children[i]->value.directions, directionsInMyTree.data(), sizeof(direction_t) * directionsInMyTree.size());
                         // newNode->children[i]->value.directions[directionsInMyTree.size()] = PATH_END_DIRECTION;
                         newNode->children[i]->value.directions[directionsInMyTree.size()] = PATH_END_DIRECTION;
-                        // std::cout << "value broadcasting (rank " << rank << ", i =" << i << "): " << node->children[i]->value << std::endl;
-                        
+
                         if(!node->isValue)
                         {
                             directionsInMyTree.pop_back();
@@ -205,7 +201,6 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     MPI_Bcast(newNode->children[i]->value.directions, sizeof(direction_t) * MAX_DIRECTIONS_SIZE, MPI_BYTE, containingValue, this->comm);
                 }
                 newNode->children[i]->value.owner = containingValue;
-                // newNode->children[i]->boundingBox.ll.owner = newNode->children[i]->boundingBox.ur.owner = containingValue;
                 newNode->children[i]->isValue = true;
             }
         }
@@ -236,9 +231,6 @@ bool DistributedOctTree<T>::validateHelper(const DistributedOctTreeNode *node) c
     if(hasChildren)
     {
         assert(node->isValue);
-        // assert(node->boundingBox.ll.owner != UNDEFINED_OWNER);
-        // assert(node->boundingBox.ur.owner != UNDEFINED_OWNER);
-        // assert(node->boundingBox.ll.owner == node->boundingBox.ur.owner);
     }
     for(int i = 0; i < CHILDREN; i++)
     {

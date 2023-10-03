@@ -18,14 +18,14 @@ private:
     template<typename U>
     using Ranking = typename DistributedOctTree<U>::RankedValue; // adding ranks to struct `U`
     template<typename U>
-    using Mass = typename GravityTree<U>::_MassedNodeInfo; // adding mass to struct `U`
+    using Mass = typename GravityTree<U>::MassedValue; // adding mass to struct `U`
     /* define `Node` as a node of octtree, when its values are ranked (that is, they have ranks), and massed (that is, each one has `mass` and `CM`), where the points theirself are of type `U` */
     
     using OctNode = typename OctTree<Ranking<Mass<T>>>::OctTreeNode;
 
 public:
-    DistributedGravityTree(const GravityTree<T> *gravityTree, bool quadpole = false, const MPI_Comm &comm = MPI_COMM_WORLD): 
-        quadpole(quadpole)
+    DistributedGravityTree(const GravityTree<T> *gravityTree, bool quadrupole = false, const MPI_Comm &comm = MPI_COMM_WORLD): 
+        quadrupole(quadrupole)
     {
         MPI_Comm_size(comm, &this->size);
         MPI_Comm_rank(comm, &this->rank);
@@ -61,8 +61,7 @@ private:
             return false;
         }
         const Mass<T> massedPoint = node->value.value;
-        const _BoundingBox<T> boundingBox(node->boundingBox.getLL().value.value, node->boundingBox.getUR().value.value);
-        return /*(!node->isValue) and */(boundingBox.contains(point) or (std::abs(GetAngleBoxPoint(point, boundingBox, massedPoint.CM, distanceToCM)) >= this->thetaSquared));
+        return (std::abs(GetAngleBoxPoint(point, node->boundingBox, massedPoint.CM, distanceToCM)) >= this->thetaSquared) or (node->boundingBox.contains(point));
     }
 
     void fixGravityValuesHelper(OctNode *node);
@@ -72,7 +71,7 @@ private:
     int rank, size;
     DistributedOctTree<Mass<T>> *distributedTree;
     double theta, thetaSquared;
-    bool quadpole;
+    bool quadrupole;
 };
 
 template<typename T>
@@ -85,11 +84,6 @@ void DistributedGravityTree<T>::fixGravityValuesHelper(OctNode *node)
 
     Mass<T> &value = node->value.value;
     typename T::coord_type *Q = value.Q;
-    // reset Q
-    for(int i = 0; i < 6; i++)
-    {
-        Q[i] = 0;
-    }
 
     if(!node->isValue)
     {
@@ -108,6 +102,12 @@ void DistributedGravityTree<T>::fixGravityValuesHelper(OctNode *node)
             }
         }
         value.CM = value.CM  / value.mass;
+
+        // reset Q
+        for(int i = 0; i < 6; i++)
+        {
+            Q[i] = 0;
+        }
 
         // calculate Q
         for(int i = 0; i < CHILDREN; i++)
@@ -168,7 +168,7 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
     }
     else
     {
-        unopenedGravity += CalculateLeafGravityContribution(node->value.value, point, distanceToCM, this->quadpole);
+        unopenedGravity += CalculateLeafGravityContribution(node->value.value, point, distanceToCM, this->quadrupole);
     }
 }
 

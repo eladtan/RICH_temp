@@ -51,12 +51,13 @@ public:
     template<typename T>
     using _set = boost::container::flat_set<T>;
 
-    GravityAgent(const GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm)
+    GravityAgent(const GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD):
+             comm(comm), gravityTreeCreated(false)
     {
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
         this->gravityTree = gravityTree;
-        this->distributedGravityTree = new DistributedGravityTree(gravityTree, gravityTree->getQuadpole(), comm);
+        this->distributedGravityTree = new DistributedGravityTree(gravityTree, gravityTree->getQuadrupole(), comm);
         this->ansAgent = new GravityAnswerAgent(gravityTree);
         this->talkAgent = new GravityTalkAgent();
         this->queryAgent = new QueryAgent<GravityQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false, comm);
@@ -64,6 +65,10 @@ public:
 
     ~GravityAgent() override
     {
+        if(this->gravityTreeCreated)
+        {
+            delete this->gravityTree;
+        }
         delete this->distributedGravityTree;
         delete this->queryAgent;
         delete this->talkAgent;
@@ -78,6 +83,7 @@ private:
     MPI_Comm comm;
     int rank, size;
     const GravityTree<_3DPoint> *gravityTree;
+    bool gravityTreeCreated; // if the gravity tree should be deleted at the end
     DistributedGravityTree<_3DPoint> *distributedGravityTree;
     AnswerAgent<GravityQueryData, _3DPoint> *ansAgent;
     QueryAgent<GravityQueryData, _3DPoint> *queryAgent;
