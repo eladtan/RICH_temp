@@ -51,6 +51,10 @@ public:
         return std::make_pair<T, std::vector<GravityTreeLocation>>(std::move(initialGravity), std::move(locations));
     };
 
+    #ifdef DEBUG_MODE
+    inline void print() const{this->distributedTree->print();};
+    #endif // DEBUG_MODE
+
 private:    
     void getLocationListHelper(const OctNode *node, const T &point, std::vector<GravityTreeLocation> &locations, T &unopenedGravity) const;
     
@@ -140,18 +144,13 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
         return;
     }
 
-    if(node->value.owner == this->rank)
-    {
-        return; // self gravity will be dealt with later
-    }
-
     double distanceToCM = -1;
     if(this->shouldOpenBox(point, node, distanceToCM))
     {
         // open the box            
         if(node->value.owner != UNDEFINED_OWNER)
         {
-            // one owner, to just add it to locations
+            // one owner, to just add it to locations (a location contains rank and direction within this rank)
             locations.push_back({});
             GravityTreeLocation &currLoc = locations[locations.size() - 1];
             currLoc.rank = node->value.owner;

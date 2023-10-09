@@ -5,7 +5,6 @@
 
 #include "utils/queryAgent/QueryAgent.hpp"
 #include "DistributedGravityTree.hpp"
-#include "newtonian/three_dimensional/ConservativeForce3D.hpp"
 
 #include "GravityTree.hpp"
 
@@ -19,7 +18,7 @@ struct GravityQueryData
     GravityTreeLocation location;
 };
 
-class GravityAgent : public Acceleration3D
+class GravityAgent
 {
 private:
     class GravityAnswerAgent : public AnswerAgent<GravityQueryData, _3DPoint>
@@ -51,19 +50,33 @@ public:
     template<typename T>
     using _set = boost::container::flat_set<T>;
 
+    GravityAgent(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses, const Vector3D &ll, const Vector3D &ur, double theta, bool quadrupole = false):
+            comm(comm), gravityTreeCreated(true)
+    {
+        MPI_Comm_size(this->comm, &this->size);
+        MPI_Comm_rank(this->comm, &this->rank);
+        GravityTree<_3DPoint> *gravTree = new GravityTree<_3DPoint>(_3DPoint(ll), _3DPoint(ur), theta, quadrupole);
+        std::vector<MassedPoint<_3DPoint>> massedPoints;
+        massedPoints.reserve(points.size());
+        for(size_t pointIdx = 0; pointIdx < points.size(); pointIdx++)
+        {
+            massedPoints.emplace_back(MassedPoint<_3DPoint>(points[pointIdx], masses[pointIdx]));
+        }
+        gravTree->build(massedPoints);
+        this->gravityTree = gravTree;
+        this->initialize();
+    }
+
     GravityAgent(const GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD):
              comm(comm), gravityTreeCreated(false)
     {
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
         this->gravityTree = gravityTree;
-        this->distributedGravityTree = new DistributedGravityTree(gravityTree, gravityTree->getQuadrupole(), comm);
-        this->ansAgent = new GravityAnswerAgent(gravityTree);
-        this->talkAgent = new GravityTalkAgent();
-        this->queryAgent = new QueryAgent<GravityQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false, comm);
+        this->initialize();
     }
 
-    ~GravityAgent() override
+    ~GravityAgent()
     {
         if(this->gravityTreeCreated)
         {
@@ -74,8 +87,6 @@ public:
         delete this->talkAgent;
         delete this->ansAgent;
     }
-
-	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& fluxes, const double time, vector<Vector3D> &acc) const;
 
     std::vector<Vector3D> getForces(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const;
 
@@ -88,6 +99,14 @@ private:
     AnswerAgent<GravityQueryData, _3DPoint> *ansAgent;
     QueryAgent<GravityQueryData, _3DPoint> *queryAgent;
     TalkAgent<GravityQueryData> *talkAgent;
+
+    inline void initialize()
+    {
+        this->distributedGravityTree = new DistributedGravityTree(this->gravityTree, this->gravityTree->getQuadrupole(), this->comm);
+        this->ansAgent = new GravityAnswerAgent(this->gravityTree);
+        this->talkAgent = new GravityTalkAgent();
+        this->queryAgent = new QueryAgent<GravityQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* don't send to self */, this->comm);
+    }
 };
 
 std::vector<Vector3D> GravityAgent::getForces(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const
@@ -112,14 +131,23 @@ std::vector<Vector3D> GravityAgent::getForces(const std::vector<Vector3D> &point
             res[pointIdx] = Vector3D(forceCalcData.first.x, forceCalcData.first.y, forceCalcData.first.z); // initial force (from unopened boxes)
             for(const GravityTreeLocation &location : forceCalcData.second)
             {
-                // add a query to this point
-                GravityQueryData data;
-                data.point = point;
-                data.mass = masses[pointIdx];
-                data.pointIdx = pointIdx;
-                data.location = location;
-                queries.emplace(data);
-                numQueries++;
+                if(location.rank == this->rank)
+                {
+                    // self gravity
+                    _3DPoint gravityResult = this->gravityTree->gravity(point, location.directions);
+                    res[pointIdx] += Vector3D(gravityResult.x, gravityResult.y, gravityResult.z);
+                }
+                else
+                {
+                    // add a query to this point
+                    GravityQueryData data;
+                    data.point = point;
+                    data.mass = masses[pointIdx];
+                    data.pointIdx = pointIdx;
+                    data.location = location;
+                    queries.emplace(data);
+                    numQueries++;
+                }
             }
             pointIdx++;
         }
@@ -145,67 +173,7 @@ std::vector<Vector3D> GravityAgent::getForces(const std::vector<Vector3D> &point
             break;
         }
     }
-
-    for(size_t pointIdx = 0; pointIdx < res.size(); pointIdx++)
-    {
-        // consider also self gravity
-        const _3DPoint &selfGravity = this->gravityTree->gravity(_3DPoint(points[pointIdx].x, points[pointIdx].y, points[pointIdx].z));
-        res[pointIdx] += Vector3D(selfGravity.x, selfGravity.y, selfGravity.z);
-        // multiply by the point mass
-        res[pointIdx] *= masses[pointIdx];
-    }
     return res;
-}
-
-void GravityAgent::operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& fluxes, const double time, vector<Vector3D> &acc) const
-{
-    std::queue<GravityQueryData> queries;
-    
-    std::vector<Vector3D> points = tess.getMeshPoints();
-    points.resize(tess.GetPointNo());
-
-    std::vector<gravity_result_t> masses;
-    masses.reserve(points.size());
-
-    for(size_t i = 0; i < points.size(); i++)
-    {
-        masses.push_back((cells[i].density) * (tess.GetVolume(i)));
-    }
-    acc = std::move(this->getForces(points, masses));
-    
-    /*
-    acc.resize(points.size());
-    std::fill(acc.begin(), acc.end(), Vector3D(0, 0, 0));
-
-    for(size_t i = 0; i < points.size(); i++)
-    {
-        _3DPoint point(points[i].x, points[i].y, points[i].z);
-        // get the list of locations (pairs of <rank, directions in its tree>) we should talk to
-        auto forceCalcData = this->distributedGravityTree->getLocationList(point);
-        acc[i] = Vector3D(forceCalcData.first.x, forceCalcData.first.y, forceCalcData.first.z); // initial force (from unopened boxes)
-        for(const GravityTreeLocation &location : forceCalcData.second)
-        {
-            // add a query to this point
-            GravityQueryData data;
-            data.point = point;
-            data.mass = ;
-            data.pointIdx = i;
-            data.location = location;
-            queries.emplace(data);
-        }
-    }
-
-    // submit the batch, and get the answer
-    QueryBatchInfo<GravityQueryData, _3DPoint> batchInfo = this->queryAgent->runBatch(queries);
-    std::vector<QueryInfo<GravityQueryData, _3DPoint>> &answers = batchInfo.queriesAnswers;
-
-    for(const QueryInfo<GravityQueryData, _3DPoint> &query : answers)
-    {
-        size_t pointIdx = query.data.pointIdx;
-        const _3DPoint &force =  query.finalResults[0];
-        acc[pointIdx] += Vector3D(force.x, force.y, force.z); 
-    }
-    */
 }
 
 #endif // RICH_MPI

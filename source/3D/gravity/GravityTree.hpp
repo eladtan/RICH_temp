@@ -25,14 +25,14 @@ T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &n
     T gravity;
     const T &CM = nodeValue.CM;
     const T &temp = point - CM;
-    gravity_result_t length = fastabs(temp); // abs(temp);
+    gravity_result_t length = abs(temp); // abs(temp);
     if(length < EPSILON)
     {
         // this leaf is the point itself. Gravity should not be calculated
         return gravity;
     }
     gravity_result_t sizeOfForce = 1 / (length * length * length);
-    gravity -= (temp * sizeOfForce) * nodeValue.mass; // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
+    gravity -= temp * (sizeOfForce * nodeValue.mass); // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
     
     T quadrupoleAddition;
     if((distanceToCM > 0) and (quadrupole))
@@ -102,9 +102,9 @@ private:
     }
 
     OctTree<MassedValue> *octTree;
-    mutable std::vector<std::pair<const Node*, bool>> nodes_stack_;
     double theta, thetaSquared;
     bool quadrupole;
+    mutable std::vector<std::pair<const Node*, bool>> stack;
 
 public:
     GravityTree(const T &ll, const T &ur, double theta, bool quadrupole = false): 
@@ -134,55 +134,7 @@ public:
 
     T gravityHelper(const T &point, const Node *node) const;
 
-    inline T gravity(const T &point, const direction_t *directions = nullptr) const
-    {
-        T gravity;
-        const Node *startingNode = this->octTree->getNodeByDirections(directions);
-        this->nodes_stack_.push_back({startingNode, startingNode->boundingBox.contains(point)});
-
-        while(!this->nodes_stack_.empty())
-        {
-            const Node *node = this->nodes_stack_[this->nodes_stack_.size() - 1].first;
-            bool containsPoint = this->nodes_stack_[this->nodes_stack_.size() - 1].second;
-            this->nodes_stack_.pop_back();
-
-            if(node == nullptr)
-            {
-                continue;
-            }
-
-            double distanceToCM;
-            // always push the child that contains the node
-            if(!node->isValue and (containsPoint or this->shouldOpenBox(point, node, distanceToCM)))
-            {
-                int childContains = -1;
-                // open the box
-                if(containsPoint)
-                {
-                    childContains = node->getChildNumberContaining(point); // child index that contains that node
-                    this->nodes_stack_.push_back({node->children[childContains], true});
-                }
-                for(int i = 0; i < CHILDREN; i++)
-                {
-                    if(i == childContains)
-                    {
-                        continue;
-                    }
-                    this->nodes_stack_.push_back({node->children[i], false});
-                }
-            }
-            else
-            {
-                if(node->isValue)
-                {
-                    distanceToCM = -1;
-                }
-                // do not open the box
-                gravity += CalculateLeafGravityContribution(node->value, point, distanceToCM, this->quadrupole);
-            }
-        }
-        return gravity;
-    }
+    T gravity(const T &point, const direction_t *directions = nullptr) const;
 
     inline bool getQuadrupole() const{return this->quadrupole;};
 
@@ -253,6 +205,57 @@ void GravityTree<T>::calculateMassHelper(Node *node)
     {
         value.CM = value.value;
     }
+}
+
+template<typename T>
+T GravityTree<T>::gravity(const T &point, const direction_t *directions = nullptr) const
+{
+    T gravity;
+    const Node *startingNode = this->octTree->getNodeByDirections(directions);
+    stack.push_back({startingNode, startingNode->boundingBox.contains(point)});
+
+    while(!stack.empty())
+    {
+        const Node *node = stack[stack.size() - 1].first;
+        bool containsPoint = stack[stack.size() - 1].second;
+        stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        double distanceToCM;
+        // always push the child that contains the node
+        if(!node->isValue and (containsPoint or this->shouldOpenBox(point, node, distanceToCM)))
+        {
+            int childContains = -1;
+            // open the box
+            if(containsPoint)
+            {
+                childContains = node->getChildNumberContaining(point); // child index that contains that node
+                stack.push_back({node->children[childContains], true});
+            }
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                if(i == childContains)
+                {
+                    continue;
+                }
+                stack.push_back({node->children[i], false});
+            }
+        }
+        else
+        {
+            if(node->isValue)
+            {
+                distanceToCM = -1;
+            }
+            // do not open the box
+            gravity += CalculateLeafGravityContribution(node->value, point, distanceToCM, this->quadrupole);
+        }
+    }
+    return gravity;
 }
 
 #endif // _GRAVITY_TREE_HPP
