@@ -10,34 +10,39 @@ template<typename T>
 class GravityTree;
 
 template<typename T, typename BB>
-double GetAngleBoxPoint(const T &point, const BB &boundingBox, const T &centerOfMass, typename T::coord_type &distanceToCM)
+bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, bool thetaSquared)
 {
-    typename T::coord_type width = boundingBox.getWidthSquared(); // std::max(boundingBox.ur[0] - boundingBox.ll[0], std::max(boundingBox.ur[1] - boundingBox.ll[1], boundingBox.ur[2] - boundingBox.ll[2]));
+    if(boundingBox.contains(point))
+    {
+        return true;
+    }
+    typename T::coord_type width = boundingBox.getWidthSquared();
     Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
     Vec4d squared = diff * diff;
-    distanceToCM = squared[0] + squared[1] + squared[2];
-    return width / distanceToCM; // todo: avoid division!
+    typename T::coord_type distanceToCM = squared[0] + squared[1] + squared[2];
+    return width >= (distanceToCM * thetaSquared);
 }
 
 template<typename T>
-T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &nodeValue, const T &point, double distanceToCM, bool quadrupole = false)
+T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &nodeValue, const T &point, bool quadrupole = false)
 {
     T gravity;
     const T &CM = nodeValue.CM;
     const T &temp = point - CM;
     gravity_result_t length = abs(temp); // abs(temp);
+    gravity_result_t length2 = length * length;
     if(length < EPSILON)
     {
         // this leaf is the point itself. Gravity should not be calculated
         return gravity;
     }
-    gravity_result_t sizeOfForce = 1 / (length * length * length);
+    gravity_result_t sizeOfForce = 1 / (length2 * length);
     gravity -= temp * (sizeOfForce * nodeValue.mass); // will create a vector in the direction of `temp`, which is in length 1/|temp|^2
     
     T quadrupoleAddition;
-    if((distanceToCM > 0) and (quadrupole))
+    if(quadrupole)
     {
-        typename T::coord_type Qfactor = sizeOfForce / distanceToCM;
+        typename T::coord_type Qfactor = sizeOfForce / length2;
         const typename T::coord_type *Q = nodeValue.Q;
         typename T::coord_type dx = point[0] - CM[0];
         typename T::coord_type dy = point[1] - CM[1];
@@ -46,11 +51,10 @@ T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &n
         quadrupoleAddition[1] += Qfactor * (dx * Q[1] + dy * Q[3] + dz * Q[4]);
         quadrupoleAddition[2] += Qfactor * (dx * Q[2] + dy * Q[4] + dz * Q[5]);
         typename T::coord_type mrr = dx * dx * Q[0] + dy * dy * Q[3] + dz * dz * Q[5] + 2 * dx * dy * Q[1] + 2 * dx * dz * Q[2] + 2 * dy * dz * Q[4];
-        Qfactor *= -5 * mrr / (2 * distanceToCM);
+        Qfactor *= -5 * mrr / (2 * length2);
         quadrupoleAddition[0] += Qfactor * dx;
         quadrupoleAddition[1] += Qfactor * dy;
         quadrupoleAddition[2] += Qfactor * dz;
-        // std::cout << "gravity is " << gravity << ", quadrupole adds " << quadrupoleAddition << std::endl;
     }
     gravity += quadrupoleAddition;
     return gravity;
@@ -92,14 +96,6 @@ public:
 
 private:
     void calculateMassHelper(Node *node);
-    inline bool shouldOpenBox(const T &point, const Node *node, double &distanceToCM) const
-    {
-        if(node == nullptr)
-        {
-            return false;
-        }
-        return ((std::abs(GetAngleBoxPoint(point, node->boundingBox, node->value.CM, distanceToCM)) >= this->thetaSquared) or (node->boundingBox.contains(point)));
-    }
 
     OctTree<MassedValue> *octTree;
     double theta, thetaSquared;
@@ -120,10 +116,9 @@ public:
     {
         for(const MassedPoint<T> &_point : points)
         {
-            // std::cout << "rank " << rank << " inserts point " << _point.point << " with mass " << _point.mass << std::endl;
             if(!this->octTree->insert(MassedValue(_point.point, _point.mass)))
             {
-                continue; // todo: something else?
+                throw UniversalError("Can not add a point (" + std::to_string(_point.point.x) + ", " + std::to_string(_point.point.y) + ", " + std::to_string(_point.point.z) + ") to the gravity tree");
             }
         }
         this->calculateMasses();
@@ -225,9 +220,8 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
             continue;
         }
 
-        double distanceToCM;
         // always push the child that contains the node
-        if(!node->isValue and (containsPoint or this->shouldOpenBox(point, node, distanceToCM)))
+        if(!node->isValue and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
         {
             int childContains = -1;
             // open the box
@@ -247,12 +241,9 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
         }
         else
         {
-            if(node->isValue)
-            {
-                distanceToCM = -1;
-            }
             // do not open the box
-            gravity += CalculateLeafGravityContribution(node->value, point, distanceToCM, this->quadrupole);
+            // activate quadrupole only for non-value nodes
+            gravity += CalculateLeafGravityContribution(node->value, point, this->quadrupole);
         }
     }
     return gravity;

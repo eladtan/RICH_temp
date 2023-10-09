@@ -20,7 +20,6 @@ private:
     template<typename U>
     using Mass = typename GravityTree<U>::MassedValue; // adding mass to struct `U`
     /* define `Node` as a node of octtree, when its values are ranked (that is, they have ranks), and massed (that is, each one has `mass` and `CM`), where the points theirself are of type `U` */
-    
     using OctNode = typename OctTree<Ranking<Mass<T>>>::OctTreeNode;
 
 public:
@@ -57,16 +56,6 @@ public:
 
 private:    
     void getLocationListHelper(const OctNode *node, const T &point, std::vector<GravityTreeLocation> &locations, T &unopenedGravity) const;
-    
-    inline bool shouldOpenBox(const T &point, const OctNode *node, double &distanceToCM) const
-    {
-        if(node == nullptr)
-        {
-            return false;
-        }
-        const Mass<T> massedPoint = node->value.value;
-        return (std::abs(GetAngleBoxPoint(point, node->boundingBox, massedPoint.CM, distanceToCM)) >= this->thetaSquared) or (node->boundingBox.contains(point));
-    }
 
     void fixGravityValuesHelper(OctNode *node);
 
@@ -144,8 +133,7 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
         return;
     }
 
-    double distanceToCM = -1;
-    if(this->shouldOpenBox(point, node, distanceToCM))
+    if(ShouldOpenBox(point, node->boundingBox, node->value.value.CM, this->thetaSquared))
     {
         // open the box            
         if(node->value.owner != UNDEFINED_OWNER)
@@ -167,7 +155,7 @@ void DistributedGravityTree<T>::getLocationListHelper(const OctNode *node, const
     }
     else
     {
-        unopenedGravity += CalculateLeafGravityContribution(node->value.value, point, distanceToCM, this->quadrupole);
+        unopenedGravity += CalculateLeafGravityContribution(node->value.value, point, this->quadrupole);
     }
 }
 

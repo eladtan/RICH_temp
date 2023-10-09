@@ -1,10 +1,10 @@
 #include <iostream>
+#include <vector>
 #include <unistd.h>
 #include <execinfo.h>
 
 #ifdef RICH_MPI
 #include <mpi.h>
-#include <shmem.h>
 #define MPI_SYNC_TAG 2003
 #define MPI_MASTER_SYNC_TAG 2002
 #endif // RICH_MPI
