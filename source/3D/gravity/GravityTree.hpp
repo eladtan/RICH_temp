@@ -208,7 +208,7 @@ void GravityTree<T>::calculateMassHelper(Node *node)
 }
 
 template<typename T>
-T GravityTree<T>::gravity(const T &point, const direction_t *directions = nullptr) const
+T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
 {
     T gravity;
     const Node *startingNode = this->octTree->getNodeByDirections(directions);
