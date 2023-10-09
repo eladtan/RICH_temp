@@ -10,7 +10,7 @@ template<typename T>
 class GravityTree;
 
 template<typename T, typename BB>
-bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, bool thetaSquared)
+bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, double thetaSquared)
 {
     if(boundingBox.contains(point))
     {
@@ -44,9 +44,9 @@ T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &n
     {
         typename T::coord_type Qfactor = sizeOfForce / length2;
         const typename T::coord_type *Q = nodeValue.Q;
-        typename T::coord_type dx = point[0] - CM[0];
-        typename T::coord_type dy = point[1] - CM[1];
-        typename T::coord_type dz = point[2] - CM[2];
+        typename T::coord_type dx = temp[0];
+        typename T::coord_type dy = temp[1];
+        typename T::coord_type dz = temp[2];
         quadrupoleAddition[0] += Qfactor * (dx * Q[0] + dy * Q[1] + dz * Q[2]);
         quadrupoleAddition[1] += Qfactor * (dx * Q[1] + dy * Q[3] + dz * Q[4]);
         quadrupoleAddition[2] += Qfactor * (dx * Q[2] + dy * Q[4] + dz * Q[5]);
