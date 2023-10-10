@@ -249,7 +249,7 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
 template<typename QueryData, typename AnswerType>
 void QueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo &query)
 {
-    typename TalkAgent<QueryData>::_set<int> talkingRanks = this->talkAgent->getTalkList(query.data);
+    typename TalkAgent<QueryData>::RanksSet talkingRanks = this->talkAgent->getTalkList(query.data);
     for(const int &_rank : talkingRanks)
     {
         if((_rank == this->rank) and (!this->sendToSelf))

@@ -99,12 +99,12 @@ public:
     /**
      * re-calculates the borders, to be equally-divided
     */
-    std::vector<hilbert_index_t> redetermineBorders(const std::vector<Vector3D> &points, int order) const
+    std::vector<hilbert_index_t> redetermineBorders(const std::vector<Vector3D> &points, const HilbertIndexing3D *indexing) const
     {
         std::vector<hilbert_index_t> indices;
         for(const Vector3D &point : points)
         {
-            indices.push_back(EnvironmentAgent::xyz2d(point, this->ll, this->ur, order));
+            indices.push_back(indexing->xyz2d(point));
         }
         return getBorders(indices);
     };
@@ -114,10 +114,10 @@ public:
         return this->pointsExchange([envAgent](const _3DPointRadius &_point){return envAgent->getOwner(Vector3D(_point.point.x, _point.point.y, _point.point.z));}, points, radiuses);
     };
 
-    inline PointsExchangeResult pointsExchange(const std::vector<hilbert_index_t> &ranges, int order, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
+    inline PointsExchangeResult pointsExchange(const std::vector<hilbert_index_t> &ranges, const HilbertIndexing3D *indexing, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
     {
-        return this->pointsExchange([this, ranges, order](const _3DPointRadius &_point){
-            return std::min<hilbert_index_t>(std::distance(ranges.cbegin(), std::upper_bound(ranges.cbegin(), ranges.cend(), EnvironmentAgent::xyz2d(Vector3D(_point.point.x, _point.point.y, _point.point.z), this->ll, this->ur, order))), (this->size - 1));
+        return this->pointsExchange([this, ranges, indexing](const _3DPointRadius &_point){
+            return std::min<hilbert_index_t>(std::distance(ranges.cbegin(), std::upper_bound(ranges.cbegin(), ranges.cend(), indexing->xyz2d(Vector3D(_point.point.x, _point.point.y, _point.point.z)))), (this->size - 1));
             }, points, radiuses);
     };
 

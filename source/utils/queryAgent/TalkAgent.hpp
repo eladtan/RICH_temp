@@ -5,10 +5,9 @@ template<typename QueryData>
 class TalkAgent
 {
 public:
-    template<typename T>
-    using _set = boost::container::flat_set<T>;
+    using RanksSet = boost::container::flat_set<int>;
 
-    virtual _set<int> getTalkList(const QueryData &query) const = 0;
+    virtual RanksSet getTalkList(const QueryData &query) const = 0;
 };
 
 #endif // _TALK_AGENT_HPP

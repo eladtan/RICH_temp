@@ -31,6 +31,9 @@
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
+#include "3D/environment/kernels/Scale.hpp"
+#include "3D/environment/kernels/Shrink.hpp"
+
 #endif // RICH_MPI
 
 // #define VORONOI_DEBUG
@@ -1198,7 +1201,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     std::vector<Face> box;
     std::vector<Vector3D> normals;
     this->InitialBoxBuild(box, normals);
-
+    
     bool sent_finished = false; // if I sent a finished message
     int finished = 0; // the number of finished ranks
     boost::container::flat_set<size_t> smallPoints; // indices of 'small' points
@@ -1390,7 +1393,6 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         // first call
         this->CalculateInitialRadius(points.size());
     }
-
     if(this->radiuses.size() < points.size())
     {
         // actually, should not reach here
@@ -1405,9 +1407,10 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         OctTree<Vector3D> tree(this->ll_, this->ur_, points);
         int depth = tree.getDepth(); // my own depth
         MPI_Allreduce(&depth, &this->hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
+        this->indexing = new Scale(this->ll_, this->ur_, this->hilbertOrder);
         this->hilbertOrder = std::min<size_t>(MAX_ALLOWED_HILBERT_ORDER, this->hilbertOrder);
-        this->responsibilityRange = this->pointsManager.redetermineBorders(points, this->hilbertOrder); // recalculates borders accoridng to the deepest order
-        exchangeResult = this->pointsManager.pointsExchange(this->responsibilityRange, this->hilbertOrder, points, this->radiuses); // exchange
+        this->responsibilityRange = this->pointsManager.redetermineBorders(points, this->indexing); // recalculates borders accoridng to the deepest order
+        exchangeResult = this->pointsManager.pointsExchange(this->responsibilityRange, this->indexing, points, this->radiuses); // exchange
         if(this->envAgent != nullptr)
         {
             this->envAgent->updateBorders(this->responsibilityRange, this->hilbertOrder);
@@ -1429,7 +1432,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
     if(this->firstCall or (this->envAgent == nullptr))
     {
         // create new environment agent
-        this->envAgent = new DistributedOctEnvironmentAgent(this->ll_, this->ur_, new_points, this->responsibilityRange, this->hilbertOrder);
+        this->envAgent = new DistributedOctEnvironmentAgent(this->indexing, this->ll_, this->ur_, new_points, this->responsibilityRange, this->hilbertOrder);
         this->firstCall = false;
     }
     else

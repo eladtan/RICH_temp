@@ -13,7 +13,8 @@ class HashBruteForceFinder : public RangeFinder
 {
 public:
     template<typename RandomAccessIterator>
-    HashBruteForceFinder(const EnvironmentAgent *envAgent, RandomAccessIterator first, RandomAccessIterator last): envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent))
+    HashBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertIndexing3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), indexing(indexing)
     {
         this->cellsPointsSize = static_cast<size_t>(std::pow(2, 1.4 * this->envAgent->getOrder())); // heuristic
         this->cellsPoints.resize(this->cellsPointsSize);
@@ -24,7 +25,7 @@ public:
         {
             const Vector3D &point = *it;
             this->myPoints.push_back(point);
-            hilbert_index_t cell = this->envAgent->xyz2d(point);
+            hilbert_index_t cell = this->indexing->xyz2d(point);
             this->cellsPoints[cell % this->cellsPointsSize].push_back(index);
             index++;
         }
@@ -32,7 +33,8 @@ public:
     };
 
     template<typename Container>
-    inline HashBruteForceFinder(const EnvironmentAgent *envAgent, Container points): HashBruteForceFinder(envAgent, points.begin(), points.end()){};
+    inline HashBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertIndexing3D *indexing, Container points):
+         HashBruteForceFinder(envAgent, indexing, points.begin(), points.end()){};
     inline ~HashBruteForceFinder() = default;
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
@@ -42,7 +44,7 @@ public:
 
     std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
-        boost::container::flat_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
+        typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
         {
@@ -74,6 +76,7 @@ private:
     size_t cellsPointsSize;
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
+    const HilbertIndexing3D *indexing;
 };
 
 #endif // RICH_MPI

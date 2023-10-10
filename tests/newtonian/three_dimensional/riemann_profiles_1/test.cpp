@@ -1,7 +1,7 @@
 #include <iostream>
 #include <algorithm>
-#include "source/3D/GeometryCommon/Vector3D.hpp"
-#include "source/3D/GeometryCommon/Voronoi3D.hpp"
+#include "source/3D/elementary/Vector3D.hpp"
+#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
 #include "source/newtonian/three_dimensional/Lagrangian3D.hpp"
 #include "source/newtonian/three_dimensional/RoundCells3D.hpp"
@@ -14,7 +14,7 @@
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
-#include "source/3D/GeometryCommon/hdf_write.hpp"
+#include "source/3D/output/hdf_write.hpp"
 #include <fstream>
 
 using std::cout;

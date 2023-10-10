@@ -9,8 +9,8 @@
 class DistributedOctEnvironmentAgent : public EnvironmentAgent
 {
 public:
-    inline DistributedOctEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, int order, const MPI_Comm &comm = MPI_COMM_WORLD): 
-            range(ranges), EnvironmentAgent(ll, ur, comm)
+    inline DistributedOctEnvironmentAgent(const HilbertIndexing3D *indexing, const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, int order, const MPI_Comm &comm = MPI_COMM_WORLD): 
+            indexing(indexing), range(ranges), EnvironmentAgent(ll, ur, comm)
     {
         OctTree<Vector3D> myTree(this->ll, this->ur, points);
         this->distributedOctTree = new DistributedOctTree<Vector3D>(&myTree, false, this->comm);
@@ -19,11 +19,11 @@ public:
 
     inline ~DistributedOctEnvironmentAgent(){delete this->distributedOctTree;};
 
-    inline EnvironmentAgent::_set<int> getIntersectingRanks(const Vector3D &center, double radius) const override
+    inline EnvironmentAgent::RanksSet getIntersectingRanks(const Vector3D &center, double radius) const override
     {
         return this->distributedOctTree->getIntersectingRanks(center, radius);
     };
-    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(this->xyz2d(point, this->order));};
+    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(this->indexing->xyz2d(point));};
     inline int getCellOwner(hilbert_index_t d) const
     {
         return std::min<int>(std::distance(this->range.begin(), std::upper_bound(this->range.begin(), this->range.end(), d)), this->size - 1);
@@ -46,6 +46,7 @@ public:
 
 private:
     DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
+    const HilbertIndexing3D *indexing = nullptr;
     std::vector<hilbert_index_t> range;
     int order;
 };
