@@ -88,8 +88,11 @@ include_directories(${HDF5_INCLUDE})
 message("proj_dir ${proj_dir}")
 message("HDF5 ${HDF5_LIBS}")
 message("VTK ${VTK_DIR}")
+message("VECTORCLASS ${PROJECT_SOURCE_DIR}/opt/vcl/")
+include_directories("${PROJECT_SOURCE_DIR}/opt/vcl/")
 
 add_executable(${EXE_NAME} ${TEST_DIR} ${R3D} ${SRC_CPP})
+
 target_link_libraries(
     ${EXE_NAME} 
     PRIVATE pybind11::embed pybind11::module 

@@ -1,10 +1,10 @@
 #include <iostream>
+#include <vector>
 #include <unistd.h>
 #include <execinfo.h>
 
 #ifdef RICH_MPI
 #include <mpi.h>
-#include <shmem.h>
 #define MPI_SYNC_TAG 2003
 #define MPI_MASTER_SYNC_TAG 2002
 #endif // RICH_MPI
@@ -96,7 +96,10 @@ void MPI_Synchronoize(int seconds, const MPI_Comm &comm = MPI_COMM_WORLD)
         MPI_Recv(&dummy, 1, MPI_BYTE, status.MPI_SOURCE, MPI_SYNC_TAG, comm, MPI_STATUS_IGNORE);
         MPI_Iprobe(MPI_ANY_SOURCE, MPI_SYNC_TAG, comm, &arrived, &status);
     }
-    MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+    if(!requests.empty())
+    {    
+        MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+    }
 }
 
 #endif // RICH_MPI

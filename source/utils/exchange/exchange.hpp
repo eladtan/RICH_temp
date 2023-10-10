@@ -138,7 +138,10 @@ ExchangeAnswer<T> dataExchange(const std::vector<T> &data, const ExchangeDetermi
     initializeReceive(answer, sizesToMe, requests, comm);
     makeSend(data, answer, requests, comm, sendVectors);
 
-    MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+    if(!requests.empty())
+    {
+        MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+    }
 
     // there's a requirement to have all the answers ordered by the order of the sentproc vector
     for(size_t i = 0; i < answer.processesSend.size(); i++)

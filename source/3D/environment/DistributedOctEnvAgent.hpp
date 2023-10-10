@@ -13,7 +13,7 @@ public:
             range(ranges), EnvironmentAgent(ll, ur, comm)
     {
         OctTree<Vector3D> myTree(this->ll, this->ur, points);
-        this->distributedOctTree = new DistributedOctTree(this->comm, &myTree);
+        this->distributedOctTree = new DistributedOctTree<Vector3D>(&myTree, false, this->comm);
         this->order = order;
     };
 
@@ -32,7 +32,7 @@ public:
     {
         delete this->distributedOctTree;
         OctTree<Vector3D> myTree(this->ll, this->ur, newPoints);
-        this->distributedOctTree = new DistributedOctTree(this->comm, &myTree);
+        this->distributedOctTree = new DistributedOctTree(&myTree, false, this->comm);
     }
 
     inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
@@ -41,6 +41,8 @@ public:
         this->order = newOrder;
         return; // nothing to do
     }
+
+    const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};
 
 private:
     DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
