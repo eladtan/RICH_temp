@@ -47,7 +47,7 @@ private:
     };
 
 public:
-    GravityAgent(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses, const Vector3D &ll, const Vector3D &ur, double theta, bool quadrupole = false):
+    GravityAgent(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses, const Vector3D &ll, const Vector3D &ur, double theta, bool quadrupole = false, const MPI_Comm &comm = MPI_COMM_WORLD):
             comm(comm), gravityTreeCreated(true)
     {
         MPI_Comm_size(this->comm, &this->size);

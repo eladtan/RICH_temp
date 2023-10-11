@@ -1389,6 +1389,8 @@ void Voronoi3D::CalculateInitialRadius(size_t pointsSize)
 */
 std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points)
 {
+    bool first_call = (this->pointsManager == nullptr);
+
     if(this->initialRadius < 0)
     {
         // first call
@@ -1463,15 +1465,15 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points)
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
-        // if(first_call)
-        // {
-        //     OctTree<Vector3D> myOctTree(this->ll_, this->ur_, new_points);
-        //     for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
-        //     {
-        //         // todo second closest
-        //         this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (100 * myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
-        //     }
-        // }
+        if(first_call)
+        {
+            OctTree<Vector3D> myOctTree(this->ll_, this->ur_, new_points);
+            for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
+            {
+                // todo second closest
+                this->radiuses[pointIdx] = 2 * fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
+            }
+        }
     }
 
     if(this->radiuses.size() != new_points.size())
