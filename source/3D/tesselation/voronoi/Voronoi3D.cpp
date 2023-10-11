@@ -1408,12 +1408,12 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         OctTree<Vector3D> tree(this->ll_, this->ur_, points);
         int depth = tree.getDepth(); // my own depth
         MPI_Allreduce(&depth, &this->hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
-        this->hilbertOrder = std::min<size_t>(MAX_ALLOWED_HILBERT_ORDER, this->hilbertOrder);
+        this->hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, this->hilbertOrder);
         this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_));
         
         int size;
         MPI_Comm_size(MPI_COMM_WORLD, &size);
-        
+
         std::vector<hilbert_index_t> indices;
         for(const Vector3D &point : points)
         {

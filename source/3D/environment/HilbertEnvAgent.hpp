@@ -8,7 +8,6 @@
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 
 #define AVERAGE_INTERSECT 128
-#define MAX_HILBERT_ORDER 18
 #define NULL_ORDER -1
 
 class HilbertEnvironmentAgent : public EnvironmentAgent
