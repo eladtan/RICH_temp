@@ -4,9 +4,8 @@
 #ifdef RICH_MPI
 
 #include "EnvironmentAgent.h"
+#include "3D/hilbert/HilbertConvertor.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
-#include "3D/hilbert/hilbertTypes.h"
-#include "3D/hilbert/HilbertOrder3D.hpp"
 
 #define AVERAGE_INTERSECT 128
 #define MAX_HILBERT_ORDER 18
@@ -17,7 +16,7 @@ class HilbertEnvironmentAgent : public EnvironmentAgent
 public:
     using CellsSet = boost::container::flat_set<hilbert_index_t>;
 
-    inline HilbertEnvironmentAgent(const HilbertIndexing3D *indexing, const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD):
+    inline HilbertEnvironmentAgent(const IndexingKernel3D *indexing, const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD):
             EnvironmentAgent(ll, ur, comm), indexing(indexing)
     {
         this->setOrder(order);
@@ -29,7 +28,7 @@ public:
     
     CellsSet getIntersectingCells(const Vector3D &center, double radius) const;
     
-    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(this->indexing->xyz2d(point));};
+    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->order));};
     
     inline int getCellOwner(hilbert_index_t d) const
     {
@@ -54,7 +53,7 @@ private:
     int order;
     int rank, size;
     std::vector<hilbert_index_t> range;
-    const HilbertIndexing3D *indexing = nullptr;
+    const IndexingKernel3D *indexing = nullptr;
 
     inline void setOrder(int order)
     {
@@ -134,7 +133,7 @@ typename HilbertEnvironmentAgent::CellsSet HilbertEnvironmentAgent::getIntersect
                 if(std::abs(((closestX - center.x) * (closestX - center.x) + (closestY - center.y) * (closestY - center.y) + (closestZ - center.z) * (closestZ - center.z)) - (radius * radius)) <= EPSILON)
                 {
                     // the testing point is inside the circle iff the whole cube intersects the circle
-                    hilbertCells.insert(this->indexing->xyz2d(Vector3D(_x + (this->sidesLengths.x) / 2, _y + (this->sidesLengths.y) / 2, _z + (this->sidesLengths.z) / 2)));
+                    hilbertCells.insert(Hilbert3DConvertor::xyz2d((*this->indexing)(Vector3D(_x + (this->sidesLengths.x) / 2, _y + (this->sidesLengths.y) / 2, _z + (this->sidesLengths.z) / 2)), this->order));
                 }
             }
         }

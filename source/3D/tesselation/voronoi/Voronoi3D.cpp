@@ -31,6 +31,7 @@
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
+#include "3D/environment/kernels/Move.hpp"
 #include "3D/environment/kernels/Scale.hpp"
 #include "3D/environment/kernels/Shrink.hpp"
 
@@ -1407,10 +1408,25 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         OctTree<Vector3D> tree(this->ll_, this->ur_, points);
         int depth = tree.getDepth(); // my own depth
         MPI_Allreduce(&depth, &this->hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
-        this->indexing = new Scale(this->ll_, this->ur_, this->hilbertOrder);
         this->hilbertOrder = std::min<size_t>(MAX_ALLOWED_HILBERT_ORDER, this->hilbertOrder);
-        this->responsibilityRange = this->pointsManager.redetermineBorders(points, this->indexing); // recalculates borders accoridng to the deepest order
-        exchangeResult = this->pointsManager.pointsExchange(this->responsibilityRange, this->indexing, points, this->radiuses); // exchange
+        this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_));
+        
+        int size;
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+        
+        std::vector<hilbert_index_t> indices;
+        for(const Vector3D &point : points)
+        {
+            indices.push_back(Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->hilbertOrder));
+        }
+        this->responsibilityRange = getBorders(indices);
+
+        exchangeResult = this->pointsManager.pointsExchange([this, size](const _3DPointRadius &_point){
+            return std::min<hilbert_index_t>(std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), Hilbert3DConvertor::xyz2d((*this->indexing)(Vector3D(_point.point.x, _point.point.y, _point.point.z)), this->hilbertOrder))), (size - 1));
+            }, points, radiuses); // exchange
+
+        // exchangeResult = this->pointsManager.pointsExchange(this->responsibilityRange, this->indexing, points, this->radiuses); // exchange
+        
         if(this->envAgent != nullptr)
         {
             this->envAgent->updateBorders(this->responsibilityRange, this->hilbertOrder);

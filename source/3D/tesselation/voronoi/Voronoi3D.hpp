@@ -140,7 +140,7 @@ private:
     std::vector<hilbert_index_t> responsibilityRange;
     PointsManager pointsManager;
     int hilbertOrder;
-    const HilbertIndexing3D *indexing = nullptr;
+    const IndexingKernel3D *indexing = nullptr;
   #endif // RICH_MPI
 
 public:

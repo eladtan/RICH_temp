@@ -7,11 +7,11 @@
 #include <vector>
 #include <mpi.h>
 #include <assert.h>
+
 #include "utils/balance/balance.hpp"
 #include "utils/exchange/exchange.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/hilbert/hilbertTypes.h"
 
 #define BALANCE_FACTOR 1.1
 
@@ -99,27 +99,30 @@ public:
     /**
      * re-calculates the borders, to be equally-divided
     */
-    std::vector<hilbert_index_t> redetermineBorders(const std::vector<Vector3D> &points, const HilbertIndexing3D *indexing) const
+   /*
+    std::vector<hilbert_index_t> redetermineBorders(const std::vector<Vector3D> &points, const IndexingKernel3D *indexing) const
     {
         std::vector<hilbert_index_t> indices;
         for(const Vector3D &point : points)
         {
-            indices.push_back(indexing->xyz2d(point));
+            indices.push_back(Hilbert3DConvertor::xyz2d(indexing(point), ));
         }
         return getBorders(indices);
     };
-
+*/
     inline PointsExchangeResult pointsExchangeByEnvAgent(const EnvironmentAgent *envAgent, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
     {
         return this->pointsExchange([envAgent](const _3DPointRadius &_point){return envAgent->getOwner(Vector3D(_point.point.x, _point.point.y, _point.point.z));}, points, radiuses);
     };
 
-    inline PointsExchangeResult pointsExchange(const std::vector<hilbert_index_t> &ranges, const HilbertIndexing3D *indexing, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
+    /*
+    inline PointsExchangeResult pointsExchange(const std::vector<hilbert_index_t> &ranges, const IndexingKernel3D *indexing, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
     {
         return this->pointsExchange([this, ranges, indexing](const _3DPointRadius &_point){
-            return std::min<hilbert_index_t>(std::distance(ranges.cbegin(), std::upper_bound(ranges.cbegin(), ranges.cend(), indexing->xyz2d(Vector3D(_point.point.x, _point.point.y, _point.point.z)))), (this->size - 1));
+            return std::min<hilbert_index_t>(std::distance(ranges.cbegin(), std::upper_bound(ranges.cbegin(), ranges.cend(), Hilbert3DConvertor::xyz2d((*this->indexing)(Vector3D(_point.point.x, _point.point.y, _point.point.z))))), (this->size - 1));
             }, points, radiuses);
     };
+    */
 
 private:
     MPI_Comm comm;

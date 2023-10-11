@@ -4,10 +4,10 @@
 #include "3D/hilbert/HilbertOrder3D.hpp"
 #include "3D/elementary/Vector3D.hpp"
 
-class HilbertIndexing3D
+class IndexingKernel3D
 {
 public:
-    virtual hilbert_index_t xyz2d(const Vector3D &point) const = 0;
+    virtual Vector3D operator()(const Vector3D &vector) const = 0;
 };
 
 #endif // HILBERT_INDEXING_HPP

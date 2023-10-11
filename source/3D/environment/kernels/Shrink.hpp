@@ -1,30 +1,27 @@
 #ifndef SHRINK_KERNEL_HPP
 #define SHRINK_KERNEL_HPP
 
-#include "HilbertIndexing3D.hpp"
+#include "IndexingKernel3D.hpp"
 
-class Shrink : public HilbertIndexing3D
+class Shrink : public IndexingKernel3D
 {
 public:
-    inline Shrink(const Vector3D &ll, const Vector3D &ur, size_t order): ll(ll), ur(ur), order(order)
+    inline Shrink(const Vector3D &scale, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
     {
-        Vector3D diff = ur - ll;
-        this->dx = std::max(diff[0], std::max(diff[1], diff[2]));
+        this->scale = 1 / std::max(scale[0], std::max(scale[1], scale[2]));
     };
 
-    inline hilbert_index_t xyz2d(const Vector3D &point) const override{return this->xyz2d(point, this->order);};
+    inline Shrink(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *indexing = nullptr): Shrink(ur - ll, indexing){};
 
-    inline hilbert_index_t xyz2d(const Vector3D &point, size_t order) const
+    inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D scaledVector = (point - ll) / dx;
-        return this->curve.Hilbert3D_xyz2d(scaledVector, order);
-    }
+        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
+        return (vec * this->scale);
+    };
 
 private:
-    HilbertCurve3D curve;
-    Vector3D ll, ur;
-    double dx;
-    size_t order;
+    double scale;
+    const IndexingKernel3D *indexing;
 };
 
 #endif // SHRINK_KERNEL_HPP

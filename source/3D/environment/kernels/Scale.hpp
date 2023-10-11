@@ -1,27 +1,24 @@
 #ifndef SCALE_KERNEL_HPP
 #define SCALE_KERNEL_HPP
 
-#include "HilbertIndexing3D.hpp"
+#include "IndexingKernel3D.hpp"
 
-class Scale : public HilbertIndexing3D
+class Scale : public IndexingKernel3D
 {
 public:
-    inline Scale(const Vector3D &ll, const Vector3D &ur, size_t order): ll(ll), ur(ur), dx(ur - ll), order(order){};
+    inline Scale(const Vector3D &scale, const IndexingKernel3D *indexing = nullptr): scale(scale), indexing(indexing){};
 
-    inline hilbert_index_t xyz2d(const Vector3D &point) const override{return this->xyz2d(point, this->order);};
+    inline Scale(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *indexing = nullptr): Scale(ur - ll, indexing){};
 
-    inline hilbert_index_t xyz2d(const Vector3D &point, size_t order) const
+    inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D scaledVector = Vector3D((point.x - this->ll.x) / this->dx.x,
-                                         (point.y - this->ll.y) / this->dx.y, 
-                                         (point.z - this->ll.z) / this->dx.z);
-        return this->curve.Hilbert3D_xyz2d(scaledVector, order);
-    }
+        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
+        return Vector3D(vec.x / this->scale.x, vec.y / this->scale.y, vec.z / this->scale.z);
+    };
 
 private:
-    HilbertCurve3D curve;
-    Vector3D ll, ur, dx;
-    size_t order;
+    Vector3D scale;
+    const IndexingKernel3D *indexing;
 };
 
 #endif // SCALE_KERNEL_HPP

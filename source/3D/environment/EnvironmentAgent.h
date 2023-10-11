@@ -6,7 +6,7 @@
 #include <mpi.h>
 #include <boost/container/flat_set.hpp>
 
-#include "kernels/HilbertIndexing3D.hpp"
+#include "kernels/IndexingKernel3D.hpp"
 
 class EnvironmentAgent
 {
