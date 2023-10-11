@@ -113,11 +113,9 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
     return cmake_result
 
 def build_program(*, configs, make_dir, src_dir, test_dir):
-    from source.cppversion.generate_cppversion import generate_cppversion
     """Build the program with the desired configurations."""
     exe_name = "rich"
     logger.debug(f"args:\nconfigs = {configs}\nroot_dir = {root_dir}\nmake_dir = {make_dir}\nsrc_dir = {src_dir}\ntest_dir = {test_dir}")
-    git_version = gen_version.GitVersion(root_dir)
     assert os.path.isdir(os.path.join(root_dir, "source")), f"Directory {root_dir} does not contain a directory named source"
 
     with open(os.path.join(root_dir, "compilation", "SystemLibsLinks.py"), "r") as f:
@@ -145,11 +143,6 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         config_dir = os.path.join(build_dir, config)
         if not os.path.isdir(config_dir):
             os.makedirs(config_dir)
-        
-        generate_cppversion(path=os.path.join(config_dir, "generated/cppversion"),
-                    version=str(git_version),
-                    config=config)
-
         
         #run cmake for the specific config
         logger.info("Running cmake")

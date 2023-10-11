@@ -33,7 +33,7 @@
 #define INITIAL_SENDRECV_TAG 1105
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.1 // 1.618
-#define MAX_ALLOWED_HILBERT_ORDER 19
+#define MAX_ALLOWED_HILBERT_ORDER 18
 #endif 
 
 typedef std::array<std::size_t, 4> b_array_4;

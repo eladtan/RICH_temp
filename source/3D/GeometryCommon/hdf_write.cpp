@@ -145,7 +145,7 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
 #ifdef RICH_MPI
 		     ,bool mpi_write
 #endif // RICH_MPI
-, bool const write_vtu
+      , bool const write_vtu
 		     )
 {
 #ifdef RICH_MPI

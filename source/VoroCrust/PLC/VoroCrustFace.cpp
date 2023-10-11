@@ -1,5 +1,6 @@
 #include "VoroCrustFace.hpp"
-#include "../../../source/3D/GeometryCommon/Mat33.hpp"
+#include "source/3D/elementary/Vector3D.hpp"
+#include "source/3D/elementary/Mat33.hpp"
 #include <iostream>
 #include <sstream>
 #include <algorithm>
