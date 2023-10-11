@@ -36,12 +36,7 @@ public:
 
     inline int getOrder() const{return this->order;};
 
-    inline void update(const std::vector<Vector3D> &points) override
-    {
-        return; // nothing to do
-    }
-
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
+    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
     {
         this->range = newRange;
         this->setOrder(newOrder);

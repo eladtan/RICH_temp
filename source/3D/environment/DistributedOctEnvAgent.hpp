@@ -24,23 +24,26 @@ public:
     {
         return this->distributedOctTree->getIntersectingRanks(center, radius);
     };
+
     inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->order));};
+
     inline int getCellOwner(hilbert_index_t d) const
     {
         return std::min<int>(std::distance(this->range.begin(), std::upper_bound(this->range.begin(), this->range.end(), d)), this->size - 1);
     };
-    inline void update(const std::vector<Vector3D> &newPoints) override
+
+    inline void updatePoints(const std::vector<Vector3D> &newPoints)
     {
         delete this->distributedOctTree;
         OctTree<Vector3D> myTree(this->ll, this->ur, newPoints);
         this->distributedOctTree = new DistributedOctTree(&myTree, false, this->comm);
     }
 
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
+    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
     {
         this->range = newRange;
         this->order = newOrder;
-        return; // nothing to do
+        return; // nothing else to do
     }
 
     const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};

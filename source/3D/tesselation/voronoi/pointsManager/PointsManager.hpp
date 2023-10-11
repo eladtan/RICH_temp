@@ -41,6 +41,14 @@ public:
         MPI_Comm_rank(this->comm, &this->rank);
     };
 
+    virtual ~PointsManager() = default;
+
+    virtual PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) = 0;
+
+    virtual void rebalance(const std::vector<Vector3D> &points) = 0;
+
+    virtual const EnvironmentAgent *getEnvironmentAgent() const = 0;
+
     bool checkForRebalance(const std::vector<Vector3D> &points) const
     {
         // checks if I have too many points, and notify other ranks
@@ -57,6 +65,21 @@ public:
         }
         return (rebalance > 0);
     };
+
+    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+    {
+        if(this->checkForRebalance(points))
+        {
+            this->rebalance(points);
+        }
+        return this->exchange(points, radiuses);
+    }
+
+protected:
+    MPI_Comm comm;
+    int size;
+    int rank;
+    Vector3D ll, ur;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
@@ -96,39 +119,10 @@ public:
         return toReturn;
     };
 
-    /**
-     * re-calculates the borders, to be equally-divided
-    */
-   /*
-    std::vector<hilbert_index_t> redetermineBorders(const std::vector<Vector3D> &points, const IndexingKernel3D *indexing) const
-    {
-        std::vector<hilbert_index_t> indices;
-        for(const Vector3D &point : points)
-        {
-            indices.push_back(Hilbert3DConvertor::xyz2d(indexing(point), ));
-        }
-        return getBorders(indices);
-    };
-*/
     inline PointsExchangeResult pointsExchangeByEnvAgent(const EnvironmentAgent *envAgent, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
     {
         return this->pointsExchange([envAgent](const _3DPointRadius &_point){return envAgent->getOwner(Vector3D(_point.point.x, _point.point.y, _point.point.z));}, points, radiuses);
     };
-
-    /*
-    inline PointsExchangeResult pointsExchange(const std::vector<hilbert_index_t> &ranges, const IndexingKernel3D *indexing, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
-    {
-        return this->pointsExchange([this, ranges, indexing](const _3DPointRadius &_point){
-            return std::min<hilbert_index_t>(std::distance(ranges.cbegin(), std::upper_bound(ranges.cbegin(), ranges.cend(), Hilbert3DConvertor::xyz2d((*this->indexing)(Vector3D(_point.point.x, _point.point.y, _point.point.z))))), (this->size - 1));
-            }, points, radiuses);
-    };
-    */
-
-private:
-    MPI_Comm comm;
-    int size;
-    int rank;
-    Vector3D ll, ur;
 };
 
 #endif // RICH_MPI

@@ -20,8 +20,6 @@ public:
     };
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;
     virtual int getOwner(const Vector3D &point) const = 0;
-    virtual void update(const std::vector<Vector3D> &newPoints) = 0;
-    virtual void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) = 0;
 
 protected:
     Vector3D ll, ur;
