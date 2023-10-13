@@ -5,7 +5,7 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
     PointsExchangeResult exchangeResult;
     if(this->envAgent != nullptr)
     {
-        exchangeResult = this->pointsExchangeByEnvAgent(this->envAgent, points, radiuses);
+        exchangeResult = this->pointsExchangeByEnvAgent(points, radiuses);
         this->envAgent->updatePoints(exchangeResult.newPoints);
     }
     else
