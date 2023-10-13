@@ -19,6 +19,8 @@ public:
         this->calculateTransformation(u, v, w);
     }
     
+    inline ~Parallelepiped(){delete this->indexing;};
+
     Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *indexing = nullptr);
 
     inline Vector3D operator()(const Vector3D &vector) const override
@@ -109,6 +111,8 @@ Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKer
     {
         throw UniversalError("The given shape is not a parallelepiped (in 'Parallelepiped' kernelization)");
     }
+    Vector3D move_factor = faces[0].vertices[0];
+    this->indexing = new Move(move_factor, indexing);
     this->calculateTransformation(allEdges[0], allEdges[1], allEdges[2]);
 }
 

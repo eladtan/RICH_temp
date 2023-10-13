@@ -6,7 +6,7 @@
 class Scale : public IndexingKernel3D
 {
 public:
-    inline Scale(const Vector3D &scale, const IndexingKernel3D *indexing = nullptr): scale(scale), indexing(indexing){};
+    inline Scale(const Vector3D &scale = Vector3D(), const IndexingKernel3D *indexing = nullptr): scale(scale), indexing(indexing){};
 
     inline Scale(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *indexing = nullptr): Scale(ur - ll, indexing){};
 

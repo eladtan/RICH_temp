@@ -6,7 +6,7 @@
 class Move : public IndexingKernel3D
 {
 public:
-    inline Move(const Vector3D &vector, const IndexingKernel3D *indexing = nullptr): moveVec(vector), indexing(indexing){};
+    inline Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *indexing = nullptr): moveVec(vector), indexing(indexing){};
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {

@@ -124,11 +124,19 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
                          0, 0, 1, 0,
                          0, 0, 0, 1,
                          1, 1, 1, 0);
-    const double k = 1;
-
-    Vector3D point1 = faces[0].vertices[0] - move_factor, point2 = faces[0].vertices[1] - move_factor, point3 = faces[0].vertices[2] - move_factor;
-    Vector3D point4 = this->find_S(faces) - move_factor; // head (S)
-    Mat44<double> F(point1.x, point2.x, point3.x, k * point4.x, point1.y, point2.y, point3.y, k * point4.y, point1.z, point2.z, point3.z, k * point4.z, 1, 1, 1, k);
+    Vector3D point1 = (*this->indexing)(faces[0].vertices[0]), point2 = (*this->indexing)(faces[0].vertices[1]), point3 = (*this->indexing)(faces[0].vertices[2]);
+    Vector3D point4 = (*this->indexing)(this->find_S(faces)); // head (S)
+    Mat44<double> F(point1.x, point2.x, point3.x, point4.x, point1.y, point2.y, point3.y, point4.y, point1.z, point2.z, point3.z, point4.z, 1, 1, 1, 1);
     this->P = C * F.inverse();
+
+    std::vector<Vector3D> allVertices;
+    for(const Face &face : faces)
+    {
+        for(const Vector3D &vertex : face.vertices)
+        {
+            allVertices.push_back(this->beforeScaling(vertex));
+        }
+    }
+    this->scaleToBox = Rectangle(allVertices);
 }
 
