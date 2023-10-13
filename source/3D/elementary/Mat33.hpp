@@ -3,6 +3,7 @@
 \author Elad Steinberg
 */
 
+#include "3D/elementary/Vector3D.hpp"
 #include "../../misc/serializable.hpp"
 
 #define EPSILON 1e-12
