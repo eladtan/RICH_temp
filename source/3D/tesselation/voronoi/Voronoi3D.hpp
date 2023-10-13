@@ -35,7 +35,7 @@
 #define RADIUSES_GROWING_FACTOR 1.1 // 1.618
 #endif 
 
-#define INITIAL_RADIUS_UNINITIALIZED -1
+#define RADIUS_UNINITIALIZED -1
 
 typedef std::array<std::size_t, 4> b_array_4;
 typedef std::array<std::size_t, 3> b_array_3;

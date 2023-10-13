@@ -6,6 +6,10 @@
 #ifndef MAT44_HPP
 #define MAT44_HPP 1
 
+#include <iostream>
+
+#define EPSILON 1e-12
+
 //! \brief A 4x4 matrix
 template <typename T>
 class Mat44
@@ -14,6 +18,9 @@ private:
 	T _data[4][4];
 
 public:
+	// \brief Constructs a zeroed out matrix
+	Mat44();
+
 	//! \brief Return the element at (row, col)
   //! \param row Row
   //! \param col Column
@@ -44,9 +51,6 @@ public:
   //! \return Entry
 	inline const T& operator()(int row, int col) const { return at(row, col); }
 
-	// \brief Constructs a zeroed out matrix
-	Mat44();
-
   /*! \brief Constructs a matrix and fills all its values. An intializer_list is better, but C++ 11 isn't always supported
     \param d00 Term in in position 0,0
     \param d01 Term in in position 0,1
@@ -73,6 +77,54 @@ public:
 	//! \brief Returns the matrix's determinant
   //! \return Value of the determinant 
 	T determinant() const;
+
+	Mat44<T> inverse() const;
+
+	template<typename U>
+	friend inline Mat44<U> operator*(const Mat44<U> &A, const Mat44<U> &B)
+	{
+		Mat44<U> result;
+		for(size_t i = 0; i < 4; i++)
+		{
+			for(size_t j = 0; j < 4; j++)
+			{
+				result(i, j) = U();
+				for(size_t k = 0; k < 4; k++)
+				{
+					result(i, j) += A(i, k) * B(k, j);
+				}
+			}
+		}
+		return result;
+	}
+
+	inline Mat44<T> operator*(const T &scalar) const
+	{
+		Mat44<T> newMat;
+		for(int i = 0; i < 4; i++)
+		{
+			for(int j = 0; j < 4; j++)
+			{
+				newMat(i, j) = this->_data[i][j] * scalar;
+			}
+		}
+		return newMat;
+	}
+
+	template<typename U>
+	friend std::ostream &operator<<(std::ostream &stream, const Mat44<U> &matrix)
+	{
+		stream << std::endl;
+		for(int i = 0; i < 4; i++)
+		{
+			for(int j = 0; j < 4; j++)
+			{
+				stream << matrix(i, j) << " ";
+			}
+			stream << std::endl;
+		}
+		return stream;
+	}
 };
 
 template <typename T>
@@ -124,6 +176,58 @@ Mat44<T>::Mat44()
 	for (int i = 0; i < 4; i++)
 		for (int j = 0; j < 4; j++)
 			_data[i][j] = 0;
+}
+
+template<typename T>
+Mat44<T> Mat44<T>::inverse() const
+{
+	T determinant = this->determinant();
+	if(std::abs(determinant) < EPSILON)
+	{
+		throw UniversalError("Matrix (4x4) is singular");
+	}
+	// look here: https://semath.info/src/inverse-cofactor-ex4.html (`\tilde{A}`, the adjacency matrix, will be denoted as `B`)
+	const Mat44<T> &A = (*this);
+	Mat44<T> B;
+
+	B(0, 0) = (A(1, 1) * A(2, 2) * A(3, 3)) + (A(1, 2) * A(2, 3) * A(3, 1)) + (A(1, 3) * A(2, 1) * A(3, 2))
+				- (A(1, 3) * A(2, 2) * A(3, 1)) - (A(1, 2) * A(2, 1) * A(3, 3)) - (A(1, 1) * A(2, 3) * A(3, 2));
+	B(0, 1) = -(A(0, 1) * A(2, 2) * A(3, 3)) - (A(0, 2) * A(2, 3) * A(3, 1)) - (A(0, 3) * A(2, 1) * A(3, 2))
+				+ (A(0, 3) * A(2, 2) * A(3, 1)) + (A(0, 2) * A(2, 1) * A(3, 3)) + (A(0, 1) * A(2, 3) * A(3, 2));
+	B(0, 2) = (A(0, 1) * A(1, 2) * A(3, 3)) + (A(0, 2) * A(1, 3) * A(3, 1)) + (A(0, 3) * A(1, 1) * A(3, 2))
+				- (A(0, 3) * A(1, 2) * A(3, 1)) - (A(0, 2) * A(1, 1) * A(3, 3)) - (A(0, 1) * A(1, 3) * A(3, 2));
+	B(0, 3) = -(A(0, 1) * A(1, 2) * A(2, 3)) - (A(0, 2) * A(1, 3) * A(2, 1)) - (A(0, 3) * A(1, 1) * A(2, 2))
+				+ (A(0, 3) * A(1, 2) * A(2, 1)) + (A(0, 2) * A(1, 1) * A(2, 3)) + (A(0, 1) * A(1, 3) * A(2, 2));
+
+	B(1, 0) = -(A(1, 0) * A(2, 2) * A(3, 3)) - (A(1, 2) * A(2, 3) * A(3, 0)) - (A(1, 3) * A(2, 0) * A(3, 2))
+				+ (A(1, 3) * A(2, 2) * A(3, 0)) + (A(1, 2) * A(2, 0) * A(3, 3)) + (A(1, 0) * A(2, 3) * A(3, 2));
+	B(1, 1) = (A(0, 0) * A(2, 2) * A(3, 3)) + (A(0, 2) * A(2, 3) * A(3, 0)) + (A(0, 3) * A(2, 0) * A(3, 2))
+				- (A(0, 3) * A(2, 2) * A(3, 0)) - (A(0, 2) * A(2, 0) * A(3, 3)) - (A(0, 0) * A(2, 3) * A(3, 2));
+	B(1, 2) = -(A(0, 0) * A(1, 2) * A(3, 3)) - (A(0, 2) * A(1, 3) * A(3, 0)) - (A(0, 3) * A(1, 0) * A(3, 2))
+				+ (A(0, 3) * A(1, 2) * A(3, 0)) + (A(0, 2) * A(1, 0) * A(3, 3)) + (A(0, 0) * A(1, 3) * A(3, 2));
+	B(1, 3) = (A(0, 0) * A(1, 2) * A(2, 3)) + (A(0, 2) * A(1, 3) * A(2, 0)) + (A(0, 3) * A(1, 0) * A(2, 2))
+				- (A(0, 3) * A(1, 2) * A(2, 0)) - (A(0, 2) * A(1, 0) * A(2, 3)) - (A(0, 0) * A(1, 3) * A(2, 2));
+	
+	B(2, 0) = (A(1, 0) * A(2, 1) * A(3, 3)) + (A(1, 1) * A(2, 3) * A(3, 0)) + (A(1, 3) * A(2, 0) * A(3, 1))
+				- (A(1, 3) * A(2, 1) * A(3, 0)) - (A(1, 1) * A(2, 0) * A(3, 3)) - (A(1, 0) * A(2, 3) * A(3, 1));
+	B(2, 1) = -(A(0, 0) * A(2, 1) * A(3, 3)) - (A(0, 1) * A(2, 3) * A(3, 0)) - (A(0, 3) * A(2, 0) * A(3, 1))
+				+ (A(0, 3) * A(2, 1) * A(3, 0)) + (A(0, 1) * A(2, 0) * A(3, 3)) + (A(0, 0) * A(2, 3) * A(3, 1));
+	B(2, 2) = (A(0, 0) * A(1, 1) * A(3, 3)) + (A(0, 1) * A(1, 3) * A(3, 0)) + (A(0, 3) * A(1, 0) * A(3, 1))
+				- (A(0, 3) * A(1, 1) * A(3, 0)) - (A(0, 1) * A(1, 0) * A(3, 3)) - (A(0, 0) * A(1, 3) * A(3, 1));
+	B(2, 3) = -(A(0, 0) * A(1, 1) * A(2, 3)) - (A(0, 1) * A(1, 3) * A(2, 0)) - (A(0, 3) * A(1, 0) * A(2, 1))
+				+ (A(0, 3) * A(1, 1) * A(2, 0)) + (A(0, 1) * A(1, 0) * A(2, 3)) + (A(0, 0) * A(1, 3) * A(2, 1));
+	
+	B(3, 0) = -(A(1, 0) * A(2, 1) * A(3, 2)) - (A(1, 1) * A(2, 2) * A(3, 0)) - (A(1, 2) * A(2, 0) * A(3, 1))
+				+ (A(1, 2) * A(2, 1) * A(3, 0)) + (A(1, 1) * A(2, 0) * A(3, 2)) + (A(1, 0) * A(2, 2) * A(3, 1));
+	B(3, 1) = (A(0, 0) * A(2, 1) * A(3, 2)) + (A(0, 1) * A(2, 2) * A(3, 0)) + (A(0, 2) * A(2, 0) * A(3, 1))
+				- (A(0, 2) * A(2, 1) * A(3, 0)) - (A(0, 1) * A(2, 0) * A(3, 2)) - (A(0, 0) * A(2, 2) * A(3, 1));
+	B(3, 2) = -(A(0, 0) * A(1, 1) * A(3, 2)) - (A(0, 1) * A(1, 2) * A(3, 0)) - (A(0, 2) * A(1, 0) * A(3, 1))
+				+ (A(0, 2) * A(1, 1) * A(3, 0)) + (A(0, 1) * A(1, 0) * A(3, 2)) + (A(0, 0) * A(1, 2) * A(3, 1));
+	B(3, 3) = (A(0, 0) * A(1, 1) * A(2, 2)) + (A(0, 1) * A(1, 2) * A(2, 0)) + (A(0, 2) * A(1, 0) * A(2, 1))
+				- (A(0, 2) * A(1, 1) * A(2, 0)) - (A(0, 1) * A(1, 0) * A(2, 2)) - (A(0, 0) * A(1, 2) * A(2, 1));
+
+	T detInverse = 1 / determinant;
+	return B * detInverse;
 }
 
 #endif // MAT44_HPP
