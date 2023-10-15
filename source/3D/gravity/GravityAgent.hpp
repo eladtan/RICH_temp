@@ -40,17 +40,14 @@ private:
     public:
         GravityTalkAgent(){};
 
-        inline _set<int> getTalkList(const GravityQueryData &query) const override
+        inline TalkAgent::RanksSet getTalkList(const GravityQueryData &query) const override
         {
-            return _set<int>({query.location.rank});
+            return RanksSet({query.location.rank});
         }
     };
 
 public:
-    template<typename T>
-    using _set = boost::container::flat_set<T>;
-
-    GravityAgent(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses, const Vector3D &ll, const Vector3D &ur, double theta, bool quadrupole = false):
+    GravityAgent(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses, const Vector3D &ll, const Vector3D &ur, double theta, bool quadrupole = false, const MPI_Comm &comm = MPI_COMM_WORLD):
             comm(comm), gravityTreeCreated(true)
     {
         MPI_Comm_size(this->comm, &this->size);

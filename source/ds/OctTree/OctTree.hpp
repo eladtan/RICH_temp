@@ -5,7 +5,6 @@
 #include <assert.h>
 #include <utility>
 #include "../geometry_utils.hpp"
-#include <mpi.h> // todo: remove
 
 #include <stack>
 
@@ -13,6 +12,7 @@
 #define CHILDREN 8 // 2^DIM
 #define PATH_END_DIRECTION (-1)
 #define MAX_DEPTH 50
+
 #define DEBUG_MODE
 
 #ifdef DEBUG_MODE
@@ -172,7 +172,6 @@ public:
         {
             return this->getRoot();
         }
-        int rank; MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         const OctTreeNode *current = this->getRoot();
         size_t i = 0;
         while(directions[i] != PATH_END_DIRECTION)
@@ -186,14 +185,6 @@ public:
         }
 
         assert(current != nullptr);
-        if(current == nullptr)
-        {
-            std::cerr << "Illegal path in rank " << rank << std::endl;
-            size_t j = 0;
-            std::cout << "path is ";
-            while(directions[j] != PATH_END_DIRECTION){std::cout << directions[j++] << " ";};  std::cout << std::endl;
-            exit(8200);
-        }
         return current;
     }
 
@@ -202,6 +193,8 @@ public:
     inline T closestPoint(const T &point) const{return this->getClosestPointInfo(point).first;};
 
     inline typename T::coord_type closestPointDistance(const T &point) const{return this->getClosestPointInfo(point).second;};
+
+    T KthClosestPoint(const T &point) const;
 };
 
 template<typename T>
@@ -586,6 +579,5 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const T &po
     }
     return {closestPoint, closestDistance};
 }
-
 #endif // _OCTTREE_HPP
 

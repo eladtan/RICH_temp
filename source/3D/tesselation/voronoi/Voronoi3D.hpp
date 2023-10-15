@@ -28,7 +28,7 @@
 #endif
 
 #ifdef RICH_MPI
-#include "PointsManager.hpp"
+#include "pointsManager/HilbertPointsManager.hpp"
 #define RICH_TESELLATION_FINISHED_TAG 505
 #define INITIAL_SENDRECV_TAG 1105
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
@@ -36,17 +36,14 @@
 #define MAX_ALLOWED_HILBERT_ORDER 18
 #endif 
 
+#define INITIAL_RADIUS_UNINITIALIZED -1
+
 typedef std::array<std::size_t, 4> b_array_4;
 typedef std::array<std::size_t, 3> b_array_3;
 
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
-#ifdef RICH_MPI
-public:
-  const EnvironmentAgent *GetEnvAgent() const{return this->envAgent;}; // todo: remove!
-#endif // RICH_MPI
-
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -134,19 +131,17 @@ private:
   std::vector<Face> box_faces_;
   #ifdef RICH_MPI
     std::vector<double> radiuses;
-    EnvironmentAgent *envAgent = nullptr;
     double initialRadius;
-    bool firstCall;
-    std::vector<hilbert_index_t> responsibilityRange;
-    PointsManager pointsManager;
-    int hilbertOrder;
+    PointsManager *pointsManager = nullptr;
+    const IndexingKernel3D *indexing = nullptr;
   #endif // RICH_MPI
 
 public:
   inline ~Voronoi3D()
   {
     #ifdef RICH_MPI
-      delete this->envAgent;
+      delete this->pointsManager;
+      delete this->indexing;
     #endif // RICH_MPI
   }
 

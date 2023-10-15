@@ -124,10 +124,10 @@ private:
             MPI_Comm_size(comm, &this->size);
         };
 
-        inline EnvironmentAgent::_set<int> getTalkList(const RangeQueryData &query) const override
+        inline EnvironmentAgent::RanksSet getTalkList(const RangeQueryData &query) const override
         {
             const DistributedOctEnvironmentAgent *distributedOctAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
-            EnvironmentAgent::_set<int> intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+            EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
             if(intersectingRanks.size() == 1)
             {
                 return intersectingRanks;
@@ -174,7 +174,6 @@ private:
             }
             if(minDistRank > static_cast<size_t>(this->size))
             {
-                // std::cout << "here, size of intersecting is " << intersectingRanks.size() << ", min dist is " << minDist << ", min rank is " << minDistRank << ", size is " << this->size << std::endl;
                 // in fact, should not reach here, if intersectingRanks.size() > 1
                 throw UniversalError("In range talk agent, should not reach here (no rank found)");
             }
@@ -182,7 +181,7 @@ private:
             double closestDistThreshold = distances[minDistRank].second;
 
             // return all the ranks which their closest point to us is in distance of at most `closestDistThreshold`
-            EnvironmentAgent::_set<int> result;
+            EnvironmentAgent::RanksSet result;
             for(const int &_rank : intersectingRanks)
             {
                 if(distances[_rank].first <= (closestDistThreshold * (1 + EPSILON)))

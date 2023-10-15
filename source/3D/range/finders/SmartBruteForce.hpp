@@ -4,9 +4,11 @@
 #ifdef RICH_MPI
 
 #include <mpi.h>
+
 // for maps:
 #include <map>
 #include <boost/container/flat_map.hpp>
+
 #include "3D/environment/HilbertEnvAgent.hpp"
 #include "RangeFinder.hpp"
 
@@ -17,7 +19,8 @@ public:
     using _map = boost::container::flat_map<K, V>;
 
     template<typename RandomAccessIterator>
-    SmartBruteForceFinder(const EnvironmentAgent *envAgent, RandomAccessIterator first, RandomAccessIterator last): envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent))
+    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), indexing(indexing)
     {
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
         size_t index = 0;
@@ -25,7 +28,7 @@ public:
         {
             const Vector3D &point = *it;
             this->myPoints.push_back(point);
-            hilbert_index_t cell = this->envAgent->xyz2d(point);
+            hilbert_index_t cell = Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->envAgent->getOrder());
             if(this->cellsPoints.find(cell) == this->cellsPoints.end())
             {
                 this->cellsPoints[cell] = std::vector<size_t>();
@@ -37,7 +40,8 @@ public:
     };
 
     template<typename Container>
-    inline SmartBruteForceFinder(const EnvironmentAgent *envAgent, Container points): SmartBruteForceFinder(envAgent, points.begin(), points.end()){};
+    inline SmartBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, Container points):
+         SmartBruteForceFinder(envAgent, indexing, points.begin(), points.end()){};
     inline ~SmartBruteForceFinder() = default;
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
@@ -49,7 +53,7 @@ public:
 
     std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
-        typename HilbertEnvironmentAgent::_set<size_t> intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
+        typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
         {
@@ -85,6 +89,7 @@ private:
     _map<hilbert_index_t, std::vector<size_t>> cellsPoints;
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
+    const IndexingKernel3D *indexing;
 };
 
 #endif // RICH_MPI

@@ -31,6 +31,10 @@
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
+#include "3D/environment/kernels/Move.hpp"
+#include "3D/environment/kernels/Scale.hpp"
+#include "3D/environment/kernels/Shrink.hpp"
+
 #endif // RICH_MPI
 
 // #define VORONOI_DEBUG
@@ -607,7 +611,7 @@ Voronoi3D::Voronoi3D() : ll_(Vector3D()), ur_(Vector3D()), Norg_(0), bigtet_(0),
                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>())
                         #ifdef RICH_MPI
-                        , envAgent(nullptr), initialRadius(0.0), firstCall(true), pointsManager(PointsManager(this->ll_, this->ur_)), hilbertOrder(NULL_ORDER)
+                        , initialRadius(INITIAL_RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
                         #endif // RICH_MPI
 {
 }
@@ -622,7 +626,7 @@ Voronoi3D::Voronoi3D(std::vector<Face> const& box_faces) : Norg_(0), bigtet_(0),
                                                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(box_faces)
                                                         #ifdef RICH_MPI
-                                                        , envAgent(nullptr), initialRadius(0.0), firstCall(true), pointsManager(PointsManager(this->ll_, this->ur_)), hilbertOrder(NULL_ORDER)
+                                                        , initialRadius(INITIAL_RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
                                                         #endif // RICH_MPI
 {
     size_t const Nfaces = box_faces.size();
@@ -655,7 +659,7 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                               self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ())
                                                               #ifdef RICH_MPI
-                                                              , envAgent(nullptr), initialRadius(0.0), firstCall(true), pointsManager(PointsManager(this->ll_, this->ur_)), hilbertOrder(NULL_ORDER)
+                                                              , initialRadius(INITIAL_RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
                                                               #endif // RICH_MPI
                                                               {}
 
@@ -822,8 +826,9 @@ bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
 {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    assert(this->envAgent != nullptr);
-    return (this->envAgent->getOwner(point) == rank);
+    assert(this->pointsManager != nullptr);
+    assert(this->pointsManager->getEnvironmentAgent() != nullptr);
+    return (this->pointsManager->getEnvironmentAgent()->getOwner(point) == rank);
 }
 
 
@@ -1030,7 +1035,7 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
 
 void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints)
 {
-    DistributedOctEnvironmentAgent *octEnvAgent = dynamic_cast<DistributedOctEnvironmentAgent*>(this->envAgent);
+    const DistributedOctEnvironmentAgent *octEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->pointsManager->getEnvironmentAgent());
     if(octEnvAgent == nullptr)
     {
         return;
@@ -1198,7 +1203,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     std::vector<Face> box;
     std::vector<Vector3D> normals;
     this->InitialBoxBuild(box, normals);
-
+    
     bool sent_finished = false; // if I sent a finished message
     int finished = 0; // the number of finished ranks
     boost::container::flat_set<size_t> smallPoints; // indices of 'small' points
@@ -1222,7 +1227,9 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
     // this->InitialExchange(points, sentProc_, sentPoints_);
     // std::cout << "rank " << rank << " finished initial exchange" << std::endl;
-    RangeAgent rangeAgent(this->envAgent, &rangeFinder, sentProc_, sentPoints_);
+
+    // std::cout << "initial radius is " << this->initialRadius << ", I have " << points.size() << " points" << std::endl;
+    RangeAgent rangeAgent(this->pointsManager->getEnvironmentAgent(), &rangeFinder, sentProc_, sentPoints_);
 
     std::vector<std::pair<size_t, size_t>> allMirrored;
     int iterations = 0;
@@ -1241,7 +1248,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     while(true) // loop is not really infinite (has 'break')
     {
         iterations++;
-        if(rank == 0) std::cout << "iteration " << iterations << std::endl;
+        // if(rank == 0) std::cout << "iteration " << iterations << std::endl;
 
         std::queue<RangeQueryData> queries = this->CreateBatches(smallPoints, largePoints, currentRadiuses, iterations);
 
@@ -1368,14 +1375,11 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 void Voronoi3D::CalculateInitialRadius(size_t pointsSize)
 {
     this->radiuses.resize(pointsSize);
-    if(std::abs(this->initialRadius) <= EPSILON)
-    {
-        // initial radius is zero, so we need to determine it
-      double volume = (this->ur_[0] - this->ll_[0]) * (this->ur_[1] - this->ll_[1]) * (this->ur_[2] - this->ll_[2]);
-      size_t N;
-      MPI_Allreduce(&pointsSize, &N, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-      this->initialRadius = 2 * std::pow(volume / N, 0.333333f); // heuristic
-    } 
+    // initial radius is zero, so we need to determine it
+    double volume = (this->ur_[0] - this->ll_[0]) * (this->ur_[1] - this->ll_[1]) * (this->ur_[2] - this->ll_[2]);
+    size_t N;
+    MPI_Allreduce(&pointsSize, &N, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+    this->initialRadius = 2 * std::pow(volume / N, 0.333333f); // heuristic
     std::fill(this->radiuses.begin(), this->radiuses.end(), this->initialRadius);
 }
 
@@ -1385,7 +1389,9 @@ void Voronoi3D::CalculateInitialRadius(size_t pointsSize)
 */
 std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points)
 {
-    if(this->firstCall == true)
+    bool first_call = (this->pointsManager == nullptr);
+
+    if(this->initialRadius < 0)
     {
         // first call
         this->CalculateInitialRadius(points.size());
@@ -1397,47 +1403,21 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         this->radiuses.resize(points.size(), this->initialRadius);
     }
 
-    PointsExchangeResult exchangeResult;
+    if(this->pointsManager == nullptr)
+    {
+        this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_)); // todo: memory leak...?
+        this->pointsManager = new HilbertPointsManager(this->ll_, this->ur_, this->indexing);
+    }
 
-    if(pointsManager.checkForRebalance(points) or (this->firstCall == true) or (this->envAgent == nullptr))
-    {
-        // calculate the first and initial order, and set it to the deepest hilbert order we have
-        OctTree<Vector3D> tree(this->ll_, this->ur_, points);
-        int depth = tree.getDepth(); // my own depth
-        MPI_Allreduce(&depth, &this->hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
-        this->hilbertOrder = std::min<size_t>(MAX_ALLOWED_HILBERT_ORDER, this->hilbertOrder);
-        this->responsibilityRange = this->pointsManager.redetermineBorders(points, this->hilbertOrder); // recalculates borders accoridng to the deepest order
-        exchangeResult = this->pointsManager.pointsExchange(this->responsibilityRange, this->hilbertOrder, points, this->radiuses); // exchange
-        if(this->envAgent != nullptr)
-        {
-            this->envAgent->updateBorders(this->responsibilityRange, this->hilbertOrder);
-        }
-    }
-    else
-    {
-        // perform points exchange, according to the environment agent
-        exchangeResult = this->pointsManager.pointsExchangeByEnvAgent(this->envAgent, points, this->radiuses);
-    }
-    
+    PointsExchangeResult exchangeResult = this->pointsManager->update(points, this->radiuses); // does rebalancing (if necessary) and exchanging
     std::vector<Vector3D> new_points = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
     this->sentprocs_ = std::move(exchangeResult.sentProcessors);
     this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
     this->self_index_ = std::move(exchangeResult.indicesToSelf);
+
     this->BuildInitialize(new_points.size());
 
-    if(this->firstCall or (this->envAgent == nullptr))
-    {
-        // create new environment agent
-        this->envAgent = new DistributedOctEnvironmentAgent(this->ll_, this->ur_, new_points, this->responsibilityRange, this->hilbertOrder);
-        this->firstCall = false;
-    }
-    else
-    {
-        // update the existing environment agent
-        assert(this->envAgent != nullptr);
-        this->envAgent->update(new_points);
-    }
     return new_points;
 }
 
@@ -1451,7 +1431,7 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    bool first_call = this->firstCall;
+    bool first_call = (this->pointsManager == nullptr);
     std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points);
     // std::cout << "points.size() was " << points.size() << " and now is " << new_points.size() << std::endl;
     
@@ -1491,7 +1471,7 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points)
             for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
             {
                 // todo second closest
-                this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (100 * myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
+                this->radiuses[pointIdx] = 2 * fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
             }
         }
     }
@@ -2451,7 +2431,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 duplicated_points_(other.duplicated_points_), sentprocs_(other.sentprocs_), duplicatedprocs_(other.duplicatedprocs_), sentpoints_(other.sentpoints_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , envAgent(other.envAgent), initialRadius(other.initialRadius), firstCall(true), pointsManager(PointsManager(this->ll_, this->ur_)), hilbertOrder(NULL_ORDER)
+                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager)
                                                 #endif // RICH_MPI
                                                 {}
 
@@ -2731,10 +2711,8 @@ void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur)
     ll_ = ll;
     ur_ = ur;
     #ifdef RICH_MPI
-        this->pointsManager = PointsManager(this->ll_, this->ur_);
+        delete this->pointsManager;
+        this->pointsManager = nullptr;
         this->radiuses.clear();
-        this->firstCall = false;
-        delete this->envAgent;
-        this->envAgent = nullptr;
     #endif // RICH_MPI
 }

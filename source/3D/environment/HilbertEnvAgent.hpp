@@ -4,50 +4,50 @@
 #ifdef RICH_MPI
 
 #include "EnvironmentAgent.h"
+#include "3D/hilbert/HilbertConvertor.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
-#include "3D/hilbert/hilbertTypes.h"
-#include "3D/hilbert/HilbertOrder3D.hpp"
 
 #define AVERAGE_INTERSECT 128
-#define MAX_HILBERT_ORDER 18
 #define NULL_ORDER -1
 
 class HilbertEnvironmentAgent : public EnvironmentAgent
 {
 public:
-    inline HilbertEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD): EnvironmentAgent(ll, ur, comm)
+    using CellsSet = boost::container::flat_set<hilbert_index_t>;
+
+    inline HilbertEnvironmentAgent(const IndexingKernel3D *indexing, const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD):
+            EnvironmentAgent(ll, ur, comm), indexing(indexing)
     {
-        this->dx = std::max(std::max((ur.x - ll.x), (ur.y - ll.y)), (ur.z - ll.z));
         this->setOrder(order);
     };
+    
     inline HilbertEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): EnvironmentAgent(ll, ur, comm), order(NULL_ORDER){};
-    _set<int> getIntersectingRanks(const Vector3D &center, double radius) const override;
-    _set<hilbert_index_t> getIntersectingCells(const Vector3D &center, double radius) const;
-    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(this->xyz2d(point));};
+    
+    RanksSet getIntersectingRanks(const Vector3D &center, double radius) const override;
+    
+    CellsSet getIntersectingCells(const Vector3D &center, double radius) const;
+    
+    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->order));};
+    
     inline int getCellOwner(hilbert_index_t d) const
     {
         return std::min<int>(std::distance(this->range.begin(), std::upper_bound(this->range.begin(), this->range.end(), d)), this->size - 1);
     };
+
     inline int getOrder() const{return this->order;};
-    inline hilbert_index_t xyz2d(const Vector3D &point) const{
-        return EnvironmentAgent::curve.Hilbert3D_xyz2d(Vector3D((point.x - this->ll.x) / dx, (point.y - this->ll.y) / dx, (point.z - this->ll.z) / dx), this->order);
-    };
-    inline void update(const std::vector<Vector3D> &points) override
-    {
-        return; // nothing to do
-    }
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
+
+    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
     {
         this->range = newRange;
         this->setOrder(newOrder);
     }
 
 private:
-    Vector3D myll, myur, sidesLengths;
-    double dx;
+    Vector3D sidesLengths;
     int order;
     int rank, size;
     std::vector<hilbert_index_t> range;
+    const IndexingKernel3D *indexing = nullptr;
 
     inline void setOrder(int order)
     {
@@ -85,9 +85,9 @@ namespace
 /**
  * The old method for calculating intersecting circle. Inefficient for too-large hilbert accuracies.
 */
-typename EnvironmentAgent::_set<hilbert_index_t> HilbertEnvironmentAgent::getIntersectingCells(const Vector3D &center, double radius) const
+typename HilbertEnvironmentAgent::CellsSet HilbertEnvironmentAgent::getIntersectingCells(const Vector3D &center, double radius) const
 {
-    typename EnvironmentAgent::_set<hilbert_index_t> hilbertCells;
+    CellsSet hilbertCells;
     hilbertCells.reserve(AVERAGE_INTERSECT);
 
     coord_t _minX, _maxX;
@@ -127,7 +127,7 @@ typename EnvironmentAgent::_set<hilbert_index_t> HilbertEnvironmentAgent::getInt
                 if(std::abs(((closestX - center.x) * (closestX - center.x) + (closestY - center.y) * (closestY - center.y) + (closestZ - center.z) * (closestZ - center.z)) - (radius * radius)) <= EPSILON)
                 {
                     // the testing point is inside the circle iff the whole cube intersects the circle
-                    hilbertCells.insert(this->xyz2d(Vector3D(_x + (this->sidesLengths.x) / 2, _y + (this->sidesLengths.y) / 2, _z + (this->sidesLengths.z) / 2)));
+                    hilbertCells.insert(Hilbert3DConvertor::xyz2d((*this->indexing)(Vector3D(_x + (this->sidesLengths.x) / 2, _y + (this->sidesLengths.y) / 2, _z + (this->sidesLengths.z) / 2)), this->order));
                 }
             }
         }
@@ -139,9 +139,9 @@ typename EnvironmentAgent::_set<hilbert_index_t> HilbertEnvironmentAgent::getInt
 /**
  * The old method for calculating intersecting circle. Inefficient for too-large hilbert accuracies.
 */
-typename EnvironmentAgent::_set<int> HilbertEnvironmentAgent::getIntersectingRanks(const Vector3D &center, double radius) const
+typename EnvironmentAgent::RanksSet HilbertEnvironmentAgent::getIntersectingRanks(const Vector3D &center, double radius) const
 {
-    EnvironmentAgent::_set<int> ranks;
+    EnvironmentAgent::RanksSet ranks;
     for(const hilbert_index_t &cellIdx : this->getIntersectingCells(center, radius))
     {
         ranks.insert(this->getCellOwner(cellIdx));
