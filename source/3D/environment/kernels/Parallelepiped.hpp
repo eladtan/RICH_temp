@@ -125,6 +125,10 @@ void Parallelepiped::calculateTransformation(const Vector3D &u, const Vector3D &
         inverseTransformation(i, 1) = v[i];
         inverseTransformation(i, 2) = w[i];
     }
+    if(std::abs(inverseTransformation.determinant()) < EPSILON)
+    {
+        throw UniversalError("The given shape is not a proper parallelepiped (in 'Parallelepiped' kernelization)");
+    }
     this->transformation = inverseTransformation.inverse();
 }
 

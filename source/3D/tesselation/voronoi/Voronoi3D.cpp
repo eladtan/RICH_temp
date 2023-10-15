@@ -31,11 +31,7 @@
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
-#include "3D/environment/kernels/Move.hpp"
-#include "3D/environment/kernels/Scale.hpp"
-#include "3D/environment/kernels/Shrink.hpp"
-#include "3D/environment/kernels/Frustrum.hpp"
-#include "3D/environment/kernels/Parallelepiped.hpp"
+#include "3D/environment/kernels/Rectangle.hpp"
 
 #endif // RICH_MPI
 
@@ -2714,7 +2710,7 @@ void Voronoi3D::SetKernel(const IndexingKernel3D *newIndexing)
 
     if(newIndexing == nullptr)
     {
-        this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_)); // default kernel
+        this->indexing = new Rectangle(this->ll_, this->ur_); // default kernel
         this->shouldDeleteKernelOnDestruction = true;
     }
     else
