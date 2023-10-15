@@ -89,7 +89,6 @@ private:
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   #ifdef RICH_MPI
-
   std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
   void CalculateInitialRadius(size_t pointsSize);
@@ -100,7 +99,8 @@ private:
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
-
+  void SetKernel(const IndexingKernel3D *newIndexing = nullptr);
+  void SetBox(Vector3D const &ll, Vector3D const &ur, const IndexingKernel3D *newIndexing);
   #endif // RICH_MPI
 
   Delaunay3D del_;
@@ -128,11 +128,13 @@ private:
   std::array<Vector3D, 4> temp_points_;
   std::array<Vector3D, 5> temp_points2_;
   std::vector<Face> box_faces_;
+  
   #ifdef RICH_MPI
     std::vector<double> radiuses;
     double initialRadius;
     PointsManager *pointsManager = nullptr;
     const IndexingKernel3D *indexing = nullptr;
+    bool shouldDeleteKernelOnDestruction;
   #endif // RICH_MPI
 
 public:
@@ -140,7 +142,10 @@ public:
   {
     #ifdef RICH_MPI
       delete this->pointsManager;
-      delete this->indexing;
+      if(this->shouldDeleteKernelOnDestruction)
+      {
+        delete this->indexing;
+      }
     #endif // RICH_MPI
   }
 

@@ -613,7 +613,7 @@ Voronoi3D::Voronoi3D() : ll_(Vector3D()), ur_(Vector3D()), Norg_(0), bigtet_(0),
                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>())
                         #ifdef RICH_MPI
-                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
+                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
                         #endif // RICH_MPI
 {
 }
@@ -628,7 +628,7 @@ Voronoi3D::Voronoi3D(std::vector<Face> const& box_faces) : Norg_(0), bigtet_(0),
                                                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(box_faces)
                                                         #ifdef RICH_MPI
-                                                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
+                                                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
                                                         #endif // RICH_MPI
 {
     size_t const Nfaces = box_faces.size();
@@ -661,7 +661,7 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                               self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ())
                                                               #ifdef RICH_MPI
-                                                              , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
+                                                              , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
                                                               #endif // RICH_MPI
                                                               {}
 
@@ -1230,7 +1230,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     // this->InitialExchange(points, sentProc_, sentPoints_);
     // std::cout << "rank " << rank << " finished initial exchange" << std::endl;
 
-    std::cout << "initial radius is " << this->initialRadius << ", I have " << points.size() << " points" << std::endl;
     RangeAgent rangeAgent(this->pointsManager->getEnvironmentAgent(), &rangeFinder, sentProc_, sentPoints_);
 
     std::vector<std::pair<size_t, size_t>> allMirrored;
@@ -1403,7 +1402,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 
     if(this->pointsManager == nullptr)
     {
-        this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_)); // todo: memory leak...?
+        this->SetKernel(); // default kernel
         this->pointsManager = new HilbertPointsManager(this->ll_, this->ur_, this->indexing);
     }
 
@@ -2429,7 +2428,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 duplicated_points_(other.duplicated_points_), sentprocs_(other.sentprocs_), duplicatedprocs_(other.duplicatedprocs_), sentpoints_(other.sentpoints_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager)
+                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager), shouldDeleteKernelOnDestruction(other.shouldDeleteKernelOnDestruction)
                                                 #endif // RICH_MPI
                                                 {}
 
@@ -2704,10 +2703,32 @@ vector<std::size_t> &Voronoi3D::GetSelfIndex(void)
     return self_index_;
 }
 
-void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur)
+#ifdef RICH_MPI
+void Voronoi3D::SetKernel(const IndexingKernel3D *newIndexing)
 {
-    ll_ = ll;
-    ur_ = ur;
+    if(this->shouldDeleteKernelOnDestruction)
+    {
+        delete this->indexing;
+        this->indexing = nullptr;
+    }
+
+    if(newIndexing == nullptr)
+    {
+        this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_)); // default kernel
+        this->shouldDeleteKernelOnDestruction = true;
+    }
+    else
+    {
+        this->indexing = newIndexing;
+        this->shouldDeleteKernelOnDestruction = false;
+    }
+}
+#endif // RICH_MPI
+
+void Voronoi3D::SetBox(const Vector3D &ll, const Vector3D &ur)
+{
+    this->ll_ = ll;
+    this->ur_ = ur;
     #ifdef RICH_MPI
         delete this->pointsManager;
         this->pointsManager = nullptr;
@@ -2715,3 +2736,11 @@ void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur)
         this->initialRadius = RADIUS_UNINITIALIZED;
     #endif // RICH_MPI
 }
+
+#ifdef RICH_MPI
+void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const IndexingKernel3D *newIndexing)
+{
+    this->SetBox(ll, ur);
+    this->SetKernel(newIndexing);
+}
+#endif // RICH_MPI
