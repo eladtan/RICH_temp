@@ -1,4 +1,4 @@
-/*! \brief Tillotson EOS
+/*! \brief Calculate speed of sound/*! \brief Tillotson EOS
 \file TillotsonOrg.hpp
 \author Elad Steinberg
 */
@@ -19,19 +19,17 @@ private:
 	double a_, b_, A_, B_, rho0_, E0_, EIV_, ECV_, alpha_, beta_;
 	mutable double temp_d_, temp_p_;
 
-	double dp2EI(double d, double p)const;
-	double dp2EIV(double d, double p)const;
 	double de2pI(double d, double e)const;
 	double de2pII(double d, double e)const;
 	double de2pIV(double d, double e)const;
-	double dep2cI(double d, double e, double p)const;
+	double dep2cI(double d, double e)const;
   /*! \brief Calculate speed of sound
     \param d Density
     \param e Energy
     \param p PRessure 
     \return Speed of sound
    */
-	double dep2cIV(double d, double e, double p)const;
+	double dep2cIV(double d, double e)const;
 public:
 
   /*! \brief Class constructor
@@ -71,4 +69,3 @@ public:
 };
 
 #endif //TILLOTSONORG_HPP
-

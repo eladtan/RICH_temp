@@ -11,6 +11,48 @@ public:
                 points(std::vector<Vector3D>()){this->points.insert(this->points.begin(), first, last); this->pointsSize = this->points.size();};
     BruteForceFinder(const std::vector<Vector3D> &points): BruteForceFinder(points.begin(), points.end()){};
 
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
+    {
+        size_t closestSoFarIndex = std::numeric_limits<size_t>::max();
+        double closestSoFar = std::numeric_limits<double>::min();
+        const Vector3D *_points = this->points.data();
+        for(size_t i = 0; i < this->pointsSize; i++)
+        {
+            //  __builtin_prefetch(&_points[i]);
+            const Vector3D &_point = _points[i];
+            double sphere_dx = _point.x - center.x;
+            double sphere_dy = _point.y - center.y;
+            double sphere_dz = _point.z - center.z;
+            double dx = point.x - center.x;
+            double dy = point.y - center.y;
+            double dz = point.z - center.z;
+            sphere_dx *= sphere_dx;
+            sphere_dy *= sphere_dy;
+            sphere_dz *= sphere_dz;
+            dx *= dx;
+            dy *= dy;
+            dz *= dz;
+            double distanceToPoint = dx + dy + dz;
+            double distanceToSphere = sphere_dx + sphere_dy + sphere_dz;
+            if((distanceToPoint < closestSoFar) and (distanceToSphere <= ((radius * radius) + EPSILON)))
+            {
+                closestSoFar = distanceToPoint;
+                closestSoFarIndex = i;
+            }
+        }
+
+        std::vector<size_t> result;
+        result.reserve(1);
+        if(closestSoFarIndex != std::numeric_limits<size_t>::max())
+        {
+            // a point was found
+            result.push_back(closestSoFarIndex);
+        }
+        return result;
+    }
+
+    inline const Vector3D &getPoint(size_t index) const override{return this->points[index];};
+
     inline std::vector<size_t> range(const Vector3D &center, double radius) const override
     {
         std::vector<size_t> result;
@@ -25,15 +67,13 @@ public:
             dx *= dx;
             dy *= dy;
             dz *= dz;
-            if(std::abs((dx + dy + dz) - (radius * radius)) <= EPSILON)
+            if((dx + dy + dz) <= ((radius * radius) + EPSILON))
             {
                 result.push_back(i);
             }
         }
         return result;
     }
-
-    inline const Vector3D &getPoint(size_t index) const override{return this->points[index];};
 
     inline size_t size() const override{return this->pointsSize;};
 

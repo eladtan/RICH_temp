@@ -631,7 +631,8 @@ Snapshot ReDistributeData(string const& filename, Tessellation const& proctess, 
 		if (status.MPI_TAG > 3)
 			throw UniversalError("Wrong mpi tag");
 	}
-	MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
+	if(!req.empty())
+		MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
 
 	for (size_t i = 0; i < chull.size(); ++i)
 	{

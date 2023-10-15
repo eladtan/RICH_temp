@@ -5,7 +5,7 @@
 #include <boost/random.hpp>
 
 #include "../PLC/PL_Complex.hpp"
-#include "../../../source/3D/GeometryCommon/Vector3D.hpp"
+#include "source/3D/elementary/Vector3D.hpp"
 #include "../VoroCrust_kd_tree/VoroCrust_kd_tree.hpp"
 #include "../trees.hpp"
 

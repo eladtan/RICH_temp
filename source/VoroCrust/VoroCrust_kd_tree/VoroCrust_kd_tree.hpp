@@ -5,7 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <iostream>
-#include "../../../source/3D/GeometryCommon/Vector3D.hpp"
+#include "source/3D/elementary/Vector3D.hpp"
 
 #define DIM 3
 

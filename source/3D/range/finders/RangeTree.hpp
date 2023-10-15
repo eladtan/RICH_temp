@@ -12,6 +12,8 @@
 template class BinaryTree<IndexedVector3D>;
 template class RangeTree<IndexedVector3D>;
 
+#define DIMENSIONS 3
+
 class RangeTreeFinder : public RangeFinder
 {
 public:
@@ -19,6 +21,14 @@ public:
     RangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last);
     inline RangeTreeFinder(std::vector<Vector3D> &myPoints): RangeTreeFinder(myPoints.begin(), myPoints.end()){};
     ~RangeTreeFinder();
+
+    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
+
+    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
+    {
+        return std::vector<size_t>();
+    }
+    
     inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->rangeTree->circularRange(center, radius))
@@ -28,11 +38,10 @@ public:
         return toReturn;
     };
     inline size_t size() const override{return this->rangeTree->size();};
-    inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
 private:
-    RangeTree<IndexedVector3D> *rangeTree;
     std::vector<Vector3D> myPoints;
+    RangeTree<IndexedVector3D> *rangeTree;
 };
 
 template<typename RandomAccessIterator>
@@ -40,14 +49,17 @@ RangeTreeFinder::RangeTreeFinder(RandomAccessIterator first, RandomAccessIterato
 {
     std::vector<IndexedVector3D> data;
     size_t index = 0;
+
+    myPoints.reserve(last - first);
     for(RandomAccessIterator it = first; it != last; it++)
     {
         const Vector3D &vec = *it;
-        data.push_back(IndexedVector3D(vec.x, vec.y, vec.z, index));
         this->myPoints.push_back(vec);
+        IndexedVector3D idx_vec = IndexedVector3D(vec.x, vec.y, vec.z, index);
+        data.push_back(idx_vec);
         index++;
     }
-    this->rangeTree = new RangeTree<IndexedVector3D>(3);
+    this->rangeTree = new RangeTree<IndexedVector3D>(DIMENSIONS);
     this->rangeTree->build(data.begin(), data.end());
 }
 

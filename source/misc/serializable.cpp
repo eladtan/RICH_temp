@@ -1,8 +1,6 @@
 #include <boost/foreach.hpp>
 #include "serializable.hpp"
 
-Serializable::~Serializable(void) {}
-
 vector<double> list_serialize
 (const vector<Serializable*>& los)
 {

@@ -7,11 +7,11 @@
 #include <vector>
 #include <mpi.h>
 #include <assert.h>
+
 #include "utils/balance/balance.hpp"
 #include "utils/exchange/exchange.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/hilbert/hilbertTypes.h"
 
 #define BALANCE_FACTOR 1.1
 
@@ -41,6 +41,14 @@ public:
         MPI_Comm_rank(this->comm, &this->rank);
     };
 
+    virtual ~PointsManager() = default;
+
+    virtual PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) = 0;
+
+    virtual void rebalance(const std::vector<Vector3D> &points) = 0;
+
+    virtual const EnvironmentAgent *getEnvironmentAgent() const = 0;
+
     bool checkForRebalance(const std::vector<Vector3D> &points) const
     {
         // checks if I have too many points, and notify other ranks
@@ -51,12 +59,27 @@ public:
         int I_say = (mySize >= (BALANCE_FACTOR * static_cast<double>(ideal)))? 1 : 0; // if I say 'rebalance' or not
         int rebalance = 0; // if someone says 'rebalance' or not
         MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if((rebalance > 0) and (this->rank == 0))
+        if(rebalance > 0 and this->rank == 0)
         {
-            std::cout << "Doing load rebalance" << std::endl;
+            std::cout << "doing rebalance" << std::endl;
         }
         return (rebalance > 0);
     };
+
+    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+    {
+        if(this->checkForRebalance(points))
+        {
+            this->rebalance(points);
+        }
+        return this->exchange(points, radiuses);
+    }
+
+protected:
+    MPI_Comm comm;
+    int size;
+    int rank;
+    Vector3D ll, ur;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
@@ -64,15 +87,13 @@ public:
     template<typename DetermineFunc>
     PointsExchangeResult pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
     {
-        assert(points.size() == radiuses.size());
-
         std::vector<_3DPointRadius> data;
         data.reserve(points.size());
         for(size_t i = 0; i < points.size(); i++)
         {
             const Vector3D &point = points[i];
             const double radius = radiuses[i];
-            data.push_back({{point.x, point.y, point.z}, radius});
+            data.push_back({_3DPoint(point.x, point.y, point.z), radius});
         }
 
         ExchangeAnswer<_3DPointRadius> answer = dataExchange(data, func, this->comm);
@@ -98,36 +119,11 @@ public:
         return toReturn;
     };
 
-    /**
-     * re-calculates the borders, to be equally-divided
-    */
-    std::vector<hilbert_index_t> redetermineBorders(const std::vector<Vector3D> &points, int order) const
+    inline PointsExchangeResult pointsExchangeByEnvAgent(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
     {
-        std::vector<hilbert_index_t> indices;
-        for(const Vector3D &point : points)
-        {
-            indices.push_back(EnvironmentAgent::xyz2d(point, this->ll, this->ur, order));
-        }
-        return getBorders(indices);
-    };
-
-    inline PointsExchangeResult pointsExchangeByEnvAgent(const EnvironmentAgent *envAgent, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
-    {
+        const EnvironmentAgent *envAgent = this->getEnvironmentAgent();
         return this->pointsExchange([envAgent](const _3DPointRadius &_point){return envAgent->getOwner(Vector3D(_point.point.x, _point.point.y, _point.point.z));}, points, radiuses);
     };
-
-    inline PointsExchangeResult pointsExchange(const std::vector<hilbert_index_t> &ranges, int order, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
-    {
-        return this->pointsExchange([this, ranges, order](const _3DPointRadius &_point){
-            return std::min<hilbert_index_t>(std::distance(ranges.cbegin(), std::upper_bound(ranges.cbegin(), ranges.cend(), EnvironmentAgent::xyz2d(Vector3D(_point.point.x, _point.point.y, _point.point.z), this->ll, this->ur, order))), (this->size - 1));
-            }, points, radiuses);
-    };
-
-private:
-    MPI_Comm comm;
-    int size;
-    int rank;
-    Vector3D ll, ur;
 };
 
 #endif // RICH_MPI

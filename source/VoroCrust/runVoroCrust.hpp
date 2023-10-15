@@ -2,7 +2,7 @@
 #define RUNVOROCRUST_HPP 1
 #include <filesystem>
 #include <vector>
-#include "source/3D/GeometryCommon/Vector3D.hpp"
+#include "source/3D/elementary/Vector3D.hpp"
 #include "PLC/PL_Complex.hpp"
 #include "VoroCrustAlgorithm.hpp"
 
