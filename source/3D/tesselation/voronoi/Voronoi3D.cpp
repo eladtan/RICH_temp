@@ -31,9 +31,7 @@
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
-#include "3D/environment/kernels/Move.hpp"
-#include "3D/environment/kernels/Scale.hpp"
-#include "3D/environment/kernels/Shrink.hpp"
+#include "3D/environment/kernels/Rectangle.hpp"
 
 #endif // RICH_MPI
 
@@ -611,7 +609,7 @@ Voronoi3D::Voronoi3D() : ll_(Vector3D()), ur_(Vector3D()), Norg_(0), bigtet_(0),
                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>())
                         #ifdef RICH_MPI
-                        , initialRadius(INITIAL_RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
+                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
                         #endif // RICH_MPI
 {
 }
@@ -626,7 +624,7 @@ Voronoi3D::Voronoi3D(std::vector<Face> const& box_faces) : Norg_(0), bigtet_(0),
                                                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(box_faces)
                                                         #ifdef RICH_MPI
-                                                        , initialRadius(INITIAL_RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
+                                                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
                                                         #endif // RICH_MPI
 {
     size_t const Nfaces = box_faces.size();
@@ -659,7 +657,7 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                               self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ())
                                                               #ifdef RICH_MPI
-                                                              , initialRadius(INITIAL_RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr)
+                                                              , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
                                                               #endif // RICH_MPI
                                                               {}
 
@@ -768,27 +766,27 @@ void Voronoi3D::InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &n
 }
 
 #ifdef RICH_MPI
-namespace
-{
     #ifdef VORONOI_DEBUG
-    template<typename T>
-    void reportDuplications(const std::vector<T> &vector)
+    namespace
     {
-        for(size_t i = 0; i < vector.size(); i++)
+        template<typename T>
+        void reportDuplications(const std::vector<T> &vector)
         {
-            for(size_t j = 0; j < vector.size(); j++)
+            for(size_t i = 0; i < vector.size(); i++)
             {
-                if(i == j) continue;
-                if(vector[i] == vector[j])
+                for(size_t j = 0; j < vector.size(); j++)
                 {
-                    std::cout << "duplication found in indices " << i << " and " << j << ": " << vector[i] << std::endl;
-                    MPI_Abort(MPI_COMM_WORLD, 2050);
+                    if(i == j) continue;
+                    if(vector[i] == vector[j])
+                    {
+                        std::cout << "duplication found in indices " << i << " and " << j << ": " << vector[i] << std::endl;
+                        MPI_Abort(MPI_COMM_WORLD, 2050);
+                    }
                 }
             }
         }
     }
     #endif // VORONOI_DEBUG
-}
 
 /**
  * \author Maor Mizrachi
@@ -1185,7 +1183,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
     this->del_.BuildExtra(extraPoints);
 
     this->R_.resize(this->del_.tetras_.size());
-    std::fill(this->R_.begin(), this->R_.end(), -1);
+    std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
     this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 }
@@ -1228,7 +1226,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     // this->InitialExchange(points, sentProc_, sentPoints_);
     // std::cout << "rank " << rank << " finished initial exchange" << std::endl;
 
-    // std::cout << "initial radius is " << this->initialRadius << ", I have " << points.size() << " points" << std::endl;
     RangeAgent rangeAgent(this->pointsManager->getEnvironmentAgent(), &rangeFinder, sentProc_, sentPoints_);
 
     std::vector<std::pair<size_t, size_t>> allMirrored;
@@ -1251,11 +1248,9 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         // if(rank == 0) std::cout << "iteration " << iterations << std::endl;
 
         std::queue<RangeQueryData> queries = this->CreateBatches(smallPoints, largePoints, currentRadiuses, iterations);
-
         std::vector<std::pair<size_t, size_t>> mirroredPoints = this->MirrorPoints(queries, box, normals);
 
         I_finished = queries.empty()? 1 : 0;
-        
         MPI_Iallreduce(&I_finished, &numFinished, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD, &finishedReq);
 
         QueryBatchInfo<RangeQueryData, _3DPoint> batchInfo = rangeAgent.runBatch(queries);
@@ -1343,8 +1338,8 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         // performs internal tesselation:
         this->del_.BuildExtra(newPoints);
 
-        this->R_.resize(this->del_.tetras_.size(), -1);
-        std::fill(this->R_.begin(), this->R_.end(), -1);
+        this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
+        std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
@@ -1355,8 +1350,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             break;
         }
     }
-
-    MPI_Barrier(MPI_COMM_WORLD);
 
     const std::vector<std::vector<size_t>> &sentPoints = rangeAgent.getSentPoints();
     const std::vector<int> &sentProc = rangeAgent.getSentProc();
@@ -1405,7 +1398,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 
     if(this->pointsManager == nullptr)
     {
-        this->indexing = new Scale(this->ll_, this->ur_, new Move(this->ll_)); // todo: memory leak...?
+        this->SetKernel(); // default kernel
         this->pointsManager = new HilbertPointsManager(this->ll_, this->ur_, this->indexing);
     }
 
@@ -1461,7 +1454,7 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points)
 
         // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
         this->R_.resize(this->del_.tetras_.size());
-        std::fill(this->R_.begin(), this->R_.end(), -1);
+        std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
@@ -1645,7 +1638,7 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     }
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), -1);
+    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
     bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
 
@@ -1680,7 +1673,7 @@ void Voronoi3D::BuildDebug(int rank)
     bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), -1);
+    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
 
     CM_.resize(del_.points_.size());
@@ -1723,7 +1716,7 @@ void Voronoi3D::Build(vector<Vector3D> const &points)
     del_.Build(points, ur_, ll_, order);
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), -1);
+    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
     bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
 
@@ -1734,7 +1727,7 @@ void Voronoi3D::Build(vector<Vector3D> const &points)
     del_.BuildExtra(extra_points);
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), -1);
+    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
     bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
     ghost_index = SerialFindIntersections(true);
@@ -1742,7 +1735,7 @@ void Voronoi3D::Build(vector<Vector3D> const &points)
     del_.BuildExtra(extra_points);
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), -1);
+    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
     bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
     ghost_index = SerialFindIntersections(false);
@@ -1755,7 +1748,7 @@ void Voronoi3D::Build(vector<Vector3D> const &points)
     std::vector<Vector3D>().swap(extra_points);
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), -1);
+    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
 
     CM_.resize(del_.points_.size());
@@ -2431,7 +2424,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 duplicated_points_(other.duplicated_points_), sentprocs_(other.sentprocs_), duplicatedprocs_(other.duplicatedprocs_), sentpoints_(other.sentpoints_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager)
+                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager), shouldDeleteKernelOnDestruction(other.shouldDeleteKernelOnDestruction)
                                                 #endif // RICH_MPI
                                                 {}
 
@@ -2706,13 +2699,44 @@ vector<std::size_t> &Voronoi3D::GetSelfIndex(void)
     return self_index_;
 }
 
-void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur)
+#ifdef RICH_MPI
+void Voronoi3D::SetKernel(const IndexingKernel3D *newIndexing)
 {
-    ll_ = ll;
-    ur_ = ur;
+    if(this->shouldDeleteKernelOnDestruction)
+    {
+        delete this->indexing;
+        this->indexing = nullptr;
+    }
+
+    if(newIndexing == nullptr)
+    {
+        this->indexing = new Rectangle(this->ll_, this->ur_); // default kernel
+        this->shouldDeleteKernelOnDestruction = true;
+    }
+    else
+    {
+        this->indexing = newIndexing;
+        this->shouldDeleteKernelOnDestruction = false;
+    }
+}
+#endif // RICH_MPI
+
+void Voronoi3D::SetBox(const Vector3D &ll, const Vector3D &ur)
+{
+    this->ll_ = ll;
+    this->ur_ = ur;
     #ifdef RICH_MPI
         delete this->pointsManager;
         this->pointsManager = nullptr;
         this->radiuses.clear();
+        this->initialRadius = RADIUS_UNINITIALIZED;
     #endif // RICH_MPI
 }
+
+#ifdef RICH_MPI
+void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const IndexingKernel3D *newIndexing)
+{
+    this->SetBox(ll, ur);
+    this->SetKernel(newIndexing);
+}
+#endif // RICH_MPI

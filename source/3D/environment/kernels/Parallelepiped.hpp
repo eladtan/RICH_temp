@@ -19,6 +19,8 @@ public:
         this->calculateTransformation(u, v, w);
     }
     
+    inline ~Parallelepiped(){delete this->indexing;};
+
     Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *indexing = nullptr);
 
     inline Vector3D operator()(const Vector3D &vector) const override
@@ -44,9 +46,9 @@ Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKer
 
     std::vector<size_t> contrastFaces;
     std::vector<Vector3D> allEdges;
-    std::vector<std::pair<Vector3D, Vector3D> edgesVectors;
-    this->edgesVectors.resize(NUM_FACES);
-    this->contrastFaces.reserve(NUM_FACES);
+    std::vector<std::pair<Vector3D, Vector3D>> edgesVectors;
+    edgesVectors.resize(NUM_FACES);
+    contrastFaces.reserve(NUM_FACES);
 
     for(size_t faceIdx = 0; faceIdx < faces.size(); faceIdx++)
     {
@@ -109,6 +111,8 @@ Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKer
     {
         throw UniversalError("The given shape is not a parallelepiped (in 'Parallelepiped' kernelization)");
     }
+    Vector3D move_factor = faces[0].vertices[0];
+    this->indexing = new Move(move_factor, indexing);
     this->calculateTransformation(allEdges[0], allEdges[1], allEdges[2]);
 }
 
@@ -117,9 +121,13 @@ void Parallelepiped::calculateTransformation(const Vector3D &u, const Vector3D &
     Mat33<typename Vector3D::coord_type> inverseTransformation;
     for(int i = 0; i < 3; i++)
     {
-        inverseTransformation[i][0] = u[i];
-        inverseTransformation[i][1] = v[i];
-        inverseTransformation[i][2] = w[i];
+        inverseTransformation(i, 0) = u[i];
+        inverseTransformation(i, 1) = v[i];
+        inverseTransformation(i, 2) = w[i];
+    }
+    if(std::abs(inverseTransformation.determinant()) < EPSILON)
+    {
+        throw UniversalError("The given shape is not a proper parallelepiped (in 'Parallelepiped' kernelization)");
     }
     this->transformation = inverseTransformation.inverse();
 }
