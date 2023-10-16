@@ -3,7 +3,10 @@
 \author Elad Steinberg
 */
 
+#include "3D/elementary/Vector3D.hpp"
 #include "../../misc/serializable.hpp"
+
+#define EPSILON 1e-12
 
 #ifndef MAT3_HPP
 #define MAT3_HPP 1
@@ -326,9 +329,6 @@ inline T Mat33<T>::J2() const
 	     + _data[1][0]*_data[1][0] + _data[1][1]*_data[1][1] + _data[1][2]*_data[1][2]
 	     + _data[2][0]*_data[2][0] + _data[2][1]*_data[2][1] + _data[2][2]*_data[2][2];
 }
-
-
-#define EPSILON 1e-12
 
 template <typename T>
 Mat33<T> operator+(Mat33<T> const& A1, Mat33<T> const& A2)

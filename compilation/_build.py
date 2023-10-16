@@ -112,11 +112,18 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
 
     return cmake_result
 
+def remove_unnecessary_files(src_dir):
+    VCL_PATH = "opt/vcl"
+    files = {os.path.join(src_dir, VCL_PATH, "dispatch_example1.cpp"), os.path.join(src_dir, VCL_PATH, "dispatch_example2.cpp")}
+
+    for file_path in files:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    
 def build_program(*, configs, make_dir, src_dir, test_dir):
     """Build the program with the desired configurations."""
     exe_name = "rich"
     logger.debug(f"args:\nconfigs = {configs}\nroot_dir = {root_dir}\nmake_dir = {make_dir}\nsrc_dir = {src_dir}\ntest_dir = {test_dir}")
-    git_version = gen_version.GitVersion(root_dir)
     assert os.path.isdir(os.path.join(root_dir, "source")), f"Directory {root_dir} does not contain a directory named source"
 
     with open(os.path.join(root_dir, "compilation", "SystemLibsLinks.py"), "r") as f:
@@ -156,7 +163,10 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
 
         short_exe_path = os.path.join(config_dir, exe_name)
         if os.path.islink(short_exe_path):
-            os.remove(short_exe_path)         
+            os.remove(short_exe_path)   
+
+        # remove unnecessary files
+        remove_unnecessary_files(src_dir)
 
         #run make   
         logger.info("Running make")

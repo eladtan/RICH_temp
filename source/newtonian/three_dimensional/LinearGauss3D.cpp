@@ -640,7 +640,7 @@ namespace
 			{
 #endif
 				if (!is_shock(res, tess.GetWidth(cell_index), shockratio, cell, neighbor_list, pressure_ratio,
-					      eos.dp2c(cell.density, cell.pressure, cell.tracers, ComputationalCell3D::tracerNames)))
+					      eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames)))
 				{
 					slope_limit(cell, tess.GetCellCM(cell_index), neighbor_list, res, temp2, temp3, temp4, temp5,
 						skip_key, tess, cell_index, faces, eos);

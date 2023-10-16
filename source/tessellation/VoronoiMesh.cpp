@@ -1485,7 +1485,8 @@ vector<Vector2D> VoronoiMesh::UpdateMPIPoints(Tessellation const& vproc, int ran
 		MPI_Recv(&wsize, 1, MPI_INT, MPI_ANY_SOURCE, 3, MPI_COMM_WORLD, &status);
 		talkwithme.push_back(status.MPI_SOURCE);
 	}
-	MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
+	if(!req.empty())
+		MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
 	MPI_Barrier(MPI_COMM_WORLD);
 	for (size_t i = 0; i < talkwithme.size(); ++i)
 	{
@@ -1542,7 +1543,8 @@ vector<Vector2D> VoronoiMesh::UpdateMPIPoints(Tessellation const& vproc, int ran
 				throw UniversalError("Recv bad mpi tag");
 		}
 	}
-	MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
+	if(!req.empty())
+		MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
 	MPI_Barrier(MPI_COMM_WORLD);
 
 	// Combine the vectors

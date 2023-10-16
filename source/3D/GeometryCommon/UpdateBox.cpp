@@ -153,7 +153,7 @@ void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, do
 		for (size_t i = N; i < (N + Nadded); ++i)
 			cells.at(i).ID = Nstart + i - N;
 		size_t& MaxID = sim.GetMaxID();
-		for (size_t i = 0; i < size; ++i)
+		for (int i = 0; i < size; ++i)
 			MaxID += nrecv[i];
 		MPI_exchange_data(tess, cells, true, &reference_cell);
 #endif

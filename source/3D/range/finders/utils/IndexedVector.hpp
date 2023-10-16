@@ -2,6 +2,7 @@
 #define _INDEXED_VECTOR_HPP
 
 #include <iostream>
+#include "3D/elementary/Vector3D.hpp"
 #include "3D/hilbert/hilbertTypes.h"
 
 #define ILLEGAL_IDX -1
@@ -19,8 +20,9 @@ typedef struct IndexedVector3D
     inline explicit IndexedVector3D(): IndexedVector3D(0, 0, 0){};
     inline IndexedVector3D(const Vector3D &other): IndexedVector3D(other.x, other.y, other.z){};
     inline IndexedVector3D(const IndexedVector3D &other): IndexedVector3D(&other.values[0], other.index){};
+    inline IndexedVector3D(const Vector3D &point, size_t index): IndexedVector3D(point.x, point.y, point.z, index){};
     inline IndexedVector3D &operator=(const IndexedVector3D &other){this->values[0] = other.values[0]; this->values[1] = other.values[1]; this->values[2] = other.values[2]; this->index = other.index; return *this;};
-    inline bool operator==(const IndexedVector3D &other) const{return (this->values[0] == other.values[0]) and (this->values[1] == other.values[1]) and (this->values[2] == other.values[2]) and (this->index == other.index);};
+    inline bool operator==(const IndexedVector3D &other) const{return (std::abs(this->values[0] - other.values[0]) < EPSILON) and (std::abs(this->values[1] - other.values[1]) < EPSILON) and (std::abs(this->values[2] - other.values[2]) < EPSILON);};
     inline bool operator<=(const IndexedVector3D &other) const{
         if(this->values[0] < other.values[0]) return true;
         if(this->values[0] == other.values[0])
@@ -55,6 +57,10 @@ typedef struct IndexedVector3D
         return stream;
     }
 
+    inline size_t getIndex() const{return this->index;};
+    inline _3DPoint getData() const{return _3DPoint(values[0], values[1], values[2]);};
+    inline Vector3D getVector() const{return Vector3D(values[0], values[1], values[2]);};
+    
 } IndexedVector3D;
 
 

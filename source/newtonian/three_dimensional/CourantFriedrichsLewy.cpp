@@ -39,7 +39,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 			try
 			{
 #endif
-				c = eos.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers,
+				c = eos.de2c(cells[i].density, cells[i].internal_energy, cells[i].tracers,
 					     ComputationalCell3D::tracerNames);
 #ifdef RICH_DEBUG
 			}
