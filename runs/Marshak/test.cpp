@@ -1,4 +1,4 @@
-#include "source/3D/GeometryCommon/Voronoi3D.hpp"
+#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
@@ -18,7 +18,6 @@
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
 #include "source/3D/GeometryCommon/hdf_write.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
-#include "source/newtonian/three_dimensional/ANNSelfGravity.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/DiffusionForce.hpp"
 #include "source/misc/int2str.hpp"
@@ -31,11 +30,6 @@
 #include <filesystem>
 #include "source/3D/GeometryCommon/UpdateBox.hpp"
 namespace fs = std::filesystem;
-#ifdef RICH_MPI
-#include "source/mpi/mpi_commands.hpp"
-#include "source/mpi/ConstNumberPerProc3D.hpp"
-#include "source/mpi/SetLoad3D.hpp"
-#endif
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
@@ -212,11 +206,7 @@ int main(void)
 		, &tproc
 #endif
 		);
-	tess.Build(points
-#ifdef RICH_MPI
-		, tproc
-#endif
-		);
+	tess.BuildHilbert(points);
 	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
 
 	Hllc3D rs;
@@ -250,18 +240,8 @@ int main(void)
 
 
 	CourantFriedrichsLewy tsf(0.25, 1, force);
-#ifdef RICH_MPI
-	ConstNumberPerProc3D procupdate(0.00005, 0.275, 2);
-#endif
-	HDSim3D sim(tess, 
-	#ifdef RICH_MPI
-		tproc, 
-	#endif
-		cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false
-	#ifdef RICH_MPI
-		, &procupdate
-	#endif
-		, true);
+
+	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
 	double init_dt = 1e-13 / tscale;
 	double const dt_output = 1e-9 / tscale;
@@ -273,31 +253,10 @@ int main(void)
 	WriteSnapshot3D(sim, "init.h5", appendices, true);
 	while (sim.getTime() < tf)
 	{
-#ifdef RICH_MPI
-		int ntotal = 0;
-#endif
 		if (sim.getCycle() % 1 == 0)
 		{
-#ifdef RICH_MPI
-			double load = procupdate.GetLoadImbalance(tess, ntotal);
 			if (rank == 0)
-			{
-				std::cout<<std::endl;
-				std::cout << "Load = " << load << " Point num " << ntotal << " dt " << old_dt << std::endl;
-			}
-			if (load > 1.9)
-			{
-				if (rank == 0)
-					std::cout << "Redoing load balance" << std::endl;
-				SetLoad(sim, 50, 0.005, 2, 0.275);
-				SetLoad(sim, 50, 0.003, 2, 0.275);
-				SetLoad(sim, 35, 0.001, 2, 0.275);
-				SetLoad(sim, 30, 0.0005, 2, 0.275);
-				SetLoad(sim, 20, 0.0001, 2, 0.275);
-				SetLoad(sim, 10, 0.00005, 2, 0.275, true, true);
-			}
-			if (rank == 0)
-#endif
+
 				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << std::endl;
 		}
 		if (sim.getTime() > nextT)
