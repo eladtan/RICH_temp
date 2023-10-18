@@ -105,9 +105,9 @@ bool VoroCrustAlgorithm::enforceLipschitzness(VoroCrust_KD_Tree_Ball& ball_tree)
             auto const& [p_j, r_j] = ball_tree.getBall(j);
             double const dist = distance(p_i, p_j);
             
-            if(r_i > r_j + L_Lipschitz*dist){
+            if(ball_tree.ball_radii[i] > r_j + L_Lipschitz*dist){
                 number_of_balls_shrunk++;
-                ball_tree.ball_radii[i] = r_j + L_Lipschitz*dist;
+                ball_tree.ball_radii[i] = std::min(ball_tree.ball_radii[i], r_j + L_Lipschitz*dist);
             }
         }
     }
