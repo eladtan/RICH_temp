@@ -11,16 +11,18 @@
 #include <cmath>
 #include <vector>
 #include <string>
-#include "../delaunay/Delaunay3D.hpp"
-#include "3D/GeometryCommon/Intersections.hpp"
+#include <memory>
 #include <stack>
 #include <set>
 #include <array>
-#include "3D/hilbert/HilbertOrder3D.hpp"
-#include "3D/range/RangeAgent.hpp" // "3D/range/RangeAgent.h"
-#include "../Tessellation3D.hpp"
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
+
+#include "3D/tesselation/delaunay/Delaunay3D.hpp"
+#include "3D/GeometryCommon/Intersections.hpp"
+#include "3D/hilbert/HilbertOrder3D.hpp"
+#include "3D/range/RangeAgent.hpp"
+#include "../Tessellation3D.hpp"
 
 #ifdef RICH_MPI
 #include "newtonian/three_dimensional/computational_cell.hpp"
@@ -94,14 +96,14 @@ private:
   std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
   void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
-  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);
+  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
   std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
-  void SetKernel(const IndexingKernel3D *newIndexing = nullptr);
-  void SetBox(Vector3D const &ll, Vector3D const &ur, const IndexingKernel3D *newIndexing);
+  void SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>());
+  void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing);
   #endif // RICH_MPI
 
   Delaunay3D del_;
@@ -133,22 +135,11 @@ private:
   #ifdef RICH_MPI
     std::vector<double> radiuses;
     double initialRadius;
-    PointsManager *pointsManager = nullptr;
-    const IndexingKernel3D *indexing = nullptr;
-    bool shouldDeleteKernelOnDestruction;
+    std::shared_ptr<PointsManager> pointsManager;
+    std::shared_ptr<const IndexingKernel3D> indexing;
   #endif // RICH_MPI
 
 public:
-  inline ~Voronoi3D()
-  {
-    #ifdef RICH_MPI
-      delete this->pointsManager;
-      if(this->shouldDeleteKernelOnDestruction)
-      {
-        delete this->indexing;
-      }
-    #endif // RICH_MPI
-  }
 
   vector<int>& GetSentProcs(void) override;
 
@@ -183,7 +174,7 @@ public:
    */
   void output_buildextra(std::string const& filename) const;
 
-  void BuildHilbert(vector<Vector3D> const& points) override;
+  void BuildHilbert(vector<Vector3D> const& points, bool suppressRebalancing = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
 

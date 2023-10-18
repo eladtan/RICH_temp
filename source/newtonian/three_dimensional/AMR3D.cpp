@@ -1029,7 +1029,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveVector(new_mesh, ToRemove.first);
 	new_mesh.insert(new_mesh.end(), new_points.begin(), new_points.end());
 #ifdef RICH_MPI
-	tess.BuildHilbert(new_mesh);
+	tess.BuildHilbert(new_mesh, true);
 #else // RICH_MPI
 	tess.Build(new_mesh);
 #endif

@@ -454,16 +454,6 @@ Snapshot3D ReadSnapshot3D(const string& fname
       res.mesh_points.at(i) = Vector3D(x.at(i), y.at(i), z.at(i));
   }
 
-#ifdef RICH_MPI
-  // MPI
-  Group mpi = file.openGroup("mpi");
-  const vector<double> px = read_double_vector_from_hdf5(mpi, "proc_X");
-  const vector<double> py = read_double_vector_from_hdf5(mpi, "proc_Y");
-  const vector<double> pz = read_double_vector_from_hdf5(mpi, "proc_Z");
-  res.proc_points.resize(px.size());
-  for (size_t i = 0; i < px.size(); ++i)
-    res.proc_points.at(i) = Vector3D(px.at(i), py.at(i), pz.at(i));
-#endif
   const vector<double> box = read_double_vector_from_hdf5(file, "Box");
   res.ll.Set(box[0], box[1], box[2]);
   res.ur.Set(box[3], box[4], box[5]);

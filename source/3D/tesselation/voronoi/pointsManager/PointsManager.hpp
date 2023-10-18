@@ -66,9 +66,9 @@ public:
         return (rebalance > 0);
     };
 
-    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool doRebalance = true)
     {
-        if(this->checkForRebalance(points))
+        if(doRebalance and this->checkForRebalance(points))
         {
             this->rebalance(points);
         }
@@ -77,9 +77,8 @@ public:
 
 protected:
     MPI_Comm comm;
-    int size;
-    int rank;
     Vector3D ll, ur;
+    int rank, size;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
