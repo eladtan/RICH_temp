@@ -64,9 +64,15 @@ endif()
 # https://vtk.org/doc/nightly/html/md__builds_gitlab-kitware-sciviz-ci_Documentation_Doxygen_ModuleMigration.html
 find_package(VTK COMPONENTS 
     CommonCore 
+    CommonColor
+    CommonDataModel
+    CommonTransforms
+    FiltersGeneral
+    FiltersSources
     IOXML 
     IOParallelXML 
     ParallelMPI 
+    InteractionStyle
     NO_MODULE 
     PATHS ${VTK_DIRECTORY} NO_DEFAULT_PATH
 )
