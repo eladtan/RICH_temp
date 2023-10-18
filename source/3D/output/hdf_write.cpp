@@ -570,3 +570,87 @@ Snapshot3D ReDistributeData3D(string const& filename, Tessellation3D const& proc
   return snap;
 }
 #endif
+
+void WriteData(const Voronoi3D &tess, const std::string &filename, const std::vector<std::vector<double>> &data, const std::vector<std::string>& names)
+{
+  int rank = 0;
+  int ws = 0;
+  H5File file;
+#ifdef RICH_MPI
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &ws);
+  if (rank == 0)
+    {
+#endif // RICH_MPI
+      H5File file2(H5std_string(filename), H5F_ACC_TRUNC);
+      file2.close();
+      file.openFile(H5std_string(filename), H5F_ACC_RDWR);
+#ifdef RICH_MPI
+    }
+#endif // RICH_MPI
+  std::vector<std::vector<double> > vtu_cell_variables;
+  std::vector<std::string> vtu_cell_variable_names;
+  std::vector<std::string> vtu_cell_vectors_names;
+	std::vector<std::vector<Vector3D> > vtu_cell_vectors;
+
+  Group writegroup;
+#ifdef RICH_MPI
+  MPI_Barrier(MPI_COMM_WORLD);
+  int dummy = 0;
+  if (rank > 0)
+  {
+    MPI_Recv(&dummy, 1, MPI_INT, rank - 1, 343, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    file.openFile(H5std_string(filename), H5F_ACC_RDWR);
+  }
+  file.createGroup("/rank" + int2str(rank));
+  writegroup = file.openGroup("/rank" + int2str(rank));
+#else
+  writegroup = file.openGroup("/");
+#endif
+
+  size_t const Ncells = tess.GetPointNo();
+
+  for(size_t i = 0; i < data.size(); ++i)
+  {
+    write_std_vector_to_hdf5(writegroup, data[i], names[i]);
+    vtu_cell_variables.push_back(data[i]);
+    vtu_cell_variable_names.push_back(names[i]);
+  }
+  
+  std::vector<double> temp(Ncells);
+  for (size_t i = 0; i < Ncells; ++i)
+    temp[i] = tess.GetVolume(i);
+  write_std_vector_to_hdf5(writegroup, temp, "Volume");
+  vtu_cell_variables.push_back(temp);
+  vtu_cell_variable_names.push_back("Volume");
+
+  for (size_t i = 0; i < Ncells; ++i)
+    temp[i] = rank;
+  write_std_vector_to_hdf5(writegroup, temp, "MPI_rank");
+  vtu_cell_variables.push_back(temp);
+  vtu_cell_variable_names.push_back("MPI_rank");
+
+
+#ifdef RICH_MPI
+  if (rank < (ws - 1))
+	{
+	  int dummy = 0;
+	  writegroup.close();
+	  file.close();
+	  MPI_Send(&dummy, 1, MPI_INT, rank + 1, 343, MPI_COMM_WORLD);
+	}
+  else
+  {
+    writegroup.close();
+    file.close();
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+#else
+  writegroup.close();
+  file.close();
+#endif
+  std::filesystem::path vtu_name(filename);
+  vtu_name.replace_extension("vtu");
+  write_vtu3d::write_vtu_3d(vtu_name, vtu_cell_variable_names, vtu_cell_variables, vtu_cell_vectors_names, vtu_cell_vectors, 0, 0, tess);
+}
+
