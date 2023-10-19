@@ -1380,7 +1380,7 @@ void Voronoi3D::CalculateInitialRadius(size_t pointsSize)
  * \author Maor Mizrachi
  * \brief Makes load rebalancing if needed, if needed, and initializing the environment agent (the object which is responsible for dividing the space to ranks)
 */
-std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points)
+std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool supressRebalance)
 {
     bool first_call = (this->pointsManager == nullptr);
 
@@ -1398,11 +1398,12 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 
     if(this->pointsManager == nullptr)
     {
+        // initialize the points manager
         this->SetKernel(); // default kernel
         this->pointsManager = new HilbertPointsManager(this->ll_, this->ur_, this->indexing);
     }
 
-    PointsExchangeResult exchangeResult = this->pointsManager->update(points, this->radiuses); // does rebalancing (if necessary) and exchanging
+    PointsExchangeResult exchangeResult = this->pointsManager->update(points, this->radiuses, supressRebalance); // does rebalancing (if necessary) and exchanging
     std::vector<Vector3D> new_points = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
     this->sentprocs_ = std::move(exchangeResult.sentProcessors);
@@ -1418,14 +1419,14 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
  * \author Maor Mizrachi
  * \brief Build the voronoi, after rebalancing the points using a proper hilbert curve. 
 */
-void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points)
+void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool supressRebalance)
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     bool first_call = (this->pointsManager == nullptr);
-    std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points);
+    std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points, supressRebalance);
     // std::cout << "points.size() was " << points.size() << " and now is " << new_points.size() << std::endl;
     
     std::vector<size_t> order;
@@ -2424,7 +2425,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 duplicated_points_(other.duplicated_points_), sentprocs_(other.sentprocs_), duplicatedprocs_(other.duplicatedprocs_), sentpoints_(other.sentpoints_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager), shouldDeleteKernelOnDestruction(other.shouldDeleteKernelOnDestruction)
+                                                , initialRadius(other.initialRadius), pointsManager(new PointsManager(other.pointsManager)), shouldDeleteKernelOnDestruction(other.shouldDeleteKernelOnDestruction), radiuses(other.radiuses)
                                                 #endif // RICH_MPI
                                                 {}
 

@@ -66,9 +66,9 @@ public:
         return (rebalance > 0);
     };
 
-    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool supressRebalance = false)
     {
-        if(this->checkForRebalance(points))
+        if((!supressRebalance) and (this->checkForRebalance(points)))
         {
             this->rebalance(points);
         }

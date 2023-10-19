@@ -1,6 +1,8 @@
 #ifndef HILBERT_POINTS_MANAGER_HPP
 #define HILBERT_POINTS_MANAGER_HPP
 
+#ifdef RICH_MPI
+
 #include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "PointsManager.hpp"
 
@@ -29,5 +31,7 @@ private:
     const IndexingKernel3D *indexing;
     std::vector<hilbert_index_t> responsibilityRange;
 };
+
+#endif // RICH_MPI
 
 #endif // HILBERT_POINTS_MANAGER_HPP

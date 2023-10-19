@@ -87,13 +87,13 @@ private:
   double GetMaxRadius(std::size_t index);
   double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
-
+  
   #ifdef RICH_MPI
   std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
   void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
-  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);
+  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool supressRebalance = false);
   void BuildInitialize(size_t num_points);
   std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
@@ -182,7 +182,7 @@ public:
    */
   void output_buildextra(std::string const& filename) const;
 
-  void BuildHilbert(vector<Vector3D> const& points) override;
+  void BuildHilbert(vector<Vector3D> const& points, bool supressRebalance = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
 
