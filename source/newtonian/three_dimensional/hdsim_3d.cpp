@@ -853,7 +853,6 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, matrix_builder.zero_cells_[i]));
 	double max_diff = std::numeric_limits<double>::min() * 100;
 	int max_loc = 0;
-	int rank = 0;
 #ifdef RICH_MPI
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
