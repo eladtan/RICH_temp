@@ -140,7 +140,9 @@ public:
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;
 
     void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-        std::vector<double>const& CG_result)const override;
+        std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result)const override;
+
+    double GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const;
 
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
     mutable std::vector<double> sigma_planck, sigma_s, fleck_factor, D, R2, cell_flux_limiter;

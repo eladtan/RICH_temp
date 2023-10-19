@@ -609,7 +609,7 @@ Voronoi3D::Voronoi3D() : ll_(Vector3D()), ur_(Vector3D()), Norg_(0), bigtet_(0),
                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>())
                         #ifdef RICH_MPI
-                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
+                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(std::shared_ptr<PointsManager>()), indexing(std::shared_ptr<const IndexingKernel3D>())
                         #endif // RICH_MPI
 {
 }
@@ -624,7 +624,7 @@ Voronoi3D::Voronoi3D(std::vector<Face> const& box_faces) : Norg_(0), bigtet_(0),
                                                         sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(box_faces)
                                                         #ifdef RICH_MPI
-                                                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
+                                                        , initialRadius(RADIUS_UNINITIALIZED), pointsManager(std::shared_ptr<PointsManager>()), indexing(std::shared_ptr<const IndexingKernel3D>())
                                                         #endif // RICH_MPI
 {
     size_t const Nfaces = box_faces.size();
@@ -657,7 +657,7 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                               self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ())
                                                               #ifdef RICH_MPI
-                                                              , initialRadius(RADIUS_UNINITIALIZED), pointsManager(nullptr), indexing(nullptr), shouldDeleteKernelOnDestruction(false)
+                                                              , initialRadius(RADIUS_UNINITIALIZED), pointsManager(std::shared_ptr<PointsManager>()), indexing(std::shared_ptr<const IndexingKernel3D>())
                                                               #endif // RICH_MPI
                                                               {}
 
@@ -824,9 +824,9 @@ bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
 {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    assert(this->pointsManager != nullptr);
-    assert(this->pointsManager->getEnvironmentAgent() != nullptr);
-    return (this->pointsManager->getEnvironmentAgent()->getOwner(point) == rank);
+    assert(this->pointsManager.get() != nullptr);
+    assert(this->pointsManager.get()->getEnvironmentAgent() != nullptr);
+    return (this->pointsManager.get()->getEnvironmentAgent()->getOwner(point) == rank);
 }
 
 
@@ -1033,10 +1033,10 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
 
 void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints)
 {
-    const DistributedOctEnvironmentAgent *octEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->pointsManager->getEnvironmentAgent());
+    const DistributedOctEnvironmentAgent *octEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->pointsManager.get()->getEnvironmentAgent());
     if(octEnvAgent == nullptr)
     {
-        return;
+        return; // supported only in `DistributedOctEnvironmentAgent` currently
     }
     const DistributedOctTree<Vector3D> *octTree = octEnvAgent->getOctTree();
     if(octTree == nullptr)
@@ -1226,17 +1226,12 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     // this->InitialExchange(points, sentProc_, sentPoints_);
     // std::cout << "rank " << rank << " finished initial exchange" << std::endl;
 
-    RangeAgent rangeAgent(this->pointsManager->getEnvironmentAgent(), &rangeFinder, sentProc_, sentPoints_);
+    RangeAgent rangeAgent(this->pointsManager.get()->getEnvironmentAgent(), &rangeFinder, sentProc_, sentPoints_);
 
     std::vector<std::pair<size_t, size_t>> allMirrored;
     int iterations = 0;
 
     std::vector<double> currentRadiuses = this->radiuses;
-    for(size_t i = 0; i < currentRadiuses.size(); i++)
-    {
-        double radius = currentRadiuses[i];
-    }
-
     MPI_Request finishedReq;
 
     int I_finished = 0;
@@ -1367,22 +1362,21 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 */
 void Voronoi3D::CalculateInitialRadius(size_t pointsSize)
 {
-    this->radiuses.resize(pointsSize);
     // initial radius is zero, so we need to determine it
     double volume = (this->ur_[0] - this->ll_[0]) * (this->ur_[1] - this->ll_[1]) * (this->ur_[2] - this->ll_[2]);
     size_t N;
     MPI_Allreduce(&pointsSize, &N, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
     this->initialRadius = 2 * std::pow(volume / N, 0.333333f); // heuristic
-    std::fill(this->radiuses.begin(), this->radiuses.end(), this->initialRadius);
+    this->radiuses.resize(pointsSize, this->initialRadius);
 }
 
 /**
  * \author Maor Mizrachi
  * \brief Makes load rebalancing if needed, if needed, and initializing the environment agent (the object which is responsible for dividing the space to ranks)
 */
-std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool supressRebalance)
+std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing)
 {
-    bool first_call = (this->pointsManager == nullptr);
+    bool first_call = (this->pointsManager.get() == nullptr);
 
     if(this->initialRadius < 0)
     {
@@ -1396,14 +1390,14 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         this->radiuses.resize(points.size(), this->initialRadius);
     }
 
-    if(this->pointsManager == nullptr)
+    if(this->pointsManager.get() == nullptr)
     {
         // initialize the points manager
         this->SetKernel(); // default kernel
-        this->pointsManager = new HilbertPointsManager(this->ll_, this->ur_, this->indexing);
+        this->pointsManager = std::make_shared<HilbertPointsManager>(HilbertPointsManager(this->ll_, this->ur_, this->indexing.get()));
     }
 
-    PointsExchangeResult exchangeResult = this->pointsManager->update(points, this->radiuses, supressRebalance); // does rebalancing (if necessary) and exchanging
+    PointsExchangeResult exchangeResult = this->pointsManager.get()->update(points, this->radiuses, not suppressRebalancing); // does rebalancing (if necessary) and exchanging
     std::vector<Vector3D> new_points = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
     this->sentprocs_ = std::move(exchangeResult.sentProcessors);
@@ -1419,14 +1413,14 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
  * \author Maor Mizrachi
  * \brief Build the voronoi, after rebalancing the points using a proper hilbert curve. 
 */
-void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool supressRebalance)
+void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing)
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    bool first_call = (this->pointsManager == nullptr);
-    std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points, supressRebalance);
+    bool first_call = (this->pointsManager.get() == nullptr);
+    std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points, suppressRebalancing);
     // std::cout << "points.size() was " << points.size() << " and now is " << new_points.size() << std::endl;
     
     std::vector<size_t> order;
@@ -1465,7 +1459,8 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool supressRe
             for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
             {
                 // todo second closest
-                this->radiuses[pointIdx] = 2 * fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
+                if(this->radiuses[pointIdx] < 0)
+                    this->radiuses[pointIdx] = 2 * fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
             }
         }
     }
@@ -2425,7 +2420,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 duplicated_points_(other.duplicated_points_), sentprocs_(other.sentprocs_), duplicatedprocs_(other.duplicatedprocs_), sentpoints_(other.sentpoints_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , initialRadius(other.initialRadius), pointsManager(new PointsManager(other.pointsManager)), shouldDeleteKernelOnDestruction(other.shouldDeleteKernelOnDestruction), radiuses(other.radiuses)
+                                                , initialRadius(other.initialRadius), pointsManager(other.pointsManager), indexing(other.indexing), radiuses(other.radiuses)
                                                 #endif // RICH_MPI
                                                 {}
 
@@ -2701,23 +2696,15 @@ vector<std::size_t> &Voronoi3D::GetSelfIndex(void)
 }
 
 #ifdef RICH_MPI
-void Voronoi3D::SetKernel(const IndexingKernel3D *newIndexing)
+void Voronoi3D::SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing)
 {
-    if(this->shouldDeleteKernelOnDestruction)
+    if(indexing.get() == nullptr)
     {
-        delete this->indexing;
-        this->indexing = nullptr;
-    }
-
-    if(newIndexing == nullptr)
-    {
-        this->indexing = new Rectangle(this->ll_, this->ur_); // default kernel
-        this->shouldDeleteKernelOnDestruction = true;
+        this->indexing = std::make_shared<const Rectangle>(Rectangle(this->ll_, this->ur_)); // default kernel
     }
     else
     {
-        this->indexing = newIndexing;
-        this->shouldDeleteKernelOnDestruction = false;
+        this->indexing = indexing;
     }
 }
 #endif // RICH_MPI
@@ -2727,15 +2714,14 @@ void Voronoi3D::SetBox(const Vector3D &ll, const Vector3D &ur)
     this->ll_ = ll;
     this->ur_ = ur;
     #ifdef RICH_MPI
-        delete this->pointsManager;
-        this->pointsManager = nullptr;
-        this->radiuses.clear();
+        this->pointsManager = std::shared_ptr<PointsManager>();
+        // this->radiuses.clear();
         this->initialRadius = RADIUS_UNINITIALIZED;
     #endif // RICH_MPI
 }
 
 #ifdef RICH_MPI
-void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const IndexingKernel3D *newIndexing)
+void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing)
 {
     this->SetBox(ll, ur);
     this->SetKernel(newIndexing);

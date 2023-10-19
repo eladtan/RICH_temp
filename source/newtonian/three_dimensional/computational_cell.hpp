@@ -39,6 +39,10 @@ public:
 	//! \brief Radiation enregy per unit mass
 	double Erad;
 
+	double Erad_dt;
+
+	double Erad_dt_dt;
+
   static vector<string> tracerNames;
   static vector<string> stickerNames;
 

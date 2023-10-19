@@ -26,6 +26,10 @@ public:
 	//! \brief Radiation energy
 	double Erad;
 
+	double Erad_dt;
+
+	double Erad_dt_dt;
+
 	//! \brief Tracers
 	std::array<double,MAX_TRACERS> tracers;
 

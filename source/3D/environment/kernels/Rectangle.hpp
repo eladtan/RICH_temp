@@ -17,6 +17,7 @@ public:
     {
         Vector3D ll(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
         Vector3D ur(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
+        
 
         for(const Vector3D &vertex : vertices)
         {

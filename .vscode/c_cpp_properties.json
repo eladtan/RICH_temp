@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/software/x86_64/4.18.0/vtk/9.2.0/gcc/12.2.0/with_X/include",
+            ],
+            "defines": ["RICH_MPI"],
+            "compilerPath": "/software/x86_64/4.18.0/gcc/12.2.0/bin/g++",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}

@@ -9,8 +9,6 @@ __pycache__
 *.pvtu
 *.mat
 rich
-output
-error
 VoroCrust/CMakeFiles
 VoroCrust/cmake_install.cmake
 VoroCrust/CMakeCache.txt

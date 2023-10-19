@@ -765,19 +765,92 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		std::cout<<"Zero cells in RadiationTimeStep"<<std::endl;
 	std::vector<double> old_Er(N, 0);
 	for(size_t i = 0; i < N; ++i)
+	{
 		old_Er[i] = cells_[i].Erad * cells_[i].density;
-	std::vector<double> new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt, matrix_builder, pt_.getTime());
+		if(old_Er[i] < 0)
+		{
+			UniversalError eo("negative Erad");
+			eo.addEntry("i", i);
+			eo.addEntry("old_Er", old_Er[i]);
+			eo.addEntry("ID", cells_[i].ID);
+			eo.addEntry("density", cells_[i].density);
+			throw eo;
+		}
+	}
 	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif	
+	int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+	double total_elapsed_time = 0;
+	double dt_try = dt;
+	std::vector<double> new_Er, new_Er_full;
+	size_t reduce_counter = 0;
+	while(total_elapsed_time < dt * 0.9999999)
+	{
+		std::vector<ComputationalCell3D> cells(cells_);
+		std::vector<Conserved3D> extensives(extensive_);
+		bool good_try = true;
+		dt_try = std::min(dt_try, dt - total_elapsed_time);
+
+		new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
+		double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		double min_Er = 1;
+		for(size_t i = 0; i < N; ++i)
+		{
+			if(new_Er[i] < 0 && std::abs(new_Er[i]) < 1e-9 * max_Er)
+				new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature);
+			min_Er = std::min(min_Er, new_Er[i]);
+		}
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &min_Er, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+		if(min_Er < 0)
+		{
+			reduce_counter++;
+			good_try = false;
+			dt_try *= 0.5;
+			if(rank == 0)
+				std::cout<<"Negative Er, Reducing dt, new dt "<<dt_try<<std::endl;
+			if(dt_try < 0.001 * dt)
+				throw UniversalError("too small dt in RadiationTimeStep");
+		}
+		else
+		{
+			int good_run = 1;
+			try
+			{
+				matrix_builder.PostCG(tess_, extensive_, dt_try, cells_, new_Er, new_Er_full);		
+			}
+			catch(UniversalError const& eo)
+			{
+				good_run = 0;
+			}
+			if(good_run == 0)
+			{
+				good_try = false;
+				dt_try *= 0.5;
+				if(rank == 0)
+					std::cout<<"Reducing PostCG dt, new dt "<<dt_try<<std::endl;
+				extensive_ = extensives;
+				cells_ = cells;
+				if(dt_try < 0.001 * dt)
+					throw UniversalError("too small dt in RadiationTimeStep");
+			}
+		}
+		if(good_try)
+			total_elapsed_time += dt_try;
+	}
 	size_t const Nzero = matrix_builder.zero_cells_.size();
 	std::vector<size_t> zero_indeces;
 	for(size_t i = 0; i < Nzero; ++i)
 		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, matrix_builder.zero_cells_[i]));
-
-	matrix_builder.PostCG(tess_, extensive_, dt, cells_, new_Er);
-
 	double max_diff = std::numeric_limits<double>::min() * 100;
 	int max_loc = 0;
 	int rank = 0;
@@ -822,5 +895,5 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		pt_.updateTime(dt);
 		pt_.updateCycle();
 	}
-	return dt * std::min(0.075 / max_diff, 1.15);
+	return dt * std::min(0.075 / max_diff, 1.2) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
 }

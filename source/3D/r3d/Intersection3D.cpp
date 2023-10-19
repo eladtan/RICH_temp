@@ -95,6 +95,7 @@ namespace
 		for (size_t i = 0; i < face_inds.size(); ++i)
 			face_inds[i] = RemoveList(face_inds[i], toremoveint);
 		std::sort(bad_indeces.begin(), bad_indeces.end());
+		bad_indeces = unique(bad_indeces);
 		return bad_indeces;
 	}
 
@@ -216,9 +217,10 @@ namespace
 				if(counter[i] < 3)
 				{
 					size_t found = 0;
+					size_t removed = 0;
 					for(size_t k = 0; k < Nfaces; ++k)
 					{
-						size_t const Ninface = face_inds[k].size();
+						size_t Ninface = face_inds[k].size();
 						for(size_t j = 0; j < Ninface; ++j)
 						{
 							if(face_inds[k][j] == static_cast<int>(all_indeces[i]))
@@ -228,24 +230,26 @@ namespace
 								if(fastabs(CrossProduct(points[face_inds[k][j]] - points[face_inds[k][(j + Ninface - 1) % Ninface]], 
 									points[face_inds[k][(j + 1) % Ninface]] - points[face_inds[k][(j + Ninface - 1) % Ninface]])) < maxR * maxR * 1e-3)
 								{
-									too_many.push_back(i);
+									++removed;
+									if(removed == counter[i])
+										too_many.push_back(i);
 									face_inds[k].erase(face_inds[k].begin() + j);
+									--Ninface;
+									--j;
 								}
-								break;
 							}
 						}
 						if(found == counter[i])
 							break;
 					}
-				}
-				else
-					if (counter[i] != 3)
-					{
-						res = false;
-						std::cout<<"Bad point "<<all_indeces[i]<<std::endl;
-					}
-					
+				}				
 		RemoveVector(all_indeces, too_many);
+		too_many.clear();
+		Nfaces = face_inds.size();
+		for(size_t i = 0; i < Nfaces; ++i)
+			if(face_inds[i].size() < 3)
+				too_many.push_back(i);
+		RemoveVector(face_inds, too_many);
 		return res;
 	}
 
@@ -428,9 +432,9 @@ std::pair<bool, std::array<double,4> > PolyhedraIntersection(Tessellation3D cons
 		planes = new vector<r3d_plane>;
 		GetPlanes(*planes, newtess, newcell);
 	}
-	r3d_clip(&poly, &(planes->at(0)), static_cast<int>(planes->size()));
+	int good_clip = r3d_clip(&poly, &(planes->at(0)), static_cast<int>(planes->size()));
 	std::pair<bool, std::array<double, 4> > res;
-	if (poly.nverts == 0)
+	if (good_clip == 0 || poly.nverts == 0)
 		res.first = false;
 	else
 	{
@@ -441,10 +445,16 @@ std::pair<bool, std::array<double,4> > PolyhedraIntersection(Tessellation3D cons
 		r3d_reduce(&poly, &m[0], 1);
 		m[0] = std::abs(m[0]);
 		if (!(m[0] > 0) || !std::isfinite(m[0]))
+		{
 			res.first = false;
-		for (size_t j = 1; j < 4; ++j)
-			m[j] /= m[0];
-		res.second = m;
+			res.second = m;
+		}
+		else
+		{
+			for (size_t j = 1; j < 4; ++j)
+				m[j] /= m[0];
+			res.second = m;
+		}
 	}
 	if (allocated)
 		delete planes;

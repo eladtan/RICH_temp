@@ -8,6 +8,8 @@ namespace
 	{
 		size_t ntracers = left.tracers.size();
 		res.Erad = (res.mass > 0 ? left.Erad : right.Erad) * res.mass;
+		res.Erad_dt = (res.mass > 0 ? left.Erad_dt : right.Erad_dt) * res.mass;
+		res.Erad_dt_dt = (res.mass > 0 ? left.Erad_dt_dt : right.Erad_dt_dt) * res.mass;
 		for (size_t i = 0; i < ntracers; ++i)
 			res.tracers[i] = (res.mass>0 ? left.tracers[i] : right.tracers[i])*res.mass;
 	}

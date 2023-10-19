@@ -102,61 +102,43 @@ void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, do
 		mypoints.resize(N);
 		cells.resize(N);
 		// GetNewPoints
-		boost::random::mt19937_64 generator(sim.getCycle());
-		boost::random::uniform_real_distribution<> dist;
-		std::vector<Vector3D> newpoints;
-		double ran[3];
-		Vector3D point;
-		size_t counter = 0;
-		while (counter < Np)
+		size_t& MaxID = sim.GetMaxID();
+		if(rank == 0)
 		{
-			ran[0] = dist(generator);
-			ran[1] = dist(generator);
-			ran[2] = dist(generator);
-			point.x = ran[0] * (recvmax.x - recvmin.x) + recvmin.x;
-			point.y = ran[1] * (recvmax.y - recvmin.y) + recvmin.y;
-			point.z = ran[2] * (recvmax.z - recvmin.z) + recvmin.z;
-			if (point.x<cur_min.x || point.y<cur_min.y || point.z<cur_min.z || point.x>cur_max.x || point.y>cur_max.y || point.z>cur_max.z)
+			boost::random::mt19937_64 generator(sim.getCycle());
+			boost::random::uniform_real_distribution<> dist;
+			std::vector<Vector3D> newpoints;
+			double ran[3];
+			Vector3D point;
+			size_t counter = 0;
+			while (counter < Np)
 			{
-				newpoints.push_back(point);
-				++counter;
+				ran[0] = dist(generator);
+				ran[1] = dist(generator);
+				ran[2] = dist(generator);
+				point.x = ran[0] * (recvmax.x - recvmin.x) + recvmin.x;
+				point.y = ran[1] * (recvmax.y - recvmin.y) + recvmin.y;
+				point.z = ran[2] * (recvmax.z - recvmin.z) + recvmin.z;
+				if (point.x<cur_min.x || point.y<cur_min.y || point.z<cur_min.z || point.x>cur_max.x || point.y>cur_max.y || point.z>cur_max.z)
+				{
+					mypoints.push_back(point);
+					cells.push_back(reference_cell);
+					cells.back().ID = MaxID + 1 + counter;
+					++counter;
+				}
 			}
 		}
-		for (size_t i = 0; i < Np; ++i)
-		{
-#ifdef RICH_MPI
-			if (tess.PointInMyDomain(newpoints[i]))
-#endif
-			{
-				mypoints.push_back(newpoints[i]);
-				cells.push_back(reference_cell);
-			}
-		}
+		MaxID += Np;
 		assert(N>0);
 		
 #ifdef RICH_MPI
 		tess.BuildHilbert(mypoints);
+		MPI_exchange_data(tess, cells, false, &reference_cell);
+		MPI_exchange_data(tess, cells, true, &reference_cell);
 #else // RICH_MPI
 		tess.Build(mypoints);
 #endif // RICH_MPI
 
-		// deal with hydro
-		size_t Nstart = sim.GetMaxID() + 1;
-		size_t Nadded = mypoints.size() - N;
-#ifdef RICH_MPI
-		int size;
-		MPI_Comm_size(MPI_COMM_WORLD, &size);
-		std::vector<size_t> nrecv(size, 0);
-		MPI_Allgather(&Nadded, 1, MPI_UNSIGNED_LONG_LONG, &nrecv[0], 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
-		for (size_t i = 0; i < static_cast<size_t>(rank); ++i)
-			Nstart += nrecv[i];
-		for (size_t i = N; i < (N + Nadded); ++i)
-			cells.at(i).ID = Nstart + i - N;
-		size_t& MaxID = sim.GetMaxID();
-		for (int i = 0; i < size; ++i)
-			MaxID += nrecv[i];
-		MPI_exchange_data(tess, cells, true, &reference_cell);
-#endif
 		extensives.resize(tess.GetPointNo());		
 		for (size_t i = 0; i < tess.GetPointNo(); ++i)
 			PrimitiveToConserved(cells.at(i), tess.GetVolume(i), extensives.at(i));

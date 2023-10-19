@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), tracers() {}
+	Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
 
 namespace
 {
@@ -47,6 +47,8 @@ Conserved3D& Conserved3D::operator-=(const Conserved3D& diff)
 	energy -= diff.energy;
 	internal_energy -= diff.internal_energy;
 	Erad -= diff.Erad;
+	Erad_dt -= diff.Erad_dt;
+	Erad_dt_dt -= diff.Erad_dt_dt;
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		tracers[i] -= diff.tracers[i];
 	return *this;
@@ -59,6 +61,8 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 	energy += diff.energy;
 	internal_energy += diff.internal_energy;
 	Erad += diff.Erad;
+	Erad_dt += diff.Erad_dt;
+	Erad_dt_dt += diff.Erad_dt_dt;
 	for (size_t i = 0; i < tracers.size(); ++i)
 		tracers[i] += diff.tracers[i];
 	return *this;
@@ -67,7 +71,7 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 #ifdef RICH_MPI
 size_t Conserved3D::getChunkSize(void) const
 {
-	return 7 + tracers.size();
+	return 9 + tracers.size();
 }
 
 vector<double> Conserved3D::serialize(void) const
@@ -80,7 +84,9 @@ vector<double> Conserved3D::serialize(void) const
 	res.at(4) = momentum.z;
 	res.at(5) = internal_energy;
 	res.at(6) = Erad;
-	size_t counter = 7;
+	res.at(7) = Erad_dt;
+	res.at(8) = Erad_dt_dt;
+	size_t counter = 9;
 	//size_t N = tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res[j + counter] = tracers[j];
@@ -97,7 +103,9 @@ void Conserved3D::unserialize(const vector<double>& data)
 	momentum.z = data.at(4);
 	internal_energy = data.at(5);
 	Erad = data.at(6);
-	size_t counter = 7;
+	Erad_dt = data.at(7);
+	Erad_dt_dt = data.at(8);
+	size_t counter = 9;
 	//size_t N = tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		tracers[j] = data.at(counter + j);
@@ -111,6 +119,8 @@ Conserved3D operator*(double s, const Conserved3D& c)
 		s*c.energy, s*c.internal_energy,
 		s*c.tracers);
 	res.Erad = s * c.Erad;
+	res.Erad_dt = s * c.Erad_dt;
+	res.Erad_dt_dt = s * c.Erad_dt_dt;
 	return res;
 }
 
@@ -128,6 +138,8 @@ Conserved3D operator/(const Conserved3D& c, double s)
 		c.energy * s_1, c.internal_energy * s_1,
 		s_1 * c.tracers);
 	res.Erad = c.Erad * s_1;
+	res.Erad_dt = c.Erad_dt * s_1;
+	res.Erad_dt_dt = c.Erad_dt_dt * s_1;
 	return res;
 }
 
@@ -139,6 +151,8 @@ void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved
 	res.internal_energy = res.mass*cell.internal_energy;
 	res.energy = res.mass*0.5*ScalarProd(cell.velocity, cell.velocity) + res.internal_energy;
 	res.Erad = cell.Erad * res.mass;
+	res.Erad_dt = cell.Erad_dt * res.mass;
+	res.Erad_dt_dt = cell.Erad_dt_dt * res.mass;
 	//size_t N = cell.tracers.size();
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
@@ -184,6 +198,8 @@ Conserved3D& Conserved3D::operator*=(double s)
 	this->energy *= s;
 	this->internal_energy *= s;
 	this->Erad *= s;
+	this->Erad_dt *= s;
+	this->Erad_dt_dt *= s;
 	size_t N = this->tracers.size();
 	for (size_t j = 0; j < N; ++j)
 		this->tracers[j] *= s;

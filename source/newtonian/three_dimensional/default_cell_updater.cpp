@@ -9,10 +9,26 @@ namespace
 	void EntropyFix(EquationOfState const& eos, ComputationalCell3D &res, size_t entropy_index, double &energy,
 		Conserved3D &extensive)
 	{
+		if(!(res.density > 0) || !(res.tracers[entropy_index] > 0))
+		{
+			UniversalError eo("Negative EntropyFix");
+			eo.addEntry("entropy", res.tracers[entropy_index]);
+			eo.addEntry("density", res.density);
+			throw eo;
+		}
 	  	double new_pressure = eos.sd2p(res.tracers[entropy_index], res.density, res.tracers, ComputationalCell3D::tracerNames);
 		res.pressure = new_pressure;
 		double de = eos.dp2e(res.density, res.pressure) - energy;
 		energy += de;
+		if(!(energy > 0))
+		{
+			UniversalError eo("negative thermal energu in entropy fix");
+			eo.addEntry("de", de);
+			eo.addEntry("energy", energy);
+			eo.addEntry("entropy", res.tracers[entropy_index]);
+			eo.addEntry("density", res.density);
+			throw eo;
+		}
 		res.internal_energy = energy;
 		extensive.energy += de * extensive.mass;
 		extensive.internal_energy += de * extensive.mass;
@@ -45,7 +61,7 @@ namespace
 
 	void regular_update(std::vector<ComputationalCell3D> &res, std::vector<Conserved3D> & extensives,
 		Tessellation3D const& tess, size_t entropy_index,
-		EquationOfState const& eos, bool const includes_temperature)
+		EquationOfState const& eos, bool const includes_temperature, const Diffusion* diffusion)
 	{
 		size_t Nloop = tess.GetPointNo();
 		size_t Ntracers = ComputationalCell3D::tracerNames.size();
@@ -105,16 +121,42 @@ namespace
 						eo.addEntry("Cell energy", extensives[i].energy);
 						eo.addEntry("Cell thermal energy per unit mass", energy);
 						eo.addEntry("Cell id", static_cast<double>(res[i].ID));
+						for(size_t j = 0; j <ComputationalCell3D::tracerNames.size(); ++j)
+							eo.addEntry(ComputationalCell3D::tracerNames[j], extensives[i].tracers[j]);
 						throw eo;
 					}
 				}
 				else
 				{
-				  res[i].pressure = eos.de2p(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
+				  	res[i].pressure = eos.de2p(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
 					res[i].internal_energy = energy;
 				}
 				if(includes_temperature)
-					res[i].temperature = eos.de2T(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
+				{
+					if(diffusion != nullptr)
+					{
+						res[i].Erad = extensive.Erad / extensive.mass;
+						if(!(res[i].Erad > 0))
+						{
+							UniversalError eo("Negative quantity in cell update");
+							eo.addEntry("Cell index", static_cast<double>(i));
+							eo.addEntry("extensive.Erad", extensive.Erad);
+							eo.addEntry("Cell mass", extensives[i].mass);
+							eo.addEntry("Cell x momentum", extensives[i].momentum.x);
+							eo.addEntry("Cell y momentum", extensives[i].momentum.y);
+							eo.addEntry("Cell z momentum", extensives[i].momentum.z);
+							eo.addEntry("Cell x location", tess.GetMeshPoint(i).x);
+							eo.addEntry("Cell y location", tess.GetMeshPoint(i).y);
+							eo.addEntry("Cell z location", tess.GetMeshPoint(i).z);
+							eo.addEntry("Cell volume", vol);
+							eo.addEntry("Cell energy", extensives[i].energy);
+							eo.addEntry("Cell thermal energy per unit mass", energy);
+							eo.addEntry("Cell id", static_cast<double>(res[i].ID));
+							throw eo;
+						}
+					}
+					res[i].temperature = eos.de2T(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
+				}
 				if (!(res[i].density > 0) || !(res[i].pressure > 0) || (!std::isfinite(fastabs(extensives[i].momentum))))
 				{
 					UniversalError eo("Negative quantity in cell update");
@@ -231,7 +273,7 @@ namespace
 
 }
 
-DefaultCellUpdater::DefaultCellUpdater(bool SR, double G, bool const includes_temperature) :SR_(SR), G_(G), includes_temperature_(includes_temperature), entropy_index_(9999999) {}
+DefaultCellUpdater::DefaultCellUpdater(bool SR, double G, bool const includes_temperature, const Diffusion* diffusion) :SR_(SR), G_(G), includes_temperature_(includes_temperature), diffusion_(diffusion), entropy_index_(9999999) {}
 
 void DefaultCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
 	const Tessellation3D& tess, vector<Conserved3D>& extensives) const
@@ -249,7 +291,7 @@ void DefaultCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOf
 	}
 #endif
 	if (!SR_)
-		regular_update(res, extensives, tess, entropy_index_, eos, includes_temperature_);
+		regular_update(res, extensives, tess, entropy_index_, eos, includes_temperature_, diffusion_);
 	else
 		regular_updateSR(res, extensives, tess, entropy_index_, eos, G_);
 #ifdef RICH_MPI
