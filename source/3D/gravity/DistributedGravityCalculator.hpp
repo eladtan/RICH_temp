@@ -30,7 +30,7 @@ namespace
             }
         }
 
-        if(node->isValue or !shouldOpen)
+        if(node->isLeaf or !shouldOpen)
         {
             // do not open, send me
             sendNodes.push_back(node->value);

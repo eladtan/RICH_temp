@@ -198,7 +198,7 @@ std::vector<std::pair<octnode_id_t, typename GravityTree<T>::MassedValue>> Gravi
         }
 
         // always push the child that contains the node
-        if(!node->isValue and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
+        if(!node->isLeaf and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
         {
             int childContains = -1;
             // open the box
@@ -235,7 +235,7 @@ void GravityTree<T>::calculateMassHelper(Node *node)
     MassedValue &value = node->value;
     typename T::coord_type *Q = value.Q;
 
-    if(!node->isValue)
+    if(!node->isLeaf)
     {
         // internal node
         // the mass should be the accumulative mass. Calculate also the center of mass
@@ -305,7 +305,7 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
         }
 
         // always push the child that contains the node
-        if(!node->isValue and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
+        if(!node->isLeaf and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
         {
             int childContains = -1;
             // open the box

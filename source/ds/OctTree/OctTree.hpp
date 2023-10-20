@@ -4,20 +4,21 @@
 #include <vector>
 #include <assert.h>
 #include <utility>
-#include "../geometry_utils.hpp"
 
 #include <stack>
-
-#define DIM 3
-#define CHILDREN 8 // 2^DIM
-#define PATH_END_DIRECTION (-1)
-#define MAX_DEPTH 50
-
 #include <sstream>
 
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif // DEBUG_MODE
+
+#include "../geometry_utils.hpp"
+#include "source/misc/universal_error.hpp"
+
+#define DIM 3
+#define CHILDREN 8 // 2^DIM
+#define PATH_END_DIRECTION (-1)
+#define MAX_DEPTH 64
 
 typedef size_t octnode_id_t;
 typedef char direction_t;
@@ -37,7 +38,7 @@ public:
         friend class OctTree;
 
     public:
-        inline OctTreeNode(const T &ll, const T &ur): isValue(false), value((ll + ur)/2), boundingBox(_BoundingBox(ll, ur)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(_BoundingBox(ll, ur)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -45,7 +46,7 @@ public:
             }
         }
 
-        inline OctTreeNode(const T &point): isValue(true), value(point), boundingBox(_BoundingBox(point, point)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(_BoundingBox(point, point)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -53,7 +54,7 @@ public:
             }
         }
 
-        inline OctTreeNode(OctTreeNode &&other): isValue(other.isValue), value(other.value), boundingBox(other.boundingBox)
+        inline OctTreeNode(OctTreeNode &&other): isLeaf(other.isLeaf), value(other.value), boundingBox(other.boundingBox)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -74,12 +75,14 @@ public:
         virtual OctTreeNode *addLeafChild(int childIndex, const T &point);
         virtual OctTreeNode *createChild(int childNumber);
 
+        #ifdef DEBUG_MODE
         virtual inline void print() const
         {
             std::cout << this->value << ", BB: " << this->boundingBox.getLL() << ", " << this->boundingBox.getUR() << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
         }
+        #endif // DEBUG_MODE
 
-        bool isValue;
+        bool isLeaf; // if a leaf
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
         _BoundingBox<T> boundingBox; // the bounding box this node induces
         OctTreeNode *children[CHILDREN];
@@ -236,7 +239,7 @@ void OctTree<T>::deleteSubtree(OctTreeNode *node)
 }
 
 template<typename T>
-OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isValue(false), parent(parent), depth(0)
+OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isLeaf(false), parent(parent), depth(0)
 {
     assert(parent != nullptr);
 
@@ -304,7 +307,7 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFindParent(const U &point
     const OctTreeNode *current = this->getRoot();
     while(current != nullptr)
     {
-        if(current->isValue)
+        if(current->isLeaf)
         {
             return current;
         }
@@ -326,7 +329,7 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const U &point) cons
     const OctTreeNode *current = this->getRoot();
     while(current != nullptr)
     {
-        if(current->isValue)
+        if(current->isLeaf)
         {
             if(current->value == point)
             {
@@ -371,7 +374,7 @@ template<typename T>
 void OctTree<T>::OctTreeNode::splitNode()
 {
     assert(this->parent != nullptr);
-    assert(this->isValue);
+    assert(this->isLeaf);
 
     // get my index
     int i;
@@ -389,7 +392,7 @@ void OctTree<T>::OctTreeNode::splitNode()
     this->parent->createChild(i);
     
     this->parent = this->parent->children[i];
-    this->parent->isValue = false;
+    this->parent->isLeaf = false;
     
     int myIndex = this->parent->getChildNumberContaining(this->value);
     this->parent->children[myIndex] = this; 
@@ -405,7 +408,7 @@ void OctTree<T>::printHelper(const OctTreeNode *node, int indent) const
         std::cout << "nullptr" << std::endl;
         return;
     }
-    if(node->isValue)
+    if(node->isLeaf)
     {
         std::cout << node->value << std::endl;
     }
@@ -480,7 +483,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
     while(current != nullptr)
     {
         // if we reached a leaf with the value `v`, start splitting until `v` and `point` are not in the same rectangle
-        while(current->isValue)
+        while(current->isLeaf)
         {
             if(current->value == point)
             {
@@ -518,7 +521,7 @@ void OctTree<T>::getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> 
     {
         return;
     }
-    if(node->isValue)
+    if(node->isLeaf)
     {
         result.push_back(node->value);
     }
@@ -539,7 +542,7 @@ void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, 
     {
         return;
     }
-    if(node->isValue)
+    if(node->isLeaf)
     {
         // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
         // that is because a leaf does not necessarily has to be a point (it can be a box, as in `DistributedOctTree`)
@@ -588,7 +591,7 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const T &po
             continue;
         }
         // there might be a closer point in the subtrees
-        if(node->isValue)
+        if(node->isLeaf)
         {
             if(node->value == point)
             {

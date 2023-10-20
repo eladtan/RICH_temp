@@ -116,7 +116,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
     {
         for(int i = 0; i < CHILDREN; i++)
         {
-            bool bit = (node->children[i] != nullptr || (node->isValue and newNode->getChildNumberContaining(RankedValue(node->value, UNDEFINED_OWNER)) == i));
+            bool bit = (node->children[i] != nullptr || (node->isLeaf and newNode->getChildNumberContaining(RankedValue(node->value, UNDEFINED_OWNER)) == i));
             valueToSend |= (bit << i);
         }
     }
@@ -159,7 +159,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                 bool advancedNode = false; // if went down to a child of current node
                 if(node != nullptr)
                 {
-                    if(node->isValue)
+                    if(node->isLeaf)
                     {
                         nextNode = newNode->children[i]->boundingBox.contains(RankedValue(node->value, UNDEFINED_OWNER))? node : nullptr;
                     }
@@ -181,7 +181,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     directionsInMyTree.pop_back();
                 }
                 newNode->children[i]->value.owner = UNDEFINED_OWNER; // several owners
-                newNode->children[i]->isValue = false;
+                newNode->children[i]->isLeaf = false;
             }
             else
             {
@@ -191,7 +191,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     if(rank == containingValue)
                     {
                         const typename OctTree<T>::OctTreeNode *childNode;
-                        if(node->isValue)
+                        if(node->isLeaf)
                         {
                             childNode = node;
                         }
@@ -206,7 +206,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                         // newNode->children[i]->value.directions[directionsInMyTree.size()] = PATH_END_DIRECTION;
                         newNode->children[i]->value.directions[directionsInMyTree.size()] = PATH_END_DIRECTION;
 
-                        if(!node->isValue)
+                        if(!node->isLeaf)
                         {
                             directionsInMyTree.pop_back();
                         }
@@ -215,7 +215,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     MPI_Bcast(newNode->children[i]->value.directions, sizeof(direction_t) * MAX_DIRECTIONS_SIZE, MPI_BYTE, containingValue, this->comm);
                 }
                 newNode->children[i]->value.owner = containingValue;
-                newNode->children[i]->isValue = true;
+                newNode->children[i]->isLeaf = true;
             }
         }
         else
@@ -244,7 +244,7 @@ bool DistributedOctTree<T>::validateHelper(const DistributedOctTreeNode *node) c
     }
     if(hasChildren)
     {
-        assert(node->isValue);
+        assert(node->isLeaf);
     }
     for(int i = 0; i < CHILDREN; i++)
     {
@@ -311,7 +311,7 @@ int DistributedOctTree<T>::getClosestRank(const T &point) const
         {
             continue;
         }
-        if(node->isValue)
+        if(node->isLeaf)
         {
             if(node->value.owner == this->rank)
             {
@@ -427,7 +427,7 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         {
             continue;
         }
-        if(!node->isValue)
+        if(!node->isLeaf)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
