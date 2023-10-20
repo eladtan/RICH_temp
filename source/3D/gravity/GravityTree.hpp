@@ -12,10 +12,6 @@ class GravityTree;
 template<typename T, typename BB>
 bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, double thetaSquared)
 {
-    if(boundingBox.contains(point))
-    {
-        return true;
-    }
     typename T::coord_type width = boundingBox.getWidthSquared();
     Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
     Vec4d squared = diff * diff;
