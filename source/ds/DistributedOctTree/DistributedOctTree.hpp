@@ -65,7 +65,21 @@ public:
 
     int getClosestRank(const T &point) const;
 
+    std::vector<T> getRankValues(int _rank) const;
+
+    std::vector<_BoundingBox<T>> getRankBoundingBoxes(int _rank) const;
+
+    inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};
+
+    inline std::vector<_BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
+
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const T &point) const;
+
+    template<typename U>
+    inline int getOwner(const U &value) const
+    {
+        return this->octTree->findParent(value).owner;
+    }
 
     #ifdef DEBUG_MODE
     inline bool validate() const{if(this->octTree != nullptr) return this->validateHelper(this->octTree->getRoot()); return true;};
@@ -315,6 +329,80 @@ int DistributedOctTree<T>::getClosestRank(const T &point) const
         }
     }
     return closestRank;
+}
+
+template<typename T>
+std::vector<T> DistributedOctTree<T>::getRankValues(int _rank) const
+{
+    std::vector<T> values;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(node->value.owner == UNDEFINED_OWNER)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(node->value.owner == _rank)
+            {
+                values.emplace_back(node->value.value);
+            }
+        }
+    }
+    return values;
+}
+
+template<typename T>
+std::vector<_BoundingBox<T>> DistributedOctTree<T>::getRankBoundingBoxes(int _rank) const
+{
+    std::vector<_BoundingBox<T>> boxes;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(node->value.owner == UNDEFINED_OWNER)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(node->value.owner == _rank)
+            {
+                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
+            }
+        }
+    }
+    return boxes;
 }
 
 template<typename T>

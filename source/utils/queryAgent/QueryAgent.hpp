@@ -242,7 +242,7 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
             //*/
            // MPI_Send(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm);
         }
-        MPI_Iprobe(MPI_ANY_SOURCE,  TAG_REQUEST, this->comm, &arrivedNew, &status);
+        MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &status);
     }
 }
 

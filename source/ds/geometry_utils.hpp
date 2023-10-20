@@ -88,6 +88,12 @@ public:
         */
     }
 
+    template<typename U>
+    inline bool intersects(const _BoundingBox<U> &other) const
+    {
+        return this->contains(other.getLL()) or this->contains(other.getUR()) or other.contains(this->ll) or other.contains(this->ur);
+    }
+
     inline T closestPoint(const T &point) const
     {
         Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
@@ -134,6 +140,11 @@ public:
             }
         }
         return furthestPoint;
+    }
+
+    friend std::ostream &operator<<(std::ostream &stream, const _BoundingBox<T> &box)
+    {
+        return stream << "BoundingBox(" << box.ll << ", " << box.ur << ")";
     }
 };
 

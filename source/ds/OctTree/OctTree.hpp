@@ -13,12 +13,13 @@
 #define PATH_END_DIRECTION (-1)
 #define MAX_DEPTH 50
 
-#define DEBUG_MODE
+#include <sstream>
 
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif // DEBUG_MODE
 
+typedef size_t octnode_id_t;
 typedef char direction_t;
 
 template<typename T>
@@ -85,7 +86,8 @@ public:
         OctTreeNode *parent;
         int height; // height of a leaf is 0
         int depth; // depth of the root is 0
-    
+        octnode_id_t id;
+
     protected:
         void fixHeightsRecursively();
         void splitNode();
@@ -94,10 +96,14 @@ public:
 protected:
     void deleteSubtree(OctTreeNode *node);
 
-    const OctTreeNode *tryFind(const T &point) const;
-    inline OctTreeNode *tryFind(const T &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFind(point));};
-    const OctTreeNode *tryFindParent(const T &point) const;
-    inline OctTreeNode *tryFindParent(const T &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
+    template<typename U>
+    const OctTreeNode *tryFind(const U &point) const;
+    template<typename U>
+    inline OctTreeNode *tryFind(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFind(point));};
+    template<typename U>
+    const OctTreeNode *tryFindParent(const U &point) const;
+    template<typename U>
+    inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
     virtual OctTreeNode *tryInsert(const T &point);
 
     #ifdef DEBUG_MODE
@@ -116,9 +122,10 @@ protected:
     
     OctTreeNode *root;
     size_t treeSize;
+    size_t nodesNumber;
 
 public:
-    explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0){this->setBounds(ll, ur);};
+    explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0), nodesNumber(0){this->setBounds(ll, ur);};
     template<typename InputIterator>
     explicit OctTree(const T &ll, const T &ur, const InputIterator &first, const InputIterator &last): OctTree(ll, ur)
     {
@@ -129,19 +136,36 @@ public:
     };
     template<typename Container>
     inline OctTree(const T &ll, const T &ur, Container container): OctTree(ll, ur, container.begin(), container.end()){};
-    inline explicit OctTree(): root(nullptr), treeSize(0){};
+    inline explicit OctTree(): root(nullptr), treeSize(0), nodesNumber(0){};
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
     inline bool insert(const T &point)
     {
-        if(this->tryInsert(point) != nullptr)
+        OctTreeNode *newNode = this->tryInsert(point);
+        if(newNode != nullptr)
         {
+            newNode->id = (this->nodesNumber++);
             this->treeSize++;
             return true;
         }
         return false;
     };
-    inline bool find(const T &point) const{return this->tryFind(point) != nullptr;};
+
+    template<typename U>
+    inline bool find(const U &point) const{return this->tryFind(point) != nullptr;};
+
+    template<typename U>
+    inline T findParent(const U &point) const
+    {
+        const OctTreeNode *parent = this->tryFindParent(point);
+        if(parent == nullptr)
+        {
+            std::stringstream valueStr;
+            valueStr << point;
+            throw UniversalError("Error: could not find a parent to " + valueStr.str() + " (is the tree empty or point out of boundaries?)");
+        }
+        return parent->value;
+    };
 
     virtual inline OctTreeNode *getRoot(){return this->root;};
     virtual inline const OctTreeNode *getRoot() const{return this->root;};
@@ -274,18 +298,15 @@ int OctTree<T>::OctTreeNode::getChildNumberContaining(const U &point) const
 }
 
 template<typename T>
-const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFindParent(const T &point) const
+template<typename U>
+const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFindParent(const U &point) const
 {
     const OctTreeNode *current = this->getRoot();
     while(current != nullptr)
     {
         if(current->isValue)
         {
-            if(current->value == point)
-            {
-                return current;
-            }
-            return nullptr;
+            return current;
         }
         // otherwise, determine the direction to go
         const OctTreeNode *nextChild = current->getChildContaining(point);
@@ -299,7 +320,8 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFindParent(const T &point
 }
 
 template<typename T>
-const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const T &point) const
+template<typename U>
+const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const U &point) const
 {
     const OctTreeNode *current = this->getRoot();
     while(current != nullptr)
@@ -351,6 +373,7 @@ void OctTree<T>::OctTreeNode::splitNode()
     assert(this->parent != nullptr);
     assert(this->isValue);
 
+    // get my index
     int i;
     for(i = 0; i < CHILDREN; i++)
     {
@@ -448,7 +471,9 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
     assert(this->getRoot() != nullptr);
     if(!this->getRoot()->boundingBox.contains(point))
     {
-        return nullptr;
+        std::stringstream valueStr;
+        valueStr << point;
+        throw UniversalError("value " + valueStr.str() + " is outside the bounding box of the octtree");
     }
 
     OctTreeNode *current = this->getRoot();
@@ -463,6 +488,8 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
             }
             current->splitNode();
             current = current->parent;
+            current->id = (this->nodesNumber++);
+
             int childIndex = current->getChildNumberContaining(point);
             if(current->children[childIndex] == nullptr)
             {
@@ -479,7 +506,9 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
         }
         current = current->children[childIndex];
     }
-    return nullptr;
+    std::stringstream valueStr;
+    valueStr << point;
+    throw UniversalError("point " + valueStr.str() + " could not be inserted to the tree");
 }
 
 template<typename T>
