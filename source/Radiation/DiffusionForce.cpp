@@ -166,7 +166,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
 #endif
     if(rank == max_data.mpi_id)
         std::cout<<"DiffusionForce dt ID "<<cells[max_loc].ID<<" new Er "<<extensives[max_loc].Erad / tess.GetVolume(max_loc) <<" old Er "<<new_Er[max_loc]<<" max diff "<<max_diff<<" next dt "<<dt * std::min(0.2 / max_diff, 1.1)<<" density "<<cells[max_loc].density<<" T "<<cells[max_loc].temperature<<std::endl;
-	next_dt_ = dt * std::min(0.2 / max_diff, 1.25);
+	next_dt_ = dt * std::min(0.3 / max_diff, 1.25);
 }   
 
 
