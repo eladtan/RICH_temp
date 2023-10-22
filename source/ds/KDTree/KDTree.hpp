@@ -22,7 +22,7 @@ private:
         KDTreeNode(const T &value, const T &ll, const T &ur); // for root
 
         T value;
-        bool isValue; // is a value in the tree, or an auxiliary node
+        bool isLeaf; // is a value in the tree, or an auxiliary node
         int partitionAxis;
         KDTreeNode *left, *right;
         KDTreeNode *parent;
@@ -101,7 +101,7 @@ void KDTree<T, D>::KDTreeNode::updateHeightRecursively()
 }
 
 template<typename T, int D>
-KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), parent(nullptr), isValue(true)
+KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), parent(nullptr), isLeaf(true)
 {
     this->boundingBox = _BoundingBox<T>(ll, ur);
     this->depth = 0;
@@ -110,7 +110,7 @@ KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): 
 }
 
 template<typename T, int D>
-KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(value), parent(parent), isValue(true)
+KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(value), parent(parent), isLeaf(true)
 {
     this->left = this->right = nullptr;
 
@@ -199,7 +199,7 @@ const typename KDTree<T, D>::KDTreeNode *KDTree<T, D>::tryFind(const T &value) c
     const KDTreeNode *current = this->getRoot();
     while(current != nullptr)
     {
-        if((current->value == value) and (current->isValue))
+        if((current->value == value) and (current->isLeaf))
         {
             return current;
         }
@@ -238,7 +238,7 @@ void KDTree<T, D>::rangeHelper(const KDTreeNode *node, const _Sphere<T> &sphere,
     }
     if(SphereBoxIntersection(node->boundingBox, sphere))
     {
-        if(node->isValue)
+        if(node->isLeaf)
         {
             if(sphere.contains(node->value))
             {
@@ -261,7 +261,7 @@ void KDTree<T, D>::printHelper(const KDTreeNode *node, int tabs) const
         return;
     }
     for(int i = 0; i < tabs; i++){std::cout << "\t";}
-    if(node->isValue)
+    if(node->isLeaf)
     {
         std::cout << "\033[1;34m";
     }

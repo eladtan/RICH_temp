@@ -77,7 +77,7 @@ private:
             return;
         }
         // there might be a closer point in the subtrees
-        if(node->isValue)
+        if(node->isLeaf)
         {
             //if(std::find(ignore.begin(), ignore.end(), node->value.index) == ignore.end())
             if(ignore.find(node->value.index) == ignore.cend())
@@ -136,7 +136,7 @@ void OctTreeFinder::getClosestPointHelper(const _Sphere<IndexedVector3D> &sphere
         return;
     }
     // there might be a closer point in the subtrees
-    if(node->isValue)
+    if(node->isLeaf)
     {
         if(std::find(ignore.begin(), ignore.end(), node->value.index) == ignore.end())
         {

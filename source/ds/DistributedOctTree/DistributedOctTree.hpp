@@ -65,7 +65,21 @@ public:
 
     int getClosestRank(const T &point) const;
 
+    std::vector<T> getRankValues(int _rank) const;
+
+    std::vector<_BoundingBox<T>> getRankBoundingBoxes(int _rank) const;
+
+    inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};
+
+    inline std::vector<_BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
+
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const T &point) const;
+
+    template<typename U>
+    inline int getOwner(const U &value) const
+    {
+        return this->octTree->findParent(value).owner;
+    }
 
     #ifdef DEBUG_MODE
     inline bool validate() const{if(this->octTree != nullptr) return this->validateHelper(this->octTree->getRoot()); return true;};
@@ -102,7 +116,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
     {
         for(int i = 0; i < CHILDREN; i++)
         {
-            bool bit = (node->children[i] != nullptr || (node->isValue and newNode->getChildNumberContaining(RankedValue(node->value, UNDEFINED_OWNER)) == i));
+            bool bit = (node->children[i] != nullptr || (node->isLeaf and newNode->getChildNumberContaining(RankedValue(node->value, UNDEFINED_OWNER)) == i));
             valueToSend |= (bit << i);
         }
     }
@@ -145,7 +159,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                 bool advancedNode = false; // if went down to a child of current node
                 if(node != nullptr)
                 {
-                    if(node->isValue)
+                    if(node->isLeaf)
                     {
                         nextNode = newNode->children[i]->boundingBox.contains(RankedValue(node->value, UNDEFINED_OWNER))? node : nullptr;
                     }
@@ -167,7 +181,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     directionsInMyTree.pop_back();
                 }
                 newNode->children[i]->value.owner = UNDEFINED_OWNER; // several owners
-                newNode->children[i]->isValue = false;
+                newNode->children[i]->isLeaf = false;
             }
             else
             {
@@ -177,7 +191,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     if(rank == containingValue)
                     {
                         const typename OctTree<T>::OctTreeNode *childNode;
-                        if(node->isValue)
+                        if(node->isLeaf)
                         {
                             childNode = node;
                         }
@@ -192,7 +206,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                         // newNode->children[i]->value.directions[directionsInMyTree.size()] = PATH_END_DIRECTION;
                         newNode->children[i]->value.directions[directionsInMyTree.size()] = PATH_END_DIRECTION;
 
-                        if(!node->isValue)
+                        if(!node->isLeaf)
                         {
                             directionsInMyTree.pop_back();
                         }
@@ -201,7 +215,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                     MPI_Bcast(newNode->children[i]->value.directions, sizeof(direction_t) * MAX_DIRECTIONS_SIZE, MPI_BYTE, containingValue, this->comm);
                 }
                 newNode->children[i]->value.owner = containingValue;
-                newNode->children[i]->isValue = true;
+                newNode->children[i]->isLeaf = true;
             }
         }
         else
@@ -230,7 +244,7 @@ bool DistributedOctTree<T>::validateHelper(const DistributedOctTreeNode *node) c
     }
     if(hasChildren)
     {
-        assert(node->isValue);
+        assert(node->isLeaf);
     }
     for(int i = 0; i < CHILDREN; i++)
     {
@@ -297,7 +311,7 @@ int DistributedOctTree<T>::getClosestRank(const T &point) const
         {
             continue;
         }
-        if(node->isValue)
+        if(node->isLeaf)
         {
             if(node->value.owner == this->rank)
             {
@@ -315,6 +329,80 @@ int DistributedOctTree<T>::getClosestRank(const T &point) const
         }
     }
     return closestRank;
+}
+
+template<typename T>
+std::vector<T> DistributedOctTree<T>::getRankValues(int _rank) const
+{
+    std::vector<T> values;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(node->value.owner == UNDEFINED_OWNER)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(node->value.owner == _rank)
+            {
+                values.emplace_back(node->value.value);
+            }
+        }
+    }
+    return values;
+}
+
+template<typename T>
+std::vector<_BoundingBox<T>> DistributedOctTree<T>::getRankBoundingBoxes(int _rank) const
+{
+    std::vector<_BoundingBox<T>> boxes;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(node->value.owner == UNDEFINED_OWNER)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(node->value.owner == _rank)
+            {
+                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
+            }
+        }
+    }
+    return boxes;
 }
 
 template<typename T>
@@ -339,7 +427,7 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         {
             continue;
         }
-        if(!node->isValue)
+        if(!node->isLeaf)
         {
             for(int i = 0; i < CHILDREN; i++)
             {

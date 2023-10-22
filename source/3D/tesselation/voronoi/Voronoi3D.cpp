@@ -1392,6 +1392,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 
     if(this->pointsManager.get() == nullptr)
     {
+        // initialize the points manager
         this->SetKernel(); // default kernel
         this->pointsManager = std::make_shared<HilbertPointsManager>(HilbertPointsManager(this->ll_, this->ur_, this->indexing.get()));
     }

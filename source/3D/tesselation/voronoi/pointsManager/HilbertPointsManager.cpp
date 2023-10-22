@@ -1,5 +1,7 @@
 #include "HilbertPointsManager.hpp"
 
+#ifdef RICH_MPI
+
 PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
 {
     PointsExchangeResult exchangeResult;
@@ -48,3 +50,5 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
 
     return exchangeResult;
 }
+
+#endif // RICH_MPI
