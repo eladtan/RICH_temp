@@ -215,11 +215,14 @@ public:
         return current;
     }
 
-    std::pair<T, typename T::coord_type> getClosestPointInfo(const T &point) const;
+    template<typename U>
+    std::pair<T, typename T::coord_type> getClosestPointInfo(const U &point) const;
 
-    inline T closestPoint(const T &point) const{return this->getClosestPointInfo(point).first;};
+    template<typename U>
+    inline T closestPoint(const U &point) const{return this->getClosestPointInfo(point).first;};
 
-    inline typename T::coord_type closestPointDistance(const T &point) const{return this->getClosestPointInfo(point).second;};
+    template<typename U>
+    inline typename T::coord_type closestPointDistance(const U &point) const{return this->getClosestPointInfo(point).second;};
 
     T KthClosestPoint(const T &point) const;
 };
@@ -560,7 +563,8 @@ void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, 
 #define EPSILON 1e-12
 
 template<typename T>
-std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const T &point) const
+template<typename U>
+std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point) const
 {
     std::stack<const OctTreeNode*> nodes;
     nodes.push(this->getRoot());
