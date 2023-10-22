@@ -60,6 +60,8 @@ namespace CG
         virtual void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
             std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result)const = 0;
 
+        virtual void PrintDebugData(size_t const index) const {;}
+        
         std::vector<std::string> const zero_cells_;
     };
 
