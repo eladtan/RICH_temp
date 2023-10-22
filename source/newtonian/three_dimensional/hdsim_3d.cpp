@@ -255,8 +255,10 @@ void HDSim3D::timeAdvance2(void)
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), dt);
 	vector<Conserved3D> mid_extensives(extensive_);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
+	auto t1 = get_time();
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
-
+	auto t2 = get_time();
+	DisplayTime(t1, t2, "Source time");
 	if (pt_.cycle % 10 == 0)
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
@@ -269,9 +271,9 @@ void HDSim3D::timeAdvance2(void)
 		point_vel = VectorValues(point_vel, order);
 	}
 	MovePoints(tess_, point_vel, dt);
-	auto t1 = get_time();
+	t1 = get_time();
 	UpdateTessellation(tess_, point_vel, dt);
-	auto t2 = get_time();
+	t2 = get_time();
 	DisplayTime(t1, t2, "Voronoi build time");
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -293,7 +295,10 @@ pt_.updateTime(dt);
 pt_.updateCycle();
 CalcFaceVelocities(tess_, point_vel, face_vel);
 face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt);
+t1 = get_time();
 source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
+t2 = get_time();
+DisplayTime(t1, t2, "Second source time");
 eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
@@ -789,9 +794,10 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 	double dt_try = dt;
 	std::vector<double> new_Er, new_Er_full;
 	size_t reduce_counter = 0;
+	std::vector<ComputationalCell3D> cells;
 	while(total_elapsed_time < dt * 0.9999999)
 	{
-		std::vector<ComputationalCell3D> cells(cells_);
+		cells = cells_;
 		std::vector<Conserved3D> extensives(extensive_);
 		bool good_try = true;
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
@@ -853,10 +859,6 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, matrix_builder.zero_cells_[i]));
 	double max_diff = std::numeric_limits<double>::min() * 100;
 	int max_loc = 0;
-	int rank = 0;
-#ifdef RICH_MPI
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
 	for(size_t i = 0; i < N; ++i)
 	{
 		bool to_calc = true;
@@ -888,8 +890,12 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 	MPI_exchange_data(tess_, cells_, true, &cdummy);	
 #endif
 	if(rank == max_data.mpi_id)
+	{
 		std::cout<<"Radiation time step ID "<<cells_[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells_[max_loc].Erad * cells_[max_loc].density<<
-		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<std::endl;
+		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<
+		" width "<<tess_.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		matrix_builder.PrintDebugData(max_loc);
+	}
 	if(no_hydro)
 	{
 		pt_.updateTime(dt);
