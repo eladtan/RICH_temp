@@ -98,7 +98,6 @@ private:
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
-  void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask);
   std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
@@ -174,6 +173,8 @@ public:
     \param filename Output file name
    */
   void output_buildextra(std::string const& filename) const;
+
+  void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
   void BuildHilbert(vector<Vector3D> const& points, bool suppressRebalancing = false) override;
 
