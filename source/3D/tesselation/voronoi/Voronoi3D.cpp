@@ -1409,6 +1409,48 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
     return new_points;
 }
 
+void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask)
+{
+    assert(points.size() == mask.size());
+    size_t originalPointsNum = this->Norg_;
+    size_t newPointsNum = points.size();
+
+    std::vector<IndexedVector3D> oldPoints;
+    for(size_t i = 0; i < newPointsNum; i++)
+    {
+        size_t matchingPointIdx = mask[i];
+        if(matchingPointIdx < originalPointsNum)
+        {
+            oldPoints.push_back(IndexedVector3D(points[i], matchingPointIdx));
+        }
+    }
+
+    std::vector<double> newRadiuses(newPointsNum, this->initialRadius);
+    if(!oldPoints.empty())
+    {
+        OctTree<IndexedVector3D> oldPointsTree(this->ll_, this->ur_, oldPoints);
+        newRadiuses = std::vector<double>(newPointsNum);
+        for(size_t i = 0; i < newPointsNum; i++)
+        {
+            size_t matchingPointIdx = mask[i];
+            double radius;
+
+            if(matchingPointIdx >= originalPointsNum)
+            {
+                size_t closestPointIdx = oldPointsTree.closestPoint(points[i]).getIndex();
+                radius = this->radiuses[closestPointIdx];
+            }
+            else
+            {
+                // old point
+                radius = this->radiuses[matchingPointIdx];
+            }
+            newRadiuses[i] = radius;
+        }
+    }
+    this->radiuses = std::move(newRadiuses);
+}
+
 /**
  * \author Maor Mizrachi
  * \brief Build the voronoi, after rebalancing the points using a proper hilbert curve. 

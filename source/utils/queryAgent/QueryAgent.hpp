@@ -444,6 +444,8 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
         MPI_Waitall(this->requests.size(), &(*(this->requests.begin())), MPI_STATUSES_IGNORE); // make sure any query was indeed received
     }
 
+    MPI_Barrier(this->comm);
+
     // add to the list the processors that sent us a message for the first time
     for(int _rank = 0; _rank < this->size; _rank++)
     {

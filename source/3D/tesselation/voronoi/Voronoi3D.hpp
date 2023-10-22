@@ -174,6 +174,8 @@ public:
    */
   void output_buildextra(std::string const& filename) const;
 
+  void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
+
   void BuildHilbert(vector<Vector3D> const& points, bool suppressRebalancing = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
