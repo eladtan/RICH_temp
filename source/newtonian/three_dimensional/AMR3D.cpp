@@ -1029,6 +1029,11 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveVector(new_mesh, ToRemove.first);
 	new_mesh.insert(new_mesh.end(), new_points.begin(), new_points.end());
 #ifdef RICH_MPI
+	std::vector<size_t> mask(Norg);
+	std::iota(mask.begin(), mask.end(), 0);
+	RemoveVector(mask, ToRemove.first);
+	mask.resize(new_mesh.size(), std::numeric_limits<size_t>::max());
+	tess.PreparePoints(new_mesh, mask);
 	tess.BuildHilbert(new_mesh, true);
 #else // RICH_MPI
 	tess.Build(new_mesh);
