@@ -490,18 +490,64 @@ Snapshot3D ReadSnapshot3D(const string &fname
   Snapshot3D res;
   H5File file(fname, H5F_ACC_RDONLY);
   Group read_location = file.openGroup("/");
+  
+  const vector<double> box = read_double_vector_from_hdf5(file, "Box");
+  res.ll.Set(box[0], box[1], box[2]);
+  res.ur.Set(box[3], box[4], box[5]);
+
+  // Misc
+  {
+    const vector<double> time = read_double_vector_from_hdf5(file, "Time");
+    res.time = time.at(0);
+    const vector<int> cycle = read_int_vector_from_hdf5(file, "Cycle");
+    res.cycle = cycle.at(0);
+  }
+
+  bool good_open = true;
   #ifdef RICH_MPI
-    if(mpi_write)
+  if(mpi_write)
+  {
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if(fake_rank >= 0)
     {
-      int rank = 0;
-      MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-      if(fake_rank >= 0)
-        rank = fake_rank;
+      rank = fake_rank;
+      good_open = false;
+    }
+    try
+    {
       read_location = file.openGroup("/rank" + int2str(rank));
     }
-  #endif
-    // Mesh points
+    catch (Exception& notFoundError)
     {
+      good_open = false;
+      read_location = file.openGroup("/rank" + int2str(0));
+    }
+  }
+#endif
+  {
+    Group g_tracers = read_location.openGroup("tracers");
+    Group g_stickers = read_location.openGroup("stickers");
+    std::vector<string> tracernames(g_tracers.getNumObjs());
+    for(hsize_t n = 0; n < g_tracers.getNumObjs(); ++n)
+    {
+      const H5std_string name = g_tracers.getObjnameByIdx(n);
+      tracernames[n] = name;
+    }
+
+    std::vector<string> stickernames(g_stickers.getNumObjs());
+    for(hsize_t n = 0; n < g_stickers.getNumObjs(); ++n)
+    {
+      const H5std_string name = g_stickers.getObjnameByIdx(n);
+      stickernames[n] = name;
+    }
+    res.tracerstickernames.first = tracernames;
+    res.tracerstickernames.second = stickernames;
+  }   
+  {
+    if(good_open)
+    {
+      // Mesh points
       const vector<double> x = read_double_vector_from_hdf5(read_location, "X");
       const vector<double> y = read_double_vector_from_hdf5(read_location, "Y");
       const vector<double> z = read_double_vector_from_hdf5(read_location, "Z");
@@ -510,87 +556,65 @@ Snapshot3D ReadSnapshot3D(const string &fname
       {
         res.mesh_points.at(i) = Vector3D(x[i], y[i], z[i]);
       }
-    }
-
-  const vector<double> box = read_double_vector_from_hdf5(file, "Box");
-  res.ll.Set(box[0], box[1], box[2]);
-  res.ur.Set(box[3], box[4], box[5]);
-  // Hydrodynamic
-  {
-    const vector<double> density = read_double_vector_from_hdf5(read_location, "Density");
-    const vector<double> Erad = read_double_vector_from_hdf5(read_location, "Erad");
-    const vector<double> temperature = read_double_vector_from_hdf5(read_location, "Temperature");
-    const vector<double> pressure = read_double_vector_from_hdf5(read_location, "Pressure");
-    const vector<double> energy = read_double_vector_from_hdf5(read_location, "InternalEnergy");
-    vector<size_t> IDs(density.size(), 0);
-    hsize_t objcount = read_location.getNumObjs();
-    for(hsize_t i = 0; i < objcount; ++i)
-    {
-      std::string name = read_location.getObjnameByIdx(i);
-      if(name.compare(std::string("ID")) == 0)
+      // Hydrodynamic
+      res.volumes = read_double_vector_from_hdf5(read_location, "Volume");;
+      const vector<double> density = read_double_vector_from_hdf5(read_location, "Density");
+      const vector<double> Erad = read_double_vector_from_hdf5(read_location, "Erad");
+      const vector<double> temperature = read_double_vector_from_hdf5(read_location, "Temperature");
+      const vector<double> pressure = read_double_vector_from_hdf5(read_location, "Pressure");
+      const vector<double> energy = read_double_vector_from_hdf5(read_location, "InternalEnergy");
+      vector<size_t> IDs(density.size(), 0);
+      hsize_t objcount = read_location.getNumObjs();
+      for(hsize_t i = 0; i < objcount; ++i)
       {
-        IDs = read_sizet_vector_from_hdf5(read_location, "ID");
+        std::string name = read_location.getObjnameByIdx(i);
+        if(name.compare(std::string("ID")) == 0)
+        {
+          IDs = read_sizet_vector_from_hdf5(read_location, "ID");
+        }
       }
-    }
-    const vector<double> x_velocity = read_double_vector_from_hdf5(read_location, "Vx");
-    const vector<double> y_velocity = read_double_vector_from_hdf5(read_location, "Vy");
-    const vector<double> z_velocity = read_double_vector_from_hdf5(read_location, "Vz");
+      const vector<double> x_velocity = read_double_vector_from_hdf5(read_location, "Vx");
+      const vector<double> y_velocity = read_double_vector_from_hdf5(read_location, "Vy");
+      const vector<double> z_velocity = read_double_vector_from_hdf5(read_location, "Vz");
 
-    Group g_tracers = read_location.openGroup("tracers");
-    Group g_stickers = read_location.openGroup("stickers");
-    vector<vector<double>> tracers(g_tracers.getNumObjs());
-    vector<string> tracernames(tracers.size());
-    for(hsize_t n = 0; n < g_tracers.getNumObjs(); ++n)
-    {
-      const H5std_string name = g_tracers.getObjnameByIdx(n);
-      tracernames[n] = name;
-      tracers[n] = read_double_vector_from_hdf5(g_tracers, name);
-    }
-
-    vector<vector<int>> stickers(g_stickers.getNumObjs());
-    vector<string> stickernames(stickers.size());
-    for(hsize_t n = 0; n < g_stickers.getNumObjs(); ++n)
-    {
-      const H5std_string name = g_stickers.getObjnameByIdx(n);
-      stickernames[n] = name;
-      stickers[n] = read_int_vector_from_hdf5(g_stickers, name);
-    }
-    res.tracerstickernames.first = tracernames;
-    res.tracerstickernames.second = stickernames;
-    res.cells.resize(density.size());
-    for(size_t i = 0; i < res.cells.size(); ++i)
-    {
-      res.cells.at(i).density = density.at(i);
-      res.cells.at(i).Erad = Erad.at(i);
-      res.cells.at(i).temperature = temperature.at(i);
-      res.cells.at(i).pressure = pressure.at(i);
-      res.cells.at(i).internal_energy = energy.at(i);
-      res.cells.at(i).ID = IDs[i];
-      res.cells.at(i).velocity.x = x_velocity.at(i);
-      res.cells.at(i).velocity.y = y_velocity.at(i);
-      res.cells.at(i).velocity.z = z_velocity.at(i);
-      for(size_t j = 0; j < tracernames.size(); ++j)
+      Group g_tracers = read_location.openGroup("tracers");
+      Group g_stickers = read_location.openGroup("stickers");
+      vector<vector<double>> tracers(g_tracers.getNumObjs());
+      for(hsize_t n = 0; n < g_tracers.getNumObjs(); ++n)
       {
-        res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
+        const H5std_string name = g_tracers.getObjnameByIdx(n);
+        tracers[n] = read_double_vector_from_hdf5(g_tracers, name);
       }
-      for(size_t j = 0; j < stickernames.size(); ++j)
+
+      vector<vector<int>> stickers(g_stickers.getNumObjs());
+      for(hsize_t n = 0; n < g_stickers.getNumObjs(); ++n)
       {
-        res.cells.at(i).stickers.at(j) = (stickers.at(j).at(i) == 1);
+        const H5std_string name = g_stickers.getObjnameByIdx(n);
+        stickers[n] = read_int_vector_from_hdf5(g_stickers, name);
+      }
+      res.cells.resize(density.size());
+      for(size_t i = 0; i < res.cells.size(); ++i)
+      {
+        res.cells.at(i).density = density.at(i);
+        res.cells.at(i).Erad = Erad.at(i);
+        res.cells.at(i).temperature = temperature.at(i);
+        res.cells.at(i).pressure = pressure.at(i);
+        res.cells.at(i).internal_energy = energy.at(i);
+        res.cells.at(i).ID = IDs[i];
+        res.cells.at(i).velocity.x = x_velocity.at(i);
+        res.cells.at(i).velocity.y = y_velocity.at(i);
+        res.cells.at(i).velocity.z = z_velocity.at(i);
+        for(size_t j = 0; j < tracers.size(); ++j)
+        {
+          res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
+        }
+        for(size_t j = 0; j < stickers.size(); ++j)
+        {
+          res.cells.at(i).stickers.at(j) = (stickers.at(j).at(i) == 1);
+        }
       }
     }
   }
-
-  // Misc
-  {
-    const vector<double> time = read_double_vector_from_hdf5(file, "Time");
-    res.time = time.at(0);
-
-    const vector<double> volume = read_double_vector_from_hdf5(read_location, "Volume");
-    res.volumes = volume;
-    const vector<int> cycle = read_int_vector_from_hdf5(file, "Cycle");
-    res.cycle = cycle.at(0);
-  }
-
   return res;
 }
 
