@@ -20,6 +20,8 @@ public:
         return this->sentData;
     }
 
+    virtual ~AnswerAgent(){}
+
 protected:
     std::vector<int> sentProc;
     std::vector<std::vector<size_t>> sentData;
