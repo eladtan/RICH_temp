@@ -13,7 +13,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 
-#define BALANCE_FACTOR 1.1
+#define BALANCE_FACTOR 1.05
 
 /**
  * \author Maor Mizrachi
@@ -68,11 +68,13 @@ public:
 
     PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool doRebalance = true)
     {
-        if(doRebalance and this->checkForRebalance(points))
+        PointsExchangeResult result = this->exchange(points, radiuses);
+        if(doRebalance and this->checkForRebalance(result.newPoints))
         {
             this->rebalance(points);
+            return this->exchange(points, radiuses);
         }
-        return this->exchange(points, radiuses);
+        return result;
     }
 
 protected:
