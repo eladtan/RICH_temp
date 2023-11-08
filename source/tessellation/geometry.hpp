@@ -5,6 +5,7 @@
 
 #ifndef GEOMETRY_HPP
 #define GEOMETRY_HPP 1
+#include <ostream>
 #include <vector>
 #include <boost/array.hpp>
 #ifdef RICH_MPI
@@ -77,6 +78,15 @@ public:
   void Rotate(double a);
   //! \brief Caluclates the distance from the Vector to v1 \param v1 The vector whose distance from is calculated \returns The distance
   double distance(Vector2D const& v1) const;
+
+  inline double &operator[](size_t i){if(i == 0) return this->x; return this->y;};
+
+  inline double operator[](size_t i) const{if(i == 0) return this->x; return this->y;};
+
+  friend inline std::ostream &operator<<(std::ostream &stream, const Vector2D &vector)
+  {
+    return (stream << "(" << vector.x << ", " << vector.y << ")");
+  }
 
 #ifdef RICH_MPI
   /*! \brief Serializer
