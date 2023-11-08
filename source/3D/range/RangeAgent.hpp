@@ -128,6 +128,11 @@ private:
         {
             const DistributedOctEnvironmentAgent *distributedOctAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
             EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+            if(intersectingRanks.empty())
+            {
+                std::cout << "query is " << query << std::endl;
+                throw UniversalError("In range talk agent, should not reach here: the intersecting ranks list should at least contain the rank itself");
+            }
             if(intersectingRanks.size() == 1)
             {
                 return intersectingRanks;
@@ -174,6 +179,7 @@ private:
             }
             if(minDistRank > static_cast<size_t>(this->size))
             {
+                std::cout << "min dist rank is " << minDistRank << std::endl;
                 // in fact, should not reach here, if intersectingRanks.size() > 1
                 throw UniversalError("In range talk agent, should not reach here (no rank found)");
             }
@@ -245,9 +251,9 @@ public:
     inline std::vector<int> &getRecvProc(){return this->queryAgent->getRecvProc();};
 
 private:
-    AnswerAgent<RangeQueryData, _3DPoint> *ansAgent;
+    RangeAnswerAgent *ansAgent;
+    RangeTalkAgent *talkAgent;
     QueryAgent<RangeQueryData, _3DPoint> *queryAgent;
-    TalkAgent<RangeQueryData> *talkAgent;
 };
 
 #endif // RICH_MPI

@@ -48,6 +48,8 @@ public:
 
     const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};
 
+    inline int getOrder() const{return this->order;};
+    
 private:
     DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
     const IndexingKernel3D *indexing = nullptr;

@@ -6,7 +6,7 @@
 class Shrink : public IndexingKernel3D
 {
 public:
-    inline Shrink(const Vector3D &scale, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    inline Shrink(const Vector3D &scale = Vector3D(), const IndexingKernel3D *indexing = nullptr): indexing(indexing)
     {
         this->scale = 1 / std::max(scale[0], std::max(scale[1], scale[2]));
     };

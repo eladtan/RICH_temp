@@ -5,11 +5,6 @@
 #include <mpi.h>
 #include <functional>
 
-#include <chrono>
-#define TIMED_BARRIER_ARRIVED 1
-#define TIMED_BARRIER_TAG 1979
-#define TIMED_BARRIER_EXIT_CODE 1980
-
 template<typename T>
 struct ExchangeAnswer
 {

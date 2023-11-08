@@ -18,16 +18,17 @@ public:
         Vector3D ll(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
         Vector3D ur(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
         
-
         for(const Vector3D &vertex : vertices)
         {
-            ll.x = std::min(ll.x, vertex.x);
-            ll.y = std::min(ll.y, vertex.y);
-            ll.z = std::min(ll.z, vertex.z);
-            ur.x = std::max(ur.x, vertex.x);
-            ur.y = std::max(ur.y, vertex.y);
-            ur.z = std::max(ur.z, vertex.z);
+            Vector3D kerneledVertex = (this->indexing == nullptr)? vertex : (*this->indexing)(vertex);
+            ll.x = std::min(ll.x, kerneledVertex.x);
+            ll.y = std::min(ll.y, kerneledVertex.y);
+            ll.z = std::min(ll.z, kerneledVertex.z);
+            ur.x = std::max(ur.x, kerneledVertex.x);
+            ur.y = std::max(ur.y, kerneledVertex.y);
+            ur.z = std::max(ur.z, kerneledVertex.z);
         }
+
         this->moveIndexing = Move(ll);
         this->scaleIndexing = Scale(ur - ll);
     }

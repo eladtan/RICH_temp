@@ -1,6 +1,7 @@
 #ifndef HILBERT_CONVERTOR_HPP
 #define HILBERT_CONVERTOR_HPP
 
+#include <sstream>
 #include "HilbertOrder3D.hpp"
 
 #define MAX_HILBERT_ORDER 19

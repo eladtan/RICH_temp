@@ -19,6 +19,7 @@ public:
         MPI_Comm_size(this->comm, &this->size);
     };
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;
+
     virtual int getOwner(const Vector3D &point) const = 0;
 
 protected:

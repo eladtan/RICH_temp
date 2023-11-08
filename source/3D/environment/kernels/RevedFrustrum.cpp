@@ -1,4 +1,4 @@
-#include "Frustrum.hpp"
+#include "RevedFrustrum.hpp"
 
 namespace
 {
@@ -23,7 +23,7 @@ namespace
     }
 }
 
-Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
+Vector3D RevedFrustrum::find_S(const std::vector<Face> &faces) const
 {    
     // first find the parallel faces
     std::vector<Vector3D> normals;
@@ -31,7 +31,7 @@ Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
     {
         if(face.vertices.size() != VERTICES_NUMBER)
         {
-            throw UniversalError("Can not use 'Frustrum' kernelization when there's a face with " + std::to_string(face.vertices.size()) + " vertices (expected " + std::to_string(VERTICES_NUMBER) + ")");
+            throw UniversalError("Can not use 'RevedFrustrum' kernelization when there's a face with " + std::to_string(face.vertices.size()) + " vertices (expected " + std::to_string(VERTICES_NUMBER) + ")");
         }
         normals.emplace_back(GetNormal(face));
     }
@@ -62,7 +62,7 @@ Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
 
     if(!found)
     {
-        throw UniversalError("Can not use 'Frustrum' kernelization when there are no parallel faces");
+        throw UniversalError("Can not use 'RevedFrustrum' kernelization when there are no parallel faces");
     }
 
     std::vector<size_t> nonParallelIdx;
@@ -87,7 +87,7 @@ Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
     return intersection1;
 }
 
-Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing, const IndexingKernel3D *afterIndexing)
+RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing, const IndexingKernel3D *afterIndexing)
 {
     if(faces.size() != NUM_FACES)
     {
@@ -117,18 +117,19 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
         }
         kerneledFaces.emplace_back(newFace);
     }
-
-    const Mat44<double> C(0, 1, 1, 0,
-                         0, 0, 1, 0,
-                         0, 0, 0, 1,
-                         1, 1, 1, 0);
-    Vector3D point1 = (kerneledFaces[0].vertices[0]), point2 = (kerneledFaces[0].vertices[1]), point3 = (kerneledFaces[0].vertices[2]);
-    Vector3D point4 = this->find_S(kerneledFaces); // head (S)
-    Mat44<double> F(point1.x, point2.x, point3.x, point4.x, point1.y, point2.y, point3.y, point4.y, point1.z, point2.z, point3.z, point4.z, 1, 1, 1, 1);
-    this->P = C * F.inverse();
-
+    this->S = this->find_S(kerneledFaces); // head (S)
+    
     Vector3D normalBase1 = GetNormal(kerneledFaces[0]);
     Vector3D normalBase2 = GetNormal(kerneledFaces[1]);
+
+    if((normalBase1 != Vector3D(0, 0, 1) and normalBase1 != Vector3D(0, 0, -1)) or (normalBase2 != Vector3D(0, 0, 1) and normalBase2 != Vector3D(0, 0, -1)))
+    {
+        // this message is thrown in order to calculate whether the summit is "above" or "below" the frustrum (the terms "above" and "below" are not clear otherwise)
+        // necessary also for calculating the height of the pyramid (although it's easier to change)
+        throw UniversalError("Currently, frustrum kernel is supported only when the bases are parallel to the XY plane");
+    }
+
+    this->h = std::abs(this->S.z - kerneledFaces[0].vertices[0].z); // height of the pyramid
 
     allVertices.clear();
     for(const Face &face : faces)
@@ -139,14 +140,10 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
         }
     }
 
-    if((normalBase1 != Vector3D(0, 0, 1) and normalBase1 != Vector3D(0, 0, -1)) or (normalBase2 != Vector3D(0, 0, 1) and normalBase2 != Vector3D(0, 0, -1)))
-    {
-        // this message is thrown in order to calculate whether the summit is "above" or "below" the frustrum (the terms "above" and "below" are not clear otherwise)
-        throw UniversalError("Currently, frustrum kernel is supported only when the bases are parallel to the XY plane");
-    }
-    bool summitAbove = (point4.z > kerneledFaces[0].vertices[0].z) and (point4.z > kerneledFaces[1].vertices[0].z);
-    std::cout << "summit above: " << summitAbove << std::endl;
-    const IndexingKernel3D *preIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
-    this->afterIndexing = (afterIndexing == nullptr)? new Rectangle(allVertices, preIndexing) : preIndexing;
+    // bool summitAbove = (this->S > kerneledFaces[0].vertices[0].z) and (this->S > kerneledFaces[1].vertices[0].z);
+    // std::cout << "summit above: " << summitAbove << std::endl;
+    // const IndexingKernel3D *preIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
+
+    this->afterIndexing = (afterIndexing == nullptr)? new Rectangle(allVertices) : nullptr;
 }
 

@@ -34,7 +34,7 @@
 #define RICH_TESELLATION_FINISHED_TAG 505
 #define INITIAL_SENDRECV_TAG 1105
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
-#define RADIUSES_GROWING_FACTOR 1.1 // 1.618
+#define RADIUSES_GROWING_FACTOR 1.1 
 #define MAX_ALLOWED_HILBERT_ORDER 18
 #endif 
 
@@ -102,8 +102,6 @@ private:
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
-  void SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>());
-  void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing);
   #endif // RICH_MPI
 
   Delaunay3D del_;
@@ -141,6 +139,11 @@ private:
 
 public:
 
+  #ifdef RICH_MPI
+    void SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>());
+    void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing);
+    inline const EnvironmentAgent *GetEnvironmentAgent(void){return this->pointsManager.get()->getEnvironmentAgent();}; // TODO: REMOVE
+  #endif // RICH_MPI
   vector<int>& GetSentProcs(void) override;
 
   vector<vector<size_t> >& GetSentPoints(void) override;

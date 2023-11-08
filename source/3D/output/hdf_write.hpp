@@ -141,4 +141,6 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
 
 void WriteData(const Voronoi3D &tess, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
 
+void WritePoints(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
+
 #endif // HDF_WRITE

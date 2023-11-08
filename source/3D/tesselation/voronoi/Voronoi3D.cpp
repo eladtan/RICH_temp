@@ -1240,7 +1240,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     while(true) // loop is not really infinite (has 'break')
     {
         iterations++;
-        // if(rank == 0) std::cout << "iteration " << iterations << std::endl;
+        if(rank == 0) std::cout << "iteration " << iterations << " (initial radius " << this->initialRadius << ")" << std::endl;
 
         std::queue<RangeQueryData> queries = this->CreateBatches(smallPoints, largePoints, currentRadiuses, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints = this->MirrorPoints(queries, box, normals);
@@ -1280,7 +1280,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             if(newLargePoints.find(pointIdx) == newLargePoints.end())
             {
                 // point was large, and is finished
-                this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (2 * this->GetMinRadius(pointIdx));
+                this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (5 * this->GetMinRadius(pointIdx));
             }
         }
         smallPoints = std::move(newSmallPoints);
@@ -1393,7 +1393,11 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
     if(this->pointsManager.get() == nullptr)
     {
         // initialize the points manager
-        this->SetKernel(); // default kernel
+        if(this->indexing.get() == nullptr)
+        {
+            // no kernel has been determined yet
+            this->SetKernel(); // default kernel
+        }
         this->pointsManager = std::make_shared<HilbertPointsManager>(HilbertPointsManager(this->ll_, this->ur_, this->indexing.get()));
     }
 
@@ -1501,8 +1505,7 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
             for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
             {
                 // todo second closest
-                if(this->radiuses[pointIdx] < 0)
-                    this->radiuses[pointIdx] = 2 * fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
+                this->radiuses[pointIdx] = 2 * fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx]));
             }
         }
     }

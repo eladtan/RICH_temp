@@ -35,7 +35,22 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points)
 PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
 {
     // calculate the first and initial order, and set it to the deepest hilbert order we have
-    OctTree<Vector3D> tree(this->ll, this->ur, points);
+    std::vector<Vector3D> kerneledVectors;
+    Vector3D kerneledLL(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
+    Vector3D kerneledUR(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
+    kerneledVectors.reserve(points.size());
+    for(const Vector3D &point : points)
+    {
+        Vector3D kerneledPoint = (*this->indexing)(point);
+        kerneledVectors.push_back(kerneledPoint);
+        kerneledLL.x = std::min<double>(kerneledLL.x, kerneledPoint.x);
+        kerneledLL.y = std::min<double>(kerneledLL.y, kerneledPoint.y);
+        kerneledLL.z = std::min<double>(kerneledLL.z, kerneledPoint.z);
+        kerneledUR.x = std::max<double>(kerneledUR.x, kerneledPoint.x);
+        kerneledUR.y = std::max<double>(kerneledUR.y, kerneledPoint.y);
+        kerneledUR.z = std::max<double>(kerneledUR.z, kerneledPoint.z);
+    }
+    OctTree<Vector3D> tree(kerneledLL, kerneledUR, kerneledVectors);
     int depth = tree.getDepth(); // my own depth
     MPI_Allreduce(&depth, &this->hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
     this->hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, this->hilbertOrder);
