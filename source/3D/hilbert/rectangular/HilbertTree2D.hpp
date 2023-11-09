@@ -7,13 +7,16 @@
 #include "tessellation/geometry.hpp" // for Vector2D
 #include "../hilbertTypes.h"
 
-#define SIGN(x) ((x > 0) - (x < 0))
-
 class HilbertTree2D
 {
 private:
     static constexpr int CHILDREN_MAX = 4; // can actually be 3
     using coord_t = double; // coordinate type
+
+    struct DirectionVector2D
+    {
+        int x, y;
+    };
 
     class Node
     {
@@ -21,7 +24,7 @@ private:
         Node(const Vector2D &ll = Vector2D(std::numeric_limits<coord_t>::max(), std::numeric_limits<coord_t>::max()),
              const Vector2D &ur = Vector2D(std::numeric_limits<coord_t>::min(), std::numeric_limits<coord_t>::min())): ll(ll), ur(ur){};
 
-        inline bool contains(double x, double y) const{return (this->ll[0] <= x) and (x <= this->ur[0]) and (this->ll[1] <= y) and (y <= this->ur[1]);};
+        inline bool contains(coord_t x, coord_t y) const{return (this->ll[0] <= x) and (x <= this->ur[0]) and (this->ll[1] <= y) and (y <= this->ur[1]);};
         inline bool contains(const Vector2D &point) const{return this->contains(point.x, point.y);};
         void calculateLLUR();
 
@@ -33,7 +36,7 @@ private:
     };
 
     Node *root;
-    Vector2D ll, step, div;
+    Vector2D ll, step;
 
 public:
     explicit HilbertTree2D(const Vector2D &ll, const Vector2D &ur, size_t order);
@@ -46,8 +49,8 @@ public:
     Vector2D d2xy(hilbert_index_t d) const;
 
 private:
-    void buildBaseStep(Node *node, const std::pair<int, int> &startPoint, int length, const std::pair<int, int> &direction, hilbert_index_t d_start);
-    void buildHelper(Node *node, const std::pair<int, int> &ll, const std::pair<int, int> &a, const std::pair<int, int> &b, hilbert_index_t d_start);
+    void buildBaseStep(Node *node, const DirectionVector2D &startPoint, int length, const DirectionVector2D &direction, hilbert_index_t &d);
+    void buildHelper(Node *node, const DirectionVector2D &ll, const DirectionVector2D &a, const DirectionVector2D &b, hilbert_index_t &d);
     Vector2D WidthHeightToXY(int width, int height) const;
     void deleteTreeHelper(Node *root);
 };

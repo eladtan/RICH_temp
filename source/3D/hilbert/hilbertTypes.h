@@ -8,8 +8,9 @@
 typedef double coord_t;
 typedef unsigned long int hilbert_index_t;
 
+#define SIGN(x) ((x > 0) - (x < 0))
 
-#define EPSILON 1e-12
+#define EPSILON 1e-12 // redefined (already defined in 'Vector3D.hpp')
 
 typedef struct _3DPoint
 {
