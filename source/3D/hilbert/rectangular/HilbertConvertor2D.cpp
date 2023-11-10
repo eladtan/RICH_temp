@@ -12,8 +12,6 @@ HilbertConvertor2D::HilbertConvertor2D(const Vector2D &ll, const Vector2D &ur, s
     
     this->total_points_num = this->div.x * this->div.y;
     this->step = Vector2D(realWidth / this->div.x, realHeight / this->div.y);
-
-    std::cout << "div: (" << div.x << ", " << div.y << "), step: " << this->step << std::endl;
 }
 
 Vector2D HilbertConvertor2D::WidthHeightToXY(int width, int height) const
@@ -21,7 +19,6 @@ Vector2D HilbertConvertor2D::WidthHeightToXY(int width, int height) const
     coord_t x, y;
     x = this->ll[0] + width * this->step[0];
     y = this->ll[1] + height * this->step[1];
-    // std::cout << "translating (" << width << ", " << height << ") to (" << x << ", " << y << ")" << std::endl;
     return Vector2D(x, y);
 }
 
@@ -45,17 +42,17 @@ bool HilbertConvertor2D::d2xy_helper(const DirectionVector2D &startPoint, const 
     int dax = SIGN(a.x), day = SIGN(a.y);
     int dbx = SIGN(b.x), dby = SIGN(b.y);
 
+    size_t diff = requested_d - current_d;
+
     // base cases
     if(height == 1)
     {
-        size_t diff = requested_d - current_d;
         result = this->WidthHeightToXY(startPoint.x + diff * dax, startPoint.y + diff * day);
         return true;
     }
 
     if(width == 1)
     {
-        size_t diff = requested_d - current_d;
         result = this->WidthHeightToXY(startPoint.x + diff * dbx, startPoint.y + diff * dby);
         return true;
     }
@@ -86,7 +83,6 @@ bool HilbertConvertor2D::d2xy_helper(const DirectionVector2D &startPoint, const 
     }
     else
     {
-        // std::cout << "here" << std::endl;
         if((height2 % 2) and (height > 2))
         {
             // prefer even steps
@@ -115,6 +111,22 @@ bool HilbertConvertor2D::d2xy_helper(const DirectionVector2D &startPoint, const 
     return false;
 }
 
+bool HilbertConvertor2D::xy2d_helper_base(const DirectionVector2D &startPoint, int steps, const DirectionVector2D &direction, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
+{
+    int x = startPoint.x, y = startPoint.y;
+    for(int i = 0; i < steps; i++)
+    {
+        if((requested_point.x == x) and (requested_point.y == y))
+        {
+            return true;
+        }
+        x += direction.x;
+        y += direction.y;
+        current_d++;
+    }
+    return false;
+}
+
 /**
  * see here the algorithm: https://github.com/jakubcerveny/gilbert
 */
@@ -131,8 +143,8 @@ bool HilbertConvertor2D::xy2d_helper(const DirectionVector2D &startPoint, const 
     DirectionVector2D boundary = {startPoint.x + a.x + b.x, startPoint.y + a.y + b.y};
     std::pair<DirectionVector2D, DirectionVector2D> bounding_box = {{std::min(startPoint.x, boundary.x), std::min(startPoint.y, boundary.y)},
                                                                     {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y)}};    
-    if((requested_point.x < bounding_box.first.x) or ((requested_point.x > bounding_box.second.x)) or
-    (requested_point.y < bounding_box.first.y) or ((requested_point.y > bounding_box.second.y)))
+    if((requested_point.x < bounding_box.first.x) or (requested_point.x > bounding_box.second.x) or
+        (requested_point.y < bounding_box.first.y) or (requested_point.y > bounding_box.second.y))
     {
         // doesn't have a chance to be here
         current_d += num_points;
@@ -142,34 +154,12 @@ bool HilbertConvertor2D::xy2d_helper(const DirectionVector2D &startPoint, const 
     // base cases
     if(height == 1)
     {
-        int x = startPoint.x, y = startPoint.y;
-        for(int i = 0; i < width; i++)
-        {
-            if((requested_point.x == x) and (requested_point.y == y))
-            {
-                return true;
-            }
-            x += dax;
-            y += day;
-            current_d++;
-        }
-        return false;
+        return this->xy2d_helper_base(startPoint, width, {dax, day}, requested_point, current_d);
     }
 
     if(width == 1)
     {
-        int x = startPoint.x, y = startPoint.y;
-        for(int i = 0; i < height; i++)
-        {
-            if((requested_point.x == x) and (requested_point.y == y))
-            {
-                return true;
-            }
-            x += dbx;
-            y += dby;
-            current_d++;
-        }
-        return false;
+        return this->xy2d_helper_base(startPoint, height, {dax, day}, requested_point, current_d);
     }
 
     DirectionVector2D a2 = {a.x >> 1, a.y >> 1}; /* (a.x//2, a.y//2) */
@@ -198,7 +188,6 @@ bool HilbertConvertor2D::xy2d_helper(const DirectionVector2D &startPoint, const 
     }
     else
     {
-        // std::cout << "here" << std::endl;
         if((height2 % 2) and (height > 2))
         {
             // prefer even steps
@@ -236,9 +225,6 @@ Vector2D HilbertConvertor2D::d2xy(hilbert_index_t d) const
 hilbert_index_t HilbertConvertor2D::xy2d(coord_t x, coord_t y) const
 {
     // convert (x,y) to the integer pair (width, height)
-    double width_d = (x - this->ll.x) / this->step.x;
-    double height_d = (y - this->ll.y) / this->step.y;
-
     int width = std::floor((x - this->ll.x) / this->step.x);
     int height = std::floor((y - this->ll.y) / this->step.y);
 

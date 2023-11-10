@@ -2,8 +2,6 @@
 #define HILBERT_CONVERTOR_2D_HPP
 
 #include <iostream> // todo: remove
-#include <vector>
-#include <boost/container/small_vector.hpp>
 #include "tessellation/geometry.hpp" // for Vector2D
 #include "../hilbertTypes.h"
 
@@ -31,6 +29,7 @@ public:
 
 private:
     bool d2xy_helper(const DirectionVector2D &startPoint, const DirectionVector2D &a, const DirectionVector2D &b, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector2D &result) const;
+    bool xy2d_helper_base(const DirectionVector2D &startPoint, int steps, const DirectionVector2D &direction, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const;
     bool xy2d_helper(const DirectionVector2D &startPoint, const DirectionVector2D &a, const DirectionVector2D &b, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const;
     Vector2D WidthHeightToXY(int width, int height) const;
 };
