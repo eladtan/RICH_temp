@@ -13,6 +13,7 @@ Named after Omri Reved
 #include "Rectangle.hpp"
 #include "GenericScale.hpp"
 #include "Linear.hpp"
+#include "Identity.hpp"
 
 #define NUM_FACES 6
 #define FACE_EDGES_NUMBER 4

@@ -102,9 +102,8 @@ RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKerne
             allVertices.push_back(vertex);
         }
     }
-    this->beforeIndexing = new Rectangle(allVertices, indexing);
-
-    Vector3D move_factor = (*beforeIndexing)(faces[0].vertices[0]);
+    this->beforeIndexing = (indexing) == nullptr? new Identity() : indexing; // Rectangle(allVertices, indexing);
+    // Vector3D move_factor = (*beforeIndexing)(faces[0].vertices[0]);
     // IndexingKernel3D *move_kernel = new Move(move_factor, indexing);
     
     std::vector<Face> kerneledFaces;
