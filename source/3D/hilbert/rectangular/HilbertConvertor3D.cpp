@@ -3,11 +3,18 @@
 HilbertConvertor3D::HilbertConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order)
 {
     this->ll = ll;
-    coord_t realWidth = ur.x - ll.x;
-    coord_t realHeight = ur.y - ll.y;
-    coord_t realDepth = ur.z - ll.z;
+    this->ur = ur;
+    this->changeOrder(order);
+}
 
-    // calculate divisions number in x axis and y axis
+void HilbertConvertor3D::changeOrder(size_t order)
+{
+    this->order = order = std::min<size_t>(MAX_HILBERT_ORDER, order);
+    coord_t realWidth = this->ur.x - this->ll.x;
+    coord_t realHeight = this->ur.y - this->ll.y;
+    coord_t realDepth = this->ur.z - this->ll.z;
+
+    // calculate divisions number in x, y, z axises
     this->div.x = std::ceil(std::pow((realWidth * realWidth) / (realHeight * realDepth), 0.333333333) * std::pow(2, order));
     this->div.y = std::ceil(std::pow((realHeight * realHeight) / (realWidth * realDepth), 0.333333333) * std::pow(2, order));
     this->div.z = std::ceil(std::pow(8, order) / (this->div.x * this->div.y));
@@ -266,7 +273,7 @@ Vector3D HilbertConvertor3D::d2xyz(hilbert_index_t d) const
 
 hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
 {
-    // convert (x,y) to the integer pair (width, height)
+    // convert (x,y, z) to the integer triple (width, height, width)
     int width = std::floor((x - this->ll.x) / this->step.x);
     int height = std::floor((y - this->ll.y) / this->step.y);
     int depth = std::floor((z - this->ll.z) / this->step.z);
@@ -274,7 +281,7 @@ hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
     hilbert_index_t result = 0;
     if(not this->xyz2d_helper({0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}, {width, height, depth}, result))
     {
-        throw UniversalError("Should not reach here (in 3D xyz->d)");
+        throw UniversalError("Should not reach here (in 3D xyz->d), point is (" + std::to_string(x) + ", " + std::to_string(y) + ", " + std::to_string(z) + ")");
     }
     return result;
 }

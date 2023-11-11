@@ -31,11 +31,12 @@
 
 #ifdef RICH_MPI
 #include "pointsManager/HilbertPointsManager.hpp"
-#define RICH_TESELLATION_FINISHED_TAG 505
+#include "3D/environment/kernels/Identity.hpp"
+
 #define INITIAL_SENDRECV_TAG 1105
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.1 
-#define MAX_ALLOWED_HILBERT_ORDER 18
+#define MIN_BIG_RADIUS_SMALL_RADIUS_RATIO_TO_COUNT_AS_LARGE_POINT 3
 #endif 
 
 #define RADIUS_UNINITIALIZED -1
@@ -94,7 +95,6 @@ private:
   #ifdef RICH_MPI
   std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
-  void CalculateInitialRadius(size_t pointsSize);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
@@ -132,15 +132,15 @@ private:
   
   #ifdef RICH_MPI
     std::vector<double> radiuses;
-    double initialRadius;
     std::shared_ptr<PointsManager> pointsManager;
-    std::shared_ptr<const IndexingKernel3D> indexing;
+    std::shared_ptr<const IndexingKernel3D> indexingToSave = std::shared_ptr<const IndexingKernel3D>();
   #endif // RICH_MPI
 
 public:
 
   #ifdef RICH_MPI
     void SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>());
+    void SetKernel(const IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const IndexingKernel3D>(indexing));};
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing);
     inline const EnvironmentAgent *GetEnvironmentAgent(void){return this->pointsManager.get()->getEnvironmentAgent();}; // TODO: REMOVE
   #endif // RICH_MPI

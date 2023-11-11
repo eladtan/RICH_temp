@@ -57,7 +57,9 @@ public:
     DistributedOctTree(const OctTree<T> *tree, bool detailedNodeInfo = false, const MPI_Comm &comm = MPI_COMM_WORLD);
     ~DistributedOctTree(){delete this->octTree;};
 
+    #ifdef DEBUG_MODE
     void print() const{this->octTree->print();};
+    #endif // DEBUG_MODE
     boost::container::flat_set<int> getIntersectingRanks(const _Sphere<T> &sphere) const;
     inline boost::container::flat_set<int> getIntersectingRanks(const T &center, const typename T::coord_type radius) const{return this->getIntersectingRanks(_Sphere(center, radius));};
     int getDepth() const{return this->octTree->getDepth();};
@@ -89,7 +91,8 @@ private:
     OctTree<RankedValue> *octTree = nullptr;
     MPI_Comm comm;
     int rank, size;
-    bool detailedNodeInfo;
+    bool detailedNodeInfo; // whether or not to save detailed info on the leaf nodes
+    size_t treeSize;
 
     void buildTreeHelper(DistributedOctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree);
     void buildTree(const OctTree<T> *tree);
@@ -110,13 +113,14 @@ DistributedOctTree<T>::DistributedOctTree(const OctTree<T> *tree, bool detailedN
 template<typename T>
 void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree)
 {
+
     assert(newNode != nullptr);
     unsigned char valueToSend = 0; // assumes `CHILDREN` is 8. this variable contains 1 in the `i`th bit iff child `i` exists
     if(node != nullptr)
     {
         for(int i = 0; i < CHILDREN; i++)
         {
-            bool bit = (node->children[i] != nullptr || (node->isLeaf and newNode->getChildNumberContaining(RankedValue(node->value, UNDEFINED_OWNER)) == i));
+            bool bit = (node->children[i] != nullptr || (node->isLeaf and newNode->getChildNumberContaining(node->value) == i));
             valueToSend |= (bit << i);
         }
     }
@@ -161,7 +165,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
                 {
                     if(node->isLeaf)
                     {
-                        nextNode = newNode->children[i]->boundingBox.contains(RankedValue(node->value, UNDEFINED_OWNER))? node : nullptr;
+                        nextNode = newNode->children[i]->boundingBox.contains(node->value)? node : nullptr;
                     }
                     else
                     {
@@ -220,6 +224,7 @@ void DistributedOctTree<T>::buildTreeHelper(DistributedOctTreeNode *newNode, con
         }
         else
         {
+            this->treeSize++;
             newNode->children[i] = nullptr;
         }
     }
@@ -266,8 +271,8 @@ void DistributedOctTree<T>::buildTree(const OctTree<T> *tree)
     directions.reserve(MAX_DIRECTIONS_SIZE);
     // tree->print();
     this->octTree = new OctTree<RankedValue>(RankedValue(tree->getRoot()->boundingBox.getLL(), UNDEFINED_OWNER), RankedValue(tree->getRoot()->boundingBox.getUR(), UNDEFINED_OWNER));
+    this->treeSize = 0;
     this->buildTreeHelper(this->octTree->getRoot(), tree->getRoot(), directions);
-    // this->octTree->print();
 }
 
 template<typename T>
@@ -301,7 +306,7 @@ int DistributedOctTree<T>::getClosestRank(const T &point) const
         {
             continue;
         }
-        RankedValue closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER));
+        RankedValue closestPoint = node->boundingBox.closestPoint(point);
         typename T::coord_type distance = 0;
         for(int i = 0; i < DIM; i++)
         {
@@ -437,8 +442,8 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         }
         // node is a value node
         int owner = node->value.owner;
-        closestPoint = node->boundingBox.closestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
-        furthestPoint = node->boundingBox.furthestPoint(RankedValue(point, UNDEFINED_OWNER)).value;
+        closestPoint = node->boundingBox.closestPoint(point).value;
+        furthestPoint = node->boundingBox.furthestPoint(point).value;
         typename T::coord_type closestDist = 0, furthestDist = 0;
         for(int i = 0; i < DIM; i++)
         {

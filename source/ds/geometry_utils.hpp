@@ -94,7 +94,8 @@ public:
         return this->contains(other.getLL()) or this->contains(other.getUR()) or other.contains(this->ll) or other.contains(this->ur);
     }
 
-    inline T closestPoint(const T &point) const
+    template<typename U>
+    inline T closestPoint(const U &point) const
     {
         Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
         Vec8db cmp = _point < this->boundariesVec; // _point < _boundaries;
@@ -122,7 +123,8 @@ public:
         return closestPoint;
     }
 
-    inline T furthestPoint(const T &point) const
+    template<typename U>
+    inline T furthestPoint(const U &point) const
     {
         Vec4d _point(point[0], point[1], point[2], 0);
         Vec4db cmp = (2 * _point) > this->llPlusUrVec;

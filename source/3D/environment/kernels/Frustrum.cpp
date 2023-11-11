@@ -146,7 +146,7 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
     }
     bool summitAbove = (point4.z > kerneledFaces[0].vertices[0].z) and (point4.z > kerneledFaces[1].vertices[0].z);
     std::cout << "summit above: " << summitAbove << std::endl;
-    const IndexingKernel3D *preIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
-    this->afterIndexing = (afterIndexing == nullptr)? new Rectangle(allVertices, preIndexing) : preIndexing;
+    const IndexingKernel3D *preAfterIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
+    this->afterIndexing = preAfterIndexing;
 }
 

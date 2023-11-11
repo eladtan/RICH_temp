@@ -3,8 +3,15 @@
 HilbertConvertor2D::HilbertConvertor2D(const Vector2D &ll, const Vector2D &ur, size_t order)
 {
     this->ll = ll;
-    coord_t realWidth = ur.x - ll.x;
-    coord_t realHeight = ur.y - ll.y;
+    this->ur = ur;
+    this->changeOrder(order);
+}
+
+void HilbertConvertor2D::changeOrder(size_t order)
+{
+    this->order = order = std::min<size_t>(MAX_HILBERT_ORDER, order);
+    coord_t realWidth = this->ur.x - this->ll.x;
+    coord_t realHeight = this->ur.y - this->ll.y;
 
     // calculate divisions number in x axis and y axis
     this->div.x = std::ceil(std::sqrt(realWidth / realHeight) * std::pow(2, order));

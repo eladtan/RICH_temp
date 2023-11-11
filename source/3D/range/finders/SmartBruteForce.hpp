@@ -19,8 +19,8 @@ public:
     using _map = boost::container::flat_map<K, V>;
 
     template<typename RandomAccessIterator>
-    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
-        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), indexing(indexing)
+    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), convertor(convertor), indexing(indexing)
     {
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
         size_t index = 0;
@@ -28,7 +28,7 @@ public:
         {
             const Vector3D &point = *it;
             this->myPoints.push_back(point);
-            hilbert_index_t cell = Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->envAgent->getOrder());
+            hilbert_index_t cell = this->convertor->xyz2d((*this->indexing)(point));
             if(this->cellsPoints.find(cell) == this->cellsPoints.end())
             {
                 this->cellsPoints[cell] = std::vector<size_t>();
@@ -89,6 +89,7 @@ private:
     _map<hilbert_index_t, std::vector<size_t>> cellsPoints;
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
+    const HilbertConvertor3D *convertor;
     const IndexingKernel3D *indexing;
 };
 

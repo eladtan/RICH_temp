@@ -130,7 +130,6 @@ private:
             EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
             if(intersectingRanks.empty())
             {
-                std::cout << "query is " << query << std::endl;
                 throw UniversalError("In range talk agent, should not reach here: the intersecting ranks list should at least contain the rank itself");
             }
             if(intersectingRanks.size() == 1)

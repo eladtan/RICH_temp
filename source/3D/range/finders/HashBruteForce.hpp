@@ -13,8 +13,8 @@ class HashBruteForceFinder : public RangeFinder
 {
 public:
     template<typename RandomAccessIterator>
-    HashBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
-        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), indexing(indexing)
+    HashBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), convertor(convertor), indexing(indexing)
     {
         this->cellsPointsSize = static_cast<size_t>(std::pow(2, 1.4 * this->envAgent->getOrder())); // heuristic
         this->cellsPoints.resize(this->cellsPointsSize);
@@ -25,7 +25,7 @@ public:
         {
             const Vector3D &point = *it;
             this->myPoints.push_back(point);
-            hilbert_index_t cell = Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->envAgent->getOrder());
+            hilbert_index_t cell = this->convertor->xyz2d((*this->indexing)(point));
             this->cellsPoints[cell % this->cellsPointsSize].push_back(index);
             index++;
         }
@@ -76,6 +76,7 @@ private:
     size_t cellsPointsSize;
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
+    const HilbertConvertor3D *convertor;
     const IndexingKernel3D *indexing;
 };
 

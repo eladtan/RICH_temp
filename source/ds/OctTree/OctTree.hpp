@@ -8,6 +8,8 @@
 #include <stack>
 #include <sstream>
 
+#define DEBUG_MODE // todo remove
+
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif // DEBUG_MODE
