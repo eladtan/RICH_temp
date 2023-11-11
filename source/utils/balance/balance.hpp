@@ -13,9 +13,6 @@
 #include <assert.h>
 #include <mpi.h>
 
-#define MEDIAN_TAG 2049
-#define NO_VALUES_TAG 2050
-
 namespace
 {
     template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>

@@ -1,12 +1,14 @@
 #ifndef _KDTREE_HPP
 #define _KDTREE_HPP
 
+#include <vector>
 #include <utility>
 
 #include "../geometry_utils.hpp"
 
-#define KD_DEBUG_MODE 1
-
+#ifdef KD_DEBUG_MODE
+#include <iostream>
+#endif // KD_DEBUG_MODE
 
 template<typename T, int D>
 class KDTree
