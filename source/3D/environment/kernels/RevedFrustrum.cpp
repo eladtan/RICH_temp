@@ -87,7 +87,7 @@ Vector3D RevedFrustrum::find_S(const std::vector<Face> &faces) const
     return intersection1;
 }
 
-RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing, const IndexingKernel3D *afterIndexing)
+RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing, const IndexingKernel3D *afterIndexing)
 {
     if(faces.size() != NUM_FACES)
     {
@@ -102,9 +102,7 @@ RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKerne
             allVertices.push_back(vertex);
         }
     }
-    this->beforeIndexing = (indexing) == nullptr? new Identity() : indexing; // Rectangle(allVertices, indexing);
-    // Vector3D move_factor = (*beforeIndexing)(faces[0].vertices[0]);
-    // IndexingKernel3D *move_kernel = new Move(move_factor, indexing);
+    this->beforeIndexing = new Identity(beforeIndexing);
     
     std::vector<Face> kerneledFaces;
     for(const Face &face : faces)
@@ -135,7 +133,7 @@ RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKerne
     {
         for(const Vector3D &vertex : face.vertices)
         {
-            allVertices.push_back(this->beforeScaling(vertex));
+            allVertices.push_back(this->beforeTransformation(vertex));
         }
     }
 

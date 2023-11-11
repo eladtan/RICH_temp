@@ -13,7 +13,7 @@
 class RectangleShrink : public IndexingKernel3D
 {
 public:
-    inline RectangleShrink(const std::vector<Vector3D> &vertices = std::vector<Vector3D>(), const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    inline RectangleShrink(const std::vector<Vector3D> &vertices = std::vector<Vector3D>(), const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing)
     {
         Vector3D ll(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
         Vector3D ur(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
@@ -32,7 +32,7 @@ public:
         this->shrinkIndexing = Shrink(ur - ll);
     }
     
-    RectangleShrink(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    RectangleShrink(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing)
     {
         this->moveIndexing = Move(ll);
         this->shrinkIndexing = Shrink(ur - ll);
@@ -40,12 +40,12 @@ public:
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
+        Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
         return this->shrinkIndexing(this->moveIndexing(vec));
     };
 
 private:
-    const IndexingKernel3D *indexing;
+    const IndexingKernel3D *beforeIndexing;
     Move moveIndexing;
     Shrink shrinkIndexing;
 };

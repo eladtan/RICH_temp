@@ -1,24 +1,10 @@
 #include "Voronoi3D.hpp"
-#ifdef RICH_MPI
-#include <mpi.h>
-#endif
-#include <vectorclass.h>
-#include <algorithm>
-#include <cfloat>
-#include <stack>
 #include "../../elementary/Mat33.hpp"
 #include "../utils/Predicates3D.hpp"
 #include "misc/utils.hpp"
 #include "misc/io3D.hpp"
-#include <fstream>
-#include <iostream>
-#include <boost/container/flat_map.hpp>
-#include <boost/container/flat_set.hpp>
 #include "3D/GeometryCommon/Intersections.hpp"
 #include "misc/int2str.hpp"
-#include <boost/multiprecision/cpp_dec_float.hpp>
-#include <boost/container/static_vector.hpp>
-#include <omp.h>
 
 #ifdef RICH_MPI
 

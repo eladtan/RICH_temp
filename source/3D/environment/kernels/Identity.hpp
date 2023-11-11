@@ -6,16 +6,15 @@
 class Identity : public IndexingKernel3D
 {
 public:
-    inline Identity(const IndexingKernel3D *indexing = nullptr): indexing(indexing){};
+    inline Identity(const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing){};
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
-        return vec;
+        return (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
     };
 
 private:
-    const IndexingKernel3D *indexing;
+    const IndexingKernel3D *beforeIndexing;
 };
 
 #endif // IDENTITY_KERNEL_HPP

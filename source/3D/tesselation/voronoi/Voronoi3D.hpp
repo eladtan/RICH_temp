@@ -8,15 +8,29 @@
 #if  _MSC_VER
 #define _USE_MATH_DEFINES
 #endif // _MSC_VER
+
+#include <vectorclass.h>
+#include <algorithm>
+#include <cfloat>
+#include <stack>
+#include <iostream>
+#include <fstream>
+#include <boost/container/flat_map.hpp>
+#include <boost/container/flat_set.hpp>
+#include <boost/multiprecision/cpp_dec_float.hpp>
+#include <boost/container/static_vector.hpp>
 #include <cmath>
 #include <vector>
 #include <string>
 #include <memory>
-#include <stack>
 #include <set>
 #include <array>
-#include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
+#include <omp.h>
+
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif // RICH_MPI
 
 #include "3D/tesselation/delaunay/Delaunay3D.hpp"
 #include "3D/GeometryCommon/Intersections.hpp"

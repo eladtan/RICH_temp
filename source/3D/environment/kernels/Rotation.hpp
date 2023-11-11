@@ -13,12 +13,12 @@ public:
         X, Y, Z
     };
 
-    inline Rotation(double theta, const Vector3D &rotationVector, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    inline Rotation(double theta, const Vector3D &rotationVector, const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing)
     {
         this->initializeMatrix(normalize(rotationVector), theta);
     };
 
-    inline Rotation(double theta, const Axis &axis, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    inline Rotation(double theta, const Axis &axis, const IndexingKernel3D *indexing = nullptr): beforeIndexing(beforeIndexing)
     {
         Vector3D rotationVector;
         switch(axis)
@@ -38,13 +38,13 @@ public:
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
+        Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
         return this->mat * vec;
     };
 
 private:
     Mat33<double> mat;
-    const IndexingKernel3D *indexing;
+    const IndexingKernel3D *beforeIndexing;
 
     inline void initializeMatrix(const Vector3D &rotationVector, double theta)
     {

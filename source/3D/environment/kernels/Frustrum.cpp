@@ -102,9 +102,9 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
             allVertices.push_back(vertex);
         }
     }
-    this->beforeIndexing = new Rectangle(allVertices, indexing);
+    this->beforeIndexing = new Rectangle(allVertices, beforeIndexing);
 
-    Vector3D move_factor = (*beforeIndexing)(faces[0].vertices[0]);
+    Vector3D move_factor = (*this->beforeIndexing)(faces[0].vertices[0]);
     // IndexingKernel3D *move_kernel = new Move(move_factor, indexing);
     
     std::vector<Face> kerneledFaces;
@@ -135,18 +135,18 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
     {
         for(const Vector3D &vertex : face.vertices)
         {
-            allVertices.push_back(this->beforeScaling(vertex));
+            allVertices.push_back(this->beforeTransformation(vertex));
         }
     }
 
-    if((normalBase1 != Vector3D(0, 0, 1) and normalBase1 != Vector3D(0, 0, -1)) or (normalBase2 != Vector3D(0, 0, 1) and normalBase2 != Vector3D(0, 0, -1)))
-    {
-        // this message is thrown in order to calculate whether the summit is "above" or "below" the frustrum (the terms "above" and "below" are not clear otherwise)
-        throw UniversalError("Currently, frustrum kernel is supported only when the bases are parallel to the XY plane");
-    }
-    bool summitAbove = (point4.z > kerneledFaces[0].vertices[0].z) and (point4.z > kerneledFaces[1].vertices[0].z);
-    std::cout << "summit above: " << summitAbove << std::endl;
-    const IndexingKernel3D *preAfterIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
-    this->afterIndexing = preAfterIndexing;
+    // if((normalBase1 != Vector3D(0, 0, 1) and normalBase1 != Vector3D(0, 0, -1)) or (normalBase2 != Vector3D(0, 0, 1) and normalBase2 != Vector3D(0, 0, -1)))
+    // {
+    //     // this message is thrown in order to calculate whether the summit is "above" or "below" the frustrum (the terms "above" and "below" are not clear otherwise)
+    //     throw UniversalError("Currently, frustrum kernel is supported only when the bases are parallel to the XY plane");
+    // }
+    // bool summitAbove = (point4.z > kerneledFaces[0].vertices[0].z) and (point4.z > kerneledFaces[1].vertices[0].z);
+    // std::cout << "summit above: " << summitAbove << std::endl;
+    // const IndexingKernel3D *preAfterIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
+    this->afterIndexing = afterIndexing;
 }
 

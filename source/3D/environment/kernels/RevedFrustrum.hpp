@@ -1,6 +1,3 @@
-/*
-Named after Omri Reved
-*/
 #ifndef REVED_FRUSTRUM_KERNEL_HPP
 #define REVED_FRUSTRUM_KERNEL_HPP
 
@@ -9,28 +6,27 @@ Named after Omri Reved
 #include <algorithm>
 
 #include "3D/elementary/Face.hpp"
-#include "3D/elementary/Mat44.hpp"
-#include "Rectangle.hpp"
-#include "GenericScale.hpp"
-#include "Linear.hpp"
+#include "3D/elementary/Mat33.hpp"
 #include "Identity.hpp"
 
 #define NUM_FACES 6
 #define FACE_EDGES_NUMBER 4
 #define VERTICES_NUMBER 4
 
-// see here: https://math.stackexchange.com/questions/2265255/mapping-a-3d-point-inside-a-hexahedron-to-a-unit-cube
-
+/*
+A transformation from a frustum to a rectangle.
+Named after Omri Reved (this transformation was his idea).
+*/
 class RevedFrustrum : public IndexingKernel3D
 {
 public:
-    RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing = nullptr, const IndexingKernel3D *afterIndexing = nullptr);
+    RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing = nullptr, const IndexingKernel3D *afterIndexing = nullptr);
     
     inline ~RevedFrustrum(){delete this->beforeIndexing; delete this->afterIndexing;};
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D vec = this->beforeScaling(vector);
+        Vector3D vec = this->beforeTransformation(vector);
         return (this->afterIndexing == nullptr)? vec : (*this->afterIndexing)(vec);
     }
 
@@ -42,7 +38,7 @@ private:
 
     Vector3D find_S(const std::vector<Face> &faces) const;
 
-    inline Vector3D beforeScaling(const Vector3D &vector) const
+    inline Vector3D beforeTransformation(const Vector3D &vector) const
     {
         Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
         double slope = (this->h - this->S.z) / (vec.z - this->S.z);
