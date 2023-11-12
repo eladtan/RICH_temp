@@ -47,7 +47,21 @@ void HilbertPointsManager::determineHilbertOrder(const std::vector<Vector3D> &po
     Vector3D kerneledLL(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
     Vector3D kerneledUR(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
     kerneledVectors.reserve(points.size());
+
     for(const Vector3D &point : points)
+    {
+        Vector3D kerneledPoint = (*this->indexing)(point);
+        kerneledVectors.push_back(kerneledPoint);
+        kerneledLL.x = std::min<double>(kerneledLL.x, kerneledPoint.x);
+        kerneledLL.y = std::min<double>(kerneledLL.y, kerneledPoint.y);
+        kerneledLL.z = std::min<double>(kerneledLL.z, kerneledPoint.z);
+        kerneledUR.x = std::max<double>(kerneledUR.x, kerneledPoint.x);
+        kerneledUR.y = std::max<double>(kerneledUR.y, kerneledPoint.y);
+        kerneledUR.z = std::max<double>(kerneledUR.z, kerneledPoint.z);
+    }
+
+    // consider the ll and ur as well
+    for(const Vector3D &point : std::vector<Vector3D>({this->ll, this->ur}))
     {
         Vector3D kerneledPoint = (*this->indexing)(point);
         kerneledVectors.push_back(kerneledPoint);
@@ -72,12 +86,12 @@ void HilbertPointsManager::determineHilbertOrder(const std::vector<Vector3D> &po
 
     // make a little bit space
     double x_length = kerneledUR.x - kerneledLL.x, y_length = kerneledUR.y - kerneledLL.y, z_length = kerneledUR.z - kerneledLL.z;
-    kerneledLL.x -= SPACE_FACTOR * x_length;
-    kerneledLL.y -= SPACE_FACTOR * y_length;
-    kerneledLL.z -= SPACE_FACTOR * z_length;
-    kerneledUR.x += SPACE_FACTOR * x_length;
-    kerneledUR.y += SPACE_FACTOR * y_length;
-    kerneledUR.z += SPACE_FACTOR * z_length;
+    kerneledLL.x -= std::abs(SPACE_FACTOR * x_length);
+    kerneledLL.y -= std::abs(SPACE_FACTOR * y_length);
+    kerneledLL.z -= std::abs(SPACE_FACTOR * z_length);
+    kerneledUR.x += std::abs(SPACE_FACTOR * x_length);
+    kerneledUR.y += std::abs(SPACE_FACTOR * y_length);
+    kerneledUR.z += std::abs(SPACE_FACTOR * z_length);
     
     this->hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, this->hilbertOrder);
     this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, this->hilbertOrder);

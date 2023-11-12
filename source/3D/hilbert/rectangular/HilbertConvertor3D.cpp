@@ -281,7 +281,7 @@ hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
     hilbert_index_t result = 0;
     if(not this->xyz2d_helper({0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}, {width, height, depth}, result))
     {
-        throw UniversalError("Should not reach here (in 3D xyz->d), point is (" + std::to_string(x) + ", " + std::to_string(y) + ", " + std::to_string(z) + ")");
+        throw UniversalError("Should not reach here (in 3D xyz->d), point is (" + std::to_string(x) + ", " + std::to_string(y) + ", " + std::to_string(z) + ") (maybe outside the box?)");
     }
     return result;
 }
