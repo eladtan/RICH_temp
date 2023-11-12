@@ -4,7 +4,7 @@
 #include <vector>
 #include <assert.h>
 #include <utility>
-
+#include <type_traits>
 #include <stack>
 #include <sstream>
 
@@ -25,6 +25,18 @@
 typedef size_t octnode_id_t;
 typedef char direction_t;
 
+// see here: https://stackoverflow.com/a/27567052
+template<class ...>
+using void_t = void;
+template<class T, class = void>
+struct is_raw_type_defined { 
+    using type = T;
+};
+template<class T>
+struct is_raw_type_defined<T, void_t<typename T::Raw_type>> { 
+    using type = typename T::Raw_type;
+};
+
 template<typename T>
 class OctTree
 {
@@ -34,13 +46,15 @@ class OctTree
     template<typename U>
     friend class DistributedOctTree;
 
+    using Raw_type = typename is_raw_type_defined<T>::type;
+
 public:
     class OctTreeNode
     {
         friend class OctTree;
 
     public:
-        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(_BoundingBox(ll, ur)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(_BoundingBox<Raw_type>(ll, ur)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -48,7 +62,7 @@ public:
             }
         }
 
-        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(_BoundingBox(point, point)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(_BoundingBox<Raw_type>(point, point)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -86,7 +100,7 @@ public:
 
         bool isLeaf; // if a leaf
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
-        _BoundingBox<T> boundingBox; // the bounding box this node induces
+        _BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
         OctTreeNode *children[CHILDREN];
         OctTreeNode *parent;
         int height; // height of a leaf is 0
@@ -109,7 +123,8 @@ protected:
     const OctTreeNode *tryFindParent(const U &point) const;
     template<typename U>
     inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
-    virtual OctTreeNode *tryInsert(const T &point);
+    template<typename U>
+    OctTreeNode *tryInsert(const U &point);
 
     #ifdef DEBUG_MODE
     void printHelper(const OctTreeNode *node, int indent) const;
@@ -123,14 +138,17 @@ protected:
         return result;
     };
 
-    void rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const;
+    template<typename U>
+    void rangeHelper(const OctTreeNode *node, const _Sphere<U> &sphere, std::vector<T> &result) const;
     
     OctTreeNode *root;
+    T ll, ur;
     size_t treeSize;
     size_t nodesNumber;
 
 public:
     explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0), nodesNumber(0){this->setBounds(ll, ur);};
+
     template<typename InputIterator>
     explicit OctTree(const T &ll, const T &ur, const InputIterator &first, const InputIterator &last): OctTree(ll, ur)
     {
@@ -141,10 +159,13 @@ public:
     };
     template<typename Container>
     inline OctTree(const T &ll, const T &ur, Container container): OctTree(ll, ur, container.begin(), container.end()){};
+
     inline explicit OctTree(): root(nullptr), treeSize(0), nodesNumber(0){};
+
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
-    inline bool insert(const T &point)
+    template<typename U>
+    inline bool insert(const U &point)
     {
         OctTreeNode *newNode = this->tryInsert(point);
         if(newNode != nullptr)
@@ -177,10 +198,15 @@ public:
     virtual inline void setRoot(OctTreeNode *other){this->root = other;};
     virtual void setBounds(const T &ll, const T &ur)
     {
+        this->ll = ll;
+        this->ur = ur;
         assert(this->getRoot() == nullptr);
         this->setRoot(new OctTreeNode(ll, ur));
         this->getRoot()->parent = nullptr;
     }
+
+    const T &getLL() const{return this->ll;};
+    const T &getUR() const{return this->ur;};
 
     #ifdef DEBUG_MODE
     void print() const{this->printHelper(this->getRoot(), 0);};
@@ -188,7 +214,9 @@ public:
 
     inline int getDepth() const{assert(this->getRoot() != nullptr); return this->getRoot()->height;};
     inline size_t getSize() const{return this->treeSize;};
-    inline std::vector<T> range(const _Sphere<T> &sphere) const
+
+    template<typename U>
+    inline std::vector<T> range(const _Sphere<U> &sphere) const
     {
         std::vector<T> result;
         this->rangeHelper(this->getRoot(), sphere, result);
@@ -249,8 +277,8 @@ OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isLe
     assert(parent != nullptr);
 
     // determine box:
-    T new_ll, new_ur;
-    const T &parentLL = parent->boundingBox.getLL(), &parentUR = parent->boundingBox.getUR();
+    Raw_type new_ll, new_ur;
+    const Raw_type &parentLL = parent->boundingBox.getLL(), &parentUR = parent->boundingBox.getUR();
     for(int i = 0; i < DIM; i++)
     {
         if((childNumber >> ((DIM - 1) - i)) & 1)
@@ -474,7 +502,8 @@ void OctTree<T>::printHelper(const OctTreeNode *node, int indent) const
 #endif // DEBUG_MODE
 
 template<typename T>
-typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
+template<typename U>
+typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
 {
     assert(this->getRoot() != nullptr);
     if(!this->getRoot()->boundingBox.contains(point))
@@ -516,7 +545,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
     }
     std::stringstream valueStr;
     valueStr << point;
-    throw UniversalError("point " + valueStr.str() + " could not be inserted to the tree");
+    throw UniversalError("point " + valueStr.str() + " could not be inserted to the octtree");
 }
 
 template<typename T>
@@ -537,7 +566,8 @@ void OctTree<T>::getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> 
 }
 
 template<typename T>
-void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const
+template<typename U>
+void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<U> &sphere, std::vector<T> &result) const
 {
     if(node == nullptr)
     {

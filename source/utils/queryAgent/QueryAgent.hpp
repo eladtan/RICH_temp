@@ -309,6 +309,10 @@ int QueryAgent<QueryData, AnswerType>::checkForFinishMessages() const
 template<typename QueryData, typename AnswerType>
 void QueryAgent<QueryData, AnswerType>::flushBuffer(int _rank)
 {
+    if((_rank < 0) or (_rank >= this->size))
+    {
+        throw UniversalError("Invalid rank (" + std::to_string(_rank) + "), in QueryAgent::flushBuffer");
+    }
     int bufferIdx = this->ranksBufferIdx[_rank];
     if(bufferIdx == UNDEFINED_BUFFER_IDX)
     {
@@ -420,7 +424,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
                     this->finishedReceived += this->checkForFinishMessages();
                     break;
                 default:
-                    std::cerr << "Rank " << this->rank << " received unrecognized tag: " << status.MPI_TAG << ", from rank " << status.MPI_SOURCE << std::endl;
+                    throw UniversalError("Rank " + std::to_string(this->rank) + " received unrecognized tag: " + std::to_string(status.MPI_TAG) + ", from rank " + std::to_string(status.MPI_SOURCE));
             }
 
             // if(i % RECEIVE_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal > this->receivedUntilNow)
@@ -439,8 +443,6 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     {
         MPI_Waitall(this->requests.size(), &(*(this->requests.begin())), MPI_STATUSES_IGNORE); // make sure any query was indeed received
     }
-
-    MPI_Barrier(this->comm);
 
     // add to the list the processors that sent us a message for the first time
     for(int _rank = 0; _rank < this->size; _rank++)
@@ -462,8 +464,11 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
         }
     }
 
+    MPI_Barrier(this->comm);
+
     this->finishedReceived -= this->size;
     this->rearrangeResult(queriesBatch);
+
     return queriesBatch;
 }
 

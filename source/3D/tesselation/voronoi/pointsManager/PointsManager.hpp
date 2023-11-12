@@ -117,12 +117,6 @@ protected:
         }
         return toReturn;
     };
-
-    inline PointsExchangeResult pointsExchangeByEnvAgent(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
-    {
-        const EnvironmentAgent *envAgent = this->getEnvironmentAgent();
-        return this->pointsExchange([envAgent](const _3DPointRadius &_point){return envAgent->getOwner(Vector3D(_point.point.x, _point.point.y, _point.point.z));}, points, radiuses);
-    };
 };
 
 #endif // RICH_MPI

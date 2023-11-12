@@ -7,7 +7,13 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
     PointsExchangeResult exchangeResult;
     if(this->envAgent != nullptr)
     {
-        exchangeResult = this->pointsExchangeByEnvAgent(points, radiuses);
+        exchangeResult = this->pointsExchange([this](const _3DPointRadius &_point)
+        {
+            hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
+            size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
+            return std::min<hilbert_index_t>(index, (this->size - 1));
+        },
+        points, radiuses); // exchange
         this->envAgent->updatePoints(exchangeResult.newPoints);
     }
     else

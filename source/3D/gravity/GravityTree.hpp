@@ -63,6 +63,7 @@ public:
     struct MassedValue
     {
         using coord_type = typename T::coord_type;
+        using Raw_type = T;
 
         T value;
         T CM; // center of mass
@@ -75,7 +76,8 @@ public:
         inline MassedValue operator-(const MassedValue &other) const{return MassedValue(this->value - other.value);};
         inline MassedValue operator*(typename T::coord_type scalar) const{return MassedValue(this->value * scalar);};
         inline MassedValue operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
-        inline bool operator==(const MassedValue &other) const{return this->value == other.value;};
+        inline bool operator==(const T &other) const{return this->value == other;};
+        inline bool operator==(const MassedValue &other) const{return this->operator==(other.value);};
         inline bool operator!=(const MassedValue &other) const{return !this->operator==(other);};
         inline friend std::ostream &operator<<(std::ostream &stream, const MassedValue &value)
         {

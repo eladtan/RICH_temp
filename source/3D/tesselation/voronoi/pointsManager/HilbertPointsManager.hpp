@@ -8,7 +8,7 @@
 #include "PointsManager.hpp"
 #include "3D/environment/kernels/Identity.hpp"
 
-#define SPACE_FACTOR 1e-10
+#define SPACE_FACTOR 1e-5
 
 class HilbertPointsManager : public PointsManager
 {

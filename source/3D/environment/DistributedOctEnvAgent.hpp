@@ -25,7 +25,10 @@ public:
         return this->distributedOctTree->getIntersectingRanks(center, radius);
     };
 
-    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(this->convertor->xyz2d((*this->indexing)(point)));};
+    inline int getOwner(const Vector3D &point) const override
+    {
+        return this->getCellOwner(this->convertor->xyz2d((*this->indexing)(point)));
+    };
 
     inline int getCellOwner(hilbert_index_t d) const
     {
