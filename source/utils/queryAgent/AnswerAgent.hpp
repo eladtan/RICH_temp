@@ -8,6 +8,8 @@ template<typename QueryData, typename AnswerType>
 class AnswerAgent
 {
 public:
+    virtual ~AnswerAgent() = default;
+    
     virtual std::vector<AnswerType> answer(const QueryData &query, int _rank) = 0;
 
     virtual std::vector<int> &getSentProc()

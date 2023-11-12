@@ -72,6 +72,8 @@ public:
 
     QueryAgent(const TalkAgent<QueryData> *talkAgent, AnswerAgent<QueryData, AnswerType> *answerAgent, bool sendToSelf = false, const MPI_Comm &comm = MPI_COMM_WORLD);
 
+    virtual ~QueryAgent() = default;
+    
     void receiveQueries(QueryBatchInfo<QueryData, AnswerType> &batch);
     void answerQueries();
     void sendQuery(const QueryInfo<QueryData, AnswerType> &query);
