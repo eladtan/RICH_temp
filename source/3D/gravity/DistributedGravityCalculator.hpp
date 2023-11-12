@@ -97,7 +97,7 @@ public:
         }
         gravTree->build(massedPoints);
         this->gravityTree = gravTree;
-        this->distributedTree = new DistributedOctTree<MassedValue>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
+        this->distributedTree = new DistributedOctTree<MassedValue, 1>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
     }
 
     DistributedGravityCalculator(GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm), gravityTreeCreated(false)
@@ -105,7 +105,7 @@ public:
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
         this->gravityTree = gravityTree;
-        this->distributedTree = new DistributedOctTree<MassedValue>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
+        this->distributedTree = new DistributedOctTree<MassedValue, 1>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
     }
    
     ~DistributedGravityCalculator()
