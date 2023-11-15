@@ -124,7 +124,7 @@ private:
     int rank, size;
     GravityTree<_3DPoint> *gravityTree;
     bool gravityTreeCreated; // if the gravity tree should be deleted at the end
-    const DistributedOctTree<MassedValue> *distributedTree;
+    const DistributedOctTree<MassedValue, 1> *distributedTree;
 
     std::vector<MassedValue> exchangeImportedValues(const std::vector<Vector3D> &points) const;
 };
