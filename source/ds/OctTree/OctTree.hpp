@@ -144,7 +144,7 @@ protected:
     T ll, ur;
     size_t treeSize;
     size_t nodesNumber;
-    mutable std::stack<const OctTreeNode*> nodes_stack;
+    mutable std::vector<const OctTreeNode*> nodes_stack;
 
 public:
     explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0), nodesNumber(0){this->setBounds(ll, ur);};
@@ -535,38 +535,47 @@ std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const Filte
 {
     std::vector<T> result;
     size_t resultSize = 0;
-    this->nodes_stack.push(this->getRoot());
+    this->nodes_stack.push_back(this->getRoot());
 
     while((not this->nodes_stack.empty()) and (resultSize < N))
     {
-        const OctTreeNode *node = this->nodes_stack.top();
-        this->nodes_stack.pop();
+        const OctTreeNode *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
 
         if(node == nullptr)
         {
             continue;
         }
 
-        if(!SphereBoxIntersection(node->boundingBox, sphere))
+        // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
+        // that is because a leaf does not necessarily have to be a point (it can be a box, as in `DistributedOctTree`)
+        if(not SphereBoxIntersection(node->boundingBox, sphere))
         {
             continue;
         }
         
         if(node->isLeaf)
         {
-            // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
-            // that is because a leaf does not necessarily has to be a point (it can be a box, as in `DistributedOctTree`)
-            if(/* SphereBoxIntersection(node->boundingBox, sphere) and */ filter(node->value))
+            if(filter(node->value))
             {
+                if(not result.empty() and node->value == result.back())
+                {
+                    std::cout << "Error!!!!!!!!!!!!!!! reached same node" << std::endl;
+                }
                 result.push_back(node->value);
                 resultSize++;
             }
         }
-        for(int i = 0; i < CHILDREN; i++)
+        else
         {
-            this->nodes_stack.push(node->children[i]); // recursively iterate
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                this->nodes_stack.push_back(node->children[i]); // recursively iterate
+            }
         }
     }
+
+    this->nodes_stack.clear();
 
     return result;
 }
@@ -617,15 +626,15 @@ template<typename T>
 template<typename U>
 std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point) const
 {
-    this->nodes_stack.push(this->getRoot());
+    this->nodes_stack.push_back(this->getRoot());
 
     T closestPoint;
     typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
     
     while(!this->nodes_stack.empty())
     {
-        const OctTreeNode *node = this->nodes_stack.top();
-        this->nodes_stack.pop();
+        const OctTreeNode *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
 
         if(node == nullptr)
         {
@@ -657,7 +666,7 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push(node->children[i]);
+                this->nodes_stack.push_back(node->children[i]);
             }
         }
     }

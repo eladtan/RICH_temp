@@ -36,7 +36,7 @@ public:
     {
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->octTree->range(_Sphere<IndexedVector3D>(IndexedVector3D(center.x, center.y, center.z, ILLEGAL_IDX), radius), N,
-                                                             [ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
+                                                             [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);
         }
