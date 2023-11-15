@@ -33,7 +33,7 @@ public:
     
 private:
     bool d2xyz_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
-    bool xyz2d_helper_base(const DirectionVector3D &startPoint, int steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    bool xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
     bool xyz2d_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
     Vector3D WidthHeightDepthToXYZ(int width, int height, int depth) const;
 };

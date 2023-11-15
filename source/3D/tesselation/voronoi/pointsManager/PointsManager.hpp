@@ -28,6 +28,12 @@ struct PointsExchangeResult
     std::vector<size_t> indicesToSelf;
 };
 
+typedef struct _3DPointRadius
+{
+    _3DPoint point;
+    double radius;
+} _3DPointRadius;
+
 /**
  * \author Maor Mizrachi
  * \brief A point manager performs data movement between ranks (borders determination and points exchange according to borders).
@@ -42,6 +48,8 @@ public:
     };
 
     virtual ~PointsManager() = default;
+
+    PointsManager &operator=(const PointsManager &other) = delete;
 
     virtual PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) = 0;
 
@@ -68,7 +76,7 @@ public:
 
     PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool doRebalance = true)
     {
-        if(doRebalance and this->checkForRebalance(points))
+        if(doRebalance and this->checkForRebalance(points) and this->getEnvironmentAgent() != nullptr)
         {
             this->rebalance(points);
         }

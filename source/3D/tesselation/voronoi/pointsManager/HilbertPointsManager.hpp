@@ -18,7 +18,7 @@ public:
     {
         if(indexing.get() == nullptr)
         {
-            this->indexing = std::make_shared<const Identity>(Identity()); // default kernel
+            this->indexing = std::shared_ptr<const Identity>(new Identity()); // default kernel
         }
         else
         {
@@ -26,12 +26,18 @@ public:
         }
     }
 
-    inline ~HilbertPointsManager() override{delete this->envAgent; delete this->convertor;};
+    inline ~HilbertPointsManager() override
+    {
+        delete this->envAgent;
+        delete this->convertor;
+    };
 
     inline const EnvironmentAgent *getEnvironmentAgent() const override
     {
         return this->envAgent;
     }
+
+    HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;
 
     PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) override;
 

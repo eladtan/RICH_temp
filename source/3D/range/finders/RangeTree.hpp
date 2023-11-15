@@ -26,10 +26,12 @@ public:
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return std::vector<size_t>();
+        throw UniversalError("RangeTreeFinder::closestPointInSphere not implemented");
     }
     
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
+    {
+        throw UniversalError("RangeTreeFinder::range not implemented correctly");  // `ignore` and `N` aren't addressed
         std::vector<size_t> toReturn;
         for(const IndexedVector3D &vec : this->rangeTree->circularRange(center, radius))
         {

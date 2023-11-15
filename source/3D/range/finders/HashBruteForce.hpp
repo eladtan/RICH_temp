@@ -39,15 +39,20 @@ public:
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return std::vector<size_t>();
+        throw UniversalError("HashBruteForceFinder::closestPointInSphere not implemented");
     }
 
-    std::vector<size_t> range(const Vector3D &center, double radius) const override
+    std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
         typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
         {
+            if(result.size() >= N)
+            {
+                break;
+            }
+
             if(this->envAgent->getCellOwner(cell) == this->rank)
             {
                 const size_t *_points = this->cellsPoints[cell % this->cellsPointsSize].data();

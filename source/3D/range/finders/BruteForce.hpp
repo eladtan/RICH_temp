@@ -53,12 +53,18 @@ public:
 
     inline const Vector3D &getPoint(size_t index) const override{return this->points[index];};
 
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
+        throw UniversalError("BruteForce::range not implemented correctly"); // `ignore` isn't addressed
+
         std::vector<size_t> result;
         const Vector3D *_points = this->points.data();
         for(size_t i = 0; i < this->pointsSize; i++)
         {
+            if(result.size() >= N)
+            {
+                break;
+            }
             //  __builtin_prefetch(&_points[i]);
             const Vector3D &point = _points[i];
             double dx = point.x - center.x;

@@ -67,19 +67,4 @@ inline typename _3DPoint::coord_type fastabs(_3DPoint const& v)
 	return fastsqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
 }
 
-typedef struct _3DPointRadius
-{
-    _3DPoint point;
-    double radius;
-} _3DPointRadius;
-
-
-typedef struct _2DPoint
-{
-    using coord_type = coord_t;
-
-    coord_type x;
-    coord_type y;
-} _2DPoint;
-
 #endif // _HILBERT_TYPES_H

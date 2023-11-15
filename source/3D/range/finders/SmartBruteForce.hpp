@@ -46,17 +46,24 @@ public:
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return std::vector<size_t>();
+        throw UniversalError("SmartBruteForceFinder::closestPointInSphere not implemented");
     }
 
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
-    std::vector<size_t> range(const Vector3D &center, double radius) const override
+    std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
+        throw UniversalError("SmartBruteForceFinder::range not implemented correctly"); // `ignore` isn't addressed
+
         typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
         {
+            if(result.size() >= N)
+            {
+                break;
+            }
+
             if(this->envAgent->getCellOwner(cell) == this->rank)
             {
                 auto it = this->cellsPoints.find(cell);

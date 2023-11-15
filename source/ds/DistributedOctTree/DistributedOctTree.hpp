@@ -413,6 +413,7 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
 {
     const typename T::coord_type &maxVal = std::numeric_limits<typename T::coord_type>::max();
     const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::min();
+    
     std::pair<T, T> initialPair = std::make_pair<T, T>(T(maxVal, maxVal, maxVal), T(minVal, minVal, minVal));
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> distances(size, {maxVal, minVal});
 

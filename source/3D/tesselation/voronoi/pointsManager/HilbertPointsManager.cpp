@@ -25,6 +25,11 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
 
 void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points)
 {
+    if(this->convertor == nullptr)
+    {
+        throw UniversalError("HilbertPointsManager::rebalance: convertor was not initialized yet");
+    }
+
     std::vector<hilbert_index_t> indices;
     for(const Vector3D &point : points)
     {
@@ -94,6 +99,7 @@ void HilbertPointsManager::determineHilbertOrder(const std::vector<Vector3D> &po
     kerneledUR.z += std::abs(SPACE_FACTOR * z_length);
     
     this->hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, this->hilbertOrder);
+
     this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, this->hilbertOrder);
 }
 

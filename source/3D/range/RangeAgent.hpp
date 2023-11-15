@@ -47,63 +47,84 @@ private:
     public:
         RangeAnswerAgent(const RangeFinder *rangeFinder): rangeFinder(rangeFinder){};
 
-        std::vector<size_t> clearDuplication(const std::vector<size_t> &unfilteredResult, int _rank)
-        {
-            std::vector<int> &sentProc = this->sentProc;
-            std::vector<std::vector<size_t>> &sentData = this->sentData;
-            std::vector<RangeFinder::_set<size_t>> &sentDataSet = this->sentDataSet;
-            std::vector<size_t> result;
+        // std::vector<size_t> clearDuplication(const std::vector<size_t> &unfilteredResult, int _rank)
+        // {
+        //     std::vector<int> &sentProc = this->sentProc;
+        //     std::vector<std::vector<size_t>> &sentData = this->sentData;
+        //     std::vector<RangeFinder::_set<size_t>> &sentDataSet = this->sentDataSet;
+        //     std::vector<size_t> result;
 
-            if(unfilteredResult.empty())
-            {
-                return result;
-            }
-            size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
-            if(rankIdx == sentProc.size())
-            {
-                // `_rank` is new
-                sentProc.push_back(_rank);
-                sentData.emplace_back(std::vector<size_t>());
-                sentDataSet.emplace_back(RangeFinder::_set<size_t>());
-            }
-            RangeFinder::_set<size_t> &_rankSet = sentDataSet[rankIdx];
+        //     if(unfilteredResult.empty())
+        //     {
+        //         return result;
+        //     }
+        //     size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
+        //     if(rankIdx == sentProc.size())
+        //     {
+        //         // `_rank` is new
+        //         sentProc.push_back(_rank);
+        //         sentData.emplace_back(std::vector<size_t>());
+        //         sentDataSet.emplace_back(RangeFinder::_set<size_t>());
+        //     }
+        //     RangeFinder::_set<size_t> &_rankSet = sentDataSet[rankIdx];
 
-            for(const size_t &dataIdx : unfilteredResult)
-            {
-                if(_rankSet.find(dataIdx) == _rankSet.end())
-                {
-                    // `_data` was not sent before
-                    result.push_back(dataIdx);
-                    _rankSet.insert(dataIdx);
-                    sentData[rankIdx].push_back(dataIdx);
-                }
-            }
-            return result;
-        }
+        //     for(const size_t &dataIdx : unfilteredResult)
+        //     {
+        //         if(_rankSet.find(dataIdx) == _rankSet.end())
+        //         {
+        //             // `_data` was not sent before
+        //             result.push_back(dataIdx);
+        //             _rankSet.insert(dataIdx);
+        //             sentData[rankIdx].push_back(dataIdx);
+        //         }
+        //     }
+        //     return result;
+        // }
 
         std::vector<_3DPoint> answer(const RangeQueryData &query, int _rank) override
         {
             std::vector<_3DPoint> result;
             std::vector<size_t> indicesResult;
 
+            size_t rankIndex = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
+            const RangeFinder::_set<size_t> &ignore = (rankIndex == this->sentProc.size())? RangeFinder::_set<size_t>() : this->sentDataSet[rankIndex];
+
             if(query.maxPointsToGet == 1)
             {
-                size_t rankIndex = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
-                const RangeFinder::_set<size_t> &ignore = (rankIndex == this->sentProc.size())? RangeFinder::_set<size_t>() : sentDataSet[rankIndex];
+                // a big query, bring only the closest point
                 indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z), ignore);
             }
             else
             {
-                indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+                // a small query, bring the requested number of points
+                indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
             }
 
+            /*
             indicesResult = this->clearDuplication(indicesResult, _rank);
+            */
+           
+            if(indicesResult.empty())
+            {
+                return result; // result empty
+            }
+
+            if(rankIndex == this->sentProc.size())
+            {
+                // `_rank` is new
+                this->sentProc.push_back(_rank);
+                this->sentData.emplace_back(std::vector<size_t>());
+                this->sentDataSet.emplace_back(RangeFinder::_set<size_t>());
+            }
 
             result.reserve(indicesResult.size());
             for(const size_t &pointIdx : indicesResult)
             {
                 result.push_back(_3DPoint(this->rangeFinder->getPoint(pointIdx)));
+                this->sentDataSet[rankIndex].insert(pointIdx);
+                this->sentData[rankIndex].push_back(pointIdx);
             }
+
             return result;
         }
 
