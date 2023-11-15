@@ -144,7 +144,7 @@ protected:
     T ll, ur;
     size_t treeSize;
     size_t nodesNumber;
-    mutable std::stack<const OctTreeNode*> nodes;
+    mutable std::stack<const OctTreeNode*> nodes_stack;
 
 public:
     explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0), nodesNumber(0){this->setBounds(ll, ur);};
@@ -564,7 +564,7 @@ std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const Filte
         }
         for(int i = 0; i < CHILDREN; i++)
         {
-            this->nodes_stack.push_back(node->children[i]); // recursively iterate
+            this->nodes_stack.push(node->children[i]); // recursively iterate
         }
     }
 
