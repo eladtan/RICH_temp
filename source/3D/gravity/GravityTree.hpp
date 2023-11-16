@@ -131,7 +131,7 @@ public:
 
     inline bool getQuadrupole() const{return this->quadrupole;};
 
-    inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;}; // todo: can remove?
+    inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;};
 
     inline double getTheta() const{return this->theta;};
 };

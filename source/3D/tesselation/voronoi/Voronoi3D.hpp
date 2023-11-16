@@ -157,7 +157,6 @@ public:
     void SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>());
     void SetKernel(const IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const IndexingKernel3D>(indexing));};
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing);
-    inline const EnvironmentAgent *GetEnvironmentAgent(void){return this->pointsManager.get()->getEnvironmentAgent();}; // TODO: REMOVE
   #endif // RICH_MPI
   vector<int>& GetSentProcs(void) override;
 

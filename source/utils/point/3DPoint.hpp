@@ -1,4 +1,4 @@
-#include <iostream> // todo: remove
+#include <iostream>
 #include "3D/elementary/Vector3D.hpp"
 
 struct _3DPoint

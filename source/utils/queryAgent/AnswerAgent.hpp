@@ -1,7 +1,6 @@
 #ifndef _ANSWER_AGENT_HPP
 #define _ANSWER_AGENT_HPP
 
-#include <iostream> // todo remove
 #include <vector>
 
 template<typename QueryData, typename AnswerType>

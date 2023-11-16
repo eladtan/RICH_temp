@@ -75,7 +75,7 @@ public:
                 const size_t *_points = (*it).second.data();
                 for(size_t i = 0; i < cellPointsSize; i++)
                 {
-                    __builtin_prefetch(&this->myPoints[_points[i]]); // todo: doesn't help much
+                    __builtin_prefetch(&this->myPoints[_points[i]]);
                     const Vector3D &point = this->myPoints[_points[i]];
                     double distanceSquared = (point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y) + (point.z - center.z) * (point.z - center.z);
                     if(distanceSquared <= (radius * radius))

@@ -9,8 +9,6 @@
 #include <stack>
 #include <sstream>
 
-#define DEBUG_MODE // todo remove
-
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif // DEBUG_MODE
@@ -41,7 +39,6 @@ struct is_raw_type_defined<T, void_t<typename T::Raw_type>> {
 template<typename T>
 class OctTree
 {
-    // todo: necessary?
     template<typename U>
     class DistributedOctTree;
     template<typename U>

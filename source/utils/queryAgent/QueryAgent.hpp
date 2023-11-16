@@ -3,7 +3,6 @@
 
 #ifdef RICH_MPI
 
-#include <iostream> // todo remove
 #include <algorithm>
 #include <cmath>
 #include <set>

@@ -8,10 +8,6 @@
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 
-// todo, unnecessary?
-template class BinaryTree<IndexedVector3D>;
-template class RangeTree<IndexedVector3D>;
-
 #define DIMENSIONS 3
 
 class RangeTreeFinder : public RangeFinder
