@@ -49,7 +49,7 @@
 
 #define INITIAL_SENDRECV_TAG 1105
 #define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
-#define RANGE_MAX_POINTS_TO_GET 30
+#define RANGE_MAX_POINTS_TO_GET 15
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.1
 #endif 
@@ -117,6 +117,7 @@ private:
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
+  void DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<RangeQueryData, _3DPoint>> &queriesAnswers, boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, boost::container::flat_map<size_t, size_t> &firstLargeIteration, const std::vector<double> &currentRadiuses);
   #endif // RICH_MPI
 
   Delaunay3D del_;

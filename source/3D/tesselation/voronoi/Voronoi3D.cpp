@@ -1132,6 +1132,55 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
 
 /**
  * \author Maor Mizrachi
+ * \brief Calculates the points for next iteration, and determine its type (small or big)
+*/
+void Voronoi3D::DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<RangeQueryData, _3DPoint>> &queriesAnswers, boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, boost::container::flat_map<size_t, size_t> &firstLargeIteration, const std::vector<double> &currentRadiuses)
+{
+    boost::container::flat_set<size_t> newSmallPoints, newLargePoints;
+    for(const QueryInfo<RangeQueryData, _3DPoint> &ans : queriesAnswers)
+    {
+        const size_t &pointIdx = ans.data.pointIndex;
+        if(not ans.data.bigQuery)
+        {
+            // small query                
+            if(ans.finalResults.size() > RANGE_MAX_POINTS_TO_GET)
+            {
+                // the result is too big, we should consider this point as large
+                newLargePoints.insert(pointIdx);
+                firstLargeIteration[pointIdx] = iterations + 1; // the first large iteration for `pointIdx` is the next one
+                this->radiuses[pointIdx] = LARGE_POINTS_SHRINK_RADIUS_RATIO * currentRadiuses[pointIdx];
+            }
+            else
+            {
+                double maxRadius = this->GetMaxRadius(pointIdx);
+                if(currentRadiuses[pointIdx] < 2 * maxRadius)
+                {
+                    // point is not yet done!
+                    newSmallPoints.insert(pointIdx);
+                }
+                else
+                {
+                    // point is finished, set a radius for next iteration
+                    this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (2 * maxRadius);
+                }
+            }
+        }
+        else
+        {
+            // query is large, check if it returned non empty. If yes, we are not yet done
+            if(!ans.finalResults.empty())
+            {
+                newLargePoints.insert(pointIdx);
+            }
+        }
+    }
+
+    smallPoints = std::move(newSmallPoints);
+    largePoints = std::move(newLargePoints);
+}
+
+/**
+ * \author Maor Mizrachi
  * \brief The algorithm follows arepro paper (https://www.mpa-garching.mpg.de/~volker/arepo/arepo_paper.pdf), section 2.4.
 */
 void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
@@ -1178,10 +1227,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
     size_t iterations = 0;
 
-    size_t maxPointsNumToMoveSmallToBig = RANGE_MAX_POINTS_TO_GET;
     boost::container::flat_map<size_t, size_t> firstLargeIteration;
-
-    size_t finishedSmall = 0;
 
     while(true) // loop is not really infinite (has 'break')
     {
@@ -1196,58 +1242,8 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
         QueryBatchInfo<RangeQueryData, _3DPoint> batchInfo = rangeAgent.runBatch(queries);
 
-        boost::container::flat_set<size_t> newSmallPoints, newLargePoints;
-        for(const QueryInfo<RangeQueryData, _3DPoint> &ans : batchInfo.queriesAnswers)
-        {
-            const size_t &pointIdx = ans.data.pointIndex;
-            if(not ans.data.bigQuery)
-            {
-                // small query                
-                if(ans.finalResults.size() > maxPointsNumToMoveSmallToBig)
-                {
-                    // the result is too big, we should consider this point as large
-                    newLargePoints.insert(pointIdx);
-                    firstLargeIteration[pointIdx] = iterations + 1; // the first large iteration for `pointIdx` is the next one
-                    this->radiuses[pointIdx] *= LARGE_POINTS_SHRINK_RADIUS_RATIO;
-                }
-                else
-                {
-                    double maxRadius = this->GetMaxRadius(pointIdx);
-                    if(currentRadiuses[pointIdx] < 2 * maxRadius)
-                    {
-                        // point is not yet done!
-                        newSmallPoints.insert(pointIdx);
-                    }
-                    else
-                    {
-                        // point is finished, set a radius for next iteration
-                        this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (2 * maxRadius);
-                        finishedSmall++;
-                    }
-                }
-            }
-            else
-            {
-                // query is large, check if it returned non empty. If yes, we are not yet done
-                if(!ans.finalResults.empty())
-                {
-                    newLargePoints.insert(pointIdx);
-                }
-            }
-        }
+        this->DetermineNextIterationPoints(iterations, batchInfo.queriesAnswers, smallPoints, largePoints, firstLargeIteration, currentRadiuses);
 
-        // for(const size_t &pointIdx : largePoints)
-        // {
-        //     if(newLargePoints.find(pointIdx) == newLargePoints.end())
-        //     {
-        //         // point was large, and is finished
-        //         this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (1 * this->GetMinRadius(pointIdx)); // todo: magic number
-        //     }
-        // }
-
-        smallPoints = std::move(newSmallPoints);
-        largePoints = std::move(newLargePoints);
-        
         std::vector<_3DPoint> &_newPoints = batchInfo.result;
         std::vector<Vector3D> newPoints;
         newPoints.reserve(_newPoints.size());
@@ -1306,15 +1302,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         {
             break;
         }
-    }
-
-    MPI_Allreduce(MPI_IN_PLACE, &finishedSmall, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-    size_t NumPoints = points.size();
-    MPI_Allreduce(MPI_IN_PLACE, &NumPoints, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-    
-    if(rank == 0)
-    {
-        std::cout << "finishedSmall = " << finishedSmall << ", finishedLarge = " << (NumPoints - finishedSmall) << std::endl;
     }
         
     const std::vector<std::vector<size_t>> &sentPoints = rangeAgent.getSentPoints();

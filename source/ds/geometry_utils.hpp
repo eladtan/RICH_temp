@@ -193,31 +193,35 @@ public:
     }
 };
 
+/**
+ * @brief Checks if a sphere intersects a box
+*/
 template<typename T, typename U, typename V = T>
 bool SphereBoxIntersection(const _BoundingBox<T> &box, const _Sphere<U> &sphere)
 {
-    V closestPoint;
     typename T::coord_type distance = 0;
     const T &boxLL = box.getLL(), &boxUR = box.getUR();
     for(int i = 0; i < DIM; i++)
     {
         typename V::coord_type centerCoord = sphere.center[i];
+        typename V::coord_type closestPointCoord;
+
         if(centerCoord < boxLL[i])
         {
-            closestPoint[i] = boxLL[i];
+            closestPointCoord = boxLL[i];
         }
         else
         {
             if(centerCoord <= boxUR[i])
             {
-                closestPoint[i] = centerCoord;
+                closestPointCoord = centerCoord;
             }
             else
             {
-                closestPoint[i] = boxUR[i];
+                closestPointCoord = boxUR[i];
             }
         }
-        typename V::coord_type _distance = (closestPoint[i] - sphere.center[i]);
+        typename V::coord_type _distance = (closestPointCoord - sphere.center[i]);
         _distance *= _distance;
         distance += _distance;
     }

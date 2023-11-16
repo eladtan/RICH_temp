@@ -172,6 +172,7 @@ private:
             {
                 return intersectingRanks;
             }
+
             // otherwise, the queries requests to ask only the close ranks
             // we calculate the closest distances from the point, to all the other ranks.
             std::vector<std::pair<double, double>> distances;
