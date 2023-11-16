@@ -555,10 +555,6 @@ std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const Filte
         {
             if(filter(node->value))
             {
-                if(not result.empty() and node->value == result.back())
-                {
-                    std::cout << "Error!!!!!!!!!!!!!!! reached same node" << std::endl;
-                }
                 result.push_back(node->value);
                 resultSize++;
             }
