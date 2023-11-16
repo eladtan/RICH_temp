@@ -304,10 +304,11 @@ namespace
 
         for (size_t i = 0; i < Ntetra; ++i)
         {
+            const Tetrahedron &tet = tetras[i];
+
             has_good = false;
             has_big = false;
 
-            const Tetrahedron &tet = tetras[i];
             Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
             Vec4qb cmp = (_points < _Norg);
 
@@ -327,21 +328,6 @@ namespace
             {
                 bigtet = i;
             }
-            /*
-            for (size_t j = 0; j < 4; ++j)
-            {
-                size_t temp = tetras[i].points[j];
-                if (temp < Norg)
-                {
-                    PointTetras[temp].push_back(i);
-                    has_good = true;
-                }
-                else
-                    has_big = true;
-            }
-            if (has_big && has_good)
-                bigtet = i;
-            */
         }
         return bigtet;
     }
@@ -839,10 +825,9 @@ std::vector<size_t> Voronoi3D::CheckToMirror(const Vector3D &point, double radiu
  * \author Maor Mizrachi
  * \brief Creates a batch for a cycle (iteration) in the ghost points bringing loop
 */
-std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations)
+std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations)
 {
     std::queue<RangeQueryData> queries;
-    boost::container::flat_set<size_t> newSmallPoints, newLargePoints;
     boost::container::flat_set<size_t> tetraToCancel;
 
     if(iterations == 1)
@@ -850,9 +835,8 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
         // at first iteration, run an initial query
         for(const size_t &pointIdx : smallPoints)
         {
-            newSmallPoints.insert(pointIdx);
             const Vector3D &point = this->del_.points_[pointIdx];
-            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, currentRadiuses[pointIdx], RANGE_MAX_POINTS_TO_GET + 1, ASK_ALL};
+            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, currentRadiuses[pointIdx], false /* small query*/, RANGE_MAX_POINTS_TO_GET + 1, ASK_ALL};
             queries.push(query);
 
             if(currentRadiuses[pointIdx] <= 0)
@@ -863,71 +847,38 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
     }
     else
     {
-        for(const size_t &pointIdx : smallPoints)
-        {
-            // let us first check if the point is really small, or should be considered as large
-            double biggestRadius = std::numeric_limits<double>::min(), smallestRadius = std::numeric_limits<double>::max();
-            for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
-            {
-                double tetraRadius = this->GetRadius(tetraIdx);
-                biggestRadius = std::max<double>(biggestRadius, tetraRadius);
-                smallestRadius = std::min<double>(smallestRadius, tetraRadius);
-            }
-
-            newSmallPoints.insert(pointIdx);
-
-            /*
-            double ratio = biggestRadius / smallestRadius;
-            if(ratio > MIN_BIG_RADIUS_SMALL_RADIUS_RATIO_TO_COUNT_AS_LARGE_POINT)
-            {
-                // point is now considered large!
-                newLargePoints.insert(pointIdx);
-            }
-            else
-            {
-                newSmallPoints.insert(pointIdx);
-            }
-            */
-        }
+        // treat large points
         for(const size_t &pointIdx : largePoints)
         {
-            newLargePoints.insert(pointIdx);
-        }
-
-        // treat large points
-        for(const size_t &pointIdx : newLargePoints)
-        {
             const Vector3D &point = this->del_.points_[pointIdx];
+            char whoToAsk = (iterations == firstLargeIteration.at(pointIdx))? ASK_ONLY_CLOSE : ASK_ALL; // on the first iteration as large, bring only the close points
+
             for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
             {
-                if(!this->del_.tetras_[tetraIdx].newTetra)
+                if(not this->del_.tetras_[tetraIdx].newTetra)
                 {
                     continue; // tetra does not need to be checked
                 }
                 const Vector3D &center = this->tetra_centers_[tetraIdx];
                 double radius = this->GetRadius(tetraIdx);
                 // from each big tetrahedron, ask each one of the intersecting ranks to give us the closest point it has to our point
-                RangeQueryData query;
                 // for a large point queries, if the iteration number is 2, we ask only the near ranks to give their closest point.
                 // From the 3rd iteration, we ask all the intersecting ranks to give their closest point.
-                if(iterations == 2)
+                if(whoToAsk == ASK_ALL)
                 {
-                    query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, MAX_POINTS_IN_BIG_TETRA_QUERY, ASK_ONLY_CLOSE};
+                    // do not cancel the tetra if we ask only close
+                    tetraToCancel.insert(tetraIdx);
                 }
-                else
-                {
-                    query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, MAX_POINTS_IN_BIG_TETRA_QUERY, ASK_ALL};
-                }
+                RangeQueryData query = {pointIdx, {center.x, center.y, center.z}, {point.x, point.y, point.z}, radius, true /* big query*/, MAX_POINTS_IN_BIG_TETRA_QUERY, whoToAsk};
                 // add the tetra to the list of tetrahedra to clear (mark as 'not new')
-                tetraToCancel.insert(tetraIdx);
                 queries.push(query);
             }
         }
 
         // treat small points
-        for(const size_t &pointIdx : newSmallPoints)
+        for(const size_t &pointIdx : smallPoints)
         {
-            // submit one query which is a union of the others
+            // submit one query whichf is a union of the others
             const Vector3D &point = this->del_.points_[pointIdx];
             double radius = currentRadiuses[pointIdx] *= RADIUSES_GROWING_FACTOR; // increase radius by 'RADIUSES_GROWING_FACTOR'
            
@@ -936,22 +887,15 @@ std::queue<RangeQueryData> Voronoi3D::CreateBatches(boost::container::flat_set<s
                 throw UniversalError("Radius for a certain point is <= 0 (in 'Voronoi3D::CreateBatches')");
             }
 
-            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, radius, RANGE_MAX_POINTS_TO_GET + 1, ASK_ALL};
+            RangeQueryData query = {pointIdx, {point.x, point.y, point.z}, {point.x, point.y, point.z}, radius, false /* small query*/, RANGE_MAX_POINTS_TO_GET + 1, ASK_ALL};
             queries.push(query);
         }
     }
 
-    if(iterations != 2)
+    for(const size_t &tetraIdx : tetraToCancel)
     {
-        for(const size_t &tetraIdx : tetraToCancel)
-        {
-            this->del_.tetras_[tetraIdx].newTetra = false;
-        }
+        this->del_.tetras_[tetraIdx].newTetra = false;
     }
-    smallPoints = std::move(newSmallPoints);
-    largePoints = std::move(newLargePoints);
-
-    // std::cout << "has " << smallPoints.size() << " small points, " << largePoints.size() << " large points" << std::endl;
     return queries;
 }
 
@@ -1232,18 +1176,19 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
     std::vector<std::pair<size_t, size_t>> allMirrored;
 
-    int iterations = 0;
+    size_t iterations = 0;
 
     size_t maxPointsNumToMoveSmallToBig = RANGE_MAX_POINTS_TO_GET;
-    
-    size_t finishedSmall = 0, finishedLarge = 0;
+    boost::container::flat_map<size_t, size_t> firstLargeIteration;
+
+    size_t finishedSmall = 0;
 
     while(true) // loop is not really infinite (has 'break')
     {
         iterations++;
         if(rank == 0) std::cout << "iteration " << iterations << std::endl;
 
-        std::queue<RangeQueryData> queries = this->CreateBatches(smallPoints, largePoints, currentRadiuses, iterations);
+        std::queue<RangeQueryData> queries = this->CreateBatches(smallPoints, largePoints, firstLargeIteration, currentRadiuses, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints = this->MirrorPoints(queries, box, normals);
 
         I_finished = queries.empty()? 1 : 0;
@@ -1255,13 +1200,15 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         for(const QueryInfo<RangeQueryData, _3DPoint> &ans : batchInfo.queriesAnswers)
         {
             const size_t &pointIdx = ans.data.pointIndex;
-            if(ans.data.maxPointsToGet != MAX_POINTS_IN_BIG_TETRA_QUERY)
+            if(not ans.data.bigQuery)
             {
-                // small query
+                // small query                
                 if(ans.finalResults.size() > maxPointsNumToMoveSmallToBig)
                 {
+                    // the result is too big, we should consider this point as large
                     newLargePoints.insert(pointIdx);
-                    this->radiuses[pointIdx] *= 0.95; // todo: magic number
+                    firstLargeIteration[pointIdx] = iterations + 1; // the first large iteration for `pointIdx` is the next one
+                    this->radiuses[pointIdx] *= LARGE_POINTS_SHRINK_RADIUS_RATIO;
                 }
                 else
                 {
@@ -1273,7 +1220,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
                     }
                     else
                     {
-                        // point is finished
+                        // point is finished, set a radius for next iteration
                         this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (2 * maxRadius);
                         finishedSmall++;
                     }
@@ -1282,13 +1229,9 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             else
             {
                 // query is large, check if it returned non empty. If yes, we are not yet done
-                if(!ans.finalResults.empty() or iterations == 2)
+                if(!ans.finalResults.empty())
                 {
                     newLargePoints.insert(pointIdx);
-                }
-                else
-                {
-                    finishedLarge++;
                 }
             }
         }
@@ -1366,14 +1309,14 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     }
 
     MPI_Allreduce(MPI_IN_PLACE, &finishedSmall, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, &finishedLarge, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    size_t NumPoints = points.size();
+    MPI_Allreduce(MPI_IN_PLACE, &NumPoints, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     
     if(rank == 0)
     {
-        std::cout << "finishedSmall = " << finishedSmall << ", finishedLarge = " << finishedLarge << std::endl;
+        std::cout << "finishedSmall = " << finishedSmall << ", finishedLarge = " << (NumPoints - finishedSmall) << std::endl;
     }
         
-
     const std::vector<std::vector<size_t>> &sentPoints = rangeAgent.getSentPoints();
     const std::vector<int> &sentProc = rangeAgent.getSentProc();
     const std::vector<int> &recvProc = rangeAgent.getRecvProc();

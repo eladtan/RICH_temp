@@ -66,27 +66,15 @@
         "thread": "cpp",
         "bitset": "cpp",
         "chrono": "cpp",
-        "ratio": "cpp"
-    },
-    "editor.tokenColorCustomizations": {
-        "textMateRules": [
-            {
-                "scope": "variable.other.property",
-                "settings": {
-                    "foreground": "#2e65fb",
-                    // "fontStyle": "italic bold underline"
-                    // "fontStyle": "bold"
-                }
-            }
-            {
-                "scope": "entity.name.function.member",
-                "settings": {
-                    // "foreground": "#0059ff",
-                    // "fontStyle": "italic bold underline"
-                    "fontStyle": "bold"
-                }
-            }
-        ]
+        "ratio": "cpp",
+        "compare": "cpp",
+        "codecvt": "cpp",
+        "concepts": "cpp",
+        "condition_variable": "cpp",
+        "mutex": "cpp",
+        "numbers": "cpp",
+        "semaphore": "cpp",
+        "stop_token": "cpp"
     },
     "cmake.configureOnOpen": true
 }

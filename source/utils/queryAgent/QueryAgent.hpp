@@ -29,8 +29,6 @@
 #define QUERY_AUTOFLUSH_NUM 16
 #define RECEIVE_AUTOFLUSH_NUM 32
 #define FINISH_AUTOFLUSH_NUM 128
-#define MAX_RECEIVE_IN_CYCLE 20
-#define MAX_ANSWER_IN_CYCLE 20
 
 namespace
 {
@@ -127,18 +125,16 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
     }
     MPI_Status status;
     int receivedAnswer = 0;
-    int received = 0;
 
     std::vector<_queryInfo> &queries = batch.queriesAnswers;
     MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
 
     std::vector<char> buffer;
 
-    while(receivedAnswer and (received < MAX_RECEIVE_IN_CYCLE))
+    while(receivedAnswer)
     {
         // received a message
         ++this->receivedUntilNow;
-        ++received;
 
         // prepare the reading buffer for receiving
         int count;
@@ -159,6 +155,10 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
         id = *reinterpret_cast<long int*>(buffer.data()); // decode id
         length = *reinterpret_cast<long int*>(buffer.data() + sizeof(long int)); // decode length
 
+        if(id < 0 or static_cast<size_t>(id) >= queries.size())
+        {
+            throw UniversalError("In QueryAgent::receiveQueries, id of answered query " + std::to_string(id) + " is illegal (expected 0-"+ std::to_string(queries.size()) + ")");
+        }
         if(length > 0)
         {
             // insert the results to the data received by rank `status.MPI_SOURCE` and to the queries result
@@ -174,7 +174,10 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
         }
         else
         {
-            assert(length >= 0);
+            if(length < 0)
+            {
+                throw UniversalError("In QueryAgent::receiveQueries, length of query is negative");
+            }
         }
         MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
     }
@@ -192,14 +195,13 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
 
     MPI_Status status;
     int arrivedNew = 0;
-    int answered = 0;
 
     MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &status);
     
     std::vector<char> arriveBuffer;
 
     // while arrived new messages, and we should answer until the end, or answer until a bound we haven't reached to
-    while((arrivedNew != 0) and (answered < MAX_ANSWER_IN_CYCLE))
+    while(arrivedNew != 0)
     {
         int count;
         MPI_Get_count(&status, MPI_BYTE, &count);
@@ -213,23 +215,17 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
         for(int i = 0; i < subQueries; i++)
         {
             const _subQueryData &query = *reinterpret_cast<_subQueryData*>(&arriveBuffer[i * sizeof(_subQueryData)]);
-            answered++;
             // calculate the result
             std::vector<AnswerType> result = this->answerAgent->answer(query.data, status.MPI_SOURCE);
             long int resultSize = static_cast<long int>(result.size());
 
             this->buffers.push_back(std::vector<char>());
-            std::vector<char> &to_send = this->buffers[this->buffers.size() - 1];
+            std::vector<char> &to_send = this->buffers.back();
             size_t msg_size = 2 * sizeof(long int) + resultSize * sizeof(AnswerType);
             to_send.resize(msg_size);
 
             long int id = query.parent_id;
 
-            /*
-            int pos = 0;
-            MPI_Pack(&id, 1, MPI_LONG, &to_send[0], msg_size, &pos, this->comm);
-            MPI_Pack(&resultSize, 1, MPI_LONG, &to_send[0], msg_size, &pos, this->comm);
-            */
            *reinterpret_cast<long int*>(to_send.data()) = id;
            *reinterpret_cast<long int*>(to_send.data() + sizeof(long int)) = resultSize;
 
@@ -238,11 +234,8 @@ void QueryAgent<QueryData, AnswerType>::answerQueries()
                 AnswerType *toSendData = reinterpret_cast<AnswerType*>(to_send.data() + sizeof(id) + sizeof(resultSize));
                 std::memcpy(toSendData, result.data(), resultSize * sizeof(AnswerType));
             }
-           // /*
             this->requests.push_back(MPI_REQUEST_NULL);
-            MPI_Isend(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, &this->requests[requests.size() - 1]);
-            //*/
-           // MPI_Send(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm);
+            MPI_Isend(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, &this->requests.back());
         }
         MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &status);
     }
@@ -269,9 +262,9 @@ void QueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo &query)
         bufferIdx = this->ranksBufferIdx[_rank];
         if(bufferIdx == UNDEFINED_BUFFER_IDX)
         {
-            this->buffers.push_back(std::vector<char>());
-            this->buffers[this->buffers.size() - 1].reserve(sizeof(_subQueryData) * FLUSH_QUERIES_NUM);
-            this->ranksBufferIdx[_rank] = this->buffers.size() - 1;
+            this->ranksBufferIdx[_rank] = this->buffers.size();
+            this->buffers.emplace_back(std::vector<char>());
+            this->buffers.back().reserve(sizeof(_subQueryData) * FLUSH_QUERIES_NUM);
         }
         bufferIdx = this->ranksBufferIdx[_rank];
         this->buffers[bufferIdx].resize(this->buffers[bufferIdx].size() + sizeof(_subQueryData));
@@ -289,7 +282,7 @@ void QueryAgent<QueryData, AnswerType>::sendFinish()
     for(int _rank = 0; _rank < this->size; _rank++)
     {
         this->requests.push_back(MPI_REQUEST_NULL);
-        MPI_Isend(&dummy, 1, MPI_BYTE, _rank, TAG_FINISHED, this->comm, &this->requests[this->requests.size() - 1]);
+        MPI_Isend(&dummy, 1, MPI_BYTE, _rank, TAG_FINISHED, this->comm, &this->requests.back());
     }
 }
 
@@ -320,10 +313,12 @@ void QueryAgent<QueryData, AnswerType>::flushBuffer(int _rank)
     {
         return;
     }
-    if(this->buffers[bufferIdx].size() > 0)
+
+    std::vector<char> &buffer = this->buffers[bufferIdx];
+    if(buffer.size() > 0)
     {
         this->requests.push_back(MPI_REQUEST_NULL);
-        MPI_Isend(&this->buffers[bufferIdx][0], this->buffers[bufferIdx].size(), MPI_BYTE, _rank, TAG_REQUEST, this->comm, &this->requests[this->requests.size() - 1]);
+        MPI_Isend(buffer.data(), buffer.size(), MPI_BYTE, _rank, TAG_REQUEST, this->comm, &this->requests.back());
     }
     this->ranksBufferIdx[_rank] = UNDEFINED_BUFFER_IDX;
 }
@@ -361,6 +356,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     this->buffers.clear();
     size_t originalQueriesNum = queries.size();
     this->buffers.reserve(10 * originalQueriesNum); // heuristic
+    this->requests.reserve(10 * originalQueriesNum); // heuristic
     this->requests.clear();
     _queryBatchInfo queriesBatch;
     queriesBatch.queriesAnswers.reserve(originalQueriesNum);
@@ -383,7 +379,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
             QueryData queryData = queries.front();
             queries.pop();
             queriesInfo.push_back({queryData, i, std::vector<AnswerType>()});
-            _queryInfo &query = queriesInfo[queriesInfo.size() - 1];
+            _queryInfo &query = queriesInfo.back();
 
             this->sendQuery(query);
             if(i == (originalQueriesNum - 1))
@@ -398,15 +394,6 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
                 }
             }
         }
-
-        // if(i % RECEIVE_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal > this->receivedUntilNow)
-        // {
-        //     this->receiveQueries(queriesBatch);
-        // }
-        // if(i % QUERY_AUTOFLUSH_NUM == 0)
-        // {
-        //     this->answerQueries();
-        // }
 
         MPI_Status status;
         int arrived;
@@ -428,15 +415,6 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
                 default:
                     throw UniversalError("Rank " + std::to_string(this->rank) + " received unrecognized tag: " + std::to_string(status.MPI_TAG) + ", from rank " + std::to_string(status.MPI_SOURCE));
             }
-
-            // if(i % RECEIVE_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal > this->receivedUntilNow)
-            // {
-            //     this->receiveQueries(queriesBatch);
-            // }
-            // if(i % QUERY_AUTOFLUSH_NUM == 0)
-            // {
-            //     this->answerQueries();
-            // }
         }
         ++i;
     }
@@ -462,7 +440,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
         {
             // rank is not inside the recvProcessors rank, add it
             this->recvProcessorsRanks.push_back(_rank);
-            this->recvData.push_back(std::vector<size_t>());
+            this->recvData.emplace_back(std::vector<size_t>());
         }
     }
 

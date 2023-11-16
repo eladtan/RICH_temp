@@ -172,7 +172,7 @@ public:
     T center;
     typename T::coord_type radius;
 
-    template<typename U>
+    template<typename U> 
     _Sphere(const U &center, typename T::coord_type radius): radius(radius)
     {
         this->center[0] = center[0];

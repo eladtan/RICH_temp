@@ -48,10 +48,10 @@
 #include "3D/environment/kernels/Identity.hpp"
 
 #define INITIAL_SENDRECV_TAG 1105
+#define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
 #define RANGE_MAX_POINTS_TO_GET 30
 #define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.1
-#define MIN_BIG_RADIUS_SMALL_RADIUS_RATIO_TO_COUNT_AS_LARGE_POINT 3
 #endif 
 
 #define RADIUS_UNINITIALIZED -1
@@ -109,7 +109,7 @@ private:
   
   #ifdef RICH_MPI
   std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
-  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
+  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);

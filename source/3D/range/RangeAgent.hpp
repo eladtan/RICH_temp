@@ -19,18 +19,20 @@ typedef struct RangeQueryData
     _3DPoint center;
     _3DPoint extraPoint;
     coord_t radius;
+    bool bigQuery; // if a big query, only one point is being returned (the closest point)
     size_t maxPointsToGet;
-    char whoToAsk;
+    char whoToAsk; // in a case of a big query, we can ask all the ranks, or only the close ranks (see `ASK_ALL` and `ASK_ONLY_CLOSE`)
 
     friend std::ostream &operator<<(std::ostream &stream, const RangeQueryData &query)
     {
-        stream << "[center " << query.center << ", radius " << query.radius << ", extra point " << query.extraPoint << ", max2get " << query.maxPointsToGet << "]";
-        return stream;
+        if(query.bigQuery)
+        {
+            return stream << "[BIG, point is " << query.extraPoint << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
+        }
+        return stream << "[SMALL, max points is " << query.maxPointsToGet << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
 
 } RangeQueryData;
-
-#define NO_MAX_POINTS 1000000000
 
 /**
  * The range agent is responsible for running batches of range queries. A batch is a collection of queries, and a range query is an instance of the `RangeQueryData` class, containing a point and a requested radius.
@@ -45,7 +47,12 @@ private:
         friend class RangeAgent;
 
     public:
-        RangeAnswerAgent(const RangeFinder *rangeFinder): rangeFinder(rangeFinder){};
+        RangeAnswerAgent(const RangeFinder *rangeFinder, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder)
+        {
+            int size;
+            MPI_Comm_size(comm, &size);
+            this->sentDataSet.resize(size, RangeFinder::_set<size_t>());
+        };
 
         // std::vector<size_t> clearDuplication(const std::vector<size_t> &unfilteredResult, int _rank)
         // {
@@ -87,9 +94,9 @@ private:
             std::vector<size_t> indicesResult;
 
             size_t rankIndex = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
-            const RangeFinder::_set<size_t> &ignore = (rankIndex == this->sentProc.size())? RangeFinder::_set<size_t>() : this->sentDataSet[rankIndex];
+            const RangeFinder::_set<size_t> &ignore = this->sentDataSet[_rank];
 
-            if(query.maxPointsToGet == 1)
+            if(query.bigQuery)
             {
                 // a big query, bring only the closest point
                 indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z), ignore);
@@ -114,14 +121,13 @@ private:
                 // `_rank` is new
                 this->sentProc.push_back(_rank);
                 this->sentData.emplace_back(std::vector<size_t>());
-                this->sentDataSet.emplace_back(RangeFinder::_set<size_t>());
             }
 
             result.reserve(indicesResult.size());
             for(const size_t &pointIdx : indicesResult)
             {
                 result.push_back(_3DPoint(this->rangeFinder->getPoint(pointIdx)));
-                this->sentDataSet[rankIndex].insert(pointIdx);
+                this->sentDataSet[_rank].insert(pointIdx);
                 this->sentData[rankIndex].push_back(pointIdx);
             }
 
@@ -157,7 +163,7 @@ private:
             {
                 return intersectingRanks;
             }
-            if(query.maxPointsToGet != 1 or distributedOctAgent == nullptr)
+            if((not query.bigQuery) or distributedOctAgent == nullptr)
             {
                 return intersectingRanks;
             }
