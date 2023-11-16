@@ -9,4 +9,4 @@
 	url = https://gitlab.com/omrycohen/gen_version.git
 [submodule "source/opt/vcl"]
 	path = source/opt/vcl
-	url = https://github.com/vectorclass/version2/
+	url = https://github.com/maormizrachi/vcl_rich.git
