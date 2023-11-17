@@ -13,7 +13,8 @@
 #include <iostream>
 #endif // DEBUG_MODE
 
-#include "../geometry_utils.hpp"
+#include "ds/utils/raw_type.h"
+#include "ds/utils/geometry.hpp"
 #include "source/misc/universal_error.hpp"
 
 #define DIM 3
@@ -23,18 +24,6 @@
 
 typedef size_t octnode_id_t;
 typedef char direction_t;
-
-// see here: https://stackoverflow.com/a/27567052
-template<class ...>
-using void_t = void;
-template<class T, class = void>
-struct is_raw_type_defined { 
-    using type = T;
-};
-template<class T>
-struct is_raw_type_defined<T, void_t<typename T::Raw_type>> { 
-    using type = typename T::Raw_type;
-};
 
 template<typename T>
 class OctTree
@@ -222,6 +211,9 @@ public:
 
     template<typename U, typename FilterFunction = DefaultFilterFunction>
     std::vector<T> range(const _Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
+
+    template<typename U, typename FilterFunction = DefaultFilterFunction>
+    std::pair<T, typename T::coord_type> getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
 
     const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const;
 
@@ -571,6 +563,56 @@ std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const Filte
     this->nodes_stack.clear();
 
     return result;
+}
+
+template<typename T>
+template<typename U, typename FilterFunction>
+std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
+{
+    this->nodes_stack.push_back(this->getRoot());
+
+    T closestPoint;
+    typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+
+    while(not this->nodes_stack.empty())
+    {
+        const OctTreeNode *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+        T closestPointInBox = node->boundingBox.closestPoint(point);
+        // calculate distance squared
+        typename T::coord_type dist = 0;
+        for(int i = 0; i < DIM; i++)
+        {
+            dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
+        }
+        if((dist >= closestDistance) or (not SphereBoxIntersection(node->boundingBox, sphere)))
+        {
+            continue;
+        }
+        // there might be a closer point in the subtrees
+        if(node->isLeaf)
+        {
+            if(filter(node->value))
+            {
+                // should not be ignored
+                closestPoint = node->value;
+                closestDistance = dist;
+            }
+        }
+        else
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                this->nodes_stack.push_back(node->children[i]);
+            }
+        }
+    }
+    return {closestPoint, closestDistance};
 }
 
 template<typename T>

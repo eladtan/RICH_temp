@@ -4,7 +4,6 @@
 #ifdef RICH_MPI
 
 #include "utils/queryAgent/QueryAgent.hpp"
-#include "utils/queryAgent/DuplicationRemover.hpp"
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
@@ -17,17 +16,17 @@ typedef struct RangeQueryData
 {
     size_t pointIndex;
     _3DPoint center;
-    _3DPoint extraPoint;
+    _3DPoint point;
     coord_t radius;
     bool bigQuery; // if a big query, only one point is being returned (the closest point)
     size_t maxPointsToGet;
     char whoToAsk; // in a case of a big query, we can ask all the ranks, or only the close ranks (see `ASK_ALL` and `ASK_ONLY_CLOSE`)
 
-    friend std::ostream &operator<<(std::ostream &stream, const RangeQueryData &query)
+    friend inline std::ostream &operator<<(std::ostream &stream, const RangeQueryData &query)
     {
         if(query.bigQuery)
         {
-            return stream << "[BIG, point is " << query.extraPoint << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
+            return stream << "[BIG, point is " << query.point << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
         }
         return stream << "[SMALL, max points is " << query.maxPointsToGet << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
@@ -54,40 +53,6 @@ private:
             this->sentDataSet.resize(size, RangeFinder::_set<size_t>());
         };
 
-        // std::vector<size_t> clearDuplication(const std::vector<size_t> &unfilteredResult, int _rank)
-        // {
-        //     std::vector<int> &sentProc = this->sentProc;
-        //     std::vector<std::vector<size_t>> &sentData = this->sentData;
-        //     std::vector<RangeFinder::_set<size_t>> &sentDataSet = this->sentDataSet;
-        //     std::vector<size_t> result;
-
-        //     if(unfilteredResult.empty())
-        //     {
-        //         return result;
-        //     }
-        //     size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
-        //     if(rankIdx == sentProc.size())
-        //     {
-        //         // `_rank` is new
-        //         sentProc.push_back(_rank);
-        //         sentData.emplace_back(std::vector<size_t>());
-        //         sentDataSet.emplace_back(RangeFinder::_set<size_t>());
-        //     }
-        //     RangeFinder::_set<size_t> &_rankSet = sentDataSet[rankIdx];
-
-        //     for(const size_t &dataIdx : unfilteredResult)
-        //     {
-        //         if(_rankSet.find(dataIdx) == _rankSet.end())
-        //         {
-        //             // `_data` was not sent before
-        //             result.push_back(dataIdx);
-        //             _rankSet.insert(dataIdx);
-        //             sentData[rankIdx].push_back(dataIdx);
-        //         }
-        //     }
-        //     return result;
-        // }
-
         std::vector<_3DPoint> answer(const RangeQueryData &query, int _rank) override
         {
             std::vector<_3DPoint> result;
@@ -99,17 +64,13 @@ private:
             if(query.bigQuery)
             {
                 // a big query, bring only the closest point
-                indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z), ignore);
+                indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.point.x, query.point.y, query.point.z), ignore);
             }
             else
             {
                 // a small query, bring the requested number of points
                 indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
             }
-
-            /*
-            indicesResult = this->clearDuplication(indicesResult, _rank);
-            */
            
             if(indicesResult.empty())
             {
@@ -185,7 +146,7 @@ private:
             else
             {
                 // not in cache, calculate it and insert to the cache
-                Vector3D point(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z);
+                Vector3D point(query.point.x, query.point.y, query.point.z);
                 distances = distributedOctAgent->getOctTree()->getClosestFurthestPointsByRanks(point);
                 this->resultCache.insert({query.pointIndex, distances});
             }

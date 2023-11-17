@@ -25,10 +25,6 @@
 #define UNDEFINED_BUFFER_IDX -1
 #define FLUSH_QUERIES_NUM 50
 
-#define QUERY_AUTOFLUSH_NUM 16
-#define RECEIVE_AUTOFLUSH_NUM 32
-#define FINISH_AUTOFLUSH_NUM 128
-
 namespace
 {
     template<typename QueryData>

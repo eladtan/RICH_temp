@@ -443,7 +443,7 @@ void Delaunay3D::flip32(std::size_t tetra0, std::size_t tetra1, std::size_t loca
 	  newtet_.neighbors[1] = temp;
 	}
     }
-  tetras_[tetra0] = newtet_;
+  tetras_[tetra0] = std::move(newtet_);
 	
   if (location0 % 2 == 1)
     {

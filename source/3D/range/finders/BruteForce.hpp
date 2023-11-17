@@ -18,6 +18,10 @@ public:
         const Vector3D *_points = this->points.data();
         for(size_t i = 0; i < this->pointsSize; i++)
         {
+            if((ignore.find(i) != ignore.cend()))
+            {
+                continue;
+            }
             //  __builtin_prefetch(&_points[i]);
             const Vector3D &_point = _points[i];
             double sphere_dx = _point.x - center.x;
@@ -55,8 +59,6 @@ public:
 
     inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
-        throw UniversalError("BruteForce::range not implemented correctly"); // `ignore` isn't addressed
-
         std::vector<size_t> result;
         const Vector3D *_points = this->points.data();
         for(size_t i = 0; i < this->pointsSize; i++)
@@ -65,7 +67,12 @@ public:
             {
                 break;
             }
-            //  __builtin_prefetch(&_points[i]);
+
+            if((ignore.find(i) != ignore.cend()))
+            {
+                continue;
+            }
+
             const Vector3D &point = _points[i];
             double dx = point.x - center.x;
             double dy = point.y - center.y;
