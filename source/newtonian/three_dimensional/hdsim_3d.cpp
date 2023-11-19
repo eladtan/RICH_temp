@@ -269,6 +269,7 @@ void HDSim3D::timeAdvance2(void)
 		extensive_ = VectorValues(extensive_, order);
 		cells_ = VectorValues(cells_, order);
 		point_vel = VectorValues(point_vel, order);
+		tess_.PreparePoints(mesh, order);
 	}
 	MovePoints(tess_, point_vel, dt);
 	t1 = get_time();
@@ -901,5 +902,5 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		pt_.updateTime(dt);
 		pt_.updateCycle();
 	}
-	return dt * std::min(0.075 / max_diff, 1.2) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
+	return dt * std::min(0.1 / max_diff, 1.25) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
 }
