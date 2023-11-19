@@ -76,5 +76,94 @@
         "semaphore": "cpp",
         "stop_token": "cpp"
     },
-    "cmake.configureOnOpen": true
+    "cmake.configureOnOpen": true,
+
+    // maor:
+    "git.autofetch": true,
+    "[python]": {
+        "editor.formatOnType": true
+    },
+    "editor.fontSize": 18,
+    "files.autoSave": "afterDelay",
+    "editor.cursorSmoothCaretAnimation": "on",
+    "terminal.integrated.enableMultiLinePasteWarning": false,
+    "explorer.confirmDelete": false,
+    "workbench.editor.closeOnFileDelete": true,
+    "workbench.colorTheme": "Atom One Dark",
+
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            {
+                "scope": "variable.other.property",
+                "settings": {
+                    "fontStyle": "italic",
+                    "foreground": "#E06C75"
+                }
+            },
+            // {
+            //     "scope": "entity.name.type",
+            //     "settings": {
+            //         "foreground": "#6ab479"
+            //     }
+            // },
+            {
+                "scope": "entity.name.function.macro",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "entity.name.function.member.cpp",
+                "settings": {
+                    "foreground": "#2596be",
+                    "fontStyle": "italic"
+                }
+            },
+            {
+                "scope": "variable.language.this.cpp, variable.language.this.java",
+                "settings": {
+                    "foreground": "#EA99A2",
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "entity.name.namespace",
+                "settings": {
+                    "fontStyle": "bold",
+                    "foreground": "#6ab467"
+                }
+            },
+            {
+                "scope": "entity.name.function.macro",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "variable.other.readwrite, entity.name.variable, variable.other.constant, variable.other.local.cpp",
+                "settings": {
+                    "foreground": "#a2acb9"
+                }
+            },
+            {
+                "scope": "variable.other.constant",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            }
+        ]        
+    },
+    "editor.defaultFoldingRangeProvider": "zhuangtongfa.material-theme",
+    "todo-tree.regex.regexCaseSensitive": false,
+    "C_Cpp.inlayHints.autoDeclarationTypes.showOnLeft": true,
+    "C_Cpp.inlayHints.referenceOperator.enabled": true,
+    "C_Cpp.files.exclude": {
+        "*.h5": true,
+        "*.txt": true,
+        "*.vtu": true,
+        "**/.vscode": true,
+        "**/.vs": true
+    },
+    "cmake.sourceDirectory": "/home/maorm/RICH/source",
+    "C_Cpp.default.compilerPath": "/software/x86_64/4.18.0/gcc/12.1.0/bin/g++"
 }
