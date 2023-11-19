@@ -637,9 +637,12 @@ int main(void)
 	Snapshot3D snap;
 	if (restart)
 	{
+		int hdf5_rank = -1;
+		if(rank >= 128)
+			hdf5_rank = 0;
 		snap = ReadSnapshot3D(file_name + int2str(counter) + ".h5"
 #ifdef RICH_MPI
-		, true
+		, true, hdf5_rank
 #endif
 		);
 		t_restart = snap.time;
@@ -653,16 +656,19 @@ int main(void)
 					std::cout<<"Reading from restart file"<<std::endl;
 				snap = ReadSnapshot3D(restart_name
 		#ifdef RICH_MPI
-					, true
+					, true, hdf5_rank
 		#endif
 				);
 			}
 		}
+		std::cout<<"Rank "<<rank<<" has "<<snap.mesh_points.size()<<" points, hdf5_rank "<<hdf5_rank<<std::endl;
 		if (full_gravity && file_name.find(std::string("full")) == std::string::npos)
 			file_name += "full_";
 		++counter;
 		ll = snap.ll;
 		ur = snap.ur;
+		if(rank == 0)
+			std::cout<<"Box is ll="<<ll<<" ur="<<ur<<std::endl;
 		tess.SetBox(snap.ll, snap.ur);
 		tess.BuildHilbert(snap.mesh_points);
 		ComputationalCell3D cdummy;
@@ -713,7 +719,7 @@ int main(void)
 	double Tmin = 1e3;
 
 	Lagrangian3D bpm;
-	RoundCells3D pm(bpm, eos, 3.25, 0.01, false, 1.25);
+	RoundCells3D pm(bpm, eos, 2.25, 0.01, false, 1.25);
 
 	DiffusionOpenBoundary D_boundary;
 	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), true, true, true);
@@ -734,7 +740,7 @@ int main(void)
 
 	vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
 	ConditionExtensiveUpdater3D eu(eu_sequence);
-	GravityAcceleration3D sg(0.95, true, 1.0);
+	GravityAcceleration3D sg(1.05, true, 1.0);
 	TDEGravity acc(Mbh, M, R, beta, sg, not full_gravity);
 	std::shared_ptr<ConservativeForce3D> gravity_force = std::make_shared<ConservativeForce3D>(acc, false);
 	std::vector<std::shared_ptr<SourceTerm3D>> forces;
@@ -742,7 +748,7 @@ int main(void)
 	forces.push_back(gravity_force);
 	forces.push_back(rad_force);
 	SeveralSources3D force(forces);
-	CourantFriedrichsLewy tsf(0.225, 1, force, std::vector<std::string> (),	false);
+	CourantFriedrichsLewy tsf(0.275, 1, force, std::vector<std::string> (),	false);
 
 	std::unique_ptr<HDSim3D> sim;
 	if(restart)
@@ -784,8 +790,7 @@ int main(void)
 	if(not restart)
 		WriteSnapshot3D(*sim, "init.h5", appendices, true);
 	
-	for(size_t i = 0; i < 10; ++i)
-	// while (sim->getTime() < tf)
+	while (sim->getTime() < tf)
 	{
 		if (sim->getCycle() % 1 == 0)
 		{
