@@ -17,6 +17,8 @@ class EnvironmentAgent
 public:
     using RanksSet = boost::container::flat_set<int>;
 
+    virtual ~EnvironmentAgent() = default;
+    
     inline EnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): ll(ll), ur(ur), comm(comm)
     {
         MPI_Comm_rank(this->comm, &this->rank);
