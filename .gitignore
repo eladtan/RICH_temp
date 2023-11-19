@@ -25,3 +25,4 @@ toy_input*/*
 validation*/*
 .gitignore
 .vscode*/*
+result_dir*
