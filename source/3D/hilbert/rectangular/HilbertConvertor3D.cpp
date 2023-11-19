@@ -23,7 +23,7 @@ void HilbertConvertor3D::changeOrder(size_t order)
     this->step = Vector3D(realWidth / div.x, realHeight / div.y, realDepth / div.z);
 }
 
-Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(int width, int height, int depth) const
+Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const
 {
     coord_t x, y, z;
     x = this->ll[0] + width * this->step[0];
@@ -38,15 +38,15 @@ Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(int width, int height, int de
 */
 bool HilbertConvertor3D::d2xyz_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const
 {
-    int width = std::abs(a.x + a.y + a.z);
-    int height = std::abs(b.x + b.y + b.z);
-    int depth = std::abs(c.x + c.y + c.z);
+    direction_t width = std::abs(a.x + a.y + a.z);
+    direction_t height = std::abs(b.x + b.y + b.z);
+    direction_t depth = std::abs(c.x + c.y + c.z);
 
     size_t num_points = width * height * depth;
 
-    int dax = SIGN(a.x), day = SIGN(a.y), daz = SIGN(a.z);
-    int dbx = SIGN(b.x), dby = SIGN(b.y), dbz = SIGN(b.z);
-    int dcx = SIGN(c.x), dcy = SIGN(c.y), dcz = SIGN(c.z);
+    direction_t dax = SIGN(a.x), day = SIGN(a.y), daz = SIGN(a.z);
+    direction_t dbx = SIGN(b.x), dby = SIGN(b.y), dbz = SIGN(b.z);
+    direction_t dcx = SIGN(c.x), dcy = SIGN(c.y), dcz = SIGN(c.z);
 
     if(requested_d >= current_d + num_points)
     {
@@ -59,7 +59,7 @@ bool HilbertConvertor3D::d2xyz_helper(const DirectionVector3D &startPoint, const
     {
         throw UniversalError("in HilbertConvertor3D::d2xyz_helper, should not reach here (algorithm failed)");
     }
-    size_t diff = requested_d - current_d;
+    hilbert_index_t diff = requested_d - current_d;
 
     // base cases
     if(height == 1 and depth == 1)
@@ -84,9 +84,9 @@ bool HilbertConvertor3D::d2xyz_helper(const DirectionVector3D &startPoint, const
     DirectionVector3D b2 = {b.x >> 1, b.y >> 1, b.z >> 1}; /* (b.x//2, b.y//2, b.z//2) */
     DirectionVector3D c2 = {c.x >> 1, c.y >> 1, c.z >> 1}; /* (c.x//2, c.y//2, c.z//2) */
 
-    int width2 = std::abs(a2.x + a2.y + a2.z);
-    int height2 = std::abs(b2.x + b2.y + b2.z);
-    int depth2 = std::abs(c2.x + c2.y + c2.z);
+    direction_t width2 = std::abs(a2.x + a2.y + a2.z);
+    direction_t height2 = std::abs(b2.x + b2.y + b2.z);
+    direction_t depth2 = std::abs(c2.x + c2.y + c2.z);
 
     // prefer even steps
     if((width2 % 2) and (width > 2))
@@ -110,9 +110,9 @@ bool HilbertConvertor3D::d2xyz_helper(const DirectionVector3D &startPoint, const
         c2.z = c2.z + dcz;
     }
 
-    const int &x = startPoint.x;
-    const int &y = startPoint.y;
-    const int &z = startPoint.z;
+    const direction_t &x = startPoint.x;
+    const direction_t &y = startPoint.y;
+    const direction_t &z = startPoint.z;
 
     if((2 * width > 3 * height) and (2 * width > 3 * depth))
     {
@@ -145,7 +145,7 @@ bool HilbertConvertor3D::d2xyz_helper(const DirectionVector3D &startPoint, const
 
 bool HilbertConvertor3D::xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
 {
-    int x = startPoint.x, y = startPoint.y, z = startPoint.z;
+    direction_t x = startPoint.x, y = startPoint.y, z = startPoint.z;
     for(size_t i = 0; i < steps; i++)
     {
         if((requested_point.x == x) and (requested_point.y == y) and (requested_point.z == z))
@@ -165,15 +165,15 @@ bool HilbertConvertor3D::xyz2d_helper_base(const DirectionVector3D &startPoint, 
 */
 bool HilbertConvertor3D::xyz2d_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
 {
-    size_t width = std::abs(a.x + a.y + a.z);
-    size_t height = std::abs(b.x + b.y + b.z);
-    size_t depth = std::abs(c.x + c.y + c.z);
+    direction_t width = std::abs(a.x + a.y + a.z);
+    direction_t height = std::abs(b.x + b.y + b.z);
+    direction_t depth = std::abs(c.x + c.y + c.z);
 
     size_t num_points = width * height * depth;
 
-    int dax = SIGN(a.x), day = SIGN(a.y), daz = SIGN(a.z);
-    int dbx = SIGN(b.x), dby = SIGN(b.y), dbz = SIGN(b.z);
-    int dcx = SIGN(c.x), dcy = SIGN(c.y), dcz = SIGN(c.z);
+    direction_t dax = SIGN(a.x), day = SIGN(a.y), daz = SIGN(a.z);
+    direction_t dbx = SIGN(b.x), dby = SIGN(b.y), dbz = SIGN(b.z);
+    direction_t dcx = SIGN(c.x), dcy = SIGN(c.y), dcz = SIGN(c.z);
 
     DirectionVector3D boundary = {startPoint.x + a.x + b.x + c.x, startPoint.y + a.y + b.y + c.y, startPoint.z + a.z + b.z + c.z};
     std::pair<DirectionVector3D, DirectionVector3D> bounding_box = {{std::min(startPoint.x, boundary.x), std::min(startPoint.y, boundary.y), std::min(startPoint.z, boundary.z)},
@@ -207,9 +207,9 @@ bool HilbertConvertor3D::xyz2d_helper(const DirectionVector3D &startPoint, const
     DirectionVector3D b2 = {b.x >> 1, b.y >> 1, b.z >> 1}; /* (b.x//2, b.y//2, b.z//2) */
     DirectionVector3D c2 = {c.x >> 1, c.y >> 1, c.z >> 1}; /* (c.x//2, c.y//2, c.z//2) */
 
-    int width2 = std::abs(a2.x + a2.y + a2.z);
-    int height2 = std::abs(b2.x + b2.y + b2.z);
-    int depth2 = std::abs(c2.x + c2.y + c2.z);
+    direction_t width2 = std::abs(a2.x + a2.y + a2.z);
+    direction_t height2 = std::abs(b2.x + b2.y + b2.z);
+    direction_t depth2 = std::abs(c2.x + c2.y + c2.z);
 
     // prefer even steps
     if((width2 % 2) and (width > 2))
@@ -233,9 +233,9 @@ bool HilbertConvertor3D::xyz2d_helper(const DirectionVector3D &startPoint, const
         c2.z = c2.z + dcz;
     }
 
-    const int &x = startPoint.x;
-    const int &y = startPoint.y;
-    const int &z = startPoint.z;
+    const direction_t &x = startPoint.x;
+    const direction_t &y = startPoint.y;
+    const direction_t &z = startPoint.z;
 
     if((2 * width > 3 * height) and (2 * width > 3 * depth))
     {
@@ -278,11 +278,11 @@ Vector3D HilbertConvertor3D::d2xyz(hilbert_index_t d) const
 hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
 {
     // convert (x,y, z) to the integer triple (width, height, width)
-    int width = std::floor((x - this->ll.x) / this->step.x);
-    int height = std::floor((y - this->ll.y) / this->step.y);
-    int depth = std::floor((z - this->ll.z) / this->step.z);
+    direction_t width = std::floor((x - this->ll.x) / this->step.x);
+    direction_t height = std::floor((y - this->ll.y) / this->step.y);
+    direction_t depth = std::floor((z - this->ll.z) / this->step.z);
 
-    if(width < 0 or height < 0 or depth < 0)
+    if(width < 0 or height < 0 or depth < 0 or width > this->div.x or height > this->div.y or depth > this->div.z)
     {
         throw UniversalError("Should not reach here, overflow (in 3D xyz->d)");
     }

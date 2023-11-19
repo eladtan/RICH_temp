@@ -11,10 +11,11 @@ class HilbertConvertor3D
 {
 private:
     using coord_t = Vector3D::coord_type; // coordinate type
+    using direction_t = long int;
 
     struct DirectionVector3D
     {
-        int x, y, z;
+        direction_t x, y, z;
     };
 
     Vector3D ll, ur, step;
@@ -35,7 +36,7 @@ private:
     bool d2xyz_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
     bool xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
     bool xyz2d_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
-    Vector3D WidthHeightDepthToXYZ(int width, int height, int depth) const;
+    Vector3D WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const;
 };
 
 #endif // HILBERT_CONVERTOR_3D_HPP
