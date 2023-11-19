@@ -19,8 +19,8 @@ public:
     using _map = boost::container::flat_map<K, V>;
 
     template<typename RandomAccessIterator>
-    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
-        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), indexing(indexing)
+    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), convertor(convertor), indexing(indexing)
     {
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
         size_t index = 0;
@@ -28,7 +28,7 @@ public:
         {
             const Vector3D &point = *it;
             this->myPoints.push_back(point);
-            hilbert_index_t cell = Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->envAgent->getOrder());
+            hilbert_index_t cell = this->convertor->xyz2d((*this->indexing)(point));
             if(this->cellsPoints.find(cell) == this->cellsPoints.end())
             {
                 this->cellsPoints[cell] = std::vector<size_t>();
@@ -46,17 +46,24 @@ public:
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return std::vector<size_t>();
+        throw UniversalError("SmartBruteForceFinder::closestPointInSphere not implemented");
     }
 
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
-    std::vector<size_t> range(const Vector3D &center, double radius) const override
+    std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
+        throw UniversalError("SmartBruteForceFinder::range not implemented correctly"); // `ignore` isn't addressed
+
         typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
         {
+            if(result.size() >= N)
+            {
+                break;
+            }
+
             if(this->envAgent->getCellOwner(cell) == this->rank)
             {
                 auto it = this->cellsPoints.find(cell);
@@ -68,7 +75,7 @@ public:
                 const size_t *_points = (*it).second.data();
                 for(size_t i = 0; i < cellPointsSize; i++)
                 {
-                    __builtin_prefetch(&this->myPoints[_points[i]]); // todo: doesn't help much
+                    __builtin_prefetch(&this->myPoints[_points[i]]);
                     const Vector3D &point = this->myPoints[_points[i]];
                     double distanceSquared = (point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y) + (point.z - center.z) * (point.z - center.z);
                     if(distanceSquared <= (radius * radius))
@@ -89,6 +96,7 @@ private:
     _map<hilbert_index_t, std::vector<size_t>> cellsPoints;
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
+    const HilbertConvertor3D *convertor;
     const IndexingKernel3D *indexing;
 };
 

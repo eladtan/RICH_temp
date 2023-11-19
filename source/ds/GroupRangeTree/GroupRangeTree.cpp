@@ -1,4 +1,3 @@
-#include <iostream> // todo: remove
 #include "GroupRangeTree.h"
 
 template<typename T, int N>
@@ -77,7 +76,6 @@ typename GroupRangeTree<T, N>::GroupRangeNode *GroupRangeTree<T, N>::fastBuildHe
 template<typename T, int N>
 void GroupRangeTree<T, N>::splitNode(typename GroupTree<T, N>::Node *node)
 {
-    // todo - call parent splitNode?
     if(node == nullptr)
     {
         return;

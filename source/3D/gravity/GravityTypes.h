@@ -1,7 +1,7 @@
 #ifndef _GRAVITY_TYPES_H
 #define _GRAVITY_TYPES_H
 
-#include <iostream> // todo remove
+#include <iostream>
 
 typedef double gravity_result_t;
 

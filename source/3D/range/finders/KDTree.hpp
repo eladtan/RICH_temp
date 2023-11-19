@@ -13,18 +13,30 @@ public:
     template<typename RandomAccessIterator>
     KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
     inline KDTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): KDTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
-    ~KDTreeFinder();
+    
+    inline ~KDTreeFinder(){delete this->kdTree;};
     
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return std::vector<size_t>();
+        std::pair<IndexedVector3D, double> closestPointPair = this->kdTree->getClosestPointInSphere(_Sphere<Vector3D>(center, radius), point,
+                                                                                                    [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();});
+        const IndexedVector3D &closestPoint = closestPointPair.first;
+        const double &closestDistance = closestPointPair.second;
+
+        if(closestDistance != std::numeric_limits<typename IndexedVector3D::coord_type>::max())
+        {
+            return std::vector<size_t>({closestPoint.index});
+        }
+        return std::vector<size_t>(); // empty
     }
 
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
+    {
         std::vector<size_t> toReturn;
-        for(const IndexedVector3D &vec : this->kdTree->range(_Sphere<IndexedVector3D>(IndexedVector3D(center.x, center.y, center.z, ILLEGAL_IDX), radius)))
+        for(const IndexedVector3D &vec : this->kdTree->range(_Sphere<Vector3D>(center, radius), N,
+                                                            [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);
         }
@@ -48,15 +60,10 @@ KDTreeFinder::KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last
     {
         const Vector3D &vec = *it;
         IndexedVector3D idx_vec = IndexedVector3D(vec.x, vec.y, vec.z, index);
-        this->myPoints.push_back(idx_vec);
+        this->myPoints.push_back(vec);
         this->kdTree->insert(idx_vec);
         index++;
     }
-}
-
-KDTreeFinder::~KDTreeFinder()
-{
-    delete this->kdTree;
 }
 
 #endif // _KDTREE_FINDER_HPP

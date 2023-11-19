@@ -276,15 +276,16 @@ inline Mat33<T> Mat33<T>::inverse() const
 {
 	Mat33<T> temp;
 	double det = determinant();
-	temp._data[0][0] = (_data[1][1] * _data[2][2] - _data[2][1] * _data[1][2]) / det;
-	temp._data[0][1] = (_data[0][2] * _data[2][1] - _data[0][1] * _data[2][2]) / det;
-	temp._data[0][2] = (_data[0][1] * _data[1][2] - _data[0][2] * _data[1][1]) / det;
-	temp._data[1][0] = (_data[1][2] * _data[2][1] - _data[1][0] * _data[2][2]) / det;
-	temp._data[1][1] = (_data[0][0] * _data[2][2] - _data[0][2] * _data[2][0]) / det;
-	temp._data[1][2] = (_data[0][2] * _data[1][0] - _data[0][0] * _data[1][2]) / det;
-	temp._data[2][0] = (_data[1][0] * _data[2][1] - _data[1][1] * _data[2][1]) / det;
-	temp._data[2][1] = (_data[0][1] * _data[2][0] - _data[0][0] * _data[2][1]) / det;
-	temp._data[2][2] = (_data[1][1] * _data[0][0] - _data[0][1] * _data[1][0]) / det;
+	double detInverse = 1 / det;
+	temp._data[0][0] = (_data[1][1] * _data[2][2] - _data[2][1] * _data[1][2]) * detInverse;
+	temp._data[0][1] = (_data[0][2] * _data[2][1] - _data[0][1] * _data[2][2]) * detInverse;
+	temp._data[0][2] = (_data[0][1] * _data[1][2] - _data[0][2] * _data[1][1]) * detInverse;
+	temp._data[1][0] = (_data[1][2] * _data[2][0] - _data[1][0] * _data[2][2]) * detInverse;
+	temp._data[1][1] = (_data[0][0] * _data[2][2] - _data[0][2] * _data[2][0]) * detInverse;
+	temp._data[1][2] = (_data[0][2] * _data[1][0] - _data[0][0] * _data[1][2]) * detInverse;
+	temp._data[2][0] = (_data[1][0] * _data[2][1] - _data[1][1] * _data[2][0]) * detInverse;
+	temp._data[2][1] = (_data[0][1] * _data[2][0] - _data[0][0] * _data[2][1]) * detInverse;
+	temp._data[2][2] = (_data[1][1] * _data[0][0] - _data[0][1] * _data[1][0]) * detInverse;
 	return temp;
 }
 

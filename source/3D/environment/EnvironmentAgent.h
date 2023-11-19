@@ -8,6 +8,10 @@
 
 #include "kernels/IndexingKernel3D.hpp"
 
+/**
+ * \author Maor Mizrachi
+ * \brief The environment agent is responsible for "knowing" the environment. It can calculate the ranks that intersect a sphere, or calculate the owner of a certain point.
+*/
 class EnvironmentAgent
 {
 public:
@@ -20,6 +24,7 @@ public:
     };
     virtual ~EnvironmentAgent() = default;
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;
+
     virtual int getOwner(const Vector3D &point) const = 0;
 
 protected:

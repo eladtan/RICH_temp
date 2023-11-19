@@ -2,9 +2,10 @@
 #define _OCTTREE_HPP
 
 #include <vector>
+#include <functional>
 #include <assert.h>
 #include <utility>
-
+#include <type_traits>
 #include <stack>
 #include <sstream>
 
@@ -12,7 +13,8 @@
 #include <iostream>
 #endif // DEBUG_MODE
 
-#include "../geometry_utils.hpp"
+#include "ds/utils/raw_type.h"
+#include "ds/utils/geometry.hpp"
 #include "source/misc/universal_error.hpp"
 
 #define DIM 3
@@ -26,11 +28,13 @@ typedef char direction_t;
 template<typename T>
 class OctTree
 {
-    // todo: necessary?
     template<typename U>
     class DistributedOctTree;
     template<typename U>
     friend class DistributedOctTree;
+
+    using Raw_type = typename is_raw_type_defined<T>::type;
+    using DefaultFilterFunction = std::function<bool(const T&)>;
 
 public:
     class OctTreeNode
@@ -38,7 +42,7 @@ public:
         friend class OctTree;
 
     public:
-        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(_BoundingBox(ll, ur)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(_BoundingBox<Raw_type>(ll, ur)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -46,7 +50,7 @@ public:
             }
         }
 
-        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(_BoundingBox(point, point)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(_BoundingBox<Raw_type>(point, point)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -84,7 +88,7 @@ public:
 
         bool isLeaf; // if a leaf
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
-        _BoundingBox<T> boundingBox; // the bounding box this node induces
+        _BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
         OctTreeNode *children[CHILDREN];
         OctTreeNode *parent;
         int height; // height of a leaf is 0
@@ -107,7 +111,8 @@ protected:
     const OctTreeNode *tryFindParent(const U &point) const;
     template<typename U>
     inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
-    virtual OctTreeNode *tryInsert(const T &point);
+    template<typename U>
+    OctTreeNode *tryInsert(const U &point);
 
     #ifdef DEBUG_MODE
     void printHelper(const OctTreeNode *node, int indent) const;
@@ -120,15 +125,16 @@ protected:
         this->getAllDecendantsHelper(node, result);
         return result;
     };
-
-    void rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const;
     
     OctTreeNode *root;
+    T ll, ur;
     size_t treeSize;
     size_t nodesNumber;
+    mutable std::vector<const OctTreeNode*> nodes_stack;
 
 public:
     explicit OctTree(const T &ll, const T &ur): root(nullptr), treeSize(0), nodesNumber(0){this->setBounds(ll, ur);};
+
     template<typename InputIterator>
     explicit OctTree(const T &ll, const T &ur, const InputIterator &first, const InputIterator &last): OctTree(ll, ur)
     {
@@ -139,10 +145,13 @@ public:
     };
     template<typename Container>
     inline OctTree(const T &ll, const T &ur, Container container): OctTree(ll, ur, container.begin(), container.end()){};
+
     inline explicit OctTree(): root(nullptr), treeSize(0), nodesNumber(0){};
+
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
-    inline bool insert(const T &point)
+    template<typename U>
+    inline bool insert(const U &point)
     {
         OctTreeNode *newNode = this->tryInsert(point);
         if(newNode != nullptr)
@@ -175,45 +184,38 @@ public:
     virtual inline void setRoot(OctTreeNode *other){this->root = other;};
     virtual void setBounds(const T &ll, const T &ur)
     {
+        this->ll = ll;
+        this->ur = ur;
         assert(this->getRoot() == nullptr);
         this->setRoot(new OctTreeNode(ll, ur));
         this->getRoot()->parent = nullptr;
     }
 
+    const T &getLL() const{return this->ll;};
+    const T &getUR() const{return this->ur;};
+
     #ifdef DEBUG_MODE
     void print() const{this->printHelper(this->getRoot(), 0);};
     #endif // DEBUG_MODE
 
-    inline int getDepth() const{assert(this->getRoot() != nullptr); return this->getRoot()->height;};
-    inline size_t getSize() const{return this->treeSize;};
-    inline std::vector<T> range(const _Sphere<T> &sphere) const
+    inline int getDepth() const
     {
-        std::vector<T> result;
-        this->rangeHelper(this->getRoot(), sphere, result);
-        return result;
+        if(this->getRoot() == nullptr)
+        {
+            throw UniversalError("OctTree::getDepth: root is null");
+        }
+        return this->getRoot()->height;
     };
 
-    inline const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const
-    {
-        if(directions == nullptr)
-        {
-            return this->getRoot();
-        }
-        const OctTreeNode *current = this->getRoot();
-        size_t i = 0;
-        while(directions[i] != PATH_END_DIRECTION)
-        {
-            if(current == nullptr)
-            {
-                break;
-            };
-            current = current->children[directions[i]];
-            i++;
-        }
+    inline size_t getSize() const{return this->treeSize;};
 
-        assert(current != nullptr);
-        return current;
-    }
+    template<typename U, typename FilterFunction = DefaultFilterFunction>
+    std::vector<T> range(const _Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
+
+    template<typename U, typename FilterFunction = DefaultFilterFunction>
+    std::pair<T, typename T::coord_type> getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
+
+    const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const;
 
     template<typename U>
     std::pair<T, typename T::coord_type> getClosestPointInfo(const U &point) const;
@@ -223,8 +225,6 @@ public:
 
     template<typename U>
     inline typename T::coord_type closestPointDistance(const U &point) const{return this->getClosestPointInfo(point).second;};
-
-    T KthClosestPoint(const T &point) const;
 };
 
 template<typename T>
@@ -247,8 +247,8 @@ OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isLe
     assert(parent != nullptr);
 
     // determine box:
-    T new_ll, new_ur;
-    const T &parentLL = parent->boundingBox.getLL(), &parentUR = parent->boundingBox.getUR();
+    Raw_type new_ll, new_ur;
+    const Raw_type &parentLL = parent->boundingBox.getLL(), &parentUR = parent->boundingBox.getUR();
     for(int i = 0; i < DIM; i++)
     {
         if((childNumber >> ((DIM - 1) - i)) & 1)
@@ -472,7 +472,8 @@ void OctTree<T>::printHelper(const OctTreeNode *node, int indent) const
 #endif // DEBUG_MODE
 
 template<typename T>
-typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
+template<typename U>
+typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
 {
     assert(this->getRoot() != nullptr);
     if(!this->getRoot()->boundingBox.contains(point))
@@ -514,7 +515,127 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const T &point)
     }
     std::stringstream valueStr;
     valueStr << point;
-    throw UniversalError("point " + valueStr.str() + " could not be inserted to the tree");
+    throw UniversalError("point " + valueStr.str() + " could not be inserted to the octtree");
+}
+
+template<typename T>
+template<typename U, typename FilterFunction>
+std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
+{
+    std::vector<T> result;
+    size_t resultSize = 0;
+    this->nodes_stack.push_back(this->getRoot());
+
+    while((not this->nodes_stack.empty()) and (resultSize < N))
+    {
+        const OctTreeNode *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
+        // that is because a leaf does not necessarily have to be a point (it can be a box, as in `DistributedOctTree`)
+        if(not SphereBoxIntersection(node->boundingBox, sphere))
+        {
+            continue;
+        }
+        
+        if(node->isLeaf)
+        {
+            if(filter(node->value))
+            {
+                result.push_back(node->value);
+                resultSize++;
+            }
+        }
+        else
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                this->nodes_stack.push_back(node->children[i]); // recursively iterate
+            }
+        }
+    }
+
+    this->nodes_stack.clear();
+
+    return result;
+}
+
+template<typename T>
+template<typename U, typename FilterFunction>
+std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
+{
+    this->nodes_stack.push_back(this->getRoot());
+
+    T closestPoint;
+    typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+
+    while(not this->nodes_stack.empty())
+    {
+        const OctTreeNode *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+        T closestPointInBox = node->boundingBox.closestPoint(point);
+        // calculate distance squared
+        typename T::coord_type dist = 0;
+        for(int i = 0; i < DIM; i++)
+        {
+            dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
+        }
+        if((dist >= closestDistance) or (not SphereBoxIntersection(node->boundingBox, sphere)))
+        {
+            continue;
+        }
+        // there might be a closer point in the subtrees
+        if(node->isLeaf)
+        {
+            if(filter(node->value))
+            {
+                // should not be ignored
+                closestPoint = node->value;
+                closestDistance = dist;
+            }
+        }
+        else
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                this->nodes_stack.push_back(node->children[i]);
+            }
+        }
+    }
+    return {closestPoint, closestDistance};
+}
+
+template<typename T>
+const typename OctTree<T>::OctTreeNode *OctTree<T>::getNodeByDirections(const direction_t *directions) const
+{
+    if(directions == nullptr)
+    {
+        return this->getRoot();
+    }
+    const OctTreeNode *current = this->getRoot();
+    size_t i = 0;
+    while(directions[i] != PATH_END_DIRECTION)
+    {
+        if(current == nullptr)
+        {
+            break;
+        };
+        current = current->children[directions[i]];
+        i++;
+    }
+
+    assert(current != nullptr);
+    return current;
 }
 
 template<typename T>
@@ -534,56 +655,27 @@ void OctTree<T>::getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> 
     }
 }
 
-template<typename T>
-void OctTree<T>::rangeHelper(const OctTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const
-{
-    if(node == nullptr)
-    {
-        return;
-    }
-    if(!SphereBoxIntersection(node->boundingBox, sphere))
-    {
-        return;
-    }
-    if(node->isLeaf)
-    {
-        // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
-        // that is because a leaf does not necessarily has to be a point (it can be a box, as in `DistributedOctTree`)
-        if(SphereBoxIntersection(node->boundingBox, sphere))
-        {
-            result.push_back(node->value);
-        }
-    }
-    for(int i = 0; i < CHILDREN; i++)
-    {
-        this->rangeHelper(node->children[i], sphere, result);
-    }
-}
-
 #define EPSILON 1e-12
 
 template<typename T>
 template<typename U>
 std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point) const
 {
-    std::stack<const OctTreeNode*> nodes;
-    nodes.push(this->getRoot());
+    this->nodes_stack.push_back(this->getRoot());
 
     T closestPoint;
     typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
-
-    T closestPointInBox;
     
-    while(!nodes.empty())
+    while(!this->nodes_stack.empty())
     {
-        const OctTreeNode *node = nodes.top();
-        nodes.pop();
+        const OctTreeNode *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
 
         if(node == nullptr)
         {
             continue;
         }
-        closestPointInBox = node->boundingBox.closestPoint(point);
+        const T &closestPointInBox = node->boundingBox.closestPoint(point);
         // calculate distance squared
         typename T::coord_type dist = 0;
         for(int i = 0; i < DIM; i++)
@@ -609,7 +701,7 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                nodes.push(node->children[i]);
+                this->nodes_stack.push_back(node->children[i]);
             }
         }
     }

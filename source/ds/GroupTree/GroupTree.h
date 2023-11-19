@@ -1,11 +1,10 @@
 #ifndef _GROUP_TREE_RICH_H
 #define _GROUP_TREE_RICH_H
 
-#undef DEBUG_MODE // todo
-
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif
+
 #include <utility>
 #include <vector>
 #include <array>

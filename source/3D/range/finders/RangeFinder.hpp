@@ -4,6 +4,7 @@
 #include <boost/container/flat_set.hpp>
 #include "../../elementary/Vector3D.hpp"
 #include <vector>
+#include <limits>
 #include <unordered_set>
 #include <boost/unordered_set.hpp>
 

@@ -3,11 +3,18 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**",
+                "${workspaceFolder}/",
+                "${workspaceFolder}/source",
+                "${workspaceFolder}/source/opt/vcl", // for vcl
                 "/software/x86_64/4.18.0/vtk/9.2.0/gcc/12.2.0/with_X/include",
+                "/software/x86_64/4.18.0/openmpi/4.1.5/gcc/12.2.0/include",
+                "/software/x86_64/4.18.0/hdf5/1.14.2/gcc/12.3.0_unsupported/include"
             ],
-            "defines": ["RICH_MPI"],
-            "compilerPath": "/software/x86_64/4.18.0/gcc/12.2.0/bin/g++",
+
+            "defines": [
+                "RICH_MPI"
+            ],
+            
             "cStandard": "c11",
             "cppStandard": "c++17",
             "intelliSenseMode": "gcc-x64"

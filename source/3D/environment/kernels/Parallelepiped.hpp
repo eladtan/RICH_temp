@@ -6,6 +6,7 @@
 
 #include "3D/elementary/Face.hpp"
 #include "3D/elementary/Mat33.hpp"
+#include "Move.hpp" // move kernel
 #include "IndexingKernel3D.hpp"
 
 #define NUM_FACES 6 // a parallelepiped has 6 faces
@@ -14,18 +15,18 @@
 class Parallelepiped : public IndexingKernel3D
 {
 public:
-    inline Parallelepiped(const Vector3D &u, const Vector3D &v, const Vector3D &w, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    inline Parallelepiped(const Vector3D &u, const Vector3D &v, const Vector3D &w, const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing)
     {
         this->calculateTransformation(u, v, w);
     }
     
-    inline ~Parallelepiped(){delete this->indexing;};
+    inline ~Parallelepiped(){delete this->beforeIndexing;};
 
-    Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *indexing = nullptr);
+    Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing = nullptr);
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
+        Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
         return this->transformation * vec;
     };
 
@@ -33,12 +34,12 @@ private:
     void calculateTransformation(const Vector3D &u, const Vector3D &v, const Vector3D &w);
 
     Mat33<typename Vector3D::coord_type> transformation;
-    const IndexingKernel3D *indexing;
+    const IndexingKernel3D *beforeIndexing;
 };
 
-Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *indexing)
+Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing)
 {
-    this->indexing = indexing;
+    this->beforeIndexing = beforeIndexing;
     if(faces.size() != NUM_FACES)
     {
         throw UniversalError("Can not use 'Parallelepiped' kernelization when there are not " + std::to_string(NUM_FACES) + " faces (given " + std::to_string(faces.size()) + ")");
@@ -112,7 +113,7 @@ Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKer
         throw UniversalError("The given shape is not a parallelepiped (in 'Parallelepiped' kernelization)");
     }
     Vector3D move_factor = faces[0].vertices[0];
-    this->indexing = new Move(move_factor, indexing);
+    this->beforeIndexing = new Move(move_factor, beforeIndexing);
     this->calculateTransformation(allEdges[0], allEdges[1], allEdges[2]);
 }
 

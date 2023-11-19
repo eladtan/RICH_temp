@@ -3,8 +3,9 @@
 
 #ifdef RICH_MPI
 #include <mpi.h>
-
 #include "GravityTree.hpp"
+#include "ds/DistributedOctTree/DistributedOctTree.hpp"
+#include "3D/hilbert/hilbertTypes.h" // for _3DPoint
 
 #define GRAVITY_POINTS_REQUEST_TAG 1104
 #define GRAVITY_POINTS_SEND_TAG 1105
@@ -96,7 +97,7 @@ public:
         }
         gravTree->build(massedPoints);
         this->gravityTree = gravTree;
-        this->distributedTree = new DistributedOctTree<MassedValue>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
+        this->distributedTree = new DistributedOctTree<MassedValue, 1>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
     }
 
     DistributedGravityCalculator(GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm), gravityTreeCreated(false)
@@ -104,7 +105,7 @@ public:
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
         this->gravityTree = gravityTree;
-        this->distributedTree = new DistributedOctTree<MassedValue>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
+        this->distributedTree = new DistributedOctTree<MassedValue, 1>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
     }
    
     ~DistributedGravityCalculator()
@@ -123,7 +124,7 @@ private:
     int rank, size;
     GravityTree<_3DPoint> *gravityTree;
     bool gravityTreeCreated; // if the gravity tree should be deleted at the end
-    const DistributedOctTree<MassedValue> *distributedTree;
+    const DistributedOctTree<MassedValue, 1> *distributedTree;
 
     std::vector<MassedValue> exchangeImportedValues(const std::vector<Vector3D> &points) const;
 };
@@ -213,12 +214,12 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     */
     for(const Vector3D &point : points)
     {
-        int owner = distributedTree->getOwner(point);
-        if(owner != this->rank)
+        _3DPoint _point(point);
+        if(not this->gravityTree->getOctTree()->find(_point))
         {
             std::stringstream valueStr;
             valueStr << point;
-            throw UniversalError("The point " + valueStr.str() + " is not owned by rank " + std::to_string(this->rank) + " but by rank " + std::to_string(owner));
+            throw UniversalError("(DistributedGravityCalculator) The point " + valueStr.str() + " is not owned by rank " + std::to_string(this->rank));
         }
     }
     
