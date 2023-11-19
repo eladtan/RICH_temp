@@ -13,7 +13,7 @@ public:
     template<typename RandomAccessIterator>
     OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
     inline OctTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): OctTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
-    inline ~OctTreeFinder()
+    inline ~OctTreeFinder() override
     {
         delete this->octTree;
     }

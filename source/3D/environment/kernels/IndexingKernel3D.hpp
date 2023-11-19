@@ -7,6 +7,7 @@
 class IndexingKernel3D
 {
 public:
+    virtual ~IndexingKernel3D() = default;
     virtual Vector3D operator()(const Vector3D &vector) const = 0;
 };
 
