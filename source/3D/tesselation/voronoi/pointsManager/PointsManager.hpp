@@ -67,7 +67,7 @@ public:
         int I_say = (mySize >= (BALANCE_FACTOR * static_cast<double>(ideal)))? 1 : 0; // if I say 'rebalance' or not
         int rebalance = 0; // if someone says 'rebalance' or not
         MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if(rebalance > 0 and this->rank == 0)
+        if((rebalance > 0) and (this->rank == 0))
         {
             std::cout << "doing rebalance" << std::endl;
         }
@@ -76,7 +76,9 @@ public:
 
     PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool doRebalance = true)
     {
-        if(doRebalance and this->checkForRebalance(points) and this->getEnvironmentAgent() != nullptr)
+        // if envAgent is null, the `exchange` will perform an initialization as well.
+        // `rebalance` is used only when the environment agent is initialized.
+        if(this->getEnvironmentAgent() != nullptr and doRebalance and this->checkForRebalance(points))
         {
             this->rebalance(points);
             return this->exchange(points, radiuses);
