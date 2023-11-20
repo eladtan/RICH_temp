@@ -4,8 +4,6 @@
 #include <vector>
 #include <algorithm>
 
-#include "3D/elementary/Face.hpp"
-#include "3D/elementary/Mat33.hpp"
 #include "Move.hpp"
 #include "Scale.hpp"
 #include "IndexingKernel3D.hpp"

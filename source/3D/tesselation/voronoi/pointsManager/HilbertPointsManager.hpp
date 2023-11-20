@@ -46,7 +46,7 @@ public:
     const IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
     
 private:
-    void determineHilbertOrder(const std::vector<Vector3D> &points);
+    void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
     PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses);
 

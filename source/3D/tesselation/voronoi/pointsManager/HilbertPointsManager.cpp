@@ -45,8 +45,9 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points)
 
 /*
 heuristic to determine the hilbert order.
+Also initializes the convertor.
 */
-void HilbertPointsManager::determineHilbertOrder(const std::vector<Vector3D> &points)
+void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3D> &points)
 {
     std::vector<Vector3D> kerneledVectors;
     Vector3D kerneledLL(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
@@ -106,9 +107,10 @@ void HilbertPointsManager::determineHilbertOrder(const std::vector<Vector3D> &po
 PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
 {
     // calculate the first and initial order, and set it to the deepest hilbert order we have
-    this->determineHilbertOrder(points); // also initializes the convertor
+    this->initializeHilbertParameters(points); // also initializes the convertor
 
-    this->rebalance(points); // determine initial borders
+    this->rebalance(points); // determines initial borders
+    // making exchange according to these borders
     PointsExchangeResult exchangeResult = this->pointsExchange([this](const _3DPointRadius &_point)
     {
         hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
