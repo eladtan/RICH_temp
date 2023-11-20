@@ -10,8 +10,6 @@ public:
     virtual ~TalkAgent() = default;
 
     virtual RanksSet getTalkList(const QueryData &query) const = 0;
-
-    virtual ~TalkAgent(){}
 };
 
 #endif // _TALK_AGENT_HPP
