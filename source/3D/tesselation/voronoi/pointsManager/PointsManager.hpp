@@ -83,7 +83,7 @@ public:
             this->rebalance(points);
             return this->exchange(points, radiuses);
         }
-        return result;
+        return this->exchange(points, radiuses);
     }
 
 protected:

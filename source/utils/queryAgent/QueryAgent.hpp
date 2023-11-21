@@ -426,7 +426,6 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
         ++i;
     }
 
-    MPI_Barrier(this->comm);
     if(this->requests.size() > 0)
     {
         MPI_Waitall(this->requests.size(), &(*(this->requests.begin())), MPI_STATUSES_IGNORE); // make sure any query was indeed received
