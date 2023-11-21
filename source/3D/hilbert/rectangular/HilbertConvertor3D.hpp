@@ -18,6 +18,14 @@ private:
         direction_t x, y, z;
     };
 
+    struct RecursionArguments
+    {
+        DirectionVector3D startPoint;
+        DirectionVector3D a;
+        DirectionVector3D b;
+        DirectionVector3D c;
+    };
+
     Vector3D ll, ur, step;
     DirectionVector3D div;
     hilbert_index_t total_points_num;
@@ -33,9 +41,10 @@ public:
     inline size_t getOrder() const{return this->order;};
     
 private:
-    bool d2xyz_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
+    std::vector<RecursionArguments> getRecursionArguments(const RecursionArguments &args) const;
+    bool d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
     bool xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
-    bool xyz2d_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    bool xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
     Vector3D WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const;
 };
 
