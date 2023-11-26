@@ -152,7 +152,6 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
     if(rank == 0)
     {
   #endif // RICH_MPI
-      // todo: why?
       H5File file2(H5std_string(filename), H5F_ACC_TRUNC);
       file2.close();
       file.openFile(H5std_string(filename), H5F_ACC_RDWR);
