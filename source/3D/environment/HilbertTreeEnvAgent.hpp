@@ -1,28 +1,30 @@
-#ifndef _DIST_OCT_ENVIRONMENT_AGENT_HPP
-#define _DIST_OCT_ENVIRONMENT_AGENT_HPP
+#ifndef _HILBERT_TREE_ENVIRONMENT_AGENT_HPP
+#define _HILBERT_TREE_ENVIRONMENT_AGENT_HPP
 
 #ifdef RICH_MPI
 
 #include "EnvironmentAgent.h"
 #include "3D/hilbert/rectangular/HilbertConvertor3D.hpp"
-#include "ds/DistributedOctTree/DistributedOctTree.hpp"
+#include "3D/hilbert/rectangular/HilbertTree3D.hpp"
 
-class DistributedOctEnvironmentAgent : public EnvironmentAgent
+#define MAX_RANKS_PER_LEAF 1
+
+class HilbertTreeEnvironmentAgent : public EnvironmentAgent
 {
 public:
-    inline DistributedOctEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, const MPI_Comm &comm = MPI_COMM_WORLD): 
+    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, const MPI_Comm &comm = MPI_COMM_WORLD): 
             range(ranges), convertor(convertor), indexing(indexing), EnvironmentAgent(ll, ur, comm)
     {
         this->order = this->convertor->getOrder();
-        OctTree<Vector3D> myTree(this->ll, this->ur, points);
-        this->distributedOctTree = new DistributedOctTree<Vector3D>(&myTree, false /* no detailed nodes info */, this->comm);
+        this->hilbertTree = new HilbertTree3D<MAX_RANKS_PER_LEAF>(this->convertor, this->range, this->comm);
     };
 
-    inline ~DistributedOctEnvironmentAgent(){delete this->distributedOctTree;};
+    inline ~HilbertTreeEnvironmentAgent(){delete this->hilbertTree;};
 
     inline EnvironmentAgent::RanksSet getIntersectingRanks(const Vector3D &center, double radius) const override
     {
-        return this->distributedOctTree->getIntersectingRanks(center, radius);
+        throw UniversalError("When using kernelization, the results are not accurate (since the tree represents what happens after kernelization, but the sphere does not)");
+        return this->hilbertTree->getIntersectingRanks(center, radius);
     };
 
     inline int getOwner(const Vector3D &point) const override
@@ -38,11 +40,9 @@ public:
 
     inline void updatePoints(const std::vector<Vector3D> &newPoints)
     {
-        delete this->distributedOctTree;
-        OctTree<Vector3D> myTree(this->ll, this->ur, newPoints);
-        this->distributedOctTree = new DistributedOctTree(&myTree, false, this->comm);
+        return; // nothing to do
     }
-
+    
     inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
     {
         this->range = newRange;
@@ -50,21 +50,24 @@ public:
         {
             this->convertor->changeOrder(newOrder);
         }
+
+        delete this->hilbertTree;
+        this->hilbertTree = new HilbertTree3D<MAX_RANKS_PER_LEAF>(this->convertor, this->range, this->comm);
+        
         return; // nothing else to do
     }
-
-    const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};
 
     inline int getOrder() const{return this->order;};
     
     template<typename U>
     inline std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_type>> getClosestFurthestPointsByRanks(const U &point) const
     {
-        return this->distributedOctTree->getClosestFurthestPointsByRanks(point);
+        throw UniversalError("When using kernelization, the results are not accurate (since the tree represents what happens after kernelization, but the sphere does not)");
+        return this->hilbertTree->getClosestFurthestPointsByRanks(point);
     }
 
 private:
-    DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
+    const HilbertTree3D<MAX_RANKS_PER_LEAF> *hilbertTree;
     HilbertConvertor3D *convertor = nullptr;
     const IndexingKernel3D *indexing = nullptr;
     std::vector<hilbert_index_t> range;
@@ -73,4 +76,4 @@ private:
 
 #endif // RICH_MPI
 
-#endif // _DIST_OCT_ENVIRONMENT_AGENT_HPP
+#endif // _HILBERT_TREE_ENVIRONMENT_AGENT_HPP

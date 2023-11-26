@@ -104,7 +104,7 @@ std::vector<HilbertConvertor3D::RecursionArguments> HilbertConvertor3D::getRecur
     return toReturn;
 }
 
-inline Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const
+Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const
 {
     coord_t x, y, z;
     x = this->ll[0] + width * this->step[0];
@@ -193,6 +193,21 @@ bool HilbertConvertor3D::xyz2d_helper_base(const DirectionVector3D &startPoint, 
     return false;
 }
 
+std::pair<typename HilbertConvertor3D::DirectionVector3D, typename HilbertConvertor3D::DirectionVector3D> HilbertConvertor3D::getBoundingBox(const RecursionArguments &args) const
+{
+    // todo: make this in 2D as well
+    const DirectionVector3D &startPoint = args.startPoint;
+    const DirectionVector3D &a = args.a;
+    const DirectionVector3D &b = args.b;
+    const DirectionVector3D &c = args.c;
+
+    direction_t x_advancing = a.x + b.x + c.x;
+    direction_t y_advancing = a.y + b.y + c.y;
+    direction_t z_advancing = a.z + b.z + c.z;
+
+    DirectionVector3D boundary = {startPoint.x + x_advancing + ((x_advancing >= 0)? 1 : 0), startPoint.y + y_advancing + ((y_advancing >= 0)? 1 : 0), startPoint.z + z_advancing + ((z_advancing >= 0)? 1 : 0)};
+    return {{std::min(startPoint.x, boundary.x), std::min(startPoint.y, boundary.y), std::min(startPoint.z, boundary.z)}, {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y), std::max(startPoint.z, boundary.z)}};    
+}
 /**
  * see here the algorithm: https://github.com/jakubcerveny/gilbert
 */
@@ -209,9 +224,7 @@ bool HilbertConvertor3D::xyz2d_helper(const RecursionArguments &args, const Dire
 
     size_t num_points = width * height * depth;
 
-    DirectionVector3D boundary = {startPoint.x + a.x + b.x + c.x, startPoint.y + a.y + b.y + c.y, startPoint.z + a.z + b.z + c.z};
-    std::pair<DirectionVector3D, DirectionVector3D> bounding_box = {{std::min(startPoint.x, boundary.x), std::min(startPoint.y, boundary.y), std::min(startPoint.z, boundary.z)},
-                                                                    {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y), std::max(startPoint.z, boundary.z)}};    
+    std::pair<DirectionVector3D, DirectionVector3D> bounding_box = this->getBoundingBox(args);
     if((requested_point.x < bounding_box.first.x) or (requested_point.x > bounding_box.second.x) or
         (requested_point.y < bounding_box.first.y) or (requested_point.y > bounding_box.second.y) or
         (requested_point.z < bounding_box.first.z) or (requested_point.z > bounding_box.second.z))

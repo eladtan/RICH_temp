@@ -15,7 +15,7 @@
 #include "3D/range/finders/GroupRangeTree.hpp"
 #include "3D/range/finders/HashBruteForce.hpp"
 #include "3D/range/finders/SmartBruteForce.hpp"
-#include "3D/environment/DistributedOctEnvAgent.hpp"
+#include "3D/environment/HilbertTreeEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
 #endif // RICH_MPI
@@ -976,15 +976,13 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
 
 void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints)
 {
-    const DistributedOctEnvironmentAgent *octEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->pointsManager.get()->getEnvironmentAgent());
-    if(octEnvAgent == nullptr)
+    // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
+    using SmartEnvironmentAgent = RangeAgent::SmartEnvironmentAgent;
+
+    const SmartEnvironmentAgent *smartAgent = dynamic_cast<const SmartEnvironmentAgent*>(this->pointsManager.get()->getEnvironmentAgent());
+    if(smartAgent == nullptr)
     {
-        return; // supported only in `DistributedOctEnvironmentAgent` currently
-    }
-    const DistributedOctTree<Vector3D> *octTree = octEnvAgent->getOctTree();
-    if(octTree == nullptr)
-    {
-        return;
+        return; // supported only in `SmartEnvironmentAgent` currently
     }
     
     int rank, size;
@@ -1011,7 +1009,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
         }
         int closestRank = std::numeric_limits<int>::max();
         double closestDistance = std::numeric_limits<double>::max();
-        auto distances = octTree->getClosestFurthestPointsByRanks(points[pointIdx]);
+        auto distances = smartAgent->getClosestFurthestPointsByRanks(points[pointIdx]);
         for(int _rank = 0; _rank < size; _rank++)
         {
             if(_rank == rank)

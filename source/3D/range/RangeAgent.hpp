@@ -7,7 +7,8 @@
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/environment/DistributedOctEnvAgent.hpp"
+#include "3D/environment/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/DistributedOctEnvAgent.hpp" 
 
 #define ASK_ONLY_CLOSE 0
 #define ASK_ALL 1
@@ -40,6 +41,9 @@ typedef struct RangeQueryData
 */
 class RangeAgent
 {
+public:
+    using SmartEnvironmentAgent = DistributedOctEnvironmentAgent;
+
 private:
     class RangeAnswerAgent : public AnswerAgent<RangeQueryData, _3DPoint>
     {
@@ -114,7 +118,7 @@ private:
 
         inline EnvironmentAgent::RanksSet getTalkList(const RangeQueryData &query) const override
         {
-            const DistributedOctEnvironmentAgent *distributedOctAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
+            // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
             EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
             if(intersectingRanks.empty())
             {
@@ -124,7 +128,9 @@ private:
             {
                 return intersectingRanks;
             }
-            if((not query.bigQuery) or distributedOctAgent == nullptr)
+
+            const SmartEnvironmentAgent *smartAgent = dynamic_cast<const SmartEnvironmentAgent*>(this->envAgent);
+            if((not query.bigQuery) or smartAgent == nullptr)
             {
                 return intersectingRanks;
             }
@@ -146,8 +152,7 @@ private:
             else
             {
                 // not in cache, calculate it and insert to the cache
-                Vector3D point(query.point.x, query.point.y, query.point.z);
-                distances = distributedOctAgent->getOctTree()->getClosestFurthestPointsByRanks(point);
+                distances = smartAgent->getClosestFurthestPointsByRanks(query.point);
                 this->resultCache.insert({query.pointIndex, distances});
             }
             // get the closest rank
