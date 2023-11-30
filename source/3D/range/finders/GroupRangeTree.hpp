@@ -1,10 +1,7 @@
 #ifndef _GROUP_RANGE_TREE_FINDER_HPP
 #define _GROUP_RANGE_TREE_FINDER_HPP
 
-#include "ds/GroupTree/GroupTree.h"
-#include "ds/GroupRangeTree/GroupRangeTree.h"
-#include "ds/GroupTree/GroupTree.cpp" // todo: not good
-#include "ds/GroupRangeTree/GroupRangeTree.cpp" // todo: not good
+#include "ds/GroupRangeTree/GroupRangeTree.hpp"
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 
@@ -28,9 +25,8 @@ public:
 
     inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
-        throw UniversalError("GroupRangeTreeFinder::range not implemented correctly");
         std::vector<size_t> toReturn;
-        for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius))
+        for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius, N, [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);
         }

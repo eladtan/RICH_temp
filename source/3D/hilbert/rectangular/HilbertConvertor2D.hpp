@@ -1,7 +1,6 @@
 #ifndef HILBERT_CONVERTOR_2D_HPP
 #define HILBERT_CONVERTOR_2D_HPP
 
-#include <iostream> // todo: remove
 #include "tessellation/geometry.hpp" // for Vector2D
 #include "../hilbertTypes.h"
 

@@ -13,6 +13,8 @@
 #include <assert.h>
 #include <mpi.h>
 
+#include "misc/universal_error.hpp"
+
 namespace
 {
     template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>

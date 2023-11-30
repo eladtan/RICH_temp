@@ -1,4 +1,87 @@
-#include "GroupRangeTree.h"
+#ifndef GROUP_RANGETREE_HPP
+#define GROUP_RANGETREE_HPP
+
+#include <vector>
+#include <algorithm>
+#include "../GroupTree/GroupTree.hpp"
+
+template<typename T, int N>
+class GroupRangeTree : public GroupTree<T, N>
+{
+protected:
+    using DefaultFilterFunction = std::function<bool(const T&)>;
+
+    class GroupRangeNode : public GroupTree<T, N>::Node
+    {
+    public:
+        GroupRangeNode(): GroupTree<T, N>::Node(), subtree(nullptr){};
+        GroupRangeNode(const T &value): GroupTree<T, N>::Node(value), subtree(nullptr){};
+        template<typename Container>
+        GroupRangeNode(const Container &container): GroupTree<T, N>::Node(container), subtree(nullptr){};
+        ~GroupRangeNode() override{delete this->subtree;};
+
+        GroupRangeTree<T, N> *subtree;
+    };
+
+    void splitNode(typename GroupTree<T, N>::Node *node) override;
+    GroupRangeNode *tryInsert(const T &value);
+
+private:
+    inline typename GroupRangeTree<T, N>::GroupRangeNode *getRoot() override{return this->actualRoot;};
+    inline const typename GroupRangeTree<T, N>::GroupRangeNode *getRoot() const override{return this->actualRoot;};
+    inline void setRoot(typename GroupTree<T, N>::Node *other) override{if(other == nullptr) return; this->actualRoot = dynamic_cast<GroupRangeNode*>(other); assert(this->actualRoot != nullptr);};
+
+    template<typename RandomAccessIterator>
+    GroupRangeNode *fastBuildHelper(const RandomAccessIterator &first, const RandomAccessIterator &last);
+    template<typename U, typename FilterFunction>
+    void rangeHelper(const std::vector<std::pair<typename U::coord_type, typename U::coord_type>> &range, const typename GroupTree<T, N>::Node *node, int coord, std::vector<T> &result, size_t maxToGet, const FilterFunction &filter) const;
+
+    void recreateSubtree(GroupRangeNode *node);
+
+    inline void deleteHelper(typename GroupTree<T, N>::Node *node) override{if(node == nullptr) return; deleteHelper(node->left); deleteHelper(node->right); delete dynamic_cast<GroupRangeNode*>(node);};
+    inline void deleteTree() override{this->deleteHelper(this->getRoot()); this->setRoot(nullptr); this->treeSize = 0;};
+
+public:
+    GroupRangeTree(GroupRangeNode *root, const typename GroupTree<T, N>::Compare &compare, int currentDim, int dimensions): GroupTree<T, N>(root, compare), actualRoot(root), dim(dimensions), currentDim(currentDim){};
+    GroupRangeTree(const typename GroupTree<T, N>::Compare &compare, int currentDim, int dimensions): GroupRangeTree(nullptr, compare, currentDim, dimensions){};
+    GroupRangeTree(int currentDim, int dimensions): GroupRangeTree([currentDim](const T &a, const T &b){return (a[currentDim] <= b[currentDim]);}, currentDim, dimensions){};
+    GroupRangeTree(int dimensions): GroupRangeTree<T, N>(0, dimensions){};
+    template<typename InputIterator>
+    inline GroupRangeTree(const InputIterator &first, const InputIterator &last, int dimensions): GroupRangeNode(){for(InputIterator it = first; it != last; it++) this->insert(*it);};
+    ~GroupRangeTree() override{this->deleteTree();};
+
+    template<typename U = T, typename FilterFunction = DefaultFilterFunction>
+    inline std::vector<T> range(const std::vector<std::pair<typename U::coord_type, typename U::coord_type>> &range, size_t maxToGet = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const
+    {
+        std::vector<T> result;
+        this->rangeHelper(range, this->getRoot(), 0, result, maxToGet, filter);
+        return result;
+    };
+    template<typename U = T, typename FilterFunction = DefaultFilterFunction>
+    std::vector<T> circularRange(const U &center, typename U::coord_type radius, size_t maxToGet = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const; 
+    
+    template<typename RandomAccessIterator>
+    inline void build(RandomAccessIterator first, RandomAccessIterator last)
+    {
+        if(this->treeSize != 0)
+        {
+            throw UniversalError("Can not build a GroupRangeTree, because tree is not empty");
+        }
+        std::sort(first, last, this->compare);
+        this->setRoot(this->fastBuildHelper(first, last));
+        this->updateNodeInfo(this->getRoot());
+    };
+
+    template<typename Container>
+    inline void build(Container &&container){this->build(container.begin(), container.end());};
+    
+    template<typename Container>
+    inline void build(Container &container){this->build(container.begin(), container.end());};
+
+private:
+    GroupRangeNode *actualRoot = nullptr;
+    int dim, currentDim;
+};
 
 template<typename T, int N>
 void GroupRangeTree<T, N>::recreateSubtree(GroupRangeNode *node)
@@ -217,7 +300,8 @@ typename GroupRangeTree<T, N>::GroupRangeNode *GroupRangeTree<T, N>::tryInsert(c
 }
 
 template<typename T, int N>
-void GroupRangeTree<T, N>::rangeHelper(const std::vector<std::pair<typename T::coord_type, typename T::coord_type>> &range, const typename GroupTree<T, N>::Node *node, int coord, std::vector<T> &result) const
+template<typename U, typename FilterFunction>
+void GroupRangeTree<T, N>::rangeHelper(const std::vector<std::pair<typename U::coord_type, typename U::coord_type>> &range, const typename GroupTree<T, N>::Node *node, int coord, std::vector<T> &result, size_t maxToGet, const FilterFunction &filter) const
 {
     if(node == nullptr or coord >= this->dim)
     {
@@ -227,19 +311,26 @@ void GroupRangeTree<T, N>::rangeHelper(const std::vector<std::pair<typename T::c
     {
         return;
     }
+    if(result.size() >= maxToGet)
+    {
+        return; // don't continue
+    }
     if(coord == this->dim - 1)
     {
         // search over the tree to find the maching points
-        this->rangeHelper(range, node->left, coord, result);
+        this->rangeHelper(range, node->left, coord, result, maxToGet, filter);
         for(int i = 0; i < node->numValues; i++)
         {
             const T &value = node->values[i];
-            if((value[coord] >= range[coord].first) and (value[coord] <= range[coord].second))
+            if((value[coord] >= range[coord].first) and (value[coord] <= range[coord].second) and (result.size() < maxToGet))
             {
-                result.push_back(value);
+                if(filter(value))
+                {
+                    result.push_back(value);
+                }
             }
         }
-        this->rangeHelper(range, node->right, coord, result);
+        this->rangeHelper(range, node->right, coord, result, maxToGet, filter);
     }
     else
     {
@@ -256,24 +347,31 @@ void GroupRangeTree<T, N>::rangeHelper(const std::vector<std::pair<typename T::c
                 const T &value = node->values[i];
                 int j;
                 for(j = coord; j < this->dim; j++) if(value[j] < range[j].first or value[j] > range[j].second) break;
-                if(j == this->dim) result.push_back(value);
+                if((j == this->dim) and (result.size() < maxToGet))
+                {
+                    if(filter(value))
+                    {
+                        result.push_back(value);
+                    }
+                }
             }
-            this->rangeHelper(range, node->right, coord, result);
-            this->rangeHelper(range, node->left, coord, result);
+            this->rangeHelper(range, node->right, coord, result, maxToGet, filter);
+            this->rangeHelper(range, node->left, coord, result, maxToGet, filter);
         }
     }
 }
 
 template<typename T, int N>
-std::vector<T> GroupRangeTree<T, N>::circularRange(const T &center, typename T::coord_type radius) const
+template<typename U, typename FilterFunction>
+std::vector<T> GroupRangeTree<T, N>::circularRange(const U &center, typename U::coord_type radius, size_t maxToGet, const FilterFunction &filter) const
 {
-    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> range;
+    std::vector<std::pair<typename U::coord_type, typename U::coord_type>> rectangularRange;
     for(int i = 0; i < this->dim; i++)
     {
-        range.push_back(std::make_pair(center[i] - radius, center[i] + radius));
+        rectangularRange.push_back(std::make_pair(center[i] - radius, center[i] + radius));
     }
     std::vector<T> result;
-    for(const T &possible_value : this->range(range))
+    for(const T &possible_value : this->range(rectangularRange, maxToGet))
     {
         typename T::coord_type distanceSquared = 0;
         for(int i = 0; i < this->dim; i++)
@@ -287,3 +385,5 @@ std::vector<T> GroupRangeTree<T, N>::circularRange(const T &center, typename T::
     }
     return result;
 }
+
+#endif // GROUP_RANGETREE_HPP

@@ -48,11 +48,6 @@ public:
   //! \return Position on curve
 	unsigned long long int Hilbert3D_xyz2d(Vector3D const & rvPoint, int numOfIterations) const;
 
-	/**
-	todo - implement!
-	*/
-	Vector3D Hilbert3D_d2xyz(hilbert_index_t d, int numOfIterations) const{return Vector3D(0, 0, 0);};
-
 private:
 	// Rotate a shape according to a given rotation scheme (in-place):
 	void RotateShape(int iShapeIndex, vector<int> vAxes);

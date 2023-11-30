@@ -64,7 +64,11 @@ public:
                     double distanceSquared = (point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y) + (point.z - center.z) * (point.z - center.z);
                     if(distanceSquared <= ((radius * radius) + EPSILON))
                     {
-                        result.push_back(i);
+                        if(ignore.find(i) == ignore.cend())
+                        {
+                            // do not ignore
+                            result.push_back(i);
+                        }
                     }
                 }
             }

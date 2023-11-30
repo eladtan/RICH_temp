@@ -159,7 +159,7 @@ public:
         return furthestPoint;
     }
 
-    friend std::ostream &operator<<(std::ostream &stream, const _BoundingBox<T> &box)
+    friend inline std::ostream &operator<<(std::ostream &stream, const _BoundingBox<T> &box)
     {
         return stream << "BoundingBox(" << box.ll << ", " << box.ur << ")";
     }
@@ -190,6 +190,11 @@ public:
             distance += _distance * _distance;
         }
         return distance <= (this->radius * this->radius);
+    }
+
+    friend inline std::ostream &operator<<(std::ostream &stream, const _Sphere<T> &sphere)
+    {
+        return stream << "Sphere(" << sphere.center << ", " << sphere.radius << ")";
     }
 };
 

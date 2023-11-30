@@ -1,5 +1,5 @@
-#ifndef _DISTRIBUTED_OCTTREE_HPP
-#define _DISTRIBUTED_OCTTREE_HPP
+#ifndef DISTRIBUTED_OCTTREE_HPP
+#define DISTRIBUTED_OCTTREE_HPP
 
 #ifdef RICH_MPI
 
@@ -98,7 +98,8 @@ public:
 
     inline std::vector<_BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
 
-    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const T &point) const;
+    template<typename U>
+    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const U &point) const;
 
     #ifdef DEBUG_MODE
     inline bool validate() const{if(this->octTree != nullptr) return this->validateHelper(this->octTree->getRoot()); return true;};
@@ -409,7 +410,8 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankB
 }
 
 template<typename T, int max_ranks_per_leaf>
-std::vector<std::pair<typename T::coord_type, typename T::coord_type>> DistributedOctTree<T, max_ranks_per_leaf>::getClosestFurthestPointsByRanks(const T &point) const
+template<typename U>
+std::vector<std::pair<typename T::coord_type, typename T::coord_type>> DistributedOctTree<T, max_ranks_per_leaf>::getClosestFurthestPointsByRanks(const U &point) const
 {
     const typename T::coord_type &maxVal = std::numeric_limits<typename T::coord_type>::max();
     const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::min();
@@ -467,4 +469,4 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
 
 #endif // RICH_MPI
 
-#endif // _DISTRIBUTED_OCTTREE_HPP
+#endif // DISTRIBUTED_OCTTREE_HPP

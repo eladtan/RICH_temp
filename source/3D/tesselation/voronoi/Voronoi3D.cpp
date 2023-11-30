@@ -15,7 +15,7 @@
 #include "3D/range/finders/GroupRangeTree.hpp"
 #include "3D/range/finders/HashBruteForce.hpp"
 #include "3D/range/finders/SmartBruteForce.hpp"
-#include "3D/environment/DistributedOctEnvAgent.hpp"
+#include "3D/environment/HilbertTreeEnvAgent.hpp"
 #include "3D/environment/HilbertEnvAgent.hpp"
 
 #include "3D/environment/kernels/Rectangle.hpp"
@@ -979,15 +979,13 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
 
 void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints)
 {
-    const DistributedOctEnvironmentAgent *octEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->pointsManager.get()->getEnvironmentAgent());
-    if(octEnvAgent == nullptr)
+    // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
+    using SmartEnvironmentAgent = RangeAgent::SmartEnvironmentAgent;
+
+    const SmartEnvironmentAgent *smartAgent = dynamic_cast<const SmartEnvironmentAgent*>(this->pointsManager.get()->getEnvironmentAgent());
+    if(smartAgent == nullptr)
     {
-        return; // supported only in `DistributedOctEnvironmentAgent` currently
-    }
-    const DistributedOctTree<Vector3D> *octTree = octEnvAgent->getOctTree();
-    if(octTree == nullptr)
-    {
-        return;
+        return; // supported only in `SmartEnvironmentAgent` currently
     }
     
     int rank, size;
@@ -1014,7 +1012,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
         }
         int closestRank = std::numeric_limits<int>::max();
         double closestDistance = std::numeric_limits<double>::max();
-        auto distances = octTree->getClosestFurthestPointsByRanks(points[pointIdx]);
+        auto distances = smartAgent->getClosestFurthestPointsByRanks(points[pointIdx]);
         for(int _rank = 0; _rank < size; _rank++)
         {
             if(_rank == rank)
@@ -1351,7 +1349,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 */
 void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask)
 {
-    if(points.size() == mask.size())
+    if(points.size() != mask.size())
     {
         throw UniversalError("In Voronoi3D::PreparePoints, mask size (" + std::to_string(mask.size()) + ") is not equal to the points size (" + std::to_string(points.size()) + ")");
     }
@@ -1448,7 +1446,7 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
     }
 
     // use an oct tree to fast calculate the distance to closest point
-    OctTree<Vector3D> myOctTree(this->ll_, this->ur_, points);
+    OctTree<Vector3D> myOctTree(this->ll_, this->ur_, new_points);
     for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
     {
         if(this->radiuses[pointIdx] < 0)

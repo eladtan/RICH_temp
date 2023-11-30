@@ -1,7 +1,6 @@
 #ifndef HILBERT_CONVERTOR_3D_HPP
 #define HILBERT_CONVERTOR_3D_HPP
 
-#include <iostream> // todo: remove
 #include "3D/elementary/Vector3D.hpp" // for Vector3D
 #include "../hilbertTypes.h"
 
@@ -9,6 +8,9 @@
 
 class HilbertConvertor3D
 {
+    template<int max_leaf_ranks>
+    friend class HilbertTree3D;
+
 private:
     using coord_t = Vector3D::coord_type; // coordinate type
     using direction_t = long int;
@@ -16,6 +18,14 @@ private:
     struct DirectionVector3D
     {
         direction_t x, y, z;
+    };
+
+    struct RecursionArguments
+    {
+        DirectionVector3D startPoint;
+        DirectionVector3D a;
+        DirectionVector3D b;
+        DirectionVector3D c;
     };
 
     Vector3D ll, ur, step;
@@ -33,9 +43,11 @@ public:
     inline size_t getOrder() const{return this->order;};
     
 private:
-    bool d2xyz_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
+    std::vector<RecursionArguments> getRecursionArguments(const RecursionArguments &args) const;
+    bool d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
     bool xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
-    bool xyz2d_helper(const DirectionVector3D &startPoint, const DirectionVector3D &a, const DirectionVector3D &b, const DirectionVector3D &c,  const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    bool xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    std::pair<typename HilbertConvertor3D::DirectionVector3D, typename HilbertConvertor3D::DirectionVector3D> getBoundingBox(const RecursionArguments &args) const;
     Vector3D WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const;
 };
 

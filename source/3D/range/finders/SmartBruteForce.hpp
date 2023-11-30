@@ -53,8 +53,6 @@ public:
 
     std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
-        throw UniversalError("SmartBruteForceFinder::range not implemented correctly"); // `ignore` isn't addressed
-
         typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);
         std::vector<size_t> result;
         for(hilbert_index_t cell : intersectingCells)
@@ -80,7 +78,11 @@ public:
                     double distanceSquared = (point.x - center.x) * (point.x - center.x) + (point.y - center.y) * (point.y - center.y) + (point.z - center.z) * (point.z - center.z);
                     if(distanceSquared <= (radius * radius))
                     {
-                        result.push_back(i);
+                        if(ignore.find(i) == ignore.cend())
+                        {
+                            // do not ignore
+                            result.push_back(i);
+                        }
                     }
                 }
             }

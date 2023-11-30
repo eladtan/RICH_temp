@@ -106,6 +106,11 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
 
 PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
 {
+    if(this->rank == 0)
+    {
+        std::cout << "initializes the points manager, and the environment agent" << std::endl;
+    }
+
     // calculate the first and initial order, and set it to the deepest hilbert order we have
     this->initializeHilbertParameters(points); // also initializes the convertor
 
