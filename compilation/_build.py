@@ -78,6 +78,9 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
     
     prof = "on" if "Prof" in config else "off"
     
+    jsoncpp_include_dir = SysLibsDict["jsoncpp_include"] if "jsoncpp_include" in SysLibsDict else None
+    jsoncpp_lib_dir = SysLibsDict["jsoncpp_lib_dir"] if "jsoncpp_lib_dir" in SysLibsDict else None
+
     cmd = ['cmake',
             f'-DMPI={mpi}',
             f'-DPROF={prof}',
@@ -96,6 +99,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DHDF5_LIB_DIRECTORY={hdf5_lib_dir}',
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
             f'-DVTK_DIRECTORY={vtk_dir}',
+            f'-DJSONCPP_INCLUDE={jsoncpp_include_dir}' if jsoncpp_include_dir else "",
+            f'-DJSONCPP_LIB_DIRECTORY={jsoncpp_lib_dir}' if jsoncpp_lib_dir else "",
             f'-DTEST_DIR={test_dir}',
             '-DCMAKE_VERBOSE_MAKEFILE=on',
             f'-DPROJECT_ROOT_DIR={root_dir}',

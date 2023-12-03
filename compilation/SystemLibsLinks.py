@@ -20,4 +20,7 @@
     'mpic++_gcc'   : "/software/x86_64/4.18.0/openmpi/4.1.4/gcc/12.2.0/bin/mpic++",
 
     'pybind11'   : "/software/x86_64/3.10.0/pybind11/2.6.1/mock_install/share/cmake/pybind11",
+
+    'jsoncpp_include' : "/software/x86_64/4.18.0/jsoncpp/1.9.5/include",
+    'jsoncpp_lib_dir' : "/software/x86_64/4.18.0/jsoncpp/1.9.5/lib64/"
 }

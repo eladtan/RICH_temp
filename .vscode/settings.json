@@ -75,7 +75,10 @@
         "numbers": "cpp",
         "semaphore": "cpp",
         "stop_token": "cpp",
-        "*.txx": "cpp"
+        "*.txx": "cpp",
+        "csetjmp": "cpp",
+        "csignal": "cpp",
+        "any": "cpp"
     },
     "cmake.configureOnOpen": true,
 

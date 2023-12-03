@@ -6,5 +6,6 @@
     "Intel/OneApi/2022.2.0/compiler/2022.1.0",
     "boost/1.78.0",
     "gcc/12.2.0",
-    "vtk/9.2.0/gcc/12.2.0/with_X"
+    "vtk/9.2.0/gcc/12.2.0/with_X",
+    "jsoncpp/1.9.5"
 ]
