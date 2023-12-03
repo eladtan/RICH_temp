@@ -14,12 +14,12 @@
 class HilbertPointsManager : public PointsManager
 {
 public:
-    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD)
+    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD)
         : PointsManager(ll, ur, comm), envAgent(nullptr), hilbertOrder(0), convertor(nullptr)
     {
         if(indexing.get() == nullptr)
         {
-            this->indexing = std::shared_ptr<const Identity>(new Identity()); // default kernel
+            this->indexing = std::shared_ptr<const Kernelization3D::Identity>(new Kernelization3D::Identity()); // default kernel
         }
         else
         {
@@ -44,7 +44,7 @@ public:
 
     void rebalance(const std::vector<Vector3D> &points) override;
 
-    const IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
+    const Kernelization3D::IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
     
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
@@ -54,7 +54,7 @@ private:
     int hilbertOrder;
     HilbertConvertor3D *convertor;
     DistributedOctEnvironmentAgent *envAgent;
-    std::shared_ptr<const IndexingKernel3D> indexing;
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
     std::vector<hilbert_index_t> responsibilityRange;
 };
 

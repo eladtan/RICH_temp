@@ -149,15 +149,15 @@ private:
   #ifdef RICH_MPI
     std::vector<double> radiuses;
     std::shared_ptr<PointsManager> pointsManager;
-    std::shared_ptr<const IndexingKernel3D> indexingToSave = std::shared_ptr<const IndexingKernel3D>();
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
   #endif // RICH_MPI
 
 public:
 
   #ifdef RICH_MPI
-    void SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>());
-    void SetKernel(const IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const IndexingKernel3D>(indexing));};
-    void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing);
+    void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
+    inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
+    void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);
   #endif // RICH_MPI
   vector<int>& GetSentProcs(void) override;
 

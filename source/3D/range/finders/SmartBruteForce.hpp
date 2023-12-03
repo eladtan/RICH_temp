@@ -19,7 +19,7 @@ public:
     using _map = boost::container::flat_map<K, V>;
 
     template<typename RandomAccessIterator>
-    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+    SmartBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const Kernelization3D::IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
         envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), convertor(convertor), indexing(indexing)
     {
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
@@ -40,7 +40,7 @@ public:
     };
 
     template<typename Container>
-    inline SmartBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, Container points):
+    inline SmartBruteForceFinder(const EnvironmentAgent *envAgent, const Kernelization3D::IndexingKernel3D *indexing, Container points):
          SmartBruteForceFinder(envAgent, indexing, points.begin(), points.end()){};
     inline ~SmartBruteForceFinder() = default;
 
@@ -99,7 +99,7 @@ private:
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
     const HilbertConvertor3D *convertor;
-    const IndexingKernel3D *indexing;
+    const Kernelization3D::IndexingKernel3D *indexing;
 };
 
 #endif // RICH_MPI

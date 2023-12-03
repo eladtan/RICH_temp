@@ -23,7 +23,7 @@ namespace
     }
 }
 
-Vector3D RevedFrustrum::find_S(const std::vector<Face> &faces) const
+Vector3D Kernelization3D::RevedFrustrum::find_S(const std::vector<Face> &faces) const
 {    
     // first find the parallel faces
     std::vector<Vector3D> normals;
@@ -87,7 +87,7 @@ Vector3D RevedFrustrum::find_S(const std::vector<Face> &faces) const
     return intersection1;
 }
 
-RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing, const IndexingKernel3D *afterIndexing)
+Kernelization3D::RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing, const IndexingKernel3D *afterIndexing)
 {
     if(faces.size() != NUM_FACES)
     {

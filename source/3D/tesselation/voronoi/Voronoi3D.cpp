@@ -2679,7 +2679,7 @@ vector<std::size_t> &Voronoi3D::GetSelfIndex(void)
 }
 
 #ifdef RICH_MPI
-void Voronoi3D::SetKernel(const std::shared_ptr<const IndexingKernel3D> &indexing)
+void Voronoi3D::SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing)
 {
     this->indexingToSave = indexing;
     HilbertPointsManager *hilbertPointsManager = dynamic_cast<HilbertPointsManager*>(this->pointsManager.get());
@@ -2704,7 +2704,7 @@ void Voronoi3D::SetBox(const Vector3D &ll, const Vector3D &ur)
 }
 
 #ifdef RICH_MPI
-void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const IndexingKernel3D> &newIndexing)
+void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing)
 {
     this->SetBox(ll, ur);
     this->SetKernel(newIndexing);

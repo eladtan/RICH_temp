@@ -10,7 +10,7 @@
 class DistributedOctEnvironmentAgent : public EnvironmentAgent
 {
 public:
-    inline DistributedOctEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, const MPI_Comm &comm = MPI_COMM_WORLD): 
+    inline DistributedOctEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const Kernelization3D::IndexingKernel3D *indexing, const MPI_Comm &comm = MPI_COMM_WORLD): 
             range(ranges), convertor(convertor), indexing(indexing), EnvironmentAgent(ll, ur, comm)
     {
         this->order = this->convertor->getOrder();
@@ -66,7 +66,7 @@ public:
 private:
     DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
     HilbertConvertor3D *convertor = nullptr;
-    const IndexingKernel3D *indexing = nullptr;
+    const Kernelization3D::IndexingKernel3D *indexing = nullptr;
     std::vector<hilbert_index_t> range;
     int order;
 };
