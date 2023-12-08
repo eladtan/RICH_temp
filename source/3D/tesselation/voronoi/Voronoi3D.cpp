@@ -402,7 +402,7 @@ namespace
             Vector3D normal_temp = CrossProduct(face_points[indeces[i]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]], face_points[indeces[(i + 1) % Nindeces]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]]);
             double const area = fastabs(normal_temp);
             normal_temp *= 1.0 / (100 * std::numeric_limits<double>::min() + area);
-            if(area < area_scale * small_fraction || ScalarProd(normal_temp, good_normal) < /*0.99998*/ 0.9999)
+            if((area < area_scale * small_fraction) || (ScalarProd(normal_temp, good_normal) < /*0.99998*/ 0.9999))
             {
                 indeces.erase(indeces.begin() + i);
                 if(i == indeces.size() - 1)
@@ -424,7 +424,7 @@ namespace
                 Vector3D normal_temp = CrossProduct(face_points[indeces[i]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]], face_points[indeces[(i + 1) % Nindeces]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]]);
                 double const area = fastabs(normal_temp);
                 normal_temp *= 1.0 / area;
-                if(area < area_scale * small_fraction || ScalarProd(normal_temp, good_normal) < /*0.99998*/ 0.9999)
+                if((area < area_scale * small_fraction) || ScalarProd(normal_temp, good_normal) < /*0.99998*/ 0.9999)
                 {
                     indeces.erase(indeces.begin() + i);
                     if(i == indeces.size() - 1)
@@ -437,8 +437,28 @@ namespace
 
         if(Nindeces < 3)
         {
-            // TODO HERE
-            throw UniversalError("Bad CleanSameLine");
+            Nindeces = N;
+            indeces = old;
+            UniversalError eo("Bad CleanSameLine");
+            eo.addEntry("N", N);
+            eo.addEntry("good normal x", good_normal.x);
+            eo.addEntry("good normal y", good_normal.y);
+            eo.addEntry("good normal z", good_normal.z);
+            for(size_t i = 0; i < N; ++i)
+            {
+                eo.addEntry("index", old[i]);
+                eo.addEntry("area_vec_temp", area_vec_temp[i]);
+                eo.addEntry("point " + std::to_string(i) + " x", face_points[indeces[i]].x);
+                eo.addEntry("point " + std::to_string(i) + " y", face_points[indeces[i]].y);
+                eo.addEntry("point " + std::to_string(i) + " z", face_points[indeces[i]].z);
+                Vector3D normal_temp = CrossProduct(face_points[indeces[i]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]], face_points[indeces[(i + 1) % Nindeces]] - face_points[indeces[(Nindeces + i - 1) % Nindeces]]);
+                normal_temp *= (1.0 / abs(normal_temp));
+                eo.addEntry("normal " + std::to_string(i) + " x", normal_temp.x);
+                eo.addEntry("normal " + std::to_string(i) + " y", normal_temp.y);
+                eo.addEntry("normal " + std::to_string(i) + " z", normal_temp.z);
+                eo.addEntry("dot", ScalarProd(good_normal, normal_temp));
+            }
+            throw eo;
         }
         /*
         return false;
@@ -1822,7 +1842,23 @@ void Voronoi3D::BuildVoronoi(std::vector<size_t> const &order)
                         }
                         // Make faces right handed
                         MakeRightHandFace(*temp_points_in_face, del_.points_[point], tetra_centers_, temp3, area_[FaceCounter]);
-                        CleanSameLine(*temp_points_in_face, tetra_centers_, area_vec_temp);
+                        try
+                        {
+                            CleanSameLine(*temp_points_in_face, tetra_centers_, area_vec_temp);
+                        }
+                        catch(UniversalError &eo)
+                        {
+                            eo.addEntry("Points0", del_.points_[point]);
+                            eo.addEntry("Points1", del_.points_[point_other]);
+                            eo.addEntry("diff", abs(del_.points_[point] - del_.points_[point_other]));
+                            eo.addEntry("Asize", Asize);
+                            int rank = 0;
+                            #ifdef RICH_MPI
+                               MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+                            #endif // RICH_MPI
+                            // throw eo;
+                            continue;
+                        }
                         FaceNeighbors_[FaceCounter].first = point;
                         FaceNeighbors_[FaceCounter].second = point_other;
 

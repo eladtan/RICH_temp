@@ -78,7 +78,8 @@
         "*.txx": "cpp",
         "csetjmp": "cpp",
         "csignal": "cpp",
-        "any": "cpp"
+        "any": "cpp",
+        "shared_mutex": "cpp"
     },
     "cmake.configureOnOpen": true,
 
