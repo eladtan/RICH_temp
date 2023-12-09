@@ -58,7 +58,7 @@ void write_vtk(std::string const& file_name,
 	fprintf(file, "TIME 1 1 double\n");
 	fprintf(file, "%1.10E\n", time);
 	fprintf(file, "CYCLE 1 1 int\n");
-	fprintf(file, "%lld\n\n", cycle);
+	fprintf(file, "%ld\n\n", cycle);
 	
 	std::size_t const num_vertices = x_vertices.size();
 	std::size_t const num_cells = cells_num_vertices.size();
