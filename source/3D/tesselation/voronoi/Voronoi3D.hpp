@@ -1,6 +1,6 @@
-/* \file Voronoi3D.hpp
+/** \file Voronoi3D.hpp
    \brief A 3D Voronoi
-   \Author Elad Steinberg
+   \author Elad Steinberg, Maor Mizrachi
 */
 #ifndef VORONOI3D_HPP
 #define VORONOI3D_HPP 1
@@ -9,39 +9,66 @@
 #define _USE_MATH_DEFINES
 #endif // _MSC_VER
 
-#include <vectorclass.h>
+
 #include <algorithm>
 #include <cfloat>
 #include <stack>
 #include <iostream>
 #include <fstream>
-#include <boost/container/flat_map.hpp>
-#include <boost/container/flat_set.hpp>
-#include <boost/multiprecision/cpp_dec_float.hpp>
-#include <boost/container/static_vector.hpp>
 #include <cmath>
 #include <vector>
 #include <string>
 #include <memory>
 #include <set>
 #include <array>
+#include <boost/container/flat_map.hpp>
+#include <boost/container/flat_set.hpp>
+#include <boost/multiprecision/cpp_dec_float.hpp>
+#include <boost/container/static_vector.hpp>
 #include <boost/container/small_vector.hpp>
 #include <omp.h>
 
+
+#ifdef USE_VCL_VECTORIZATION
+  #include <vectorclass.h>
+#endif // USE_VCL_VECTORIZATION
+
 #ifdef RICH_MPI
-#include <mpi.h>
+  #include <mpi.h>
 #endif // RICH_MPI
 
+#include "3D/tesselation/Tessellation3D.hpp"
 #include "3D/tesselation/delaunay/Delaunay3D.hpp"
 #include "3D/GeometryCommon/Intersections.hpp"
+#include "3D/elementary/Mat33.hpp"
+#include "3D/tesselation/utils/Predicates3D.hpp"
 #include "3D/hilbert/HilbertOrder3D.hpp"
 #include "3D/range/RangeAgent.hpp"
-#include "../Tessellation3D.hpp"
+#include "misc/utils.hpp"
+#include "misc/io3D.hpp"
 
 #ifdef RICH_MPI
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "mpi/mpi_commands.hpp"
 #endif
+
+#ifdef RICH_MPI
+// finders
+#include "3D/range/finders/BruteForce.hpp"
+#include "3D/range/finders/RangeTree.hpp"
+#include "3D/range/finders/OctTree.hpp"
+#include "3D/range/finders/KDTree.hpp"
+#include "3D/range/finders/GroupRangeTree.hpp"
+#include "3D/range/finders/HashBruteForce.hpp"
+#include "3D/range/finders/SmartBruteForce.hpp"
+#endif // RICH_MPI
+
+#ifdef RICH_MPI
+// env agents
+#include "3D/environment/DistributedOctEnvAgent.hpp"
+#include "3D/environment/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/HilbertEnvAgent.hpp"
+#endif // RICH_MPI
 
 #ifdef RICH_MPI
 #include "pointsManager/HilbertPointsManager.hpp"

@@ -14,7 +14,7 @@ public:
     KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
     inline KDTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): KDTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
     
-    inline ~KDTreeFinder(){delete this->kdTree;};
+    inline ~KDTreeFinder() override{delete this->kdTree;};
     
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
@@ -50,7 +50,7 @@ private:
 };
 
 template<typename RandomAccessIterator>
-KDTreeFinder::KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur)
+inline KDTreeFinder::KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur)
 {
     size_t index = 0;
     this->kdTree = new KDTree<IndexedVector3D, DIMENSIONS>(ll, ur);

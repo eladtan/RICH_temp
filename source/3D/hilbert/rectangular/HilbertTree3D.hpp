@@ -328,11 +328,10 @@ typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per
 
     if(result.empty())
     {
-        std::stringstream sphere_os;
-        sphere_os << sphere;
-        std::stringstream root_boundingbox_os;
-        root_boundingbox_os << this->root->boundingBox;
-        throw UniversalError("In HilbertTree3D::getIntersectingRanks: result is empty, for " + sphere_os.str() + " (should at least contain the rank itself), root bounding box is " + root_boundingbox_os.str());
+        UniversalError eo("In HilbertTree3D::getIntersectingRanks: result is empty, (should at least contain the rank itself)");
+        eo.addEntry("Sphere", sphere);
+        eo.addEntry("Root Bounding Box", this->root->boundingBox);
+        throw eo;
     }
 
     return result;

@@ -9,8 +9,11 @@ public:
     template<typename RandomAccessIterator>
     BruteForceFinder(const RandomAccessIterator &first, const RandomAccessIterator &last):
                 points(std::vector<Vector3D>()){this->points.insert(this->points.begin(), first, last); this->pointsSize = this->points.size();};
+    
     BruteForceFinder(const std::vector<Vector3D> &points): BruteForceFinder(points.begin(), points.end()){};
 
+    inline ~BruteForceFinder() = default;
+    
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
         size_t closestSoFarIndex = std::numeric_limits<size_t>::max();

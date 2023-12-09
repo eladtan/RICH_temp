@@ -7,7 +7,6 @@
 #include <utility>
 #include <type_traits>
 #include <stack>
-#include <sstream>
 
 #ifdef DEBUG_MODE
 #include <iostream>
@@ -172,9 +171,9 @@ public:
         const OctTreeNode *parent = this->tryFindParent(point);
         if(parent == nullptr)
         {
-            std::stringstream valueStr;
-            valueStr << point;
-            throw UniversalError("Error: could not find a parent to " + valueStr.str() + " (is the tree empty or point out of boundaries?)");
+            UniversalError eo("OctTree: could not find a parent (is the tree empty or point out of boundaries?)");
+            eo.addEntry("Value", point);
+            throw eo;
         }
         return parent->value;
     };
@@ -475,12 +474,15 @@ template<typename T>
 template<typename U>
 typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
 {
-    assert(this->getRoot() != nullptr);
+    if(this->getRoot() == nullptr)
+    {
+        throw UniversalError("OctTree: root is null, the tree should be first configured with LL and UR");
+    }
     if(!this->getRoot()->boundingBox.contains(point))
     {
-        std::stringstream valueStr;
-        valueStr << point;
-        throw UniversalError("value " + valueStr.str() + " is outside the bounding box of the octtree");
+        UniversalError eo("OctTree: Value is outside the bounding box of the OctTree");
+        eo.addEntry("Point", point);
+        throw eo;
     }
 
     OctTreeNode *current = this->getRoot();
@@ -513,9 +515,9 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
         }
         current = current->children[childIndex];
     }
-    std::stringstream valueStr;
-    valueStr << point;
-    throw UniversalError("point " + valueStr.str() + " could not be inserted to the octtree");
+    UniversalError eo("OctTree: A point could not be inserted to the OctTree");
+    eo.addEntry("Point", point);
+    throw eo;
 }
 
 template<typename T>

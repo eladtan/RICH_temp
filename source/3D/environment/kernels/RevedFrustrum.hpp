@@ -1,7 +1,6 @@
 #ifndef REVED_FRUSTRUM_KERNEL_HPP
 #define REVED_FRUSTRUM_KERNEL_HPP
 
-#include <sstream>
 #include <vector>
 #include <algorithm>
 

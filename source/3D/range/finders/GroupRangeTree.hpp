@@ -13,8 +13,10 @@ class GroupRangeTreeFinder : public RangeFinder
 public:
     template<typename RandomAccessIterator>
     GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last);
+    
     inline GroupRangeTreeFinder(std::vector<Vector3D> &myPoints): GroupRangeTreeFinder(myPoints.begin(), myPoints.end()){};
-    ~GroupRangeTreeFinder();
+    
+    inline ~GroupRangeTreeFinder() override{delete this->groupRangeTree;};
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
@@ -41,7 +43,7 @@ private:
 
 template<int GroupSize>
 template<typename RandomAccessIterator>
-GroupRangeTreeFinder<GroupSize>::GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
+inline GroupRangeTreeFinder<GroupSize>::GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
 {
     size_t index = 0;
     std::vector<IndexedVector3D> data;
@@ -55,12 +57,6 @@ GroupRangeTreeFinder<GroupSize>::GroupRangeTreeFinder(RandomAccessIterator first
     }
     this->groupRangeTree = new GroupRangeTree<IndexedVector3D, GroupSize>(DIMENSIONS);
     this->groupRangeTree->build(data.begin(), data.end());
-}
-
-template<int GroupSize>
-GroupRangeTreeFinder<GroupSize>::~GroupRangeTreeFinder()
-{
-    delete this->groupRangeTree;
 }
 
 #endif // _GROUP_RANGE_TREE_FINDER_HPP

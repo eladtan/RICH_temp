@@ -1,7 +1,6 @@
 #ifndef FRUSTRUM_KERNEL_HPP
 #define FRUSTRUM_KERNEL_HPP
 
-#include <sstream>
 #include <vector>
 #include <algorithm>
 

@@ -1,7 +1,7 @@
 #ifndef INTERSECTIONS_HPP
 #define INTERSECTIONS_HPP 1
 
-#include "../elementary/Face.hpp"
+#include "3D/elementary/Face.hpp"
 
 //! \brief Sphere data
 struct Sphere

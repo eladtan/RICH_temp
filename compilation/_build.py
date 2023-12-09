@@ -15,12 +15,9 @@ root_dir = str(pathlib.Path(__file__).parent.parent.absolute())
 sys.path.append(root_dir)
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definitionOfReal=8):
-
-    # removed -Werror from:
-    # added -flto to:
-    common_cxx_flags = " -std=c++14 -Wextra -Wshadow -fno-common -fstack-protector-all -rdynamic "
+    common_cxx_flags = " -std=c++17 -Wextra -Wshadow -fno-common -fstack-protector-all -rdynamic -g"
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
-    common_cxx_flags_release = " -DNDEBUG -g -O3 -DOMPI_SKIP_MPICXX "
+    common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX "
 
     hdf5_lib_dir = SysLibsDict["hdf5_lib_dir"]
     hdf5_include_dir = SysLibsDict["hdf5_include"]
@@ -50,7 +47,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
 
         c_compiler = SysLibsDict["icc"]
         cxx_compiler = SysLibsDict["icpc"]
-       
+
         common_cxx_flags += " -diag-remark=13397,13401,15552,2196 -pedantic-errors -Wall "
         cmake_cxx_standard = "17"
         cmake_cxx_flags = " -ansi-alias -fimf-arch-consistency=true "
@@ -66,8 +63,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             c_compiler = SysLibsDict["mpicc_gcc"]
             cxx_compiler = SysLibsDict["mpic++_gcc"]
         else:
-            c_compiler = SysLibsDict["mpicc"]
-            cxx_compiler = SysLibsDict["mpic++"]
+            c_compiler = SysLibsDict["mpicc_intel"]
+            cxx_compiler = SysLibsDict["mpic++_intel"]
     else:
         mpi = "off"
     
@@ -80,6 +77,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
     
     jsoncpp_include_dir = SysLibsDict["jsoncpp_include"] if "jsoncpp_include" in SysLibsDict else None
     jsoncpp_lib_dir = SysLibsDict["jsoncpp_lib_dir"] if "jsoncpp_lib_dir" in SysLibsDict else None
+    vcl_include_dir = SysLibsDict["vcl_include"] if "vcl_include" in SysLibsDict else os.path.join(root_dir, "source/opt/vcl")
+    r3d_include_dir = SysLibsDict["r3d_include"] if "r3d_include" in SysLibsDict else os.path.join(root_dir, "source/opt/r3d/src")
 
     cmd = ['cmake',
             f'-DMPI={mpi}',
@@ -101,10 +100,13 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DVTK_DIRECTORY={vtk_dir}',
             f'-DJSONCPP_INCLUDE={jsoncpp_include_dir}' if jsoncpp_include_dir else "",
             f'-DJSONCPP_LIB_DIRECTORY={jsoncpp_lib_dir}' if jsoncpp_lib_dir else "",
+            f'-DVCL_INCLUDE={vcl_include_dir}' if vcl_include_dir else "",
+            f'-DR3D_INCLUDE={r3d_include_dir}' if r3d_include_dir else "",
+            f'-DPYBIND11={SysLibsDict["pybind11"]}' if "pybind11" in SysLibsDict else "",
+            f'-DPYTHON_EXECUTABLE={SysLibsDict["python3"]}' if "python3" in SysLibsDict else "",
             f'-DTEST_DIR={test_dir}',
             '-DCMAKE_VERBOSE_MAKEFILE=on',
             f'-DPROJECT_ROOT_DIR={root_dir}',
-            '-DPYBIND11=' + SysLibsDict["pybind11"],
             f'{build_dir}',
             f'{root_dir}/source']
     print(cmd)
@@ -116,14 +118,25 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
 
     return cmake_result
 
-def remove_unnecessary_files(src_dir):
-    VCL_PATH = "opt/vcl"
-    files = {os.path.join(src_dir, VCL_PATH, "dispatch_example1.cpp"), os.path.join(src_dir, VCL_PATH, "dispatch_example2.cpp")}
-
-    for file_path in files:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+def load_modules(root_dir, SysLibsDict):
+    if "lmod" not in SysLibsDict.keys():
+        print("Didn't find 'lmod', skipping modules load")
+        return
     
+    with open(os.path.join(root_dir, "compilation", "ModulesToLoad.py"), "r") as f:
+        modules = eval(f.read())
+    
+    for m in modules:
+        logger.info(f"loading module {m}")
+        lmod.module(SysLibsDict["lmod"], "load", m)
+
+def fix_r3d(root_dir):
+        # Fix issue in r3d
+    with open(os.path.join(root_dir,"source/opt/r3d/config/r3d-config.h.in"), "r") as fin:
+        with open(os.path.join(root_dir,"source/opt/r3d/src/r3d-config.h"), "w") as fout:
+            for line in fin:
+                fout.write(line.replace('@R3D_MAX_VERTS@', '256'))
+
 def build_program(*, configs, make_dir, src_dir, test_dir):
     """Build the program with the desired configurations."""
     exe_name = "rich"
@@ -132,20 +145,9 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
 
     with open(os.path.join(root_dir, "compilation", "SystemLibsLinks.py"), "r") as f:
         SysLibsDict = eval(f.read())
-    assert "lmod" in SysLibsDict.keys(), f"Did not find lmod link in SysLibsDict"
 
-    with open(os.path.join(root_dir, "compilation", "ModulesToLoad.py"), "r") as f:
-        modules = eval(f.read())
-    
-    for m in modules:
-        logger.info(f"loading module {m}")
-        lmod.module(SysLibsDict["lmod"], "load", m)
-
-# Fix issue in r3d
-    with open(os.path.join(root_dir,"r3d/config/r3d-config.h.in"), "r") as fin:
-        with open(os.path.join(root_dir,"r3d/src/r3d-config.h"), "w") as fout:
-            for line in fin:
-                fout.write(line.replace('@R3D_MAX_VERTS@', '256'))
+    load_modules(root_dir, SysLibsDict)
+    fix_r3d(root_dir)
     
     for config in configs:
         logger.info(f"Building {config}")
@@ -156,9 +158,6 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         if not os.path.isdir(config_dir):
             os.makedirs(config_dir)
         
-        # remove unnecessary files
-        remove_unnecessary_files(src_dir)
-
         #run cmake for the specific config
         logger.info("Running cmake")
         cmake = _run_cmake(build_dir=build_dir,
@@ -171,7 +170,6 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         short_exe_path = os.path.join(config_dir, exe_name)
         if os.path.islink(short_exe_path):
             os.remove(short_exe_path)   
-
 
         #run make   
         logger.info("Running make")

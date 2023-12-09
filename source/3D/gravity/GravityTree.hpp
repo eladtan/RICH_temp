@@ -1,7 +1,9 @@
 #ifndef _GRAVITY_TREE_HPP
 #define _GRAVITY_TREE_HPP
 
-#include <vectorclass.h>
+#ifdef USE_VCL_VECTORIZATION
+    #include <vectorclass.h>
+#endif // USE_VCL_VECTORIZATION
 #include <vector>
 #include "GravityTypes.h"
 #include "ds/OctTree/OctTree.hpp"
@@ -13,9 +15,14 @@ template<typename T, typename BB>
 bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, double thetaSquared)
 {
     typename T::coord_type width = boundingBox.getWidthSquared();
-    Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
-    Vec4d squared = diff * diff;
-    typename T::coord_type distanceToCM = squared[0] + squared[1] + squared[2];
+    #ifdef USE_VCL_VECTORIZATION
+        Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
+        Vec4d squared = diff * diff;
+        typename T::coord_type distanceToCM = squared[0] + squared[1] + squared[2];
+    #else // USE_VCL_VECTORIZATION
+        typename T::coord_type distanceToCM = ((point[0] - centerOfMass[0]) * (point[0] - centerOfMass[0])) + 
+                                            ((point[1] - centerOfMass[1]) * (point[1] - centerOfMass[1])) + ((point[2] - centerOfMass[2]) * (point[2] - centerOfMass[2]));
+    #endif // USE_VCL_VECTORIZATION
     return width >= (distanceToCM * thetaSquared);
 }
 
@@ -144,9 +151,9 @@ bool GravityTree<T>::build(const std::vector<MassedPoint<T>> &points)
         MassedValue value(_point.point, _point.mass);
         if(!this->octTree->insert(value))
         {
-            std::stringstream valueStr;
-            valueStr << value;
-            throw UniversalError("Can not add a point (" + valueStr.str() + ") to the gravity tree");
+            UniversalError eo("Could not add a point to the gravity tree");
+            eo.addEntry("Point", value);
+            throw eo;
         }
     }
     this->calculateMasses();
@@ -169,9 +176,9 @@ void GravityTree<T>::addExternalValues(const std::vector<MassedValue> &values)
         }
         if(!this->octTree->insert(correctedValue))
         {
-            std::stringstream valueStr;
-            valueStr << correctedValue;
-            throw UniversalError("Can not add a point (" + valueStr.str() + ") to the gravity tree");
+            UniversalError eo("Could not add a point to the gravity tree");
+            eo.addEntry("Point", correctedValue);
+            throw eo;
         }
     }
     this->calculateMasses();

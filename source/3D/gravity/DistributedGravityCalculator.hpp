@@ -214,12 +214,12 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     */
     for(const Vector3D &point : points)
     {
-        _3DPoint _point(point);
-        if(not this->gravityTree->getOctTree()->find(_point))
+        if(not this->gravityTree->getOctTree()->find(point))
         {
-            std::stringstream valueStr;
-            valueStr << point;
-            throw UniversalError("(DistributedGravityCalculator) The point " + valueStr.str() + " is not owned by rank " + std::to_string(this->rank));
+            UniversalError eo("DistributedGravityCalculator: A point is not owned by rank");
+            eo.addEntry("Point", point);
+            eo.addEntry("Rank", rank);
+            throw eo;
         }
     }
     

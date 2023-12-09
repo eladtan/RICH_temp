@@ -1,7 +1,9 @@
 #ifndef _GEOMETRY_UTILS_RICH_HPP
 #define _GEOMETRY_UTILS_RICH_HPP
 
-#include <vectorclass.h>
+#ifdef USE_VCL_VECTORIZATION
+    #include <vectorclass.h>
+#endif // USE_VCL_VECTORIZATION
 
 #define DIM 3
 
@@ -11,19 +13,24 @@ class _BoundingBox
 private:
     T ll; // leftmost point of the box
     T ur; // rightmost point of the box
-    Vec4d llVec, urVec;
-    Vec4d llPlusUrVec;
-    Vec8d boundariesVec;
+
+    #ifdef USE_VCL_VECTORIZATION
+        Vec4d llVec, urVec;
+        Vec4d llPlusUrVec;
+        Vec8d boundariesVec;
+    #endif // USE_VCL_VECTORIZATION
     typename T::coord_type widthSquared;
 
     void recalculateFields()
     {
         typename T::coord_type width = std::max(this->ur[0] - this->ll[0], std::max(this->ur[1] - this->ll[1], this->ur[2] - this->ll[2]));
         this->widthSquared = width * width;
-        this->llVec = Vec4d(this->ll[0], this->ll[1], this->ll[2], 0);
-        this->urVec = Vec4d(this->ur[0], this->ur[1], this->ur[2], 0);
-        this->llPlusUrVec = this->llVec + this->urVec;
-        this->boundariesVec = Vec8d(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
+        #ifdef USE_VCL_VECTORIZATION
+            this->llVec = Vec4d(this->ll[0], this->ll[1], this->ll[2], 0);
+            this->urVec = Vec4d(this->ur[0], this->ur[1], this->ur[2], 0);
+            this->llPlusUrVec = this->llVec + this->urVec;
+            this->boundariesVec = Vec8d(this->ll[0], this->ll[1], this->ll[2], this->ur[0], this->ur[1], this->ur[2], 0, 0);
+        #endif // USE_VCL_VECTORIZATION
     }
 
 public:
@@ -112,19 +119,29 @@ public:
     template<typename U>
     inline T closestPoint(const U &point) const
     {
-        Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
-        Vec8db cmp = _point < this->boundariesVec; // _point < _boundaries;
+        #ifdef USE_VCL_VECTORIZATION
+            Vec8d _point(point[0], point[1], point[2], point[0], point[1], point[2], 0, 0);
+            Vec8db cmp = _point < this->boundariesVec; // _point < _boundaries;
+        #endif // USE_VCL_VECTORIZATION
         T closestPoint;
         for(int i = 0; i < DIM; i++)
         {
-            if(cmp[i])
+            #ifdef USE_VCL_VECTORIZATION
+                if(cmp[i])
+            #else
+                if(point[i] < this->ll[i])
+            #endif // USE_VCL_VECTORIZATION
             {
                 // that means point[i] < this->ll[i]
                 closestPoint[i] = this->ll[i];
             }
             else
             {
-                if(cmp[i + DIM])
+                #ifdef USE_VCL_VECTORIZATION
+                    if(cmp[i + DIM])
+                #else // USE_VCL_VECTORIZATION
+                    if(point[i] < this->ur[i])
+                #endif // USE_VCL_VECTORIZATION
                 {
                     // that means point[i] < this->ur[i]
                     closestPoint[i] = point[i];
@@ -141,12 +158,20 @@ public:
     template<typename U>
     inline T furthestPoint(const U &point) const
     {
-        Vec4d _point(point[0], point[1], point[2], 0);
-        Vec4db cmp = (2 * _point) > this->llPlusUrVec;
+        #ifdef USE_VCL_VECTORIZATION
+            Vec4d _point(point[0], point[1], point[2], 0);
+            Vec4db cmp = (2 * _point) > this->llPlusUrVec;
+        #endif // USE_VCL_VECTORIZATION
+
         T furthestPoint;
+
         for(int i = 0; i < DIM; i++)
         {
-            if(cmp[i])
+            #ifdef USE_VCL_VECTORIZATION
+                if(cmp[i])
+            #else // USE_VCL_VECTORIZATION
+                if(point[i] < ((this->ll[i] + this->ur[i]) * 0.5))
+            #endif // USE_VCL_VECTORIZATION
             {
                 // that means point[i] > (this->ll[i] + this->ur[i]) / 2
                 furthestPoint[i] = this->ll[i];

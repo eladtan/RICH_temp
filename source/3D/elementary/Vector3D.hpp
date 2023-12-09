@@ -16,6 +16,8 @@
 
 using std::vector;
 
+#define SIGN(x) ((x > 0) - (x < 0))
+
 #define EPSILON 1e-12
 
 namespace
@@ -88,7 +90,9 @@ public:
 			return y;
 		if (index == 2)
 			return z;
-		throw UniversalError("Trying to access illegal index of vector (index " + std::to_string(index) + ")");
+		UniversalError eo("Trying to access illegal index of vector");
+		eo.addEntry("index", index);
+		throw eo;
 	}
 
   /*! \brief Indexed access to member
@@ -140,17 +144,18 @@ public:
 	\param v Vector to be copied
 	\return The assigned value
 	*/
+	template<typename VectorType>
 	#ifdef __INTEL_COMPILER
 	#pragma omp declare simd
 	#endif
-	inline Vector3D& operator=(Vector3D const& v)
+	inline Vector3D& operator=(const VectorType& v)
 	{
-		x = v.x;
-		y = v.y;
-		z = v.z;
+		x = v[0];
+		y = v[1];
+		z = v[2];
 		return *this;
 	}
-	
+
 	/*! \brief Scalar product
 	\param s Scalar
 	\return Reference to the vector multiplied by scalar
@@ -498,8 +503,36 @@ inline Vector3D normalize(Vector3D const& vec)
 \param vY Vector of y coordinates (out)
 \param vZ Vector of z coordinates (out)
 */
-void Split(vector<Vector3D> const & vIn, vector<double> & vX, vector<double> & vY, vector<double> & vZ);
+inline void Split(vector<Vector3D> const & vIn, vector<double> & vX, vector<double> & vY, vector<double> & vZ)
+{
+	vX.resize(vIn.size());
+	vY.resize(vIn.size());
+	vZ.resize(vIn.size());
 
+	for (std::size_t ii = 0; ii < vIn.size(); ++ii)
+	{
+		vX[ii] = vIn[ii].x;
+		vY[ii] = vIn[ii].y;
+		vZ[ii] = vIn[ii].z;
+	}
+	return;
+}
+
+/*! \brief Assignment operator
+\param v Vector to be copied
+\return The assigned value
+*/
+template<>
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+inline Vector3D& Vector3D::operator=<Vector3D>(const Vector3D& v)
+{
+	x = v.x;
+	y = v.y;
+	z = v.z;
+	return *this;
+}
 
 #endif // Vector3D_HPP
 

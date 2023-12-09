@@ -12,11 +12,10 @@ class OctTreeFinder : public RangeFinder
 public:
     template<typename RandomAccessIterator>
     OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
+    
     inline OctTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): OctTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
-    inline ~OctTreeFinder()
-    {
-        delete this->octTree;
-    }
+    
+    inline ~OctTreeFinder() override{ delete this->octTree;};
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
@@ -54,7 +53,7 @@ private:
 };
 
 template<typename RandomAccessIterator>
-OctTreeFinder::OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur)
+inline OctTreeFinder::OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur)
 {
     this->octTree = new OctTree<IndexedVector3D>(ll, ur);
     this->myPoints.reserve(last - first);

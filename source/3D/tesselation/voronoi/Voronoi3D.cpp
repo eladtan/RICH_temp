@@ -1,26 +1,4 @@
 #include "Voronoi3D.hpp"
-#include "../../elementary/Mat33.hpp"
-#include "../utils/Predicates3D.hpp"
-#include "misc/utils.hpp"
-#include "misc/io3D.hpp"
-#include "3D/GeometryCommon/Intersections.hpp"
-#include "misc/int2str.hpp"
-
-#ifdef RICH_MPI
-
-#include "3D/range/finders/BruteForce.hpp"
-#include "3D/range/finders/RangeTree.hpp"
-#include "3D/range/finders/OctTree.hpp"
-#include "3D/range/finders/KDTree.hpp"
-#include "3D/range/finders/GroupRangeTree.hpp"
-#include "3D/range/finders/HashBruteForce.hpp"
-#include "3D/range/finders/SmartBruteForce.hpp"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/HilbertEnvAgent.hpp"
-
-#endif // RICH_MPI
-
-// #define VORONOI_DEBUG
 
 bool PointInPoly(Tessellation3D const &tess, Vector3D const &point, std::size_t index)
 {
@@ -285,7 +263,9 @@ namespace
         PointTetras.clear();
         PointTetras.resize(Norg);
 
-        Vec4uq _Norg(Norg, Norg, Norg, Norg);
+        #ifdef USE_VCL_VECTORIZATION
+            Vec4uq _Norg(Norg);
+        #endif // USE_VCL_VECTORIZATION
 
         size_t Ntetra = tetras.size();
         size_t bigtet(0);
@@ -310,15 +290,21 @@ namespace
             has_good = false;
             has_big = false;
 
-            Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
-            Vec4qb cmp = (_points < _Norg);
+            #ifdef USE_VCL_VECTORIZATION
+                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
+                Vec4qb cmp = (_points < _Norg);
+            #endif // USE_VCL_VECTORIZATION
 
             for(int j = 0; j < 4; ++j)
             {
-                if(cmp[j])
+                #ifdef USE_VCL_VECTORIZATION
+                    if(cmp[j])
+                #else // USE_VCL_VECTORIZATION
+                    if(tet.points[j] < Norg)
+                #endif // USE_VCL_VECTORIZATION
                 {
                     has_good = true;
-                    PointTetras[_points[j]].push_back(i);
+                    PointTetras[tet.points[j]].push_back(i);
                 }
                 else
                 {
@@ -1655,18 +1641,18 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
 
 void Voronoi3D::BuildDebug(int rank)
 {
-    std::vector<size_t> order = read_vecst("order_" + int2str(rank) + ".bin");
-    std::vector<Vector3D> points = read_vec3d("points0_" + int2str(rank) + ".bin");
+    std::vector<size_t> order = read_vecst("order_" + std::to_string(rank) + ".bin");
+    std::vector<Vector3D> points = read_vec3d("points0_" + std::to_string(rank) + ".bin");
     Norg_ = points.size();
-    std::vector<Vector3D> bb = read_vec3d("bb_" + int2str(rank) + ".bin");
+    std::vector<Vector3D> bb = read_vec3d("bb_" + std::to_string(rank) + ".bin");
     del_.Build(points, bb[1], bb[0], order);
-    points = read_vec3d("points1_" + int2str(rank) + ".bin");
+    points = read_vec3d("points1_" + std::to_string(rank) + ".bin");
     del_.BuildExtra(points);
-    points = read_vec3d("points2_" + int2str(rank) + ".bin");
+    points = read_vec3d("points2_" + std::to_string(rank) + ".bin");
     del_.BuildExtra(points);
-    points = read_vec3d("points3_" + int2str(rank) + ".bin");
+    points = read_vec3d("points3_" + std::to_string(rank) + ".bin");
     del_.BuildExtra(points);
-    points = read_vec3d("points4_" + int2str(rank) + ".bin");
+    points = read_vec3d("points4_" + std::to_string(rank) + ".bin");
     del_.BuildExtra(points);
 
     bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);

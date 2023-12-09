@@ -37,15 +37,18 @@ endif()
 
 set(proj_dir "${PROJECT_SOURCE_DIR}")
 
-include_directories("${PROJECT_BINARY_DIR}/generated/cppversion")
-find_package(pybind11 REQUIRED PATHS ${PYBIND11} NO_DEFAULT_PATH)
-message("pybind11 directory: " ${pybind11_DIR})
-message("python exe path: " ${PYTHON_EXECUTABLE})
+find_package(pybind11 QUIET REQUIRED PATHS ${PYBIND11} NO_DEFAULT_PATH)
+if(pybind11_FOUND)
+    message("pybind11 directory: " ${pybind11_DIR})
+    message("python exe path: " ${PYTHON_EXECUTABLE})
+else()
+    message("PYBIND11 NOT FOUND")
+endif()
 
 # files to compile
 file(GLOB_RECURSE SRC_CPP FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp")
-file(GLOB R3D "${PROJECT_ROOT_DIR}/r3d/src/*.c")
 file(GLOB_RECURSE TEST_DIR "${TEST_DIR}/*.cpp")
+file(GLOB SRC_R3D "${PROJECT_SOURCE_DIR}/opt/r3d/src/*.c")
 
 # HDF5
 find_library(HDF5 hdf5 PATHS ${HDF5_LIB_DIRECTORY} NO_DEFAULT_PATH)
@@ -88,12 +91,19 @@ include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_ROOT_DIR})
 include_directories(${BOOST_INCLUDE})
 include_directories(${HDF5_INCLUDE})
-# vcl
-include_directories("${PROJECT_SOURCE_DIR}/opt/vcl/")
+include_directories(${R3D_INCLUDE})
+include_directories("${PYBIND11_DIR}/include")
 
 message("proj_dir ${proj_dir}")
 message("HDF5 ${HDF5_LIBS}")
 message("VTK ${VTK_DIR}")
+
+# vcl
+if(DEFINED VCL_INCLUDE)
+    message("VCL ${VCL_INCLUDE}")
+    include_directories("${VCL_INCLUDE}")
+    add_compile_definitions("USE_VCL_VECTORIZATION")
+endif()
 
 # json
 if(DEFINED JSONCPP_INCLUDE)
@@ -111,19 +121,25 @@ else()
     message("NO JSON")
 endif()
 
-add_executable(${EXE_NAME} ${TEST_DIR} ${R3D} ${SRC_CPP})
+add_executable(${EXE_NAME} ${TEST_DIR} ${SRC_R3D} ${SRC_CPP})
 
 target_link_libraries(
     ${EXE_NAME} 
     PRIVATE
-    pybind11::embed
-    pybind11::module 
     ${HDF5_LIBS} 
     ${VTK_LIBRARIES}
     ${JSONCPP_LIB}
 )
 
-target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
+# link pybind11
+if(pybind11_FOUND)
+    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
+endif()
+
+# link json cpp
+if(DEFINED JSONCPP_LIB_DIRECTORY)
+    target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
+endif()
 
 vtk_module_autoinit(
   TARGETS ${EXE_NAME}

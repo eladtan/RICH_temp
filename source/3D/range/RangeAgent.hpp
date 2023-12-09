@@ -153,7 +153,7 @@ private:
             {
                 // not in cache, calculate it and insert to the cache
                 distances = smartAgent->getClosestFurthestPointsByRanks(query.point);
-                this->resultCache.insert({query.pointIndex, distances});
+                this->resultCache.insert(std::pair<size_t, decltype(distances)>({query.pointIndex, distances}));
             }
             // get the closest rank
             double minDist = std::numeric_limits<double>::max();
