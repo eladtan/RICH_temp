@@ -102,6 +102,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DJSONCPP_LIB_DIRECTORY={jsoncpp_lib_dir}' if jsoncpp_lib_dir else "",
             f'-DVCL_INCLUDE={vcl_include_dir}' if vcl_include_dir else "",
             f'-DR3D_INCLUDE={r3d_include_dir}' if r3d_include_dir else "",
+            f'-DCGAL_INCLUDE={SysLibsDict["cgal_include"] if "cgal_include" in SysLibsDict else ""}',
             f'-DPYBIND11={SysLibsDict["pybind11"]}' if "pybind11" in SysLibsDict else "",
             f'-DPYTHON_EXECUTABLE={SysLibsDict["python3"]}' if "python3" in SysLibsDict else "",
             f'-DTEST_DIR={test_dir}',
