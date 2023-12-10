@@ -7,5 +7,6 @@
     "boost/1.78.0",
     "gcc/12.2.0",
     "vtk/9.2.0/gcc/12.2.0/with_X",
-    "jsoncpp/1.9.5"
+    "jsoncpp/1.9.5",
+    "cgal/5.6"
 ]
