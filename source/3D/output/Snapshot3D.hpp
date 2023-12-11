@@ -14,19 +14,14 @@ class Snapshot3D
 public:
 
 	//! \brief Default constructor
-	Snapshot3D(void);
+	Snapshot3D(void): mesh_points(), volumes(), cells(), time(), cycle(), tracerstickernames(), ll(Vector3D()), ur(Vector3D()){};
 
 	//! \brief Copy constructor
 	//! \param source Source
-	Snapshot3D(const Snapshot3D &source);
+	Snapshot3D(const Snapshot3D &source): mesh_points(source.mesh_points), volumes(source.volumes), cells(source.cells), time(source.time), cycle(source.cycle), tracerstickernames(source.tracerstickernames), ll(source.ll), ur(source.ur){};
 
 	//! \brief Mesh points
 	std::vector<Vector3D> mesh_points;
-
-#ifdef RICH_MPI
-	//! \brief Processors Mesh points
-	std::vector<Vector3D> proc_points; // TODO: maybe not necessary?
-#endif
 
 	//! \brief Volume of cells
 	std::vector<double> volumes;
