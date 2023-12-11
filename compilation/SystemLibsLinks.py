@@ -23,5 +23,11 @@
 
     'jsoncpp_include' : "/software/x86_64/4.18.0/jsoncpp/1.9.5/include",
     'jsoncpp_lib_dir' : "/software/x86_64/4.18.0/jsoncpp/1.9.5/lib64/",
-    'cgal_include': "/software/x86_64/4.18.0/cgal/5.6/include"
+    'cgal_include': "/software/x86_64/4.18.0/cgal/5.6/include",
+
+    "qhull_include": "/home/maorm/opt/qhull/current/include",
+    "qhull_lib_dir": "/home/maorm/opt/qhull/current/lib",
+
+    "vtune_include": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/include",
+    "vtune_lib_dir": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/lib64"
 }

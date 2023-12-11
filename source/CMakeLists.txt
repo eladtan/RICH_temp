@@ -24,7 +24,6 @@ message("CMAKE_Fortran_FLAGS_RELEASE = " ${CMAKE_Fortran_FLAGS_RELEASE})
 message("CMAKE_Fortran_FLAGS_DEBUG = " ${CMAKE_Fortran_FLAGS_DEBUG})
 message("Root_dir = " ${PROJECT_ROOT_DIR})
 
-
 # ADDING PROFILER
 if (${PROF})
     message("Compiling with GProf")
@@ -129,6 +128,15 @@ else()
     message("NO JSON")
 endif()
 
+# vtune
+if(DEFINED VTUNE_INCLUDE)
+    # target json_cpp
+    message("VTUNE ${VTUNE_INCLUDE}")
+    include_directories(${VTUNE_INCLUDE})
+else()
+    message("NO VTUNE")
+endif()
+
 add_executable(${EXE_NAME} ${TEST_DIR} ${SRC_R3D} ${SRC_CPP})
 
 target_link_libraries(
@@ -149,6 +157,13 @@ if(DEFINED JSONCPP_LIB_DIRECTORY)
     target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
 endif()
 
+# link vtune
+if((DEFINED VTUNE_INCLUDE) AND (DEFINED VTUNE_LIB_DIRECTORY))
+    set(VTUNE_LIB ${VTUNE_LIB_DIRECTORY}/libittnotify.a)
+    message("VTUNE_LIB ${VTUNE_LIB}")
+    target_link_libraries(${EXE_NAME} PRIVATE "${VTUNE_LIB}")
+    add_compile_definitions("WITH_VTUNE")
+endif()
 vtk_module_autoinit(
   TARGETS ${EXE_NAME}
   MODULES ${VTK_LIBRARIES}

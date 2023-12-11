@@ -2,7 +2,9 @@
 #define MPI_COMMANDS_HPP 1
 
 #ifdef RICH_MPI
+
 #include <vector>
+#include <chrono>
 #include <mpi.h>
 #include "newtonian/two_dimensional/computational_cell_2d.hpp"
 #include "newtonian/two_dimensional/extensive.hpp"
@@ -11,6 +13,8 @@
 #include "misc/utils.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
 #include "stdint.h"
+
+#define MPI_TIMED_BARRIER_TAG 110503
 
 using std::vector;
 
@@ -469,6 +473,10 @@ vector<vector<vector<double> > > MPI_exchange_data(const Tessellation3D& tess, v
 vector<vector<size_t> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<size_t> > &tosend);
 
 void MPI_exchange_data(const Tessellation3D& tess, vector<char>& cells, bool ghost_or_sent);
+
+void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &place);
+
 #endif //RICH_MPI
+
 #endif // MPI_COMMANDS_HPP
 

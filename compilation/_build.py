@@ -75,8 +75,6 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
     
     prof = "on" if "Prof" in config else "off"
     
-    jsoncpp_include_dir = SysLibsDict["jsoncpp_include"] if "jsoncpp_include" in SysLibsDict else None
-    jsoncpp_lib_dir = SysLibsDict["jsoncpp_lib_dir"] if "jsoncpp_lib_dir" in SysLibsDict else None
     vcl_include_dir = SysLibsDict["vcl_include"] if "vcl_include" in SysLibsDict else os.path.join(root_dir, "source/opt/vcl")
     r3d_include_dir = SysLibsDict["r3d_include"] if "r3d_include" in SysLibsDict else os.path.join(root_dir, "source/opt/r3d/src")
 
@@ -98,8 +96,10 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DHDF5_LIB_DIRECTORY={hdf5_lib_dir}',
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
             f'-DVTK_DIRECTORY={vtk_dir}',
-            f'-DJSONCPP_INCLUDE={jsoncpp_include_dir}' if jsoncpp_include_dir else "",
-            f'-DJSONCPP_LIB_DIRECTORY={jsoncpp_lib_dir}' if jsoncpp_lib_dir else "",
+            f'-DJSONCPP_INCLUDE={SysLibsDict["jsoncpp_include"]}' if "jsoncpp_include" in SysLibsDict else "",
+            f'-DJSONCPP_LIB_DIRECTORY={SysLibsDict["jsoncpp_lib_dir"]}' if "jsoncpp_lib_dir" in SysLibsDict else "",
+            f'-DVTUNE_INCLUDE={SysLibsDict["vtune_include"]}' if "vtune_include" in SysLibsDict else "",
+            f'-DVTUNE_LIB_DIRECTORY={SysLibsDict["vtune_lib_dir"]}' if "vtune_lib_dir" in SysLibsDict else "",
             f'-DVCL_INCLUDE={vcl_include_dir}' if vcl_include_dir else "",
             f'-DR3D_INCLUDE={r3d_include_dir}' if r3d_include_dir else "",
             f'-DCGAL_INCLUDE={SysLibsDict["cgal_include"] if "cgal_include" in SysLibsDict else ""}',
