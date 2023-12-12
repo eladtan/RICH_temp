@@ -15,6 +15,8 @@
 
 #include "misc/universal_error.hpp"
 
+class UniversalError;
+
 namespace
 {
     template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
