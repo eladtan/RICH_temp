@@ -21,6 +21,7 @@
 #include <memory>
 #include <set>
 #include <array>
+#include <tuple>
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/multiprecision/cpp_dec_float.hpp>
@@ -43,7 +44,8 @@
 #include "3D/elementary/Mat33.hpp"
 #include "3D/tesselation/utils/Predicates3D.hpp"
 #include "3D/hilbert/HilbertOrder3D.hpp"
-#include "3D/range/RangeAgent.hpp"
+#include "3D/range/SmallRangeAgent.hpp"
+#include "3D/range/BigRangeAgent.hpp"
 #include "misc/utils.hpp"
 #include "misc/io3D.hpp"
 
@@ -77,7 +79,6 @@
 #define INITIAL_SENDRECV_TAG 1105
 #define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
 #define RANGE_MAX_POINTS_TO_GET 15
-#define MAX_POINTS_IN_BIG_TETRA_QUERY 1
 #define RADIUSES_GROWING_FACTOR 1.1
 #endif 
 
@@ -135,16 +136,16 @@ private:
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
   
   #ifdef RICH_MPI
-  std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
-  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
+  std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
-  std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
-  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
+  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
-  void DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<RangeQueryData, _3DPoint>> &queriesAnswers, boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, boost::container::flat_map<size_t, size_t> &firstLargeIteration, const std::vector<double> &currentRadiuses);
+  void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);
+  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers, boost::container::flat_map<size_t, size_t> &firstLargeIteration, const std::vector<double> &currentRadiuses);
+  
   #endif // RICH_MPI
 
   Delaunay3D del_;

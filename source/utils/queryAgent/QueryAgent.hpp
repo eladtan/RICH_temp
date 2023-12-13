@@ -72,8 +72,6 @@ public:
     void sendQuery(const QueryInfo<QueryData, AnswerType> &query);
     QueryBatchInfo<QueryData, AnswerType> runBatch(std::queue<QueryData> &queries);
 
-    inline std::vector<std::vector<size_t>> &getSentData(){return this->answerAgent->getSentData();};
-    inline std::vector<int> &getSentProc(){return this->answerAgent->getSentProc();};
     inline std::vector<std::vector<size_t>> &getRecvData(){return this->recvData;};
     inline std::vector<int> &getRecvProc(){return this->recvProcessorsRanks;};
 
@@ -152,7 +150,11 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
 
         if(id < 0 or static_cast<size_t>(id) >= queries.size())
         {
-            throw UniversalError("In QueryAgent::receiveQueries, id of answered query " + std::to_string(id) + " is illegal (expected 0-"+ std::to_string(queries.size()) + ")");
+            UniversalError eo("QueryAgent::receiveQueries, id of answered query is illegal");
+            eo.addEntry("Id", id);
+            eo.addEntry("Expected range", "0-" + std::to_string(queries.size()));
+            eo.addEntry("Received Query", *reinterpret_cast<const QueryData*>(buffer.data()));
+            throw eo;
         }
         if(length > 0)
         {
@@ -171,7 +173,9 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
         {
             if(length < 0)
             {
-                throw UniversalError("In QueryAgent::receiveQueries, length of query is negative");
+                UniversalError eo("In QueryAgent::receiveQueries, length of query is negative");
+                eo.addEntry("Length", length);
+                throw eo;
             }
         }
         MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
@@ -301,7 +305,9 @@ void QueryAgent<QueryData, AnswerType>::flushBuffer(int _rank)
 {
     if((_rank < 0) or (_rank >= this->size))
     {
-        throw UniversalError("Invalid rank (" + std::to_string(_rank) + "), in QueryAgent::flushBuffer");
+        UniversalError eo("QueryAgent::flushBuffer: invalid rank buffer flush");
+        eo.addEntry("Rank", _rank);
+        throw eo;
     }
     int bufferIdx = this->ranksBufferIdx[_rank];
     if(bufferIdx == UNDEFINED_BUFFER_IDX)
@@ -408,7 +414,11 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
                     this->finishedReceived += this->checkForFinishMessages();
                     break;
                 default:
-                    throw UniversalError("Rank " + std::to_string(this->rank) + " received unrecognized tag: " + std::to_string(status.MPI_TAG) + ", from rank " + std::to_string(status.MPI_SOURCE));
+                    UniversalError eo("Received unrecognized tag in queryAgent");
+                    eo.addEntry("My rank", this->rank);
+                    eo.addEntry("From whom", status.MPI_SOURCE);
+                    eo.addEntry("Tag", status.MPI_TAG);
+                    throw eo;
             }
         }
         ++i;

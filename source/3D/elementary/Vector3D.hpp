@@ -58,13 +58,12 @@ public:
 	*/
 	explicit inline Vector3D(void): Vector3D(0, 0, 0){};
 
+
 	/*! \brief Class copy constructor
-	\param v Other vector
+	\param other Other vector
 	*/
-#ifdef __INTEL_COMPILER
-#pragma omp declare simd
-#endif
-	inline Vector3D(const Vector3D& v): Vector3D(v.x, v.y, v.z) {};
+	template<typename VectorType>
+	inline Vector3D(const VectorType &other): Vector3D(other[0], other[1], other[2]){}
 
 	/*! \brief Set vector components
 	\param ix x Component
@@ -517,6 +516,13 @@ inline void Split(vector<Vector3D> const & vIn, vector<double> & vX, vector<doub
 	}
 	return;
 }
+
+template<>
+#ifdef __INTEL_COMPILER
+#pragma omp declare simd
+#endif
+inline Vector3D::Vector3D(const Vector3D &v): Vector3D(v.x, v.y, v.z)
+{}
 
 /*! \brief Assignment operator
 \param v Vector to be copied

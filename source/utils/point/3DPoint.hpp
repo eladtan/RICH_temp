@@ -1,7 +1,10 @@
+#ifndef _3DPOINT_HPP
+#define _3DPOINT_HPP
+
 #include <iostream>
 #include "3D/elementary/Vector3D.hpp"
 
-#define EPSILON 1e-12 // redefined (already defined in 'Vector3D.hpp')
+#define EPSILON 1e-12
 
 struct _3DPoint
 {
@@ -181,3 +184,5 @@ inline _3DPoint::coord_type fastabs(const _3DPoint &v)
 {
     return fastsqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
 }
+
+#endif // _3DPOINT_HPP

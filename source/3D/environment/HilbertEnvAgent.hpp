@@ -5,7 +5,6 @@
 
 #include "EnvironmentAgent.h"
 #include "3D/hilbert/rectangular/HilbertConvertor3D.hpp"
-#include "ds/DistributedOctTree/DistributedOctTree.hpp"
 
 #define AVERAGE_INTERSECT 128
 #define NULL_ORDER -1
