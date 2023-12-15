@@ -7,8 +7,8 @@
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/DistributedOctEnvAgent.hpp" 
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
 #include "SentPointsContainer.hpp"
 #include "RangeQueryData.h"
 
@@ -31,12 +31,12 @@ typedef struct SmallRangeQueryData : public RangeQueryData
 class SmallRangeAgent
 {
 private:
-    class RangeAnswerAgent : public AnswerAgent<SmallRangeQueryData, _3DPoint>
+    class SmallRangeAnswerAgent : public AnswerAgent<SmallRangeQueryData, _3DPoint>
     {
         friend class RangeAgent;
 
     public:
-        RangeAnswerAgent(const RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder), pointsContainer(pointsContainer){}
+        SmallRangeAnswerAgent(const RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder), pointsContainer(pointsContainer){}
 
         std::vector<_3DPoint> answer(const SmallRangeQueryData &query, int _rank) override
         {
@@ -62,13 +62,13 @@ private:
         SentPointsContainer &pointsContainer;
     };
 
-    class RangeTalkAgent : public TalkAgent<SmallRangeQueryData>
+    class SmallRangeTalkAgent : public TalkAgent<SmallRangeQueryData>
     {
     public:
         template<typename K, typename V>
         using _map = boost::container::flat_map<K, V>;
 
-        RangeTalkAgent(const EnvironmentAgent *envAgent, const MPI_Comm &comm = MPI_COMM_WORLD): envAgent(envAgent)
+        SmallRangeTalkAgent(const EnvironmentAgent *envAgent, const MPI_Comm &comm = MPI_COMM_WORLD): envAgent(envAgent)
         {
             MPI_Comm_rank(comm, &this->rank);
             MPI_Comm_size(comm, &this->size);
@@ -96,9 +96,8 @@ public:
 
     SmallRangeAgent(const EnvironmentAgent *envAgent, RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     {
-        RangeAnswerAgent *answersAgent = new RangeAnswerAgent(rangeFinder, pointsContainer, comm);
-        this->ansAgent = answersAgent;
-        this->talkAgent = new RangeTalkAgent(envAgent, comm);
+        this->ansAgent = new SmallRangeAnswerAgent(rangeFinder, pointsContainer, comm);
+        this->talkAgent = new SmallRangeTalkAgent(envAgent, comm);
         this->queryAgent = new QueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
     }
 
@@ -120,8 +119,8 @@ public:
     inline std::vector<int> &getRecvProc(){return this->queryAgent->getRecvProc();};
 
 private:
-    RangeAnswerAgent *ansAgent;
-    RangeTalkAgent *talkAgent;
+    SmallRangeAnswerAgent *ansAgent;
+    SmallRangeTalkAgent *talkAgent;
     QueryAgent<SmallRangeQueryData, _3DPoint> *queryAgent;
     SentPointsContainer &pointsContainer;
 };

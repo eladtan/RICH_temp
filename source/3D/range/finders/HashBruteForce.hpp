@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include <mpi.h>
-#include "3D/environment/HilbertEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #include "RangeFinder.hpp"
 
 #define HASH_SIZE 128

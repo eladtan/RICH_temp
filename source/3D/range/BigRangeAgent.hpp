@@ -7,8 +7,8 @@
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/DistributedOctEnvAgent.hpp" 
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
 #include "SentPointsContainer.hpp"
 #include "RangeQueryData.h"
 
@@ -30,20 +30,16 @@ struct BigRangeQueryData : public RangeQueryData
 */
 class BigRangeAgent
 {
-public:
-    using SmartEnvironmentAgent = DistributedOctEnvironmentAgent;
-
 private:
-    class RangeAnswerAgent : public AnswerAgent<BigRangeQueryData, _3DPoint>
+    class BigRangeAnswerAgent : public AnswerAgent<BigRangeQueryData, _3DPoint>
     {
         friend class RangeAgent;
 
     public:
-        RangeAnswerAgent(const RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder), pointsContainer(pointsContainer){}
+        BigRangeAnswerAgent(const RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder), pointsContainer(pointsContainer){}
 
         std::vector<_3DPoint> answer(const BigRangeQueryData &query, int _rank) override
         {
-            // std::cout << "answering to rank " << _rank << " about query " << query << std::endl;            
             const SentPointsContainer::PointsSet &ignore = this->pointsContainer.getSentDataSetRank(_rank);
 
             // a big query, bring only the closest point
@@ -56,6 +52,7 @@ private:
             {
                 result.push_back(_3DPoint(this->rangeFinder->getPoint(pointIdx)));
             }
+            // std::cout << "answering to rank " << _rank << " " << result.size() << " points " << std::endl;            
             return result;
         }
 
@@ -64,16 +61,30 @@ private:
         SentPointsContainer &pointsContainer;
     };
 
-    class RangeTalkAgent : public TalkAgent<BigRangeQueryData>
+    class BigRangeTalkAgent : public TalkAgent<BigRangeQueryData>
     {
     public:
         template<typename K, typename V>
         using _map = boost::container::flat_map<K, V>;
 
-        RangeTalkAgent(const EnvironmentAgent *envAgent, const MPI_Comm &comm = MPI_COMM_WORLD): envAgent(envAgent)
+        BigRangeTalkAgent(const EnvironmentAgent *envAgent, const MPI_Comm &comm = MPI_COMM_WORLD):
+            envAgent(envAgent), supportsFurthestClosestRanks(false)
         {
             MPI_Comm_rank(comm, &this->rank);
             MPI_Comm_size(comm, &this->size);
+
+            const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
+            if(distribuedOctEnvAgent != nullptr)
+            {
+                this->supportsFurthestClosestRanks = true;
+                this->getFurthestClosestRanks = [distribuedOctEnvAgent](const _3DPoint &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
+            }
+            const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(this->envAgent);
+            if(hilbertTreeEnvAgent != nullptr)
+            {
+                this->supportsFurthestClosestRanks = true;
+                this->getFurthestClosestRanks = [hilbertTreeEnvAgent](const _3DPoint &point){return hilbertTreeEnvAgent->getClosestFurthestPointsByRanks(point);};
+            }
         };
 
         inline EnvironmentAgent::RanksSet getTalkList(const BigRangeQueryData &query) const override
@@ -84,18 +95,18 @@ private:
             {
                 throw UniversalError("In range talk agent, should not reach here: the intersecting ranks list should at least contain the rank itself");
             }
+
             if(intersectingRanks.size() == 1)
             {
                 return intersectingRanks;
             }
-
+            
             // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
-            const SmartEnvironmentAgent *smartAgent = dynamic_cast<const SmartEnvironmentAgent*>(this->envAgent);
-            if(smartAgent == nullptr)
+            if(not this->supportsFurthestClosestRanks)
             {
                 return intersectingRanks;
             }
-
+            
             // if the query requests to ask all the intersecting ranks, return all the intersecting ranks
             if(not query.askOnlyClose)
             {
@@ -104,7 +115,7 @@ private:
 
             // otherwise, the queries requests to ask only the close ranks
             // we calculate the closest distances from the point, to all the other ranks.
-            std::vector<std::pair<double, double>> distances;
+            HilbertCurveEnvironmentAgent::DistancesVector distances;
             // maybe the distances were already computed (check in a cache)
             auto it = this->resultCache.find(query.pointIdx);
             if(it != this->resultCache.end())
@@ -114,15 +125,16 @@ private:
             else
             {
                 // not in cache, calculate it and insert to the cache
-                distances = smartAgent->getClosestFurthestPointsByRanks(query.originalPoint);
+                distances = this->getFurthestClosestRanks(query.originalPoint);
                 this->resultCache.insert(std::pair<size_t, decltype(distances)>({query.pointIdx, distances}));
             }
+            
             // get the closest rank
             double minDist = std::numeric_limits<double>::max();
-            size_t minDistRank = std::numeric_limits<size_t>::max();
+            int minDistRank = std::numeric_limits<int>::max();
             for(const int &_rank : intersectingRanks)
             {
-                if(static_cast<int>(_rank) == this->rank)
+                if(_rank == this->rank)
                 {
                     continue; // don't count myself
                 }
@@ -131,6 +143,15 @@ private:
                     minDist = distances[_rank].first;
                     minDistRank = _rank;
                 }
+            }
+            if(minDistRank >= this->size)
+            {
+                UniversalError eo("In BigRangeTalkAgent, should not reach here, since size of intersectingRanks is > 1");
+                eo.addEntry("Query", query);
+                eo.addEntry("minDistRank", minDistRank);
+                eo.addEntry("Size of intersectingRanks", intersectingRanks.size());
+                eo.addEntry("Distances", distances);
+                throw eo;
             }
             // consider the closest rank, and its furthest distance from the point, denoted as `closestDistThreshold`
             double closestDistThreshold = distances[minDistRank].second;
@@ -144,6 +165,17 @@ private:
                     result.insert(_rank);
                 }
             }
+
+            if(result.size() <= 1)
+            {
+                UniversalError eo("In BigRangeTalkAgent, should not reach here, since `result` must contain at least one additional rank");
+                eo.addEntry("Query", query);
+                eo.addEntry("Distances", distances);
+                eo.addEntry("closestDistThreshold", closestDistThreshold);
+                eo.addEntry("Size of result", result.size());
+                eo.addEntry("Size of intersectingRanks", intersectingRanks.size());
+                throw eo;
+            }
             return result;
         }
 
@@ -151,6 +183,8 @@ private:
         const EnvironmentAgent *envAgent;
         mutable _map<size_t, std::vector<std::pair<double, double>>> resultCache;
         int rank, size;
+        bool supportsFurthestClosestRanks;
+        std::function<HilbertCurveEnvironmentAgent::DistancesVector(const _3DPoint&)> getFurthestClosestRanks;
     };
 
 public:
@@ -159,9 +193,8 @@ public:
 
     BigRangeAgent(const EnvironmentAgent *envAgent, RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     {
-        RangeAnswerAgent *answersAgent = new RangeAnswerAgent(rangeFinder, pointsContainer);
-        this->ansAgent = answersAgent;
-        this->talkAgent = new RangeTalkAgent(envAgent, comm);
+        this->ansAgent = new BigRangeAnswerAgent(rangeFinder, pointsContainer);;
+        this->talkAgent = new BigRangeTalkAgent(envAgent, comm);
         this->queryAgent = new QueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
     }
 
@@ -183,8 +216,8 @@ public:
     inline std::vector<int> &getRecvProc(){return this->queryAgent->getRecvProc();};
 
 private:
-    RangeAnswerAgent *ansAgent;
-    RangeTalkAgent *talkAgent;
+    BigRangeAnswerAgent *ansAgent;
+    BigRangeTalkAgent *talkAgent;
     QueryAgent<BigRangeQueryData, _3DPoint> *queryAgent;
     SentPointsContainer &pointsContainer;
 };

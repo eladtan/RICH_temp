@@ -8,8 +8,7 @@
 // for maps:
 #include <map>
 #include <boost/container/flat_map.hpp>
-
-#include "3D/environment/HilbertEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #include "RangeFinder.hpp"
 
 class SmartBruteForceFinder : public RangeFinder

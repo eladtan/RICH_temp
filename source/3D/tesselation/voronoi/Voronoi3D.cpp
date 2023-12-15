@@ -557,7 +557,7 @@ namespace
             Area += 3.0 * A;
         }
         CM.Set(x, y, z);
-        CM *= (1.0 / (Area + DBL_MIN * 100)); //prevent overflow
+        CM *= (1.0 / (Area + std::numeric_limits<double>::min() * 100)); //prevent overflow
     }
 
     bool PointInDomain(Vector3D const &ll, Vector3D const &ur, Vector3D const &point)
@@ -918,7 +918,7 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
                 }
                 BigRangeQueryData query = {{.pointIdx = pointIdx,
                                             .center = {center.x, center.y, center.z},
-                                            .radius = radius,},
+                                            .radius = radius},
                                             .originalPoint = {point.x, point.y, point.z}, 
                                             .askOnlyClose = askOnlyClose};
                 // add the tetra to the list of tetrahedra to clear (mark as 'not new')
@@ -1007,13 +1007,27 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
 
 void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints)
 {
-    // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
-    using SmartEnvironmentAgent = BigRangeAgent::SmartEnvironmentAgent;
+    const EnvironmentAgent *envAgent = this->pointsManager->getEnvironmentAgent();
+    bool supportsFurthestClosestRanks;
+    std::function<HilbertCurveEnvironmentAgent::DistancesVector(const _3DPoint&)> getFurthestClosestRanks;
 
-    const SmartEnvironmentAgent *smartAgent = dynamic_cast<const SmartEnvironmentAgent*>(this->pointsManager.get()->getEnvironmentAgent());
-    if(smartAgent == nullptr)
+    // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)            
+    const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(envAgent);
+    if(distribuedOctEnvAgent != nullptr)
     {
-        return; // supported only in `SmartEnvironmentAgent` currently
+        supportsFurthestClosestRanks = true;
+        getFurthestClosestRanks = [distribuedOctEnvAgent](const _3DPoint &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
+    }
+    const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(envAgent);
+    if(hilbertTreeEnvAgent != nullptr)
+    {
+        supportsFurthestClosestRanks = true;
+        getFurthestClosestRanks = [hilbertTreeEnvAgent](const _3DPoint &point){return hilbertTreeEnvAgent->getClosestFurthestPointsByRanks(point);};
+    }
+
+    if(not supportsFurthestClosestRanks)
+    {
+        return;
     }
     
     int rank, size;
@@ -1040,7 +1054,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
         }
         int closestRank = std::numeric_limits<int>::max();
         double closestDistance = std::numeric_limits<double>::max();
-        auto distances = smartAgent->getClosestFurthestPointsByRanks(points[pointIdx]);
+        auto distances = getFurthestClosestRanks(points[pointIdx]);
         for(int _rank = 0; _rank < size; _rank++)
         {
             if(_rank == rank)
@@ -1203,7 +1217,7 @@ std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>
     {
         const size_t &pointIdx = ans.data.pointIdx;
         // query is large, check if it returned non empty. If yes, we are not yet done
-        if(!ans.finalResults.empty())
+        if((iterations == firstLargeIteration.at(pointIdx)) or (not ans.finalResults.empty()))
         {
             newLargePoints.insert(pointIdx);
         }
@@ -1302,11 +1316,32 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
         MPI_Iallreduce(&I_finished, &finished, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD, &finishedReq);
 
+        // large points queries
         QueryBatchInfo<BigRangeQueryData, _3DPoint> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
-        QueryBatchInfo<SmallRangeQueryData, _3DPoint> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
-
         std::vector<Vector3D> newPoints;
-        newPoints.reserve(newPoints.size() + mirroredPoints.size());
+        newPoints.reserve(bigBatchInfo.result.size());
+        for(const _3DPoint &_point : bigBatchInfo.result)
+        {
+            newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
+        }
+        this->SetGhostArray(bigRangeAgent.getRecvProc(), bigRangeAgent.getRecvPoints());
+        this->del_.BuildExtra(newPoints);
+
+        // small points queries
+        QueryBatchInfo<SmallRangeQueryData, _3DPoint> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
+        newPoints.clear();
+        newPoints.reserve(smallBatchInfo.result.size());
+        for(const _3DPoint &_point : smallBatchInfo.result)
+        {
+            newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
+        }
+        this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
+        this->del_.BuildExtra(newPoints);
+
+        std::tie(smallPoints, largePoints) = this->DetermineNextIterationPoints(iterations, smallBatchInfo.queriesAnswers, bigBatchInfo.queriesAnswers, firstLargeIteration, currentRadiuses);
+
+        newPoints.clear();
+        newPoints.reserve(mirroredPoints.size());
         allMirrored.reserve(allMirrored.size() + mirroredPoints.size());
         for(const std::pair<size_t, size_t> &pairFacePoint : mirroredPoints)
         {
@@ -1318,28 +1353,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
             }
         }
         this->del_.BuildExtra(newPoints);
-
-        // small points queries
-        newPoints.clear();
-        newPoints.reserve(smallBatchInfo.result.size());
-        for(const _3DPoint &_point : smallBatchInfo.result)
-        {
-            newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
-        }
-        this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
-        this->del_.BuildExtra(newPoints);
-
-        // large points queries
-        newPoints.clear();
-        newPoints.reserve(bigBatchInfo.result.size());
-        for(const _3DPoint &_point : bigBatchInfo.result)
-        {
-            newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
-        }
-        this->SetGhostArray(bigRangeAgent.getRecvProc(), bigRangeAgent.getRecvPoints());
-        this->del_.BuildExtra(newPoints);
-
-        std::tie(smallPoints, largePoints) = this->DetermineNextIterationPoints(iterations, smallBatchInfo.queriesAnswers, bigBatchInfo.queriesAnswers, firstLargeIteration, currentRadiuses);
 
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
         std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
@@ -2750,6 +2763,7 @@ vector<std::size_t> &Voronoi3D::GetSelfIndex(void)
 #ifdef RICH_MPI
 void Voronoi3D::SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing)
 {
+    MPI_Barrier(MPI_COMM_WORLD); // everyone should set the kernel
     this->indexingToSave = indexing;
     HilbertPointsManager *hilbertPointsManager = dynamic_cast<HilbertPointsManager*>(this->pointsManager.get());
     if(hilbertPointsManager == nullptr)

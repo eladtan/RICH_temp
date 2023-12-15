@@ -6,8 +6,8 @@
 #include <memory>
 #include "PointsManager.hpp"
 #include "3D/environment/kernels/Identity.hpp" // for default kernelization
-#include "3D/environment/DistributedOctEnvAgent.hpp"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 
 #define SPACE_FACTOR 1e-5
 
@@ -20,10 +20,12 @@ public:
         if(indexing.get() == nullptr)
         {
             this->indexing = std::shared_ptr<const Kernelization3D::Identity>(new Kernelization3D::Identity()); // default kernel
+            this->customIndexingIsSet = false;
         }
         else
         {
             this->indexing = indexing;
+            this->customIndexingIsSet = true;
         }
     }
 
@@ -53,9 +55,10 @@ private:
 
     int hilbertOrder;
     HilbertConvertor3D *convertor;
-    DistributedOctEnvironmentAgent *envAgent;
+    HilbertCurveEnvironmentAgent *envAgent;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
     std::vector<hilbert_index_t> responsibilityRange;
+    bool customIndexingIsSet;
 };
 
 #endif // RICH_MPI

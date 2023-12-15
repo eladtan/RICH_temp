@@ -125,7 +125,15 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     points, radiuses); // exchange
 
     // initialize environment agent
-    this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor, this->indexing.get());
+    if(this->customIndexingIsSet)
+    {
+        this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor, this->indexing.get());
+    }
+    else
+    {
+        // use hilbert tree, as it is better
+        this->envAgent = new HilbertTreeEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor);
+    }
 
     return exchangeResult;
 }

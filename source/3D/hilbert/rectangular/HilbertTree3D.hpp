@@ -54,6 +54,7 @@ public:
         MPI_Comm_size(this->comm, &this->size);
         this->buildTree(convertor, responsibilityRange);
     }
+
     ~HilbertTree3D();
 
     template<typename U>
@@ -76,6 +77,7 @@ public:
 template<int max_ranks_per_leaf>
 HilbertTree3D<max_ranks_per_leaf>::~HilbertTree3D()
 {
+    this->nodes_stack.push_back(this->root);
     while(not this->nodes_stack.empty())
     {
         const Node *node = this->nodes_stack.back();
@@ -171,16 +173,12 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
     currentNode->d_end = current_d + num_points;
     
     // set bounding box
-
     const std::pair<DirectionVector3D, DirectionVector3D> &boundingBox = convertor->getBoundingBox(current_args);
     const DirectionVector3D &ll = boundingBox.first;       
     const DirectionVector3D &ur = boundingBox.second;       
     currentNode->boundingBox = _BoundingBox<Vector3D>(convertor->WidthHeightDepthToXYZ(ll.x, ll.y, ll.z), convertor->WidthHeightDepthToXYZ(ur.x, ur.y, ur.z));
-    std::cout << "startPoint is " << startPoint.x << ", " << startPoint.y << ", " << startPoint.z << ", x_advancing = " << (a.x + b.x + c.x) << ", y_advancing = " << (a.y + b.y + c.z) << ", z_advancing = " << (a.z + b.z + c.z) << ", boundingBox is " << currentNode->boundingBox << std::endl;
 
     std::pair<int, int> ranksMatching = {0, this->size - 1};
-    
-
     for(int index = 0; index < this->size; index++)
     {
         if(currentNode->d_start <= responsibilityRange[index])

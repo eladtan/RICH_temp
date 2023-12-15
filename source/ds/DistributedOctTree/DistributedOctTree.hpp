@@ -175,10 +175,6 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
             // someone holds the `i`th child
             this->treeSize++;
             newNode->createChild(i); // creates the child in my own tree
-            if(newNode->children[i] == nullptr)
-            {
-                std::cout << "here 1" << std::endl;
-            }
             if(recursiveBuild and (ranks_containing_child.size() > max_ranks_per_leaf))
             {
                 // there are several holders, call recursive build (until we reach one holder)

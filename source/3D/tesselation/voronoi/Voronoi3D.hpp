@@ -22,6 +22,7 @@
 #include <set>
 #include <array>
 #include <tuple>
+#include <limits>
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/multiprecision/cpp_dec_float.hpp>
@@ -55,31 +56,27 @@
 #endif
 
 #ifdef RICH_MPI
-// finders
-#include "3D/range/finders/BruteForce.hpp"
-#include "3D/range/finders/RangeTree.hpp"
-#include "3D/range/finders/OctTree.hpp"
-#include "3D/range/finders/KDTree.hpp"
-#include "3D/range/finders/GroupRangeTree.hpp"
-#include "3D/range/finders/HashBruteForce.hpp"
-#include "3D/range/finders/SmartBruteForce.hpp"
+  // finders
+  #include "3D/range/finders/BruteForce.hpp"
+  #include "3D/range/finders/RangeTree.hpp"
+  #include "3D/range/finders/OctTree.hpp"
+  #include "3D/range/finders/KDTree.hpp"
+  #include "3D/range/finders/GroupRangeTree.hpp"
+  #include "3D/range/finders/HashBruteForce.hpp"
+  #include "3D/range/finders/SmartBruteForce.hpp"
+
+  // env agents
+  #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
+  #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+  #include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #endif // RICH_MPI
 
 #ifdef RICH_MPI
-// env agents
-#include "3D/environment/DistributedOctEnvAgent.hpp"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/HilbertEnvAgent.hpp"
-#endif // RICH_MPI
-
-#ifdef RICH_MPI
-#include "pointsManager/HilbertPointsManager.hpp"
-#include "3D/environment/kernels/Identity.hpp"
-
-#define INITIAL_SENDRECV_TAG 1105
-#define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
-#define RANGE_MAX_POINTS_TO_GET 15
-#define RADIUSES_GROWING_FACTOR 1.1
+  #include "pointsManager/HilbertPointsManager.hpp"
+  #define INITIAL_SENDRECV_TAG 1105
+  #define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
+  #define RANGE_MAX_POINTS_TO_GET 15 // 15
+  #define RADIUSES_GROWING_FACTOR 1.1
 #endif 
 
 #define RADIUS_UNINITIALIZED -1
