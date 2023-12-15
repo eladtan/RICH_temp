@@ -228,8 +228,11 @@ void WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Grou
 
         fs::path path = fs::absolute(filename).parent_path();
         std::string myFilePath;
-
         fs::path ranks_files_path = path / fs::path(filename).filename().replace_extension();
+        if(not fs::exists(ranks_files_path))
+        {
+            fs::create_directory(ranks_files_path);
+        }
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &ws);
         myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
