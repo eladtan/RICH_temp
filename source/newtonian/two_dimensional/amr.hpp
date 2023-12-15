@@ -6,16 +6,16 @@
 #ifndef AMR_HPP
 #define AMR_HPP 1
 
+#include <clipper.hpp>
+#include <boost/scoped_ptr.hpp>
 #include "computational_cell_2d.hpp"
 #include "extensive.hpp"
 #include "../common/equation_of_state.hpp"
 #include "OuterBoundary.hpp"
 #include "../../tessellation/tessellation.hpp"
 #include "../../tessellation/ConvexHull.hpp"
-#include "../../clipper/clipper.hpp"
 #include "../test_2d/main_loop_2d.hpp"
 #include "../../tessellation/polygon_overlap_area.hpp"
-#include <boost/scoped_ptr.hpp>
 #include "interpolations/LinearGaussImproved.hpp"
 
 //! \brief Abstract class for cell update scheme in amr

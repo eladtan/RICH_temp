@@ -104,6 +104,13 @@ if(VCL_INCLUDE)
     add_compile_definitions("USE_VCL_VECTORIZATION")
 endif()
 
+# clipper
+if(CLIPPER_INCLUDE)
+    message("CLIPPER ${CLIPPER_INCLUDE}")
+    include_directories("${CLIPPER_INCLUDE}")
+    add_compile_definitions("USE_CLIPPER")
+endif()
+
 # json
 if(JSONCPP_INCLUDE)
     if(JSONCPP_LIB_DIRECTORY)
