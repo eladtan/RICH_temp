@@ -145,7 +145,6 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
     std::vector<unsigned char> childBuff(this->size);
     MPI_Allgather(&valueToSend, 1, MPI_UNSIGNED_CHAR, &childBuff[0], 1, MPI_BYTE, this->comm);
 
-    bool doesnt_have_children = true;
     for(int i = 0; i < CHILDREN; i++)
     {
         bool recursiveBuild = false;

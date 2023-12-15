@@ -21,11 +21,6 @@ public:
     
     inline ~HashBruteForceFinder() override = default;
 
-    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
-    {
-        throw UniversalError("HashBruteForceFinder::closestPointInSphere not implemented");
-    }
-
     std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
         typename HilbertEnvironmentAgent::CellsSet intersectingCells = this->envAgent->getIntersectingCells(Vector3D(center.x, center.y, center.z), radius);

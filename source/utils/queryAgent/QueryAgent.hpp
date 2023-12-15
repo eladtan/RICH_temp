@@ -78,12 +78,12 @@ public:
 private:
     MPI_Comm comm;
     int rank, size;
+    const TalkAgent<QueryData> *talkAgent; // answers to whom we should talk to, given a query
+    AnswerAgent<QueryData, AnswerType> *answerAgent; // an answer agent
     std::vector<MPI_Request> requests;
     std::vector<std::vector<char>> buffers; // send buffers, so that they will not be allocated on the stack
     size_t receivedUntilNow; // number of answers I received until now
     size_t shouldReceiveInTotal; // number of answers I have to receive (to know when to finish)
-    AnswerAgent<QueryData, AnswerType> *answerAgent; // an answer agent
-    const TalkAgent<QueryData> *talkAgent; // answers to whom we should talk to, given a query
     bool sendToSelf; // should send queries to self
     bool finishedMyQueries; // if finished to answer my queries
     int finishedReceived; // number of 'finish' messages received
@@ -143,7 +143,6 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
         // decode the message - id first, then length, then the data itself
         long int id;
         long int length;
-        int pos = 0;
 
         id = *reinterpret_cast<long int*>(buffer.data()); // decode id
         length = *reinterpret_cast<long int*>(buffer.data() + sizeof(long int)); // decode length
@@ -366,8 +365,7 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     this->finishedMyQueries = queries.empty();
     this->finishedReceived = 0;
     size_t i = 0;
-    bool notEmpty = false;
-    
+
     // if doesn't have any queries, send a finish message
     if(this->finishedMyQueries)
     {

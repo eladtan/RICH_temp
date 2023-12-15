@@ -47,9 +47,6 @@ std::vector<HilbertConvertor2D::RecursionArguments> HilbertConvertor2D::getRecur
     direction_t width2 = std::abs(a2.x + a2.y);
     direction_t height2 = std::abs(b2.x + b2.y);
 
-    const direction_t &x = startPoint.x;
-    const direction_t &y = startPoint.y;
-
     std::vector<RecursionArguments> toReturn;
 
     if(2 * width > 3 * height)
@@ -204,7 +201,7 @@ bool HilbertConvertor2D::xy2d_helper(const RecursionArguments &args, const Direc
 
     if(width == 1)
     {
-        return this->xy2d_helper_base(startPoint, height, {dax, day}, requested_point, current_d);
+        return this->xy2d_helper_base(startPoint, height, {dbx, dby}, requested_point, current_d);
     }
 
     for(const RecursionArguments &nextArgs : this->getRecursionArguments(args))

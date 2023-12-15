@@ -582,8 +582,8 @@ Voronoi3D::Voronoi3D() : ll_(Vector3D()), ur_(Vector3D()), Norg_(0), bigtet_(0),
                         PointsInFace_(vector<point_vec>()),
                         FaceNeighbors_(vector<std::pair<std::size_t, std::size_t>>()),
                         CM_(vector<Vector3D>()), Face_CM_(vector<Vector3D>()),
-                        volume_(vector<double>()), area_(vector<double>()), duplicated_points_(vector<vector<std::size_t>>()),
-                        sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
+                        volume_(vector<double>()), area_(vector<double>()), sentprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), 
+                        duplicatedprocs_(vector<int>()), duplicated_points_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>())
                         #ifdef RICH_MPI
                         , pointsManager(std::shared_ptr<PointsManager>())
@@ -597,8 +597,8 @@ Voronoi3D::Voronoi3D(std::vector<Face> const& box_faces) : Norg_(0), bigtet_(0),
                                                         PointsInFace_(vector<point_vec>()),
                                                         FaceNeighbors_(vector<std::pair<std::size_t, std::size_t>>()),
                                                         CM_(vector<Vector3D>()), Face_CM_(vector<Vector3D>()),
-                                                        volume_(vector<double>()), area_(vector<double>()), duplicated_points_(vector<vector<std::size_t>>()),
-                                                        sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
+                                                        volume_(vector<double>()), area_(vector<double>()), sentprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), duplicatedprocs_(vector<int>()), 
+                                                        duplicated_points_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                         self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(box_faces)
                                                         #ifdef RICH_MPI
                                                         , pointsManager(std::shared_ptr<PointsManager>())
@@ -630,8 +630,8 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               PointsInFace_(vector<point_vec>()),
                                                               FaceNeighbors_(vector<std::pair<std::size_t, std::size_t>>()),
                                                               CM_(vector<Vector3D>()), Face_CM_(vector<Vector3D>()),
-                                                              volume_(vector<double>()), area_(vector<double>()), duplicated_points_(vector<vector<std::size_t>>()),
-                                                              sentprocs_(vector<int>()), duplicatedprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
+                                                              volume_(vector<double>()), area_(vector<double>()), sentprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()),  duplicatedprocs_(vector<int>()), 
+                                                              duplicated_points_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()),
                                                               self_index_(vector<std::size_t>()), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ())
                                                               #ifdef RICH_MPI
                                                               , pointsManager(std::shared_ptr<PointsManager>())
@@ -1126,9 +1126,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
             // std::cout << "rank " << rank << " is receiving " << recvLengths[_rank] << " from rank " << _rank << ", insertedSoFar is " << insertedSoFar << "(total length: " << totalLength << ")" << std::endl;
             requests.push_back(MPI_REQUEST_NULL);
             MPI_Irecv(&almostExtraPoints[insertedSoFar], sizeof(_3DPoint) * recvLengths[_rank], MPI_BYTE, _rank, INITIAL_SENDRECV_TAG, MPI_COMM_WORLD, &requests[requests.size() - 1]);
-            size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
-            
-            size_t dupRankIdx = std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank) - this->duplicatedprocs_.begin();
+            size_t dupRankIdx = std::distance(this->duplicatedprocs_.begin(), std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank));
             if(dupRankIdx == this->duplicatedprocs_.size())
             {
                 // new rank in this->duplicatedprocs_, initialize it
@@ -1149,7 +1147,6 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
     for(size_t i = 0; i < toSend.size(); i++)
     {
         int _rank = sentProc[i];
-        size_t dupRankIdx = std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank) - this->duplicatedprocs_.begin();        
         // std::cout << "rank " << rank << " is sending " << toSend[i].size() << " to rank " << _rank << std::endl;
         requests.push_back(MPI_REQUEST_NULL);
         MPI_Isend(&toSend[i][0], sizeof(_3DPoint) * toSend[i].size(), MPI_BYTE, _rank, INITIAL_SENDRECV_TAG, MPI_COMM_WORLD, &requests[requests.size() - 1]);
@@ -1466,8 +1463,6 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-    bool first_call = (this->pointsManager.get() == nullptr);
 
     std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points, suppressRebalancing);
     // std::cout << "points.size() was " << points.size() << " and now is " << new_points.size() << std::endl;
@@ -2482,10 +2477,10 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 set_temp_(other.set_temp_), stack_temp_(other.stack_temp_), del_(other.del_), PointTetras_(other.PointTetras_), R_(other.R_),
                                                 tetra_centers_(other.tetra_centers_), FacesInCell_(other.FacesInCell_), PointsInFace_(other.PointsInFace_),
                                                 FaceNeighbors_(other.FaceNeighbors_), CM_(other.CM_), Face_CM_(other.Face_CM_), volume_(other.volume_), area_(other.area_),
-                                                duplicated_points_(other.duplicated_points_), sentprocs_(other.sentprocs_), duplicatedprocs_(other.duplicatedprocs_), sentpoints_(other.sentpoints_),
+                                                sentprocs_(other.sentprocs_), sentpoints_(other.sentpoints_), duplicatedprocs_(other.duplicatedprocs_), duplicated_points_(other.duplicated_points_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , pointsManager(other.pointsManager), radiuses(other.radiuses)
+                                                , pointsManager(other.pointsManager), radiuses(other.radiuses), indexingToSave(other.indexingToSave)
                                                 #endif // RICH_MPI
                                                 {}
 

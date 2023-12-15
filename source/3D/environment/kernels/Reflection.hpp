@@ -9,7 +9,7 @@ namespace Kernelization3D
     class Reflection : public IndexingKernel3D
     {
     public:
-        inline Reflection(const Vector3D &reflectionVector, const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing), reflectionVector(reflectionVector), factoredVec(reflectionVector * (2 / abs(reflectionVector))){};
+        inline Reflection(const Vector3D &reflectionVector, const IndexingKernel3D *beforeIndexing = nullptr): reflectionVector(reflectionVector), factoredVec(reflectionVector * (2 / abs(reflectionVector))), beforeIndexing(beforeIndexing){};
 
         inline Vector3D operator()(const Vector3D &vector) const override
         {

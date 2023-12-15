@@ -15,7 +15,7 @@ class HilbertPointsManager : public PointsManager
 {
 public:
     HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD)
-        : PointsManager(ll, ur, comm), envAgent(nullptr), hilbertOrder(0), convertor(nullptr)
+        : PointsManager(ll, ur, comm), envAgent(nullptr), convertor(nullptr)
     {
         if(indexing.get() == nullptr)
         {
@@ -53,9 +53,8 @@ private:
 
     PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses);
 
-    int hilbertOrder;
-    HilbertConvertor3D *convertor;
     HilbertCurveEnvironmentAgent *envAgent;
+    HilbertConvertor3D *convertor;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
     std::vector<hilbert_index_t> responsibilityRange;
     bool customIndexingIsSet;

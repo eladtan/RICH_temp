@@ -172,8 +172,8 @@ private:
   std::vector<Face> box_faces_;
   
   #ifdef RICH_MPI
-    std::vector<double> radiuses;
     std::shared_ptr<PointsManager> pointsManager;
+    std::vector<double> radiuses;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
   #endif // RICH_MPI
 

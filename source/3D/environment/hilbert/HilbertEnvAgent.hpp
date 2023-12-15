@@ -26,7 +26,9 @@ public:
     inline int getOrder() const{return this->order;};
 
     inline void updatePoints(const std::vector<Vector3D> &newPoints) override
-    {}
+    {
+        this->HilbertCurveEnvironmentAgent::updatePoints(newPoints);
+    }
 
     inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
     {

@@ -12,6 +12,7 @@ class KDTreeFinder : public RangeFinder
 public:
     template<typename RandomAccessIterator>
     KDTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
+    
     inline KDTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): KDTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
     
     inline ~KDTreeFinder() override{delete this->kdTree;};

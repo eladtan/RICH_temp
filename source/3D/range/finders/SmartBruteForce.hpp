@@ -26,11 +26,6 @@ public:
     
     inline ~SmartBruteForceFinder() = default;
 
-    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
-    {
-        throw UniversalError("SmartBruteForceFinder::closestPointInSphere not implemented");
-    }
-
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
     std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override;
