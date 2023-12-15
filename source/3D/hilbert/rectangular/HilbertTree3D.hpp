@@ -1,6 +1,8 @@
 #ifndef HILBERT_TREE_3D
 #define HILBERT_TREE_3D
 
+#define DEBUG_MODE
+
 #ifdef DEBUG_MODE
     #include <iostream>
 #endif // DEBUG_MODE
@@ -39,8 +41,12 @@ private:
     mutable std::vector<const Node*> nodes_stack;
     MPI_Comm comm;
     int rank, size;
+    #ifdef DEBUG_MODE
+        const HilbertConvertor3D *convertor;
+    #endif // DEBUG_MODE
 
     void buildTreeHelper(Node *currentNode, const typename HilbertConvertor3D::RecursionArguments &current_args, hilbert_index_t &current_d, const HilbertConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
+    
     void buildTree(const HilbertConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
 
     #ifdef DEBUG_MODE
@@ -52,6 +58,9 @@ public:
     {
         MPI_Comm_rank(this->comm, &this->rank);
         MPI_Comm_size(this->comm, &this->size);
+        #ifdef DEBUG_MODE
+            this->convertor = convertor;
+        #endif // DEBUG_MODE
         this->buildTree(convertor, responsibilityRange);
     }
 
@@ -198,6 +207,9 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
 
     }
 
+    Vector3D newLL = std::numeric_limits<typename Vector3D::coord_type>::max() * Vector3D(1, 1, 1);
+    Vector3D newUR = std::numeric_limits<typename Vector3D::coord_type>::min() * Vector3D(1, 1, 1);
+
     if((ranksMatching.second - ranksMatching.first) < max_ranks_per_leaf)
     {
         // don't have to call recursively
@@ -264,8 +276,24 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
             {
                 currentNode->children.push_back(new Node(currentNode));
                 this->buildTreeHelper(currentNode->children.back(), nextArgs, current_d, convertor, responsibilityRange);
-            }                
+            }      
+
+            for(const Node *child : currentNode->children)
+            {
+                const Vector3D &childLL = child->boundingBox.getLL();
+                const Vector3D &childUR = child->boundingBox.getUR();
+                
+                for(int j = 0; j < DIM; j++)
+                {
+                    newLL[j] = std::min<typename Vector3D::coord_type>(newLL[j], childLL[j]);
+                    newUR[j] = std::max<typename Vector3D::coord_type>(newUR[j], childUR[j]);
+                }
+            }    
+            newLL -= Vector3D(EPSILON, EPSILON, EPSILON);
+            newUR += Vector3D(EPSILON, EPSILON, EPSILON);
+            currentNode->boundingBox.setBounds(newLL, newUR);
         }
+
     }
 }
 
@@ -327,8 +355,13 @@ typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per
     if(result.empty())
     {
         UniversalError eo("In HilbertTree3D::getIntersectingRanks: result is empty, (should at least contain the rank itself)");
+        eo.addEntry("Rank", rank);
         eo.addEntry("Sphere", sphere);
         eo.addEntry("Root Bounding Box", this->root->boundingBox);
+        #ifdef DEBUG_MODE
+            eo.addEntry("d of sphere center", this->convertor->xyz2d(sphere.center));
+            this->print();
+        #endif // DEBUG_MODE
         throw eo;
     }
 

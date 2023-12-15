@@ -203,7 +203,8 @@ std::pair<typename HilbertConvertor3D::DirectionVector3D, typename HilbertConver
     direction_t z_advancing = a.z + b.z + c.z;
 
     DirectionVector3D boundary = {startPoint.x + x_advancing + ((x_advancing >= 0)? 1 : 0), startPoint.y + y_advancing + ((y_advancing >= 0)? 1 : 0), startPoint.z + z_advancing + ((z_advancing >= 0)? 1 : 0)};
-    return {{std::min(startPoint.x, boundary.x), std::min(startPoint.y, boundary.y), std::min(startPoint.z, boundary.z)}, {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y), std::max(startPoint.z, boundary.z)}};    
+    return {{std::min(startPoint.x, boundary.x) - 1, std::min(startPoint.y, boundary.y) - 1, std::min(startPoint.z, boundary.z) - 1}, 
+            {std::max(startPoint.x, boundary.x) + 1, std::max(startPoint.y, boundary.y) + 1, std::max(startPoint.z, boundary.z) + 1}};    
 }
 
 /**
