@@ -14,7 +14,7 @@ using namespace H5;
 
 #ifdef RICH_MPI
 	#include <mpi.h>
-	#define HDF5_WRITE_BLOCK_TAG 9041
+	#define HDF5_WRITE_BLOCK_TAG 604
 #endif // RICH_MPI
 
 #if RICH_MPI  

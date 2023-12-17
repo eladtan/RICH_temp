@@ -18,7 +18,7 @@ struct ExchangeAnswer
 
 namespace
 {
-    #define EXCHANGE_DATA_SEND_TAG 1999
+    #define EXCHANGE_DATA_SEND_TAG 2605
 
     template<typename T>
     void initializeReceive(ExchangeAnswer<T> &answer, const std::vector<size_t> &sizes, std::vector<MPI_Request> &requests, const MPI_Comm &comm)

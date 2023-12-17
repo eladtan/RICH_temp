@@ -14,6 +14,10 @@
 #include <boost/container/flat_set.hpp>
 #include <unordered_set>
 
+#ifdef TIMING
+    #include <chrono>
+#endif // TIMING
+
 #include "3D/environment/EnvironmentAgent.h"
 #include "AnswerAgent.hpp"
 #include "TalkAgent.hpp"
@@ -50,6 +54,11 @@ struct QueryBatchInfo
     std::vector<QueryInfo<QueryData, AnswerType>> queriesAnswers;
     std::vector<AnswerType> result;
     std::vector<std::vector<AnswerType>> dataByRanks;
+    #ifdef TIMING
+        std::chrono::_V2::system_clock::time_point beginClockTime; 
+        double finishSubmittingTime;
+        double receivedAllTime;
+    #endif // TIMING
 };
 
 template<typename QueryData, typename AnswerType>
@@ -94,7 +103,7 @@ private:
 
     void rearrangeResult(_queryBatchInfo &queriesBatch);
 
-    void sendFinish();
+    void sendFinish(_queryBatchInfo &queriesBatch);
     int checkForFinishMessages() const;
     void flushBuffer(int _rank);
     inline void flushAll(){for(int i = 0; i < this->size; i++) this->flushBuffer(i);};
@@ -182,7 +191,7 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
 
     if(this->finishedMyQueries and this->shouldReceiveInTotal == this->receivedUntilNow)
     {
-        this->sendFinish();
+        this->sendFinish(batch);
     }
 }
 
@@ -274,8 +283,13 @@ void QueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo &query)
 }
 
 template<typename QueryData, typename AnswerType>
-void QueryAgent<QueryData, AnswerType>::sendFinish()
+void QueryAgent<QueryData, AnswerType>::sendFinish(_queryBatchInfo &queriesBatch)
 {
+    #ifdef TIMING
+        std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+        queriesBatch.receivedAllTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+    #endif // TIMING
+
     int dummy;
     for(int _rank = 0; _rank < this->size; _rank++)
     {
@@ -346,6 +360,7 @@ void QueryAgent<QueryData, AnswerType>::rearrangeResult(_queryBatchInfo &queries
 template<typename QueryData, typename AnswerType>
 QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatch(std::queue<QueryData> &queries)
 {
+
     this->receivedUntilNow = 0; // reset the receive counter
     this->shouldReceiveInTotal = 0; // reset the should-be-received counter
     for(std::vector<size_t> &_receivedDataFromRank : this->recvData)
@@ -359,6 +374,10 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     this->requests.reserve(10 * originalQueriesNum); // heuristic
     this->requests.clear();
     _queryBatchInfo queriesBatch;
+    #ifdef TIMING
+        queriesBatch.beginClockTime std::chrono::system_clock::now();
+    #endif // TIMING
+
     queriesBatch.queriesAnswers.reserve(originalQueriesNum);
     std::vector<_queryInfo> &queriesInfo = queriesBatch.queriesAnswers;
     queriesBatch.dataByRanks.resize(this->size);
@@ -369,7 +388,11 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     // if doesn't have any queries, send a finish message
     if(this->finishedMyQueries)
     {
-        this->sendFinish();
+        this->sendFinish(queriesBatch);
+        #ifdef TIMING
+            std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+            queriesBatch.finishSubmittingTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+        #endif // TIMING
     }
     while((!this->finishedMyQueries) or (this->finishedReceived < this->size))
     {
@@ -385,11 +408,16 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
             {
                 // send the rest of the waiting (buffered) requests
                 this->flushAll();
+                #ifdef TIMING
+                    std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+                    queriesBatch.finishSubmittingTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+                #endif // TIMING
+
                 this->finishedMyQueries = true;
                 // if had several queries, but no communication was needed, send a finish message
                 if(this->shouldReceiveInTotal == 0)
                 {
-                    this->sendFinish();
+                    this->sendFinish(queriesBatch);
                 }
             }
         }
@@ -426,6 +454,11 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     {
         MPI_Waitall(this->requests.size(), &(*(this->requests.begin())), MPI_STATUSES_IGNORE); // make sure any query was indeed received
     }
+
+    #ifdef TIMING
+        std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+        queriesBatch.finishTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+    #endif // TIMING
 
     // add to the list the processors that sent us a message for the first time
     for(int _rank = 0; _rank < this->size; _rank++)

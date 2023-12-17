@@ -58,7 +58,6 @@ public:
 	*/
 	explicit inline Vector3D(void): Vector3D(0, 0, 0){};
 
-
 	/*! \brief Class copy constructor
 	\param other Other vector
 	*/
