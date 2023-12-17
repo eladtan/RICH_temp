@@ -39,7 +39,7 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points)
     
     if(this->envAgent != nullptr)
     {
-        this->envAgent->updateBorders(this->responsibilityRange, this->hilbertOrder);
+        this->envAgent->updateBorders(this->responsibilityRange, this->convertor->getOrder());
     }
 }
 
@@ -81,7 +81,8 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     OctTree<Vector3D> tree(kerneledLL, kerneledUR, kerneledVectors);
 
     int depth = tree.getDepth(); // my own depth
-    MPI_Allreduce(&depth, &this->hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
+    int hilbertOrder;
+    MPI_Allreduce(&depth, &hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
 
     MPI_Allreduce(MPI_IN_PLACE, &kerneledLL.x, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &kerneledLL.y, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
@@ -99,9 +100,8 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     kerneledUR.y += std::abs(SPACE_FACTOR * y_length);
     kerneledUR.z += std::abs(SPACE_FACTOR * z_length);
     
-    this->hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, this->hilbertOrder);
-
-    this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, this->hilbertOrder);
+    hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, hilbertOrder);
+    this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
 }
 
 PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
@@ -125,7 +125,15 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     points, radiuses); // exchange
 
     // initialize environment agent
-    this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor, this->indexing.get());
+    if(this->customIndexingIsSet)
+    {
+        this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor, this->indexing.get());
+    }
+    else
+    {
+        // use hilbert tree, as it is better
+        this->envAgent = new HilbertTreeEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor);
+    }
 
     return exchangeResult;
 }

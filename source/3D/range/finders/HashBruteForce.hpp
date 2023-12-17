@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include <mpi.h>
-#include "3D/environment/HilbertEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #include "RangeFinder.hpp"
 
 #define HASH_SIZE 128
@@ -20,11 +20,6 @@ public:
          HashBruteForceFinder(envAgent, indexing, points.begin(), points.end()){};
     
     inline ~HashBruteForceFinder() override = default;
-
-    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
-    {
-        throw UniversalError("HashBruteForceFinder::closestPointInSphere not implemented");
-    }
 
     std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {

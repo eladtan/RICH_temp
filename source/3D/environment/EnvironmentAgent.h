@@ -5,7 +5,6 @@
 
 #include <mpi.h>
 #include <boost/container/flat_set.hpp>
-
 #include "kernels/IndexingKernel3D.hpp"
 
 /**

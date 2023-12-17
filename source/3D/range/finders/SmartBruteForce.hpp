@@ -8,8 +8,7 @@
 // for maps:
 #include <map>
 #include <boost/container/flat_map.hpp>
-
-#include "3D/environment/HilbertEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #include "RangeFinder.hpp"
 
 class SmartBruteForceFinder : public RangeFinder
@@ -26,11 +25,6 @@ public:
          SmartBruteForceFinder(envAgent, indexing, points.begin(), points.end()){};
     
     inline ~SmartBruteForceFinder() = default;
-
-    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
-    {
-        throw UniversalError("SmartBruteForceFinder::closestPointInSphere not implemented");
-    }
 
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
