@@ -188,24 +188,42 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
     currentNode->boundingBox = _BoundingBox<Vector3D>(convertor->WidthHeightDepthToXYZ(ll.x, ll.y, ll.z), convertor->WidthHeightDepthToXYZ(ur.x, ur.y, ur.z));
 
     std::pair<int, int> ranksMatching = {0, this->size - 1};
-    for(int index = 0; index < this->size; index++)
+
+
+    if(current_d >= responsibilityRange.back())
     {
-        if(currentNode->d_start <= responsibilityRange[index])
+        ranksMatching = {this->size-1, this->size-1};
+    }
+    else
+    {
+        for(int index = 0; index < this->size; index++)
         {
-            ranksMatching.first = index;
-            break;
+            if(currentNode->d_start <= responsibilityRange[index])
+            {
+                ranksMatching.first = index;
+                break;
+            }
+        }
+
+        for(int index = ranksMatching.first; index < this->size; index++)
+        {
+            if((currentNode->d_end - 1) <= responsibilityRange[index])
+            {
+                ranksMatching.second = index;
+                break;
+            }
+
         }
     }
 
-    for(int index = ranksMatching.first; index < this->size; index++)
-    {
-        if((currentNode->d_end - 1) <= responsibilityRange[index])
-        {
-            ranksMatching.second = index;
-            break;
-        }
-
-    }
+    // // todo remove:
+    // int rank;
+    // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    // if(rank == 0)
+    // {
+    //     std::cout << "current args: " << current_args << ", d is " << current_d << ", (width, height, depth) = " << width << ", " << height << ", " << depth << ", ranksMatching: " << ranksMatching.first << ", " << ranksMatching.second << std::endl;
+    //     std::cout << "responsibilityRange: " << responsibilityRange[0] << ", " << responsibilityRange[1] << ", ... " << responsibilityRange.back() << std::endl;
+    // }
 
     Vector3D newLL = std::numeric_limits<typename Vector3D::coord_type>::max() * Vector3D(1, 1, 1);
     Vector3D newUR = std::numeric_limits<typename Vector3D::coord_type>::min() * Vector3D(1, 1, 1);
@@ -293,7 +311,6 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
             newUR += Vector3D(EPSILON, EPSILON, EPSILON);
             currentNode->boundingBox.setBounds(newLL, newUR);
         }
-
     }
 }
 
