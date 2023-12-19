@@ -98,15 +98,22 @@ message("HDF5 ${HDF5_LIBS}")
 message("VTK ${VTK_DIR}")
 
 # vcl
-if(DEFINED VCL_INCLUDE)
+if(VCL_INCLUDE)
     message("VCL ${VCL_INCLUDE}")
     include_directories("${VCL_INCLUDE}")
     add_compile_definitions("USE_VCL_VECTORIZATION")
 endif()
 
+# clipper
+if(CLIPPER_INCLUDE)
+    message("CLIPPER ${CLIPPER_INCLUDE}")
+    include_directories("${CLIPPER_INCLUDE}")
+    add_compile_definitions("USE_CLIPPER")
+endif()
+
 # json
-if(DEFINED JSONCPP_INCLUDE)
-    if(DEFINED JSONCPP_LIB_DIRECTORY)
+if(JSONCPP_INCLUDE)
+    if(JSONCPP_LIB_DIRECTORY)
         # target json_cpp
         message("JSON_CPP ${JSONCPP_INCLUDE}, LIB ${JSONCPP_LIB_DIRECTORY}")
         include_directories(${JSONCPP_INCLUDE})

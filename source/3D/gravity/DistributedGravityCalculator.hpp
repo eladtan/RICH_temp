@@ -7,8 +7,8 @@
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 #include "3D/hilbert/hilbertTypes.h" // for _3DPoint
 
-#define GRAVITY_POINTS_REQUEST_TAG 1104
-#define GRAVITY_POINTS_SEND_TAG 1105
+#define GRAVITY_POINTS_REQUEST_TAG 1004
+#define GRAVITY_POINTS_SEND_TAG 100402
 
 namespace
 {

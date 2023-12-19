@@ -15,7 +15,7 @@ inline void vtune_pause(void)
 inline void vtune_resume(void)
 {
     #ifdef WITH_VTUNE
-        __itt_pause();
+        __itt_resume();
     #else // WITH_VTUNE
         throw UniversalError("Compiled without Vtune");
     #endif // WITH_VTUNE

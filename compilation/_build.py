@@ -15,10 +15,11 @@ root_dir = str(pathlib.Path(__file__).parent.parent.absolute())
 sys.path.append(root_dir)
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definitionOfReal=8):
-    common_cxx_flags = " -std=c++17 -Wextra -Wshadow -fno-common -fstack-protector-all -rdynamic -g"
+    warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
+    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g"
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX "
-
+    
     hdf5_lib_dir = SysLibsDict["hdf5_lib_dir"]
     hdf5_include_dir = SysLibsDict["hdf5_include"]
     vtk_dir = SysLibsDict["vtk"]
@@ -77,6 +78,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
     
     vcl_include_dir = SysLibsDict["vcl_include"] if "vcl_include" in SysLibsDict else os.path.join(root_dir, "source/opt/vcl")
     r3d_include_dir = SysLibsDict["r3d_include"] if "r3d_include" in SysLibsDict else os.path.join(root_dir, "source/opt/r3d/src")
+    clipper_include_dir = SysLibsDict["clipper_include"] if "clipper_include" in SysLibsDict else os.path.join(root_dir, "source/opt/clipper")
 
     cmd = ['cmake',
             f'-DMPI={mpi}',
@@ -101,6 +103,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DVTUNE_INCLUDE={SysLibsDict["vtune_include"]}' if "vtune_include" in SysLibsDict else "",
             f'-DVTUNE_LIB_DIRECTORY={SysLibsDict["vtune_lib_dir"]}' if "vtune_lib_dir" in SysLibsDict else "",
             f'-DVCL_INCLUDE={vcl_include_dir}' if vcl_include_dir else "",
+            f'-DCLIPPER_INCLUDE={clipper_include_dir}' if clipper_include_dir else "",
             f'-DR3D_INCLUDE={r3d_include_dir}' if r3d_include_dir else "",
             f'-DCGAL_INCLUDE={SysLibsDict["cgal_include"] if "cgal_include" in SysLibsDict else ""}',
             f'-DPYBIND11={SysLibsDict["pybind11"]}' if "pybind11" in SysLibsDict else "",

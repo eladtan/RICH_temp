@@ -86,8 +86,8 @@ public:
     }
 
 protected:
-    MPI_Comm comm;
     Vector3D ll, ur;
+    MPI_Comm comm;
     int rank, size;
 
     /**

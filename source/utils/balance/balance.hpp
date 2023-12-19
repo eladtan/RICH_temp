@@ -173,5 +173,4 @@ std::vector<T> getBorders(std::vector<T> &input, const Comparator &comp = [](con
     return getStatOrders(input, stats, comp);
 }
 
-
 #endif // _RICH_BALANCE2_HPP

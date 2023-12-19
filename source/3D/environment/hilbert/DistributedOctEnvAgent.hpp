@@ -3,17 +3,15 @@
 
 #ifdef RICH_MPI
 
-#include "EnvironmentAgent.h"
-#include "3D/hilbert/rectangular/HilbertConvertor3D.hpp"
+#include "HilbertCurveEnvAgent.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 
-class DistributedOctEnvironmentAgent : public EnvironmentAgent
+class DistributedOctEnvironmentAgent : public HilbertCurveEnvironmentAgent
 {
 public:
     inline DistributedOctEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const Kernelization3D::IndexingKernel3D *indexing, const MPI_Comm &comm = MPI_COMM_WORLD): 
-            range(ranges), convertor(convertor), indexing(indexing), EnvironmentAgent(ll, ur, comm)
+            HilbertCurveEnvironmentAgent(ll, ur, ranges, convertor, comm), indexing(indexing)
     {
-        this->order = this->convertor->getOrder();
         OctTree<Vector3D> myTree(this->ll, this->ur, points);
         this->distributedOctTree = new DistributedOctTree<Vector3D>(&myTree, false /* no detailed nodes info */, this->comm);
     };
@@ -25,32 +23,22 @@ public:
         return this->distributedOctTree->getIntersectingRanks(center, radius);
     };
 
-    inline int getOwner(const Vector3D &point) const override
+    inline void updatePoints(const std::vector<Vector3D> &newPoints) override
     {
-        return this->getCellOwner(this->convertor->xyz2d((*this->indexing)(point)));
-    };
-
-    inline int getCellOwner(hilbert_index_t d) const
-    {
-        int index = static_cast<int>(std::distance(this->range.begin(), std::upper_bound(this->range.begin(), this->range.end(), d)));
-        return std::min<int>(index, this->size - 1);
-    };
-
-    inline void updatePoints(const std::vector<Vector3D> &newPoints)
-    {
+        this->HilbertCurveEnvironmentAgent::updatePoints(newPoints);
         delete this->distributedOctTree;
         OctTree<Vector3D> myTree(this->ll, this->ur, newPoints);
         this->distributedOctTree = new DistributedOctTree(&myTree, false, this->comm);
     }
 
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
+    inline int getOwner(const Vector3D &point) const override
     {
-        this->range = newRange;
-        if(this->convertor != nullptr)
-        {
-            this->convertor->changeOrder(newOrder);
-        }
-        return; // nothing else to do
+        return this->getCellOwner(this->convertor->xyz2d((*this->indexing)(point)));
+    };
+
+    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
+    {
+        this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
     }
 
     const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};
@@ -58,7 +46,7 @@ public:
     inline int getOrder() const{return this->order;};
     
     template<typename U>
-    inline std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_type>> getClosestFurthestPointsByRanks(const U &point) const
+    inline HilbertCurveEnvironmentAgent::DistancesVector getClosestFurthestPointsByRanks(const U &point) const
     {
         return this->distributedOctTree->getClosestFurthestPointsByRanks(point);
     }

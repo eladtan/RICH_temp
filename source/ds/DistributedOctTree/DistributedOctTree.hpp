@@ -145,7 +145,6 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
     std::vector<unsigned char> childBuff(this->size);
     MPI_Allgather(&valueToSend, 1, MPI_UNSIGNED_CHAR, &childBuff[0], 1, MPI_BYTE, this->comm);
 
-    bool doesnt_have_children = true;
     for(int i = 0; i < CHILDREN; i++)
     {
         bool recursiveBuild = false;
@@ -175,10 +174,6 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
             // someone holds the `i`th child
             this->treeSize++;
             newNode->createChild(i); // creates the child in my own tree
-            if(newNode->children[i] == nullptr)
-            {
-                std::cout << "here 1" << std::endl;
-            }
             if(recursiveBuild and (ranks_containing_child.size() > max_ranks_per_leaf))
             {
                 // there are several holders, call recursive build (until we reach one holder)

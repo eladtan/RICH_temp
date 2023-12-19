@@ -91,7 +91,6 @@ void WritePoints(const std::vector<Vector3D> &points, const std::string &filenam
 
         fs::path path = fs::absolute(filename).parent_path();
         std::string myFilePath;
-
         fs::path ranks_files_path = path / fs::path(filename).filename().replace_extension();
         if(not fs::exists(ranks_files_path))
         {
