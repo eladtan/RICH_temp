@@ -382,6 +382,28 @@ vector<std::size_t> GetGlobalHibertIndeces(vector<Vector3D> const& cor,Vector3D 
 
 vector<std::size_t> HilbertOrder3D(vector<Vector3D> const& cor)
 {
+	static int recursiveCalls = 0;
+	recursiveCalls++;
+
+	if(recursiveCalls >= MAX_HILBERT_RECURSIVE_CALLS)
+	{
+		UniversalError eo("HilbertOrder3D: too many recursive calls");
+		for(size_t i = 0; i < cor.size(); ++i)
+		{
+			for(size_t j = 0; j < cor.size(); ++j)
+			{
+				if(i != j and cor[i] == cor[j])
+				{
+					eo.Append2ErrorMessage(" - Duplicated point found");
+					eo.addEntry("Point1", cor[i]);
+					eo.addEntry("Point2", cor[j]);
+					throw eo;
+				}
+			}
+		}
+		eo.Append2ErrorMessage(" - Though no duplicated points found");
+		throw eo;
+	}
 	// If only 1 or 2 points are provided - do not reorder them
 	if ( 2 >= cor.size() )
 	{
@@ -390,6 +412,7 @@ vector<std::size_t> HilbertOrder3D(vector<Vector3D> const& cor)
 		{
 			vIndSort[ii] = ii;
 		}
+		recursiveCalls--;
 		return vIndSort;
 	}
 	// Create a 3D-Hilbert Curve Object:
@@ -427,6 +450,7 @@ vector<std::size_t> HilbertOrder3D(vector<Vector3D> const& cor)
 	// If all points have different Hilbert distances, return the sorting indices:
 	if (vEqualIndices.empty())
 	{
+		recursiveCalls--;
 		return vIndSort;
 	}
 	else
@@ -456,6 +480,7 @@ vector<std::size_t> HilbertOrder3D(vector<Vector3D> const& cor)
 		}
 
 		// Return the sorting indices:
+		recursiveCalls--;
 		return vIndSort;
 	}
 }

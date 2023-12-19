@@ -281,13 +281,29 @@ hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
 
     if((width < 0) or (height < 0) or (depth < 0) or (width > this->div.x) or (height > this->div.y) or (depth > this->div.z))
     {
-        throw UniversalError("Should not reach here, overflow (in 3D xyz->d)");
+        UniversalError eo("Should not reach here, overflow (in 3D xyz->d)");
+        eo.addEntry("Width", width);
+        eo.addEntry("this->div.x", this->div.x);
+        eo.addEntry("Height", height);
+        eo.addEntry("this->div.y", this->div.y);
+        eo.addEntry("Depth", depth);
+        eo.addEntry("this->div.z", this->div.z);
+        eo.addEntry("x", x);
+        eo.addEntry("y", y);
+        eo.addEntry("z", z);
+        eo.addEntry("step", this->step);
+        eo.addEntry("ll", this->ll);
+        throw eo;
     }
 
     hilbert_index_t result = 0;
     if(not this->xyz2d_helper({{0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}}, {width, height, depth}, result))
     {
-        throw UniversalError("Should not reach here (in 3D xyz->d), point is (" + std::to_string(x) + ", " + std::to_string(y) + ", " + std::to_string(z) + ") (maybe outside the box?)");
+        UniversalError eo("Should not reach here (in 3D xyz->d) (maybe the point is outside the box?)");
+        eo.addEntry("x", x);
+        eo.addEntry("y", y);
+        eo.addEntry("z", z);
+        throw eo;
     }
     return result;
 }
