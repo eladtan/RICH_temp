@@ -1,14 +1,30 @@
 #include "write3D.hpp"
 
-void WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Group &stickers, const std::string &filename, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
+struct VTU_Output
 {
-    Tessellation3D const &tess = sim.getTesselation();
-    vector<ComputationalCell3D> const &cells = sim.getCells();
-
     std::vector<std::vector<double>> vtu_cell_variables;
     std::vector<std::string> vtu_cell_variable_names;
     std::vector<std::string> vtu_cell_vectors_names;
     std::vector<std::vector<Vector3D>> vtu_cell_vectors;
+};
+
+void writeVTU(const std::string &filename, const HDSim3D &sim, const VTU_Output &data)
+{
+    std::filesystem::path vtu_name(filename);
+    vtu_name.replace_extension("vtu");
+    write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, sim.getTime(), sim.getCycle(), sim.getTesselation());
+}
+
+VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Group &stickers, const std::string &filename, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
+{
+    Tessellation3D const &tess = sim.getTesselation();
+    vector<ComputationalCell3D> const &cells = sim.getCells();
+    
+    VTU_Output vtu;
+    std::vector<std::vector<double>> &vtu_cell_variables = vtu.vtu_cell_variables;
+    std::vector<std::string> &vtu_cell_variable_names = vtu.vtu_cell_variable_names;
+    std::vector<std::string> &vtu_cell_vectors_names = vtu.vtu_cell_vectors_names;
+    std::vector<std::vector<Vector3D>> &vtu_cell_vectors = vtu.vtu_cell_vectors;
 
     size_t Ncells = tess.GetPointNo();
 
@@ -211,12 +227,7 @@ void WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Grou
         write_std_vector_to_hdf5(writegroup, (*(appendices.at(i)))(sim), appendices.at(i)->getName());
     }
 
-    if(write_vtu)
-    {
-        std::filesystem::path vtu_name(filename);
-        vtu_name.replace_extension("vtu");
-        write_vtu3d::write_vtu_3d(vtu_name, vtu_cell_variable_names, vtu_cell_variables, vtu_cell_vectors_names, vtu_cell_vectors, sim.getTime(), sim.getCycle(), tess);
-    }
+    return vtu;
 }
 
 #ifdef RICH_MPI
@@ -263,7 +274,7 @@ void WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Grou
         tracers = writegroup.createGroup("/tracers");
         stickers = writegroup.createGroup("/stickers");
 
-        WriteSnapshot3DHelper(file, writegroup, tracers, stickers, filename, sim, appendices, write_vtu);
+        VTU_Output vtu = WriteSnapshot3DHelper(file, writegroup, tracers, stickers, filename, sim, appendices, write_vtu);
 
         if(rank == 0)
         {
@@ -279,6 +290,7 @@ void WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Grou
         writegroup.close();
         file.close();
 
+        writeVTU(filename, sim, vtu);
         MPI_Barrier(MPI_COMM_WORLD);
         // only rank 0 makes the shared file
         if(rank == 0)
@@ -389,7 +401,7 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
         stickers = writegroup.createGroup("/stickers");
     #endif // RICH_MPI
 
-    WriteSnapshot3DHelper(file, writegroup, tracers, stickers, filename, sim, appendices, write_vtu);
+    VTU_Output vtu = WriteSnapshot3DHelper(file, writegroup, tracers, stickers, filename, sim, appendices, write_vtu);
 
     #ifdef RICH_MPI
         if(rank == 0)
@@ -425,4 +437,6 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
     #else
         file.close();
     #endif
+
+    writeVTU(filename, sim, vtu);
 }

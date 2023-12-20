@@ -1,11 +1,27 @@
 #include "write3D.hpp"
 
-void WriteVoronoiHelper(H5File &file, Group &writegroup, const std::string &filename, const Voronoi3D &tri, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names, bool write_vtu)
+struct VTU_Output
 {
     std::vector<std::vector<double>> vtu_cell_variables;
     std::vector<std::string> vtu_cell_variable_names;
     std::vector<std::string> vtu_cell_vectors_names;
     std::vector<std::vector<Vector3D>> vtu_cell_vectors;
+};
+
+void writeVTU(const std::string &filename, const Tessellation3D &tri, const VTU_Output &data)
+{
+    std::filesystem::path vtu_name(filename);
+    vtu_name.replace_extension("vtu");
+    write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, tri);
+}
+
+VTU_Output WriteVoronoiHelper(H5File &file, Group &writegroup, const std::string &filename, const Voronoi3D &tri, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names, bool write_vtu)
+{
+    VTU_Output vtu;
+    std::vector<std::vector<double>> &vtu_cell_variables = vtu.vtu_cell_variables;
+    std::vector<std::string> &vtu_cell_variable_names = vtu.vtu_cell_variable_names;
+    std::vector<std::string> &vtu_cell_vectors_names = vtu.vtu_cell_vectors_names;
+    std::vector<std::vector<Vector3D>> &vtu_cell_vectors = vtu.vtu_cell_vectors;
 
     for(size_t i = 0; i < data.size(); ++i)
     {
@@ -103,12 +119,7 @@ void WriteVoronoiHelper(H5File &file, Group &writegroup, const std::string &file
     write_std_vector_to_hdf5(writegroup, Nvert, "Number_of_vertices_in_face", datatype);
     write_std_vector_to_hdf5(writegroup, VerticesInFace, "Vertices_in_face", datatype);
 
-    if(write_vtu)
-    {
-        std::filesystem::path vtu_name(filename);
-        vtu_name.replace_extension("vtu");
-        write_vtu3d::write_vtu_3d(vtu_name, vtu_cell_variable_names, vtu_cell_variables, vtu_cell_vectors_names, vtu_cell_vectors, tri);
-    }
+    return vtu;
 }
 
 #if RICH_MPI
@@ -149,10 +160,11 @@ void WriteVoronoiHelper(H5File &file, Group &writegroup, const std::string &file
             write_std_vector_to_hdf5(file, box, "Box");
         }
 
-        WriteVoronoiHelper(file, writegroup, filename, tri, data, names, write_vtu);
+        VTU_Output vtu = WriteVoronoiHelper(file, writegroup, filename, tri, data, names, write_vtu);
 
         writegroup.close();
         file.close();
+        writeVTU(filename, tri, vtu);
 
         MPI_Barrier(MPI_COMM_WORLD);
         // only rank 0 makes the shared file
@@ -234,7 +246,7 @@ void WriteVoronoi(Voronoi3D const &tri, std::string const &filename, const std::
         }
     #endif // RICH_MPI
 
-    WriteVoronoiHelper(file, writegroup, filename, tri, data, names, write_vtu);
+    VTU_Output vtu = WriteVoronoiHelper(file, writegroup, filename, tri, data, names, write_vtu);
 
     #ifdef RICH_MPI
         writegroup.close();
@@ -248,6 +260,7 @@ void WriteVoronoi(Voronoi3D const &tri, std::string const &filename, const std::
     #else
         file.close();
     #endif
+    writeVTU(filename, tri, vtu);
 }
 
 void WriteVoronoiSerial(Voronoi3D const &tri, std::string const &filename, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names, bool writevtu)
@@ -263,7 +276,8 @@ void WriteVoronoiSerial(Voronoi3D const &tri, std::string const &filename, const
     write_std_vector_to_hdf5(file, box, "Box");
 
     Group writegroup = file.openGroup("/");
-    WriteVoronoiHelper(file, writegroup, filename, tri, data, names, writevtu);
+    VTU_Output vtu = WriteVoronoiHelper(file, writegroup, filename, tri, data, names, writevtu);
+    writeVTU(filename, tri, vtu);
     writegroup.close();
     file.close();
 }
