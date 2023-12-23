@@ -216,15 +216,6 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
         }
     }
 
-    // // todo remove:
-    // int rank;
-    // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    // if(rank == 0)
-    // {
-    //     std::cout << "current args: " << current_args << ", d is " << current_d << ", (width, height, depth) = " << width << ", " << height << ", " << depth << ", ranksMatching: " << ranksMatching.first << ", " << ranksMatching.second << std::endl;
-    //     std::cout << "responsibilityRange: " << responsibilityRange[0] << ", " << responsibilityRange[1] << ", ... " << responsibilityRange.back() << std::endl;
-    // }
-
     Vector3D newLL = std::numeric_limits<typename Vector3D::coord_type>::max() * Vector3D(1, 1, 1);
     Vector3D newUR = std::numeric_limits<typename Vector3D::coord_type>::min() * Vector3D(1, 1, 1);
 
@@ -327,7 +318,10 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTree(const HilbertConvertor3D *conv
 
     if(d != convertor->total_points_num)
     {
-        throw UniversalError("HilbertTree3D::buildTree: d (" + std::to_string(d) + " != convertor->total_points_num " + std::to_string(convertor->total_points_num) + ")");
+        UniversalError eo("HilbertTree3D::buildTree: d != convertor->total_points_num");
+        eo.addEntry("d", d);
+        eo.addEntry("total points num", convertor->total_points_num);
+        throw eo;
     }
 }
 

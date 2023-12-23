@@ -72,8 +72,7 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
   \param mpi_write Determines whether to write parallisation data
   \param write_vtu Determines whether to write vtu file as well
  */
-void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename, const vector<DiagnosticAppendix3D*>& appendices = vector<DiagnosticAppendix3D*>(),
-                     bool write_vtu = true);
+void WriteSnapshot3DParallel(HDSim3D const& sim, std::string const& filename, const vector<DiagnosticAppendix3D*>& appendices = vector<DiagnosticAppendix3D*>(), bool write_vtu = true);
 #endif // RICH_MPI
 
 void WritePoints(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
