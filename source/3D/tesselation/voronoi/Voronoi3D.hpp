@@ -30,7 +30,6 @@
 #include <boost/container/small_vector.hpp>
 #include <omp.h>
 
-
 #ifdef USE_VCL_VECTORIZATION
   #include <vectorclass.h>
 #endif // USE_VCL_VECTORIZATION
@@ -137,11 +136,13 @@ private:
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
   std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
+  void FilterRealGhostPoints();
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
+  std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const std::vector<Vector3D> &points) const;
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
   void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);
-  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers, boost::container::flat_map<size_t, size_t> &firstLargeIteration, const std::vector<double> &currentRadiuses);
+  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers, boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses);
   
   #endif // RICH_MPI
 
@@ -162,7 +163,9 @@ private:
   vector<int> sentprocs_;
   vector<vector<std::size_t>> sentpoints_; // if rank `i` is inside index `j` in `sentprocs_`, then the points in sentpoints_[j] are the points I sent to rank `i` in the initial points exchange in build
   vector<int> duplicatedprocs_; 
-  vector<vector<std::size_t> > duplicated_points_;  // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in `i`'s delaunay, which are actually mine
+  vector<vector<std::size_t>> duplicated_points_;  // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in `i`'s delaunay, which are actually mine
+  vector<int> real_duplicated_proc; 
+  vector<vector<std::size_t>> real_duplicated_points;
   vector<vector<std::size_t>> Nghost_; // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in my delaunay, which are belongs, originally, to i
   vector<std::size_t> self_index_; // indexes of the points which are truely mine (inside the points list)
   Voronoi3D();

@@ -89,6 +89,13 @@ private:
 
         inline EnvironmentAgent::RanksSet getTalkList(const BigRangeQueryData &query) const override
         {
+            if(std::isnan(query.center.x) or std::isnan(query.center.y) or std::isnan(query.center.z))
+            {
+                UniversalError eo("In BigRangeTalkAgent, should not reach here, since the query center is NaN");
+                eo.addEntry("Query", query);
+                throw eo;
+            }
+
             // std::cout << "rank " << this->rank << " calculates the talk list of query " << query << std::endl;
             EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
             if(intersectingRanks.empty())
