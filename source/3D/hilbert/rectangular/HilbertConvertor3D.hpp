@@ -5,10 +5,14 @@
     #include <iostream>
 #endif // DEBUG_MODE
 #include "3D/elementary/Vector3D.hpp" // for Vector3D
+#include "ds/utils/geometry.hpp" // for _BoundingBox<Vector3D>
 #include "../hilbertTypes.h"
 
 #define MAX_HILBERT_ORDER 19
 
+/**
+ * see here the algorithm: https://github.com/jakubcerveny/gilbert
+*/
 class HilbertConvertor3D
 {
     template<int max_leaf_ranks>
@@ -46,6 +50,7 @@ private:
     };
 
     Vector3D ll, ur, step;
+    _BoundingBox<Vector3D> spaceBoundingBox;
     DirectionVector3D div;
     hilbert_index_t total_points_num;
     size_t order;

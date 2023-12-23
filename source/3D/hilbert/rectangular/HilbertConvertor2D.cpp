@@ -80,9 +80,6 @@ std::vector<HilbertConvertor2D::RecursionArguments> HilbertConvertor2D::getRecur
     return toReturn;
 }
 
-/**
- * see here the algorithm: https://github.com/jakubcerveny/gilbert
-*/
 bool HilbertConvertor2D::d2xy_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector2D &result) const
 {
     const DirectionVector2D &startPoint = args.startPoint;
@@ -165,9 +162,6 @@ std::pair<typename HilbertConvertor2D::DirectionVector2D, typename HilbertConver
             {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y)}};    
 }
 
-/**
- * see here the algorithm: https://github.com/jakubcerveny/gilbert
-*/
 bool HilbertConvertor2D::xy2d_helper(const RecursionArguments &args, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
 {
     const DirectionVector2D &startPoint = args.startPoint;

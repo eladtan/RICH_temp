@@ -6,6 +6,9 @@
 
 #define MAX_HILBERT_ORDER 28
 
+/**
+ * see here the algorithm: https://github.com/jakubcerveny/gilbert
+*/
 class HilbertConvertor2D
 {
 private:

@@ -4,6 +4,7 @@ HilbertConvertor3D::HilbertConvertor3D(const Vector3D &ll, const Vector3D &ur, s
 {
     this->ll = ll;
     this->ur = ur;
+    this->spaceBoundingBox = _BoundingBox<Vector3D>(ll, ur);
     this->changeOrder(order);
 }
 
@@ -111,9 +112,6 @@ Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_
     return Vector3D(x, y, z);
 }
 
-/**
- * see here the algorithm: https://github.com/jakubcerveny/gilbert
-*/
 bool HilbertConvertor3D::d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
@@ -207,9 +205,6 @@ std::pair<typename HilbertConvertor3D::DirectionVector3D, typename HilbertConver
             {std::max(startPoint.x, boundary.x) + 1, std::max(startPoint.y, boundary.y) + 1, std::max(startPoint.z, boundary.z) + 1}};    
 }
 
-/**
- * see here the algorithm: https://github.com/jakubcerveny/gilbert
-*/
 bool HilbertConvertor3D::xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
@@ -278,6 +273,14 @@ hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
     direction_t width = std::floor((x - this->ll.x) / this->step.x);
     direction_t height = std::floor((y - this->ll.y) / this->step.y);
     direction_t depth = std::floor((z - this->ll.z) / this->step.z);
+
+    // if(not this->spaceBoundingBox.contains(Vector3D(x, y, z)))
+    // {
+    //     UniversalError eo("HilbertConvertor3D::xyz2d: Given point is out of the bounding box of the space");
+    //     eo.addEntry("Space bounding box", this->spaceBoundingBox);
+    //     eo.addEntry("Point", Vector3D(x, y, z));
+    //     throw eo;
+    // }
 
     if((width < 0) or (height < 0) or (depth < 0) or (width > this->div.x) or (height > this->div.y) or (depth > this->div.z))
     {
