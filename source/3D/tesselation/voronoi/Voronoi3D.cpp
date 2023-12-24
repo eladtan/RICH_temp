@@ -820,7 +820,7 @@ std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size
 
     for(int _rank = 0; _rank < size; _rank++)
     {
-        int rankIndex = std::distance(this->real_duplicated_proc.begin(), std::find(this->real_duplicated_proc.begin(), this->real_duplicated_proc.end(), _rank));
+        size_t rankIndex = std::distance(this->real_duplicated_proc.begin(), std::find(this->real_duplicated_proc.begin(), this->real_duplicated_proc.end(), _rank));
         if(rankIndex == this->real_duplicated_proc.size())
         {
             // rank _rank is not duplicated
