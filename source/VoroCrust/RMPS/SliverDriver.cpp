@@ -92,7 +92,7 @@ Ball SliverDriver::getBall(BallInfo const& ball_info, Trees const& trees) const 
 }
 
 void SliverDriver::eliminateSliversForBallsInBallTree(Dim const dim, Trees const& trees) {
-    VoroCrust_KD_Tree const * ball_tree_ptr;
+    VoroCrust_KD_Tree const * ball_tree_ptr = nullptr;
 
     switch(dim){
         case Dim::CORNER:

@@ -18,6 +18,7 @@
 #define NUMBER_OF_SHAPES 24
 #define MAX_ROTATION_LENGTH 5
 #define PI 3.14159
+#define MAX_HILBERT_RECURSIVE_CALLS 250
 
 using std::vector;
 
@@ -47,11 +48,6 @@ public:
   //! \param numOfIterations Number of iterations
   //! \return Position on curve
 	unsigned long long int Hilbert3D_xyz2d(Vector3D const & rvPoint, int numOfIterations) const;
-
-	/**
-	todo - implement!
-	*/
-	Vector3D Hilbert3D_d2xyz(hilbert_index_t d, int numOfIterations) const{return Vector3D(0, 0, 0);};
 
 private:
 	// Rotate a shape according to a given rotation scheme (in-place):

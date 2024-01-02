@@ -3,11 +3,11 @@
 
 #include <array>
 
-#include "../tesselation/Tessellation3D.hpp"
+#include "3D/tesselation/Tessellation3D.hpp"
 
 extern "C" 
 {
-#include <../r3d/src/r3d.h>
+	#include <r3d.h>
 }
 
 void GetPlanes(vector<r3d_plane> &res, Tessellation3D const& tess, size_t index);

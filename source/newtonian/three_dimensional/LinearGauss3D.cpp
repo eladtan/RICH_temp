@@ -624,6 +624,12 @@ namespace
 		res.xderivative.Erad = 0;
 		res.yderivative.Erad = 0;
 		res.zderivative.Erad = 0;
+		res.xderivative.Erad_dt = 0;
+		res.yderivative.Erad_dt = 0;
+		res.zderivative.Erad_dt = 0;
+		res.xderivative.Erad_dt_dt = 0;
+		res.yderivative.Erad_dt_dt = 0;
+		res.zderivative.Erad_dt_dt = 0;
 		res.xderivative.temperature = 0;
 		res.yderivative.temperature = 0;
 		res.zderivative.temperature = 0;

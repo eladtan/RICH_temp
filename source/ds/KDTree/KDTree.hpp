@@ -1,16 +1,26 @@
 #ifndef _KDTREE_HPP
 #define _KDTREE_HPP
 
+#include <vector>
+#include <functional>
 #include <utility>
 
-#include "../geometry_utils.hpp"
+#include "ds/utils/geometry.hpp"
 
-#define KD_DEBUG_MODE 1
+#ifdef KD_DEBUG_MODE
+#include <iostream>
+#endif // KD_DEBUG_MODE
 
-
+/**
+ * A kd tree class.
+ * @param T the type of point
+ * @param D the dimension
+*/
 template<typename T, int D>
 class KDTree
 {
+    using DefaultFilterFunction = std::function<bool(const T&)>;
+
 private:
     class KDTreeNode
     {
@@ -22,10 +32,10 @@ private:
         KDTreeNode(const T &value, const T &ll, const T &ur); // for root
 
         T value;
-        bool isValue; // is a value in the tree, or an auxiliary node
-        int partitionAxis;
         KDTreeNode *left, *right;
         KDTreeNode *parent;
+        bool isValue; // whether a real value in the tree, or merely an auxiliary node
+        int partitionAxis;
         int height;
         int depth;
         _BoundingBox<T> boundingBox;
@@ -51,13 +61,13 @@ private:
 public:
     explicit inline KDTree(const T &ll, const T &ur): root(nullptr), size(0), boundingBox(_BoundingBox<T>(ll, ur)){};
     inline ~KDTree(){this->deleteTree();};
+    
+    template<typename U, typename FilterFunction = DefaultFilterFunction>
+    std::vector<T> range(const _Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
 
-    inline std::vector<T> range(const _Sphere<T> &sphere) const
-    {
-        std::vector<T> result;
-        this->rangeHelper(this->getRoot(), sphere, result);
-        return result;
-    }
+    template<typename U, typename FilterFunction = DefaultFilterFunction>
+    std::pair<T, typename T::coord_type> getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
+
     inline bool find(const T &value) const{return this->tryFind(value) != nullptr;};
     inline bool insert(const T &value){return this->tryInsert(value) != nullptr;};
     inline void deleteTree(){this->deleteHelper(this->getRoot()); this->setRoot(nullptr);};
@@ -77,7 +87,6 @@ private:
     inline KDTreeNode *tryFindParent(const T &point){return const_cast<KDTreeNode*>(std::as_const(*this).tryFindParent(point));};
     KDTreeNode *tryInsert(const T &value);
     void deleteHelper(KDTreeNode *root);
-    void rangeHelper(const KDTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const;
 
     inline KDTreeNode *getRoot(){return this->root;};
     inline const KDTreeNode *getRoot() const{return this->root;};
@@ -101,19 +110,16 @@ void KDTree<T, D>::KDTreeNode::updateHeightRecursively()
 }
 
 template<typename T, int D>
-KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), parent(nullptr), isValue(true)
+KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), left(nullptr), right(nullptr), parent(nullptr), isValue(true)
 {
     this->boundingBox = _BoundingBox<T>(ll, ur);
     this->depth = 0;
     this->partitionAxis = 0;
-    this->left = this->right = nullptr;
 }
 
 template<typename T, int D>
-KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(value), parent(parent), isValue(true)
+KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(value), left(nullptr), right(nullptr), parent(parent), isValue(true)
 {
-    this->left = this->right = nullptr;
-
     if(parent == nullptr)
     {
         this->partitionAxis = 0;
@@ -230,24 +236,86 @@ void KDTree<T, D>::deleteHelper(typename KDTree<T, D>::KDTreeNode *root)
 }
 
 template<typename T, int D>
-void KDTree<T, D>::rangeHelper(const KDTreeNode *node, const _Sphere<T> &sphere, std::vector<T> &result) const
+template<typename U, typename FilterFunction>
+std::vector<T> KDTree<T, D>::range(const _Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
 {
-    if(node == nullptr)
+    std::vector<T> result;
+    size_t resultSize = 0;
+    std::vector<const KDTreeNode*> nodes_stack;
+    nodes_stack.push_back(this->getRoot());
+
+    while((resultSize < N) and (not nodes_stack.empty()))
     {
-        return;
-    }
-    if(SphereBoxIntersection(node->boundingBox, sphere))
-    {
+        const KDTreeNode *node = nodes_stack.back();
+        nodes_stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(not SphereBoxIntersection(node->boundingBox, sphere))
+        {
+            continue;
+        }
+
         if(node->isValue)
         {
-            if(sphere.contains(node->value))
+            if(filter(node->value) and sphere.contains(node->value))
             {
                 result.push_back(node->value);
+                resultSize++;
             }
         }
-        rangeHelper(node->left, sphere, result);
-        rangeHelper(node->right, sphere, result);
+        nodes_stack.push_back(node->left);
+        nodes_stack.push_back(node->right);
     }
+    return result;
+}
+
+template<typename T, int D>
+template<typename U, typename FilterFunction>
+std::pair<T, typename T::coord_type> KDTree<T, D>::getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
+{
+    std::vector<const KDTreeNode*> nodes_stack;
+    nodes_stack.push_back(this->getRoot());
+    T closestPoint;
+    typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+
+    while(not nodes_stack.empty())
+    {
+        const KDTreeNode *node = nodes_stack.back();
+        nodes_stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+        T closestPointInBox = node->boundingBox.closestPoint(point);
+        // calculate distance squared
+        typename T::coord_type dist = 0;
+        for(int i = 0; i < D; i++)
+        {
+            dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
+        }
+        if((dist >= closestDistance) or (not SphereBoxIntersection(node->boundingBox, sphere)))
+        {
+            continue;
+        }
+        // there might be a closer point in the subtrees
+        if(node->isValue)
+        {
+            if(filter(node->value) and sphere.contains(node->value))
+            {
+                // should not be ignored
+                closestPoint = node->value;
+                closestDistance = dist;
+            }
+        }
+        nodes_stack.push_back(node->left);
+        nodes_stack.push_back(node->right);
+    }
+    return {closestPoint, closestDistance};
 }
 
 #ifdef KD_DEBUG_MODE

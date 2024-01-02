@@ -210,9 +210,9 @@ void Delaunay3D::flip23(std::size_t tetra0, std::size_t tetra1, std::size_t loca
   newtet_.newTetra = true;
 
   if (used_empty)
-    tetras_[Nloc] = newtet_;
+    tetras_[Nloc] = std::move(newtet_);
   else
-    tetras_.push_back(newtet_);
+    tetras_.emplace_back(newtet_);
 
   if (location0 % 2 == 0)
     {
@@ -443,7 +443,7 @@ void Delaunay3D::flip32(std::size_t tetra0, std::size_t tetra1, std::size_t loca
 	  newtet_.neighbors[1] = temp;
 	}
     }
-  tetras_[tetra0] = newtet_;
+  tetras_[tetra0] = std::move(newtet_);
 	
   if (location0 % 2 == 1)
     {

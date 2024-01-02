@@ -1,6 +1,6 @@
-/* \file Voronoi3D.hpp
+/** \file Voronoi3D.hpp
    \brief A 3D Voronoi
-   \Author Elad Steinberg
+   \author Elad Steinberg, Maor Mizrachi
 */
 #ifndef VORONOI3D_HPP
 #define VORONOI3D_HPP 1
@@ -8,19 +8,46 @@
 #if  _MSC_VER
 #define _USE_MATH_DEFINES
 #endif // _MSC_VER
+
+
+#include <algorithm>
+#include <cfloat>
+#include <stack>
+#include <iostream>
+#include <fstream>
 #include <cmath>
 #include <vector>
 #include <string>
-#include "../delaunay/Delaunay3D.hpp"
-#include "3D/GeometryCommon/Intersections.hpp"
-#include <stack>
+#include <memory>
 #include <set>
 #include <array>
-#include "3D/hilbert/HilbertOrder3D.hpp"
-#include "3D/range/RangeAgent.hpp" // "3D/range/RangeAgent.h"
-#include "../Tessellation3D.hpp"
+#include <tuple>
+#include <limits>
+#include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
+#include <boost/multiprecision/cpp_dec_float.hpp>
+#include <boost/container/static_vector.hpp>
 #include <boost/container/small_vector.hpp>
+#include <omp.h>
+
+#ifdef USE_VCL_VECTORIZATION
+  #include <vectorclass.h>
+#endif // USE_VCL_VECTORIZATION
+
+#ifdef RICH_MPI
+  #include <mpi.h>
+#endif // RICH_MPI
+
+#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tesselation/delaunay/Delaunay3D.hpp"
+#include "3D/GeometryCommon/Intersections.hpp"
+#include "3D/elementary/Mat33.hpp"
+#include "3D/tesselation/utils/Predicates3D.hpp"
+#include "3D/hilbert/HilbertOrder3D.hpp"
+#include "3D/range/SmallRangeAgent.hpp"
+#include "3D/range/BigRangeAgent.hpp"
+#include "misc/utils.hpp"
+#include "misc/io3D.hpp"
 
 #ifdef RICH_MPI
 #include "newtonian/three_dimensional/computational_cell.hpp"
@@ -28,12 +55,27 @@
 #endif
 
 #ifdef RICH_MPI
-#include "pointsManager/HilbertPointsManager.hpp"
-#define RICH_TESELLATION_FINISHED_TAG 505
-#define INITIAL_SENDRECV_TAG 1105
-#define MAX_POINTS_IN_BIG_TETRA_QUERY 1
-#define RADIUSES_GROWING_FACTOR 1.1 // 1.618
-#define MAX_ALLOWED_HILBERT_ORDER 18
+  // finders
+  #include "3D/range/finders/BruteForce.hpp"
+  #include "3D/range/finders/RangeTree.hpp"
+  #include "3D/range/finders/OctTree.hpp"
+  #include "3D/range/finders/KDTree.hpp"
+  #include "3D/range/finders/GroupRangeTree.hpp"
+  #include "3D/range/finders/HashBruteForce.hpp"
+  #include "3D/range/finders/SmartBruteForce.hpp"
+
+  // env agents
+  #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
+  #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+  #include "3D/environment/hilbert/HilbertEnvAgent.hpp"
+#endif // RICH_MPI
+
+#ifdef RICH_MPI
+  #include "pointsManager/HilbertPointsManager.hpp"
+  #define INITIAL_SENDRECV_TAG 1105
+  #define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
+  #define RANGE_MAX_POINTS_TO_GET 15 // 15
+  #define RADIUSES_GROWING_FACTOR 1.1
 #endif 
 
 #define RADIUS_UNINITIALIZED -1
@@ -88,20 +130,20 @@ private:
   double GetMaxRadius(std::size_t index);
   double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
-
+  
   #ifdef RICH_MPI
-  std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<RangeQueryData> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
-  std::queue<RangeQueryData> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, std::vector<double> &currentRadiuses, int iterations);
-  void CalculateInitialRadius(size_t pointsSize);
+  std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
   void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
-  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points);
+  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
-  std::vector<size_t> CheckToMirror(const Vector3D &point, double radius, const std::vector<Face> &box, const std::vector<Vector3D> &normals);
+  void FilterRealGhostPoints();
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
-  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<int> &recvProc);
+  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
+  std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const std::vector<Vector3D> &points) const;
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
-  void SetKernel(const IndexingKernel3D *newIndexing = nullptr);
-  void SetBox(Vector3D const &ll, Vector3D const &ur, const IndexingKernel3D *newIndexing);
+  void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);
+  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers, boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses);
+  
   #endif // RICH_MPI
 
   Delaunay3D del_;
@@ -121,7 +163,9 @@ private:
   vector<int> sentprocs_;
   vector<vector<std::size_t>> sentpoints_; // if rank `i` is inside index `j` in `sentprocs_`, then the points in sentpoints_[j] are the points I sent to rank `i` in the initial points exchange in build
   vector<int> duplicatedprocs_; 
-  vector<vector<std::size_t> > duplicated_points_;  // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in `i`'s delaunay, which are actually mine
+  vector<vector<std::size_t>> duplicated_points_;  // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in `i`'s delaunay, which are actually mine
+  vector<int> real_duplicated_proc; 
+  vector<vector<std::size_t>> real_duplicated_points;
   vector<vector<std::size_t>> Nghost_; // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in my delaunay, which are belongs, originally, to i
   vector<std::size_t> self_index_; // indexes of the points which are truely mine (inside the points list)
   Voronoi3D();
@@ -131,25 +175,18 @@ private:
   std::vector<Face> box_faces_;
   
   #ifdef RICH_MPI
+    std::shared_ptr<PointsManager> pointsManager;
     std::vector<double> radiuses;
-    double initialRadius;
-    PointsManager *pointsManager = nullptr;
-    const IndexingKernel3D *indexing = nullptr;
-    bool shouldDeleteKernelOnDestruction;
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
   #endif // RICH_MPI
 
 public:
-  inline ~Voronoi3D()
-  {
-    #ifdef RICH_MPI
-      delete this->pointsManager;
-      if(this->shouldDeleteKernelOnDestruction)
-      {
-        delete this->indexing;
-      }
-    #endif // RICH_MPI
-  }
 
+  #ifdef RICH_MPI
+    void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
+    inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
+    void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);
+  #endif // RICH_MPI
   vector<int>& GetSentProcs(void) override;
 
   vector<vector<size_t> >& GetSentPoints(void) override;
@@ -183,7 +220,9 @@ public:
    */
   void output_buildextra(std::string const& filename) const;
 
-  void BuildHilbert(vector<Vector3D> const& points) override;
+  void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
+
+  void BuildHilbert(vector<Vector3D> const& points, bool suppressRebalancing = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
 

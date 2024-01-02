@@ -1,7 +1,12 @@
 #ifndef GRAVITY_ACC_3D_HPP
 #define GRAVITY_ACC_3D_HPP
 
-#include "3D/gravity/GravityAgent.hpp"
+#ifdef RICH_MPI
+    #include "3D/gravity/DistributedGravityCalculator.hpp"
+#else // RICH_MPI
+    #include "3D/gravity/GravityTree.hpp"
+#endif // RICH_MPI
+
 #include "newtonian/three_dimensional/ConservativeForce3D.hpp"
 
 class GravityAcceleration3D : public Acceleration3D
@@ -19,10 +24,27 @@ public:
         {
             masses.push_back((cells[cellIdx].density) * (tess.GetVolume(cellIdx)));
         }
-
         std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
-        GravityAgent agent(points, masses, boundaries.first, boundaries.second, this->theta, this->quadrupole);
-        acc = std::move(agent.getForces(points, masses));
+
+        #ifdef RICH_MPI
+            DistributedGravityCalculator agent(points, masses, boundaries.first, boundaries.second, this->theta, this->quadrupole);
+            acc = agent.getAcceleration(points);
+        #else // RICH_MPI
+            GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
+            std::vector<MassedPoint<Vector3D>> massedPoints;
+            for(size_t i = 0; i < points.size(); i++)
+            {
+                massedPoints.emplace_back(MassedPoint<Vector3D>(points[i], masses[i]));
+            }
+            gravTree.build(massedPoints);
+            
+            acc.clear();
+            for(const Vector3D &point : points)
+            {
+                acc.push_back(gravTree.gravity(point));
+            }
+        #endif // RICH_MPI
+
         size_t const N = tess.GetPointNo();
         for(size_t i = 0; i < N; ++i)
             acc[i] *= this->G;

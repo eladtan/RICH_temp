@@ -13,11 +13,21 @@
     'gcc'      : "/software/x86_64/4.18.0/gcc/12.2.0/bin/gcc",
     'g++'      : "/software/x86_64/4.18.0/gcc/12.2.0/bin/g++",
 
-    'mpicc'    : "/software/x86_64/4.18.0/openmpi/4.1.4/Intel/OneApi-2022.3.0/bin/mpicc",
-    'mpic++'   : "/software/x86_64/4.18.0/openmpi/4.1.4/Intel/OneApi-2022.3.0/bin/mpic++",
+    'mpicc_intel'    : "/software/x86_64/4.18.0/openmpi/4.1.4/Intel/OneApi-2022.3.0/bin/mpicc",
+    'mpic++_intel'   : "/software/x86_64/4.18.0/openmpi/4.1.4/Intel/OneApi-2022.3.0/bin/mpic++",
 
     'mpicc_gcc'    : "/software/x86_64/4.18.0/openmpi/4.1.4/gcc/12.2.0/bin/mpicc",
     'mpic++_gcc'   : "/software/x86_64/4.18.0/openmpi/4.1.4/gcc/12.2.0/bin/mpic++",
 
     'pybind11'   : "/software/x86_64/3.10.0/pybind11/2.6.1/mock_install/share/cmake/pybind11",
+
+    'jsoncpp_include' : "/software/x86_64/4.18.0/jsoncpp/1.9.5/include",
+    'jsoncpp_lib_dir' : "/software/x86_64/4.18.0/jsoncpp/1.9.5/lib64/",
+    'cgal_include': "/software/x86_64/4.18.0/cgal/5.6/include",
+
+    "qhull_include": "/home/maorm/opt/qhull/current/include",
+    "qhull_lib_dir": "/home/maorm/opt/qhull/current/lib",
+
+    "vtune_include": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/include",
+    "vtune_lib_dir": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/lib64"
 }

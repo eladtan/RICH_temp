@@ -7,6 +7,7 @@
 #define DEFAULT_CELL_UPDATER_HPP 1
 
 #include "cell_updater_3d.hpp"
+#include "../../Radiation/Diffusion.hpp"
 
  //! \brief Default scheme for cell update
 class DefaultCellUpdater : public CellUpdater3D
@@ -17,7 +18,7 @@ public:
   //! \param SR Special relativity flag
   //! \param G Correction to adiabatic index
   //! \param includes_temperature Flag if to compute the temperature as well or not
-	DefaultCellUpdater(bool SR = false,double G=0, bool const includes_temperature = false);
+	DefaultCellUpdater(bool SR = false,double G=0, bool const includes_temperature = false, const Diffusion* diffusion = nullptr);
 
 	void operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
 		const Tessellation3D& tess, vector<Conserved3D>& extensives) const override;
@@ -26,6 +27,7 @@ private:
 	const double G_;
 	const bool includes_temperature_;
 	mutable size_t entropy_index_;
+	const Diffusion* diffusion_;
 };
 
 #endif // DEFAULT_CELL_UPDATER_HPP

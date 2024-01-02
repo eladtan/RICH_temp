@@ -7,28 +7,23 @@ namespace
         return normalize(CrossProduct(face.vertices[1] - face.vertices[0], face.vertices[2] - face.vertices[1]));
     }
 
-    inline Vector3D GetIntersection(const Vector3D &point1, const Vector3D &vec1, const Vector3D &point2, const Vector3D &vec2)
+    inline Vector3D GetFacesIntersection(const Face &face1, const Face &face2, const Face &face3)
     {
-        Vector3D point = point1 - point2;
-        Vector3D vec = vec1 - vec2;
-
-        // `point1` + t`vec1` and `point2`+s`vec2` are two lines
-        double div = (vec2[0] * vec1[1]) - (vec2[1] * vec1[0]);
-        if(div == 0)
+        Vector3D normal1 = GetNormal(face1);
+        Vector3D normal2 = GetNormal(face2);
+        Vector3D normal3 = GetNormal(face3);
+        Vector3D D(ScalarProd(normal1, face1.vertices[0]), ScalarProd(normal2, face2.vertices[0]), ScalarProd(normal3, face3.vertices[0]));
+        Mat33<double> mat = Mat33<double>(normal1.x, normal1.y, normal1.z, normal2.x, normal2.y, normal2.z, normal3.x, normal3.y, normal3.z);
+        if(std::abs(mat.determinant()) < EPSILON)
         {
-            throw UniversalError("Parallel to each other");
+            throw UniversalError("One or more of the side faces of the body are parallel (all the side faces intersect in one point) (in 'Frustum')");
         }
-        double t = (vec2[1] * (point1[0] - point2[0]) - vec2[0] * (point1[1] - point2[1])) / div;
-        double s = ((point1[0] - point2[0]) + (vec1[0] * t)) / vec2[0];
-        if((point1[2] - point2[2]) != (s - t) * (vec2[2] - vec1[2]))
-        {
-            throw UniversalError("Vectors are not on the same plane");
-        }
-        return point1 + t * vec1;
+        Mat33<double> inverse = mat.inverse();
+        return inverse * D;
     }
 }
 
-Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
+Vector3D Kernelization3D::Frustrum::find_S(const std::vector<Face> &faces) const
 {    
     // first find the parallel faces
     std::vector<Vector3D> normals;
@@ -70,73 +65,83 @@ Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
         throw UniversalError("Can not use 'Frustrum' kernelization when there are no parallel faces");
     }
 
-    std::vector<Vector3D> intersections;
-
-    for(size_t idx1 = 0; idx1 < VERTICES_NUMBER; idx1++)
+    std::vector<size_t> nonParallelIdx;
+    for(size_t idx = 0; idx < 6; idx++)
     {
-        for(size_t idx3 = 0; idx3 < VERTICES_NUMBER; idx3++)
+        if(idx != parallelIdx.first and idx != parallelIdx.second)
         {
-            if(idx1 == idx3)
-            {
-                continue;
-            }
-            for(size_t shift = 0; shift < VERTICES_NUMBER; shift++)
-            {
-                size_t idx2 = (idx1 + shift) % VERTICES_NUMBER;
-                size_t idx4 = (idx3 + shift) % VERTICES_NUMBER;
-                Vector3D vec1 = faces[parallelIdx.first].vertices[idx1] - faces[parallelIdx.second].vertices[idx2];
-                Vector3D vec2 = faces[parallelIdx.first].vertices[idx3] - faces[parallelIdx.second].vertices[idx4];
-                try
-                {
-                    Vector3D intersection = GetIntersection(faces[parallelIdx.first].vertices[idx1], vec1, faces[parallelIdx.first].vertices[idx3], vec2);
-                    bool abovePlane1 = ScalarProd(intersection - faces[parallelIdx.first].vertices[idx1], normals[parallelIdx.first]) > 0;
-                    bool abovePlane2 = ScalarProd(intersection - faces[parallelIdx.second].vertices[idx2], normals[parallelIdx.second]) > 0;
-                    // the 'head' should be above or below both of the two bases
-                    if((abovePlane1 and abovePlane2) or (!abovePlane1 and !abovePlane2))
-                    {
-                        if(std::find(intersections.begin(), intersections.end(), intersection) != intersections.end())
-                        {
-                            return intersection;
-                        }
-                        intersections.emplace_back(intersection);
-                    }
-                }
-                catch(const UniversalError& e)
-                {
-                    // no intersection
-                }
-            }
+            nonParallelIdx.push_back(idx);
         }
     }
-    throw UniversalError("Body is not a frustrum");
+
+    Vector3D intersection1 = GetFacesIntersection(faces[nonParallelIdx[0]], faces[nonParallelIdx[1]], faces[nonParallelIdx[2]]);
+    Vector3D intersection2 = GetFacesIntersection(faces[nonParallelIdx[1]], faces[nonParallelIdx[2]], faces[nonParallelIdx[3]]);
+
+    if(intersection1 != intersection2)
+    {
+        UniversalError eo("Body is not a frustrum (two distinct intersections and heads)");
+		eo.addEntry("head 1", intersection1);
+		eo.addEntry("head 2", intersection2);
+		throw eo;
+    }
+    return intersection1;
 }
 
-Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing)
+Kernelization3D::Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing, const IndexingKernel3D *afterIndexing)
 {
     if(faces.size() != NUM_FACES)
     {
-        throw UniversalError("Can not use 'Frustrum' kernelization when there are not " + std::to_string(NUM_FACES) + " faces (given " + std::to_string(faces.size()) + ")");
-    }
-    Vector3D move_factor = faces[0].vertices[0];
-    this->indexing = new Move(move_factor, indexing);
 
-    const Mat44<double> C(0, 1, 1, 0,
-                         0, 0, 1, 0,
-                         0, 0, 0, 1,
-                         1, 1, 1, 0);
-    Vector3D point1 = (*this->indexing)(faces[0].vertices[0]), point2 = (*this->indexing)(faces[0].vertices[1]), point3 = (*this->indexing)(faces[0].vertices[2]);
-    Vector3D point4 = (*this->indexing)(this->find_S(faces)); // head (S)
-    Mat44<double> F(point1.x, point2.x, point3.x, point4.x, point1.y, point2.y, point3.y, point4.y, point1.z, point2.z, point3.z, point4.z, 1, 1, 1, 1);
-    this->P = C * F.inverse();
+        UniversalError eo("Can not use 'Frustrum' kernelization when there are not " + std::to_string(NUM_FACES) + " faces");
+        eo.addEntry("Faces", faces.size());
+        throw eo;
+    }
 
     std::vector<Vector3D> allVertices;
     for(const Face &face : faces)
     {
         for(const Vector3D &vertex : face.vertices)
         {
-            allVertices.push_back(this->beforeScaling(vertex));
+            allVertices.push_back(vertex);
         }
     }
-    this->scaleToBox = Rectangle(allVertices);
+    this->beforeIndexing = new Rectangle(allVertices, beforeIndexing);
+
+    Vector3D move_factor = (*this->beforeIndexing)(faces[0].vertices[0]);
+    // IndexingKernel3D *move_kernel = new Move(move_factor, indexing);
+    
+    std::vector<Face> kerneledFaces;
+    for(const Face &face : faces)
+    {
+        Face newFace;
+        for(const Vector3D &vertex : face.vertices)
+        {
+            newFace.vertices.push_back((*this->beforeIndexing)(vertex));
+        }
+        kerneledFaces.emplace_back(newFace);
+    }
+
+    const Mat44<double> C(0, 1, 1, 0,
+                         0, 0, 1, 0,
+                         0, 0, 0, 1,
+                         1, 1, 1, 0);
+    Vector3D point1 = (kerneledFaces[0].vertices[0]), point2 = (kerneledFaces[0].vertices[1]), point3 = (kerneledFaces[0].vertices[2]);
+    Vector3D point4 = this->find_S(kerneledFaces); // head (S)
+    Mat44<double> F(point1.x, point2.x, point3.x, point4.x, point1.y, point2.y, point3.y, point4.y, point1.z, point2.z, point3.z, point4.z, 1, 1, 1, 1);
+    this->P = C * F.inverse();
+
+    Vector3D normalBase1 = GetNormal(kerneledFaces[0]);
+    Vector3D normalBase2 = GetNormal(kerneledFaces[1]);
+
+    allVertices.clear();
+    for(const Face &face : faces)
+    {
+        for(const Vector3D &vertex : face.vertices)
+        {
+            allVertices.push_back(this->beforeTransformation(vertex));
+        }
+    }
+
+    this->afterIndexing = afterIndexing;
 }
 

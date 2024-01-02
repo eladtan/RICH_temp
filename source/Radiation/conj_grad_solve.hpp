@@ -58,7 +58,7 @@ namespace CG
         \param CG_result The result from the CG
         */
         virtual void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-            std::vector<double>const& CG_result)const = 0;
+            std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result)const = 0;
 
         std::vector<std::string> const zero_cells_;
     };
@@ -66,7 +66,7 @@ namespace CG
     //! The fastest implementation of conjugate gradient algorithm, using data-based parallelism only
     std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
-        double const dt, MatrixBuilder const& matrix_builder, double const time);
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
 }
 
 #endif

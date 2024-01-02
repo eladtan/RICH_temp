@@ -27,7 +27,7 @@ public:
 	\param tracerstickernames The names of the tracers and stickers
 	\return Computational cell
 	*/
-	virtual ComputationalCell3D ConvertExtensiveToPrimitve3D(const Conserved3D& extensive, const EquationOfState& eos,
+	virtual ComputationalCell3D ConvertExtensiveToPrimitve3D(Conserved3D& extensive, const EquationOfState& eos,
 		double volume, ComputationalCell3D const& old_cell) const = 0;
 
 	//! \brief Class destructor
@@ -104,7 +104,7 @@ public:
 	*/
 	SimpleAMRCellUpdater3D(const vector<string>& toskip = vector<string>());
 
-	ComputationalCell3D ConvertExtensiveToPrimitve3D(const Conserved3D& extensive, const EquationOfState& eos,
+	ComputationalCell3D ConvertExtensiveToPrimitve3D(Conserved3D& extensive, const EquationOfState& eos,
 		double volume, ComputationalCell3D const& old_cell) const override;
 };
 
@@ -140,7 +140,7 @@ public:
 	*/
   SimpleAMRCellUpdaterSR3D(double G, const vector<string>& toskip);
 
-	ComputationalCell3D ConvertExtensiveToPrimitve3D(const Conserved3D& extensive, const EquationOfState& eos,
+	ComputationalCell3D ConvertExtensiveToPrimitve3D(Conserved3D& extensive, const EquationOfState& eos,
 							 double volume, const ComputationalCell3D& old_cell) const override;
 };
 

@@ -7,10 +7,10 @@
 #define COMPUTATIONAL_CELL3D_HPP 1
 
 #include <array>
-#include "../../3D/elementary/Vector3D.hpp"
+#include "3D/elementary/Vector3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #ifdef RICH_MPI
-#include "../../misc/serializable.hpp"
+#include "misc/serializable.hpp"
 #endif // RICH_MPI
 
  //! \brief Container for the hydrodynamic variables
@@ -38,6 +38,10 @@ public:
 
 	//! \brief Radiation enregy per unit mass
 	double Erad;
+
+	double Erad_dt;
+
+	double Erad_dt_dt;
 
   static vector<string> tracerNames;
   static vector<string> stickerNames;

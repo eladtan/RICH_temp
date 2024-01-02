@@ -13,8 +13,9 @@
 #include <assert.h>
 #include <mpi.h>
 
-#define MEDIAN_TAG 2049
-#define NO_VALUES_TAG 2050
+#include "misc/universal_error.hpp"
+
+class UniversalError;
 
 namespace
 {
@@ -171,6 +172,5 @@ std::vector<T> getBorders(std::vector<T> &input, const Comparator &comp = [](con
 
     return getStatOrders(input, stats, comp);
 }
-
 
 #endif // _RICH_BALANCE2_HPP

@@ -10,7 +10,8 @@
 typedef struct IndexedVector3D
 {
     using coord_type = coord_t;
-
+    using Raw_type = Vector3D;
+    
     coord_t values[3];
     size_t index;
 
