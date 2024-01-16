@@ -79,6 +79,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
     vcl_include_dir = SysLibsDict["vcl_include"] if "vcl_include" in SysLibsDict else os.path.join(root_dir, "source/opt/vcl")
     r3d_include_dir = SysLibsDict["r3d_include"] if "r3d_include" in SysLibsDict else os.path.join(root_dir, "source/opt/r3d/src")
     clipper_include_dir = SysLibsDict["clipper_include"] if "clipper_include" in SysLibsDict else os.path.join(root_dir, "source/opt/clipper")
+    boost_dir = SysLibsDict["boost_dir"] if "boost_dir" in SysLibsDict else (os.environ["BOOST_DIR"] if "BOOST_DIR" in os.environ else "")
 
     cmd = ['cmake',
             f'-DMPI={mpi}',
@@ -98,6 +99,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DHDF5_LIB_DIRECTORY={hdf5_lib_dir}',
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
             f'-DVTK_DIRECTORY={vtk_dir}',
+            f'-DBOOST_DIR={boost_dir}' if boost_dir else "",
             f'-DJSONCPP_INCLUDE={SysLibsDict["jsoncpp_include"]}' if "jsoncpp_include" in SysLibsDict else "",
             f'-DJSONCPP_LIB_DIRECTORY={SysLibsDict["jsoncpp_lib_dir"]}' if "jsoncpp_lib_dir" in SysLibsDict else "",
             f'-DVTUNE_INCLUDE={SysLibsDict["vtune_include"]}' if "vtune_include" in SysLibsDict else "",
