@@ -111,7 +111,7 @@ namespace CG
         MPI_Comm_size (MPI_COMM_WORLD, &nprocs);
         MPI_Comm_rank (MPI_COMM_WORLD, &rank);
     #endif
-        int const max_iter = 25000;
+        int const max_iter = 2000;
 
         mat A;
         size_t_mat A_indeces;
@@ -262,6 +262,7 @@ namespace CG
         }
         if(not good_end)
         {
+            total_iters = max_iter;
             if(rank == 0)
 	      std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<std::endl;
             if(rank == max_data[0].mpi_id)
