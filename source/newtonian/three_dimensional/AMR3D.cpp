@@ -831,9 +831,9 @@ Conserved3D SimpleAMRExtensiveUpdater3D::ConvertPrimitveToExtensive3D(const Comp
 	cell_temp.internal_energy = eos.dp2e(cell_temp.density, cell_temp.pressure, cell_temp.tracers, ComputationalCell3D::tracerNames);
 	const double mass = volume * cell_temp.density;
 	res.mass = mass;
+	res.momentum = mass * cell.velocity + volume * cell.density * (cell_temp.velocity - cell.velocity);
 	res.internal_energy = cell_temp.internal_energy * mass;
-	res.energy = res.internal_energy + 0.5 * mass * ScalarProd(cell_temp.velocity, cell_temp.velocity);
-	res.momentum = mass * cell_temp.velocity;
+	res.energy = res.internal_energy + 0.5 * mass * ScalarProd(cell.velocity, cell.velocity) + volume * cell.density * ScalarProd(cell.velocity, cell_temp.velocity - cell.velocity);
 	res.Erad = mass * cell_temp.Erad;
 	size_t N = cell_temp.tracers.size();
 	//res.tracers.resize(N);
@@ -885,11 +885,29 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 	res.density = extensive.mass*vol_inv;
 	res.velocity = extensive.momentum / extensive.mass;
 	res.ID  = old_cell.ID;
+	size_t N = extensive.tracers.size();
+	for (size_t i = 0; i < N; ++i)
+		res.tracers[i] = extensive.tracers[i] / extensive.mass;
+	res.stickers = old_cell.stickers;
+	auto entropy_it = binary_find(ComputationalCell3D::tracerNames.begin(), ComputationalCell3D::tracerNames.end(), "Entropy");
 	try
 	{
-		if(!(extensive.internal_energy > 0))
-			throw UniversalError("Negative internal energy in ConvertExtensiveToPrimitve3D");
-		res.pressure = eos.de2p(res.density, extensive.internal_energy / extensive.mass);
+		if(entropy_it != ComputationalCell3D::tracerNames.end())
+		{
+			size_t const entropy_index = static_cast<size_t>(entropy_it - ComputationalCell3D::tracerNames.begin());
+			res.tracers[entropy_index] = eos.dp2s(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
+			extensive.tracers[entropy_index] = res.tracers[entropy_index] * extensive.mass;
+			res.internal_energy = eos.sd2p(res.density, res.tracers[entropy_index]);
+			res.pressure = eos.de2p(res.density, res.internal_energy);
+			extensive.internal_energy = res.internal_energy * extensive.mass;
+			extensive.energy = extensive.internal_energy + 0.5 * ScalarProd(extensive.momentum, extensive.momentum) / extensive.mass;
+		}
+		else
+		{
+			extensive.internal_energy = extensive.energy - 0.5 * ScalarProd(extensive.momentum, extensive.momentum) / extensive.mass;
+			res.internal_energy = extensive.internal_energy / extensive.mass;
+			res.pressure = eos.de2p(res.density, res.internal_energy);
+		}
 	}
 	catch (UniversalError &eo)
 	{
@@ -902,21 +920,8 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 		eo.addEntry("Volume", 1.0 / vol_inv);
 		throw;
 	}
-	res.internal_energy = extensive.internal_energy / extensive.mass;
 	res.Erad = extensive.Erad / extensive.mass;
 	res.temperature = eos.de2T(res.density, res.internal_energy);
-	size_t N = extensive.tracers.size();
-//	res.tracers.resize(N);
-	for (size_t i = 0; i < N; ++i)
-		res.tracers[i] = extensive.tracers[i] / extensive.mass;
-	res.stickers = old_cell.stickers;
-	auto entropy_it = binary_find(ComputationalCell3D::tracerNames.begin(), ComputationalCell3D::tracerNames.end(), "Entropy");
-	if(entropy_it != ComputationalCell3D::tracerNames.end())
-	{
-		size_t const entropy_index = static_cast<size_t>(entropy_it - ComputationalCell3D::tracerNames.begin());
-		res.tracers[entropy_index] = eos.dp2s(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
-		extensive.tracers[entropy_index] = res.tracers[entropy_index] * extensive.mass;
-	}
 	return res;
 }
 
