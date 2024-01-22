@@ -34,10 +34,12 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
+#include "source/3D/environment/kernels/Rectangle.hpp"
 
 typedef std::array<double, 4> state_type;
 
 #define smooth_factor 0.6
+// #define hi_res 1
 namespace
 {
 	class PaczynskiOrbit
@@ -128,12 +130,15 @@ namespace
 	void CheckIfFullGravityIsNeeded(HDSim3D &sim, std::string const& gravity_name, double const Rstar,
 		double const Mstar, double const MBH, double const beta, std::string const& restart_name)
 	{
+		int rank = 0;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		if(sim.getTime() > 10)
 		{
 			double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
 			double const Rp = Rt / beta;
 			state_type x0 = GetTrueAnomaly(sim.getTime(), MBH, Rp, -3 * Mstar * std::pow(MBH / Mstar, 0.3333333) / Rstar);
-			std::cout<<x0[0]<<","<<x0[1]<<std::endl;
+			if(rank == 0)
+				std::cout<<x0[0]<<","<<x0[1]<<std::endl;
 			if(x0[1] > 0.1 && x0[2] > 0.1)
 			{
 				UpdateReferenceFrame(sim, Rstar, Mstar, MBH, beta);
@@ -278,14 +283,18 @@ namespace
 			size_t Norg = tess.GetPointNo();
 			vector<size_t> res;
 			double MaxMass = 1.5e-7;
+			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0);
+			double min_cell_size = Rt * 1e-2;
+#ifdef hi_res
+			MaxMass *= 0.5;
+			min_cell_size *= std::pow(0.5, 0.33333);
+#endif
 			std::vector<size_t> neigh;
 			std::vector<double> volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
 			MPI_exchange_data2(tess, volumes, true);
 #endif
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
-			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0);
-			double const min_cell_size = Rt * 1e-2;
 			double const apocenter_time = 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
 
 			for (size_t i = 0; i < Norg; ++i)
@@ -296,7 +305,7 @@ namespace
 				if (tess.GetWidth(i) < min_cell_size * (r_dist < 0.65 * Rt ? smooth_factor / 0.6 : 1))
 					continue;
 				
-				if ((r_dist > 0.65 * Rt && r_dist < 2 * Rt) || r_dist > apocenter || r_dist < smooth_factor * Rt)
+				if ((r_dist > 0.65 * Rt && r_dist < 1.5 * Rt) || r_dist > 0.75*apocenter || r_dist < smooth_factor * Rt)
 					continue;
 
 				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 2.5)) ? MaxMass : MaxMass * 30;
@@ -326,7 +335,7 @@ namespace
 					res.push_back(i);
 					continue;
 				}
-				if ((V * cells[i].density) > (MaxMass2 * std::min(r_dist * r_dist / (50 * Rt * Rt), 1.0)) || V > domain_size_ * 1e-5)
+				if ((V * cells[i].density) > (MaxMass2 * std::min(r_dist * r_dist / (400 * Rt * Rt), 1.0)) || V > domain_size_ * 1e-5)
 				{
 					{
 						res.push_back(i);
@@ -368,10 +377,14 @@ namespace
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0);
 			double const time_Rt = std::sqrt(Rt * Rt * Rt / Mbh_);
-			double const min_cell_size = Rt * 1e-2;
+			double min_cell_size = Rt * 1e-2;
 			double const apocenter_time = 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
 
 			double MaxMass = 3e-8;
+#ifdef hi_res
+			MaxMass *= 0.5;
+			min_cell_size *= std::pow(0.5, 0.33333);
+#endif
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				bool good = true;
@@ -384,7 +397,7 @@ namespace
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double r_i = std::max(Rt * smooth_factor, r_org);
 				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
-				MaxMass2 = MaxMass2 * std::min(r_i * r_i / (50 * Rt * Rt), 1.0);
+				MaxMass2 = MaxMass2 * std::min(r_i * r_i / (400 * Rt * Rt), 1.0);
 				double const dt = w / eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers);
 				double const in_factor = r_i < 0.65 * Rt ? smooth_factor / 0.6 : 1;
 				MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
@@ -491,7 +504,7 @@ namespace
 		ComputationalCell3D reference;
 		std::pair<Vector3D, Vector3D> box = tess.GetBoxCoordinates();
 		double dfactor = std::min(1.0, std::max(0.01, std::exp(-(time - 900) / 100.0)));
-		double mindensity = dfactor * 1e-6 * M / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y));
+		double mindensity = dfactor * 1e-10 * M / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y));
 		mindensity = std::max(mindensity, 1e-20);
 		reference.density = mindensity;
 		double const Tref = 1e3;
@@ -537,7 +550,7 @@ namespace
 				Rcm = Vector3D(x0[0], x0[1], 0);
 			}
 			std::pair<Vector3D, Vector3D> box = tess.GetBoxCoordinates();
-			double mindensity = std::max(1e-20, 1e-5 * M_ / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y)));
+			double mindensity = std::max(1e-20, 1e-7 * M_ / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y)));
 			// Calc the tidal force
 			size_t N = acc.size();
 			double smooth = Rt * smooth_factor;
@@ -563,22 +576,36 @@ namespace
 
 int main(void)
 {
+	// std::cout<<"Here1"<<std::endl;
 	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
+	// std::cout<<"Here2"<<std::endl;
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
 	MPI_Init(NULL, NULL);
+	// std::cout<<"Here3"<<std::endl;
 	double last_start = MPI_Wtime();
+	// std::cout<<"Here4"<<std::endl;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	// std::cout<<"Here5"<<std::endl;
 	std::string run_directory("/scratch-shared/esternberg/");
+	// std::cout<<"Here6"<<std::endl;
 	double const R = read_number("Rstar.txt");
+	// std::cout<<"Here7"<<std::endl;
 	double const M = read_number("Mstar.txt");
+	// std::cout<<"Here8"<<std::endl;
 	double const Mbh = read_number("Mbh.txt");
 	double const beta =  read_number("beta.txt");
+	// std::cout<<"Here9"<<std::endl;
 	std::stringstream ss;
 	ss<<"R"<<R<<"M"<<M<<"BH"<<Mbh<<"beta"<<beta<<"S"<<static_cast<size_t>(smooth_factor*100)<<"Compton";
+#ifdef hi_res
+	ss<<"HiRes";
+#endif
+	if(rank == 0)
+		std::cout<<"Creating directory "<<ss.str()<<std::endl;
 	std::string const run_name = ss.str();
 	run_directory += run_name + "/";
 	fs::create_directory(run_directory.c_str());
@@ -593,11 +620,16 @@ int main(void)
 	if(rank == 0)
 		std::cout<<"restart "<<restart<<std::endl;
 	if(restart)
+	{
 		counter = read_int(counter_name);
+		std::filesystem::last_write_time(counter_name, std::filesystem::file_time_type::clock::now());
+	}
 	std::string gravity_name = run_directory + "gravity.txt";
 	std::string eos_location("/home/esternberg/RICH/data/EOS/");
 	std::string STA_location("/home/esternberg/RICH/data/STA/");
 	bool const full_gravity = fs::exists(gravity_name);
+	if(full_gravity)
+		std::filesystem::last_write_time(gravity_name, std::filesystem::file_time_type::clock::now());
 	if(restart && full_gravity && (not fs::exists(file_name + int2str(counter) + ".h5")))
 	{
 		file_name += "full_";
@@ -638,7 +670,7 @@ int main(void)
 	if (restart)
 	{
 		int hdf5_rank = -1;
-		if(rank >= 128)
+		if(rank >= 256)
 			hdf5_rank = 0;
 		snap = ReadSnapshot3D(file_name + int2str(counter) + ".h5"
 #ifdef RICH_MPI
@@ -670,6 +702,7 @@ int main(void)
 		if(rank == 0)
 			std::cout<<"Box is ll="<<ll<<" ur="<<ur<<std::endl;
 		tess.SetBox(snap.ll, snap.ur);
+		tess.SetKernel(new Rectangle(ll, ur));
 		tess.BuildHilbert(snap.mesh_points);
 		ComputationalCell3D cdummy;
 		MPI_exchange_data(tess, snap.cells, false, &cdummy);
@@ -703,9 +736,17 @@ int main(void)
 		);
 		ptemp.insert(ptemp.end(), ptemp2.begin(), ptemp2.end());
 		ptemp.insert(ptemp.end(), ptemp3.begin(), ptemp3.end());
-		vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15);
-		tess.BuildHilbert(points);
-		cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale);
+		try
+		{
+			vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15);
+			tess.BuildHilbert(points);
+			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale);
+		}
+		catch (UniversalError const &eo)
+		{
+			reportError(eo);
+			throw;
+		}
 		ComputationalCell3D::tracerNames.push_back("Entropy");
 		ComputationalCell3D::tracerNames.push_back("Star");
 	}
@@ -767,7 +808,7 @@ int main(void)
 	if (rank == 0)
 		std::cout << "Restart time " << sim->getTime() << std::endl;
 	ComputationalCell3D reference_cell = GetReferenceCell(eos, tess, sim->getTime());
-	double tf = 4 * std::sqrt(apocenter * apocenter * apocenter / Mbh);
+	double tf = 6 * std::sqrt(apocenter * apocenter * apocenter / Mbh);
 	double mindt = 0.001;
 	double nextT = 0;
 	nextT = (t_restart < -20) ? sim->getTime() : t_restart;
@@ -858,7 +899,7 @@ int main(void)
 			reference_cell = GetReferenceCell(eos, tess, sim->getTime());
 			if (sim->getCycle() % 7 == 0)
 			{
-				UpdateBox(sim->getTesselation(), *sim, 0.5, 1e-5, reference_cell);
+				UpdateBox(tess, *sim, 0.5, 1e-5, reference_cell);
 				std::pair<Vector3D, Vector3D> box = sim->getTesselation().GetBoxCoordinates();
 				double newvol = (box.second.x - box.first.x) * (box.second.y - box.first.y) * (box.second.z - box.first.z);
 				refine.SetSize(newvol);
