@@ -74,7 +74,8 @@
         "mutex": "cpp",
         "numbers": "cpp",
         "semaphore": "cpp",
-        "stop_token": "cpp"
+        "stop_token": "cpp",
+        "*.txx": "cpp"
     },
     "cmake.configureOnOpen": true,
 
@@ -153,17 +154,12 @@
             }
         ]        
     },
-    "editor.defaultFoldingRangeProvider": "zhuangtongfa.material-theme",
-    "todo-tree.regex.regexCaseSensitive": false,
-    "C_Cpp.inlayHints.autoDeclarationTypes.showOnLeft": true,
-    "C_Cpp.inlayHints.referenceOperator.enabled": true,
-    "C_Cpp.files.exclude": {
+    "C_Cpp.files.exclude": 
+    {
         "*.h5": true,
         "*.txt": true,
         "*.vtu": true,
         "**/.vscode": true,
         "**/.vs": true
-    },
-    "cmake.sourceDirectory": "/home/maorm/RICH/source",
-    "C_Cpp.default.compilerPath": "/software/x86_64/4.18.0/gcc/12.1.0/bin/g++"
+    }
 }

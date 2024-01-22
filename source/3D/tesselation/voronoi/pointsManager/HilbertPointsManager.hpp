@@ -4,9 +4,10 @@
 #ifdef RICH_MPI
 
 #include <memory>
-#include "3D/environment/DistributedOctEnvAgent.hpp"
 #include "PointsManager.hpp"
-#include "3D/environment/kernels/Identity.hpp"
+#include "3D/environment/kernels/Identity.hpp" // for default kernelization
+#include "3D/environment/DistributedOctEnvAgent.hpp"
+#include "3D/environment/HilbertTreeEnvAgent.hpp"
 
 #define SPACE_FACTOR 1e-5
 

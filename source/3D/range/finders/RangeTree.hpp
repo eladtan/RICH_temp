@@ -1,10 +1,8 @@
 #ifndef _RANGE_TREE_FINDER_HPP
 #define _RANGE_TREE_FINDER_HPP
 
-#include "ds/BinaryTree.h"
-#include "ds/RangeTree/RangeTree.h"
-#include "ds/BinaryTree.cpp" // todo: not good
-#include "ds/RangeTree/RangeTree.cpp" // todo: not good
+#include "ds/BinaryTree.hpp"
+#include "ds/RangeTree/RangeTree.hpp"
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 
@@ -27,9 +25,8 @@ public:
     
     inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
-        throw UniversalError("RangeTreeFinder::range not implemented correctly");  // `ignore` and `N` aren't addressed
         std::vector<size_t> toReturn;
-        for(const IndexedVector3D &vec : this->rangeTree->circularRange(center, radius))
+        for(const IndexedVector3D &vec : this->rangeTree->circularRange(center, radius, N, [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);
         }

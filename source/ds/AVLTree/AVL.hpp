@@ -1,4 +1,28 @@
-#include "AVL.h"
+#ifndef _AVL_HPP
+#define _AVL_HPP
+
+#include "../BinaryTree.hpp"
+
+template<typename T>
+class AVLTree : public BinaryTree<T>
+{
+public:
+    inline AVLTree(typename BinaryTree<T>::Node *root, const typename BinaryTree<T>::Compare &compare): BinaryTree<T>(root, compare){};
+    inline AVLTree(const typename BinaryTree<T>::Compare &compare): BinaryTree<T>(compare){};
+    inline AVLTree(): BinaryTree<T>(){};
+    template<typename InputIterator>
+    inline AVLTree(const InputIterator &begin, const InputIterator &end): AVLTree<T>(){for(InputIterator it = begin; it < end; it++) this->insert(*it);};
+    virtual ~AVLTree() = default;
+
+    virtual bool insert(const T &value) override;
+    virtual bool remove(const T &value) override;
+
+protected:
+    inline int getBalance(const typename BinaryTree<T>::Node *node) const
+    {if(node == nullptr) return 0; int leftHeight = (node->left == nullptr)? -1 : node->left->height; int rightHeight = (node->right == nullptr)? -1 : node->right->height; return leftHeight - rightHeight;}
+    void recursiveUpdateNodeInfo(typename BinaryTree<T>::Node *node) override;
+    long int validateHelper(const typename AVLTree<T>::Node *node) const override;
+};
 
 template<typename T>
 void AVLTree<T>::recursiveUpdateNodeInfo(typename BinaryTree<T>::Node *node)
@@ -103,3 +127,5 @@ long int AVLTree<T>::validateHelper(const typename AVLTree<T>::Node *node) const
     return leftSize + rightSize + node->duplications;
 }
 #endif 
+
+#endif // _AVL_HPP
