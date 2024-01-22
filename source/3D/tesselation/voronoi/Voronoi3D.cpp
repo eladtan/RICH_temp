@@ -1351,7 +1351,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
 */
 void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask)
 {
-    if(points.size() == mask.size())
+    if(points.size() != mask.size())
     {
         throw UniversalError("In Voronoi3D::PreparePoints, mask size (" + std::to_string(mask.size()) + ") is not equal to the points size (" + std::to_string(points.size()) + ")");
     }
@@ -1448,7 +1448,7 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
     }
 
     // use an oct tree to fast calculate the distance to closest point
-    OctTree<Vector3D> myOctTree(this->ll_, this->ur_, points);
+    OctTree<Vector3D> myOctTree(this->ll_, this->ur_, new_points);
     for(size_t pointIdx = 0; pointIdx < new_points.size(); pointIdx++)
     {
         if(this->radiuses[pointIdx] < 0)
