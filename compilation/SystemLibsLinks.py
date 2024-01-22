@@ -1,8 +1,8 @@
 {
     'lmod'     : "/usr/share/lmod/lmod/libexec/lmod",
     "vtk"         : "/sw/arch/RHEL8/EB_production/2022/software/VTK/9.2.0.rc2-foss-2022a/",
-    "hdf5_include": "/sw/arch/RHEL8/EB_production/2022/software/HDF5/1.12.2-iimpi-2022a/include/",
-    "hdf5_lib_dir": "/sw/arch/RHEL8/EB_production/2022/software/HDF5/1.12.2-iimpi-2022a/lib/",
+    "hdf5_include": "/sw/arch/RHEL8/EB_production/2022/software/HDF5/1.12.2-gompi-2022a/include/",
+    "hdf5_lib_dir": "/sw/arch/RHEL8/EB_production/2022/software/HDF5/1.12.2-gompi-2022a/lib/",
     'ifort'    : "/sw/arch/RHEL8/EB_production/2022/software/intel-compilers/2022.1.0/compiler/2022.1.0/linux/bin/intel64/ifort",
     'gfortran' : "/sw/arch/RHEL8/EB_production/2022/software/GCCcore/11.3.0/bin/gfortran",
     'icc'      : "/sw/arch/RHEL8/EB_production/2022/software/intel-compilers/2022.1.0/compiler/2022.1.0/linux/bin/intel64/icc",
