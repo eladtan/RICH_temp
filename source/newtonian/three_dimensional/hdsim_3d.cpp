@@ -796,6 +796,7 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 	std::vector<double> new_Er, new_Er_full;
 	size_t reduce_counter = 0;
 	std::vector<ComputationalCell3D> cells;
+	int max_iter_done = 0;
 	while(total_elapsed_time < dt * 0.9999999)
 	{
 		cells = cells_;
@@ -804,6 +805,7 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
 
 		new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
+		max_iter_done = std::max(max_iter_done, total_iters);
 		double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 #ifdef RICH_MPI
 		MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -902,5 +904,15 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		pt_.updateTime(dt);
 		pt_.updateCycle();
 	}
-	return dt * std::min(0.1 / max_diff, 1.25) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
+	double grow_factor = 1.25;
+	if(max_iter_done > 150)
+		grow_factor = 1.02;
+	else
+		if(max_iter_done > 75)
+			grow_factor = 1.05;
+
+	double new_dt = dt * std::min(0.15 / max_diff, grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
+	if(max_iter_done > 300)
+		new_dt = dt * 0.9;
+	return new_dt;
 }
