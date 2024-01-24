@@ -285,6 +285,10 @@ public:
 
   const vector<Vector3D>& getMeshPoints(void) const override;
 
+  const std::vector<Vector3D> &getAllPoints(void) const override;
+
+  size_t GetAllPointsNo(void) const override;
+
   /*! \brief Get neighbours
     \param index Point index
     \return List of indices of neighbouring points

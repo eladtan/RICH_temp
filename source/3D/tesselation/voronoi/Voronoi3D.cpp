@@ -2739,6 +2739,11 @@ const vector<Vector3D> &Voronoi3D::getMeshPoints(void) const
     return del_.points_;
 }
 
+const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
+{
+    return this->allMyPoints;
+}
+
 vector<std::size_t> Voronoi3D::GetNeighbors(std::size_t index) const
 {
     const size_t N = FacesInCell_[index].size();
@@ -2887,6 +2892,11 @@ vector<boost::container::small_vector<size_t, 8>> const& Voronoi3D::GetAllPoints
 size_t &Voronoi3D::GetPointNo(void)
 {
     return Norg_;
+}
+
+size_t Voronoi3D::GetAllPointsNo(void) const
+{
+    return this->allMyPoints.size();
 }
 
 std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
