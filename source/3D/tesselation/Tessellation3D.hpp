@@ -6,6 +6,8 @@
 #ifndef TESSELLATION3D_HPP
 #define TESSELLATION3D_HPP 1
 
+#include <algorithm>
+#include <numeric>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
@@ -34,10 +36,15 @@ public:
   /*! \brief Returns true iff the given point lies inside my domain (under my responsibility).
   */
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
-  
-  /*! \brief Tesselation build, using hilbert curve.
-  */
-  virtual void BuildHilbert(vector<Vector3D> const& points, bool suppressBalancing = false) = 0;
+
+  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
+
+  virtual void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  {
+      std::vector<size_t> indicesToBuild(points.size());
+      std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
+      this->BuildPartiallyParallel(points, indicesToBuild, suppressRebalancing);
+  }
 
   virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
 

@@ -1,6 +1,7 @@
 #ifndef _OCTTREE_HPP
 #define _OCTTREE_HPP
 
+#include <limits>
 #include <vector>
 #include <functional>
 #include <assert.h>
@@ -177,6 +178,25 @@ public:
         }
         return parent->value;
     };
+
+    template<typename U>
+    inline bool remove(const U &point)
+    {
+        OctTreeNode *node = this->tryFind(point);
+        if(node == nullptr)
+        {
+            return false;
+        }
+        OctTreeNode *newParent = this->removeLeaf(node);
+        if(newParent != nullptr)
+        {
+            newParent->fixHeightsRecursively();
+        }
+        this->treeSize--;
+        return true;
+    }
+
+    OctTreeNode *removeLeaf(OctTreeNode *node);
 
     virtual inline OctTreeNode *getRoot(){return this->root;};
     virtual inline const OctTreeNode *getRoot() const{return this->root;};
@@ -518,6 +538,65 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
     UniversalError eo("OctTree: A point could not be inserted to the OctTree");
     eo.addEntry("Point", point);
     throw eo;
+}
+
+template<typename T>
+typename OctTree<T>::OctTreeNode *OctTree<T>::removeLeaf(OctTreeNode *node)
+{
+    // first, ensure it's indeed a leaf
+    if(not node->isLeaf)
+    {
+        UniversalError eo("OctTree remove: node could not be deleted, since its not a left");
+        eo.addEntry("value", node->value);
+        throw eo;
+    }
+    this->nodesNumber--;
+    OctTreeNode *newParent = nullptr;
+    if(node->parent == nullptr)
+    {
+        // remove the root
+        this->root = nullptr;
+        newParent = nullptr;
+    }
+    else
+    {
+        OctTreeNode *parent = node->parent;
+        int myIndex;
+        int numOfChildren;
+        for(int i = 0; i < CHILDREN; i++)
+        {
+            if(parent->children[i] != nullptr)
+            {
+                numOfChildren++;
+            }
+            if(parent->children[i] == node)
+            {
+                myIndex = i;
+                break;
+            }
+        }
+        if(numOfChildren == 0)
+        {
+            throw UniversalError("OctTree remove: should not reach here");
+        }
+        parent->children[myIndex] = nullptr;
+        numOfChildren -= 1;
+        if(numOfChildren == 0)
+        {
+            // now a left
+            parent->isLeaf = true;
+        }
+        if(parent->isLeaf)
+        {
+            newParent = this->removeLeaf(parent);
+        }
+        else
+        {
+            newParent = parent;
+        }
+    }
+    delete node;
+    return newParent;
 }
 
 template<typename T>

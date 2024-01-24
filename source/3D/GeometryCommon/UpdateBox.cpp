@@ -132,7 +132,7 @@ void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, do
 		assert(N>0);
 		
 #ifdef RICH_MPI
-		tess.BuildHilbert(mypoints);
+		tess.BuildParallel(mypoints);
 		MPI_exchange_data(tess, cells, false, &reference_cell);
 		MPI_exchange_data(tess, cells, true, &reference_cell);
 #else // RICH_MPI

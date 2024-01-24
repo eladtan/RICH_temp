@@ -29,7 +29,9 @@
     "qhull_lib_dir": "/home/maorm/opt/qhull/current/lib",
 
     "vtune_include": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/include",
-    "vtune_lib_dir": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/lib64"
+    "vtune_lib_dir": "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/lib64",
+
+    'pybind11'   : "/software/x86_64/3.10.0/pybind11/2.6.1/mock_install/share/cmake/pybind11"
 }
 
 # # new kernel
