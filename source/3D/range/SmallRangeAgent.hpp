@@ -41,7 +41,7 @@ private:
         std::vector<Vector3D> selfAnswer(const SmallRangeQueryData &query, SentPointsContainer::PointsSet &ignore)
         {
             // a small query, bring the requested number of points
-            std::vector<size_t> indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
+            std::vector<size_t> indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, std::numeric_limits<size_t>::max(), ignore);
             ignore.insert(indicesResult.begin(), indicesResult.end());
 
             std::vector<Vector3D> result;
