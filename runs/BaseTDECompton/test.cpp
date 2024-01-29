@@ -433,17 +433,24 @@ namespace
 		}
 	};
 
-	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits)
+	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n)
 	{
-		vector<double> xsi = read_vector("/home/esternberg/RICH/data/xsi.txt");
-		vector<double> theta = read_vector("/home/esternberg/RICH/data/theta.txt");
+		double endfactor = 0;
+		vector<double> xsi;
+		vector<double> theta;
+		if(n > 2)
+		{
+			xsi = read_vector("/home/esternberg/RICH/data/xsi3.txt");
+			theta = read_vector("/home/esternberg/RICH/data/theta3.txt");
+			endfactor = 2.0182359;
+		}
+		else
+		{
+			xsi = read_vector("/home/esternberg/RICH/data/xsi32.txt");
+			theta = read_vector("/home/esternberg/RICH/data/theta32.txt");
+			endfactor = 2.714055;
+		}
 		xsi[0] = 0;
-
-		/*double n = 3;
-		double endfactor = 2.01824;*/
-
-		double n = 1.5;
-		double endfactor = 2.714;
 
 		double alpha = R / xsi.back();
 		double rho_c = M / (4 * M_PI * alpha * alpha * alpha * endfactor);
@@ -491,20 +498,11 @@ namespace
 
 	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time)
 	{
-		double R = 1;
 		double M = 1;
-		/*double n = 3;
-		double endfactor = 2.01824;
-		double alpha = R / 6.89684;*/
-		double n = 1.5;
-		double endfactor = 2.714;
-		double alpha = R / 3.65375;
-		double rho_c = M / (4 * M_PI * alpha * alpha * alpha * endfactor);
-		double K = alpha * alpha * 4 * M_PI / ((n + 1) * std::pow(rho_c, 1.0 / n - 1));
 		ComputationalCell3D reference;
 		std::pair<Vector3D, Vector3D> box = tess.GetBoxCoordinates();
 		double dfactor = std::min(1.0, std::max(0.01, std::exp(-(time - 900) / 100.0)));
-		double mindensity = dfactor * 1e-10 * M / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y));
+		double mindensity = dfactor * 1e-12 * M / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y));
 		mindensity = std::max(mindensity, 1e-20);
 		reference.density = mindensity;
 		double const Tref = 1e3;
@@ -595,12 +593,13 @@ int main(void)
 	double const R = read_number("Rstar.txt");
 	// std::cout<<"Here7"<<std::endl;
 	double const M = read_number("Mstar.txt");
+	double const n = read_number("n.txt");
 	// std::cout<<"Here8"<<std::endl;
 	double const Mbh = read_number("Mbh.txt");
 	double const beta =  read_number("beta.txt");
 	// std::cout<<"Here9"<<std::endl;
 	std::stringstream ss;
-	ss<<"R"<<R<<"M"<<M<<"BH"<<Mbh<<"beta"<<beta<<"S"<<static_cast<size_t>(smooth_factor*100)<<"Compton";
+	ss<<"R"<<R<<"M"<<M<<"BH"<<Mbh<<"beta"<<beta<<"S"<<static_cast<size_t>(smooth_factor*100)<<"n"<<n<<"Compton";
 #ifdef hi_res
 	ss<<"HiRes";
 #endif
@@ -740,7 +739,7 @@ int main(void)
 		{
 			vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15);
 			tess.BuildHilbert(points);
-			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale);
+			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale, n);
 		}
 		catch (UniversalError const &eo)
 		{
