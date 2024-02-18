@@ -16,10 +16,15 @@ namespace
                 ++index;
             else
             {
-                UniversalError eo("Bad interpolation");
-                eo.addEntry("xi", xi);
-                eo.addEntry("index", index);
-                throw eo;
+                if(index == 3 && std::abs(*(x_begin + index) -  xi) < 1e-14)
+                    --index;
+                else
+                {
+                    UniversalError eo("Bad interpolation");
+                    eo.addEntry("xi", xi);
+                    eo.addEntry("index", index);
+                    throw eo;
+                }
             }
         }
         double m0 = (*(y_begin + index) - *(y_begin + index - 2)) / (*(x_begin + index) - *(x_begin + index - 2));
@@ -128,7 +133,7 @@ double OndrejEOS::dp2e(double d, double p, tvector const &tracers, vector<string
     if (p_cgs > 1e16 * d_cgs)
         return tscale_ * tscale_ * 1.5 * p_cgs / (d_cgs * lscale_ * lscale_);
     else
-        return tscale_ * tscale_ * std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(p_cgs), P_, U_)) / (lscale_ * lscale_);
+        return tscale_ * tscale_ * std::exp(InterpData2(std::log(d_cgs), std::log(p_cgs), P_, U_)) / (lscale_ * lscale_);
 }
 
 double OndrejEOS::dp2T(double d, double p, tvector const &tracers, vector<string> const &tracernames) const
@@ -138,7 +143,7 @@ double OndrejEOS::dp2T(double d, double p, tvector const &tracers, vector<string
     if (p_cgs > 1e16 * d_cgs)
         return p_cgs * 7.452e-9 / d_cgs;
     else
-        return std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(p_cgs), P_, T_));
+        return std::exp(InterpData2(std::log(d_cgs), std::log(p_cgs), P_, T_));
 }
 
 double OndrejEOS::de2T(double const d, double const e, tvector const& tracers, vector<string> const& tracernames) const
@@ -148,7 +153,7 @@ double OndrejEOS::de2T(double const d, double const e, tvector const& tracers, v
     if (e_cgs > 1e16)
         return e_cgs / (1.5 * 1.3419e8);
     else
-        return std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(e_cgs), U_, T_));
+        return std::exp(InterpData2(std::log(d_cgs), std::log(e_cgs), U_, T_));
 }
 
 double OndrejEOS::dT2p(double d, double T, tvector const &tracers, vector<string> const &tracernames) const
@@ -157,7 +162,7 @@ double OndrejEOS::dT2p(double d, double T, tvector const &tracers, vector<string
     if (T > 5e7)
         return tscale_ * tscale_ * lscale_ * T * d_cgs * 1.3419e8 / mscale_;
     else
-        return tscale_ * tscale_ * lscale_ * std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(T), T_, P_)) / mscale_;
+        return tscale_ * tscale_ * lscale_ * std::exp(InterpData2(std::log(d_cgs), std::log(T), T_, P_)) / mscale_;
 }
 
 double OndrejEOS::dT2e(double d, double T, tvector const &tracers, vector<string> const &tracernames) const
@@ -165,7 +170,7 @@ double OndrejEOS::dT2e(double d, double T, tvector const &tracers, vector<string
     if (T > 8e7)
         return tscale_ * tscale_ * T * 1.5 * 1.3419e8 / (lscale_ * lscale_);
     else
-        return tscale_ * tscale_ * std::pow(10.0, InterpData2(std::log10(d * mscale_ / (lscale_ * lscale_ * lscale_)), std::log10(T), T_, U_)) / (lscale_ * lscale_);
+        return tscale_ * tscale_ * std::exp(InterpData2(std::log(d * mscale_ / (lscale_ * lscale_ * lscale_)), std::log(T), T_, U_)) / (lscale_ * lscale_);
 }
 
 double OndrejEOS::de2p(double d, double e, tvector const &tracers, vector<string> const &tracernames) const
@@ -176,7 +181,7 @@ double OndrejEOS::de2p(double d, double e, tvector const &tracers, vector<string
         return tscale_ * tscale_ * lscale_ * e_cgs * d_cgs * 0.66666666666 / mscale_;
     else
     {
-        double newp = tscale_ * tscale_ * lscale_ * std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(e_cgs), U_, P_)) / mscale_;
+        double newp = tscale_ * tscale_ * lscale_ * std::exp(InterpData2(std::log(d_cgs), std::log(e_cgs), U_, P_)) / mscale_;
         return newp;
     }
 }
@@ -190,7 +195,7 @@ double OndrejEOS::dp2c(double d, double p, tvector const &tracers, vector<string
     if (p_cgs > 1e16 * d_cgs)
         return tscale_ * std::sqrt(5 * p_cgs / (3 * d_cgs)) / lscale_;
     else
-        return tscale_ * std::sqrt(InterpData2(std::log10(d_cgs), std::log10(p_cgs), P_, cs_)) / lscale_;
+        return tscale_ * std::sqrt(InterpData2(std::log(d_cgs), std::log(p_cgs), P_, cs_)) / lscale_;
 }
 
 double OndrejEOS::dp2cv(double d, double p, tvector const &tracers, vector<string> const &tracernames) const
@@ -201,7 +206,7 @@ double OndrejEOS::dp2cv(double d, double p, tvector const &tracers, vector<strin
     if (p_cgs > 1e15 * d_cgs)
         return 2.0128e8 * d_cgs * cv_factor;
     else
-        return std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(p_cgs), P_, CV_)) * cv_factor;
+        return std::exp(InterpData2(std::log(d_cgs), std::log(p_cgs), P_, CV_)) * cv_factor;
 }
 
 double OndrejEOS::dT2cv(double const d, double const T, tvector const& tracers, vector<string> const& tracernames) const
@@ -211,7 +216,7 @@ double OndrejEOS::dT2cv(double const d, double const T, tvector const& tracers, 
     if(T > 1e6 || d_cgs > 10)
         return  2.0128e8 * d_cgs * cv_factor;
     else
-        return std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(T), T_, CV_)) * cv_factor;
+        return std::exp(InterpData2(std::log(d_cgs), std::log(T), T_, CV_)) * cv_factor;
 }
 
 double OndrejEOS::de2c(double d, double e, tvector const &tracers, vector<string> const &tracernames) const
@@ -228,7 +233,7 @@ double OndrejEOS::dp2s(double d, double p, tvector const &tracers, vector<string
         throw UniversalError("Negative Pressure in dp2s");
     if (p_cgs > 1e16 * d_cgs)
         return tscale_ * tscale_ * std::pow(10.0, (8.128 + std::log10(-38.43 + std::log(std::pow(p_cgs, 1.5) * std::pow(d_cgs, -2.5))))) / (lscale_ * lscale_);
-    return tscale_ * tscale_ * std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(p_cgs), P_, S_)) / (lscale_ * lscale_);
+    return tscale_ * tscale_ * std::exp(InterpData2(std::log(d_cgs), std::log(p_cgs), P_, S_)) / (lscale_ * lscale_);
 }
 
 double OndrejEOS::sd2p(double s, double d, tvector const &tracers, vector<string> const &tracernames) const
@@ -241,5 +246,5 @@ double OndrejEOS::sd2p(double s, double d, tvector const &tracers, vector<string
     if (s > smax)
         return tscale_ * tscale_ * lscale_ * std::pow(std::pow(d_cgs, 2.5) * std::exp(s_cgs * std::pow(10.0, -8.128) + 38.43), 0.666666666) / mscale_;
     else
-        return tscale_ * tscale_ * lscale_ * std::pow(10.0, InterpData2(std::log10(d_cgs), std::log10(s_cgs), S_, P_)) / mscale_;
+        return tscale_ * tscale_ * lscale_ * std::exp(InterpData2(std::log(d_cgs), std::log(s_cgs), S_, P_)) / mscale_;
 }
