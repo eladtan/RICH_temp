@@ -101,7 +101,7 @@ namespace
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
 		size_t const N = sim.getTesselation().GetPointNo();
 		std::pair<Vector3D, Vector3D> box_points = sim.getTesselation().GetBoxCoordinates();
-		double const reference_density = 1e-4 * Mstar / ((box_points.second.x - box_points.first.x) * (box_points.second.y - box_points.first.y) * (box_points.second.z - box_points.first.z));
+		double const reference_density = 1e-8 * Mstar / ((box_points.second.x - box_points.first.x) * (box_points.second.y - box_points.first.y) * (box_points.second.z - box_points.first.z));
 		for(size_t i = 0; i < N; ++i)
 		{
 			points[i].x += x0[0];
@@ -132,14 +132,26 @@ namespace
 	{
 		int rank = 0;
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-		if(sim.getTime() > 10)
+		if(sim.getTime() > 5)
 		{
 			double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
 			double const Rp = Rt / beta;
 			state_type x0 = GetTrueAnomaly(sim.getTime(), MBH, Rp, -3 * Mstar * std::pow(MBH / Mstar, 0.3333333) / Rstar);
+			Tessellation3D const& tess = sim.getTesselation();
+			std::vector<ComputationalCell3D> const& cells = sim.getCells();
+			int need_update = 0;
+			for(size_t i = 0; i < tess.GetPointNo(); ++i)
+			{
+				if(cells[i].density > 1e-14 && (cells[i].velocity.x + x0[2]) > 0 && (cells[i].velocity.y + x0[3]) < 0 && x0[0] < -2 * Rt)
+				{
+					need_update = 1;
+					break;
+				}
+			}
+			MPI_Allreduce(MPI_IN_PLACE, &need_update, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 			if(rank == 0)
 				std::cout<<x0[0]<<","<<x0[1]<<std::endl;
-			if(x0[1] > 0.1 && x0[2] > 0.1)
+			if((x0[1] > 0.1 && x0[2] > 0.1) || need_update == 1)
 			{
 				UpdateReferenceFrame(sim, Rstar, Mstar, MBH, beta);
 #ifdef RICH_MPI
@@ -175,10 +187,19 @@ namespace
 				return std::exp(data[0][0] + d_slope * (d - rho_[0]) + T_slope * (T - T_[0]));
 			}
 			else
-			{	
-				double const data_T0 = BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d);
-				double const T_slope = (BiLinearInterpolation(T_, rho_, data, T_[slope_length - 1], d) - data_T0) / (T_[slope_length - 1] - T_[0]);
-				return std::exp(BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d) + T_slope * (T - T_[0]));
+			{
+				if(d >= rho_.back())
+				{
+					double const d_slope = (data[0][rho_.size() - slope_length - 1] -data[0][data[0].size() - 1]) / (rho_[data[0].size() - slope_length - 1] - rho_.back());
+					double const T_slope = (data[slope_length - 1][rho_.size() - 1] -data[0][rho_.size() - 1]) / (T_[slope_length - 1] - T_[0]);
+					return std::exp(data[0][rho_.size() - 1] + d_slope * (d - rho_.back()) + T_slope * (T - T_[0]));
+				}
+				else
+				{	
+					double const data_T0 = BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d);
+					double const T_slope = (BiLinearInterpolation(T_, rho_, data, T_[slope_length - 1], d) - data_T0) / (T_[slope_length - 1] - T_[0]);
+					return std::exp(BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d) + T_slope * (T - T_[0]));
+				}
 			}
 		}
 		if(T > T_.back())
@@ -189,13 +210,28 @@ namespace
 				return std::exp(data[T_.size() - 1][0] + d_slope * (d - rho_[0]) + T_high_slope * (T - T_.back()));
 			}
 			else
-				return std::exp(BiLinearInterpolation(T_, rho_, data, T_.back() * 0.99999, d) + T_high_slope * (T - T_.back()));
+			{
+				if(d >= rho_.back())
+				{
+					size_t const Tsize = T_.size() - 1;
+					double const d_slope = (data[Tsize][rho_.size() - slope_length - 1] -data[Tsize][rho_.size() - 1]) / (rho_[rho_.size() - slope_length - 1] - rho_.back());
+					return std::exp(data[T_.size() - 1][0] + d_slope * (d - rho_.back()) + T_high_slope * (T - T_.back()));
+				}
+				else
+					return std::exp(BiLinearInterpolation(T_, rho_, data, T_.back() * 0.99999, d) + T_high_slope * (T - T_.back()));
+			}
 		}
 		if(d < rho_[0])
 		{
 			double const data_d0 = BiLinearInterpolation(T_, rho_, data, T, rho_[0] * 0.9999);
 			double const d_slope =(BiLinearInterpolation(T_, rho_, data, T, rho_[slope_length - 1]) - data_d0) / (rho_[slope_length - 1] - rho_[0]);
 			return std::exp(BiLinearInterpolation(T_, rho_, data, T, rho_[0] * 0.9999) + d_slope * (d - rho_[0]));
+		}
+		if(d >=  rho_.back())
+		{
+			double const data_d0 = BiLinearInterpolation(T_, rho_, data, T, rho_.back() * 0.9999);
+			double const d_slope =(BiLinearInterpolation(T_, rho_, data, T, rho_[rho_.size() - slope_length - 1]) - data_d0) / (rho_[rho_.size() - slope_length - 1] - rho_.back());
+			return std::exp(BiLinearInterpolation(T_, rho_, data, T, rho_.back() * 0.9999) + d_slope * (d - rho_.back()));
 		}
 		return std::exp(BiLinearInterpolation(T_, rho_, data, T, d));
 	}
@@ -265,7 +301,7 @@ namespace
 	class MassRefine : public CellsToRefine3D
 	{
 	private:
-		double domain_size_, Mbh_, Mstar_, Rstar_;
+		double domain_size_, Mbh_, Mstar_, Rstar_, beta_;
 
 	public:
 		void SetSize(double s)
@@ -273,7 +309,7 @@ namespace
 			domain_size_ = s;
 		}
 
-		MassRefine(double domainsize, double Mbh, double Mstar, double Rstar) : domain_size_(domainsize), Mbh_(Mbh), Mstar_(Mstar), Rstar_(Rstar) {}
+		MassRefine(double domainsize, double Mbh, double Mstar, double Rstar, double beta) : domain_size_(domainsize), Mbh_(Mbh), Mstar_(Mstar), Rstar_(Rstar), beta_(beta) {}
 
 		std::pair<vector<size_t>, vector<Vector3D>> ToRefine(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
@@ -282,12 +318,12 @@ namespace
 			std::vector<double> theta;
 			size_t Norg = tess.GetPointNo();
 			vector<size_t> res;
-			double MaxMass = 1.5e-7;
-			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0);
+			double MaxMass = 1.5e-7 * Mstar_;
+			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0) / beta_;
 			double min_cell_size = Rt * 1e-2;
 #ifdef hi_res
-			MaxMass *= 0.5;
-			min_cell_size *= std::pow(0.5, 0.33333);
+			MaxMass *= 0.25;
+			min_cell_size *= std::pow(0.25, 0.33333);
 #endif
 			std::vector<size_t> neigh;
 			std::vector<double> volumes = tess.GetAllVolumes();
@@ -302,10 +338,10 @@ namespace
 				if (fastabs(tess.GetCellCM(i) - tess.GetMeshPoint(i)) > (tess.GetWidth(i) * 0.15))
 					continue;
 				double r_dist = std::max(fastabs(tess.GetMeshPoint(i)), Rt * smooth_factor);
-				if (tess.GetWidth(i) < min_cell_size * (r_dist < 0.65 * Rt ? smooth_factor / 0.6 : 1))
+				if (tess.GetWidth(i) < min_cell_size * (r_dist < (0.65 * Rt) ? smooth_factor / 0.6 : 1))
 					continue;
 				
-				if ((r_dist > 0.65 * Rt && r_dist < 1.5 * Rt) || r_dist > 0.75*apocenter || r_dist < smooth_factor * Rt)
+				if (r_dist < (1.5 * Rt) || r_dist > 0.75*apocenter)
 					continue;
 
 				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 2.5)) ? MaxMass : MaxMass * 30;
@@ -324,7 +360,7 @@ namespace
 							good = false;
 							break;
 						}
-						if ((5 * volumes[neigh[j]]) < V)
+						if ((6 * volumes[neigh[j]]) < V)
 							good2 = true;
 					}
 				}
@@ -335,7 +371,7 @@ namespace
 					res.push_back(i);
 					continue;
 				}
-				if ((V * cells[i].density) > (MaxMass2 * std::min(r_dist * r_dist / (400 * Rt * Rt), 1.0)) || V > domain_size_ * 1e-5)
+				if ((V * cells[i].density) > (MaxMass2 * std::min(std::pow(0.04 * r_dist / Rt, 2.5), 1.0)) || V > domain_size_ * 1e-5)
 				{
 					{
 						res.push_back(i);
@@ -350,7 +386,7 @@ namespace
 	class RemoveBig : public CellsToRemove3D
 	{
 	private:
-		double domain_size_, Mbh_, Mstar_, Rstar_;
+		double domain_size_, Mbh_, Mstar_, Rstar_, beta_;
 		OndrejEOS const &eos_;
 
 	public:
@@ -359,7 +395,7 @@ namespace
 			domain_size_ = s;
 		}
 
-		RemoveBig(double domain_size, OndrejEOS const &eos, double Mbh, double Mstar, double Rstar) : domain_size_(domain_size), eos_(eos), Mbh_(Mbh), Mstar_(Mstar), Rstar_(Rstar) {}
+		RemoveBig(double domain_size, OndrejEOS const &eos, double Mbh, double Mstar, double Rstar, double beta) : domain_size_(domain_size), eos_(eos), Mbh_(Mbh), Mstar_(Mstar), Rstar_(Rstar), beta_(beta) {}
 
 		std::pair<vector<size_t>, vector<double>> ToRemove(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
@@ -375,15 +411,15 @@ namespace
 			MPI_exchange_data2(tess, volumes, true);
 #endif
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
-			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0);
+			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0) / beta_;
 			double const time_Rt = std::sqrt(Rt * Rt * Rt / Mbh_);
 			double min_cell_size = Rt * 1e-2;
 			double const apocenter_time = 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
 
-			double MaxMass = 3e-8;
+			double MaxMass = 3.5e-8 * Mstar_;
 #ifdef hi_res
-			MaxMass *= 0.5;
-			min_cell_size *= std::pow(0.5, 0.33333);
+			MaxMass *= 0.25;
+			min_cell_size *= std::pow(0.25, 0.33333);
 #endif
 			for (size_t i = 0; i < Norg; ++i)
 			{
@@ -393,11 +429,11 @@ namespace
 					continue;
 				double Vol = tess.GetVolume(i);
 				double w = tess.GetWidth(i);
-				double MaxMass2 = (tess.GetMeshPoint(i).x > -Rt * apocenter * 2.5) ? MaxMass : MaxMass * 30;
+				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 2.5) ? MaxMass : MaxMass * 30;
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double r_i = std::max(Rt * smooth_factor, r_org);
 				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
-				MaxMass2 = MaxMass2 * std::min(r_i * r_i / (400 * Rt * Rt), 1.0);
+				MaxMass2 = MaxMass2 * std::min(std::pow(0.04 * r_i / Rt, 2.5), 1.0);
 				double const dt = w / eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers);
 				double const in_factor = r_i < 0.65 * Rt ? smooth_factor / 0.6 : 1;
 				MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
@@ -433,6 +469,29 @@ namespace
 		}
 	};
 
+	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time)
+	{
+		double M = 1;
+		ComputationalCell3D reference;
+		std::pair<Vector3D, Vector3D> box = tess.GetBoxCoordinates();
+		double dfactor = 1;
+		double mindensity = dfactor * 1e-11 * M / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y));
+		mindensity = std::max(mindensity, 1e-20);
+		reference.density = mindensity;
+		double const Tref = 500;
+		double const Tgas = 1e7;
+		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 * 7e10 / (2e33 * reference.density);
+		reference.pressure = eos.dT2p(reference.density, Tgas, reference.tracers);
+		reference.velocity = Vector3D();
+		reference.internal_energy = eos.dp2e(reference.density, reference.pressure, reference.tracers);
+		reference.temperature = Tgas;
+		reference.tracers[0] = (eos.dp2s(reference.density, reference.pressure, reference.tracers));
+		reference.tracers[1] = (0);
+		reference.tracers[2] = (0);
+		reference.tracers[3] = (0);
+		return reference;
+	}
+
 	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n)
 	{
 		double endfactor = 0;
@@ -458,6 +517,7 @@ namespace
 
 		size_t N = tess.GetPointNo();
 		vector<ComputationalCell3D> res(N);
+		ComputationalCell3D reference = GetReferenceCell(eos, tess, 0);
 		for (size_t i = 0; i < N; ++i)
 		{
 			Vector3D const &point = tess.GetMeshPoint(i);
@@ -467,55 +527,31 @@ namespace
 			{
 				t = LinearInterpolation(xsi, theta, r / alpha);
 				res[i].tracers[1] = (1);
-				res[i].density = std::max(rho_c * std::pow(t, n), 1e-5);
+				res[i].density = std::max(rho_c * std::pow(t, n), 1e-6);
+				double const P = K * std::pow(res[i].density, 1 + 1.0 / n);
+				double const a = CG::radiation_constant;
+				double const d= res[i].density;
+				auto f = [&eos, d, P, a, Punits](double const x){return P - eos.dT2p(d, x) - Punits * a * x * x * x * x / 3;};
+				boost::math::tools::eps_tolerance<double> tol(10);
+				std::uintmax_t it = 150;
+				std::pair<double, double> Tres = boost::math::tools::bracket_and_solve_root(f, 1e4, 2.0, false, tol, it);
+				double const T = 0.5 * (Tres.first + Tres.second);
+				res[i].internal_energy = eos.dT2e(res[i].density, T, res[i].tracers);
+				res[i].tracers[4] = 0;
+				res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy);
+				res[i].Erad = 7.5657e-15 * T * T * T * T * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
+				res[i].temperature = T;
 			}
 			else
 			{
-				t = theta.back() * 10;
-				res[i].density = rho_c * std::pow(t, n);
+				res[i] = reference;
 				res[i].tracers[1] = (0);
 			}
-			res[i].tracers[4] = 0;
-			double const P = K * std::pow(res[i].density, 1 + 1.0 / n);
-			double const a = CG::radiation_constant;
-			double const d= res[i].density;
-			auto f = [&eos, d, P, a, Punits](double const x){return P - eos.dT2p(d, x) - Punits * a * x * x * x * x / 3;};
-			boost::math::tools::eps_tolerance<double> tol(10);
-			std::uintmax_t it = 150;
-			std::pair<double, double> Tres = boost::math::tools::bracket_and_solve_root(f, 1e4, 2.0, false, tol, it);
-			double const T = 0.5 * (Tres.first + Tres.second);
-			double const wrongT = eos.dp2T(d, P);
-			res[i].internal_energy = eos.dT2e(res[i].density, T, res[i].tracers);
-			res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy);
-			res[i].Erad = 7.5657e-15 * T * T * T * T * 1603 * 1603 / (7e10 * 7e10 * res[i].density);
-			res[i].temperature = T;
 			res[i].tracers[0] = (eos.dp2s(res[i].density, res[i].pressure, res[i].tracers));
 			res[i].tracers[2] = (0);
 			res[i].tracers[3] = (0);
 		}
 		return res;
-	}
-
-	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time)
-	{
-		double M = 1;
-		ComputationalCell3D reference;
-		std::pair<Vector3D, Vector3D> box = tess.GetBoxCoordinates();
-		double dfactor = std::min(1.0, std::max(0.01, std::exp(-(time - 900) / 100.0)));
-		double mindensity = dfactor * 1e-12 * M / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y));
-		mindensity = std::max(mindensity, 1e-20);
-		reference.density = mindensity;
-		double const Tref = 1e3;
-		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 / (7e10 * 7e10 * reference.density);
-		reference.pressure = eos.dT2p(reference.density, Tref, reference.tracers);
-		reference.velocity = Vector3D();
-		reference.internal_energy = eos.dp2e(reference.density, reference.pressure, reference.tracers);
-		reference.temperature = Tref;
-		reference.tracers[0] = (eos.dp2s(reference.density, reference.pressure, reference.tracers));
-		reference.tracers[1] = (0);
-		reference.tracers[2] = (0);
-		reference.tracers[3] = (0);
-		return reference;
 	}
 
 	class TDEGravity : public Acceleration3D
@@ -548,10 +584,10 @@ namespace
 				Rcm = Vector3D(x0[0], x0[1], 0);
 			}
 			std::pair<Vector3D, Vector3D> box = tess.GetBoxCoordinates();
-			double mindensity = std::max(1e-20, 1e-7 * M_ / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y)));
+			double mindensity = std::max(1e-19, 1e-10 * M_ / ((box.second.x - box.first.x) * (box.second.z - box.first.z) * (box.second.y - box.first.y)));
 			// Calc the tidal force
 			size_t N = acc.size();
-			double smooth = Rt * smooth_factor;
+			double smooth = Rt * smooth_factor / beta_;
 			for (size_t i = 0; i < N; ++i)
 			{
 				Vector3D const &point = tess.GetCellCM(i);
@@ -637,12 +673,9 @@ int main(void)
 	}
 	if(rank == 0)
 		std::cout<<"Full gravity "<<full_gravity<<std::endl;
-	double const dmin_eos = -22;
-	double const dmax_eos = 1.1;
-	double const dd_eos = 0.05;
-	double const Tmin_eos = 0.2;
-	double const Tmax_eos = 8.0;
-	double const dT_eos = 0.01;
+	double const dmin_eos = -50.656872045869001;
+	double const dmax_eos = 6.815166376138933;
+	double const dd_eos = 0.095310179804322;
 	double const lscale = 7e10;
 	double const mscale = 2e33;
 	double const tscale = 1603;
@@ -669,8 +702,8 @@ int main(void)
 	if (restart)
 	{
 		int hdf5_rank = -1;
-		if(rank >= 256)
-			hdf5_rank = 0;
+		if(rank == 0)
+			std::cout<<"Reading from file "<<file_name + int2str(counter) + ".h5"<<std::endl;
 		snap = ReadSnapshot3D(file_name + int2str(counter) + ".h5"
 #ifdef RICH_MPI
 		, true, hdf5_rank
@@ -718,7 +751,7 @@ int main(void)
 		tproc.Build(procpoints);
 #endif
 		size_t const np = std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4));
-		vector<Vector3D> ptemp = RandSphereR(np, ll, ur, 0, R * 1.1, Vector3D()
+		vector<Vector3D> ptemp = RandSphereR1(np, ll, ur, 0, R * 1.1, Vector3D()
 #ifdef RICH_MPI
 		, &tproc
 #endif
@@ -813,8 +846,8 @@ int main(void)
 	nextT = (t_restart < -20) ? sim->getTime() : t_restart;
 	nextT += std::min(8.0, mindt + 0.05 * std::pow(std::abs(sim->getTime()), 0.666666));
 
-	RemoveBig remove(8 * width * width * width, eos, Mbh, M, R);
-	MassRefine refine(8 * width * width * width, Mbh, M, R);
+	RemoveBig remove(8 * width * width * width, eos, Mbh, M, R, beta);
+	MassRefine refine(8 * width * width * width, Mbh, M, R, beta);
 	PCM3D ainterp(ghost);
 	AMR3D amr(eos, refine, remove, interp);
 	std::pair<Vector3D, Vector3D> box2 = sim->getTesselation().GetBoxCoordinates();
