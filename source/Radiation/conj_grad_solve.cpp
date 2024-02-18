@@ -111,7 +111,7 @@ namespace CG
         MPI_Comm_size (MPI_COMM_WORLD, &nprocs);
         MPI_Comm_rank (MPI_COMM_WORLD, &rank);
     #endif
-        int const max_iter = 2000;
+        int const max_iter = 1000;
 
         mat A;
         size_t_mat A_indeces;
