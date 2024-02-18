@@ -137,8 +137,8 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         lmod.module(SysLibsDict["lmod"], "load", m)
 
 # Fix issue in r3d
-    with open(os.path.join(root_dir,"r3d/config/r3d-config.h.in"), "r") as fin:
-        with open(os.path.join(root_dir,"r3d/src/r3d-config.h"), "w") as fout:
+    with open(os.path.join(root_dir,"source/opt/r3d/config/r3d-config.h.in"), "r") as fin:
+        with open(os.path.join(root_dir,"source/opt/r3d/src/r3d-config.h"), "w") as fout:
             for line in fin:
                 fout.write(line.replace('@R3D_MAX_VERTS@', '256'))
     

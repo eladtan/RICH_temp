@@ -44,7 +44,8 @@ message("python exe path: " ${PYTHON_EXECUTABLE})
 
 # files to compile
 file(GLOB_RECURSE SRC_CPP FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp")
-file(GLOB R3D "${PROJECT_ROOT_DIR}/r3d/src/*.c")
+file(GLOB R3D "${PROJECT_SOURCE_DIR}/opt/r3d/src/*.c")
+message("R3D ${PROJECT_SOURCE_DIR}/opt/r3d/src/*.c")
 file(GLOB TEST_DIR "${TEST_DIR}/*.cpp")
 
 # HDF5
