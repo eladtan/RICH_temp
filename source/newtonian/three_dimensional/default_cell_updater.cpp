@@ -72,6 +72,18 @@ namespace
 				Conserved3D& extensive = extensives[i];
 				const double vol = tess.GetVolume(i);
 				res[i].density = extensive.mass / vol;
+				double d_factor = 1;
+				if(res[i].density > 0 && res[i].density < 2e-21)
+				{
+					d_factor = 2e-21 / res[i].density;
+					res[i].density = 2e-21;
+					extensive.mass *= d_factor;
+					extensive.momentum *= d_factor;
+					extensive.internal_energy *= d_factor;
+					for (size_t j = 0; j < Ntracers; ++j)
+						extensive.tracers[j] *= d_factor;
+					extensive.Erad *= d_factor;
+				}
 				res[i].velocity = extensive.momentum / extensive.mass;
 				double energy = extensive.internal_energy / extensive.mass;
 				extensive.energy = extensive.mass*(energy + 0.5*ScalarProd(res[i].velocity, res[i].velocity));
@@ -97,8 +109,8 @@ namespace
 							}
 							else
 							{
-							  double new_pressure = eos.de2p(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
-							  double new_entropy = eos.dp2s(res[i].density, new_pressure, res[i].tracers, ComputationalCell3D::tracerNames);
+								double new_pressure = eos.de2p(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
+							  	double new_entropy = eos.dp2s(res[i].density, new_pressure, res[i].tracers, ComputationalCell3D::tracerNames);
 								// We don't need the entropy fix, update entropy
 								res[i].internal_energy = energy;
 								res[i].pressure = new_pressure;
@@ -156,6 +168,16 @@ namespace
 						}
 					}
 					res[i].temperature = eos.de2T(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
+					if(res[i].temperature < 1e3)
+					{
+						res[i].temperature = 1e3;
+						res[i].internal_energy = eos.dT2e(res[i].density, 1e3, res[i].tracers, ComputationalCell3D::tracerNames);
+						res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
+						res[i].tracers[entropy_index] = eos.dp2s(res[i].density, res[i].pressure, res[i].tracers, ComputationalCell3D::tracerNames);
+						extensive.tracers[entropy_index] = res[i].tracers[entropy_index] * extensive.mass;
+						extensive.internal_energy = res[i].internal_energy * extensive.mass;
+						extensive.energy = extensive.internal_energy + 0.5 * ScalarProd(extensive.momentum, extensive.momentum) / extensive.mass;
+					}
 				}
 				if (!(res[i].density > 0) || !(res[i].pressure > 0) || (!std::isfinite(fastabs(extensives[i].momentum))))
 				{
