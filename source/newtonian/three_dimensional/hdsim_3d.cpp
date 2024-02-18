@@ -765,7 +765,7 @@ size_t& HDSim3D::GetMaxID(void)
 double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matrix_builder, bool const no_hydro)
 {
 	int total_iters = 0;
-	double const CG_eps = 1e-10;
+	double const CG_eps = 1e-12;
 	size_t const N = tess_.GetPointNo();
 	if(N == 0)
 		std::cout<<"Zero cells in RadiationTimeStep"<<std::endl;
