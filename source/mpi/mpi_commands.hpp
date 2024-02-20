@@ -15,6 +15,7 @@
 #include "stdint.h"
 
 #define MPI_TIMED_BARRIER_TAG 110503
+#define MPI_EXCHANGE_ALL_TO_ALL_TAG 708
 
 using std::vector;
 
@@ -475,6 +476,144 @@ vector<vector<size_t> > MPI_exchange_data(const vector<int>& totalkwith, vector<
 void MPI_exchange_data(const Tessellation3D& tess, vector<char>& cells, bool ghost_or_sent);
 
 void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &place);
+
+void MPI_All_cast(const void *buffer_send, int count, MPI_Datatype datatype, void *buffer_recv, MPI_Comm communicator);
+
+template <typename T, template <typename...> class Container, typename... Ts>
+std::vector<std::vector<T>> MPI_All_cast_by_ranks(const Container<T, Ts...> &data, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_Bcast_all_serializable: given type must be serializable");
+
+	int size;
+	MPI_Comm_size(comm, &size);
+
+	// agree the chunk size
+	size_t chunkSize = (data.empty())? 0 : data[0].getChunkSize();
+	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
+	if(chunkSize == 0)
+	{
+		return std::vector<std::vector<T>>(size); // no data is being sent
+	}
+
+	// first know how much data is being sent from each one
+	std::vector<double> dataToSend;
+	for(const T &value : data)
+	{
+		std::vector<double> serialized = value.serialize();
+		dataToSend.insert(dataToSend.end(), serialized.begin(), serialized.end());
+	}
+	int count = static_cast<int>(dataToSend.size());
+	std::vector<int> recvCounts(size, 0);
+	MPI_Allgather(&count, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, comm);
+
+	std::vector<int> recvDisplacements(size, 0);
+	size_t totalToReceive = recvCounts[0];
+	for(int _rank = 1; _rank < size; _rank++)
+	{
+		recvDisplacements[_rank] = recvDisplacements[_rank - 1] + recvCounts[_rank - 1];
+		totalToReceive += recvCounts[_rank];
+	}
+	std::vector<int> sendDisplacements(size, 0);
+	std::vector<int> sendCounts(size, count);
+	std::vector<double> dataToRecv(totalToReceive);
+	MPI_Alltoallv(dataToSend.data(), sendCounts.data(), sendDisplacements.data(), MPI_DOUBLE,
+				  dataToRecv.data(), recvCounts.data(), recvDisplacements.data(), MPI_DOUBLE, comm);
+
+	std::vector<std::vector<T>> resultByRanks(size);
+	for(int _rank = 0; _rank < size; _rank++)
+	{
+		std::vector<T> &receiveFromRank = resultByRanks[_rank];
+		size_t indexBegin = recvDisplacements[_rank];
+		for(int i = 0; i < recvCounts[_rank]; i += chunkSize)
+		{
+			receiveFromRank.emplace_back(T());
+			T &value = receiveFromRank.back();
+			value.unserialize(std::vector(dataToRecv.cbegin() + indexBegin + i, dataToRecv.cbegin() + indexBegin + i + chunkSize));
+		}
+	}
+	return resultByRanks;
+}
+
+/**
+ * More convenient all-to-all funciton, allowing to send serializable objects 
+*/
+template <typename T, template <typename...> class Container, typename... Ts>
+std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");
+
+	int size;
+	MPI_Comm_size(comm, &size);
+
+	// agree the chunk size
+	size_t chunkSize = (data.empty() or data[0].empty())? 0 : data[0][0].getChunkSize();
+	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
+	if(chunkSize == 0)
+	{
+		return std::vector<std::vector<T>>(size); // no data is being sent
+	}
+	
+	std::vector<int> sendDisplacements(size, 0);
+	size_t totalSendSize = 0;
+	std::vector<int> sizesToAll(size), sizesFromAll(size);
+	for(int _rank = 0; _rank < size; _rank++)
+	{
+		sizesToAll[_rank] = static_cast<int>(data[_rank].size()) * chunkSize;
+		totalSendSize += sizesToAll[_rank];
+		if(_rank > 0)
+		{
+			sendDisplacements[_rank ] = sendDisplacements[_rank - 1] + sizesToAll[_rank - 1];
+		}
+	}
+
+	MPI_Alltoall(sizesToAll.data(), 1, MPI_INT, sizesFromAll.data(), 1, MPI_INT, comm);
+
+	std::vector<double> allDataSend;
+	allDataSend.reserve(totalSendSize);
+
+	for(int _rank = 0; _rank < size; _rank++)
+	{
+		for(const T &value : data[_rank])
+		{
+			std::vector<double> serialized = value.serialize();
+			allDataSend.insert(allDataSend.end(), serialized.begin(), serialized.end());
+		}
+	}
+
+	std::vector<int> recvDisplacements(size, 0);
+	size_t totalRecvSize = 0;
+	for(int _rank = 0; _rank < size; _rank++)
+	{
+		totalRecvSize += sizesFromAll[_rank];
+		if(_rank > 0)
+		{
+			recvDisplacements[_rank] = recvDisplacements[_rank - 1] + sizesFromAll[_rank - 1];
+		}
+	}
+
+	std::vector<double> allDataRecv(totalRecvSize);
+	
+	MPI_Alltoallv(allDataSend.data(), sizesToAll.data(), sendDisplacements.data(), MPI_DOUBLE,
+				  allDataRecv.data(), sizesFromAll.data(), recvDisplacements.data(), MPI_DOUBLE, comm);
+
+	size_t i = 0;
+	std::vector<std::vector<T>> resultByRanks(size);
+	for(int _rank = 0; _rank < size; _rank++)
+	{
+		// receive input
+		size_t NumReceived = sizesFromAll[_rank] / chunkSize;
+		resultByRanks[_rank].reserve(NumReceived);
+		for(size_t j = 0; j < NumReceived; j++)
+		{
+			T value;
+			value.unserialize(std::vector(allDataRecv.cbegin() + i, allDataRecv.cbegin() + i + chunkSize));
+			resultByRanks[_rank].push_back(value);
+			i += chunkSize;
+		}
+	}
+
+	return resultByRanks;
+}
 
 #endif //RICH_MPI
 

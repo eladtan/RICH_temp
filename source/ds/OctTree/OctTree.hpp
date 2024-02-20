@@ -150,6 +150,14 @@ public:
 
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
+    inline void clear()
+    {
+        this->deleteSubtree(this->getRoot());
+        this->setRoot(nullptr);
+        this->treeSize = 0;
+        this->nodesNumber = 0;
+    }
+    
     template<typename U>
     inline bool insert(const U &point)
     {
@@ -165,6 +173,19 @@ public:
 
     template<typename U>
     inline bool find(const U &point) const{return this->tryFind(point) != nullptr;};
+
+    template<typename U>
+    inline T &findValue(const U &point)
+    {
+        OctTreeNode *node = this->tryFind(point);
+        if(node == nullptr)
+        {
+            UniversalError eo("OctTree: could not find a point");
+            eo.addEntry("Value", point);
+            throw eo;
+        }
+        return node->value;
+    }
 
     template<typename U>
     inline T findParent(const U &point) const
@@ -715,7 +736,29 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::getNodeByDirections(const di
         i++;
     }
 
-    assert(current != nullptr);
+    if(current == nullptr)
+    {
+        current = this->getRoot();
+        UniversalError eo("OctTree::getNodeByDirections: could not find the node");
+        i = 0;
+        while(directions[i] != PATH_END_DIRECTION)
+        {
+
+            eo.addEntry("dir" + std::to_string(i), directions[i]);
+            if(current == nullptr)
+            {
+                eo.addEntry("Depth of null", i);
+                break;
+            }
+            else
+            {
+                eo.addEntry("node" + std::to_string(i), current->value);
+            }
+            current = current->children[directions[i]];
+            i++;
+        }
+        throw eo;
+    }
     return current;
 }
 

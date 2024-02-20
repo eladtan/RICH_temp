@@ -134,6 +134,8 @@ private:
 */
 std::vector<typename DistributedGravityCalculator::MassedValue> DistributedGravityCalculator::exchangeImportedValues(const std::vector<Vector3D> &points) const
 {
+    // TODO: Maybe use the new MPI functions?
+    
     std::vector<MPI_Request> requests;
     requests.reserve(2 * this->size);
 

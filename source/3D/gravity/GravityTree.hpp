@@ -11,8 +11,8 @@
 template<typename T>
 class GravityTree;
 
-template<typename T, typename BB>
-bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, double thetaSquared)
+template<typename T, typename BB_T>
+bool ShouldOpenBox(const T &point, const _BoundingBox<BB_T> &boundingBox, const T &centerOfMass, double thetaSquared)
 {
     typename T::coord_type width = boundingBox.getWidthSquared();
     #ifdef USE_VCL_VECTORIZATION
@@ -127,8 +127,6 @@ public:
     bool build(const std::vector<MassedPoint<T>> &points);
 
     inline bool find(const T &point){return this->octTree->find(point);};
-
-    T gravityHelper(const T &point, const Node *node) const;
 
     T gravity(const T &point, const direction_t *directions = nullptr) const;
 
@@ -300,8 +298,8 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
 
     while(!stack.empty())
     {
-        const Node *node = stack[stack.size() - 1].first;
-        bool containsPoint = stack[stack.size() - 1].second;
+        const Node *node = stack.back().first;
+        bool containsPoint = stack.back().second;
         stack.pop_back();
 
         if(node == nullptr)

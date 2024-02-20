@@ -5,10 +5,12 @@
     #include <vectorclass.h>
 #endif // USE_VCL_VECTORIZATION
 
+#include "misc/serializable.hpp"
+
 #define DIM 3
 
 template<typename T>
-class _BoundingBox
+class _BoundingBox : public Serializable
 {
 private:
     T ll; // leftmost point of the box
@@ -156,6 +158,24 @@ public:
     }
 
     template<typename U>
+    inline typename T::coord_type distanceSquared(const U &point) const
+    {
+        T closestPoint = this->closestPoint(point);
+        #ifdef USE_VCL_VECTORIZATION
+            Vec4d closestPointVec(closestPoint[0] - point[0], closestPoint[1] - point[1], closestPoint[2] - point[2], 0);
+            Vec4d pointSquaredVec = closestPointVec * closestPointVec;
+            return pointSquaredVec[0] + pointSquaredVec[1] + pointSquaredVec[2];
+        #else
+            T::coord_type closestDistance = 0;
+            for(int i = 0; i < DIM; i++)
+            {
+                closestDistance += (point[i] - closestPoint[i]);
+            }
+            return closestDistance;
+        #endif // USE_VCL_VECTORIZATION
+    }
+
+    template<typename U>
     inline T furthestPoint(const U &point) const
     {
         #ifdef USE_VCL_VECTORIZATION
@@ -187,6 +207,53 @@ public:
     friend inline std::ostream &operator<<(std::ostream &stream, const _BoundingBox<T> &box)
     {
         return stream << "BoundingBox(" << box.ll << ", " << box.ur << ")";
+    }
+
+    inline size_t getChunkSize(void) const override
+    {
+        if constexpr(is_serializable<T>::value)
+        {
+            return this->ll.getChunkSize() + this->ur.getChunkSize();
+        }
+        throw UniversalError("BoundingBox: type is not serializable");
+    }
+
+    inline std::vector<double> serialize(void) const override
+    {
+        std::vector<double> data;
+        if constexpr(is_serializable<T>::value)
+        {
+            std::vector<double> llData = this->ll.serialize();
+            std::vector<double> urData = this->ur.serialize();
+            data.insert(data.end(), llData.begin(), llData.end());
+            data.insert(data.end(), urData.begin(), urData.end());
+            return data;
+        }
+        throw UniversalError("BoundingBox: type is not serializable");
+    }
+
+    inline void unserialize(const std::vector<double>& data) override
+    {
+        if constexpr(is_serializable<T>::value)
+        {
+            std::vector<double> llData(data.begin(), data.begin() + this->ll.getChunkSize());
+            std::vector<double> urData(data.begin() + this->ll.getChunkSize(), data.end());
+            T ll_;
+            ll_.unserialize(llData);
+            T ur_;
+            ur_.unserialize(urData);
+            this->setBounds(ll_, ur_);
+        }
+        else
+        {
+            throw UniversalError("BoundingBox: type is not serializable");
+        }
+    }
+
+    template<typename U>
+    inline bool operator==(const _BoundingBox<U> &other)
+    {
+        return ((this->ll == other.ll) and (this->ur == other.ur));
     }
 };
 

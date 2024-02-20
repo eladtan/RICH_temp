@@ -563,4 +563,22 @@ void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &
 	}
 }
 
+void MPI_Bcast_all(const void *buffer_send, int count, MPI_Datatype datatype, void *buffer_recv, MPI_Comm communicator)
+{
+	int size;
+	MPI_Comm_size(communicator, &size);
+
+	// first know how much data is being sent from each one
+	std::vector<int> recvCounts(size, 0);
+	MPI_Allgather(&count, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, communicator);
+	std::vector<int> recvDisplacements(size, 0);
+	for(int _rank = 1; _rank < size; _rank++)
+	{
+		recvDisplacements[_rank] = recvDisplacements[_rank - 1] + recvCounts[_rank];
+	}
+	std::vector<int> sendDisplacements(size, 0);
+	std::vector<int> sendCounts(size, count);
+	MPI_Alltoallv(buffer_send, sendCounts.data(), sendDisplacements.data(), datatype, buffer_recv, recvCounts.data(), recvDisplacements.data(), datatype, communicator);
+}
+
 #endif
