@@ -97,7 +97,8 @@ public:
         }
         gravTree->build(massedPoints);
         this->gravityTree = gravTree;
-        this->distributedTree = new DistributedOctTree<MassedValue, 1>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
+        MPI_Barrier(this->comm);
+        this->distributedTree = new DistributedOctTree<MassedValue, 4>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
     }
 
     DistributedGravityCalculator(GravityTree<_3DPoint> *gravityTree, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm), gravityTreeCreated(false)
@@ -105,7 +106,8 @@ public:
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
         this->gravityTree = gravityTree;
-        this->distributedTree = new DistributedOctTree<MassedValue, 1>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
+        MPI_Barrier(this->comm);
+        this->distributedTree = new DistributedOctTree<MassedValue, 4>(this->gravityTree->getOctTree(), false /* no need to copy values of leaves */, this->comm);
     }
    
     ~DistributedGravityCalculator()
@@ -124,7 +126,7 @@ private:
     int rank, size;
     GravityTree<_3DPoint> *gravityTree;
     bool gravityTreeCreated; // if the gravity tree should be deleted at the end
-    const DistributedOctTree<MassedValue, 1> *distributedTree;
+    const DistributedOctTree<MassedValue, 4> *distributedTree;
 
     std::vector<MassedValue> exchangeImportedValues(const std::vector<Vector3D> &points) const;
 };
@@ -139,7 +141,7 @@ std::vector<typename DistributedGravityCalculator::MassedValue> DistributedGravi
 
     // send everyone my bounding boxes
     std::vector<_3DPoint> boundingBoxesToSend;
-    for(const _BoundingBox<MassedValue> &boundingBox : this->distributedTree->getMyBoundingBoxes())
+    for(const _BoundingBox<MassedValue> &boundingBox : this->distributedTree->getMyBoundingBoxesUnique())
     {
         boundingBoxesToSend.push_back(boundingBox.getLL().value);
         boundingBoxesToSend.push_back(boundingBox.getUR().value);
