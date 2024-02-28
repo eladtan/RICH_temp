@@ -161,5 +161,7 @@
         "*.vtu": true,
         "**/.vscode": true,
         "**/.vs": true
-    }
+    },
+    "cmake.sourceDirectory": "/home/esternberg/RICH/r3d",
+    "fortran.fortls.disabled": true
 }
