@@ -113,6 +113,20 @@ public:
     }
 
     template<typename U>
+    inline bool contained(const _BoundingBox<U> &other) const
+    {
+        // need: other.ll[i] >= this->ll[i] and other.ur[i] <= this->ur[i] for all i
+        for(int i = 0; i < DIM; i++)
+        {
+            if((other.ll[i] < this->ll[i]) or (other.ur[i] > this->ur[i]))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    template<typename U>
     inline bool intersects(const _BoundingBox<U> &other) const
     {
         return this->contains(other.getLL()) or this->contains(other.getUR()) or other.contains(this->ll) or other.contains(this->ur);

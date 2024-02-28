@@ -70,17 +70,21 @@ public:
         }
 
         OctTreeNode(OctTreeNode *parent, int childNumber);
+
         virtual ~OctTreeNode() = default;
         
         template<typename U>
         int getChildNumberContaining(const U &point) const;
+
         template<typename U>
         const OctTreeNode *getChildContaining(const U &point) const{return this->children[this->getChildNumberContaining(point)];};
+
         virtual OctTreeNode *addLeafChild(int childIndex, const T &point);
+
         virtual OctTreeNode *createChild(int childNumber);
 
         #ifdef DEBUG_MODE
-        virtual inline void print() const
+        inline void print() const
         {
             std::cout << this->value << ", BB: " << this->boundingBox.getLL() << ", " << this->boundingBox.getUR() << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
         }
@@ -89,7 +93,7 @@ public:
         bool isLeaf; // if a leaf
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
         _BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
-        OctTreeNode *children[CHILDREN];
+        std::array<OctTreeNode*, CHILDREN> children; // if a leaf, all children are nullptr
         OctTreeNode *parent;
         int height; // height of a leaf is 0
         int depth; // depth of the root is 0
@@ -105,12 +109,16 @@ protected:
 
     template<typename U>
     const OctTreeNode *tryFind(const U &point) const;
+    
     template<typename U>
     inline OctTreeNode *tryFind(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFind(point));};
+
     template<typename U>
     const OctTreeNode *tryFindParent(const U &point) const;
+
     template<typename U>
     inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
+
     template<typename U>
     OctTreeNode *tryInsert(const U &point);
 
@@ -119,6 +127,7 @@ protected:
     #endif // DEBUG_MODE
 
     void getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> &result) const;
+
     inline std::vector<T> getAllDecendants(const OctTreeNode *node) const
     {
         std::vector<T> result;
@@ -143,6 +152,7 @@ public:
             this->insert(*it);
         }
     };
+
     template<typename Container>
     inline OctTree(const T &ll, const T &ur, Container container): OctTree(ll, ur, container.begin(), container.end()){};
 
@@ -188,6 +198,9 @@ public:
     }
 
     template<typename U>
+    const OctTreeNode *findNodeContainingBoundingBox(const _BoundingBox<U> &boundingBox) const; // TODO: necessary? What about just find value of that node?
+
+    template<typename U>
     inline T findParent(const U &point) const
     {
         const OctTreeNode *parent = this->tryFindParent(point);
@@ -220,8 +233,11 @@ public:
     OctTreeNode *removeLeaf(OctTreeNode *node);
 
     virtual inline OctTreeNode *getRoot(){return this->root;};
+
     virtual inline const OctTreeNode *getRoot() const{return this->root;};
+
     virtual inline void setRoot(OctTreeNode *other){this->root = other;};
+
     virtual void setBounds(const T &ll, const T &ur)
     {
         this->ll = ll;
@@ -382,6 +398,24 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const U &point) cons
         }
         // otherwise, determine the direction to go
         current = current->getChildContaining(point);
+    }
+    return nullptr;
+}
+
+template<typename T>
+template<typename U>
+const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBox(const _BoundingBox<U> &boundingBox) const
+{
+    const OctTreeNode *current = this->getRoot();
+    const U &BB_center = (boundingBox.getLL() + boundingBox.getUR()) * 0.5;
+    while(current != nullptr)
+    {
+        if(boundingBox.contained(current->boundingBox))
+        {
+            return current;
+        }
+        // otherwise, determine the direction to go
+        current = current->getChildContaining(BB_center);
     }
     return nullptr;
 }

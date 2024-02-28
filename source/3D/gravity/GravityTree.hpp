@@ -7,6 +7,8 @@
 #include <vector>
 #include "GravityTypes.h"
 #include "ds/OctTree/OctTree.hpp"
+#include "misc/serializable.hpp"
+#include "misc/universal_error.hpp"
 
 template<typename T>
 class GravityTree;
@@ -67,7 +69,7 @@ template<typename T>
 class GravityTree
 {
 public:
-    struct MassedValue
+    struct MassedValue : public Serializable
     {
         using coord_type = typename T::coord_type;
         using Raw_type = T;
@@ -101,6 +103,32 @@ public:
         };
         explicit inline MassedValue(const T &value): MassedValue(value, 0){};
         explicit inline MassedValue(): MassedValue(T(), 0){};
+
+        inline size_t getChunkSize() const override
+        {
+            return 3 + 3 + 1 + 6; // 3, 3 for value and CM, 1 for mass, 6 for Q
+        }
+
+        inline std::vector<double> serialize() const override
+        {
+            std::vector<double> valueSerialized = this->value.serialize();
+            std::vector<double> CMSerialized = this->CM.serialize();
+            valueSerialized.insert(valueSerialized.end(), CMSerialized.begin(), CMSerialized.end());
+            valueSerialized.push_back(this->mass);
+            valueSerialized.insert(valueSerialized.end(), this->Q, this->Q + 6);
+            return valueSerialized;
+        }
+
+        inline void unserialize(const std::vector<double> &data) override
+        {
+            this->value.unserialize(std::vector<double>(data.cbegin(), data.cbegin() + 3));
+            this->CM.unserialize(std::vector<double>(data.cbegin() + 3, data.cbegin() + 6));
+            this->mass = data[6];
+            for(int i = 0; i < 6; i++)
+            {
+                this->Q[i] = data[7 + i];
+            }
+        }
     };
 
     using Node = typename OctTree<MassedValue>::OctTreeNode;
@@ -132,6 +160,9 @@ public:
 
     void addExternalValues(const std::vector<MassedValue> &values);
 
+    template<typename U>
+    MassedValue findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const;
+
     std::vector<std::pair<octnode_id_t, MassedValue>> getOpenNodesData(const T &point) const;
 
     inline bool getQuadrupole() const{return this->quadrupole;};
@@ -139,6 +170,10 @@ public:
     inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;};
 
     inline double getTheta() const{return this->theta;};
+
+    #ifdef DEBUG_MODE
+        void print() const{this->octTree->print();};
+    #endif // DEBUG_MODE
 };
 
 template<typename T>
@@ -183,6 +218,20 @@ void GravityTree<T>::addExternalValues(const std::vector<MassedValue> &values)
 }
 
 template<typename T>
+template<typename U>
+typename GravityTree<T>::MassedValue GravityTree<T>::findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const
+{
+    const Node *node = this->octTree->findNodeContainingBoundingBox(boundingBox);
+    if(node == nullptr)
+    {
+        UniversalError eo("GravityTree::findMatchingMassedValue: node containing bounding box could not be found");
+        eo.addEntry("Bounding Box", boundingBox);
+        throw eo;
+    }
+    return node->value;
+}
+
+template<typename T>
 std::vector<std::pair<octnode_id_t, typename GravityTree<T>::MassedValue>> GravityTree<T>::getOpenNodesData(const T &point) const
 {
     std::vector<std::pair<octnode_id_t, MassedValue>> values;
@@ -199,7 +248,7 @@ std::vector<std::pair<octnode_id_t, typename GravityTree<T>::MassedValue>> Gravi
         {
             continue;
         }
-
+        
         // always push the child that contains the node
         if(!node->isLeaf and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
         {

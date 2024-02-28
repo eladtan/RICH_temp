@@ -11,6 +11,7 @@
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
+#include "3D/environment/EnvironmentAgent.h"
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;
@@ -45,6 +46,8 @@ public:
       std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
       this->BuildPartiallyParallel(points, indicesToBuild, suppressRebalancing);
   }
+
+  virtual const EnvironmentAgent *GetEnvironmentAgent() const = 0;
 
   virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
 

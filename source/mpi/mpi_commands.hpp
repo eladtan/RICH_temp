@@ -537,7 +537,7 @@ std::vector<std::vector<T>> MPI_All_cast_by_ranks(const Container<T, Ts...> &dat
 /**
  * More convenient all-to-all funciton, allowing to send serializable objects 
 */
-template <typename T, template <typename...> class Container, typename... Ts>
+template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
 {
 	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");

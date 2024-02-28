@@ -138,7 +138,6 @@ private:
   void UpdateRangeFinder();
   void BringGhostPointsToBuild();
   std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
-  
   void BuildInitialize(size_t num_points);
   void FilterRealGhostPoints();
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
@@ -193,6 +192,7 @@ private:
 public:
 
   #ifdef RICH_MPI
+    const EnvironmentAgent *GetEnvironmentAgent() const override;
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
     inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);

@@ -3106,4 +3106,10 @@ void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared
     this->SetBox(ll, ur);
     this->SetKernel(newIndexing);
 }
+
+const EnvironmentAgent *Voronoi3D::GetEnvironmentAgent() const
+{
+    return this->pointsManager->getEnvironmentAgent();
+}
+
 #endif // RICH_MPI
