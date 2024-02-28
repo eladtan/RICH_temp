@@ -1,6 +1,7 @@
 #ifndef _OCTTREE_HPP
 #define _OCTTREE_HPP
 
+#include <limits>
 #include <vector>
 #include <functional>
 #include <assert.h>
@@ -69,17 +70,21 @@ public:
         }
 
         OctTreeNode(OctTreeNode *parent, int childNumber);
+
         virtual ~OctTreeNode() = default;
         
         template<typename U>
         int getChildNumberContaining(const U &point) const;
+
         template<typename U>
         const OctTreeNode *getChildContaining(const U &point) const{return this->children[this->getChildNumberContaining(point)];};
+
         virtual OctTreeNode *addLeafChild(int childIndex, const T &point);
+
         virtual OctTreeNode *createChild(int childNumber);
 
         #ifdef DEBUG_MODE
-        virtual inline void print() const
+        inline void print() const
         {
             std::cout << this->value << ", BB: " << this->boundingBox.getLL() << ", " << this->boundingBox.getUR() << " (depth: " << this->depth << ", height: " << this->height << ")" << std::endl;
         }
@@ -88,7 +93,7 @@ public:
         bool isLeaf; // if a leaf
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
         _BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
-        OctTreeNode *children[CHILDREN];
+        std::array<OctTreeNode*, CHILDREN> children; // if a leaf, all children are nullptr
         OctTreeNode *parent;
         int height; // height of a leaf is 0
         int depth; // depth of the root is 0
@@ -104,12 +109,16 @@ protected:
 
     template<typename U>
     const OctTreeNode *tryFind(const U &point) const;
+    
     template<typename U>
     inline OctTreeNode *tryFind(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFind(point));};
+
     template<typename U>
     const OctTreeNode *tryFindParent(const U &point) const;
+
     template<typename U>
     inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
+
     template<typename U>
     OctTreeNode *tryInsert(const U &point);
 
@@ -118,6 +127,7 @@ protected:
     #endif // DEBUG_MODE
 
     void getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> &result) const;
+
     inline std::vector<T> getAllDecendants(const OctTreeNode *node) const
     {
         std::vector<T> result;
@@ -142,6 +152,7 @@ public:
             this->insert(*it);
         }
     };
+
     template<typename Container>
     inline OctTree(const T &ll, const T &ur, Container container): OctTree(ll, ur, container.begin(), container.end()){};
 
@@ -149,6 +160,14 @@ public:
 
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
+    inline void clear()
+    {
+        this->deleteSubtree(this->getRoot());
+        this->setRoot(nullptr);
+        this->treeSize = 0;
+        this->nodesNumber = 0;
+    }
+    
     template<typename U>
     inline bool insert(const U &point)
     {
@@ -166,6 +185,22 @@ public:
     inline bool find(const U &point) const{return this->tryFind(point) != nullptr;};
 
     template<typename U>
+    inline T &findValue(const U &point)
+    {
+        OctTreeNode *node = this->tryFind(point);
+        if(node == nullptr)
+        {
+            UniversalError eo("OctTree: could not find a point");
+            eo.addEntry("Value", point);
+            throw eo;
+        }
+        return node->value;
+    }
+
+    template<typename U>
+    const OctTreeNode *findNodeContainingBoundingBox(const _BoundingBox<U> &boundingBox) const; // TODO: necessary? What about just find value of that node?
+
+    template<typename U>
     inline T findParent(const U &point) const
     {
         const OctTreeNode *parent = this->tryFindParent(point);
@@ -178,9 +213,31 @@ public:
         return parent->value;
     };
 
+    template<typename U>
+    inline bool remove(const U &point)
+    {
+        OctTreeNode *node = this->tryFind(point);
+        if(node == nullptr)
+        {
+            return false;
+        }
+        OctTreeNode *newParent = this->removeLeaf(node);
+        if(newParent != nullptr)
+        {
+            newParent->fixHeightsRecursively();
+        }
+        this->treeSize--;
+        return true;
+    }
+
+    OctTreeNode *removeLeaf(OctTreeNode *node);
+
     virtual inline OctTreeNode *getRoot(){return this->root;};
+
     virtual inline const OctTreeNode *getRoot() const{return this->root;};
+
     virtual inline void setRoot(OctTreeNode *other){this->root = other;};
+
     virtual void setBounds(const T &ll, const T &ur)
     {
         this->ll = ll;
@@ -341,6 +398,24 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const U &point) cons
         }
         // otherwise, determine the direction to go
         current = current->getChildContaining(point);
+    }
+    return nullptr;
+}
+
+template<typename T>
+template<typename U>
+const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBox(const _BoundingBox<U> &boundingBox) const
+{
+    const OctTreeNode *current = this->getRoot();
+    const U &BB_center = (boundingBox.getLL() + boundingBox.getUR()) * 0.5;
+    while(current != nullptr)
+    {
+        if(boundingBox.contained(current->boundingBox))
+        {
+            return current;
+        }
+        // otherwise, determine the direction to go
+        current = current->getChildContaining(BB_center);
     }
     return nullptr;
 }
@@ -521,6 +596,65 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
 }
 
 template<typename T>
+typename OctTree<T>::OctTreeNode *OctTree<T>::removeLeaf(OctTreeNode *node)
+{
+    // first, ensure it's indeed a leaf
+    if(not node->isLeaf)
+    {
+        UniversalError eo("OctTree remove: node could not be deleted, since its not a left");
+        eo.addEntry("value", node->value);
+        throw eo;
+    }
+    this->nodesNumber--;
+    OctTreeNode *newParent = nullptr;
+    if(node->parent == nullptr)
+    {
+        // remove the root
+        this->root = nullptr;
+        newParent = nullptr;
+    }
+    else
+    {
+        OctTreeNode *parent = node->parent;
+        int myIndex;
+        int numOfChildren;
+        for(int i = 0; i < CHILDREN; i++)
+        {
+            if(parent->children[i] != nullptr)
+            {
+                numOfChildren++;
+            }
+            if(parent->children[i] == node)
+            {
+                myIndex = i;
+                break;
+            }
+        }
+        if(numOfChildren == 0)
+        {
+            throw UniversalError("OctTree remove: should not reach here");
+        }
+        parent->children[myIndex] = nullptr;
+        numOfChildren -= 1;
+        if(numOfChildren == 0)
+        {
+            // now a left
+            parent->isLeaf = true;
+        }
+        if(parent->isLeaf)
+        {
+            newParent = this->removeLeaf(parent);
+        }
+        else
+        {
+            newParent = parent;
+        }
+    }
+    delete node;
+    return newParent;
+}
+
+template<typename T>
 template<typename U, typename FilterFunction>
 std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
 {
@@ -636,7 +770,29 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::getNodeByDirections(const di
         i++;
     }
 
-    assert(current != nullptr);
+    if(current == nullptr)
+    {
+        current = this->getRoot();
+        UniversalError eo("OctTree::getNodeByDirections: could not find the node");
+        i = 0;
+        while(directions[i] != PATH_END_DIRECTION)
+        {
+
+            eo.addEntry("dir" + std::to_string(i), directions[i]);
+            if(current == nullptr)
+            {
+                eo.addEntry("Depth of null", i);
+                break;
+            }
+            else
+            {
+                eo.addEntry("node" + std::to_string(i), current->value);
+            }
+            current = current->children[directions[i]];
+            i++;
+        }
+        throw eo;
+    }
     return current;
 }
 

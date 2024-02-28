@@ -6,15 +6,15 @@
 #include "HilbertCurveEnvAgent.hpp"
 #include "3D/hilbert/rectangular/HilbertTree3D.hpp"
 
-#define MAX_RANKS_PER_LEAF 1
-
 class HilbertTreeEnvironmentAgent : public HilbertCurveEnvironmentAgent
 {
 public:
+    using HilbertTree_Type = HilbertTree3D<DEFAULT_RANKS_IN_LEAVES>;
+
     inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const MPI_Comm &comm = MPI_COMM_WORLD): 
             HilbertCurveEnvironmentAgent(ll, ur, ranges, convertor, comm)
     {
-        this->hilbertTree = new HilbertTree3D<MAX_RANKS_PER_LEAF>(this->convertor, this->range, this->comm);
+        this->hilbertTree = new HilbertTree_Type(this->convertor, this->range, this->comm);
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
@@ -36,7 +36,7 @@ public:
     {
         this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
         delete this->hilbertTree;
-        this->hilbertTree = new HilbertTree3D<MAX_RANKS_PER_LEAF>(this->convertor, this->range, this->comm);
+        this->hilbertTree = new HilbertTree_Type(this->convertor, this->range, this->comm);
     }
 
     inline int getOrder() const{return this->order;};
@@ -47,8 +47,10 @@ public:
         return this->hilbertTree->getClosestFurthestPointsByRanks(point);
     }
 
+    inline const HilbertTree_Type *getHilbertTree() const{return this->hilbertTree;};
+
 private:
-    const HilbertTree3D<MAX_RANKS_PER_LEAF> *hilbertTree;
+    const HilbertTree_Type *hilbertTree;
 };
 
 #endif // RICH_MPI

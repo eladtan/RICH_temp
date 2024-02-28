@@ -47,8 +47,7 @@ namespace
 
             answer.processesRecv.push_back(_rank);
             answer.answerByProcesses.emplace_back(std::vector<T>());
-
-            std::vector<T> &answerVec = answer.answerByProcesses[answer.answerByProcesses.size() - 1];
+            std::vector<T> &answerVec = answer.answerByProcesses.back();
             answerVec.resize(sizes[_rank]);
             requests.push_back(MPI_REQUEST_NULL);
             MPI_Irecv(&answerVec[0], sizeof(T) * sizes[_rank], MPI_BYTE, _rank, EXCHANGE_DATA_SEND_TAG, comm, &requests[requests.size() - 1]);

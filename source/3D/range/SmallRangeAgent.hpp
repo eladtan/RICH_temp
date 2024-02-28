@@ -38,6 +38,21 @@ private:
     public:
         SmallRangeAnswerAgent(const RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder), pointsContainer(pointsContainer){}
 
+        std::vector<Vector3D> selfAnswer(const SmallRangeQueryData &query, SentPointsContainer::PointsSet &ignore)
+        {
+            // a small query, bring the requested number of points
+            std::vector<size_t> indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, std::numeric_limits<size_t>::max(), ignore);
+            ignore.insert(indicesResult.begin(), indicesResult.end());
+
+            std::vector<Vector3D> result;
+            result.reserve(indicesResult.size());
+            for(const size_t &pointIdx : indicesResult)
+            {
+                result.push_back(this->rangeFinder->getPoint(pointIdx));
+            }
+            return result;
+        }
+
         std::vector<_3DPoint> answer(const SmallRangeQueryData &query, int _rank) override
         {
             std::vector<_3DPoint> result;
@@ -94,7 +109,7 @@ public:
     template<typename T>
     using _set = boost::container::flat_set<T>;
 
-    SmallRangeAgent(const EnvironmentAgent *envAgent, RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
+    SmallRangeAgent(const EnvironmentAgent *envAgent, const RangeFinder *rangeFinder, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     {
         this->ansAgent = new SmallRangeAnswerAgent(rangeFinder, pointsContainer, comm);
         this->talkAgent = new SmallRangeTalkAgent(envAgent, comm);
@@ -106,6 +121,22 @@ public:
         delete this->queryAgent;
         delete this->talkAgent;
         delete this->ansAgent;
+    }
+
+    std::vector<Vector3D> selfBatchAnswer(std::queue<SmallRangeQueryData> &smallQueriesBatch, SentPointsContainer::PointsSet &ignore)
+    {
+        std::vector<Vector3D> result;
+        std::queue<SmallRangeQueryData> queriesBackup;
+        while(not smallQueriesBatch.empty())
+        {
+            SmallRangeQueryData &query = smallQueriesBatch.front();
+            queriesBackup.push(query);
+            std::vector<Vector3D> queryResult = this->ansAgent->selfAnswer(query, ignore);
+            result.insert(result.end(), queryResult.cbegin(), queryResult.cend());
+            smallQueriesBatch.pop();
+        }
+        smallQueriesBatch = std::move(queriesBackup);
+        return result;
     }
 
     inline QueryBatchInfo<SmallRangeQueryData, _3DPoint> runBatch(std::queue<SmallRangeQueryData> &queries)

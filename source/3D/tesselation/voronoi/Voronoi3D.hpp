@@ -86,6 +86,8 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
+  friend int main(int argc, char *argv[]);
+
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -133,16 +135,18 @@ private:
   
   #ifdef RICH_MPI
   std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
-  void BringGhostPointsToBuild(const std::vector<Vector3D> &points);
-  std::vector<Vector3D> PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing);
+  void UpdateRangeFinder();
+  void BringGhostPointsToBuild();
+  std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
   void BuildInitialize(size_t num_points);
   void FilterRealGhostPoints();
   void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
   void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
-  std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const std::vector<Vector3D> &points) const;
+  std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange() const;
   void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
   void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);
-  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers, boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses);
+  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers,
+                                        boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses);
   
   #endif // RICH_MPI
 
@@ -157,6 +161,7 @@ private:
   std::vector<point_vec > PointsInFace_; // Right hand with regard to first neighbor
   //vector<vector<std::size_t> > PointsInFace_; // Right hand with regard to first neighbor
   vector<std::pair<std::size_t, std::size_t> > FaceNeighbors_;
+  vector<Vector3D> all_CM;
   vector<Vector3D> CM_, Face_CM_; // center of masses
   vector<double> volume_; // volumes of each one of the tetrahedra
   vector<double> area_; // surface area of each one of the tetrahedra
@@ -168,6 +173,7 @@ private:
   vector<vector<std::size_t>> real_duplicated_points;
   vector<vector<std::size_t>> Nghost_; // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in my delaunay, which are belongs, originally, to i
   vector<std::size_t> self_index_; // indexes of the points which are truely mine (inside the points list)
+
   Voronoi3D();
   Voronoi3D(Voronoi3D const &other);
   std::array<Vector3D, 4> temp_points_;
@@ -178,11 +184,15 @@ private:
     std::shared_ptr<PointsManager> pointsManager;
     std::vector<double> radiuses;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
+    vector<std::size_t> indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
+    std::vector<Vector3D> allMyPoints;
+    std::shared_ptr<RangeFinder> rangeFinder;
   #endif // RICH_MPI
 
 public:
 
   #ifdef RICH_MPI
+    const EnvironmentAgent *GetEnvironmentAgent() const override;
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
     inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);
@@ -222,7 +232,7 @@ public:
 
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
-  void BuildHilbert(vector<Vector3D> const& points, bool suppressRebalancing = false) override;
+  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
 
@@ -267,6 +277,8 @@ public:
    */
   double GetVolume(std::size_t index) const override;
 
+  int GetOwner(const Vector3D &point) const;
+
   /*! \brief Get cell faces
     \param index Point index
     \return List of bounding faces
@@ -276,6 +288,10 @@ public:
   vector<Vector3D>& accessMeshPoints(void) override;
 
   const vector<Vector3D>& getMeshPoints(void) const override;
+
+  const std::vector<Vector3D> &getAllPoints(void) const override;
+
+  size_t GetAllPointsNo(void) const override;
 
   /*! \brief Get neighbours
     \param index Point index

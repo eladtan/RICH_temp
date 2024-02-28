@@ -7,6 +7,11 @@
 #include "lazy_list.hpp"
 #include <boost/foreach.hpp>
 
+class Serializable;
+
+template<typename T>
+using is_serializable = std::is_convertible<T*, Serializable*>;
+
 using std::vector;
 using std::size_t;
 

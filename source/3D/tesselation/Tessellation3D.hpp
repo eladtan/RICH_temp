@@ -6,9 +6,12 @@
 #ifndef TESSELLATION3D_HPP
 #define TESSELLATION3D_HPP 1
 
+#include <algorithm>
+#include <numeric>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
+#include "3D/environment/EnvironmentAgent.h"
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;
@@ -34,10 +37,17 @@ public:
   /*! \brief Returns true iff the given point lies inside my domain (under my responsibility).
   */
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
-  
-  /*! \brief Tesselation build, using hilbert curve.
-  */
-  virtual void BuildHilbert(vector<Vector3D> const& points, bool suppressBalancing = false) = 0;
+
+  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
+
+  virtual void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  {
+      std::vector<size_t> indicesToBuild(points.size());
+      std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
+      this->BuildPartiallyParallel(points, indicesToBuild, suppressRebalancing);
+  }
+
+  virtual const EnvironmentAgent *GetEnvironmentAgent() const = 0;
 
   virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
 
@@ -47,6 +57,11 @@ public:
     \return Number of mesh generating points
   */
   virtual size_t GetPointNo(void) const = 0;
+
+  /*! \brief Returns the number of all the points, even those which are not participating in the build
+    \return Number of all the points
+  */
+  virtual size_t GetAllPointsNo(void) const = 0;
 
   /*! \brief Get number of points
     \return Number of all points
@@ -122,6 +137,11 @@ public:
    */
   virtual const vector<Vector3D>& getMeshPoints(void) const = 0;
   
+  /*! \brief Returns all the points, even those which are not participating in the build
+    \return List of all the points
+  */
+  virtual const std::vector<Vector3D> &getAllPoints(void) const = 0;
+
   /*!
     \brief Returns a reference to the points composing the faces vector
     \returns The reference

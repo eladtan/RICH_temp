@@ -2,7 +2,7 @@
 
 #ifdef RICH_MPI
 
-PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
 {
     PointsExchangeResult exchangeResult;
     if(this->envAgent != nullptr)
@@ -13,12 +13,19 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
             size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
             return std::min<hilbert_index_t>(index, (this->size - 1));
         },
-        points, radiuses); // exchange
+        allPoints, indicesToWorkWith, radiuses, previous_CM); // exchange
         this->envAgent->updatePoints(exchangeResult.newPoints);
     }
     else
     {
-        exchangeResult = this->initialize(points, radiuses);
+        if(allPoints.size() != indicesToWorkWith.size())
+        {
+            UniversalError eo("Error in HilbertPointsManager::exchange: in the first build, a mesh with all the points should be built. Currently, points and indicesToWorkWith have different sizes");
+            eo.addEntry("allPoints.size()", allPoints.size());
+            eo.addEntry("indicesToWorkWith.size()", indicesToWorkWith.size());
+            throw eo;
+        }
+        exchangeResult = this->initialize(allPoints, radiuses, previous_CM);
     }
     return exchangeResult;
 }
@@ -104,7 +111,7 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
 }
 
-PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
 {
     // if(this->rank == 0)
     // {
@@ -112,6 +119,9 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     // }
 
     // calculate the first and initial order, and set it to the deepest hilbert order we have
+    std::vector<size_t> allIndices(points.size());
+    std::iota(allIndices.begin(), allIndices.end(), 0);
+
     this->initializeHilbertParameters(points); // also initializes the convertor
 
     this->rebalance(points); // determines initial borders
@@ -122,8 +132,8 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
         size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
         return std::min<hilbert_index_t>(index, (this->size - 1));
     },
-    points, radiuses); // exchange
-
+    points, allIndices, radiuses, previous_CM); // exchange
+        
     // initialize environment agent
     if(this->customIndexingIsSet)
     {

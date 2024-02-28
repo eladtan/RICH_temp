@@ -6,14 +6,18 @@
 #include "HilbertCurveEnvAgent.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 
+#define RANKS_IN_LEAF 4
+
 class DistributedOctEnvironmentAgent : public HilbertCurveEnvironmentAgent
 {
 public:
+    using DistributedOctTree_Type = DistributedOctTree<Vector3D, RANKS_IN_LEAF>;
+
     inline DistributedOctEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const Kernelization3D::IndexingKernel3D *indexing, const MPI_Comm &comm = MPI_COMM_WORLD): 
             HilbertCurveEnvironmentAgent(ll, ur, ranges, convertor, comm), indexing(indexing)
     {
         OctTree<Vector3D> myTree(this->ll, this->ur, points);
-        this->distributedOctTree = new DistributedOctTree<Vector3D>(&myTree, false /* no detailed nodes info */, this->comm);
+        this->distributedOctTree = new DistributedOctTree_Type(&myTree, false /* no detailed nodes info */, this->comm);
     };
 
     inline ~DistributedOctEnvironmentAgent(){delete this->distributedOctTree;};
@@ -28,7 +32,7 @@ public:
         this->HilbertCurveEnvironmentAgent::updatePoints(newPoints);
         delete this->distributedOctTree;
         OctTree<Vector3D> myTree(this->ll, this->ur, newPoints);
-        this->distributedOctTree = new DistributedOctTree(&myTree, false, this->comm);
+        this->distributedOctTree = new DistributedOctTree<Vector3D, RANKS_IN_LEAF>(&myTree, false, this->comm);
     }
 
     inline int getOwner(const Vector3D &point) const override
@@ -52,7 +56,7 @@ public:
     }
 
 private:
-    DistributedOctTree<Vector3D> *distributedOctTree = nullptr;
+    DistributedOctTree_Type *distributedOctTree = nullptr;
     HilbertConvertor3D *convertor = nullptr;
     const Kernelization3D::IndexingKernel3D *indexing = nullptr;
     std::vector<hilbert_index_t> range;

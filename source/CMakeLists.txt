@@ -88,11 +88,12 @@ endif()
 
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_ROOT_DIR})
-include_directories(${BOOST_INCLUDE})
+include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 include_directories(${R3D_INCLUDE})
 include_directories("${PYBIND11_DIR}/include")
 
+message("BOOST DIRECTORY ${BOOST_DIR}")
 message("proj_dir ${proj_dir}")
 message("HDF5 ${HDF5_LIBS}")
 message("VTK ${VTK_DIR}")
@@ -153,6 +154,11 @@ target_link_libraries(
     ${VTK_LIBRARIES}
     ${JSONCPP_LIB}
 )
+
+# link boost
+if(DEFINED BOOST_DIR)
+    target_link_directories(${EXE_NAME} PRIVATE ${BOOST_DIR}/lib)
+endif()
 
 # link pybind11
 if(pybind11_FOUND)

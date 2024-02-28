@@ -3,10 +3,11 @@
 
 #include <iostream>
 #include "3D/elementary/Vector3D.hpp"
+#include "misc/serializable.hpp"
 
 #define EPSILON 1e-12
 
-struct _3DPoint
+struct _3DPoint : public Serializable
 {
     using coord_type = double;
 
@@ -108,6 +109,23 @@ struct _3DPoint
         std::getline(stream, str, ')');
         point.z = std::stod(str);
         return stream;
+    }
+
+    size_t getChunkSize(void) const override
+    {
+        return 3;
+    }
+    
+    std::vector<double> serialize(void) const override
+    {
+        return std::vector<double>({this->x, this->y, this->z});
+    }
+
+    void unserialize(const std::vector<double>& data) override
+    {
+        this->x = data[0];
+        this->y = data[1];
+        this->z = data[2];
     }
 };
 

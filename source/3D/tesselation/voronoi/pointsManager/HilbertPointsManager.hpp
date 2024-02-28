@@ -3,6 +3,7 @@
 
 #ifdef RICH_MPI
 
+#include <numeric>
 #include <memory>
 #include "PointsManager.hpp"
 #include "3D/environment/kernels/Identity.hpp" // for default kernelization
@@ -42,7 +43,7 @@ public:
 
     HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;
 
-    PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) override;
+    PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) override;
 
     void rebalance(const std::vector<Vector3D> &points) override;
 
@@ -51,7 +52,7 @@ public:
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
-    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses);
+    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM);
 
     HilbertCurveEnvironmentAgent *envAgent;
     HilbertConvertor3D *convertor;

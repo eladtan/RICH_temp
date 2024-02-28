@@ -803,10 +803,16 @@ bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     assert(this->pointsManager.get() != nullptr);
     assert(this->pointsManager->getEnvironmentAgent() != nullptr);
-    return (this->pointsManager->getEnvironmentAgent()->getOwner(point) == rank);
+    return (this->GetOwner(point) == rank);
 }
 
-std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> Voronoi3D::InitialGhostPointsExchange(const std::vector<Vector3D> &points) const
+int Voronoi3D::GetOwner(const Vector3D &point) const
+{
+    return this->pointsManager->getEnvironmentAgent()->getOwner(point);
+}
+
+std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>>
+    Voronoi3D::InitialGhostPointsExchange() const
 {
     int size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -833,11 +839,11 @@ std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size
             toSendSizes[_rank] = 0;
             for(size_t pointIdx : this->real_duplicated_points[rankIndex])
             {
-                if(pointIdx < points.size())
+                if(pointIdx < this->Norg_)
                 {
                     sentIndices.push_back(pointIdx);
                     toSendSizes[_rank]++;
-                    pointsToSend.push_back(_3DPoint(points[pointIdx]));
+                    pointsToSend.push_back(_3DPoint(this->allMyPoints[pointIdx]));
                 }
             }
             if(not sentIndices.empty())
@@ -977,9 +983,12 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
 
             if(currentRadiuses[pointIdx] <= 0)
             {
+                int rank;
+                MPI_Comm_rank(MPI_COMM_WORLD, &rank);
                 UniversalError eo("Radius for a certain point is <= 0 (in 'Voronoi3D::CreateBatches')");
                 eo.addEntry("Point Index", pointIdx);
                 eo.addEntry("Its radius", currentRadiuses[pointIdx]);
+                eo.addEntry("Rank", rank);
                 throw eo;
             }
         }
@@ -990,6 +999,7 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
         for(const size_t &pointIdx : largePoints)
         {
             const Vector3D &point = this->del_.points_[pointIdx];
+
             // std::cout << "firstLargeIteration.at(pointIdx) is " << firstLargeIteration.at(pointIdx) << std::endl;
             bool askOnlyClose = (iterations == firstLargeIteration.at(pointIdx)); // on the first iteration as large, ask only the close ranks
 
@@ -1071,9 +1081,14 @@ void Voronoi3D::FilterRealGhostPoints()
         int _rank = this->duplicatedprocs_[i];
         this->real_duplicated_proc.push_back(_rank);
         std::vector<size_t> newSend;
-        // check for any original point, if it has neighbors that belong to rank `_rank`. If yes, the point is necessary to be sent
+        // check for any original sent point, if it has neighbors that belong to rank `_rank`. If yes, the point is necessary to be sent
         for(const size_t &pointIdx : this->duplicated_points_[i])
         {
+            if(pointIdx >= this->Norg_)
+            {
+                // point was not participating in the last built
+                continue;
+            }
             bool foundNeighbor = false;
             for(const size_t &neighborIdx : this->GetNeighbors(pointIdx))
             {
@@ -1081,11 +1096,12 @@ void Voronoi3D::FilterRealGhostPoints()
                 {
                     // found a neighbor of `pointIdx` which is a ghost point of mine
                     foundNeighbor = true;
+                    break;
                 }
             }
             if(foundNeighbor)
             {
-                newSend.push_back(pointIdx);
+                newSend.push_back(this->indicesInAllMyPoints[pointIdx]);
             }
         }
         this->real_duplicated_points.emplace_back(newSend);
@@ -1325,7 +1341,7 @@ std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>
             // the result is too big, we should consider this point as large
             newLargePoints.insert(pointIdx);
             firstLargeIteration[pointIdx] = iterations + 1; // the first large iteration for `pointIdx` is the next one
-            this->radiuses[pointIdx] = LARGE_POINTS_SHRINK_RADIUS_RATIO * currentRadiuses[pointIdx];
+            this->radiuses[this->indicesInAllMyPoints[pointIdx]] = LARGE_POINTS_SHRINK_RADIUS_RATIO * currentRadiuses[pointIdx];
         }
         else
         {
@@ -1339,7 +1355,7 @@ std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>
             else
             {
                 // point is finished, set a radius for next iteration
-                this->radiuses[pointIdx] = RADIUSES_GROWING_FACTOR * (2 * maxRadius);
+                this->radiuses[this->indicesInAllMyPoints[pointIdx]] = RADIUSES_GROWING_FACTOR * (2 * maxRadius);
             }
         }
     }
@@ -1389,7 +1405,7 @@ void Voronoi3D::SetGhostArray(const std::vector<int> &recvProc, const std::vecto
  * \author Maor Mizrachi
  * \brief The algorithm follows arepro paper (https://www.mpa-garching.mpg.de/~volker/arepo/arepo_paper.pdf), section 2.4.
 */
-void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
+void Voronoi3D::BringGhostPointsToBuild()
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -1401,19 +1417,16 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     
     boost::container::flat_set<size_t> smallPoints; // indices of 'small' points
     boost::container::flat_set<size_t> largePoints; // indices of 'large' points
-    // initialize `smallPoints`, as all the points (indices)
-    for(size_t i = 0; i < this->Norg_; i++)
+
+    std::vector<double> currentRadiuses(this->indicesInAllMyPoints.size(), RADIUS_UNINITIALIZED);
+    for(size_t i = 0; i < this->indicesInAllMyPoints.size(); i++)
     {
         smallPoints.insert(i);
+        size_t pointIdx = this->indicesInAllMyPoints[i];
+        currentRadiuses[i] = this->radiuses[pointIdx];
     }
-
-    //BruteForceFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
-    //RangeTreeFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
-    OctTreeFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_, this->ll_, this->ur_);
-    //KDTreeFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_, this->ll_, this->ur_);
-    //GroupRangeTreeFinder<256> rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
     
-    auto [ghostPointsFromLastBuild, alreadySentProc, alreadySentPoints, alreadyRecvProcs, alreadyRecvPoints] = this->InitialGhostPointsExchange(points);
+    auto [ghostPointsFromLastBuild, alreadySentProc, alreadySentPoints, alreadyRecvProcs, alreadyRecvPoints] = this->InitialGhostPointsExchange();
     SentPointsContainer pointsContainer(alreadySentProc, alreadySentPoints);
     this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints);
     this->del_.BuildExtra(ghostPointsFromLastBuild);
@@ -1422,10 +1435,10 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     this->tetra_centers_.resize(this->R_.size());
     this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
-    BigRangeAgent bigRangeAgent(this->pointsManager->getEnvironmentAgent(), &rangeFinder, pointsContainer);
-    SmallRangeAgent smallRangeAgent(this->pointsManager->getEnvironmentAgent(), &rangeFinder, pointsContainer);
+    // SentPointsContainer pointsContainer;
 
-    std::vector<double> currentRadiuses = this->radiuses;
+    BigRangeAgent bigRangeAgent(this->pointsManager->getEnvironmentAgent(), this->rangeFinder.get(), pointsContainer);
+    SmallRangeAgent smallRangeAgent(this->pointsManager->getEnvironmentAgent(), this->rangeFinder.get(), pointsContainer);
 
     MPI_Request finishedReq;
     int I_finished = 0;
@@ -1437,6 +1450,9 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
 
     boost::container::flat_map<size_t, size_t> firstLargeIteration;
 
+    bool considerOwnPoints = this->Norg_ != this->allMyPoints.size(); // there are points which we ignore in this step, so we have, in the range searching, communicate with us as well
+    boost::container::flat_set<size_t> selfIgnorePoints(this->indicesInAllMyPoints.cbegin(), this->indicesInAllMyPoints.cend());
+
     while(true) // loop is not really infinite (has 'break')
     {
         iterations++;
@@ -1446,13 +1462,22 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         std::vector<std::pair<size_t, size_t>> mirroredPoints = MirrorPoints(smallQueries, box, normals);
         std::vector<std::pair<size_t, size_t>> moreMirroredPoints = MirrorPoints(bigQueries, box, normals);
         mirroredPoints.insert(mirroredPoints.end(), moreMirroredPoints.begin(), moreMirroredPoints.end());
+        std::vector<Vector3D> newPoints;
+        if(considerOwnPoints)
+        {
+            std::vector<Vector3D> newSmallQueriesPoints = smallRangeAgent.selfBatchAnswer(smallQueries, selfIgnorePoints);
+            std::vector<Vector3D> newBigQueriesPoints = bigRangeAgent.selfBatchAnswer(bigQueries, selfIgnorePoints);
+            newPoints.insert(newPoints.end(), newSmallQueriesPoints.cbegin(), newSmallQueriesPoints.cend());
+            newPoints.insert(newPoints.end(), newBigQueriesPoints.cbegin(), newBigQueriesPoints.cend());
+        }
+        this->del_.BuildExtra(newPoints);
 
         I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
         MPI_Iallreduce(&I_finished, &finished, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD, &finishedReq);
 
         // large points queries
         QueryBatchInfo<BigRangeQueryData, _3DPoint> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
-        std::vector<Vector3D> newPoints;
+        newPoints.clear();
         newPoints.reserve(bigBatchInfo.result.size());
         for(const _3DPoint &_point : bigBatchInfo.result)
         {
@@ -1471,8 +1496,6 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         }
         this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
         this->del_.BuildExtra(newPoints);
-
-        std::tie(smallPoints, largePoints) = this->DetermineNextIterationPoints(iterations, smallBatchInfo.queriesAnswers, bigBatchInfo.queriesAnswers, firstLargeIteration, currentRadiuses);
 
         newPoints.clear();
         newPoints.reserve(mirroredPoints.size());
@@ -1493,6 +1516,8 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
+        std::tie(smallPoints, largePoints) = this->DetermineNextIterationPoints(iterations, smallBatchInfo.queriesAnswers, bigBatchInfo.queriesAnswers, firstLargeIteration, currentRadiuses);
+
         // std::cout << "del_.points_.size() for rank " << rank << " is " << del_.points_.size() << std::endl;
         MPI_Wait(&finishedReq, MPI_STATUS_IGNORE);
         if(finished == size)
@@ -1507,6 +1532,7 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
     // calculate this->duplicated_points_
     this->UpdateDuplicatedPoints(sentProc, sentPoints);
     // remove whomever that does not appear both in my sent vector and receive vector (because if one appears in only one, it means that we either sent it a point, or received one, but has no used of it at all (otherwise it would require a symetric call))
+    // this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    // todo: uncomment
     this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    
 }
 
@@ -1514,11 +1540,15 @@ void Voronoi3D::BringGhostPointsToBuild(const std::vector<Vector3D> &points)
  * \author Maor Mizrachi
  * \brief Makes load rebalancing if needed, if needed, and initializing the environment agent (the object which is responsible for dividing the space to ranks)
 */
-std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing)
+std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
 {
-    if(this->radiuses.size() < points.size())
+    if(this->radiuses.size() < allPoints.size())
     {
-        this->radiuses.resize(points.size(), RADIUS_UNINITIALIZED);
+        this->radiuses.resize(allPoints.size(), RADIUS_UNINITIALIZED);
+    }
+    if(this->all_CM.size() < allPoints.size())
+    {
+        this->all_CM.resize(allPoints.size());
     }
     
     if(this->pointsManager.get() == nullptr)
@@ -1526,17 +1556,88 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildHilbert(const std::vector<Vector3
         // initialize points manager
         this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
     }
-    PointsExchangeResult exchangeResult = this->pointsManager->update(points, this->radiuses, not suppressRebalancing); // does rebalancing (if necessary) and exchanging
+    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, indicesToBuild, this->radiuses, this->all_CM, not suppressRebalancing); // does rebalancing (if necessary) and exchanging
 
-    std::vector<Vector3D> new_points = std::move(exchangeResult.newPoints);
+    this->allMyPoints = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
+    this->all_CM = std::move(exchangeResult.newCMs);
     this->sentprocs_ = std::move(exchangeResult.sentProcessors);
     this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
     this->self_index_ = std::move(exchangeResult.indicesToSelf);
 
+    std::vector<bool> active(allPoints.size(), false);
+    for(const size_t &idx : indicesToBuild)
+    {
+        active[idx] = true;
+    }
+
+    std::vector<Vector3D> new_points;
+    this->indicesInAllMyPoints = std::vector<size_t>();
+    size_t numOfSelfPoints = this->self_index_.size();
+
+    // this loop determines the points list, and the matching indices of each point (in the points list) to the long points list
+    for(size_t pointIdx = 0; pointIdx < this->allMyPoints.size(); pointIdx++)
+    {
+        if(pointIdx < numOfSelfPoints)
+        {
+            // point belongs to me, but it doesn't mean it's an active point
+            size_t previousPointIdx = this->self_index_[pointIdx];
+            if(active[previousPointIdx])
+            {
+                new_points.push_back(this->allMyPoints[pointIdx]);
+                this->indicesInAllMyPoints.push_back(pointIdx);
+            }
+        }
+        else
+        {
+            // point has been received, so it's for sure an active
+            new_points.push_back(this->allMyPoints[pointIdx]);
+            this->indicesInAllMyPoints.push_back(pointIdx);
+        }
+    }
+    
     this->BuildInitialize(new_points.size());
 
     return new_points;
+}
+
+void Voronoi3D::UpdateRangeFinder()
+{
+    this->rangeFinder = std::make_shared<OctTreeFinder>(this->allMyPoints.begin(), this->allMyPoints.end(), this->ll_, this->ur_);
+    // if(this->rangeFinder.get() == nullptr)
+    // {
+    //     //BruteForceFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
+    //     //RangeTreeFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
+    //     this->rangeFinder = std::make_shared<RangeFinder>(this->allMyPoints.begin(), this->allMyPoints.end(), this->ll_, this->ur_);
+    //     //KDTreeFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_, this->ll_, this->ur_);
+    //     //GroupRangeTreeFinder<256> rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
+    // }
+    // else
+    // {
+    //     // there are three steps:
+    //     /*
+    //     1. test which points from the  last timestep that might have changed.
+    //     These are the active points from last time step (the points in `indicesInAllMyPoints`),
+    //     and the REAL ghost points.
+    //     */
+    //      // todo: this part should not happen here (since this function is running after the exchange)
+    //     std::vector<size_t> pointsToRemove = this->indicesInAllMyPoints;
+    //     for(const std::vector<size_t> &ghostPoints : this->real_duplicated_points)
+    //     {
+    //         pointsToRemove.insert(pointsToRemove.end(), ghostPoints.cbegin(), ghostPoints.cend());
+    //     }
+    //     /*
+    //     2. There are points that I owned in the last timestep, but I don't own anymore in this one. Remove them. 
+    //     */
+        
+    //     /*
+    //     3. There are points that I did not own in the last timestep, but I do own now. Add them.
+    //     */
+
+    //     std::vector<Vector3D> pointsToAdd;
+    //     // todo
+    //     this->rangeFinder->replacePoints();
+    // }
 }
 
 /**
@@ -1548,9 +1649,12 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
 {
     if(points.size() != mask.size())
     {
-        throw UniversalError("In Voronoi3D::PreparePoints, mask size (" + std::to_string(mask.size()) + ") is not equal to the points size (" + std::to_string(points.size()) + ")");
+        UniversalError eo("In Voronoi3D::PreparePoints, mask size is not equal to the points size");
+        eo.addEntry("Mask size", mask.size());
+        eo.addEntry("Points size", points.size());
+        throw eo;
     }
-    size_t originalPointsNum = this->Norg_;
+    size_t originalPointsNum = this->allMyPoints.size();
     size_t newPointsNum = points.size();
 
     std::vector<IndexedVector3D> oldPoints;
@@ -1582,35 +1686,41 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
             }
             else
             {
-                // old point
+                // old point, copy the radius
                 radius = this->radiuses[matchingPointIdx];
             }
             newRadiuses[i] = radius;
         }
     }
+    // copy the radiuses into the radiuses array
     this->radiuses = std::move(newRadiuses);
 }
 
-/**
- * \author Maor Mizrachi
- * \brief Build the voronoi, after rebalancing the points using a proper hilbert curve. 
-*/
-void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressRebalancing)
+void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    
-    std::vector<Vector3D> new_points = this->PrepareToBuildHilbert(points, suppressRebalancing);
-    // std::cout << "points.size() was " << points.size() << " and now is " << new_points.size() << std::endl;
+
+    for(const size_t &idx : indicesToBuild)
+    {
+        if(idx >= allPoints.size())
+        {
+            UniversalError eo("BuildParatiallyParallel: Illegal point was given");
+            eo.addEntry("Index", idx);
+            eo.addEntry("Size", allPoints.size());
+            throw eo;
+        }
+    }
+    std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, indicesToBuild, suppressRebalancing);
     
     std::vector<size_t> order;
 
     // build delaunay
-    if(not new_points.empty())
+    if(not activePoints.empty())
     {
-        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(new_points[0], new_points[0]);
-        for(const Vector3D &point : new_points)
+        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(activePoints[0], activePoints[0]);
+        for(const Vector3D &point : activePoints)
         {
             bounding_box.first.x = std::min(bounding_box.first.x, point.x);
             bounding_box.second.x = std::max(bounding_box.second.x, point.x);
@@ -1623,10 +1733,10 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;
         // reportDuplications(new_points);
-        order = HilbertOrder3D(new_points);
+        order = HilbertOrder3D(activePoints);
         
         // initial build for the points
-        this->del_.Build(new_points, bounding_box.second, bounding_box.first, order);
+        this->del_.Build(activePoints, bounding_box.second, bounding_box.first, order);
     }
 
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
@@ -1635,9 +1745,9 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
     this->tetra_centers_.resize(this->R_.size());
     this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
-    if(this->radiuses.size() != this->Norg_)
+    if(this->radiuses.size() < this->Norg_)
     {
-        UniversalError eo("Voronoi3D:PrepareToBuildHilbert: wrong size of radiuses array");
+        UniversalError eo("Voronoi3D:PrepareToBuildParallel: wrong size of radiuses array");
         eo.addEntry("Rank", rank);
         eo.addEntry("radiuses.size()", this->radiuses.size());
         eo.addEntry("Norg_", this->Norg_);
@@ -1645,37 +1755,58 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
     }
 
     // use an oct tree to fast calculate the distance to closest point
-    OctTree<Vector3D> myOctTree(this->ll_, this->ur_, new_points.begin(), new_points.begin() + this->Norg_);
-    for(size_t pointIdx = 0; pointIdx < this->Norg_; pointIdx++)
+    OctTree<Vector3D> myOctTree(this->ll_, this->ur_, this->allMyPoints.begin(), this->allMyPoints.end());
+    for(size_t i = 0; i < activePoints.size(); i++)
     {
-        if(this->radiuses[pointIdx] < 0)
+        size_t pointIndexAmongAll = this->indicesInAllMyPoints[i];
+        if(this->radiuses[pointIndexAmongAll] <= 0)
         {
-            // initialize a radius
-            this->radiuses[pointIdx] = fastsqrt(myOctTree.closestPointDistance(this->del_.points_[pointIdx])); // todo second closest
+            // point does not have a radius from a previous timestep. Initialize a radius
+            this->radiuses[pointIndexAmongAll] = fastsqrt(myOctTree.closestPointDistance(activePoints[i])); // todo second closest
         }
     }
-
-    this->BringGhostPointsToBuild(new_points);
+    
+    this->UpdateRangeFinder();
+    this->BringGhostPointsToBuild();
 
     CM_.resize(del_.points_.size());
     volume_.resize(Norg_);
 
-    if(not new_points.empty())
+    if(not activePoints.empty())
     {
         // Create Voronoi
         BuildVoronoi(order);
     }
-    std::vector<double>().swap(R_);
-    std::vector<tetra_vec>().swap(PointTetras_);
 
-    CalcAllCM();
+    // todo: why?
+    // std::vector<double>().swap(this->R_);
+    // std::vector<tetra_vec>().swap(this->PointTetras_);
+
+    this->CalcAllCM();
     for (std::size_t i = 0; i < FaceNeighbors_.size(); ++i)
-        if (BoundaryFace(i))
-            CalcRigidCM(i);
+    {
+        if(this->BoundaryFace(i))
+        {
+            this->CalcRigidCM(i);
+        }
+    }
+
+    // now, we convert CM_ to the array of the whole points. Points that were not active, should keep their previous CM
+    for(size_t i = 0; i < this->indicesInAllMyPoints.size(); i++)
+    {
+        size_t pointIdx = this->indicesInAllMyPoints[i];
+        if(pointIdx >= this->all_CM.size())
+        {
+            UniversalError eo("Voronoi3D::PrepareToBuildParallel: wrong size of previous_CM array");
+            eo.addEntry("newCM.size()", this->all_CM.size());
+            eo.addEntry("Point Index", pointIdx);
+            throw eo;
+        }
+        this->all_CM[pointIdx] = this->CM_[i];
+    }
 
     // communicate the ghost CM
-    // vector<vector<Vector3D>> incoming = MPI_Exchange_serializable(CM_, duplicatedprocs_, duplicated_points_);
-    vector<vector<Vector3D>> incoming = MPI_exchange_data(duplicatedprocs_, duplicated_points_, CM_);
+    vector<vector<Vector3D>> incoming = MPI_exchange_data(duplicatedprocs_, duplicated_points_, this->all_CM);
     // Add the recieved CM
     for (size_t i = 0; i < incoming.size(); ++i)
     {
@@ -2617,6 +2748,11 @@ const vector<Vector3D> &Voronoi3D::getMeshPoints(void) const
     return del_.points_;
 }
 
+const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
+{
+    return this->allMyPoints;
+}
+
 vector<std::size_t> Voronoi3D::GetNeighbors(std::size_t index) const
 {
     const size_t N = FacesInCell_[index].size();
@@ -2658,7 +2794,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 sentprocs_(other.sentprocs_), sentpoints_(other.sentpoints_), duplicatedprocs_(other.duplicatedprocs_), duplicated_points_(other.duplicated_points_),
                                                 Nghost_(other.Nghost_), self_index_(other.self_index_), temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_)
                                                 #ifdef RICH_MPI
-                                                , pointsManager(other.pointsManager), radiuses(other.radiuses), indexingToSave(other.indexingToSave)
+                                                , pointsManager(other.pointsManager), radiuses(other.radiuses), indexingToSave(other.indexingToSave), indicesInAllMyPoints(other.indicesInAllMyPoints), allMyPoints(other.allMyPoints), rangeFinder(other.rangeFinder)
                                                 #endif // RICH_MPI
                                                 {}
 
@@ -2765,6 +2901,11 @@ vector<boost::container::small_vector<size_t, 8>> const& Voronoi3D::GetAllPoints
 size_t &Voronoi3D::GetPointNo(void)
 {
     return Norg_;
+}
+
+size_t Voronoi3D::GetAllPointsNo(void) const
+{
+    return this->allMyPoints.size();
 }
 
 std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
@@ -2965,4 +3106,10 @@ void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared
     this->SetBox(ll, ur);
     this->SetKernel(newIndexing);
 }
+
+const EnvironmentAgent *Voronoi3D::GetEnvironmentAgent() const
+{
+    return this->pointsManager->getEnvironmentAgent();
+}
+
 #endif // RICH_MPI
