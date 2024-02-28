@@ -511,7 +511,7 @@ Snapshot3D ReadSnapshot3D(const string &fname
     if(fake_rank >= 0)
     {
       rank = fake_rank;
-      good_open = false;
+      // good_open = false;
     }
     try
     {
@@ -854,4 +854,22 @@ void WritePoints(const std::vector<Vector3D> &points, const std::string &filenam
   vtu_name.replace_extension("vtu");
   write_vtu3d::write_vtu_3d(vtu_name, vtu_cell_variable_names, vtu_cell_variables, vtu_cell_vectors_names, vtu_cell_vectors, 0, 0, tess);
   */
+}
+
+int GetNumberOfRanksInHDF(std::string const& fname)
+{
+    H5File file(fname, H5F_ACC_RDONLY);
+    int counter = 0;
+    while(true)
+    {
+      try
+      {
+        auto read_location = file.openGroup("/rank" + int2str(counter));
+        ++counter;
+      }
+      catch (Exception& notFoundError)
+      {
+        return counter;
+      }
+    }
 }

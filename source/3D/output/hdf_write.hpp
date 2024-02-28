@@ -97,6 +97,8 @@ Snapshot3D ReadSnapshot3D(const string& fname
 #endif
 );
 
+int GetNumberOfRanksInHDF(std::string const& fname);
+
 #ifdef RICH_MPI
 /*! \brief Redistribute data between the different processes
   \param filename Name of output file
