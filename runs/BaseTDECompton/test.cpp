@@ -371,7 +371,7 @@ namespace
 					res.push_back(i);
 					continue;
 				}
-				if ((V * cells[i].density) > (MaxMass2 * std::min(std::pow(0.04 * r_dist / Rt, 2.5), 1.0)) || V > domain_size_ * 1e-5)
+				if ((V * cells[i].density) > (MaxMass2 * std::min(std::pow(0.05 * r_dist / Rt, 2.5), 1.0)) || V > domain_size_ * 1e-5)
 				{
 					{
 						res.push_back(i);
@@ -433,7 +433,7 @@ namespace
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double r_i = std::max(Rt * smooth_factor, r_org);
 				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
-				MaxMass2 = MaxMass2 * std::min(std::pow(0.04 * r_i / Rt, 2.5), 1.0);
+				MaxMass2 = MaxMass2 * std::min(std::pow(0.05 * r_i / Rt, 2.5), 1.0);
 				double const dt = w / eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers);
 				double const in_factor = r_i < 0.65 * Rt ? smooth_factor / 0.6 : 1;
 				MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
@@ -702,13 +702,27 @@ int main(void)
 	if (restart)
 	{
 		int hdf5_rank = -1;
+		int NranksInFile = GetNumberOfRanksInHDF(file_name + int2str(counter) + ".h5");
 		if(rank == 0)
-			std::cout<<"Reading from file "<<file_name + int2str(counter) + ".h5"<<std::endl;
+			std::cout<<"Reading from file "<<file_name + int2str(counter) + ".h5 file has "<<NranksInFile<<" ranks"<<std::endl;
 		snap = ReadSnapshot3D(file_name + int2str(counter) + ".h5"
 #ifdef RICH_MPI
 		, true, hdf5_rank
 #endif
 		);
+		if(ws < NranksInFile && rank == 0)
+		{
+			for(int j = ws; j < NranksInFile; ++j)
+			{
+				Snapshot3D snap_temp = ReadSnapshot3D(file_name + int2str(counter) + ".h5"
+#ifdef RICH_MPI
+		, true, j
+#endif
+				);
+				snap.cells.insert(snap.cells.end(), snap_temp.cells.begin(), snap_temp.cells.end());
+				snap.mesh_points.insert(snap.mesh_points.end(), snap_temp.mesh_points.begin(), snap_temp.mesh_points.end());
+			}
+		}
 		t_restart = snap.time;
 		if(fs::exists(restart_name))
 		{
@@ -723,6 +737,19 @@ int main(void)
 					, true, hdf5_rank
 		#endif
 				);
+				if(ws < NranksInFile && rank == 0)
+				{
+					for(int j = ws; j < NranksInFile; ++j)
+					{
+						Snapshot3D snap_temp = ReadSnapshot3D(restart_name
+		#ifdef RICH_MPI
+				, true, j
+		#endif
+						);
+						snap.cells.insert(snap.cells.end(), snap_temp.cells.begin(), snap_temp.cells.end());
+						snap.mesh_points.insert(snap.mesh_points.end(), snap_temp.mesh_points.begin(), snap_temp.mesh_points.end());
+					}
+				}
 			}
 		}
 		std::cout<<"Rank "<<rank<<" has "<<snap.mesh_points.size()<<" points, hdf5_rank "<<hdf5_rank<<std::endl;
