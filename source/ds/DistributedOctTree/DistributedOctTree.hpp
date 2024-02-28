@@ -94,9 +94,13 @@ public:
 
     std::vector<_BoundingBox<T>> getRankBoundingBoxes(int _rank) const;
 
+    std::vector<_BoundingBox<T>> getRankBoundingBoxesUnique(int _rank) const;
+
     inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};
 
     inline std::vector<_BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
+
+    inline std::vector<_BoundingBox<T>> getMyBoundingBoxesUnique() const{return this->getRankBoundingBoxesUnique(this->rank);};
 
     template<typename U>
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const U &point) const;
@@ -400,6 +404,44 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankB
         else
         {
             if(std::find(node->value.owners, node->value.owners + node->value.num_owners, _rank) != node->value.owners + node->value.num_owners)
+            {
+                // is an owner
+                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
+            }
+        }
+    }
+    return boxes;
+}
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxesUnique(int _rank) const
+{
+    std::vector<_BoundingBox<T>> boxes;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(node->value.num_owners == 0)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(*std::min_element(node->value.owners, node->value.owners + node->value.num_owners) == _rank)
             {
                 // is an owner
                 boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
