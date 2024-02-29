@@ -1,7 +1,7 @@
 #ifndef DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 #define DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tesselation/Tessellation3D.hpp"
 #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
 #include "3D/hilbert/rectangular/HilbertTree3D.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
@@ -19,7 +19,7 @@ public:
 
     using MassedValue = GravityTree<Vector3D>::MassedValue;
 
-    DistributedGravityCalculator(const Voronoi3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
+    DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
 
@@ -31,7 +31,7 @@ public:
 private:
     MPI_Comm comm;
     int rank, size;
-    const Voronoi3D &tess;
+    const Tessellation3D &tess;
     double theta;
     double thetaSquared;
     bool quadrupole;
@@ -60,7 +60,7 @@ private:
     std::vector<std::vector<MassedValue>> exchangeImportedValues(const std::vector<Vector3D> &points) const;
 };
 
-DistributedGravityCalculator::DistributedGravityCalculator(const Voronoi3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_, const MPI_Comm &comm_):
+DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_, const MPI_Comm &comm_):
     tess(tess_), theta(theta_), thetaSquared(theta_ * theta_), quadrupole(quadrupole_), comm(comm_), distributedOctTree(nullptr), hilbertTree(nullptr)
 {
     MPI_Comm_size(this->comm, &this->size);
@@ -102,11 +102,11 @@ void DistributedGravityCalculator::calculateExchangeListHelper(const GravityTree
 
     const Vector3D &CM = node->value.CM; 
     // check who from the relevant ranks doesn't want the node
-    auto shouldOpen = [&CM, isLeaf = node->isLeaf, theta2 = this->thetaSquared](const _BoundingBox<Vector3D> &box)
+    auto shouldOpen = [&CM, &localBoundingBox=node->boundingBox, isLeaf = node->isLeaf, theta2 = this->thetaSquared](const _BoundingBox<Vector3D> &box)
                       {
                           if(isLeaf) return false;
                           Vector3D closestPoint = box.closestPoint(CM);
-                          return ((closestPoint == CM) /* inside the box */ or ShouldOpenBox(closestPoint, box, CM, theta2) /* outside the box, yet should be opened */);
+                          return ((closestPoint == CM) /* inside the box */ or ShouldOpenBox(closestPoint, localBoundingBox, CM, theta2) /* outside the box, yet should be opened */);
                       };
 
     boost::container::flat_set<int> newRelevantRanks;
@@ -155,11 +155,14 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     // }
     // add the external values, to make the tree 'global'
     
+    size_t totalAdded = 0;
     for(const std::vector<MassedValue> &values : this->exchangeImportedValues(points))
     {
+        totalAdded += values.size();
         // std::cout << "rank " << this->rank << " is inserting " << values.size() << " values: " << values << std::endl;
         this->gravityTree->addExternalValues(values);
     }
+    std::cout << "rank " << this->rank << " added " << totalAdded << " values" << std::endl;
 
     // calculate the results
     std::vector<Vector3D> results;

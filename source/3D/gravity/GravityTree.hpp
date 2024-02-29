@@ -16,16 +16,17 @@ class GravityTree;
 template<typename T, typename BB_T>
 bool ShouldOpenBox(const T &point, const _BoundingBox<BB_T> &boundingBox, const T &centerOfMass, double thetaSquared)
 {
-    typename T::coord_type width = boundingBox.getWidthSquared();
+    typename T::coord_type width2 = boundingBox.getWidthSquared();
     #ifdef USE_VCL_VECTORIZATION
         Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
         Vec4d squared = diff * diff;
-        typename T::coord_type distanceToCM = squared[0] + squared[1] + squared[2];
+        typename T::coord_type distanceToCM2 = squared[0] + squared[1] + squared[2];
     #else // USE_VCL_VECTORIZATION
-        typename T::coord_type distanceToCM = ((point[0] - centerOfMass[0]) * (point[0] - centerOfMass[0])) + 
-                                            ((point[1] - centerOfMass[1]) * (point[1] - centerOfMass[1])) + ((point[2] - centerOfMass[2]) * (point[2] - centerOfMass[2]));
+        typename T::coord_type distanceToCM2 = ((point[0] - centerOfMass[0]) * (point[0] - centerOfMass[0])) + 
+                                            ((point[1] - centerOfMass[1]) * (point[1] - centerOfMass[1])) +
+                                            ((point[2] - centerOfMass[2]) * (point[2] - centerOfMass[2]));
     #endif // USE_VCL_VECTORIZATION
-    return width >= (distanceToCM * thetaSquared);
+    return width2 >= (distanceToCM2 * thetaSquared);
 }
 
 template<typename T>

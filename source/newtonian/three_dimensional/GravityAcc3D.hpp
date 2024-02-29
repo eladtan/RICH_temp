@@ -27,7 +27,7 @@ public:
         std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
 
         #ifdef RICH_MPI
-            DistributedGravityCalculator agent(points, masses, boundaries.first, boundaries.second, this->theta, this->quadrupole);
+            DistributedGravityCalculator agent(tess, masses, this->theta, this->quadrupole);
             acc = agent.getAcceleration(points);
         #else // RICH_MPI
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
