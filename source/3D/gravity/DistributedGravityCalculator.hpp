@@ -102,10 +102,12 @@ void DistributedGravityCalculator::calculateExchangeListHelper(const GravityTree
 
     const Vector3D &CM = node->value.CM; 
     // check who from the relevant ranks doesn't want the node
-    auto shouldOpen = [&CM, &localBoundingBox=node->boundingBox, isLeaf = node->isLeaf, theta2 = this->thetaSquared](const _BoundingBox<Vector3D> &box)
+    
+    // TODO: use the bounding boxes CM of the other remote box
+    auto shouldOpen = [&CM, &localBoundingBox=node->boundingBox, isLeaf = node->isLeaf, theta2 = this->thetaSquared](const _BoundingBox<Vector3D> &remoteBox)
                       {
                           if(isLeaf) return false;
-                          Vector3D closestPoint = box.closestPoint(CM);
+                          Vector3D closestPoint = remoteBox.closestPoint(CM);
                           return ((closestPoint == CM) /* inside the box */ or ShouldOpenBox(closestPoint, localBoundingBox, CM, theta2) /* outside the box, yet should be opened */);
                       };
 
