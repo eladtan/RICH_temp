@@ -14,7 +14,7 @@
 #include "ds/utils/geometry.hpp"
 #include "HilbertConvertor3D.hpp"
 
-#define DEFAULT_RANKS_IN_LEAVES 1
+#define DEFAULT_RANKS_IN_LEAVES 4
 #define UNDEFINED_OWNER -1
 
 template<int max_leaf_ranks = DEFAULT_RANKS_IN_LEAVES>

@@ -48,6 +48,8 @@ public:
     
     OctTree<RankedValue> *getOctTree(){return this->octTree;};
 
+    const OctTree<RankedValue> *getOctTree() const{return this->octTree;};
+
     std::vector<T> getRankValues(int _rank) const;
 
     inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};

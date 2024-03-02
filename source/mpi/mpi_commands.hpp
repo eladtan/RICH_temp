@@ -15,7 +15,6 @@
 #include "stdint.h"
 
 #define MPI_TIMED_BARRIER_TAG 110503
-#define MPI_EXCHANGE_ALL_TO_ALL_TAG 708
 
 using std::vector;
 
@@ -544,6 +543,13 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 
 	int size;
 	MPI_Comm_size(comm, &size);
+
+	if(data.size() != size)
+	{
+		UniversalError eo("MPI_Exchange_all_to_all: data size must be equal to the number of ranks");
+		eo.addEntry("Size", data.size());
+		throw eo;
+	}
 
 	// agree the chunk size
 	size_t chunkSize = (data.empty() or data[0].empty())? 0 : data[0][0].getChunkSize();

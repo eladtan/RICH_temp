@@ -136,6 +136,8 @@ public:
 
 
 private:
+    // void gravityHelper(const Node *node, const std::vector<T> &points, std::vector<bool> &considerPoints, std::vector<Vector3D> &results) const;
+
     void calculateMassHelper(Node *node);
 
     OctTree<MassedValue> *octTree;
@@ -158,6 +160,15 @@ public:
     inline bool find(const T &point){return this->octTree->find(point);};
 
     T gravity(const T &point, const direction_t *directions = nullptr) const;
+
+    // std::vector<T> gravity(const std::vector<T> &points, const direction_t *directions = nullptr) const
+    // {
+    //     std::vector<T> results(points.size());
+    //     std::vector<bool> shouldOpen(points.size(), true);
+    //     const Node *startingNode = this->octTree->getNodeByDirections(directions);
+    //     this->gravityHelper(startingNode, points, shouldOpen, results);
+    //     return results;
+    // }
 
     void addExternalValues(const std::vector<MassedValue> &values);
 
@@ -385,5 +396,53 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
     }
     return gravity;
 }
+
+// template<typename T>
+// void GravityTree<T>::gravityHelper(const Node *node, const std::vector<T> &points, std::vector<bool> &considerPoints, std::vector<Vector3D> &results) const
+// {
+//     if(node == nullptr)
+//     {
+//         return;
+//     }
+//     size_t N = points.size();
+//     if(node->isLeaf)
+//     {
+//         for(size_t i = 0; i < N; i++)
+//         {
+//             if(considerPoints[i])
+//             {
+//                 results[i] += CalculateLeafGravityContribution(node->value, points[i], this->quadrupole);
+//             }
+//         }
+//         return;
+//     }
+
+//     std::vector<bool> shouldOpen(N, false);
+//     for(size_t i = 0; i < N; i++)
+//     {
+//         if(considerPoints[i])
+//         {
+//             shouldOpen[i] = ShouldOpenBox(points[i], node->boundingBox, node->value.CM, this->thetaSquared);
+//             if(not shouldOpen[i])
+//             {
+//                 results[i] += CalculateLeafGravityContribution(node->value, points[i], this->quadrupole);
+//             }
+//         }
+//     }    
+
+//     for(const Node *child : node->children)
+//     {
+//         if(child == nullptr)
+//         {
+//             continue;
+//         }
+//         for(size_t i = 0; i < N; i++)
+//         {
+//             bool childContainsNode = child->boundingBox.contains(points[i]);
+//             considerPoints[i] = shouldOpen[i] or childContainsNode or child->isLeaf;
+//         }
+//         this->gravityHelper(child, points, considerPoints, results);
+//     }
+// }
 
 #endif // _GRAVITY_TREE_HPP
