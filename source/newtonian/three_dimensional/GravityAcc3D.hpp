@@ -28,20 +28,21 @@ public:
 
         #ifdef RICH_MPI
             DistributedGravityCalculator agent(tess, masses, this->theta, this->quadrupole);
-            acc = agent.getAcceleration(points);
+            acc = agent.getAcceleration(points, masses);
         #else // RICH_MPI
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
             std::vector<MassedPoint<Vector3D>> massedPoints;
-            for(size_t i = 0; i < points.size(); i++)
+            size_t N = points.size();
+            for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                massedPoints.emplace_back(MassedPoint<Vector3D>(points[i], masses[i]));
+                massedPoints.emplace_back(MassedPoint<Vector3D>(points[pointIdx], masses[pointIdx]));
             }
             gravTree.build(massedPoints);
             
             acc.clear();
-            for(const Vector3D &point : points)
+            for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                acc.push_back(gravTree.gravity(point));
+                acc.push_back(gravTree.gravity(point) * masses[pointIdx]);
             }
         #endif // RICH_MPI
 

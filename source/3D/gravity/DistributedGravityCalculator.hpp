@@ -20,7 +20,7 @@ public:
 
     DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
-    std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
+    std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const;
 
     inline ~DistributedGravityCalculator()
     {
@@ -123,7 +123,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
 //     newRelevantRanks.swap(relevantRanks);
 // }
 
-std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
+std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const
 {
     // calculate the results, locally
     std::vector<Vector3D> results;
@@ -182,6 +182,11 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
         }
     }
 
+    // multiply with the mass of each point
+    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
+    {
+        results[pointIdx] *= masses[pointIdx];
+    }
     return results;
 }
 
