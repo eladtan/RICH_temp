@@ -1,6 +1,8 @@
 #ifndef DISTRIBUTED_GRAVITY_TREE
 #define DISTRIBUTED_GRAVITY_TREE
 
+#ifdef RICH_MPI
+
 #include <mpi.h>
 #include "3D/gravity/GravityTree.hpp"
 #include "3D/elementary/Vector3D.hpp"
@@ -315,5 +317,7 @@ void DistributedGravityTree::printHelper(const Node *node, int indentation) cons
         }
     }
 }
+
+#endif // RICH_MPI
 
 #endif // DISTRIBUTED_GRAVITY_TREE
