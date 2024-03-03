@@ -11,6 +11,66 @@
 #include "misc/universal_error.hpp"
 
 template<typename T>
+struct MassedValue : public Serializable
+{
+    using coord_type = typename T::coord_type;
+    using Raw_type = T;
+
+    T value;
+    T CM; // center of mass
+    gravity_result_t mass;
+    std::array<coord_type, 6> Q; // for quadropole calculations
+
+    typename T::coord_type operator[](size_t idx) const{return this->value[idx];};
+    typename T::coord_type &operator[](size_t idx){return this->value[idx];};
+    inline MassedValue operator+(const MassedValue &other) const{return MassedValue(this->value + other.value);};
+    inline MassedValue operator-(const MassedValue &other) const{return MassedValue(this->value - other.value);};
+    inline MassedValue operator*(typename T::coord_type scalar) const{return MassedValue(this->value * scalar);};
+    inline MassedValue operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
+    inline bool operator==(const T &other) const{return this->value == other;};
+    inline bool operator==(const MassedValue &other) const{return this->operator==(other.value);};
+    inline bool operator!=(const MassedValue &other) const{return !this->operator==(other);};
+    inline friend std::ostream &operator<<(std::ostream &stream, const MassedValue &value)
+    {
+        stream << "[Point: " << value.value << ", Mass: " << value.mass << ", CM: " << value.CM << ", Q: (" << value.Q[0] << ", " << value.Q[1] << ", " << value.Q[2] << ", " << value.Q[3] << ", " << value.Q[4] << ", " << value.Q[5] << ")]";
+        return stream;
+    };
+    explicit inline MassedValue(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass)
+    {
+        // reset Q
+        for(int i = 0; i < 6; i++)
+        {
+            this->Q[i] = 0;
+        }
+    };
+    explicit inline MassedValue(const T &value): MassedValue(value, 0){};
+    explicit inline MassedValue(): MassedValue(T(), 0){};
+
+    inline size_t getChunkSize() const override
+    {
+        return 3 + 3 + 1 + 6; // 3, 3 for value and CM, 1 for mass, 6 for Q
+    }
+
+    inline std::vector<double> serialize() const override
+    {
+        std::vector<double> valueSerialized = this->value.serialize();
+        std::vector<double> CMSerialized = this->CM.serialize();
+        valueSerialized.insert(valueSerialized.end(), CMSerialized.begin(), CMSerialized.end());
+        valueSerialized.push_back(this->mass);
+        valueSerialized.insert(valueSerialized.end(), this->Q.begin(), this->Q.end());
+        return valueSerialized;
+    }
+
+    inline void unserialize(const std::vector<double> &data) override
+    {
+        this->value.unserialize(std::vector<double>(data.cbegin(), data.cbegin() + 3));
+        this->CM.unserialize(std::vector<double>(data.cbegin() + 3, data.cbegin() + 6));
+        this->mass = data[6];
+        std::copy(data.cbegin() + 7, data.cbegin() + 13, this->Q.begin());
+    }
+};
+
+template<typename T>
 class GravityTree;
 
 template<typename T, typename BB_T>
@@ -29,8 +89,8 @@ bool ShouldOpenBox(const T &point, const _BoundingBox<BB_T> &boundingBox, const 
     return width2 >= (distanceToCM2 * thetaSquared);
 }
 
-template<typename T>
-T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &nodeValue, const T &point, bool quadrupole = false)
+template<typename Mass_T, typename T>
+T CalculateLeafGravityContribution(const Mass_T &nodeValue, const T &point, bool quadrupole = false)
 {
     T gravity;
     const T &CM = nodeValue.CM;
@@ -49,7 +109,7 @@ T CalculateLeafGravityContribution(const typename GravityTree<T>::MassedValue &n
     if(quadrupole)
     {
         typename T::coord_type Qfactor = sizeOfForce / length2;
-        const typename T::coord_type *Q = nodeValue.Q;
+        const typename T::coord_type *Q = nodeValue.Q.data();
         typename T::coord_type dx = temp[0];
         typename T::coord_type dy = temp[1];
         typename T::coord_type dz = temp[2];
@@ -70,84 +130,21 @@ template<typename T>
 class GravityTree
 {
 public:
-    struct MassedValue : public Serializable
-    {
-        using coord_type = typename T::coord_type;
-        using Raw_type = T;
-
-        T value;
-        T CM; // center of mass
-        gravity_result_t mass;
-        coord_type Q[6]; // for quadropole calculations
-
-        typename T::coord_type operator[](size_t idx) const{return this->value[idx];};
-        typename T::coord_type &operator[](size_t idx){return this->value[idx];};
-        inline MassedValue operator+(const MassedValue &other) const{return MassedValue(this->value + other.value);};
-        inline MassedValue operator-(const MassedValue &other) const{return MassedValue(this->value - other.value);};
-        inline MassedValue operator*(typename T::coord_type scalar) const{return MassedValue(this->value * scalar);};
-        inline MassedValue operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
-        inline bool operator==(const T &other) const{return this->value == other;};
-        inline bool operator==(const MassedValue &other) const{return this->operator==(other.value);};
-        inline bool operator!=(const MassedValue &other) const{return !this->operator==(other);};
-        inline friend std::ostream &operator<<(std::ostream &stream, const MassedValue &value)
-        {
-            stream << "[Point: " << value.value << ", Mass: " << value.mass << ", CM: " << value.CM << ", Q: (" << value.Q[0] << ", " << value.Q[1] << ", " << value.Q[2] << ", " << value.Q[3] << ", " << value.Q[4] << ", " << value.Q[5] << ")]";
-            return stream;
-        };
-        explicit inline MassedValue(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass)
-        {
-            // reset Q
-            for(int i = 0; i < 6; i++)
-            {
-                this->Q[i] = 0;
-            }
-        };
-        explicit inline MassedValue(const T &value): MassedValue(value, 0){};
-        explicit inline MassedValue(): MassedValue(T(), 0){};
-
-        inline size_t getChunkSize() const override
-        {
-            return 3 + 3 + 1 + 6; // 3, 3 for value and CM, 1 for mass, 6 for Q
-        }
-
-        inline std::vector<double> serialize() const override
-        {
-            std::vector<double> valueSerialized = this->value.serialize();
-            std::vector<double> CMSerialized = this->CM.serialize();
-            valueSerialized.insert(valueSerialized.end(), CMSerialized.begin(), CMSerialized.end());
-            valueSerialized.push_back(this->mass);
-            valueSerialized.insert(valueSerialized.end(), this->Q, this->Q + 6);
-            return valueSerialized;
-        }
-
-        inline void unserialize(const std::vector<double> &data) override
-        {
-            this->value.unserialize(std::vector<double>(data.cbegin(), data.cbegin() + 3));
-            this->CM.unserialize(std::vector<double>(data.cbegin() + 3, data.cbegin() + 6));
-            this->mass = data[6];
-            for(int i = 0; i < 6; i++)
-            {
-                this->Q[i] = data[7 + i];
-            }
-        }
-    };
-
-    using Node = typename OctTree<MassedValue>::OctTreeNode;
-
+    using Node = typename OctTree<MassedValue<T>>::OctTreeNode;
 
 private:
     // void gravityHelper(const Node *node, const std::vector<T> &points, std::vector<bool> &considerPoints, std::vector<Vector3D> &results) const;
 
     void calculateMassHelper(Node *node);
 
-    OctTree<MassedValue> *octTree;
+    OctTree<MassedValue<T>> *octTree;
     double theta, thetaSquared;
     bool quadrupole;
     mutable std::vector<std::pair<const Node*, bool>> stack;
 
 public:
     GravityTree(const T &ll, const T &ur, double theta, bool quadrupole = false): 
-            octTree(new OctTree<MassedValue>(MassedValue(ll), MassedValue(ur))),
+            octTree(new OctTree<MassedValue<T>>(MassedValue<T>(ll), MassedValue<T>(ur))),
             theta(theta), thetaSquared(theta * theta),
             quadrupole(quadrupole){};
 
@@ -170,16 +167,16 @@ public:
     //     return results;
     // }
 
-    void addExternalValues(const std::vector<MassedValue> &values);
+    void addExternalValues(const std::vector<MassedValue<T>> &values);
 
     template<typename U>
-    MassedValue findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const;
+    MassedValue<T> findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const;
 
-    std::vector<std::pair<octnode_id_t, MassedValue>> getOpenNodesData(const T &point) const;
+    std::vector<std::pair<octnode_id_t, MassedValue<T>>> getOpenNodesData(const T &point) const;
 
     inline bool getQuadrupole() const{return this->quadrupole;};
 
-    inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;};
+    inline const OctTree<MassedValue<T>> *getOctTree() const{return this->octTree;};
 
     inline double getTheta() const{return this->theta;};
 
@@ -193,7 +190,7 @@ bool GravityTree<T>::build(const std::vector<MassedPoint<T>> &points)
 {
     for(const MassedPoint<T> &_point : points)
     {
-        MassedValue value(_point.point, _point.mass);
+        MassedValue<T> value(_point.point, _point.mass);
         if(!this->octTree->insert(value))
         {
             UniversalError eo("Could not add a point to the gravity tree");
@@ -207,11 +204,11 @@ bool GravityTree<T>::build(const std::vector<MassedPoint<T>> &points)
 }
 
 template<typename T>
-void GravityTree<T>::addExternalValues(const std::vector<MassedValue> &values)
+void GravityTree<T>::addExternalValues(const std::vector<MassedValue<T>> &values)
 {
-    for(const MassedValue &value : values)
+    for(const MassedValue<T> &value : values)
     {
-        MassedValue correctedValue;
+        MassedValue<T> correctedValue;
         correctedValue.value = value.CM;
         correctedValue.CM = value.CM;
         correctedValue.mass = value.mass;
@@ -231,7 +228,7 @@ void GravityTree<T>::addExternalValues(const std::vector<MassedValue> &values)
 
 template<typename T>
 template<typename U>
-typename GravityTree<T>::MassedValue GravityTree<T>::findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const
+MassedValue<T> GravityTree<T>::findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const
 {
     const Node *node = this->octTree->findNodeContainingBoundingBox(boundingBox);
     if(node == nullptr)
@@ -244,9 +241,9 @@ typename GravityTree<T>::MassedValue GravityTree<T>::findMatchingMassedValue(con
 }
 
 template<typename T>
-std::vector<std::pair<octnode_id_t, typename GravityTree<T>::MassedValue>> GravityTree<T>::getOpenNodesData(const T &point) const
+std::vector<std::pair<octnode_id_t, MassedValue<T>>> GravityTree<T>::getOpenNodesData(const T &point) const
 {
-    std::vector<std::pair<octnode_id_t, MassedValue>> values;
+    std::vector<std::pair<octnode_id_t, MassedValue<T>>> values;
     const Node *startingNode = this->octTree->getRoot();
     stack.push_back({startingNode, startingNode->boundingBox.contains(point)});
 
@@ -296,8 +293,8 @@ void GravityTree<T>::calculateMassHelper(Node *node)
         return;
     }
 
-    MassedValue &value = node->value;
-    typename T::coord_type *Q = value.Q;
+    MassedValue<T> &value = node->value;
+    std::array<typename MassedValue<T>::coord_type, 6> &Q = value.Q;
 
     if(!node->isLeaf)
     {
@@ -310,7 +307,7 @@ void GravityTree<T>::calculateMassHelper(Node *node)
             Node *child = node->children[i];
             if(child != nullptr)
             {
-                const MassedValue &childValue = child->value;
+                const MassedValue<T> &childValue = child->value;
                 this->calculateMassHelper(child);
                 value.CM += (childValue.CM) * (childValue.mass);
                 value.mass += childValue.mass;
@@ -332,7 +329,7 @@ void GravityTree<T>::calculateMassHelper(Node *node)
                 const Node *child = node->children[i];
                 if(child != nullptr)
                 {
-                    const MassedValue &childValue = child->value;
+                    const MassedValue<T> &childValue = child->value;
                     const gravity_result_t &childMass = childValue.mass;
                     double qx = childValue.CM[0] - value.CM[0];
                     double qy = childValue.CM[1] - value.CM[1];
@@ -428,7 +425,7 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
 //                 results[i] += CalculateLeafGravityContribution(node->value, points[i], this->quadrupole);
 //             }
 //         }
-//     }    
+//     }
 
 //     for(const Node *child : node->children)
 //     {

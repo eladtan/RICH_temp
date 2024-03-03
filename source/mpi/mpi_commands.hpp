@@ -544,7 +544,7 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	int size;
 	MPI_Comm_size(comm, &size);
 
-	if(data.size() != size)
+	if(data.size() != static_cast<size_t>(size))
 	{
 		UniversalError eo("MPI_Exchange_all_to_all: data size must be equal to the number of ranks");
 		eo.addEntry("Size", data.size());
@@ -619,6 +619,27 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	}
 
 	return resultByRanks;
+}
+
+template<typename T>
+T MPI_Bcast_serializable(const T &data, int root, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");
+
+	int rank, size;
+	MPI_Comm_rank(comm, &rank);
+	MPI_Comm_size(comm, &size);
+
+	size_t chunkSize = data.getChunkSize();
+	std::vector<double> recv(chunkSize);
+	if(rank == root)
+	{
+		recv = data.serialize();
+	}
+	MPI_Bcast(recv.data(), chunkSize, MPI_DOUBLE, root, comm);
+	T result;
+	result.unserialize(recv);
+	return result;
 }
 
 #endif //RICH_MPI

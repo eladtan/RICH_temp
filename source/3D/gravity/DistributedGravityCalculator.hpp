@@ -5,6 +5,7 @@
 #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
 #include "3D/hilbert/rectangular/HilbertTree3D.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
+#include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "GravityTree.hpp"
 #include "GravityTypes.h"
@@ -17,8 +18,6 @@ public:
     using DistributedOctTreeNode_Type = DistributedOctTree_Type::DistributedOctTreeNode;
     using HilbertTreeNode_Type = HilbertTree_Type::Node;
 
-    using MassedValue = GravityTree<Vector3D>::MassedValue;
-
     DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
@@ -26,9 +25,11 @@ public:
     inline ~DistributedGravityCalculator()
     {
         delete this->gravityTree;
+        delete this->distributedGravityTree;
     }
 
 private:
+
     MPI_Comm comm;
     int rank, size;
     const Tessellation3D &tess;
@@ -36,79 +37,11 @@ private:
     double thetaSquared;
     bool quadrupole;
     GravityTree<Vector3D> *gravityTree;
-    std::vector<std::vector<_BoundingBox<Vector3D>>> boundingBoxesOfRanks;
-    const DistributedOctTree_Type *distributedOctTree;
-    const HilbertTree_Type *hilbertTree;
-    
-    // void calculateExchangeListHelper(const GravityTree<Vector3D>::Node *node, boost::container::flat_set<int> &relevantRanks, std::vector<std::vector<MassedValue>> &list) const;
-    
-    // void octTreeCalculateExchangeList(const DistributedOctTreeNode_Type *node, const std::vector<Vector3D> &points, std::vector<bool> &consider, std::vector<std::vector<size_t>> &pointsIndicesToRanks) const;
-
-    void octTreeCalculateExchangeList(const DistributedOctTreeNode_Type *node, const Vector3D &point, size_t pointIdx, bool containsPoint, std::vector<boost::container::flat_set<size_t>> &pointsIndicesToRanks) const;
-
-    inline std::vector<boost::container::flat_set<size_t>> calculateExchangeList(const std::vector<Vector3D> &points) const
-    {
-        std::vector<boost::container::flat_set<size_t>> pointsIndicesToRanks(this->size);
-        size_t N = points.size();
-        for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
-        {
-            const Vector3D &point = points[pointIdx];
-            if(this->distributedOctTree != nullptr)
-            {
-                this->octTreeCalculateExchangeList(this->distributedOctTree->getOctTree()->getRoot(), point, pointIdx, true, pointsIndicesToRanks);
-            }
-            else if(this->hilbertTree != nullptr)
-            {
-                // TODO
-            }
-        }
-        return pointsIndicesToRanks;
-    }
+    const DistributedGravityTree *distributedGravityTree;
 };
 
-void DistributedGravityCalculator::octTreeCalculateExchangeList(const DistributedOctTreeNode_Type *node, const Vector3D &point, size_t pointIdx, bool containsPoint, std::vector<boost::container::flat_set<size_t>> &pointsIndicesToRanks) const
-{
-    if(node == nullptr)
-    {
-        return;
-    }
-
-    if(node->isLeaf)
-    {
-        for(int owner : node->value.owners)
-        {
-            if(owner != this->rank)
-            {
-                pointsIndicesToRanks[owner].insert(pointIdx);
-            }
-        }
-        return;
-    }
-
-    const _BoundingBox<Vector3D> &box = node->boundingBox;
-    const Vector3D &CM = (box.getLL() + box.getUR()) / 2; // TODO: incorrect!!!!!
-
-    if(containsPoint or ShouldOpenBox(point, box, CM, this->thetaSquared))
-    {
-        int childContainsPoint = -1;
-        if(containsPoint)
-        {
-            childContainsPoint = node->getChildNumberContaining(point);
-        }
-        for(size_t i = 0; i < CHILDREN; i++)
-        {
-            const DistributedOctTreeNode_Type *child = node->children[i];
-            if(child == nullptr)
-            {
-                continue;
-            }
-            this->octTreeCalculateExchangeList(child, point, pointIdx, i == static_cast<size_t>(childContainsPoint), pointsIndicesToRanks);
-        }
-    }
-}
-
 DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_, const MPI_Comm &comm_):
-    tess(tess_), theta(theta_), thetaSquared(theta_ * theta_), quadrupole(quadrupole_), comm(comm_), distributedOctTree(nullptr), hilbertTree(nullptr)
+    tess(tess_), theta(theta_), thetaSquared(theta_ * theta_), quadrupole(quadrupole_), comm(comm_), distributedGravityTree(nullptr)
 {
     MPI_Comm_size(this->comm, &this->size);
     MPI_Comm_rank(this->comm, &this->rank);
@@ -123,21 +56,24 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
     }
     gravTree->build(massedPoints);
     this->gravityTree = gravTree;
+    
+    this->distributedGravityTree = new DistributedGravityTree(this->gravityTree, tess_, this->theta, this->quadrupole, DEFAULT_OWNER_SPLIT, this->comm);
 
-    const EnvironmentAgent *envAgent = tess_.GetEnvironmentAgent();
-    const DistributedOctEnvironmentAgent *distributedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(const_cast<EnvironmentAgent*>(envAgent));
-    if(distributedOctEnvAgent != nullptr)
-    {
-        this->distributedOctTree = distributedOctEnvAgent->getOctTree();
-        this->boundingBoxesOfRanks = this->distributedOctTree->getBoundingBoxesOfRanks();
-    }
+    // const EnvironmentAgent *envAgent = tess_.GetEnvironmentAgent();
+    // const DistributedOctEnvironmentAgent *distributedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(const_cast<EnvironmentAgent*>(envAgent));
+    // if(distributedOctEnvAgent != nullptr)
+    // {
+    //     this->distributedOctTree = distributedOctEnvAgent->getOctTree();
+    //     this->boundingBoxesOfRanks = this->distributedOctTree->getBoundingBoxesOfRanks();
+    // }
 
-    const HilbertTreeEnvironmentAgent *hilbertEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(const_cast<EnvironmentAgent*>(envAgent));
-    if(hilbertEnvAgent != nullptr)
-    {
-        this->hilbertTree = hilbertEnvAgent->getHilbertTree();
-        this->boundingBoxesOfRanks = this->hilbertTree->getBoundingBoxesOfRanks();
-    }
+    // const HilbertTreeEnvironmentAgent *hilbertEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(const_cast<EnvironmentAgent*>(envAgent));
+    // if(hilbertEnvAgent != nullptr)
+    // {
+    //     this->hilbertTree = hilbertEnvAgent->getHilbertTree();
+    //     this->boundingBoxesOfRanks = this->hilbertTree->getBoundingBoxesOfRanks();
+    // }
+
 }
 
 // void DistributedGravityCalculator::calculateExchangeListHelper(const GravityTree<Vector3D>::Node *node, boost::container::flat_set<int> &relevantRanks, std::vector<std::vector<MassedValue>> &list) const
@@ -197,23 +133,26 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     }
 
     // now, exchange necessary points with other processes
-    // first, get a list of what points to send to each rank
-    std::vector<boost::container::flat_set<size_t>> pointsIndicesToRanks = this->calculateExchangeList(points);
 
-    // we used the 'set' to avoid duplicates, but now we need to convert it to a vector
     std::vector<std::vector<size_t>> indicesToRanks(this->size);
-    for(int _rank = 0; _rank < this->size; _rank++)
+    std::vector<std::vector<Vector3D>> pointsToRanks(this->size);
+
+    size_t N = points.size();
+    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
     {
-        indicesToRanks[_rank].insert(indicesToRanks[_rank].end(), pointsIndicesToRanks[_rank].begin(), pointsIndicesToRanks[_rank].end());
+        const Vector3D &point = points[pointIdx];
+        auto [gravityResult, ranksToRequest] = this->distributedGravityTree->gravity(point);
+        for(int _rank : ranksToRequest)
+        {
+            if(this->rank != _rank)
+            {
+                indicesToRanks[_rank].push_back(pointIdx);
+                pointsToRanks[_rank].push_back(point);
+            }
+        }
+        results[pointIdx] += gravityResult;
     }
 
-    std::vector<std::vector<Vector3D>> pointsToRanks;
-    for(int _rank = 0; _rank < this->size; _rank++)
-    {
-        pointsToRanks.emplace_back();
-        std::transform(indicesToRanks[_rank].cbegin(), indicesToRanks[_rank].cend(),
-                        std::back_inserter(pointsToRanks[_rank]), [&points](size_t idx){return points[idx];});
-    }
     // exchange the list
     std::vector<std::vector<Vector3D>> incomingPoints = MPI_Exchange_all_to_all(pointsToRanks, this->comm);
 
