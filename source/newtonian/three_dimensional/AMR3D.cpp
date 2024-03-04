@@ -1,11 +1,11 @@
 #include "AMR3D.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
-#include "misc/utils.hpp"
 #include <boost/array.hpp>
 #include <iostream>
-#include "3D/r3d/Intersection3D.hpp"
 #include <boost/scoped_ptr.hpp>
 #include <limits>
+#include "3D/r3d/Intersection3D.hpp"
+#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "misc/utils.hpp"
 
 //#define debug_amr 1
 
@@ -1037,7 +1037,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveVector(mask, ToRemove.first);
 	mask.resize(new_mesh.size(), std::numeric_limits<size_t>::max());
 	tess.PreparePoints(new_mesh, mask);
-	tess.BuildHilbert(new_mesh, true);
+	tess.BuildParallel(new_mesh, true);
 #else // RICH_MPI
 	tess.Build(new_mesh);
 #endif

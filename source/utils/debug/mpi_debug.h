@@ -42,7 +42,6 @@ void MPI_Synchronoize(int seconds, const MPI_Comm &comm = MPI_COMM_WORLD)
     MPI_Comm_rank(comm, &rank);
 
     int arrived;
-    int numArrived = 0;
     int dummy;
 
     MPI_Status status;

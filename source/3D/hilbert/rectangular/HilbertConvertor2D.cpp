@@ -29,11 +29,63 @@ Vector2D HilbertConvertor2D::WidthHeightToXY(direction_t width, direction_t heig
     return Vector2D(x, y);
 }
 
-/**
- * see here the algorithm: https://github.com/jakubcerveny/gilbert
-*/
-bool HilbertConvertor2D::d2xy_helper(const DirectionVector2D &startPoint, const DirectionVector2D &a, const DirectionVector2D &b, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector2D &result) const
+std::vector<HilbertConvertor2D::RecursionArguments> HilbertConvertor2D::getRecursionArguments(const RecursionArguments &args) const
 {
+    const DirectionVector2D &startPoint = args.startPoint;
+    const DirectionVector2D &a = args.a;
+    const DirectionVector2D &b = args.b;
+
+    direction_t width = std::abs(a.x + a.y);
+    direction_t height = std::abs(b.x + b.y);
+
+    direction_t dax = SIGN(a.x), day = SIGN(a.y);
+    direction_t dbx = SIGN(b.x), dby = SIGN(b.y);
+
+    DirectionVector2D a2 = {a.x >> 1, a.y >> 1}; /* (a.x//2, a.y//2) */
+    DirectionVector2D b2 = {b.x >> 1, b.y >> 1}; /* (b.x//2, b.y//2) */
+
+    direction_t width2 = std::abs(a2.x + a2.y);
+    direction_t height2 = std::abs(b2.x + b2.y);
+
+    std::vector<RecursionArguments> toReturn;
+
+    if(2 * width > 3 * height)
+    {
+        if((width2 % 2) and (width > 2))
+        {
+            // prefer even steps
+            a2.x = a2.x + dax;
+            a2.y = a2.y + day;
+        }
+        toReturn.push_back({startPoint, a2, b});
+        toReturn.push_back({{startPoint.x + a2.x, startPoint.y + a2.y}, {a.x - a2.x, a.y - a2.y}, b});
+    }
+    else
+    {
+        if((height2 % 2) and (height > 2))
+        {
+            // prefer even steps
+            b2.x = b2.x + dbx;
+            b2.y = b2.y + dby;
+        }
+        // up
+        toReturn.push_back({startPoint, b2, a2});
+        // long horizontal
+        toReturn.push_back({{startPoint.x + b2.x, startPoint.y + b2.y}, a, {b.x - b2.x, b.y - b2.y}});
+        // down
+        toReturn.push_back({{startPoint.x + (a.x - dax) + (b2.x - dbx), startPoint.y + (a.y - day) + (b2.y - dby)}, 
+                        {-b2.x, -b2.y}, {-(a.x - a2.x), -(a.y - a2.y)}});
+    }
+
+    return toReturn;
+}
+
+bool HilbertConvertor2D::d2xy_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector2D &result) const
+{
+    const DirectionVector2D &startPoint = args.startPoint;
+    const DirectionVector2D &a = args.a;
+    const DirectionVector2D &b = args.b;
+
     direction_t width = std::abs(a.x + a.y);
     direction_t height = std::abs(b.x + b.y);
 
@@ -68,51 +120,9 @@ bool HilbertConvertor2D::d2xy_helper(const DirectionVector2D &startPoint, const 
         return true;
     }
 
-    DirectionVector2D a2 = {a.x >> 1, a.y >> 1}; /* (a.x//2, a.y//2) */
-    DirectionVector2D b2 = {b.x >> 1, b.y >> 1}; /* (b.x//2, b.y//2) */
-
-    direction_t width2 = std::abs(a2.x + a2.y);
-    direction_t height2 = std::abs(b2.x + b2.y);
-
-    if(2 * width > 3 * height)
+    for(const RecursionArguments &nextArgs : this->getRecursionArguments(args))
     {
-        if((width2 % 2) and (width > 2))
-        {
-            // prefer even steps
-            a2.x = a2.x + dax;
-            a2.y = a2.y + day;
-        }
-        
-        if(this->d2xy_helper(startPoint, a2, b, requested_d, current_d, result))
-        {
-            return true;
-        }
-        if(this->d2xy_helper({startPoint.x + a2.x, startPoint.y + a2.y}, {a.x - a2.x, a.y - a2.y}, b, requested_d, current_d, result))
-        {
-            return true;
-        }
-    }
-    else
-    {
-        if((height2 % 2) and (height > 2))
-        {
-            // prefer even steps
-            b2.x = b2.x + dbx;
-            b2.y = b2.y + dby;
-        }
-        // up
-        if(this->d2xy_helper(startPoint, b2, a2, requested_d, current_d, result))
-        {
-            return true;
-        }
-        // long horizontal
-        if(this->d2xy_helper({startPoint.x + b2.x, startPoint.y + b2.y}, a, {b.x - b2.x, b.y - b2.y}, requested_d, current_d, result))
-        {
-            return true;
-        }
-        // down
-        if(this->d2xy_helper({startPoint.x + (a.x - dax) + (b2.x - dbx), startPoint.y + (a.y - day) + (b2.y - dby)}, 
-                        {-b2.x, -b2.y}, {-(a.x - a2.x), -(a.y - a2.y)}, requested_d, current_d, result))
+        if(this->d2xy_helper(nextArgs, requested_d, current_d, result))
         {
             return true;
         }
@@ -138,11 +148,26 @@ bool HilbertConvertor2D::xy2d_helper_base(const DirectionVector2D &startPoint, s
     return false;
 }
 
-/**
- * see here the algorithm: https://github.com/jakubcerveny/gilbert
-*/
-bool HilbertConvertor2D::xy2d_helper(const DirectionVector2D &startPoint, const DirectionVector2D &a, const DirectionVector2D &b, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
+std::pair<typename HilbertConvertor2D::DirectionVector2D, typename HilbertConvertor2D::DirectionVector2D> HilbertConvertor2D::getBoundingBox(const RecursionArguments &args) const
 {
+    const DirectionVector2D &startPoint = args.startPoint;
+    const DirectionVector2D &a = args.a;
+    const DirectionVector2D &b = args.b;
+
+    direction_t x_advancing = a.x + b.x;
+    direction_t y_advancing = a.y + b.y;
+
+    DirectionVector2D boundary = {startPoint.x + x_advancing + ((x_advancing >= 0)? 1 : 0), startPoint.y + y_advancing + ((y_advancing >= 0)? 1 : 0)};
+    return {{std::min(startPoint.x, boundary.x), std::min(startPoint.y, boundary.y)},
+            {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y)}};    
+}
+
+bool HilbertConvertor2D::xy2d_helper(const RecursionArguments &args, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
+{
+    const DirectionVector2D &startPoint = args.startPoint;
+    const DirectionVector2D &a = args.a;
+    const DirectionVector2D &b = args.b;
+
     size_t width = std::abs(a.x + a.y);
     size_t height = std::abs(b.x + b.y);
 
@@ -170,58 +195,17 @@ bool HilbertConvertor2D::xy2d_helper(const DirectionVector2D &startPoint, const 
 
     if(width == 1)
     {
-        return this->xy2d_helper_base(startPoint, height, {dax, day}, requested_point, current_d);
+        return this->xy2d_helper_base(startPoint, height, {dbx, dby}, requested_point, current_d);
     }
 
-    DirectionVector2D a2 = {a.x >> 1, a.y >> 1}; /* (a.x//2, a.y//2) */
-    DirectionVector2D b2 = {b.x >> 1, b.y >> 1}; /* (b.x//2, b.y//2) */
-
-    direction_t width2 = std::abs(a2.x + a2.y);
-    direction_t height2 = std::abs(b2.x + b2.y);
-
-    if(2 * width > 3 * height)
+    for(const RecursionArguments &nextArgs : this->getRecursionArguments(args))
     {
-        if((width2 % 2) and (width > 2))
-        {
-            // prefer even steps
-            a2.x = a2.x + dax;
-            a2.y = a2.y + day;
-        }
-        
-        if(this->xy2d_helper(startPoint, a2, b, requested_point, current_d))
-        {
-            return true;
-        }
-        if(this->xy2d_helper({startPoint.x + a2.x, startPoint.y + a2.y}, {a.x - a2.x, a.y - a2.y}, b, requested_point, current_d))
+        if(this->xy2d_helper(nextArgs, requested_point, current_d))
         {
             return true;
         }
     }
-    else
-    {
-        if((height2 % 2) and (height > 2))
-        {
-            // prefer even steps
-            b2.x = b2.x + dbx;
-            b2.y = b2.y + dby;
-        }
-        // up
-        if(this->xy2d_helper(startPoint, b2, a2, requested_point, current_d))
-        {
-            return true;
-        }
-        // long horizontal
-        if(this->xy2d_helper({startPoint.x + b2.x, startPoint.y + b2.y}, a, {b.x - b2.x, b.y - b2.y}, requested_point, current_d))
-        {
-            return true;
-        }
-        // down
-        if(this->xy2d_helper({startPoint.x + (a.x - dax) + (b2.x - dbx), startPoint.y + (a.y - day) + (b2.y - dby)}, 
-                        {-b2.x, -b2.y}, {-(a.x - a2.x), -(a.y - a2.y)}, requested_point, current_d))
-        {
-            return true;
-        }
-    }
+
     return false;
 }
 
@@ -229,7 +213,7 @@ Vector2D HilbertConvertor2D::d2xy(hilbert_index_t d) const
 {
     Vector2D result;
     hilbert_index_t current_d = 0;
-    this->d2xy_helper({0, 0}, {this->div.x, 0}, {0, this->div.y}, d, current_d, result);
+    this->d2xy_helper({{0, 0}, {this->div.x, 0}, {0, this->div.y}}, d, current_d, result);
     return result;
 }
 
@@ -244,7 +228,7 @@ hilbert_index_t HilbertConvertor2D::xy2d(coord_t x, coord_t y) const
         throw UniversalError("Should not reach here, overflow (in 2D xy->d)");
     }
     hilbert_index_t result = 0;
-    if(not this->xy2d_helper({0, 0}, {this->div.x, 0}, {0, this->div.y}, {width, height}, result))
+    if(not this->xy2d_helper({{0, 0}, {this->div.x, 0}, {0, this->div.y}}, {width, height}, result))
     {
         throw UniversalError("Should not reach here (in 2D xy->d)");
     }

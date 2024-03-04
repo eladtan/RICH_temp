@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include <mpi.h>
-#include "3D/environment/HilbertEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #include "RangeFinder.hpp"
 
 #define HASH_SIZE 128
@@ -13,34 +13,13 @@ class HashBruteForceFinder : public RangeFinder
 {
 public:
     template<typename RandomAccessIterator>
-    HashBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
-        envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), convertor(convertor), indexing(indexing)
-    {
-        this->cellsPointsSize = static_cast<size_t>(std::pow(2, 1.4 * this->envAgent->getOrder())); // heuristic
-        this->cellsPoints.resize(this->cellsPointsSize);
-
-        MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
-        size_t index = 0;
-        for(RandomAccessIterator it = first; it != last; it++)
-        {
-            const Vector3D &point = *it;
-            this->myPoints.push_back(point);
-            hilbert_index_t cell = this->convertor->xyz2d((*this->indexing)(point));
-            this->cellsPoints[cell % this->cellsPointsSize].push_back(index);
-            index++;
-        }
-        this->pointsSize = index;
-    };
+    HashBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const Kernelization3D::IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last);
 
     template<typename Container>
-    inline HashBruteForceFinder(const EnvironmentAgent *envAgent, const IndexingKernel3D *indexing, Container points):
+    inline HashBruteForceFinder(const EnvironmentAgent *envAgent, const Kernelization3D::IndexingKernel3D *indexing, Container points):
          HashBruteForceFinder(envAgent, indexing, points.begin(), points.end()){};
-    inline ~HashBruteForceFinder() = default;
-
-    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
-    {
-        throw UniversalError("HashBruteForceFinder::closestPointInSphere not implemented");
-    }
+    
+    inline ~HashBruteForceFinder() override = default;
 
     std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
@@ -86,7 +65,27 @@ private:
     std::vector<Vector3D> myPoints;
     const HilbertEnvironmentAgent *envAgent;
     const HilbertConvertor3D *convertor;
-    const IndexingKernel3D *indexing;
+    const Kernelization3D::IndexingKernel3D *indexing;
+};
+
+template<typename RandomAccessIterator>
+inline HashBruteForceFinder::HashBruteForceFinder(const EnvironmentAgent *envAgent, const HilbertConvertor3D *convertor, const Kernelization3D::IndexingKernel3D *indexing, RandomAccessIterator first, RandomAccessIterator last):
+    envAgent(dynamic_cast<const HilbertEnvironmentAgent*>(envAgent)), convertor(convertor), indexing(indexing)
+{
+    this->cellsPointsSize = static_cast<size_t>(std::pow(2, 1.4 * this->envAgent->getOrder())); // heuristic
+    this->cellsPoints.resize(this->cellsPointsSize);
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
+    size_t index = 0;
+    for(RandomAccessIterator it = first; it != last; it++)
+    {
+        const Vector3D &point = *it;
+        this->myPoints.push_back(point);
+        hilbert_index_t cell = this->convertor->xyz2d((*this->indexing)(point));
+        this->cellsPoints[cell % this->cellsPointsSize].push_back(index);
+        index++;
+    }
+    this->pointsSize = index;
 };
 
 #endif // RICH_MPI

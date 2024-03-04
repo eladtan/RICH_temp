@@ -1,12 +1,9 @@
 [submodule "compilation/buildutils"]
 	path = compilation/buildutils
 	url = https://gitlab.com/nadavhalahmi/buildutils.git
-[submodule "r3d"]
-	path = r3d
-	url = https://github.com/devonmpowell/r3d.git
-[submodule "gen_version"]
-	path = gen_version
-	url = https://gitlab.com/omrycohen/gen_version.git
+[submodule "source/opt/r3d"]
+	path = source/opt/r3d
+	url = https://github.com/maormizrachi/r3d_rich
 [submodule "source/opt/vcl"]
 	path = source/opt/vcl
-	url = https://github.com/maormizrachi/vcl_rich.git
+	url = https://github.com/maormizrachi/vcl_rich

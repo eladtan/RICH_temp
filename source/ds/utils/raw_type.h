@@ -1,17 +1,19 @@
 #ifndef RAW_TYPE_H
 #define RAW_TYPE_H
 
-// see here: https://stackoverflow.com/a/27567052
-template<class ...>
-using void_t = void;
+#include <type_traits> // defined `void_t`
 
-template<class T, class = void>
-struct is_raw_type_defined { 
+// see here: https://stackoverflow.com/a/27567052
+
+template<typename T, typename = void>
+struct is_raw_type_defined 
+{ 
     using type = T;
 };
 
-template<class T>
-struct is_raw_type_defined<T, void_t<typename T::Raw_type>> { 
+template<typename T>
+struct is_raw_type_defined<T, std::void_t<typename T::Raw_type>>
+{ 
     using type = typename T::Raw_type;
 };
 

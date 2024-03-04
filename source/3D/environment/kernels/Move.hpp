@@ -3,20 +3,23 @@
 
 #include "IndexingKernel3D.hpp"
 
-class Move : public IndexingKernel3D
+namespace Kernelization3D
 {
-public:
-    inline Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr): moveVec(vector), beforeIndexing(beforeIndexing){};
-
-    inline Vector3D operator()(const Vector3D &vector) const override
+    class Move : public IndexingKernel3D
     {
-        Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-        return vec - moveVec;
-    };
+    public:
+        inline Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr): moveVec(vector), beforeIndexing(beforeIndexing){};
 
-private:
-    Vector3D moveVec;
-    const IndexingKernel3D *beforeIndexing;
-};
+        inline Vector3D operator()(const Vector3D &vector) const override
+        {
+            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
+            return vec - moveVec;
+        };
+
+    private:
+        Vector3D moveVec;
+        const IndexingKernel3D *beforeIndexing;
+    };
+}
 
 #endif // MOVE_KERNEL_HPP

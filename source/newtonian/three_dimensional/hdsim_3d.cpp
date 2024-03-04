@@ -213,7 +213,7 @@ namespace
 		}
 
 		#ifdef RICH_MPI
-		tess.BuildHilbert(points);
+		tess.BuildParallel(points);
 		#else // RICH_MPI
 		tess.Build(points);
 		#endif // RICH_MPI

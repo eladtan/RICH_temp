@@ -12,11 +12,10 @@ class OctTreeFinder : public RangeFinder
 public:
     template<typename RandomAccessIterator>
     OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur);
+    
     inline OctTreeFinder(std::vector<Vector3D> &myPoints, const Vector3D &ll ,const Vector3D &ur): OctTreeFinder(myPoints.begin(), myPoints.end(), ll, ur){};
-    inline ~OctTreeFinder() override
-    {
-        delete this->octTree;
-    }
+    
+    inline ~OctTreeFinder() override{ delete this->octTree;};
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
@@ -35,7 +34,7 @@ public:
     inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
         std::vector<size_t> toReturn;
-        for(const IndexedVector3D &vec : this->octTree->range(_Sphere<IndexedVector3D>(IndexedVector3D(center.x, center.y, center.z, ILLEGAL_IDX), radius), N,
+        for(const IndexedVector3D &vec : this->octTree->range(_Sphere<IndexedVector3D>(IndexedVector3D(center.x, center.y, center.z, ILLEGAL_IDX), radius + EPSILON), N,
                                                               [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);
@@ -54,7 +53,7 @@ private:
 };
 
 template<typename RandomAccessIterator>
-OctTreeFinder::OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur)
+inline OctTreeFinder::OctTreeFinder(RandomAccessIterator first, RandomAccessIterator last, const Vector3D &ll ,const Vector3D &ur)
 {
     this->octTree = new OctTree<IndexedVector3D>(ll, ur);
     this->myPoints.reserve(last - first);

@@ -1,21 +1,30 @@
 #ifndef _GRAVITY_TREE_HPP
 #define _GRAVITY_TREE_HPP
 
-#include <vectorclass.h>
+#ifdef USE_VCL_VECTORIZATION
+    #include <vectorclass.h>
+#endif // USE_VCL_VECTORIZATION
 #include <vector>
 #include "GravityTypes.h"
 #include "ds/OctTree/OctTree.hpp"
+#include "misc/serializable.hpp"
+#include "misc/universal_error.hpp"
 
 template<typename T>
 class GravityTree;
 
-template<typename T, typename BB>
-bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, double thetaSquared)
+template<typename T, typename BB_T>
+bool ShouldOpenBox(const T &point, const _BoundingBox<BB_T> &boundingBox, const T &centerOfMass, double thetaSquared)
 {
     typename T::coord_type width = boundingBox.getWidthSquared();
-    Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
-    Vec4d squared = diff * diff;
-    typename T::coord_type distanceToCM = squared[0] + squared[1] + squared[2];
+    #ifdef USE_VCL_VECTORIZATION
+        Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
+        Vec4d squared = diff * diff;
+        typename T::coord_type distanceToCM = squared[0] + squared[1] + squared[2];
+    #else // USE_VCL_VECTORIZATION
+        typename T::coord_type distanceToCM = ((point[0] - centerOfMass[0]) * (point[0] - centerOfMass[0])) + 
+                                            ((point[1] - centerOfMass[1]) * (point[1] - centerOfMass[1])) + ((point[2] - centerOfMass[2]) * (point[2] - centerOfMass[2]));
+    #endif // USE_VCL_VECTORIZATION
     return width >= (distanceToCM * thetaSquared);
 }
 
@@ -60,7 +69,7 @@ template<typename T>
 class GravityTree
 {
 public:
-    struct MassedValue
+    struct MassedValue : public Serializable
     {
         using coord_type = typename T::coord_type;
         using Raw_type = T;
@@ -94,6 +103,32 @@ public:
         };
         explicit inline MassedValue(const T &value): MassedValue(value, 0){};
         explicit inline MassedValue(): MassedValue(T(), 0){};
+
+        inline size_t getChunkSize() const override
+        {
+            return 3 + 3 + 1 + 6; // 3, 3 for value and CM, 1 for mass, 6 for Q
+        }
+
+        inline std::vector<double> serialize() const override
+        {
+            std::vector<double> valueSerialized = this->value.serialize();
+            std::vector<double> CMSerialized = this->CM.serialize();
+            valueSerialized.insert(valueSerialized.end(), CMSerialized.begin(), CMSerialized.end());
+            valueSerialized.push_back(this->mass);
+            valueSerialized.insert(valueSerialized.end(), this->Q, this->Q + 6);
+            return valueSerialized;
+        }
+
+        inline void unserialize(const std::vector<double> &data) override
+        {
+            this->value.unserialize(std::vector<double>(data.cbegin(), data.cbegin() + 3));
+            this->CM.unserialize(std::vector<double>(data.cbegin() + 3, data.cbegin() + 6));
+            this->mass = data[6];
+            for(int i = 0; i < 6; i++)
+            {
+                this->Q[i] = data[7 + i];
+            }
+        }
     };
 
     using Node = typename OctTree<MassedValue>::OctTreeNode;
@@ -121,11 +156,12 @@ public:
 
     inline bool find(const T &point){return this->octTree->find(point);};
 
-    T gravityHelper(const T &point, const Node *node) const;
-
     T gravity(const T &point, const direction_t *directions = nullptr) const;
 
     void addExternalValues(const std::vector<MassedValue> &values);
+
+    template<typename U>
+    MassedValue findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const;
 
     std::vector<std::pair<octnode_id_t, MassedValue>> getOpenNodesData(const T &point) const;
 
@@ -134,6 +170,10 @@ public:
     inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;};
 
     inline double getTheta() const{return this->theta;};
+
+    #ifdef DEBUG_MODE
+        void print() const{this->octTree->print();};
+    #endif // DEBUG_MODE
 };
 
 template<typename T>
@@ -144,9 +184,9 @@ bool GravityTree<T>::build(const std::vector<MassedPoint<T>> &points)
         MassedValue value(_point.point, _point.mass);
         if(!this->octTree->insert(value))
         {
-            std::stringstream valueStr;
-            valueStr << value;
-            throw UniversalError("Can not add a point (" + valueStr.str() + ") to the gravity tree");
+            UniversalError eo("Could not add a point to the gravity tree");
+            eo.addEntry("Point", value);
+            throw eo;
         }
     }
     this->calculateMasses();
@@ -169,12 +209,26 @@ void GravityTree<T>::addExternalValues(const std::vector<MassedValue> &values)
         }
         if(!this->octTree->insert(correctedValue))
         {
-            std::stringstream valueStr;
-            valueStr << correctedValue;
-            throw UniversalError("Can not add a point (" + valueStr.str() + ") to the gravity tree");
+            UniversalError eo("Could not add a point to the gravity tree");
+            eo.addEntry("Point", correctedValue);
+            throw eo;
         }
     }
     this->calculateMasses();
+}
+
+template<typename T>
+template<typename U>
+typename GravityTree<T>::MassedValue GravityTree<T>::findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const
+{
+    const Node *node = this->octTree->findNodeContainingBoundingBox(boundingBox);
+    if(node == nullptr)
+    {
+        UniversalError eo("GravityTree::findMatchingMassedValue: node containing bounding box could not be found");
+        eo.addEntry("Bounding Box", boundingBox);
+        throw eo;
+    }
+    return node->value;
 }
 
 template<typename T>
@@ -194,7 +248,7 @@ std::vector<std::pair<octnode_id_t, typename GravityTree<T>::MassedValue>> Gravi
         {
             continue;
         }
-
+        
         // always push the child that contains the node
         if(!node->isLeaf and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
         {
@@ -293,8 +347,8 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
 
     while(!stack.empty())
     {
-        const Node *node = stack[stack.size() - 1].first;
-        bool containsPoint = stack[stack.size() - 1].second;
+        const Node *node = stack.back().first;
+        bool containsPoint = stack.back().second;
         stack.pop_back();
 
         if(node == nullptr)

@@ -1,11 +1,18 @@
 #ifndef HILBERT_CONVERTOR_3D_HPP
 #define HILBERT_CONVERTOR_3D_HPP
 
+#ifdef DEBUG_MODE
+    #include <iostream>
+#endif // DEBUG_MODE
 #include "3D/elementary/Vector3D.hpp" // for Vector3D
+#include "ds/utils/geometry.hpp" // for _BoundingBox<Vector3D>
 #include "../hilbertTypes.h"
 
 #define MAX_HILBERT_ORDER 19
 
+/**
+ * see here the algorithm: https://github.com/jakubcerveny/gilbert
+*/
 class HilbertConvertor3D
 {
     template<int max_leaf_ranks>
@@ -18,6 +25,13 @@ private:
     struct DirectionVector3D
     {
         direction_t x, y, z;
+
+        #ifdef DEBUG_MODE
+        friend std::ostream &operator<<(std::ostream &os, const DirectionVector3D &args)
+        {
+            return os << "(" << args.x << ", " << args.y << ", " << args.z << ")";
+        }
+        #endif // DEBUG_MODE
     };
 
     struct RecursionArguments
@@ -26,9 +40,17 @@ private:
         DirectionVector3D a;
         DirectionVector3D b;
         DirectionVector3D c;
+
+        #ifdef DEBUG_MODE
+        friend std::ostream &operator<<(std::ostream &os, const RecursionArguments &args)
+        {
+            return os << "startPoint = " << args.startPoint << ", a = " << args.a << ", b = " << args.b << ", c = " << args.c;
+        }
+        #endif // DEBUG_MODE
     };
 
     Vector3D ll, ur, step;
+    _BoundingBox<Vector3D> spaceBoundingBox;
     DirectionVector3D div;
     hilbert_index_t total_points_num;
     size_t order;

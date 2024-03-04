@@ -5,7 +5,6 @@
 
 #include <mpi.h>
 #include <boost/container/flat_set.hpp>
-
 #include "kernels/IndexingKernel3D.hpp"
 
 /**
@@ -16,8 +15,6 @@ class EnvironmentAgent
 {
 public:
     using RanksSet = boost::container::flat_set<int>;
-
-    virtual ~EnvironmentAgent() = default;
     
     inline EnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): ll(ll), ur(ur), comm(comm)
     {
@@ -25,6 +22,8 @@ public:
         MPI_Comm_size(this->comm, &this->size);
     };
 
+    virtual ~EnvironmentAgent() = default;
+    
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;
 
     virtual int getOwner(const Vector3D &point) const = 0;

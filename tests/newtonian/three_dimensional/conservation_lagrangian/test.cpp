@@ -15,7 +15,7 @@
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 //#include "source/newtonian/three_dimensional/hdf5_diagnostics_3d.hpp"
-#include "source/3D/output/hdf_write.hpp"
+#include "source/3D/output/write3D.hpp"
 #include <fstream>
 
 using std::cout;

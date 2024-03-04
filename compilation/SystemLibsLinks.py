@@ -1,3 +1,4 @@
+# old kernel
 {
     'lmod'     : "/usr/share/lmod/lmod/libexec/lmod",
     "vtk"         : "/sw/arch/RHEL8/EB_production/2022/software/VTK/9.2.0.rc2-foss-2022a/",

@@ -32,10 +32,10 @@ private:
         KDTreeNode(const T &value, const T &ll, const T &ur); // for root
 
         T value;
-        bool isValue; // whether a real value in the tree, or merely an auxiliary node
-        int partitionAxis;
         KDTreeNode *left, *right;
         KDTreeNode *parent;
+        bool isValue; // whether a real value in the tree, or merely an auxiliary node
+        int partitionAxis;
         int height;
         int depth;
         _BoundingBox<T> boundingBox;
@@ -110,19 +110,16 @@ void KDTree<T, D>::KDTreeNode::updateHeightRecursively()
 }
 
 template<typename T, int D>
-KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), parent(nullptr), isValue(true)
+KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), left(nullptr), right(nullptr), parent(nullptr), isValue(true)
 {
     this->boundingBox = _BoundingBox<T>(ll, ur);
     this->depth = 0;
     this->partitionAxis = 0;
-    this->left = this->right = nullptr;
 }
 
 template<typename T, int D>
-KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(value), parent(parent), isValue(true)
+KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(value), left(nullptr), right(nullptr), parent(parent), isValue(true)
 {
-    this->left = this->right = nullptr;
-
     if(parent == nullptr)
     {
         this->partitionAxis = 0;

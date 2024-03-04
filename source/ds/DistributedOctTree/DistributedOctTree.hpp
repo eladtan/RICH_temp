@@ -11,96 +11,62 @@
 #include <boost/container/flat_set.hpp>
 #include <mpi.h>
 #include "ds/OctTree/OctTree.hpp"
+#include "RankedValue.hpp"
 
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif // DEBUG_MODE
 
-#define UNDEFINED_OWNER -1
 #define MAX_DIRECTIONS_SIZE (MAX_DEPTH + 1)
 
 #define MAX_RANKS_FOR_LEAF_DEFAULT 4
+
+template<typename T, int max_ranks_per_leaf, int max_directions_size>
+using DistributedOctNode = typename OctTree<OctTreeRankedValue<T, max_ranks_per_leaf, max_directions_size>>::OctTreeNode;
 
 template<typename T, int max_ranks_per_leaf = MAX_RANKS_FOR_LEAF_DEFAULT>
 class DistributedOctTree
 {
 public:
-    struct RankedValue
-    {
-        // friend class DistributedOctTree;
-        using coord_type = typename T::coord_type;
-        using Raw_type = T;
+    using RankedValue = OctTreeRankedValue<T, max_ranks_per_leaf, MAX_DIRECTIONS_SIZE>;
+    using DistributedOctTreeNode = DistributedOctNode<T, max_ranks_per_leaf, MAX_DIRECTIONS_SIZE>;
 
-        T value;
-        int owners[max_ranks_per_leaf]; // ranks of the owners (if several)
-        int num_owners;
-        direction_t directions[MAX_DIRECTIONS_SIZE]; // where it is in the owner's tree (directions)
-
-        RankedValue(const T &value = T(), int owner = UNDEFINED_OWNER): value(value){this->num_owners = (owner == UNDEFINED_OWNER)? 0 : 1; this->owners[0] = owner; this->directions[0] = PATH_END_DIRECTION;};
-        RankedValue(const RankedValue &other){(*this) = other;};
-        RankedValue &operator=(const RankedValue &other)
-        {
-            this->num_owners = other.num_owners;
-            for(int i = 0; i < this->num_owners; i++)
-            {
-                this->owners[i] = other.owners[i];
-            }        
-            this->value = other.value;
-            return (*this);
-        };
-        inline typename T::coord_type operator[](size_t idx) const{return this->value[idx];};
-        inline typename T::coord_type &operator[](size_t idx){return this->value[idx];};
-        inline RankedValue operator+(const RankedValue &other) const{return RankedValue(this->value + other.value);};
-        inline RankedValue operator-(const RankedValue &other) const{return RankedValue(this->value - other.value);};
-        inline RankedValue operator*(double constant) const{return RankedValue(this->value * constant);};
-        inline RankedValue operator/(double constant) const{return this->operator*(1/constant);};
-        inline bool operator==(const RankedValue &other) const{return this->value == other.value;};
-        inline bool operator!=(const RankedValue &other) const{return this->value != other.value;};
-        friend std::ostream &operator<<(std::ostream &stream, const RankedValue &wrapper)
-        {
-            if(wrapper.num_owners == 0)
-            {
-                return stream << wrapper.value << " [NO OWNER]";
-            }
-            if(wrapper.num_owners == 1)
-            {
-                return stream << wrapper.value << " [owner: " << wrapper.owners[0] << "]";
-            }
-            stream << wrapper.value << " [owners: ";
-            for(int i = 0; i < wrapper.num_owners - 1; i++)
-            {
-                stream << wrapper.owners[i] << " ";
-            }
-            return stream << wrapper.owners[wrapper.num_owners - 1] << "]";
-        }
-
-        int getRank() const{return this->owner;};
-    };
-
-    using DistributedOctTreeNode = typename OctTree<RankedValue>::OctTreeNode;
-
+public:
     DistributedOctTree(const OctTree<T> *tree, bool detailedNodeInfo = false, const MPI_Comm &comm = MPI_COMM_WORLD);
+
     ~DistributedOctTree(){delete this->octTree;};
 
     #ifdef DEBUG_MODE
     void print() const{this->octTree->print();};
     #endif // DEBUG_MODE
+
     boost::container::flat_set<int> getIntersectingRanks(const _Sphere<T> &sphere) const;
+    
     inline boost::container::flat_set<int> getIntersectingRanks(const T &center, const typename T::coord_type radius) const{return this->getIntersectingRanks(_Sphere<T>(center, radius));};
+    
     int getDepth() const{return this->octTree->getDepth();};
+    
     OctTree<RankedValue> *getOctTree(){return this->octTree;};
 
     std::vector<T> getRankValues(int _rank) const;
+
+    inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};
 
     std::vector<_BoundingBox<T>> getRankBoundingBoxes(int _rank) const;
 
     std::vector<_BoundingBox<T>> getRankBoundingBoxesUnique(int _rank) const;
 
-    inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};
-
     inline std::vector<_BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
 
     inline std::vector<_BoundingBox<T>> getMyBoundingBoxesUnique() const{return this->getRankBoundingBoxesUnique(this->rank);};
+
+    std::vector<std::vector<_BoundingBox<T>>> getBoundingBoxesOfRanks(void) const;
+
+    std::vector<_BoundingBox<T>> getBigBoundingBoxesOfRanks(void) const;
+
+    std::vector<std::vector<direction_t>> getRankDirections(int _rank) const;
+
+    inline std::vector<std::vector<direction_t>> getMyDirections() const{return this->getRankDirections(this->rank);};
 
     template<typename U>
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const U &point) const;
@@ -108,6 +74,8 @@ public:
     #ifdef DEBUG_MODE
     inline bool validate() const{if(this->octTree != nullptr) return this->validateHelper(this->octTree->getRoot()); return true;};
     #endif // DEBUG_MODE
+
+    std::vector<const DistributedOctTreeNode*> getValuesIf(const std::function<bool(const DistributedOctTreeNode*)> ifOpenFunction, const std::function<bool(const DistributedOctTreeNode*)> &ifAddValueFunction) const;
 
 private:
     OctTree<RankedValue> *octTree = nullptr;
@@ -117,6 +85,7 @@ private:
     size_t treeSize;
 
     void buildTreeHelper(DistributedOctTreeNode *newNode, const typename OctTree<T>::OctTreeNode *node, std::vector<direction_t> &directionsInMyTree);
+
     void buildTree(const OctTree<T> *tree);
 
     #ifdef DEBUG_MODE
@@ -149,7 +118,6 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
     std::vector<unsigned char> childBuff(this->size);
     MPI_Allgather(&valueToSend, 1, MPI_UNSIGNED_CHAR, &childBuff[0], 1, MPI_BYTE, this->comm);
 
-    bool doesnt_have_children = true;
     for(int i = 0; i < CHILDREN; i++)
     {
         bool recursiveBuild = false;
@@ -164,6 +132,7 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
 
                 if(containingValue == UNDEFINED_OWNER)
                 {
+                    // first rank to announce it holds the value
                     containingValue = _rank;
                 }
                 else
@@ -179,10 +148,6 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
             // someone holds the `i`th child
             this->treeSize++;
             newNode->createChild(i); // creates the child in my own tree
-            if(newNode->children[i] == nullptr)
-            {
-                std::cout << "here 1" << std::endl;
-            }
             if(recursiveBuild and (ranks_containing_child.size() > max_ranks_per_leaf))
             {
                 // there are several holders, call recursive build (until we reach one holder)
@@ -215,7 +180,7 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
                     directionsInMyTree.pop_back();
                 }
                 // several owners
-                newNode->children[i]->value.num_owners = 0;
+                newNode->children[i]->value.owners.resize(0);
                 newNode->children[i]->isLeaf = false;
             }
             else
@@ -225,7 +190,7 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
                     // there is only one holder, set its owner field
                     if(this->detailedNodeInfo)
                     {
-                        if(rank == containingValue)
+                        if(this->rank == containingValue)
                         {
                             const typename OctTree<T>::OctTreeNode *childNode;
                             if(node->isLeaf)
@@ -252,17 +217,13 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTreeHelper(DistributedOctTr
                         MPI_Bcast(newNode->children[i]->value.directions, sizeof(direction_t) * MAX_DIRECTIONS_SIZE, MPI_BYTE, containingValue, this->comm);
                     }
 
-                    newNode->children[i]->value.owners[0] = containingValue;
-                    newNode->children[i]->value.num_owners = 1;
+                    newNode->children[i]->value.owners = {containingValue};
                 }
                 else
                 {
                     // several owners
-                    newNode->children[i]->value.num_owners = ranks_containing_child.size();
-                    for(int j = 0; j < newNode->children[i]->value.num_owners; j++)
-                    {
-                        newNode->children[i]->value.owners[j] = ranks_containing_child[j];
-                    }
+                    newNode->children[i]->value.owners.resize(ranks_containing_child.size());
+                    std::copy(ranks_containing_child.cbegin(), ranks_containing_child.cend(), newNode->children[i]->value.owners.begin());
                 }
                 newNode->children[i]->isLeaf = true;
             }
@@ -329,126 +290,13 @@ boost::container::flat_set<int> DistributedOctTree<T, max_ranks_per_leaf>::getIn
     boost::container::flat_set<int> ranks;
     for(const RankedValue &point : this->octTree->range(_Sphere<RankedValue>(sphere.center, sphere.radius)))
     {
-        for(int i = 0; i < point.num_owners; i++)
+        size_t numOwners = point.owners.size();
+        for(size_t i = 0; i < numOwners; i++)
         {
             ranks.insert(point.owners[i]);
         }
     }
     return ranks;
-}
-
-template<typename T, int max_ranks_per_leaf>
-std::vector<T> DistributedOctTree<T, max_ranks_per_leaf>::getRankValues(int _rank) const
-{
-    std::vector<T> values;
-    std::vector<const DistributedOctTreeNode*> nodes;
-    nodes.reserve(this->getDepth() * CHILDREN);
-
-    nodes.push_back(this->octTree->getRoot());
-
-    while(!nodes.empty())
-    {
-        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
-        nodes.pop_back();
-
-        if(node == nullptr)
-        {
-            continue;
-        }
-
-        if(node->value.num_owners == 0)
-        {
-            for(int i = 0; i < CHILDREN; i++)
-            {
-                nodes.push_back(node->children[i]);
-            }
-        }
-        else
-        {
-            if(std::find(node->value.owners, node->value.owners + node->value.num_owners, _rank) != node->value.owners + node->value.num_owners)
-            {
-                // is an owner
-                values.emplace_back(node->value.value);
-            }
-        }
-    }
-    return values;
-}
-
-template<typename T, int max_ranks_per_leaf>
-std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxes(int _rank) const
-{
-    std::vector<_BoundingBox<T>> boxes;
-    std::vector<const DistributedOctTreeNode*> nodes;
-    nodes.reserve(this->getDepth() * CHILDREN);
-
-    nodes.push_back(this->octTree->getRoot());
-
-    while(!nodes.empty())
-    {
-        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
-        nodes.pop_back();
-
-        if(node == nullptr)
-        {
-            continue;
-        }
-
-        if(node->value.num_owners == 0)
-        {
-            for(int i = 0; i < CHILDREN; i++)
-            {
-                nodes.push_back(node->children[i]);
-            }
-        }
-        else
-        {
-            if(std::find(node->value.owners, node->value.owners + node->value.num_owners, _rank) != node->value.owners + node->value.num_owners)
-            {
-                // is an owner
-                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
-            }
-        }
-    }
-    return boxes;
-}
-
-template<typename T, int max_ranks_per_leaf>
-std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxesUnique(int _rank) const
-{
-    std::vector<_BoundingBox<T>> boxes;
-    std::vector<const DistributedOctTreeNode*> nodes;
-    nodes.reserve(this->getDepth() * CHILDREN);
-
-    nodes.push_back(this->octTree->getRoot());
-
-    while(!nodes.empty())
-    {
-        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
-        nodes.pop_back();
-
-        if(node == nullptr)
-        {
-            continue;
-        }
-
-        if(node->value.num_owners == 0)
-        {
-            for(int i = 0; i < CHILDREN; i++)
-            {
-                nodes.push_back(node->children[i]);
-            }
-        }
-        else
-        {
-            if(*std::min_element(node->value.owners, node->value.owners + node->value.num_owners) == _rank)
-            {
-                // is an owner
-                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
-            }
-        }
-    }
-    return boxes;
 }
 
 template<typename T, int max_ranks_per_leaf>
@@ -459,7 +307,7 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
     const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::min();
     
     std::pair<T, T> initialPair = std::make_pair<T, T>(T(maxVal, maxVal, maxVal), T(minVal, minVal, minVal));
-    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> distances(size, {maxVal, minVal});
+    std::vector<std::pair<typename T::coord_type, typename T::coord_type>> distances(this->size, {maxVal, minVal});
 
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
@@ -468,7 +316,7 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
     T closestPoint, furthestPoint;
     while(!nodes.empty())
     {
-        const DistributedOctTreeNode *node = nodes[nodes.size() - 1];
+        const DistributedOctTreeNode *node = nodes.back();
         nodes.pop_back();
 
         if(node == nullptr)
@@ -493,7 +341,9 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
             furthestDist += (furthestPoint[i] - point[i]) * (furthestPoint[i] - point[i]);
         }
 
-        for(int i = 0; i < node->value.num_owners; i++)
+        size_t numOwners = node->value.owners.size();
+
+        for(size_t i = 0; i < numOwners; i++)
         {
             int owner = node->value.owners[i];
             if(distances[owner].first > closestDist)
@@ -507,6 +357,296 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         }
     }
     return distances;
+}
+
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<T> DistributedOctTree<T, max_ranks_per_leaf>::getRankValues(int _rank) const
+{
+    std::vector<T> values;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        size_t numOwners = node->value.owners.size();
+
+        if(numOwners == 0)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(std::find(node->value.owners.cbegin(), node->value.owners.cend(), _rank) != node->value.owners.cend())
+            {
+                // is an owner
+                values.emplace_back(node->value.value);
+            }
+        }
+    }
+    return values;
+}
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxes(int _rank) const
+{
+    std::vector<_BoundingBox<T>> boxes;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        size_t numOwners = node->value.owners.size();
+
+        if(numOwners == 0)
+        {
+            // several owners
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(std::find(node->value.owners.cbegin(), node->value.owners.cend(), _rank) != node->value.owners.cend())
+            {
+                // is an owner
+                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL(), node->boundingBox.getUR()));
+            }
+        }
+    }
+    return boxes;
+}
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxesUnique(int _rank) const
+{
+    std::vector<_BoundingBox<T>> boxes;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        size_t numOwners = node->value.owners.size();
+
+        if(numOwners == 0)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(*std::min_element(node->value.owners.cbegin(), node->value.owners.cend()) == _rank)
+            {
+                // is an owner
+                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
+            }
+        }
+    }
+    return boxes;
+}
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<std::vector<_BoundingBox<T>>> DistributedOctTree<T, max_ranks_per_leaf>::getBoundingBoxesOfRanks(void) const
+{
+    std::vector<std::vector<_BoundingBox<T>>> boxes(this->size);
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        size_t numOwners = node->value.owners.size();
+
+        if(numOwners == 0)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            for(int _rank : node->value.owners)
+            {
+                boxes[_rank].push_back(node->boundingBox);
+            }
+        }
+    }
+    return boxes;
+}
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getBigBoundingBoxesOfRanks(void) const
+{
+    const _BoundingBox<T> &rootBB = this->octTree->getRoot()->boundingBox;
+    std::vector<std::pair<T, T>> boxes(this->size, {rootBB.getUR(), rootBB.getLL()});
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        size_t numOwners = node->value.owners.size();
+
+        if(numOwners == 0)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            const T &BB_ll = node->boundingBox.getLL();
+            const T &BB_ur = node->boundingBox.getUR();
+            for(int _rank : node->value.owners)
+            {
+                for(int i = 0; i < DIM; i++)
+                {
+                    boxes[_rank].first[i] = std::min(boxes[_rank].first[i], BB_ll[i]);
+                    boxes[_rank].second[i] = std::max(boxes[_rank].second[i], BB_ur[i]);
+                }
+            }
+        }
+    }
+    std::vector<_BoundingBox<T>> returnBoundingBoxes;
+    for(int _rank = 0; _rank < this->size; _rank++)
+    {
+        returnBoundingBoxes.push_back(_BoundingBox<T>(boxes[_rank].first, boxes[_rank].second));
+    }
+    return returnBoundingBoxes;
+}
+
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<std::vector<direction_t>> DistributedOctTree<T, max_ranks_per_leaf>::getRankDirections(int _rank) const
+{
+    std::vector<std::vector<direction_t>> directions;
+    std::vector<const DistributedOctTreeNode*> nodes;
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    nodes.push_back(this->octTree->getRoot());
+
+    while(!nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        size_t numOwners = node->value.owners.size();
+
+        if(numOwners == 0)
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+        else
+        {
+            if(std::find(node->value.owners.cbegin(), node->value.owners.cend(), _rank) != node->value.owners.cend())
+            {
+                // is an owner
+                size_t directionsLength = std::distance(node->value.directions, std::find(node->value.directions, node->value.directions + MAX_DIRECTIONS_SIZE, PATH_END_DIRECTION)) + 1; // + 1 for the `PATH_END_DIRECTION`
+                directions.push_back(std::vector(node->value.directions, node->value.directions + directionsLength));
+            }
+        }
+    }
+    return directions;
+}
+
+template<typename T, int max_ranks_per_leaf>
+std::vector<const typename DistributedOctTree<T, max_ranks_per_leaf>::DistributedOctTreeNode*>
+    DistributedOctTree<T, max_ranks_per_leaf>::getValuesIf(const std::function<bool(const DistributedOctTreeNode*)> ifOpenFunction, const std::function<bool(const DistributedOctTreeNode*)> &ifAddValueFunction) const
+{
+    std::vector<const DistributedOctTreeNode*> nodes = {this->octTree->getRoot()};
+    nodes.reserve(this->getDepth() * CHILDREN);
+
+    std::vector<const DistributedOctTreeNode*> result;
+
+    while(not nodes.empty())
+    {
+        const DistributedOctTreeNode *node = nodes.back();
+        nodes.pop_back();
+        if(node == nullptr)
+        {
+            continue;
+        }
+        if(node->isLeaf)
+        {
+            if(ifAddValueFunction(node))
+            {
+                result.push_back(node);
+            }
+            continue;
+        }
+        if(ifOpenFunction(node))
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                nodes.push_back(node->children[i]);
+            }
+        }
+    }
+    return result;
 }
 
 #endif // RICH_MPI
