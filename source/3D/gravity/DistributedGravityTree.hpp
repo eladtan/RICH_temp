@@ -159,6 +159,7 @@ std::pair<Vector3D, boost::container::flat_set<int>> DistributedGravityTree::gra
             continue;
         }
 
+        Vector3D closestPoint = node->boundingBox.closestPoint(point);
         if(containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared))
         {
             if(node->isLeaf)

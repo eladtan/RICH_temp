@@ -52,76 +52,14 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
     massedPoints.reserve(N);
     for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
     {
-        massedPoints.emplace_back(MassedPoint<Vector3D>(this->tess.GetMeshPoint(pointIdx), masses_[pointIdx]));
+        massedPoints.emplace_back(MassedPoint<Vector3D>(this->tess.GetCellCM(pointIdx), masses_[pointIdx]));
     }
     gravTree->build(massedPoints);
     this->gravityTree = gravTree;
     
     this->distributedGravityTree = new DistributedGravityTree(this->gravityTree, tess_, this->theta, this->quadrupole, DEFAULT_OWNER_SPLIT, this->comm);
-
-    // const EnvironmentAgent *envAgent = tess_.GetEnvironmentAgent();
-    // const DistributedOctEnvironmentAgent *distributedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(const_cast<EnvironmentAgent*>(envAgent));
-    // if(distributedOctEnvAgent != nullptr)
-    // {
-    //     this->distributedOctTree = distributedOctEnvAgent->getOctTree();
-    //     this->boundingBoxesOfRanks = this->distributedOctTree->getBoundingBoxesOfRanks();
-    // }
-
-    // const HilbertTreeEnvironmentAgent *hilbertEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(const_cast<EnvironmentAgent*>(envAgent));
-    // if(hilbertEnvAgent != nullptr)
-    // {
-    //     this->hilbertTree = hilbertEnvAgent->getHilbertTree();
-    //     this->boundingBoxesOfRanks = this->hilbertTree->getBoundingBoxesOfRanks();
-    // }
-
 }
 
-// void DistributedGravityCalculator::calculateExchangeListHelper(const GravityTree<Vector3D>::Node *node, boost::container::flat_set<int> &relevantRanks, std::vector<std::vector<MassedValue>> &list) const
-// {
-//     if(node == nullptr)
-//     {
-//         return;
-//     }
-
-//     const Vector3D &CM = node->value.CM; 
-//     // check who from the relevant ranks doesn't want the node
-    
-//     // TODO: use the bounding boxes CM of the other remote box
-//     auto shouldOpen = [&CM, &localBoundingBox=node->boundingBox, isLeaf = node->isLeaf, theta2 = this->thetaSquared](const _BoundingBox<Vector3D> &remoteBox)
-//                       {
-//                           if(isLeaf) return false;
-//                           Vector3D closestPoint = remoteBox.closestPoint(CM);
-//                           return ((closestPoint == CM) /* inside the box */ or ShouldOpenBox(closestPoint, localBoundingBox, CM, theta2) /* outside the box, yet should be opened */);
-//                       };
-
-//     boost::container::flat_set<int> newRelevantRanks;
-
-//     for(int _rank : relevantRanks)
-//     {
-//         bool wantToOpen = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(), shouldOpen);
-
-//         // if doesn't want to open, send the current node value to the rank and remove it from the relevant ranks list
-//         if(wantToOpen)
-//         {
-//             newRelevantRanks.insert(_rank);
-//         }
-//         else
-//         {
-//             list[_rank].push_back(node->value);
-//         }
-//     }
-
-//     newRelevantRanks.swap(relevantRanks);
-//     // recursive call to children
-//     if(not relevantRanks.empty())
-//     {
-//         for(const GravityTree<Vector3D>::Node *child : node->children)
-//         {
-//             this->calculateExchangeListHelper(child, relevantRanks, list);
-//         }
-//     }
-//     newRelevantRanks.swap(relevantRanks);
-// }
 
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const
 {
@@ -180,12 +118,6 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
             const size_t &pointIdx = indices[i];
             results[pointIdx] += rankResult[i];
         }
-    }
-
-    // multiply with the mass of each point
-    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
-    {
-        results[pointIdx] *= masses[pointIdx];
     }
     return results;
 }
