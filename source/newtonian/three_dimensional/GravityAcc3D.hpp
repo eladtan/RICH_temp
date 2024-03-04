@@ -16,7 +16,7 @@ public:
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& fluxes, const double time, vector<Vector3D> &acc) const
     {
-        std::vector<Vector3D> points = tess.getMeshPoints();
+        std::vector<Vector3D> points = tess.GetAllCM();
         points.resize(tess.GetPointNo());
         std::vector<gravity_result_t> masses;
         masses.reserve(points.size());
@@ -43,7 +43,7 @@ public:
             acc.clear();
             for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                acc.push_back(gravTree.gravity(point) * masses[pointIdx]);
+                acc.push_back(gravTree.gravity(point));
             }
         #endif // RICH_MPI
 
