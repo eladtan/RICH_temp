@@ -159,7 +159,6 @@ std::pair<Vector3D, boost::container::flat_set<int>> DistributedGravityTree::gra
             continue;
         }
 
-        Vector3D closestPoint = node->boundingBox.closestPoint(point);
         if(containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared))
         {
             if(node->isLeaf)
@@ -265,6 +264,11 @@ void DistributedGravityTree::buildHelper(DistributedGravityTree::Node *node, int
         return;
     }    
 
+    if(maxRank <= minRank)
+    {
+        return;
+    }
+    
     if(maxRank == minRank + 1)
     {
         // a single owner
