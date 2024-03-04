@@ -2,9 +2,6 @@
 #define DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 
 #include "3D/tesselation/Tessellation3D.hpp"
-#include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
-#include "3D/hilbert/rectangular/HilbertTree3D.hpp"
-#include "ds/DistributedOctTree/DistributedOctTree.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "GravityTree.hpp"
@@ -13,11 +10,6 @@
 class DistributedGravityCalculator
 {
 public:
-    using DistributedOctTree_Type = DistributedOctEnvironmentAgent::DistributedOctTree_Type;
-    using HilbertTree_Type = HilbertTreeEnvironmentAgent::HilbertTree_Type;
-    using DistributedOctTreeNode_Type = DistributedOctTree_Type::DistributedOctTreeNode;
-    using HilbertTreeNode_Type = HilbertTree_Type::Node;
-
     DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const;

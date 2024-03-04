@@ -59,7 +59,7 @@ public:
         MPI_Comm_size(comm, &this->size);
         MPI_Comm_rank(comm, &this->rank);
         Vector3D myLL = Vector3D(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
-        Vector3D myUR = Vector3D(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
+        Vector3D myUR = Vector3D(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
 
         size_t N = tess.GetPointNo();
         const std::vector<Vector3D> &points = tess.getMeshPoints();
@@ -209,7 +209,7 @@ void DistributedGravityTree::updateData(DistributedGravityTree::Node *node)
     value.mass = 0;
     value.CM = Vector3D();
     Vector3D newLL = Vector3D(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
-    Vector3D newUR = Vector3D(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
+    Vector3D newUR = Vector3D(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
     for(const Node *child : node->children)
     {
         if(child != nullptr)
