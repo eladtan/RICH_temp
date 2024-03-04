@@ -2913,6 +2913,11 @@ std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
     return FaceNeighbors_;
 }
 
+const std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void) const
+{
+    return FaceNeighbors_;
+}
+
 vector<double> &Voronoi3D::GetAllVolumes(void)
 {
     return volume_;

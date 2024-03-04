@@ -30,7 +30,18 @@ public:
 	 ComputationalCell3D const& right,
 	 double velocity,
 	 EquationOfState const& eos,
-	 Vector3D const& normaldir) const = 0;
+	 Vector3D const& normaldir, Vector3D & ustar_vec, Vector3D & pstar_vec) const = 0;
+
+	virtual Conserved3D operator()
+	(ComputationalCell3D const& left,
+	 ComputationalCell3D const& right,
+	 double velocity,
+	 EquationOfState const& eos,
+	 Vector3D const& normaldir, Vector3D & ustar_vec) const
+	{
+		Vector3D pstar_tmp;
+		return this->operator()(left, right, velocity, eos, normaldir, ustar_vec, pstar_tmp);
+	}
 
   /*
   RiemannSolver3D(void);

@@ -144,7 +144,7 @@ namespace
 }
 
 
-Conserved3D Hllc3D_SR::operator()(ComputationalCell3D const & left, ComputationalCell3D const & right, double velocity, EquationOfState const & eos, Vector3D const & normaldir) const
+Conserved3D Hllc3D_SR::operator()(ComputationalCell3D const & left, ComputationalCell3D const & right, double velocity, EquationOfState const & eos, Vector3D const & normaldir, Vector3D & ustar_vec, Vector3D & pstar_vec) const
 {
 	ReplaceComputationalCell(local_left_, left);
 	double par_left = fastabs(local_left_.velocity - ScalarProd(local_left_.velocity, normaldir)*normaldir);

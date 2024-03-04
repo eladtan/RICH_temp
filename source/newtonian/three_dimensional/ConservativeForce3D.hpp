@@ -58,7 +58,7 @@ public:
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Conserved3D>& fluxes, const vector<Vector3D>& point_velocities, const double t, double dt,
-			vector<Conserved3D> &extensives) const override;
+			vector<Conserved3D> &extensives, const vector<Vector3D> & ustar_vec, const std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > & face_values) const override;
 
 	double SuggestInverseTimeStep(void)const override;
 

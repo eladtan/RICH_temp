@@ -182,6 +182,81 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
         vtu_cell_variable_names.push_back("Erad");
     }
 
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        temp[i] = cells[i].elastic_energy;
+    }
+    write_std_vector_to_hdf5(writegroup, temp, "ElasticEnergy");
+
+    if(write_vtu)
+    {
+        vtu_cell_variables.push_back(temp);
+        vtu_cell_variable_names.push_back("ElasticEnergy");
+    }
+
+    
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        temp[i] = cells[i].G;
+    }
+    write_std_vector_to_hdf5(writegroup, temp, "ShearModulus");
+
+    if(write_vtu)
+    {
+        vtu_cell_variables.push_back(temp);
+        vtu_cell_variable_names.push_back("ShearModulus");
+    }
+
+
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        temp[i] = cells[i].Y0;
+    }
+    write_std_vector_to_hdf5(writegroup, temp, "PlasticYield");
+
+    if(write_vtu)
+    {
+        vtu_cell_variables.push_back(temp);
+        vtu_cell_variable_names.push_back("PlasticYield");
+    }
+
+    
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        temp[i] = cells[i].strain_plastic;
+    }
+    write_std_vector_to_hdf5(writegroup, temp, "EPS");
+
+    if(write_vtu)
+    {
+        vtu_cell_variables.push_back(temp);
+        vtu_cell_variable_names.push_back("EPS");
+    }
+
+
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        temp[i] = cells[i].strain_plastic_dt;
+    }
+    write_std_vector_to_hdf5(writegroup, temp, "EPSrate");
+
+    if(write_vtu)
+    {
+        vtu_cell_variables.push_back(temp);
+        vtu_cell_variable_names.push_back("EPSrate");
+    }
+
+
+    temp.resize(Ncells * 9);
+    for(size_t i = 0; i < Ncells; ++i)
+        for(size_t j = 0; j < 3; ++j)
+            for(size_t k = 0; k < 3; ++k)
+                temp[9*i + 3*j + k] = cells[i].stress.at(j, k);
+    write_std_vector_to_hdf5(writegroup, temp, "Stress");
+    temp.resize(Ncells);
+
+
+
     for(size_t j = 0; j < ComputationalCell3D::tracerNames.size(); ++j)
     {
         for(size_t i = 0; i < Ncells; ++i)

@@ -41,6 +41,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 #endif
 				c = eos.de2c(cells[i].density, cells[i].internal_energy, cells[i].tracers,
 					     ComputationalCell3D::tracerNames);
+				c = std::sqrt(c * c + 4 * cells[i].G/(3 * cells[i].density));
 #ifdef RICH_DEBUG
 			}
 			catch (UniversalError& eo)

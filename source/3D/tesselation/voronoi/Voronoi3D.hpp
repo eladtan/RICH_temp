@@ -422,8 +422,12 @@ public:
   /*! \brief Get all face neighbours
     \return List of pairs of indices to neighbours
    */
-  std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) override
-;
+  std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) override;
+
+  /*! \brief Get all face neighbours
+    \return List of pairs of indices to neighbours
+   */
+  const std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) const override;
 
   /*! \brief List all points in face
     \return List of all points in face

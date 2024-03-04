@@ -3,11 +3,12 @@
 
 #include <array>
 #include "3D/elementary/Vector3D.hpp"
+#include "3D/elementary/Mat33.hpp"
 #include "../common/equation_of_state.hpp"
 #include "computational_cell.hpp"
 
 //! \brief Conserved variables for a 3D computational cell
-class Conserved3D
+class Conserved3D : public Serializable
 {
 public:
 
@@ -29,6 +30,18 @@ public:
 	double Erad_dt;
 
 	double Erad_dt_dt;
+
+	//! \brief Elastic energy
+	double Eelast;
+
+	//! \brief mass*stress
+	Mat33<double> mass_stress;
+
+	//! \brief mass*EPS
+	double mass_eps;
+
+	//! \brief mass*EPS_dt
+	double mass_eps_dt;
 
 	//! \brief Tracers
 	std::array<double,MAX_TRACERS> tracers;
@@ -82,18 +95,17 @@ public:
   /*! \brief Estimate chunk sizes
     \return Size of chunk (in bits)
    */
-	size_t getChunkSize(void) const;
+	size_t getChunkSize(void) const override;
 
   /*! \brief Convert to series of numbers
     \return series of numbers
    */
-	vector<double> serialize(void) const;
+	vector<double> serialize(void) const override;
 
   /*! \brief Reconstruct from serial form
     \param data Serialised form
    */
-	void unserialize
-	(const vector<double>& data);
+	void unserialize(const vector<double>& data) override;
 #endif // RICH_MPI
 
 };
@@ -122,7 +134,6 @@ Conserved3D operator/(const Conserved3D& c, double s);
 Conserved3D operator+(Conserved3D const& p1, Conserved3D const& p2);
 
 Conserved3D operator-(Conserved3D const& p1, Conserved3D const& p2);
-
 
 void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved3D &res);
 

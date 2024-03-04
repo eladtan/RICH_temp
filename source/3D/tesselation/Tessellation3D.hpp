@@ -301,7 +301,9 @@ public:
   /*! \brief Retrieve all neighbouring points who share a face
     \return List of pairs of indices of all neighbouring points
    */
-  virtual std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) = 0;
+  virtual std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) = 0;
+
+  virtual const std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) const = 0;
 
   /*!
     \brief Returns a vector normal to the face whose magnitude is the seperation between the neighboring points
@@ -393,4 +395,5 @@ public:
   \return Points selected according to list of indices
  */
 point_vec_v VectorValues(std::vector<Vector3D> const&v, point_vec const &index);
+
 #endif // TESSELLATION3D_HPP

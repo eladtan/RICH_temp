@@ -159,7 +159,7 @@ namespace
 LagrangianHLLC3D::LagrangianHLLC3D(bool mass_flux) :massflux_(mass_flux), ws(0) {}
 
 Conserved3D LagrangianHLLC3D::operator()(ComputationalCell3D const& left, ComputationalCell3D const& right, double velocity,
-	EquationOfState const& eos, Vector3D const& normaldir) const
+	EquationOfState const& eos, Vector3D const& normaldir, Vector3D & ustar_vec, Vector3D & pstar_vec) const
 {
 
 	ComputationalCell3D local_left = left;

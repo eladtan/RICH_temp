@@ -20,7 +20,7 @@ public:
 	explicit LagrangianHLLC3D(bool massflux = true);
 
 	Conserved3D operator()(ComputationalCell3D const& left, ComputationalCell3D const& right, double velocity,
-		EquationOfState const& eos, Vector3D const& normaldir) const override;
+		EquationOfState const& eos, Vector3D const& normaldir, Vector3D & ustar_vec, Vector3D & pstar_vec) const override;
 
 	//! \brief Energy
 	mutable double ws;

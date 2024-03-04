@@ -99,6 +99,9 @@ vector<Vector3D> RandSphereR1(std::size_t PointNum, Vector3D const& ll, Vector3D
 vector<Vector3D> RandSphereRa(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,double a, Vector3D const& center,
 	Voronoi3D const* tproc = nullptr);
 
+vector<Vector3D> RandCylindrical(std::size_t NumPoints, double R, double L, double zmin, double &dr, Voronoi3D const* tproc = nullptr);
+
+
 #ifdef RICH_MPI
 /*!
 \brief Generates a random grid with uniform point density and a constant seed

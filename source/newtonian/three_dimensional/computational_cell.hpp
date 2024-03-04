@@ -8,6 +8,7 @@
 
 #include <array>
 #include "3D/elementary/Vector3D.hpp"
+#include "3D/elementary/Mat33.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #ifdef RICH_MPI
 #include "misc/serializable.hpp"
@@ -35,6 +36,24 @@ public:
 
 	//! \brief Velocity
 	Vector3D velocity;
+
+	//! \brief shear module
+	double G;
+
+	//! \brief plastic yield
+	double Y0;
+
+	//! \brief stress tensor
+	Mat33<double> stress;
+
+	//! \brief effective plastic strain
+	double strain_plastic;
+
+	//! \brief effective plastic strain rate
+	double strain_plastic_dt;
+
+	//! \brief elastic energy density (erg/g)
+	double elastic_energy;
 
 	double dt;
 	

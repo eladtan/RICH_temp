@@ -15,10 +15,9 @@
 template <typename T>
 class Mat33 : public Serializable
 {
-private:
+public:
 	T _data[3][3];
 
-public:
 	//! \brief Return the element at (row, col)
   //! \param row Row
   //! \param col Column
@@ -257,12 +256,18 @@ public:
 	T operator%(Mat33<T> const& A1, Mat33<T> const& A2);
 
 
-	/*! \brief retrun the deviatoric part
+	/*! \brief return the deviatoric part
 	\param A Matrix
 	\return A-1/3tr(A)*I
 	*/
 	template <typename T>
 	Mat33<T> deviator(Mat33<T>const & A);
+	
+	/*! \brief returns thetrace 
+	\param A Matrix
+	*/
+	template <typename T>
+	T trace(Mat33<T>const & A);
 
 template <typename T>
 inline T Mat33<T>::determinant() const
@@ -486,6 +491,12 @@ Mat33<T> deviator(Mat33<T> const& A)
     T trace3 = (A(0,0)+A(1,1)+A(2,2))*1/3.;
     Mat33<T> res(A(0,0)-trace3, A(0,1),A(0,2), A(1,0), A(1,1)-trace3, A(1,2), A(2,0), A(2,1), A(2,2)-trace3);
     return res;
+}
+
+template <typename T>
+T trace(Mat33<T> const& A)
+{
+    return A(0,0)+A(1,1)+A(2,2);
 }
 
 

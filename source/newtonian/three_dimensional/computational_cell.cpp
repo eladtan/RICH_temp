@@ -46,6 +46,12 @@ ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& o
 	Erad_dt = other.Erad_dt;
 	Erad_dt_dt = other.Erad_dt_dt;
 	cs = other.cs;
+	G = other.G;
+	Y0=other.Y0;
+	stress=other.stress;
+	elastic_energy = other.elastic_energy;
+	strain_plastic = other.strain_plastic;
+	strain_plastic_dt = other.strain_plastic_dt;
 	tracers = other.tracers;
 	stickers = other.stickers;
 	ID = other.ID;
@@ -64,6 +70,10 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;
 	this->cs = std::max<double>(this->cs, other.cs); // todo: correct?
+	this->stress += other.stress;
+	this->elastic_energy += other.elastic_energy;
+	this->strain_plastic += other.strain_plastic;
+	this->strain_plastic_dt += other.strain_plastic_dt;
 	//assert(this->tracers.size() == other.tracers.size());
 	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
@@ -86,6 +96,10 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;	
 	this->cs = std::max<double>(this->cs, other.cs); // todo: correct?
+	this->stress -= other.stress;
+	this->elastic_energy -= other.elastic_energy;
+	this->strain_plastic -= other.strain_plastic;
+	this->strain_plastic_dt -= other.strain_plastic_dt;
 	//assert(this->tracers.size() == other.tracers.size());
 	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
@@ -107,6 +121,10 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->Erad_dt *= s;
 	this->Erad_dt_dt *= s;
 	this->cs *= s; // todo: correct?
+	this->stress *= s;
+	this->elastic_energy *= s;
+	this->strain_plastic *= s;
+	this->strain_plastic_dt *= s;
 	//size_t N = this->tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] *= s;
@@ -119,7 +137,7 @@ vector<string> ComputationalCell3D::stickerNames;
 #ifdef RICH_MPI
 size_t ComputationalCell3D::getChunkSize(void) const
 {
-	return 13 + tracers.size() + stickers.size();
+	return 27 + tracers.size() + stickers.size();
 }
 
 vector<double> ComputationalCell3D::serialize(void) const
@@ -138,7 +156,16 @@ vector<double> ComputationalCell3D::serialize(void) const
 	res.at(10) = Erad_dt;
 	res.at(11) = Erad_dt_dt;
 	res.at(12) = cs;
-	size_t counter = 13;
+	res.at(13) = G;
+	res.at(14) = Y0;
+	res.at(15) = elastic_energy;
+	res.at(16) = strain_plastic;
+	res.at(17) = strain_plastic_dt;
+	size_t counter = 18;
+	for(size_t i=0; i<3; ++i)
+		for(size_t j=0; j<3; ++j)
+			res.at(counter+3*i+j) = stress.at(i,j);
+	counter = 27;
 	//size_t N = tracers.size();
 #ifdef __INTEL_COMPILER
 #pragma ivdep
@@ -171,7 +198,15 @@ void ComputationalCell3D::unserialize
 	Erad_dt = data.at(10);
 	Erad_dt_dt = data.at(11);
 	cs = data.at(12);
-	size_t counter = 13;
+	G = data.at(13);
+	Y0 = data.at(14);
+	elastic_energy = data.at(15);
+	strain_plastic = data.at(16);
+	strain_plastic_dt = data.at(17);
+	size_t counter = 18;	
+	for(size_t i=0; i<3; ++i)
+		for(size_t j=0; j<3; ++j)
+			stress.at(i,j) = data.at(counter+3*i+j);
 	//size_t N = tracers.size();
 #ifdef __INTEL_COMPILER
 #pragma ivdep
@@ -225,6 +260,10 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	res.Erad += other.Erad*scalar;
 	res.Erad_dt += other.Erad_dt*scalar;
 	res.Erad_dt_dt += other.Erad_dt_dt*scalar;
+	res.elastic_energy += other.elastic_energy*scalar;
+	res.stress += other.stress*scalar;
+	res.strain_plastic += other.strain_plastic*scalar;
+	res.straic_plastic_dt += other.strain_plastic_dt*scalar;
 	//assert(res.tracers.size() == other.tracers.size());
 	//size_t N = res.tracers.size();
 #ifdef __INTEL_COMPILER
@@ -259,6 +298,10 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 	res.Erad *= s_1;
 	res.Erad_dt *= s_1;
 	res.Erad_dt_dt *= s_1;
+	res.stress *= s_1;
+	res.elastic_energy *= s_1;
+	res.strain_plastic *= s_1;
+	res.strain_plastic_dt *= s_1;
 	//size_t N = res.tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] *= s_1;
@@ -277,6 +320,10 @@ ComputationalCell3D operator*(ComputationalCell3D const& p, double s)
 	res.Erad *= s;
 	res.Erad_dt *= s;
 	res.Erad_dt_dt *= s;
+	res.stress *= s;
+	res.elastic_energy *= s;
+	res.strain_plastic *= s;
+	res.strain_plastic_dt *= s;
 	//size_t N = res.tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] *= s;
@@ -303,6 +350,12 @@ void ReplaceComputationalCell(ComputationalCell3D & cell, ComputationalCell3D co
 	cell.Erad_dt = other.Erad_dt;
 	cell.Erad_dt_dt = other.Erad_dt_dt;
 	cell.cs = other.cs;
+	cell.G = other.G;
+	cell.Y0=other.Y0;
+	cell.stress=other.stress;
+	cell.elastic_energy = other.elastic_energy;
+	cell.strain_plastic = other.strain_plastic;
+	cell.strain_plastic_dt = other.strain_plastic_dt;
 	//size_t N = other.tracers.size();
 	//cell.tracers.resize(N);
 #ifdef __INTEL_COMPILER

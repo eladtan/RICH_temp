@@ -186,7 +186,7 @@ Hllc3DEnergy::Hllc3DEnergy(double gamma) :gamma_((gamma + 1) / (2 * gamma))
 {}
 
 Conserved3D Hllc3DEnergy::operator()(ComputationalCell3D const& left, ComputationalCell3D const& right, double velocity,
-	EquationOfState const& eos, Vector3D const& normaldir) const
+	EquationOfState const& eos, Vector3D const& normaldir, Vector3D & ustar_vec, Vector3D & pstar_vec) const
 {
 
 	ComputationalCell3D local_left = left;

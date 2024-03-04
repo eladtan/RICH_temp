@@ -30,7 +30,7 @@ public:
    */
 	virtual std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > operator()(vector<Conserved3D>& fluxes, const Tessellation3D& tess, const vector<Vector3D>& edge_velocities,
 	  const vector<ComputationalCell3D>& cells,const vector<Conserved3D>& extensives,const EquationOfState& eos,
-	  const double time, const double dt) const = 0;
+	  const double time, const double dt, std::vector<Vector3D> const & point_velocities, vector<Vector3D> & ustar_vec) const = 0;
 
   //! \brief Class destructor
   virtual ~FluxCalculator3D(void);
@@ -47,6 +47,9 @@ public:
   \param tsn Tracers and stickers names
  */
 void RotateSolveBack3D(Vector3D const& normal, ComputationalCell3D const& left, ComputationalCell3D const& right,
-	Vector3D const& face_velocity,RiemannSolver3D const& rs, Conserved3D &res,EquationOfState const& eos);
+	Vector3D const& face_velocity,RiemannSolver3D const& rs, Conserved3D &res,EquationOfState const& eos, Vector3D & ustar_vec, Vector3D & pstar_vec);
 
+
+void RotateSolveBack3D(Vector3D const& normal, ComputationalCell3D const& left, ComputationalCell3D const& right,
+	Vector3D const& face_velocity,RiemannSolver3D const& rs, Conserved3D &res,EquationOfState const& eos, Vector3D & ustar_vec)
 #endif // FLUX_CALCULATOR_HPP

@@ -320,4 +320,72 @@ vector<Vector3D> RandPointsMPI(Voronoi3D const& tproc, size_t np)
 }
 #endif
 
+vector<Vector3D> RandCylindrical(std::size_t NumPoints, double R, double L, double zmin, double &dr, Voronoi3D const* tproc)
+{
+	typedef boost::mt19937_64 base_generator_type;
+	vector<Vector3D> res;
+	res.reserve(6 * NumPoints);
+	Vector3D point;
+	base_generator_type generator;
+	boost::random::uniform_real_distribution<> dist;
+	double ran[2];
+
+	double pi = 3.1416;
+	size_t Nphi = ceil(pow(pi*pi*pi*NumPoints*R/L, 0.333));
+	size_t Nplane = ceil(pow(NumPoints*NumPoints*R*R/(L*L), 0.333));
+	size_t Nz = ceil(pow(NumPoints*L*L/(pi*R*R), 0.333));
+
+	dr = R*pi/Nphi;
+	double dphi = 2*pi/Nphi;
+	double dz = L/Nz;
+	std::vector<std::pair<double, double>> coordinates;
+	for(size_t i = 0; i < Nphi; ++i)
+	{
+		coordinates.push_back(std::make_pair((R+dr)*cos(i*dphi), (R+dr)*sin(i*dphi)));
+		coordinates.push_back(std::make_pair((R-dr)*cos(i*dphi), (R-dr)*sin(i*dphi)));
+		coordinates.push_back(std::make_pair((R+3*dr)*cos(i*dphi), (R+3*dr)*sin(i*dphi)));
+		coordinates.push_back(std::make_pair((R-3*dr)*cos(i*dphi), (R-3*dr)*sin(i*dphi)));
+	}
+	for(size_t i = 0; i < Nplane - 2*Nphi; ++i)
+	{
+		ran[0] = 2*pi*dist(generator);
+		ran[1] = (R-4.75*dr) * std::sqrt(dist(generator));
+		coordinates.push_back(std::make_pair(ran[1]*cos(ran[0]), ran[1]*sin(ran[0])));
+	}
+
+	if(tproc == nullptr)
+	{
+		for(size_t i = 1; i < Nz; ++i)
+		{
+			point.x = zmin + i * dz;
+			for(auto &p : coordinates)
+			{
+				point.z = p.first;
+				point.y = p.second;
+				res.push_back(point);
+			}
+		}
+	}
+	else
+	{
+		int rank = 0;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+		for(size_t i = 1; i < Nz; ++i)
+		{
+			point.x = zmin + i * dz;
+			for(auto &p : coordinates)
+			{
+				point.z = p.first;
+				point.y = p.second;
+				if(PointInPoly(*tproc, point, static_cast<size_t>(rank)))
+					res.push_back(point);
+			}
+		}
+	}
+	return res;
+}
+
+
 

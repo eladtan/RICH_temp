@@ -56,19 +56,24 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 
 	for (size_t i = 0; i < N; ++i)
 	{
-		double dEtherm = extensives[i].internal_energy - oldEtherm[i];
 		double Eknew = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-		double dEk = Eknew - oldEk[i];
-		double dE = extensives[i].energy - oldE[i];
-		if (dEtherm * (dE - dEk) > 0)
-		{
-			if (std::abs(dEtherm) > 0.95 * std::abs(dE - dEk) && std::abs(dEtherm) < 1.05 * std::abs(dE - dEk))
-				extensives[i].internal_energy = extensives[i].energy - Eknew;
-			else
-				extensives[i].energy = extensives[i].internal_energy + Eknew;
-		}
-		else
-			extensives[i].energy = extensives[i].internal_energy + Eknew;
+		double beta = std::min(std::sqrt(2/(std::numeric_limits<double>::epsilon() + 3.*extensives[i].mass_stress.J2()))*extensives[i].mass*cells[i].Y0, 1.);
+		extensives[i].mass_stress *= beta;
+		extensives[i].Eelast = 0.25 * (extensives[i].mass_stress.J2()) * tess.GetVolume(i) / (extensives[i].mass * extensives[i].mass * cells[i].G);
+		extensives[i].internal_energy = extensives[i].energy - Eknew - extensives[i].Eelast;
+		// double dEtherm = extensives[i].internal_energy - oldEtherm[i];
+		// double Eknew = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
+		// double dEk = Eknew - oldEk[i];
+		// double dE = extensives[i].energy - oldE[i];
+		// if (dEtherm * (dE - dEk) > 0)
+		// {
+		// 	if (std::abs(dEtherm) > 0.95 * std::abs(dE - dEk) && std::abs(dEtherm) < 1.05 * std::abs(dE - dEk))
+		// 		extensives[i].internal_energy = extensives[i].energy - Eknew;
+		// 	else
+		// 		extensives[i].energy = extensives[i].internal_energy + Eknew;
+		// }
+		// else
+		// 	extensives[i].energy = extensives[i].internal_energy + Eknew;
 		for (size_t j = 0; j < sequence_.size(); ++j)
 		{
 			if (sequence_[j].first->operator()(i, tess, cells, time))
@@ -79,7 +84,7 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 		}
 		// check cell
 		if (!(extensives[i].mass > 0) || !(extensives[i].energy > 0) || (!(extensives[i].internal_energy > 0) && (!entropy)) ||
-			(!std::isfinite(fastabs(extensives[i].momentum))) || (entropy && extensives[i].tracers[entropy_index] < 0))
+			(!std::isfinite(fastabs(extensives[i].momentum))) || (entropy && extensives[i].tracers[entropy_index] < 0) || (extensives[i].Eelast < 0))
 		{
 			UniversalError eo("Bad extesnsive update");
 			int rank = 0;
@@ -88,7 +93,7 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 #endif
 			std::cout << "Bad cell in ExtensiveUpdater3D, cell " << i << " rank " << rank <<" dt "<<dt<<" ID "<<cells[i].ID<< std::endl;
 			std::cout << "mass " << extensives[i].mass << " energy " << extensives[i].energy << " internalE " <<
-				extensives[i].internal_energy << " momentum" << abs(extensives[i].momentum) << " volume " << tess.GetVolume(i)
+				extensives[i].internal_energy << " elastic energy "<<extensives[i].Eelast<<" momentum" << abs(extensives[i].momentum) << " volume " << tess.GetVolume(i)
 				<< std::endl;
 			std::cout << "Old cell, density " << cells[i].density << " pressure " << cells[i].pressure << " vx " <<
 				cells[i].velocity.x << " vy " << cells[i].velocity.y << " vz " << cells[i].velocity.z << std::endl;
@@ -177,7 +182,7 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 				size_t N1 = tess.GetFaceNeighbors(temp[j]).second;
 				size_t Nother = N1 == i ? N0 : N1;
 				std::cout << "Neigh cell " << Nother << ", density " << cells[Nother].density << " pressure " <<
-					cells[Nother].pressure << " vx " << cells[Nother].velocity.x << " vy " << cells[Nother].velocity.y << " vz "
+					cells[Nother].pressure << " elstic sie "<<cells[Nother].elastic_energy<<" vx " << cells[Nother].velocity.x << " vy " << cells[Nother].velocity.y << " vz "
 					<< cells[Nother].velocity.z << std::endl;
 				for (size_t k = 0; k < ComputationalCell3D::tracerNames.size(); ++k)
 				{

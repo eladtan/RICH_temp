@@ -10,4 +10,4 @@ double SourceTerm3D::SuggestInverseTimeStep(void)const
 
 void ZeroForce3D::operator()(const Tessellation3D& /*tess*/, const vector<ComputationalCell3D>& /*cells*/,
 		const vector<Conserved3D>& /*fluxes*/, const vector<Vector3D>& /*point_velocities*/, const double /*t*/, 
-		double /*dt*/, vector<Conserved3D> &/*extensives*/) const {} 
+		double /*dt*/, vector<Conserved3D> &/*extensives*/, const vector<Vector3D> & /*ustar_vec*/, const std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > & /*face_values*/) const {} 

@@ -17,6 +17,7 @@ using std::pair;
 class SpatialReconstruction3D
 {
 public:
+	mutable bool slopes_have_been_built;
 
 	/*! \brief interpolates values on both sides of each interface
 	\param tess Tessellation

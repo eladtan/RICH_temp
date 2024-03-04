@@ -6,10 +6,10 @@
 #ifndef CELL_UPDATER_HPP
 #define CELL_UPDATER_HPP 1
 
+#include <vector>
 #include "computational_cell.hpp"
 #include "conserved_3d.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
-#include "../two_dimensional/computational_cell_2d.hpp"
 #include "../common/equation_of_state.hpp"
 
 //! \brief Abstract clas for cell update scheme
@@ -23,8 +23,8 @@ public:
 	  \param eos Equation of state
 	  \param tess The tessellation
 	 */
-	virtual void operator() (vector<ComputationalCell3D> &res, EquationOfState const& eos,
-		const Tessellation3D& tess,vector<Conserved3D>& extensives)const = 0;
+	virtual void operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
+		const Tessellation3D& tess,vector<Conserved3D>& extensives) const = 0;
 
 		//! \brief Class destructor
 		virtual ~CellUpdater3D(void);
@@ -37,4 +37,5 @@ public:
 \return The velocity
 */
 double GetVelocity(Conserved3D const& cell, double G);
+
 #endif // CELL_UPDATER_HPP

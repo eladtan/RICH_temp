@@ -2,6 +2,7 @@
 #include "../../misc/utils.hpp"
 #include <array>
 #include <iostream>
+#include <eigen3/Dense>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
@@ -248,6 +249,10 @@ namespace
 		ComputationalCellAddMult(res, slope.xderivative, target.x - cm.x);
 		ComputationalCellAddMult(res, slope.yderivative, target.y - cm.y);
 		ComputationalCellAddMult(res, slope.zderivative, target.z - cm.z);
+		res.pressure = -0.3333333333 * trace(res.stress);
+		double const beta = std::min(std::sqrt(2./(std::numeric_limits<double>::epsilon() + 3.*(deviator(res.stress)).J2())) * res.Y0, 1.);
+		res.stress = beta*deviator(res.stress);
+		res.elastic_energy = 0.25 * res.stress.J2() / (res.G * res.density);
 		try
 		{
 			if (!pressure_calc)
@@ -270,7 +275,25 @@ namespace
 		size_t /*cell_index*/, face_vec const& faces, EquationOfState const& eos)
 	{
 		ReplaceComputationalCell(cmax, cell);
-		ReplaceComputationalCell(cmin, cell);
+		Eigen::Matrix3d strain_rate, rot_matrix;
+		strain_rate << slope.xderivative.velocity.x, 0.5*(slope.xderivative.velocity.y + slope.yderivative.velocity.x), 0.5*(slope.xderivative.velocity.z + slope.zderivative.velocity.x),
+					   0.5*(slope.xderivative.velocity.y + slope.yderivative.velocity.x), slope.yderivative.velocity.y, 0.5*(slope.yderivative.velocity.z + slope.zderivative.velocity.y),
+					   0.5*(slope.xderivative.velocity.z + slope.zderivative.velocity.x), 0.5*(slope.zderivative.velocity.y + slope.yderivative.velocity.z), slope.zderivative.velocity.z;
+		Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigensolver(strain_rate);
+		if(eigensolver.info() != Eigen::Success) throw UniversalError("Bad Eigen Solve");
+		rot_matrix = eigensolver.eigenvectors();
+
+		Mat33<double> rot;
+		const Mat33<double> I_mat(1,0,0,0,1,0,0,0,1);
+		std::copy(rot_matrix.data(), rot_matrix.data() + 3, rot._data[0]);
+		std::copy(rot_matrix.data() + 3, rot_matrix.data() + 6, rot._data[1]);
+		std::copy(rot_matrix.data() + 6, rot_matrix.data() + 9, rot._data[2]);
+
+		cmax.velocity = rot * cmax.velocity;
+		cmax.stress = rot * (cmax.stress * rot.transpose());
+		cmax.stress -= cmax.pressure * I_mat;
+		ReplaceComputationalCell(cmin, cmax);
+
 		// Find maximum.minimum neighbor values
 		size_t nloop = neighbors.size();
 		size_t ntracer = cell.tracers.size();
@@ -280,18 +303,41 @@ namespace
 			if (!skip_key.empty() && *safe_retrieve(cell_temp.stickers.begin(), ComputationalCell3D::stickerNames.begin(),
 								ComputationalCell3D::stickerNames.end(), skip_key))
 				continue;
+
+			cell_temp.velocity = rot * cell_temp.velocity;
+			cell_temp.stress = rot * (cell_temp.stress * rot.transpose());
+			cell_temp.stress -= cell_temp.pressure * I_mat;
+			
 			cmax.density = std::max(cmax.density, cell_temp.density);
 			cmax.pressure = std::max(cmax.pressure, cell_temp.pressure);
 			cmax.velocity.x = std::max(cmax.velocity.x, cell_temp.velocity.x);
 			cmax.velocity.y = std::max(cmax.velocity.y, cell_temp.velocity.y);
 			cmax.velocity.z = std::max(cmax.velocity.z, cell_temp.velocity.z);
-			cmax.internal_energy = std::max(cmax.internal_energy, cell_temp.internal_energy);
+			cmax.internal_energy = std::max(cmax.internal_energy, cell_temp.internal_energy); //todo: erad?
+			cmax.stress.at(0,0) = std::max(cmax.stress.at(0,0), cell_temp.stress.at(0,0));
+			cmax.stress.at(0,1) = std::max(cmax.stress.at(0,1), cell_temp.stress.at(0,1));
+			cmax.stress.at(0,2) = std::max(cmax.stress.at(0,2), cell_temp.stress.at(0,2));
+			cmax.stress.at(1,0) = std::max(cmax.stress.at(1,0), cell_temp.stress.at(1,0));
+			cmax.stress.at(1,1) = std::max(cmax.stress.at(1,1), cell_temp.stress.at(1,1));
+			cmax.stress.at(1,2) = std::max(cmax.stress.at(1,2), cell_temp.stress.at(1,2));
+			cmax.stress.at(2,0) = std::max(cmax.stress.at(2,0), cell_temp.stress.at(2,0));
+			cmax.stress.at(2,1) = std::max(cmax.stress.at(2,1), cell_temp.stress.at(2,1));
+			cmax.stress.at(2,2) = std::max(cmax.stress.at(2,2), cell_temp.stress.at(2,2));
 			cmin.density = std::min(cmin.density, cell_temp.density);
 			cmin.pressure = std::min(cmin.pressure, cell_temp.pressure);
 			cmin.velocity.x = std::min(cmin.velocity.x, cell_temp.velocity.x);
 			cmin.velocity.y = std::min(cmin.velocity.y, cell_temp.velocity.y);
 			cmin.velocity.z = std::min(cmin.velocity.z, cell_temp.velocity.z);
 			cmin.internal_energy = std::min(cmin.internal_energy, cell_temp.internal_energy);
+			cmin.stress.at(0,0) = std::min(cmin.stress.at(0,0), cell_temp.stress.at(0,0));
+			cmin.stress.at(0,1) = std::min(cmin.stress.at(0,1), cell_temp.stress.at(0,1));
+			cmin.stress.at(0,2) = std::min(cmin.stress.at(0,2), cell_temp.stress.at(0,2));
+			cmin.stress.at(1,0) = std::min(cmin.stress.at(1,0), cell_temp.stress.at(1,0));
+			cmin.stress.at(1,1) = std::min(cmin.stress.at(1,1), cell_temp.stress.at(1,1));
+			cmin.stress.at(1,2) = std::min(cmin.stress.at(1,2), cell_temp.stress.at(1,2));
+			cmin.stress.at(2,0) = std::min(cmin.stress.at(2,0), cell_temp.stress.at(2,0));
+			cmin.stress.at(2,1) = std::min(cmin.stress.at(2,1), cell_temp.stress.at(2,1));
+			cmin.stress.at(2,2) = std::min(cmin.stress.at(2,2), cell_temp.stress.at(2,2));
 #ifdef __INTEL_COMPILER
 #pragma omp simd
 #endif
@@ -309,6 +355,20 @@ namespace
 		ComputationalCell3D centroid_val = interp(cell, slope, tess.FaceCM(faces[0]), cm, eos, false);
 		ComputationalCell3D dphi = centroid_val - cell;
 		vector<double> psi(6 + cell.tracers.size(), 1);
+		Mat33<double> psi_mat(1,1,1,1,1,1,1,1,1,1);
+
+		Vector3D neigh_vel_rot;
+		Mat33<double> neigh_stress_rot(psi_mat);
+
+		Vector3D cell_vel_rot = rot * cell.velocity;
+		Mat33<double> cell_stress_rot = rot * (cell.stress * rot.transpose()) - cell.pressure * I_mat;
+
+		maxdiff.velocity = cmax.velocity - cell_vel_rot;
+		mindiff.velocity = cmin.velocity - cell_vel_rot;
+
+		maxdiff.stress = cmax.stress - cell_stress_rot;
+		mindiff.stress = cmin.stress - cell_stress_rot;
+
 		const size_t nedges = faces.size();
 		const double skipfactor = 1e-3;
 		for (size_t i = 0; i < nedges; i++)
@@ -320,6 +380,19 @@ namespace
 				ReplaceComputationalCell(dphi, centroid_val);
 				dphi -= cell;
 			}
+
+			neigh_vel_rot = rot * neighbors[i].velocity;
+			dphi.velocity = rot * dphi.velocity;
+			centroid_val.velocity = rot * centroid_val.velocity;
+
+			neigh_stress_rot = rot * (neighbors[i].stress * rot.transpose());
+			dphi.stress = rot * (dphi.stress * rot.transpose());
+			centroid_val.stress = rot * (centroid_val.stress * rot.transpose());
+
+			neigh_stress_rot -= neighbors[i].pressure * I_mat;
+			dphi.stress -= dphi.pressure * I_mat;
+			centroid_val.stress -= centroid_val.pressure * I_mat;
+
 			// density
 			if (std::abs(dphi.density) > skipfactor*std::max(std::abs(maxdiff.density), std::abs(mindiff.density)) || centroid_val.density*cell.density < 0)
 			{
@@ -374,6 +447,21 @@ namespace
 					if (dphi.velocity.z < -std::abs(1e-9*cell.velocity.z))
 						psi[4] = std::min(psi[4], std::max(mindiff.velocity.z / dphi.velocity.z, 0.0));
 			}
+			//stress
+			for (int _i=0; _i<3; ++_i)
+			{
+				for(int _j = 0; _j<3; ++_j)
+				{
+					if (std::abs(dphi.stress.at(_i,_j)) > skipfactor*std::max(std::abs(maxdiff.stress.at(_i,_j)), std::abs(mindiff.stress.at(_i,_j))) || centroid_val.stress.at(_i,_j)*cell.stress.at(_i,_j) < 0)
+					{
+						if (dphi.stress.at(_i,_j) > 1e-9*cell.stress.at(_i,_j))
+							psi_mat.SetAt(std::min(psi_mat.at(_i,_j), std::max(maxdiff.stress.at(_i,_j) / dphi.stress.at(_i,_j), 0.0)), _i, _j);
+						else
+							if (dphi.stress.at(_i,_j) < -1e-9*cell.stress.at(_i,_j))
+								psi_mat.SetAt(std::min(psi_mat.at(_i,_j, std::max(mindiff.stress.at(_i,_j) / dphi.stress.at(_i,_j), 0.0)), _i, _j);
+					}
+			}
+
 			// tracers
 			for (size_t j = 0; j < ntracer; ++j)
 			{
@@ -390,8 +478,15 @@ namespace
 				}
 			}
 		}
-		psi[1] = std::min(psi[1], psi[5]);
-		psi[5] = psi[1];
+		// psi[1] = std::min(psi[1], psi[5]);
+		// psi[5] = psi[1];
+
+		slope.xderivative.velocity = rot * slope.xderivative.velocity;
+		slope.xderivative.serialize = rot * (slope.xderivative.stress * rot.transpose());
+		slope.yderivative.velocity = rot * slope.yderivative.velocity;
+		slope.yderivative.serialize = rot * (slope.yderivative.stress * rot.transpose());
+		slope.zderivative.velocity = rot * slope.zderivative.velocity;
+		slope.zderivative.serialize = rot * (slope.zderivative.stress * rot.transpose());
 
 		slope.xderivative.density *= psi[0];
 		slope.yderivative.density *= psi[0];
@@ -411,6 +506,24 @@ namespace
 		slope.xderivative.internal_energy *= psi[5];
 		slope.yderivative.internal_energy *= psi[5];
 		slope.zderivative.internal_energy *= psi[5];
+
+		for(int _i=0; _i<3; ++_i)
+		{
+			for(int _j=0; _j<3; ++_j)
+			{
+				slope.xderivative.stress.at(_i, _j) *= psi_mat.at(_i, _j);
+				slope.yderivative.stress.at(_i, _j) *= psi_mat.at(_i, _j);
+				slope.zderivative.stress.at(_i, _j) *= psi_mat.at(_i, _j);
+			}
+		}
+
+		slope.xderivative.velocity = rot.transpose() * slope.xderivative.velocity;
+		slope.xderivative.serialize = rot.transpose() * (slope.xderivative.stress * rot);
+		slope.yderivative.velocity = rot.transpose() * slope.yderivative.velocity;
+		slope.yderivative.serialize = rot.transpose() * (slope.yderivative.stress * rot);
+		slope.zderivative.velocity = rot.transpose() * slope.zderivative.velocity;
+		slope.zderivative.serialize = rot.transpose() * (slope.zderivative.stress * rot);
+
 		size_t counter = 6;
 		size_t N = slope.xderivative.tracers.size();
 #ifdef __INTEL_COMPILER
@@ -431,10 +544,26 @@ namespace
 		string const& skip_key, Tessellation3D const& tess, size_t cell_index, face_vec const& faces,
 		EquationOfState const& eos)
 	{
-		const double small_factor = 1e-9;
-		ComputationalCell3D cmax(cell), cmin(cell);
-		size_t N = faces.size();
-		size_t ntracer = cell.tracers.size();
+		ReplaceComputationalCell(cmax, cell);
+		Eigen::Matrix3d strain_rate, rot_matrix;
+		strain_rate << slope.xderivative.velocity.x, 0.5*(slope.xderivative.velocity.y + slope.yderivative.velocity.x), 0.5*(slope.xderivative.velocity.z + slope.zderivative.velocity.x),
+					   0.5*(slope.xderivative.velocity.y + slope.yderivative.velocity.x), slope.yderivative.velocity.y, 0.5*(slope.yderivative.velocity.z + slope.zderivative.velocity.y),
+					   0.5*(slope.xderivative.velocity.z + slope.zderivative.velocity.x), 0.5*(slope.zderivative.velocity.y + slope.yderivative.velocity.z), slope.zderivative.velocity.z;
+		Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eigensolver(strain_rate);
+		if(eigensolver.info() != Eigen::Success) throw UniversalError("Bad Eigen Solve");
+		rot_matrix = eigensolver.eigenvectors();
+
+		Mat33<double> rot;
+		const Mat33<double> I_mat(1,0,0,0,1,0,0,0,1);
+		std::copy(rot_matrix.data(), rot_matrix.data() + 3, rot._data[0]);
+		std::copy(rot_matrix.data() + 3, rot_matrix.data() + 6, rot._data[1]);
+		std::copy(rot_matrix.data() + 6, rot_matrix.data() + 9, rot._data[2]);
+
+		cmax.velocity = rot * cmax.velocity;
+		cmax.stress = rot * (cmax.stress * rot.transpose());
+		cmax.stress -= cmax.pressure * I_mat;
+		ReplaceComputationalCell(cmin, cmax);
+
 		// Find maximum values
 		for (size_t i = 0; i < N; ++i)
 		{
@@ -442,18 +571,41 @@ namespace
 			if (!skip_key.empty() && *safe_retrieve(cell_temp.stickers.begin(), ComputationalCell3D::stickerNames.begin(),
 								ComputationalCell3D::stickerNames.end(), skip_key))
 				continue;
+
+			cell_temp.velocity = rot * cell_temp.velocity;
+			cell_temp.stress = rot * (cell_temp.stress * rot.transpose());
+			cell_temp.stress -= cell_temp.pressure * I_mat;
+			
 			cmax.density = std::max(cmax.density, cell_temp.density);
 			cmax.pressure = std::max(cmax.pressure, cell_temp.pressure);
 			cmax.internal_energy = std::max(cmax.internal_energy, cell_temp.internal_energy);
 			cmax.velocity.x = std::max(cmax.velocity.x, cell_temp.velocity.x);
 			cmax.velocity.y = std::max(cmax.velocity.y, cell_temp.velocity.y);
 			cmax.velocity.z = std::max(cmax.velocity.z, cell_temp.velocity.z);
+			cmax.stress.at(0,0) = std::max(cmax.stress.at(0,0), cell_temp.stress.at(0,0));
+			cmax.stress.at(0,1) = std::max(cmax.stress.at(0,1), cell_temp.stress.at(0,1));
+			cmax.stress.at(0,2) = std::max(cmax.stress.at(0,2), cell_temp.stress.at(0,2));
+			cmax.stress.at(1,0) = std::max(cmax.stress.at(1,0), cell_temp.stress.at(1,0));
+			cmax.stress.at(1,1) = std::max(cmax.stress.at(1,1), cell_temp.stress.at(1,1));
+			cmax.stress.at(1,2) = std::max(cmax.stress.at(1,2), cell_temp.stress.at(1,2));
+			cmax.stress.at(2,0) = std::max(cmax.stress.at(2,0), cell_temp.stress.at(2,0));
+			cmax.stress.at(2,1) = std::max(cmax.stress.at(2,1), cell_temp.stress.at(2,1));
+			cmax.stress.at(2,2) = std::max(cmax.stress.at(2,2), cell_temp.stress.at(2,2));
 			cmin.density = std::min(cmin.density, cell_temp.density);
 			cmin.pressure = std::min(cmin.pressure, cell_temp.pressure);
 			cmin.internal_energy = std::min(cmin.internal_energy, cell_temp.internal_energy);
 			cmin.velocity.x = std::min(cmin.velocity.x, cell_temp.velocity.x);
 			cmin.velocity.y = std::min(cmin.velocity.y, cell_temp.velocity.y);
 			cmin.velocity.z = std::min(cmin.velocity.z, cell_temp.velocity.z);
+			cmin.stress.at(0,0) = std::min(cmin.stress.at(0,0), cell_temp.stress.at(0,0));
+			cmin.stress.at(0,1) = std::min(cmin.stress.at(0,1), cell_temp.stress.at(0,1));
+			cmin.stress.at(0,2) = std::min(cmin.stress.at(0,2), cell_temp.stress.at(0,2));
+			cmin.stress.at(1,0) = std::min(cmin.stress.at(1,0), cell_temp.stress.at(1,0));
+			cmin.stress.at(1,1) = std::min(cmin.stress.at(1,1), cell_temp.stress.at(1,1));
+			cmin.stress.at(1,2) = std::min(cmin.stress.at(1,2), cell_temp.stress.at(1,2));
+			cmin.stress.at(2,0) = std::min(cmin.stress.at(2,0), cell_temp.stress.at(2,0));
+			cmin.stress.at(2,1) = std::min(cmin.stress.at(2,1), cell_temp.stress.at(2,1));
+			cmin.stress.at(2,2) = std::min(cmin.stress.at(2,2), cell_temp.stress.at(2,2));
 #ifdef __INTEL_COMPILER
 #pragma omp simd
 #endif
@@ -466,6 +618,19 @@ namespace
 		ComputationalCell3D maxdiff = cmax - cell, mindiff = cmin - cell;
 		// limit the slope
 		vector<double> psi(6 + cell.tracers.size(), 1);
+		Mat33<double> psi_mat(1,1,1,1,1,1,1,1,1,1);
+		Vector3D neigh_vel_rot;
+		Mat33<double> neigh_stress_rot(psi_mat);
+
+		Vector3D cell_vel_rot = rot * cell.velocity;
+		Mat33<double> cell_stress_rot = rot * (cell.stress * rot.transpose()) - cell.pressure * I_mat;
+
+		maxdiff.velocity = cmax.velocity - cell_vel_rot;
+		mindiff.velocity = cmin.velocity - cell_vel_rot;
+
+		maxdiff.stress = cmax.stress - cell_stress_rot;
+		mindiff.stress = cmin.stress - cell_stress_rot;
+
 		for (size_t i = 0; i < N; ++i)
 		{
 			if (!skip_key.empty() && *safe_retrieve(neighbors[i].stickers.begin(),
@@ -473,6 +638,19 @@ namespace
 				continue;
 			ComputationalCell3D centroid_val = interp(cell, slope, tess.FaceCM(faces[i]), cm, eos, false);
 			ComputationalCell3D dphi = centroid_val - cell;
+
+			neigh_vel_rot = rot * neighbors[i].velocity;
+			dphi.velocity = rot * dphi.velocity;
+			centroid_val.velocity = rot * centroid_val.velocity;
+
+			neigh_stress_rot = rot * (neighbors[i].stress * rot.transpose());
+			dphi.stress = rot * (dphi.stress * rot.transpose());
+			centroid_val.stress = rot * (centroid_val.stress * rot.transpose());
+
+			neigh_stress_rot -= neighbors[i].pressure * I_mat;
+			dphi.stress -= dphi.pressure * I_mat;
+			centroid_val.stress -= centroid_val.pressure * I_mat;
+
 			// density
 			if (std::abs(dphi.density) > small_factor*std::max(std::abs(maxdiff.density), std::abs(mindiff.density)) || centroid_val.density*cell.density < 0)
 			{
@@ -509,6 +687,17 @@ namespace
 				if (std::abs(dphi.velocity.z) > 1e-9*std::abs(cell.velocity.z))
 					psi[4] = std::min(psi[4], std::max(diffusecoeff*(neighbors[i].velocity.z - cell.velocity.z) / dphi.velocity.z, 0.0));
 			}
+			//stress
+			for (int _i=0; _i<3; ++_i)
+			{
+				for(int _j = 0; _j<3; ++_j)
+				{
+					if (std::abs(dphi.stress.at(_i,_j)) > small_factor*std::max(std::abs(maxdiff.stress.at(_i,_j)), std::abs(mindiff.stress.at(_i,_j))) || centroid_val.stress.at(_i,_j)*cell.stress.at(_i,_j) < 0)
+					{
+						if (std::abs(dphi.stress.at(_i,_j)) > 1e-9*cell.stress.at(_i,_j))
+							psi_mat.SetAt(std::min(psi_mat.at(_i,_j, std::max(diffusecoeff*(neighbors[i].stress.at(_i,_j) - cell.stress.at(_i,_j)) / dphi.stress.at(_i,_j), 0.0)), _i, _j);
+					}
+			}
 			// tracers
 			size_t counter = 0;
 			for (size_t j = 0; j < ntracer; ++j)
@@ -527,9 +716,16 @@ namespace
 			}
 		}
 
-		psi[1] = std::min(psi[1], psi[5]);
-		psi[5] = psi[1];
+		// psi[1] = std::min(psi[1], psi[5]);
+		// psi[5] = psi[1];
 
+		slope.xderivative.velocity = rot * slope.xderivative.velocity;
+		slope.xderivative.serialize = rot * (slope.xderivative.stress * rot.transpose());
+		slope.yderivative.velocity = rot * slope.yderivative.velocity;
+		slope.yderivative.serialize = rot * (slope.yderivative.stress * rot.transpose());
+		slope.zderivative.velocity = rot * slope.zderivative.velocity;
+		slope.zderivative.serialize = rot * (slope.zderivative.stress * rot.transpose());
+		
 		slope.xderivative.density *= psi[0];
 		slope.yderivative.density *= psi[0];
 		slope.zderivative.density *= psi[0];
@@ -548,6 +744,24 @@ namespace
 		slope.xderivative.internal_energy *= psi[5];
 		slope.yderivative.internal_energy *= psi[5];
 		slope.zderivative.internal_energy *= psi[5];
+		
+		for(int _i=0; _i<3; ++_i)
+		{
+			for(int _j=0; _j<3; ++_j)
+			{
+				slope.xderivative.stress.at(_i, _j) *= psi_mat.at(_i, _j);
+				slope.yderivative.stress.at(_i, _j) *= psi_mat.at(_i, _j);
+				slope.zderivative.stress.at(_i, _j) *= psi_mat.at(_i, _j);
+			}
+		}
+
+		slope.xderivative.velocity = rot.transpose() * slope.xderivative.velocity;
+		slope.xderivative.serialize = rot.transpose() * (slope.xderivative.stress * rot);
+		slope.yderivative.velocity = rot.transpose() * slope.yderivative.velocity;
+		slope.yderivative.serialize = rot.transpose() * (slope.yderivative.stress * rot);
+		slope.zderivative.velocity = rot.transpose() * slope.zderivative.velocity;
+		slope.zderivative.serialize = rot.transpose() * (slope.zderivative.stress * rot);
+
 		size_t counter = 0;
 #ifdef __INTEL_COMPILER
 #pragma omp simd
@@ -633,6 +847,22 @@ namespace
 		res.xderivative.temperature = 0;
 		res.yderivative.temperature = 0;
 		res.zderivative.temperature = 0;
+		res.xderivative.G = 0;
+		res.yderivative.G = 0;
+		res.zderivative.G = 0;
+		res.xderivative.Y0 = 0;
+		res.yderivative.Y0 = 0;
+		res.zderivative.Y0 = 0;
+		res.xderivative.elastic_energy = 0;
+		res.yderivative.elastic_energy = 0;
+		res.zderivative.elastic_energy = 0;
+		res.xderivative.plastic_strain = 0;
+		res.yderivative.plastic_strain = 0;
+		res.zderivative.plastic_strain = 0;
+		res.xderivative.plastic_strain_dt = 0;
+		res.yderivative.plastic_strain_dt = 0;
+		res.zderivative.plastic_strain_dt = 0;
+		
 		if (slf)
 		{
 #ifdef RICH_DEBUG
@@ -703,7 +933,10 @@ void LinearGauss3D::Interp(ComputationalCell3D &res, ComputationalCell3D const& 
 LinearGauss3D::LinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost, bool slf, double delta_v, double theta,
 	double delta_P, bool SR, const vector<string>& calc_tracers, const string& skip_key,bool pressure_calc) : eos_(eos), ghost_(ghost), rslopes_(),
 	naive_rslopes_(), slf_(slf), shockratio_(delta_v), diffusecoeff_(theta), pressure_ratio_(delta_P), SR_(SR),
-	calc_tracers_(calc_tracers), skip_key_(skip_key), to_skip_(),pressure_calc_(pressure_calc) {}
+	calc_tracers_(calc_tracers), skip_key_(skip_key), to_skip_(),pressure_calc_(pressure_calc)
+	{
+		slopes_have_been_built = false;
+	}
 
 void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double time) 
 {
@@ -727,8 +960,13 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 		}
 	}
 	// Prepare slopes
-	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
-	naive_rslopes_.resize(CellNumber);
+	if(not slopes_have_been_built)
+	{
+		rslopes_.clear()
+		naive_rslopes_.clear()
+		rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+		naive_rslopes_.resize(CellNumber);
+	}
 	Slope3D temp1(cells[0], cells[0], cells[0]);
 	ComputationalCell3D temp2(cells[0]);
 	ComputationalCell3D temp3(cells[0]);
@@ -740,9 +978,10 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 	std::vector<Vector3D> c_ij;
 	for (size_t i = 0; i < CellNumber; ++i)
 	{
-		calc_slope(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
-			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
-			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list);
+		if(not slopes_have_been_built)
+			calc_slope(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
+				calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
+				neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list);
 	}
 #ifdef RICH_MPI
 	// communicate ghost slopes
@@ -1073,6 +1312,8 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 			}
 		}
 	}
+	if(slopes_have_been_built)
+		slopes_have_been_built = false;
 	//In SR convert back to velocities
 	if (SR_)
 	{
