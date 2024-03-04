@@ -53,7 +53,8 @@ struct GravityNodeData : Serializable
 class DistributedGravityTree
 {
 public:
-    explicit DistributedGravityTree(const GravityTree<Vector3D> *gravityTree, const Tessellation3D &tess, double theta, bool quadrupole, int ownerSplit = DEFAULT_OWNER_SPLIT, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm), root(nullptr), thetaSquared(theta * theta), quadrupole(quadrupole), ownerSplit(ownerSplit)
+    explicit DistributedGravityTree(const GravityTree<Vector3D> *gravityTree, const Tessellation3D &tess, double theta, bool quadrupole, int ownerSplit = DEFAULT_OWNER_SPLIT, const MPI_Comm &comm = MPI_COMM_WORLD):
+        comm(comm), root(nullptr), thetaSquared(theta * theta), quadrupole(quadrupole), ownerSplit(ownerSplit)
     {
         MPI_Comm_size(comm, &this->size);
         MPI_Comm_rank(comm, &this->rank);
@@ -263,11 +264,6 @@ void DistributedGravityTree::buildHelper(DistributedGravityTree::Node *node, int
     {
         return;
     }    
-
-    if(maxRank <= minRank)
-    {
-        return;
-    }
     
     if(maxRank == minRank + 1)
     {
@@ -287,7 +283,7 @@ void DistributedGravityTree::buildHelper(DistributedGravityTree::Node *node, int
         {
             Node *child = new Node();
             int firstOwner = minRank + i * ownersPerChild;
-            int lastOwner = (i == this->ownerSplit - 1)? maxRank : minRank + ownersPerChild;
+            int lastOwner = (i == this->ownerSplit - 1)? maxRank : firstOwner + ownersPerChild;
             this->buildHelper(child, firstOwner, lastOwner);
             child->parent = node;
             node->children.push_back(child);
