@@ -26,26 +26,27 @@ public:
         }
         std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
 
+        size_t N = tess.GetPointNo();
+
         #ifdef RICH_MPI
-            DistributedGravityCalculator agent(points, masses, boundaries.first, boundaries.second, this->theta, this->quadrupole);
-            acc = agent.getAcceleration(points);
+            DistributedGravityCalculator agent(tess, masses, this->theta, this->quadrupole);
+            acc = agent.getAcceleration(points, masses);
         #else // RICH_MPI
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
             std::vector<MassedPoint<Vector3D>> massedPoints;
-            for(size_t i = 0; i < points.size(); i++)
+            for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                massedPoints.emplace_back(MassedPoint<Vector3D>(points[i], masses[i]));
+                massedPoints.emplace_back(MassedPoint<Vector3D>(points[pointIdx], masses[pointIdx]));
             }
             gravTree.build(massedPoints);
             
             acc.clear();
-            for(const Vector3D &point : points)
+            for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                acc.push_back(gravTree.gravity(point));
+                acc.push_back(gravTree.gravity(point) * masses[pointIdx]);
             }
         #endif // RICH_MPI
 
-        size_t const N = tess.GetPointNo();
         for(size_t i = 0; i < N; ++i)
             acc[i] *= this->G;
     }
