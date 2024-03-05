@@ -21,7 +21,6 @@ public:
     }
 
 private:
-
     MPI_Comm comm;
     int rank, size;
     const Tessellation3D &tess;
@@ -83,19 +82,24 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
         results[pointIdx] += gravityResult;
     }
 
-    // exchange the list
-    std::vector<std::vector<Vector3D>> incomingPoints = MPI_Exchange_all_to_all(pointsToRanks, this->comm);
-
-    // for each rank, we caluclate the gravity of the points we received from it
     std::vector<std::vector<Vector3D>> resultsForRanks;
-    for(int _rank = 0; _rank < this->size; _rank++)
     {
-        resultsForRanks.emplace_back();
-        std::vector<Vector3D> &res = resultsForRanks.back();
-        for(const Vector3D &point : incomingPoints[_rank])
+        // exchange the list
+        std::vector<std::vector<Vector3D>> incomingPoints = MPI_Exchange_all_to_all(pointsToRanks, this->comm);
+        // no need of points to ranks anymore
+        pointsToRanks.clear();
+        pointsToRanks.shrink_to_fit();
+
+        // for each rank, we caluclate the gravity of the points we received from it
+        for(int _rank = 0; _rank < this->size; _rank++)
         {
-            res.push_back(this->gravityTree->gravity(point));
-        } 
+            resultsForRanks.emplace_back();
+            std::vector<Vector3D> &res = resultsForRanks.back();
+            for(const Vector3D &point : incomingPoints[_rank])
+            {
+                res.push_back(this->gravityTree->gravity(point));
+            } 
+        }
     }
 
     // exchange back the results
