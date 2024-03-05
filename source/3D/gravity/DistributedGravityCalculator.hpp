@@ -12,15 +12,16 @@ class DistributedGravityCalculator
 public:
     DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
-    std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const;
+    std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
 
     inline ~DistributedGravityCalculator()
     {
         delete this->gravityTree;
-        delete this->distributedGravityTree;
     }
 
 private:
+    using LocalNode = typename GravityTree<Vector3D>::Node;
+
     MPI_Comm comm;
     int rank, size;
     const Tessellation3D &tess;
@@ -28,11 +29,23 @@ private:
     double thetaSquared;
     bool quadrupole;
     GravityTree<Vector3D> *gravityTree;
-    const DistributedGravityTree *distributedGravityTree;
+    std::vector<std::vector<GravityNodeData>> boundingBoxesOfRanks;
+    mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths;
+
+    std::vector<std::vector<GravityNodeData>> calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const;
+
+    void getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result) const;
+    
+    inline std::vector<std::vector<MassedValue<Vector3D>>> getSendList() const
+    {
+        std::vector<std::vector<MassedValue<Vector3D>>> result(this->size);
+        this->getSendListHelper(this->gravityTree->getOctTree()->getRoot(), result);
+        return result;
+    }
 };
 
 DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_, const MPI_Comm &comm_):
-    tess(tess_), theta(theta_), thetaSquared(theta_ * theta_), quadrupole(quadrupole_), comm(comm_), distributedGravityTree(nullptr)
+    tess(tess_), theta(theta_), thetaSquared(theta_ * theta_), quadrupole(quadrupole_), comm(comm_)
 {
     MPI_Comm_size(this->comm, &this->size);
     MPI_Comm_rank(this->comm, &this->rank);
@@ -48,74 +61,137 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
     gravTree->build(massedPoints);
     this->gravityTree = gravTree;
     
-    this->distributedGravityTree = new DistributedGravityTree(this->gravityTree, tess_, this->theta, this->quadrupole, DEFAULT_OWNER_SPLIT, this->comm);
+    this->relevantRanksByDepths.resize(this->gravityTree->getOctTree()->getDepth() + 1);
+    for(int _rank = 0; _rank < this->size; _rank++)
+    {
+        if(_rank != this->rank)
+        {
+            this->relevantRanksByDepths[0].insert(_rank);
+        }
+    }
+    this->boundingBoxesOfRanks = this->calculateBoundingBoxesOfRanks(tess);
 }
 
-
-std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points, const std::vector<gravity_result_t> &masses) const
+std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const
 {
+    // first, find my LL and UR
+    Vector3D myLL(Vector3D::max()), myUR(Vector3D::min());
+    size_t N = tess.GetPointNo();
+    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
+    {
+        Vector3D CM = tess.GetMeshPoint(pointIdx);
+        for(int dim = 0; dim < 3; dim++)
+        {
+            myLL[dim] = std::min(myLL[dim], CM[dim]);
+            myUR[dim] = std::max(myUR[dim], CM[dim]);
+        }
+    }
+
+    const LocalNode *gravityTreeRoot = this->gravityTree->getOctTree()->getRoot();
+    GravityNodeData data;
+    data.boundingBox = _BoundingBox<Vector3D>(myLL, myUR);
+    data.CM = gravityTreeRoot->value.CM;
+    data.mass = gravityTreeRoot->value.mass;
+    data.Q = gravityTreeRoot->value.Q;
+
+    std::vector<GravityNodeData> myData = {data};
+    return MPI_All_cast_by_ranks(myData, this->comm);
+}
+
+std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
+{
+    {
+        std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks;
+        {
+            std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
+            insertToTreeByRanks = MPI_Exchange_all_to_all(sendList, this->comm);
+        }
+
+        size_t totalArrived = 0;
+        for(int _rank = 0; _rank < this->size; _rank++)
+        {
+            std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
+            totalArrived += rankData.size();
+            if(_rank != this->rank)
+            {
+                this->gravityTree->addExternalValues(rankData);
+            }
+
+            // remove memory of `rankData`
+            rankData.clear();
+            rankData.shrink_to_fit();
+        }
+        this->gravityTree->calculateMasses();
+    }
+
     // calculate the results, locally
     std::vector<Vector3D> results;
     for(const Vector3D &point : points)
     {
         results.emplace_back(this->gravityTree->gravity(point));
     }
-
-    // now, exchange necessary points with other processes
-
-    std::vector<std::vector<size_t>> indicesToRanks(this->size);
-    std::vector<std::vector<Vector3D>> pointsToRanks(this->size);
-
-    size_t N = points.size();
-    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
-    {
-        const Vector3D &point = points[pointIdx];
-        auto [gravityResult, ranksToRequest] = this->distributedGravityTree->gravity(point);
-        for(int _rank : ranksToRequest)
-        {
-            if(this->rank != _rank)
-            {
-                indicesToRanks[_rank].push_back(pointIdx);
-                pointsToRanks[_rank].push_back(point);
-            }
-        }
-        results[pointIdx] += gravityResult;
-    }
-
-    std::vector<std::vector<Vector3D>> resultsForRanks;
-    {
-        // exchange the list
-        std::vector<std::vector<Vector3D>> incomingPoints = MPI_Exchange_all_to_all(pointsToRanks, this->comm);
-        // no need of points to ranks anymore
-        pointsToRanks.clear();
-        pointsToRanks.shrink_to_fit();
-
-        // for each rank, we caluclate the gravity of the points we received from it
-        for(int _rank = 0; _rank < this->size; _rank++)
-        {
-            resultsForRanks.emplace_back();
-            std::vector<Vector3D> &res = resultsForRanks.back();
-            for(const Vector3D &point : incomingPoints[_rank])
-            {
-                res.push_back(this->gravityTree->gravity(point));
-            } 
-        }
-    }
-
-    // exchange back the results
-    std::vector<std::vector<Vector3D>> incomingResults = MPI_Exchange_all_to_all(resultsForRanks, this->comm);
-    for(int _rank = 0; _rank < this->size; _rank++)
-    {
-        const std::vector<size_t> &indices = indicesToRanks[_rank];
-        const std::vector<Vector3D> &rankResult = incomingResults[_rank];
-        size_t N = indices.size();
-        for(size_t i = 0; i < N; i++)
-        {
-            const size_t &pointIdx = indices[i];
-            results[pointIdx] += rankResult[i];
-        }
-    }
     return results;
+}
+
+void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result) const
+{
+    if(localNode == nullptr)
+    {
+        return;
+    }
+
+    int depth = localNode->depth;
+    boost::container::flat_set<int> &relevantRanks = this->relevantRanksByDepths[depth];
+
+    if(!localNode->isLeaf)
+    {
+        this->relevantRanksByDepths[depth + 1].clear();
+    }
+
+    bool someoneWantsToOpen = false;
+    for(int _rank : relevantRanks)
+    {
+        // check whether or not the rank `_rank` has a bounding box contained in `localNode`
+        bool contained = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
+                                    [localNode](const GravityNodeData &remote)
+                                    {
+                                        return localNode->boundingBox.contained(remote.boundingBox);
+                                    });
+        bool shouldOpen = false;
+        if(not contained)
+        {
+            shouldOpen = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
+                                    [localNode, this](const GravityNodeData &remote)
+                                    {
+                                        return ShouldOpenBox(localNode->value.CM, localNode->boundingBox, remote.boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
+                                    });
+        }
+
+        if(!localNode->isLeaf and (contained or shouldOpen))
+        {
+            someoneWantsToOpen = true;
+            // we should open, add the rank to the recursive list
+            this->relevantRanksByDepths[depth + 1].insert(_rank);
+        }
+        else
+        {
+            // we need to send this node to this rank
+            result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
+        }
+    }
+
+    if(not someoneWantsToOpen)
+    {
+        return;
+    }
+    // else, call recursively to each one of my children
+    for(size_t i = 0; i < CHILDREN; i++)
+    {
+        if(localNode->children[i] != nullptr)
+        {
+            this->getSendListHelper(localNode->children[i], result);
+        }
+    }
 }
 
 #endif // DISTRIUBTED_GRAVITY_CALCULATOR_HPP

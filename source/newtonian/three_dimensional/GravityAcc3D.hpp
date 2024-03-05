@@ -30,7 +30,7 @@ public:
 
         #ifdef RICH_MPI
             DistributedGravityCalculator agent(tess, masses, this->theta, this->quadrupole);
-            acc = agent.getAcceleration(points, masses);
+            acc = agent.getAcceleration(points);
         #else // RICH_MPI
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
             std::vector<MassedPoint<Vector3D>> massedPoints;

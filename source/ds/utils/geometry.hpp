@@ -112,6 +112,9 @@ public:
         */
     }
 
+    /**
+     * returns whether the other bounding box is contained in me.
+    */
     template<typename U>
     inline bool contained(const _BoundingBox<U> &other) const
     {
