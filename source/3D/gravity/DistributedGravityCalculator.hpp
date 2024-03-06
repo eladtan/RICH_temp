@@ -122,10 +122,6 @@ std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculat
     const LocalNode *gravityTreeRoot = this->realRootOfGravityTree;
     GravityNodeData data;
     data.boundingBox = gravityTreeRoot->boundingBox;
-    if(this->rank == 0)
-    {
-        std::cout << "0's BB is " << data.boundingBox << std::endl;
-    }
     data.CM = gravityTreeRoot->value.CM;
     data.mass = gravityTreeRoot->value.mass;
     data.Q = gravityTreeRoot->value.Q;
