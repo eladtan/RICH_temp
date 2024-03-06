@@ -31,15 +31,17 @@ private:
     GravityTree<Vector3D> *gravityTree;
     std::vector<std::vector<GravityNodeData>> boundingBoxesOfRanks;
     mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths;
+    mutable EnvironmentAgent::RanksSet tempRanks;
+    const GravityTree<Vector3D>::Node *realRootOfGravityTree;
 
     std::vector<std::vector<GravityNodeData>> calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const;
 
-    void getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result) const;
+    void getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const;
     
     inline std::vector<std::vector<MassedValue<Vector3D>>> getSendList() const
     {
         std::vector<std::vector<MassedValue<Vector3D>>> result(this->size);
-        this->getSendListHelper(this->gravityTree->getOctTree()->getRoot(), result);
+        this->getSendListHelper(this->realRootOfGravityTree, result, 0);
         return result;
     }
 };
@@ -69,6 +71,36 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
             this->relevantRanksByDepths[0].insert(_rank);
         }
     }
+
+    this->realRootOfGravityTree = this->gravityTree->getOctTree()->getRoot();
+    while(true)
+    {
+        const LocalNode *nonNullChild = nullptr;
+        bool severalChildren = false;
+        for(const LocalNode *child : this->realRootOfGravityTree->children)
+        {
+            if(child == nullptr)
+            {
+                continue;
+            }
+            if(nonNullChild == nullptr)
+            {
+                nonNullChild = child;
+            }
+            else
+            {
+                // found!
+                severalChildren = true;
+                break;
+            }
+
+        }
+        if(severalChildren or (nonNullChild == nullptr))
+        {
+            break;
+        }
+        this->realRootOfGravityTree = nonNullChild;
+    }
     this->boundingBoxesOfRanks = this->calculateBoundingBoxesOfRanks(tess);
 }
 
@@ -79,17 +111,21 @@ std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculat
     size_t N = tess.GetPointNo();
     for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
     {
-        Vector3D CM = tess.GetMeshPoint(pointIdx);
+        Vector3D point = tess.GetMeshPoint(pointIdx);
         for(int dim = 0; dim < 3; dim++)
         {
-            myLL[dim] = std::min(myLL[dim], CM[dim]);
-            myUR[dim] = std::max(myUR[dim], CM[dim]);
+            myLL[dim] = std::min(myLL[dim], point[dim]);
+            myUR[dim] = std::max(myUR[dim], point[dim]);
         }
     }
 
-    const LocalNode *gravityTreeRoot = this->gravityTree->getOctTree()->getRoot();
+    const LocalNode *gravityTreeRoot = this->realRootOfGravityTree;
     GravityNodeData data;
-    data.boundingBox = _BoundingBox<Vector3D>(myLL, myUR);
+    data.boundingBox = gravityTreeRoot->boundingBox;
+    if(this->rank == 0)
+    {
+        std::cout << "0's BB is " << data.boundingBox << std::endl;
+    }
     data.CM = gravityTreeRoot->value.CM;
     data.mass = gravityTreeRoot->value.mass;
     data.Q = gravityTreeRoot->value.Q;
@@ -133,63 +169,82 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     return results;
 }
 
-void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result) const
+void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const
 {
     if(localNode == nullptr)
     {
         return;
     }
 
-    int depth = localNode->depth;
     boost::container::flat_set<int> &relevantRanks = this->relevantRanksByDepths[depth];
-
-    if(!localNode->isLeaf)
+    
+    if(localNode->isLeaf)
     {
-        this->relevantRanksByDepths[depth + 1].clear();
-    }
-
-    bool someoneWantsToOpen = false;
-    for(int _rank : relevantRanks)
-    {
-        // check whether or not the rank `_rank` has a bounding box contained in `localNode`
-        bool contained = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
-                                    [localNode](const GravityNodeData &remote)
-                                    {
-                                        return localNode->boundingBox.contained(remote.boundingBox);
-                                    });
-        bool shouldOpen = false;
-        if(not contained)
+        // we need to send this node to the ranks that are relevant
+        for(int _rank : relevantRanks)
         {
-            shouldOpen = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
-                                    [localNode, this](const GravityNodeData &remote)
-                                    {
-                                        return ShouldOpenBox(localNode->value.CM, localNode->boundingBox, remote.boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
-                                    });
-        }
-
-        if(!localNode->isLeaf and (contained or shouldOpen))
-        {
-            someoneWantsToOpen = true;
-            // we should open, add the rank to the recursive list
-            this->relevantRanksByDepths[depth + 1].insert(_rank);
-        }
-        else
-        {
-            // we need to send this node to this rank
             result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
         }
-    }
-
-    if(not someoneWantsToOpen)
-    {
         return;
     }
-    // else, call recursively to each one of my children
-    for(size_t i = 0; i < CHILDREN; i++)
+    else
     {
-        if(localNode->children[i] != nullptr)
+        this->relevantRanksByDepths[depth + 1].clear();
+        bool someoneWantsToOpen = false;
+
+        for(int _rank : relevantRanks)
         {
-            this->getSendListHelper(localNode->children[i], result);
+            // check whether or not the rank `_rank` has a bounding box contained in `localNode`
+            bool contained = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
+                                        [localNode](const GravityNodeData &remote)
+                                        {
+                                            return remote.boundingBox.contained(localNode->boundingBox); // if local node is contained in `remote`'s bounding box
+                                        });
+            bool shouldOpen = false;
+            if(contained)
+            {
+                // check if sphere of radius `w/theta` centered at `localNode->value.CM` intersects with rank `_rank`
+                if(this->tempRanks.empty())
+                {
+                    this->tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, localNode->boundingBox.getWidth() / this->theta));
+                }
+                shouldOpen = (this->tempRanks.find(_rank) != this->tempRanks.end());
+            }
+            else
+            {
+                shouldOpen = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
+                                        [localNode, this](const GravityNodeData &remote)
+                                        {
+                                            return ShouldOpenBox(localNode->value.CM, localNode->boundingBox, remote.boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
+                                        });
+            }
+
+            if(shouldOpen)
+            {
+                someoneWantsToOpen = true;
+                // we should open, add the rank to the recursive list
+                this->relevantRanksByDepths[depth + 1].insert(_rank);
+            }
+            else
+            {
+                // we need to send this node to this rank
+                result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
+            }
+        }
+
+        this->tempRanks.clear();
+
+        if(not someoneWantsToOpen)
+        {
+            return;
+        }
+        // else, call recursively to each one of my children
+        for(size_t i = 0; i < CHILDREN; i++)
+        {
+            if(localNode->children[i] != nullptr)
+            {
+                this->getSendListHelper(localNode->children[i], result, depth + 1);
+            }
         }
     }
 }
