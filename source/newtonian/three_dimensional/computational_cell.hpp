@@ -10,14 +10,16 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #ifdef RICH_MPI
-#include "misc/serializable.hpp"
+	#include "misc/serializable.hpp"
 #endif // RICH_MPI
 
  //! \brief Container for the hydrodynamic variables
-class ComputationalCell3D : public Serializable
+class ComputationalCell3D
+						#ifdef RICH_MPI
+							: public Serializable
+						#endif // RICH_MPI
 {
 public:
-
 	//! \brief Density
 	double density;
 
@@ -92,7 +94,7 @@ public:
     \param other Source
    */
   ComputationalCell3D(const ComputationalCell3D& other);
-
+	
 	/*! \brief Self increment operator
 	\param other Addition
 	\return Reference to self
@@ -132,7 +134,6 @@ public:
    */
 	void unserialize(const vector<double>& data) override;
 #endif // RICH_MPI
-
 };
 
 /*! \brief Term by term addition

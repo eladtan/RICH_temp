@@ -3,17 +3,41 @@ RICH is an compressible hydrodynamic simulation on a moving mesh written in c++.
 We've recently published papers explaining the [serial](http://iopscience.iop.org/0067-0049/216/2/35/) and 
 [parallel](http://adsabs.harvard.edu/abs/2015ApJS..216...14S) versions of the code.
 
+# Installation
 
+## Clone
+Clone the latest version of RICH:
+```shell
+git clone --recursive https://gitlab.com/eladtan/RICH.git
+```
 
-# compilation on ICPL (as of 08/10/2022)
+Make sure the submodules are installed:
+```shell
+cd RICH
+git submodule
+```
 
-## Setting gcc compiler envoinronment
+# compilation on ICPL (as of 31/03/2024)
+
+## Setting up GNU compiler environment
+
+### Gates 1, 2 (Linux 4.18.0)
 For `gnu` compilation, use `ml purge` and then load these modules:
 ```
   1) git/2.33.0     4) cmake/3.20.2     7) openmpi/4.1.4/gcc/12.2.0
   2) python/3.9.7   5) pybind11/2.6.1   8) hdf5/1.12.2/gcc/12.2.0_cxx
   3) boost/1.74.0   6) gcc/12.2.0       9) vtk/9.2.0/gcc/12.2.0/with_X
 ```
+
+### Gates 3, 4 (Linux 5.14.0)
+For `gnu` compilation, use `ml purge` and then load these modules:
+```
+  1) gcc/12.3.0     4) hdf5/1.14.2/gcc/12.3.0_cxx     7) pybind11/2.11.1
+  2) python3/3.9.18   5) openmpi/4.1.4/gcc/12.2.0   
+  3) boost/1.78.0   6) vtk/9.3.0/gcc/12.3.0/with_X      
+```
+
+### Save Configuration
 It is advised to save these module configuration via 
 
 ```shell
@@ -32,7 +56,9 @@ Saved `module` configurations can be find in:
 ls ~/.lmod.d
 ```
 
-## Setting intel compiler envoinronment
+## Setting up intel compiler environment
+
+### Gates 1, 2 (Linux 4.18.0)
 Similarly, for `intel` compilation, use `ml purge` and then load these modules:
 ```
   1) git/2.33.0             8) gcc/12.2.0
@@ -54,7 +80,6 @@ and then reload it on a new shell via:
 ```shell
 ml restore rich_intel2022_3
 ```
-
 
 ## Compiling a specific run (`main.cpp`) file
 
