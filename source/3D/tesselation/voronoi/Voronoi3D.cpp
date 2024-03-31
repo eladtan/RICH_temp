@@ -2748,10 +2748,12 @@ const vector<Vector3D> &Voronoi3D::getMeshPoints(void) const
     return del_.points_;
 }
 
-const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
-{
-    return this->allMyPoints;
-}
+#ifdef RICH_MPI
+    const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
+    {
+        return this->allMyPoints;
+    }
+#endif // RICH_MPI
 
 vector<std::size_t> Voronoi3D::GetNeighbors(std::size_t index) const
 {
@@ -2903,10 +2905,12 @@ size_t &Voronoi3D::GetPointNo(void)
     return Norg_;
 }
 
-size_t Voronoi3D::GetAllPointsNo(void) const
-{
-    return this->allMyPoints.size();
-}
+#ifdef RICH_MPI
+    size_t Voronoi3D::GetAllPointsNo(void) const
+    {
+        return this->allMyPoints.size();
+    }
+#endif // RICH_MPI
 
 std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
 {
