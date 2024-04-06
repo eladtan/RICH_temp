@@ -9,7 +9,7 @@
                 "${workspaceFolder}/source/opt/vcl", // for vcl
                 "/software/x86_64/5.14.0/openmpi/4.1.4/gcc/12.2.0/include", // for mpi
                 "/software/x86_64/5.14.0/boost/1.78.0/include", // for boost
-                "/software/x86_64/5.14.0/vtk/9.3.0/gcc/12.3.0/with_mesa/include", // for vtk
+                "/software/x86_64/5.14.0/vtk/9.3.0/gcc/12.3.0/with_mesa/include/vtk-9.3/", // for vtk
                 "/software/x86_64/5.14.0/hdf5/1.14.2/gcc/12.3.0_cxx/include", // for hdf5
                 "/software/x86_64/5.14.0/jsoncpp/1.9.5/include", // for json_cpp
                 "/software/x86_64/5.14.0/intel/oneapi/2024.0.1/vtune/latest/include" // for vtune
