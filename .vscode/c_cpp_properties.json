@@ -18,7 +18,6 @@
             ],
 
             "defines": [
-                "RICH_MPI"
             ],
             
             "cStandard": "c11",

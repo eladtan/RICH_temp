@@ -1,6 +1,7 @@
 #ifndef DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 #define DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 
+#ifdef RICH_MPI
 #include "3D/tesselation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
@@ -107,7 +108,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
 std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const
 {
     // first, find my LL and UR
-    Vector3D myLL(Vector3D::max()), myUR(Vector3D::min());
+    Vector3D myLL(Vector3D::max()), myUR(Vector3D::lowest());
     size_t N = tess.GetPointNo();
     for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
     {
@@ -244,5 +245,7 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
         }
     }
 }
+
+#endif // RICH_MPI
 
 #endif // DISTRIUBTED_GRAVITY_CALCULATOR_HPP

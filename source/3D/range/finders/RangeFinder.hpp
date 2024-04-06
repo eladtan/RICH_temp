@@ -2,11 +2,11 @@
 #define _RANGE_FINDER_HPP
 
 #include <boost/container/flat_set.hpp>
-#include "../../elementary/Vector3D.hpp"
+#include <boost/unordered_set.hpp>
 #include <vector>
 #include <limits>
 #include <unordered_set>
-#include <boost/unordered_set.hpp>
+#include "../../elementary/Vector3D.hpp"
 
 class RangeFinder
 {
@@ -27,6 +27,7 @@ public:
     }
     
     virtual const Vector3D &getPoint(size_t index) const = 0;
+    
     virtual size_t size() const = 0;
 };
 

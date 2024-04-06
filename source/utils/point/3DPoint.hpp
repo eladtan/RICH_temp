@@ -3,11 +3,16 @@
 
 #include <iostream>
 #include "3D/elementary/Vector3D.hpp"
-#include "misc/serializable.hpp"
+#ifdef RICH_MPI
+    #include "misc/serializable.hpp"
+#endif // RICH_MPI
 
 #define EPSILON 1e-12
 
-struct _3DPoint : public Serializable
+struct _3DPoint 
+    #ifdef RICH_MPI
+                : public Serializable
+    #endif // RICH_MPI
 {
     using coord_type = double;
 
@@ -111,22 +116,24 @@ struct _3DPoint : public Serializable
         return stream;
     }
 
-    size_t getChunkSize(void) const override
-    {
-        return 3;
-    }
-    
-    std::vector<double> serialize(void) const override
-    {
-        return std::vector<double>({this->x, this->y, this->z});
-    }
+    #ifdef RICH_MPI
+        inline size_t getChunkSize(void) const override
+        {
+            return 3;
+        }
+        
+        inline std::vector<double> serialize(void) const override
+        {
+            return std::vector<double>({this->x, this->y, this->z});
+        }
 
-    void unserialize(const std::vector<double>& data) override
-    {
-        this->x = data[0];
-        this->y = data[1];
-        this->z = data[2];
-    }
+        inline void unserialize(const std::vector<double>& data) override
+        {
+            this->x = data[0];
+            this->y = data[1];
+            this->z = data[2];
+        }
+    #endif // RICH_MPI
 };
 
 // specializations

@@ -28,10 +28,17 @@ using std::vector;
 class Tessellation3D
 {
 public:
+  virtual void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) = 0;
+
   /*! \brief Builds the tessellation
     \param points Initial position of mesh generating points
   */
-  virtual void Build(vector<Vector3D> const& points) = 0;
+  virtual void Build(vector<Vector3D> const& points)
+  {
+    std::vector<size_t> indicesToBuild(points.size());
+    std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
+    this->BuildPartially(points, indicesToBuild);
+  }
 
   #ifdef RICH_MPI
   /*! \brief Returns true iff the given point lies inside my domain (under my responsibility).
@@ -208,52 +215,54 @@ public:
   */
   virtual bool BoundaryFace(size_t index) const = 0;
 
-  /*!
-    \brief Returns the indeces of the points that were sent to other processors as ghost points 
-    \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
-  */
-  virtual vector<vector<size_t> >& GetDuplicatedPoints(void) = 0;
-  /*!
-    \brief Returns the indeces of the points that were sent to other processors as ghost points
-    \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
-  */
-  virtual vector<vector<size_t> >const& GetDuplicatedPoints(void)const = 0;
+  #ifdef RICH_MPI
+    /*!
+      \brief Returns the indeces of the points that were sent to other processors as ghost points 
+      \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
+    */
+    virtual vector<vector<size_t> >& GetDuplicatedPoints(void) = 0;
+    /*!
+      \brief Returns the indeces of the points that were sent to other processors as ghost points
+      \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
+    */
+    virtual vector<vector<size_t> >const& GetDuplicatedPoints(void)const = 0;
 
-  /*!
-    \brief Returns the indeces of the points that were sent to other processors as ghost points
-    \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
-  */
-  virtual vector<int> GetDuplicatedProcs(void)const = 0;
+    /*!
+      \brief Returns the indeces of the points that were sent to other processors as ghost points
+      \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
+    */
+    virtual vector<int> GetDuplicatedProcs(void)const = 0;
 
-  /*! \brief Gets the list of parallel process to which points have been sent
-    \return List of process indices
-   */
-  virtual vector<int> GetSentProcs(void)const = 0;
+    /*! \brief Gets the list of parallel process to which points have been sent
+      \return List of process indices
+    */
+    virtual vector<int> GetSentProcs(void)const = 0;
 
-  /*! \brief Get Indices of points sent to other parallel processes
-    \return List of indices of cells sent to other processes, partitioned by process
-   */
-  virtual vector<vector<size_t> > const& GetSentPoints(void)const = 0;
+    /*! \brief Get Indices of points sent to other parallel processes
+      \return List of indices of cells sent to other processes, partitioned by process
+    */
+    virtual vector<vector<size_t> > const& GetSentPoints(void)const = 0;
 
-  /*! \brief Get real index of points
-    \return List of real indices
-   */
-  virtual vector<size_t> const& GetSelfIndex(void) const = 0;
+    /*! \brief Get real index of points
+      \return List of real indices
+    */
+    virtual vector<size_t> const& GetSelfIndex(void) const = 0;
 
-  /*! \brief Gets the list of parallel process to which points have been sent
-    \return List of process indices
-   */
-  virtual vector<int>& GetSentProcs(void) = 0;
+    /*! \brief Gets the list of parallel process to which points have been sent
+      \return List of process indices
+    */
+    virtual vector<int>& GetSentProcs(void) = 0;
 
-  /*! \brief Get Indices of points sent to other parallel processes
-    \return List of indices of cells sent to other processes, partitioned by process
-   */
-  virtual vector<vector<size_t> > & GetSentPoints(void) = 0;
+    /*! \brief Get Indices of points sent to other parallel processes
+      \return List of indices of cells sent to other processes, partitioned by process
+    */
+    virtual vector<vector<size_t> > & GetSentPoints(void) = 0;
 
-  /*! \brief Get self inidices of points
-    \return List of all indices
-   */
-  virtual vector<size_t> & GetSelfIndex(void) = 0;
+    /*! \brief Get self inidices of points
+      \return List of all indices
+    */
+    virtual vector<size_t> & GetSelfIndex(void) = 0;
+  #endif // RICH_MPI
 
   /*!
     \brief Returns the total number of points (including ghost)
@@ -337,16 +346,18 @@ public:
    */
   virtual Vector3D FaceCM(size_t index)const=0;
 
-  /*! \brief Get indices of ghost points
-    \return List of list of ghost point indices
-   */
-  virtual vector<vector<size_t> > const& GetGhostIndeces(void) const = 0;
+  #ifdef RICH_MPI
+    /*! \brief Get indices of ghost points
+      \return List of list of ghost point indices
+    */
+    virtual vector<vector<size_t> > const& GetGhostIndeces(void) const = 0;
 
-  /*! \brief Get indices of ghost points
-    \return List of indices of ghost points
-   */
-  virtual vector<vector<size_t> > & GetGhostIndeces(void) = 0;
-
+    /*! \brief Get indices of ghost points
+      \return List of indices of ghost points
+    */
+    virtual vector<vector<size_t> > & GetGhostIndeces(void) = 0;
+  #endif // RICH_MPI
+  
   /*! \brief Get the coordinate of opposite corners of the boundary
     \return Pair of coordiantes of opposite corners
    */

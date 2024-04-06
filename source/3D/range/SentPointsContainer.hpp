@@ -1,6 +1,8 @@
 #ifndef SENT_CONTAINER_HPP
 #define SENT_CONTAINER_HPP
 
+#ifdef RICH_MPI
+
 #include <vector>
 #include <boost/container/flat_set.hpp>
 #include <algorithm>
@@ -121,5 +123,7 @@ private:
         this->sentDataSet.emplace_back(PointsSet());
     }
 };
+
+#endif // RICH_MPI
 
 #endif // SENT_CONTAINER_HPP

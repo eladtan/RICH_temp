@@ -6,6 +6,7 @@
 #include <vector>
 #include <chrono>
 #include <mpi.h>
+#include <functional>
 #include "newtonian/two_dimensional/computational_cell_2d.hpp"
 #include "newtonian/two_dimensional/extensive.hpp"
 #include "tessellation/tessellation.hpp"
@@ -551,7 +552,7 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 		throw eo;
 	}
 
-	// agree the chunk size
+	// agree on the chunk size
 	size_t chunkSize = (data.empty() or data[0].empty())? 0 : data[0][0].getChunkSize();
 	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
 	if(chunkSize == 0)
@@ -640,6 +641,102 @@ T MPI_Bcast_serializable(const T &data, int root, const MPI_Comm &comm)
 	T result;
 	result.unserialize(recv);
 	return result;
+}
+
+template<typename T>
+std::vector<T> MPI_Exchange_by_ownership(const std::vector<T> &data, const std::function<int(const T&)> &ownership, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_Exchange_by_ownership: given type must be serializable");
+
+	int rank, size;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+	std::vector<std::vector<T>> dataByRanks(size);
+	for(const T &value : data)
+	{
+		int _rank = ownership(value);
+		if(_rank < 0 or _rank >= size)
+		{
+			UniversalError eo("MPI_Exchange_by_ownership: ownership function returned invalid rank");
+			eo.addEntry("Rank", _rank);
+			eo.addEntry("Size", size);
+			throw eo;
+		}
+		dataByRanks[_rank].push_back(value);
+	}
+
+	std::vector<std::vector<T>> exchangedData = MPI_Exchange_all_to_all(dataByRanks, comm);
+	std::vector<T> result;
+	for(const std::vector<T> &values : exchangedData)
+	{
+		result.insert(result.end(), values.begin(), values.end());
+	}
+	return result;
+}
+
+template<typename T>
+std::vector<T> MPI_Gatherv_serializable(const std::vector<T> &data, int root, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_Exchange_by_ownership: given type must be serializable");
+
+	int rank, size;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+	// agree on the chunk size
+	size_t chunkSize = data.empty()? 0 : data[0].getChunkSize();
+	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
+	if(chunkSize == 0)
+	{
+		return std::vector<std::vector<T>>(size); // no data is being sent
+	}
+	
+	int mySendSize = static_cast<int>(data.size());
+	std::vector<double> dataToSend;
+	dataToSend.reserve(data.size() * chunkSize);
+
+	for(const T &dataValue : data)
+	{
+		std::vector<double> serialized = dataValue.serialize();
+		dataToSend.insert(dataToSend.end(), serialized.begin(), serialized.end());
+	}
+
+	if(rank == root)
+	{
+		std::vector<int> sizesToRecv(size), displs(size, 0);
+		sizesToRecv.resize(size);
+
+		MPI_Gather(&mySendSize, 1, MPI_INT, sizesToRecv.data(), 1, MPI_INT, root, comm);
+
+		int allSize = 0;
+		for(int _rank = 0; _rank < size; _rank++)
+		{
+			displs[_rank] = allSize;
+			sizesToRecv[_rank] *= chunkSize;
+			allSize += sizesToRecv[_rank];
+		}
+
+		std::vector<double> dataToRecv(allSize);
+		MPI_Gatherv(dataToSend.data(), dataToSend.size(), MPI_DOUBLE, dataToRecv.data(), sizesToRecv.data(), displs.data(), MPI_DOUBLE, root, comm);
+
+		std::vector<T> received;
+		std::vector<double>::const_iterator curr = dataToRecv.cbegin();
+		for(int i = 0; i < allSize; i += chunkSize)
+		{
+			std::vector<double>::const_iterator _end = curr + chunkSize;
+			received.emplace_back();
+			received.back().unserialize(std::vector<double>(curr, _end));
+			curr = _end;
+		}
+		return received;
+	}
+	else
+	{
+		MPI_Gather(&mySendSize, 1, MPI_INT, NULL, 0, MPI_INT, root, comm);
+		MPI_Gatherv(dataToSend.data(), dataToSend.size(), MPI_DOUBLE, NULL, NULL, NULL, MPI_DOUBLE, root, comm);
+		return std::vector<T>();
+	}
 }
 
 #endif //RICH_MPI
