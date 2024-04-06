@@ -32,48 +32,55 @@
 #define MAX_ID_OF_CELL 1e15
 
 template<typename T>
-class TimeRequestData: public Serializable
+class TimeRequestData
+            #ifdef RICH_MPI
+                : public Serializable
+            #endif // RICH_MPI
 {
 public:
     explicit inline TimeRequestData(const _BoundingBox<T> &boundingBox_ = _BoundingBox<T>(), dt_t min_time_in_subtree_ = 0, double c_max_plus_v_max_ = 0):
         boundingBox(boundingBox_), min_time_in_subtree(min_time_in_subtree_), c_max_plus_v_max(c_max_plus_v_max_)
     {}
 
-    size_t getChunkSize() const override;
-    std::vector<double> serialize() const override;
-    void unserialize(const std::vector<double> &data) override;
+    #ifdef RICH_MPI
+        size_t getChunkSize() const override;
+        std::vector<double> serialize() const override;
+        void unserialize(const std::vector<double> &data) override;
+    #endif // RICH_MPI
 
     _BoundingBox<T> boundingBox;
     dt_t min_time_in_subtree;
     double c_max_plus_v_max;
 };
 
-template<typename T>
-size_t TimeRequestData<T>::getChunkSize() const
-{
-    return 8; // 6 for BB and 2 for two double variables
-}
+#ifdef RICH_MPI
+    template<typename T>
+    size_t TimeRequestData<T>::getChunkSize() const
+    {
+        return 8; // 6 for BB and 2 for two double variables
+    }
 
-template<typename T>
-std::vector<double> TimeRequestData<T>::serialize() const
-{
-    std::vector<double> serialized;
-    std::vector<double> serialized_ = this->boundingBox.serialize();
-    serialized.insert(serialized.end(), serialized_.cbegin(), serialized_.cend());
-    serialized.push_back(this->min_time_in_subtree);
-    serialized.push_back(this->c_max_plus_v_max);
-    return serialized;
-}
+    template<typename T>
+    std::vector<double> TimeRequestData<T>::serialize() const
+    {
+        std::vector<double> serialized;
+        std::vector<double> serialized_ = this->boundingBox.serialize();
+        serialized.insert(serialized.end(), serialized_.cbegin(), serialized_.cend());
+        serialized.push_back(this->min_time_in_subtree);
+        serialized.push_back(this->c_max_plus_v_max);
+        return serialized;
+    }
 
-template<typename T>
-void TimeRequestData<T>::unserialize(const std::vector<double> &data)
-{
-    size_t BBChunkSize = data.size() - 2;
-    std::vector<double> serData(data.cbegin(), data.cbegin() + BBChunkSize);
-    this->boundingBox.unserialize(serData);
-    this->min_time_in_subtree = data[BBChunkSize];
-    this->c_max_plus_v_max = data[BBChunkSize + 1];
-}
+    template<typename T>
+    void TimeRequestData<T>::unserialize(const std::vector<double> &data)
+    {
+        size_t BBChunkSize = data.size() - 2;
+        std::vector<double> serData(data.cbegin(), data.cbegin() + BBChunkSize);
+        this->boundingBox.unserialize(serData);
+        this->min_time_in_subtree = data[BBChunkSize];
+        this->c_max_plus_v_max = data[BBChunkSize + 1];
+    }
+#endif // RICH_MPI
 
 template<typename T>
 class TimingTree;
@@ -120,7 +127,10 @@ template<typename T>
 class TimingTree
 {
 public:
-    class NodeData : public Serializable
+    class NodeData
+        #ifdef RICH_MPI
+            : public Serializable
+        #endif // RICH_MPI
     {
     public:
         using coord_type = typename T::coord_type;
