@@ -275,6 +275,16 @@ public:
 #pragma omp declare simd
 #endif
 	~Vector3D(void) override {}
+
+	static const Vector3D max(void)
+	{
+		return Vector3D(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
+	}
+
+	static const Vector3D min(void)
+	{
+		return Vector3D(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
+	}
 };
 
 /*! \brief Norm of a vector
