@@ -523,6 +523,8 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double const old_Edot = cells[i].Erad_dt;
         cells[i].Erad_dt = (extensives[i].Erad / extensives[i].mass - cells[i].Erad) / dt;
         cells[i].Erad_dt_dt = (cells[i].Erad_dt - old_Edot) / dt;
+        if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt))
+            std::cout<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
         try
