@@ -134,7 +134,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	  cs = eos_.dp2c(cells[i].density, cells[i].pressure,	cells[i].tracers, ComputationalCell3D::tracerNames);
+	  cs = std::max(min_dw_, cells[i].cs);
 	//   cs = eos_.dp2c(cells[i].density, cells[i].pressure,	cells[i].tracers, ComputationalCell3D::tracerNames); // todo: removed by Maor
 #ifdef RICH_DEBUG
 	}
