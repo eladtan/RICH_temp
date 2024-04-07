@@ -16,7 +16,8 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
-#include "source/3D/output/hdf_write.hpp"
+#include "source/3D/output/write3D.hpp"
+#include "source/3D/output/read3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
@@ -35,6 +36,7 @@ namespace fs = std::filesystem;
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
 #include "source/3D/environment/kernels/Rectangle.hpp"
+#include "source/newtonian/three_dimensional/Dissipation.hpp"
 
 typedef std::array<double, 4> state_type;
 
@@ -42,6 +44,155 @@ typedef std::array<double, 4> state_type;
 // #define hi_res 1
 namespace
 {
+	class DissipationDiag: public DiagnosticAppendix3D
+	{
+		private:
+			Dissipation const& dissipation_;
+		public:
+		DissipationDiag(Dissipation const& dissipation):dissipation_(dissipation){}
+
+		std::vector<double> operator()(const HDSim3D& sim) const
+		{
+			int rank = 0;
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+			if(rank == 0)
+				std::cout<<"Starting dissipation diag"<<std::endl;
+			return dissipation_.CalcDissipation(sim);
+		}
+
+		std::string getName(void) const
+		{
+			return std::string("Dissipation");
+		}
+	};
+
+	class GradDiag: public DiagnosticAppendix3D
+	{
+		private:
+			LinearGauss3D const& interp_;
+			size_t const direction_, value_;
+		public:
+		GradDiag(size_t const direction, size_t const value, LinearGauss3D const& interp): direction_(direction), value_(value), interp_(interp){}
+
+		std::vector<double> operator()(const HDSim3D& sim) const
+		{
+		    std::vector<Slope3D> slopes = interp_.GetSlopesUnlimited();
+			size_t const N = sim.getTesselation().GetPointNo();
+			std::vector<double> res(N, 0);
+			switch(value_)
+			{
+				case 0:
+					switch(direction_)
+					{
+						case 0:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].xderivative.internal_energy;
+							break;
+						case 1:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].yderivative.internal_energy;
+							break;
+						case 2:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].zderivative.internal_energy;
+							break;
+					}
+					break;
+				case 1:
+					switch(direction_)
+					{
+						case 0:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].xderivative.pressure;
+							break;
+						case 1:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].yderivative.pressure;
+							break;
+						case 2:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].zderivative.pressure;
+							break;
+					}
+					break;
+				case 2:
+					switch(direction_)
+					{
+						case 0:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].xderivative.density;
+							break;
+						case 1:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].yderivative.density;
+							break;
+						case 2:
+							for(size_t i = 0; i < N; ++i)
+								res[i] = slopes[i].zderivative.density;
+							break;
+					}
+					break;
+				case 3:
+					for(size_t i = 0; i < N; ++i)
+						res[i] = slopes[i].xderivative.velocity.x + slopes[i].yderivative.velocity.y + slopes[i].zderivative.velocity.z;
+					break;
+			}
+			return res;
+		}
+
+		std::string getName(void) const
+		{
+			switch(value_)
+			{
+				case 0:
+					switch(direction_)
+					{
+						case 0:
+							return std::string("DsieDx");
+							break;
+						case 1:
+							return std::string("DsieDy");
+							break;
+						case 2:
+							return std::string("DsieDz");
+							break;
+					}
+					break;
+				case 1:
+					switch(direction_)
+					{
+						case 0:
+							return std::string("DpDx");
+							break;
+						case 1:
+							return std::string("DpDy");
+							break;
+						case 2:
+							return std::string("DpDz");
+							break;
+					}
+					break;
+				case 2:
+					switch(direction_)
+					{
+						case 0:
+							return std::string("DrhoDx");
+							break;
+						case 1:
+							return std::string("DrhoDy");
+							break;
+						case 2:
+							return std::string("DrhoDz");
+							break;
+					}
+					break;
+				case 3:
+					return std::string("divV");
+					break;
+			}
+		}
+	};
+
 	class PaczynskiOrbit
 	{
 	private:
@@ -122,7 +273,7 @@ namespace
 		box_points.second.x += x0[0];
 		box_points.second.y += x0[1];
 		sim.getTesselation().SetBox(box_points.first, box_points.second);
-		sim.getTesselation().BuildHilbert(points);
+		sim.getTesselation().BuildParallel(points);
 		ComputationalCell3D cdummy;
 		MPI_exchange_data(sim.getTesselation(), cells, false, &cdummy);;
 	}
@@ -434,10 +585,10 @@ namespace
 				double r_i = std::max(Rt * smooth_factor, r_org);
 				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
 				MaxMass2 = MaxMass2 * std::min(std::pow(0.05 * r_i / Rt, 2.5), 1.0);
-				double const dt = w / eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers);
+				double const dt = w / (eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers) + 0.5 * fastabs(cells[i].velocity));
 				double const in_factor = r_i < 0.65 * Rt ? smooth_factor / 0.6 : 1;
 				MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
-				if (Vol * cells[i].density > MaxMass2 && w > (in_factor * 0.7 * min_cell_size) && dt > (0.02 * time_Rt * in_factor))
+				if (Vol * cells[i].density > MaxMass2 && w > (in_factor * 0.75 * min_cell_size) && dt > (0.025 * time_Rt * in_factor))
 					continue;
 				if (Vol > domain_size_ * 0.5e-5)
 					continue;
@@ -447,7 +598,7 @@ namespace
 				for (size_t j = 0; j < Nneigh; ++j)
 				{
 					if (!tess.IsPointOutsideBox(neigh[j]))
-						if (volumes[neigh[j]] < Vol * 0.5)
+						if (volumes[neigh[j]] < Vol * 0.4)
 						{
 							good = false;
 							break;
@@ -646,7 +797,7 @@ int main(void)
 	fs::create_directory(run_directory.c_str());
 	double const Rt = R * std::pow(Mbh / M, 0.333333);
 	double const Rp = Rt / beta;
-	double const apocenter = Rp * std::pow(Mbh / M, 0.333333);
+	double const apocenter = Rt * std::pow(Mbh / M, 0.333333);
 	std::string file_name = run_directory + "snap_";
 	std::string restart_name = run_directory + "restart.h5";
 	std::string counter_name = run_directory + "counter.txt";
@@ -761,8 +912,8 @@ int main(void)
 		if(rank == 0)
 			std::cout<<"Box is ll="<<ll<<" ur="<<ur<<std::endl;
 		tess.SetBox(snap.ll, snap.ur);
-		tess.SetKernel(new Rectangle(ll, ur));
-		tess.BuildHilbert(snap.mesh_points);
+		// tess.SetKernel(new Rectangle(ll, ur));
+		tess.BuildParallel(snap.mesh_points);
 		ComputationalCell3D cdummy;
 		MPI_exchange_data(tess, snap.cells, false, &cdummy);
 		cells = snap.cells;
@@ -798,7 +949,7 @@ int main(void)
 		try
 		{
 			vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15);
-			tess.BuildHilbert(points);
+			tess.BuildParallel(points);
 			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale, n);
 		}
 		catch (UniversalError const &eo)
@@ -819,7 +970,7 @@ int main(void)
 	double Tmin = 1e3;
 
 	Lagrangian3D bpm;
-	RoundCells3D pm(bpm, eos, 2.25, 0.01, false, 1.25);
+	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
 	DiffusionOpenBoundary D_boundary;
 	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), true, true, true);
@@ -848,7 +999,7 @@ int main(void)
 	forces.push_back(gravity_force);
 	forces.push_back(rad_force);
 	SeveralSources3D force(forces);
-	CourantFriedrichsLewy tsf(0.275, 1, force, std::vector<std::string> (),	false);
+	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (),	false);
 
 	std::unique_ptr<HDSim3D> sim;
 	if(restart)
@@ -872,6 +1023,7 @@ int main(void)
 	double nextT = 0;
 	nextT = (t_restart < -20) ? sim->getTime() : t_restart;
 	nextT += std::min(8.0, mindt + 0.05 * std::pow(std::abs(sim->getTime()), 0.666666));
+	nextT = std::max(nextT, sim->getTime() + 0.01);
 
 	RemoveBig remove(8 * width * width * width, eos, Mbh, M, R, beta);
 	MassRefine refine(8 * width * width * width, Mbh, M, R, beta);
@@ -882,13 +1034,42 @@ int main(void)
 	refine.SetSize(newvol2);
 	remove.SetSize(newvol2);
 	vector<DiagnosticAppendix3D *> appendices;
+	GradDiag diag00(0, 0, interp);
+	GradDiag diag01(0, 1, interp);
+	GradDiag diag02(0, 2, interp);
+	GradDiag diag10(1, 0, interp);
+	GradDiag diag11(1, 1, interp);
+	GradDiag diag12(1, 2, interp);
+	GradDiag diag20(2, 0, interp);
+	GradDiag diag21(2, 1, interp);
+	GradDiag diag22(2, 2, interp);
+	GradDiag diag3(0, 3, interp);
+	Dissipation dissipation(rs, eos);
+	DissipationDiag DissDiag(dissipation);
+	appendices.push_back(&diag00);
+	appendices.push_back(&diag01);
+	appendices.push_back(&diag02);
+	appendices.push_back(&diag10);
+	appendices.push_back(&diag11);
+	appendices.push_back(&diag12);
+	appendices.push_back(&diag20);
+	appendices.push_back(&diag21);
+	appendices.push_back(&diag22);
+	appendices.push_back(&diag3);
+	appendices.push_back(&DissDiag);
+	
 	double old_t = sim->getTime();
 	double old_dt = init_dt;
 	double step_time = 0;
-	double const restart_wtime = 20000;
+	double const restart_wtime = 25000;
 	double const min_dt_output = 0.02 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
 	if(not restart)
+	{
+		interp(tess, sim->getCells(), 0, dissipation.face_values);
 		WriteSnapshot3D(*sim, "init.h5", appendices, true);
+		dissipation.face_values.clear();
+		dissipation.face_values.shrink_to_fit();
+	}
 	
 	while (sim->getTime() < tf)
 	{
@@ -908,6 +1089,9 @@ int main(void)
 		}
 		if (sim->getTime() > nextT)
 		{
+			if(rank == 0)
+				std::cout<<"Starting writing file "<<file_name + int2str(counter) + ".h5"<<std::endl;
+			interp(tess, sim->getCells(), 0, dissipation.face_values);
 			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true);
 #ifdef RICH_MPI
 			if (rank == 0)
@@ -915,6 +1099,8 @@ int main(void)
 			write_int(counter, counter_name);
 			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.1 * std::pow(std::abs(sim->getTime()), 0.666666));
 			++counter;
+			dissipation.face_values.clear();
+			dissipation.face_values.shrink_to_fit();
 		}
 		try
 		{
@@ -928,7 +1114,12 @@ int main(void)
 			MPI_Bcast(&restart_dump, 1, MPI_INT, 0, MPI_COMM_WORLD);
 			if (restart_dump == 1)
 			{
+				if(rank == 0)
+					std::cout<<"Starting writing file "<<run_directory + "restart.h5"<<std::endl;
+				interp(tess, sim->getCells(), 0, dissipation.face_values);
 				WriteSnapshot3D(*sim, run_directory + "restart.h5", appendices, true);
+				dissipation.face_values.clear();
+				dissipation.face_values.shrink_to_fit();
 				last_start = MPI_Wtime();
 			}
 			double step_tstart = MPI_Wtime();
@@ -975,6 +1166,8 @@ int main(void)
 		}
 	}
 #ifdef RICH_MPI
+    if(rank == 0)
+	   std::cout<<"Done sim"<<std::endl;
 	MPI_Finalize();
 #endif
 	return 0;
