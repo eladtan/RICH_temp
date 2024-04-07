@@ -21,11 +21,13 @@ private:
         Vec4d llPlusUrVec;
         Vec8d boundariesVec;
     #endif // USE_VCL_VECTORIZATION
+    typename T::coord_type width;
     typename T::coord_type widthSquared;
 
     void recalculateFields()
     {
         typename T::coord_type width = std::max(this->ur[0] - this->ll[0], std::max(this->ur[1] - this->ll[1], this->ur[2] - this->ll[2]));
+        this->width = width;
         this->widthSquared = width * width;
         #ifdef USE_VCL_VECTORIZATION
             this->llVec = Vec4d(this->ll[0], this->ll[1], this->ll[2], 0);
@@ -80,6 +82,11 @@ public:
         this->recalculateFields();
     }
 
+    inline typename T::coord_type getWidth() const
+    {
+        return this->width;
+    }
+
     inline typename T::coord_type getWidthSquared() const
     {
         return this->widthSquared;
@@ -112,6 +119,9 @@ public:
         */
     }
 
+    /**
+     * returns whether the other bounding box is contained in me.
+    */
     template<typename U>
     inline bool contained(const _BoundingBox<U> &other) const
     {
