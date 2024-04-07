@@ -2,13 +2,13 @@
 
 ComputationalCell3D::ComputationalCell3D(void):
   density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Erad_dt(0),
-  	Erad_dt_dt(0), cs(0), tracers(),stickers() {}
+  	Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i,double internal_energy_i,size_t ID_i,
 				     const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(),stickers() {}
+  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i, double internal_energy_i,size_t ID_i,
@@ -16,7 +16,7 @@ ComputationalCell3D::ComputationalCell3D(double density_i,
 				     const std::array<double,MAX_TRACERS>& tracers_i,
 					 const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i) {}
+  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -107,6 +107,7 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->Erad_dt *= s;
 	this->Erad_dt_dt *= s;
 	this->cs *= s; // todo: correct?
+	this->dt *= s;
 	//size_t N = this->tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] *= s;
@@ -225,6 +226,7 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	res.Erad += other.Erad*scalar;
 	res.Erad_dt += other.Erad_dt*scalar;
 	res.Erad_dt_dt += other.Erad_dt_dt*scalar;
+	res.dt += other.dt * scalar;
 	//assert(res.tracers.size() == other.tracers.size());
 	//size_t N = res.tracers.size();
 #ifdef __INTEL_COMPILER
@@ -264,6 +266,7 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 		res.tracers[j] *= s_1;
 	res.velocity = res.velocity * s_1;
 	res.cs = res.cs * s_1; // todo: correct?
+	res.dt *= s_1;
 	return res;
 }
 
@@ -282,6 +285,7 @@ ComputationalCell3D operator*(ComputationalCell3D const& p, double s)
 		res.tracers[j] *= s;
 	res.velocity = res.velocity * s;
 	res.cs = res.cs * s; // todo: correct?
+	res.dt *= s;
 	return res;
 }
 
