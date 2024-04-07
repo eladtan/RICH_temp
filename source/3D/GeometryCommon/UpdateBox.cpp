@@ -99,7 +99,7 @@ void UpdateBox(Voronoi3D &tess, HDSim3D &sim, double const min_velocity, double 
 			std::cout << "Point number " << Np << std::endl;
 		}
 		tess.SetBox(recvmin, recvmax);
-		tess.SetKernel(new Rectangle(recvmin, recvmax));		
+		// tess.SetKernel(new Rectangle(recvmin, recvmax));		
 		std::vector<Vector3D> mypoints = tess.getMeshPoints();
 		mypoints.resize(N);
 		cells.resize(N);

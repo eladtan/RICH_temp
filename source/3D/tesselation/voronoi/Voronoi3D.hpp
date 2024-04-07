@@ -86,8 +86,6 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
-  friend int main(int argc, char *argv[]);
-
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;

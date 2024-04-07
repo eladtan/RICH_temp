@@ -235,7 +235,7 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
     }
 
     Vector3D newLL = std::numeric_limits<typename Vector3D::coord_type>::max() * Vector3D(1, 1, 1);
-    Vector3D newUR = std::numeric_limits<typename Vector3D::coord_type>::min() * Vector3D(1, 1, 1);
+    Vector3D newUR = std::numeric_limits<typename Vector3D::coord_type>::lowest() * Vector3D(1, 1, 1);
 
     if((ranksMatching.second - ranksMatching.first) < max_ranks_per_leaf)
     {
@@ -405,7 +405,7 @@ std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_ty
     using coord_type = typename Vector3D::coord_type;
 
     const coord_type &maxVal = std::numeric_limits<coord_type>::max();
-    const coord_type &minVal = std::numeric_limits<coord_type>::min();
+    const coord_type &minVal = std::numeric_limits<coord_type>::lowest();
     
     std::pair<Vector3D, Vector3D> initialPair = std::make_pair<Vector3D, Vector3D>(Vector3D(maxVal, maxVal, maxVal), Vector3D(minVal, minVal, minVal));
     std::vector<std::pair<coord_type, coord_type>> distances(this->size, {maxVal, minVal});
