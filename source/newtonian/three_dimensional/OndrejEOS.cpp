@@ -12,17 +12,18 @@ namespace
         size_t index = static_cast<size_t>(std::upper_bound(x_begin, x_end, xi) - x_begin);
         if ((index < 2 && xi < *(x_begin + 1)) || index >= static_cast<size_t>(y_end - y_begin - 1))
         {
-            if(index == 1 && std::abs(*(x_begin + index) -  xi) < 1e-14)
+            if(index == 1 && std::abs(*(x_begin + index) -  xi) < 1e-13)
                 ++index;
             else
             {
-                if(index == 3 && std::abs(*(x_begin + index) -  xi) < 1e-14)
+                if(index == 3 && std::abs(*(x_begin + index) -  xi) < 1e-13)
                     --index;
                 else
                 {
                     UniversalError eo("Bad interpolation");
                     eo.addEntry("xi", xi);
                     eo.addEntry("index", index);
+                    eo.addEntry("Closest value", *(x_begin + index));
                     throw eo;
                 }
             }
