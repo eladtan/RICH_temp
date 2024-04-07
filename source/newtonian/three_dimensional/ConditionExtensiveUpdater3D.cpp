@@ -92,6 +92,7 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 				<< std::endl;
 			std::cout << "Old cell, density " << cells[i].density << " pressure " << cells[i].pressure << " vx " <<
 				cells[i].velocity.x << " vy " << cells[i].velocity.y << " vz " << cells[i].velocity.z << std::endl;
+			std::cout<<"Point "<<tess.GetMeshPoint(i)<<" CM "<<tess.GetCellCM(i)<<" d "<<abs(tess.GetMeshPoint(i) - tess.GetCellCM(i)) / tess.GetWidth(i)<<std::endl;
 			for (size_t j = 0; j < ComputationalCell3D::tracerNames.size(); ++j)
 			{
 			  std::cout << ComputationalCell3D::tracerNames[j] << " old cell " << cells[i].tracers[j] << 
