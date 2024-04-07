@@ -273,7 +273,7 @@ namespace
 		ReplaceComputationalCell(cmin, cell);
 		// Find maximum.minimum neighbor values
 		size_t nloop = neighbors.size();
-		size_t ntracer = cell.tracers.size();
+		size_t ntracer = ComputationalCell3D::tracerNames.size();
 		for (size_t i = 0; i < nloop; ++i)
 		{
 			ComputationalCell3D const& cell_temp = neighbors[i];
@@ -434,7 +434,7 @@ namespace
 		const double small_factor = 1e-9;
 		ComputationalCell3D cmax(cell), cmin(cell);
 		size_t N = faces.size();
-		size_t ntracer = cell.tracers.size();
+		size_t ntracer = ComputationalCell3D::tracerNames.size();
 		// Find maximum values
 		for (size_t i = 0; i < N; ++i)
 		{
@@ -463,7 +463,10 @@ namespace
 				cmin.tracers[j] = std::min(cmin.tracers[j], cell_temp.tracers[j]);
 			}
 		}
-		ComputationalCell3D maxdiff = cmax - cell, mindiff = cmin - cell;
+		ComputationalCell3D maxdiff(cmax);
+		cmax -= cell; 
+		ComputationalCell3D mindiff(cmin);
+		cmin -= cell;
 		// limit the slope
 		vector<double> psi(6 + cell.tracers.size(), 1);
 		for (size_t i = 0; i < N; ++i)
