@@ -45,9 +45,16 @@ Snapshot3D ReadSnapshot3DHelper(H5File &file, H5File &globalfile, Group &read_lo
 
         // Hydrodynamic
         {
+            vector<double> Erad, temperature;
             const vector<double> density = read_double_vector_from_hdf5(read_location, "Density");
-            const vector<double> Erad = read_double_vector_from_hdf5(read_location, "Erad");
-            const vector<double> temperature = read_double_vector_from_hdf5(read_location, "Temperature");
+            if(H5Lexists(read_location.getId(), std::string("Erad").c_str(), H5P_DEFAULT ) > 0)
+                Erad = read_double_vector_from_hdf5(read_location, "Erad");
+            else
+                Erad.resize(density.size(), 0);
+            if(H5Lexists(read_location.getId(), std::string("Temperature").c_str(), H5P_DEFAULT ) > 0)
+                temperature = read_double_vector_from_hdf5(read_location, "Temperature");
+            else
+                temperature.resize(density.size(), 0);
             const vector<double> pressure = read_double_vector_from_hdf5(read_location, "Pressure");
             const vector<double> energy = read_double_vector_from_hdf5(read_location, "InternalEnergy");
             vector<size_t> IDs(density.size(), 0);

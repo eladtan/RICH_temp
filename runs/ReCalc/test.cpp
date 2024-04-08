@@ -287,24 +287,35 @@ int main(int argc, char* argv[])
 	sim = std::make_unique<HDSim3D>(tess, cells, *eos_ptr.get(), pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, false);
 	sim->SetTime(snap.time);
 	sim->SetCycle(snap.cycle);
-	vector<DiagnosticAppendix3D *> appendices;
-	for(size_t i = 0; i < 3; ++i)
+	try
 	{
-		for(size_t j = 0; j < 3; ++j)
+		std::vector<pair<ComputationalCell3D, ComputationalCell3D> >  interp_values;
+		interp(tess, sim->getCells(), 0, interp_values);;
+		vector<DiagnosticAppendix3D *> appendices;
+		for(size_t i = 0; i < 3; ++i)
 		{
-			appendices.push_back(new GradDiag(i, j, interp, false));
-			appendices.push_back(new GradDiag(i, j, interp, true));
+			for(size_t j = 0; j < 3; ++j)
+			{
+				appendices.push_back(new GradDiag(i, j, interp, false));
+				appendices.push_back(new GradDiag(i, j, interp, true));
+			}
 		}
+		appendices.push_back(new GradDiag(0, 3, interp, false));
+		appendices.push_back(new GradDiag(0, 3, interp, true));
+		Dissipation dissipation(rs, *eos_ptr.get());
+		dissipation.face_values = interp_values;
+		DissipationDiag DissDiag(dissipation);
+		appendices.push_back(&DissDiag);
+		
+		if(rank == 0)
+			std::cout<<"Outputing new file "<<out_name<<std::endl;
+		WriteSnapshot3D(*sim, out_name, appendices, true, false);
 	}
-	appendices.push_back(new GradDiag(0, 3, interp, false));
-	appendices.push_back(new GradDiag(0, 3, interp, true));
-	Dissipation dissipation(rs, *eos_ptr.get());
-	DissipationDiag DissDiag(dissipation);
-	appendices.push_back(&DissDiag);
-	
-	if(rank == 0)
-		std::cout<<"Outputing new file "<<out_name<<std::endl;
-	WriteSnapshot3D(*sim, out_name, appendices, true, false);
+	catch(UniversalError const& eo)
+	{
+		reportError(eo);
+		throw;
+	}
 	MPI_Finalize();
 	return 0;
 }
