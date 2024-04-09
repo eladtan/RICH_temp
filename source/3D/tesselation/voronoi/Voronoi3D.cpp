@@ -1596,6 +1596,85 @@ std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<QueryDataType> &q
     return mirroredPoints;
 }
 
+void Voronoi3D::BringSelfGhostPoints(std::queue<BigRangeQueryData> &bigQueries, std::queue<SmallRangeQueryData> &smallQueries,
+                                        BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
+                                        boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
+                                        boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
+                                        boost::container::flat_set<size_t> &selfIgnorePoints)
+{
+    std::vector<Vector3D> newPoints;
+    {
+        std::vector<std::vector<Vector3D>> selfSmallQueriesAnswers;
+        std::queue<SmallRangeQueryData> smallQueriesBackup;
+        selfSmallQueriesAnswers = smallRangeAgent.selfBatchAnswer(smallQueries, selfIgnorePoints);
+        for(const std::vector<Vector3D> &newSmallQueriesPoints : selfSmallQueriesAnswers)
+        {
+            const SmallRangeQueryData &query = smallQueries.front();
+            newPoints.insert(newPoints.end(), newSmallQueriesPoints.cbegin(), newSmallQueriesPoints.cend());
+            smallQueries.pop();
+            numOfResultsForSmallPoints[query.pointIdx] = newSmallQueriesPoints.size();
+            smallQueriesBackup.push(query);
+        }
+        smallQueries = std::move(smallQueriesBackup);
+    }
+    {
+        std::vector<std::vector<Vector3D>> selfBigQueriesAnswers;
+        std::queue<BigRangeQueryData> bigQueriesBackup;
+        selfBigQueriesAnswers = bigRangeAgent.selfBatchAnswer(bigQueries, selfIgnorePoints);
+        for(const std::vector<Vector3D> &newBigQueriesPoints : selfBigQueriesAnswers)
+        {
+            const BigRangeQueryData &query = bigQueries.front();
+            newPoints.insert(newPoints.end(), newBigQueriesPoints.cbegin(), newBigQueriesPoints.cend());
+            bigQueries.pop();
+            numOfResultsForBigPoints[query.pointIdx] = newBigQueriesPoints.size();
+            bigQueriesBackup.push(query);
+        }
+        bigQueries = std::move(bigQueriesBackup);
+    }
+    this->del_.BuildExtra(newPoints);
+}
+
+#ifdef RICH_MPI
+    void Voronoi3D::BringRemoteGhostPoints(std::queue<BigRangeQueryData> &bigQueries, std::queue<SmallRangeQueryData> &smallQueries,
+                                        BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
+                                        boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
+                                        boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints)
+    {
+        std::vector<Vector3D> newPoints;
+        // large points queries
+        {
+            QueryBatchInfo<BigRangeQueryData, _3DPoint> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
+            newPoints.reserve(bigBatchInfo.result.size());
+            for(const QueryInfo<BigRangeQueryData, _3DPoint> &ans : bigBatchInfo.queriesAnswers)
+            {
+                numOfResultsForBigPoints[ans.data.pointIdx] += ans.finalResults.size();
+            }
+            for(const _3DPoint &_point : bigBatchInfo.result)
+            {
+                newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
+            }
+            this->SetGhostArray(bigRangeAgent.getRecvProc(), bigRangeAgent.getRecvPoints());
+            this->del_.BuildExtra(newPoints);
+        }
+        // small points queries
+        {        
+            QueryBatchInfo<SmallRangeQueryData, _3DPoint> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
+            for(const QueryInfo<SmallRangeQueryData, _3DPoint> &ans : smallBatchInfo.queriesAnswers)
+            {
+                numOfResultsForSmallPoints[ans.data.pointIdx] += ans.finalResults.size();
+            }
+            newPoints.clear();
+            newPoints.reserve(smallBatchInfo.result.size());
+            for(const _3DPoint &_point : smallBatchInfo.result)
+            {
+                newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
+            }
+            this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
+            this->del_.BuildExtra(newPoints);
+        }    
+    }
+#endif // RICH_MPI
+
 /**
  * \author Maor Mizrachi
  * \brief Calculates the points for next iteration, and determines each one's type (small or big)
@@ -1605,8 +1684,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
                                             boost::container::flat_map<size_t, size_t> &firstLargeIteration,
                                             std::vector<double> &currentRadiuses,
                                             const boost::container::flat_map<size_t, size_t> &resultOfSmallPoints,
-                                            const boost::container::flat_map<size_t, size_t> &resultOfBigPoints
-                                        )
+                                            const boost::container::flat_map<size_t, size_t> &resultOfBigPoints)
 {
     boost::container::flat_set<size_t> newSmallPoints, newLargePoints;
     
@@ -1729,14 +1807,18 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         boost::container::flat_map<size_t, size_t> numOfResultsForSmallPoints;
         boost::container::flat_map<size_t, size_t> numOfResultsForBigPoints;
         
+        size_t smallPointsNum = smallPoints.size();
+        size_t largePointsNum = largePoints.size();
+        #ifdef RICH_MPI
+            MPI_Reduce((rank == 0)? MPI_IN_PLACE : &smallPointsNum, &smallPointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
+            MPI_Reduce((rank == 0)? MPI_IN_PLACE : &largePointsNum, &largePointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
+        #endif // RICH_MPI
         iterations++;
-        if(rank == 0) std::cout << "iteration " << iterations << std::endl;
+        if(rank == 0) std::cout << "iteration " << iterations << " (" << smallPointsNum << " small points, " << largePointsNum << " large points)" << std::endl;
         auto [smallQueries, bigQueries] = this->CreateBatches(smallPoints, largePoints, firstLargeIteration, currentRadiuses, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints = MirrorPoints(smallQueries, box, normals);
         std::vector<std::pair<size_t, size_t>> moreMirroredPoints = MirrorPoints(bigQueries, box, normals);
         mirroredPoints.insert(mirroredPoints.end(), moreMirroredPoints.begin(), moreMirroredPoints.end());
-        std::vector<Vector3D> newPoints;
-
 
         #ifdef RICH_MPI
             I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
@@ -1745,73 +1827,16 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
         #endif // RICH_MPI
 
-        std::vector<std::vector<Vector3D>> selfSmallQueriesAnswers, selfBigQueriesAnswers;
         if(considerOwnPoints)
         {
-            {
-                std::queue<SmallRangeQueryData> smallQueriesBackup;
-                selfSmallQueriesAnswers = smallRangeAgent.selfBatchAnswer(smallQueries, selfIgnorePoints);
-                for(const std::vector<Vector3D> &newSmallQueriesPoints : selfSmallQueriesAnswers)
-                {
-                    const SmallRangeQueryData &query = smallQueries.front();
-                    newPoints.insert(newPoints.end(), newSmallQueriesPoints.cbegin(), newSmallQueriesPoints.cend());
-                    smallQueries.pop();
-                    numOfResultsForSmallPoints[query.pointIdx] = newSmallQueriesPoints.size();
-                    smallQueriesBackup.push(query);
-                }
-                smallQueries = std::move(smallQueriesBackup);
-            }
-            {
-                std::queue<BigRangeQueryData> bigQueriesBackup;
-                selfBigQueriesAnswers = bigRangeAgent.selfBatchAnswer(bigQueries, selfIgnorePoints);
-                for(const std::vector<Vector3D> &newBigQueriesPoints : selfBigQueriesAnswers)
-                {
-                    const BigRangeQueryData &query = bigQueries.front();
-                    newPoints.insert(newPoints.end(), newBigQueriesPoints.cbegin(), newBigQueriesPoints.cend());
-                    bigQueries.pop();
-                    numOfResultsForBigPoints[query.pointIdx] = newBigQueriesPoints.size();
-                    bigQueriesBackup.push(query);
-                }
-                bigQueries = std::move(bigQueriesBackup);
-            }
+            this->BringSelfGhostPoints(bigQueries, smallQueries, bigRangeAgent, smallRangeAgent, numOfResultsForBigPoints, numOfResultsForSmallPoints, selfIgnorePoints);
         }
-        this->del_.BuildExtra(newPoints);
 
         #ifdef RICH_MPI
-            // large points queries
-            QueryBatchInfo<BigRangeQueryData, _3DPoint> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
-            // TODO: change 'numAnswers' map
-            newPoints.clear();
-            newPoints.reserve(bigBatchInfo.result.size());
-            for(const QueryInfo<BigRangeQueryData, _3DPoint> &ans : bigBatchInfo.queriesAnswers)
-            {
-                numOfResultsForBigPoints[ans.data.pointIdx] += ans.finalResults.size();
-            }
-            for(const _3DPoint &_point : bigBatchInfo.result)
-            {
-                newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
-            }
-            this->SetGhostArray(bigRangeAgent.getRecvProc(), bigRangeAgent.getRecvPoints());
-            this->del_.BuildExtra(newPoints);
-
-            // small points queries
-            QueryBatchInfo<SmallRangeQueryData, _3DPoint> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
-            for(const QueryInfo<SmallRangeQueryData, _3DPoint> &ans : smallBatchInfo.queriesAnswers)
-            {
-                numOfResultsForSmallPoints[ans.data.pointIdx] += ans.finalResults.size();
-            }
-            // TODO: change 'numAnswers' map
-            newPoints.clear();
-            newPoints.reserve(smallBatchInfo.result.size());
-            for(const _3DPoint &_point : smallBatchInfo.result)
-            {
-                newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
-            }
-            this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
-            this->del_.BuildExtra(newPoints);
+            this->BringRemoteGhostPoints(bigQueries, smallQueries, bigRangeAgent, smallRangeAgent, numOfResultsForBigPoints, numOfResultsForSmallPoints);
         #endif // RICH_MPI
         
-        newPoints.clear();
+        std::vector<Vector3D> newPoints;
         newPoints.reserve(mirroredPoints.size());
         allMirrored.reserve(allMirrored.size() + mirroredPoints.size());
         for(const std::pair<size_t, size_t> &pairFacePoint : mirroredPoints)

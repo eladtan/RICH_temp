@@ -5,6 +5,8 @@
     #include <vectorclass.h>
 #endif // USE_VCL_VECTORIZATION
 
+#define TOLERANCE 1e-12
+
 #include "misc/serializable.hpp"
 
 #define DIM 3
@@ -346,7 +348,7 @@ bool SphereBoxIntersection(const _BoundingBox<T> &box, const _Sphere<U> &sphere)
         _distance *= _distance;
         distance += _distance;
     }
-    return (distance <= (sphere.radius * sphere.radius));
+    return (distance <= ((1 + TOLERANCE) * (sphere.radius * sphere.radius)));
 };
 
 #endif // _GEOMETRY_UTILS_RICH_HPP
