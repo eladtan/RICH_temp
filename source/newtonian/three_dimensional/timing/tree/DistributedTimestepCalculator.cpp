@@ -119,7 +119,6 @@ std::vector<std::vector<typename DistributedTimestepCalculator::NodeData>> Distr
     for(const std::vector<direction_t> &direction : myDirections)
     {
         const typename TimingTree<Vector3D>::Node *node = this->timingTree->getOctTree()->getNodeByDirections(direction.data());
-        std::cout << "node->value.min_time_in_subtree is " << node->value.min_time_in_subtree << std::endl;
         TimeRequestData<Vector3D> request(node->boundingBox, node->value.min_time_in_subtree, node->value.cell_width);
         myRequestsToAll.push_back(request);
     }

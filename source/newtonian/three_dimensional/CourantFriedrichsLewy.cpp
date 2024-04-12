@@ -27,20 +27,18 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	{
 		for (size_t i = 0; i < N; ++i)
 		{
-			bool cont = false;
-			for(size_t j = 0; j < N_no_calc; ++j)
-				if(cells[i].stickers[no_calc_indeces[j]])
-					cont = true;
-			if(cont)
+			const ComputationalCell3D &cell = cells[i];
+			if(std::any_of(no_calc_indeces.cbegin(), no_calc_indeces.cend(), [&cell](const size_t &idx){return cell.stickers[idx];}))
+			{
 				continue;
+			}
 			double res_temp = 0;
 			double c = 0;
 #ifdef RICH_DEBUG
 			try
 			{
 #endif
-				c = eos.de2c(cells[i].density, cells[i].internal_energy, cells[i].tracers,
-					     ComputationalCell3D::tracerNames);
+				c = eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames);
 #ifdef RICH_DEBUG
 			}
 			catch (UniversalError& eo)
@@ -50,7 +48,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 				throw eo;
 			}
 #endif
-			Vector3D const& v = cells[i].velocity;
+			Vector3D const& v = cell.velocity;
 			face_vec const& faces = tess.GetCellFaces(i);
 			size_t const Nloop = faces.size();
 			double max_face_area = 0;
@@ -61,8 +59,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 				res_temp = fmax(res_temp, (c + std::abs(ScalarProd(n, v - face_velocities[faces[j]]))));
 				max_face_area = std::max(max_face_area, tess.GetArea(faces[j]));
 			}
-			double cell_effective_radius = std::min(tess.GetWidth(i), tess.GetVolume(i) / 
-				max_face_area);
+			double cell_effective_radius = std::min(tess.GetWidth(i), tess.GetVolume(i) / max_face_area);
 			res_temp = cell_effective_radius / res_temp;
 			if (res_temp < res)
 			{
@@ -75,9 +72,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	res = 1.0 / std::max(source_.SuggestInverseTimeStep() / sourcecfl_, 1.0 / res);
 	double old_res = res;
 #ifdef RICH_MPI
-	double new_res = 0;
-	MPI_Allreduce(&res, &new_res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-	res = new_res;
+	MPI_Allreduce(MPI_IN_PLACE, &res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 #endif
 	if ((first_try_ && dt_first_ > 0) || (last_time_ == time && dt_first_ > 0))
 	{

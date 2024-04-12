@@ -1175,7 +1175,12 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
         // initialize points manager
         this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
     }
-    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, indicesToBuild, this->radiuses, this->all_CM, not suppressRebalancing); // does rebalancing (if necessary) and exchanging
+
+    int canDoRebalance = ((not suppressRebalancing) and (indicesToBuild.size() == allPoints.size()))? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &canDoRebalance, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    bool allowRebalance = (canDoRebalance == 1);
+
+    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, indicesToBuild, this->radiuses, this->all_CM, allowRebalance); // does rebalancing (if necessary) and exchanging
 
     this->allMyPoints = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
