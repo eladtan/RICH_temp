@@ -12,7 +12,7 @@
 #include <boost/numeric/ublas/lu.hpp>
 #include <boost/numeric/ublas/vector.hpp>
 
-NoMixMotion::NoMixMotion(const PointMotion3D& pm, SpatialReconstruction3D const& interpolation, const RiemannSolver3D & rs, const EquationOfState& eos, const vector<std::string>& no_fix) : pm_(pm), interpolation_(interpolation), no_fix_indeces(), rs_(rs), eos_(eos)
+NoMixMotion::NoMixMotion(const PointMotion3D& pm, SpatialReconstruction3D const& interpolation, const RiemannSolver3D & rs, const EquationOfState& eos, double AreaFail, double const smooth_surface_least_square_accept, const vector<std::string>& no_fix) : pm_(pm), interpolation_(interpolation), no_fix_indeces(), rs_(rs), eos_(eos), AreaFail_(AreaFail), smooth_surface_least_square_accept_(smooth_surface_least_square_accept)
 {
 	size_t const Nstick = ComputationalCell3D::stickerNames.size();
 	for (size_t i = 0; i < Nstick; ++i)
@@ -51,6 +51,7 @@ namespace
 
 	void calc_dw_no_fix(Vector3D &velocity, size_t i, const Tessellation3D & tess, const vector<ComputationalCell3D>& cells, const EquationOfState &eos, Vector3D const lagrangian_direction)
 	{
+		return;
 		const Vector3D r = tess.GetMeshPoint(i);
 		const Vector3D s = tess.GetCellCM(i);
 		Vector3D diff = s - r;
@@ -63,7 +64,7 @@ namespace
 		velocity += dv;
 	}
 
-	void MakeSmoothSurface(std::vector<Vector3D> const & lagrangian_direction, Tessellation3D const& tess, std::vector<Vector3D> &v, std::vector<char> & lagrangian_cell, std::vector<ComputationalCell3D> const& cells, std::vector<double> const & widths)
+	void MakeSmoothSurface(std::vector<Vector3D> const & lagrangian_direction, Tessellation3D const& tess, std::vector<Vector3D> &v, std::vector<char> & lagrangian_cell, std::vector<ComputationalCell3D> const& cells, std::vector<double> const & widths, double const smooth_surface_least_square_accept)
 	{
 		size_t const n = tess.GetPointNo();
 		std::vector<size_t> neighbors, temp_neighbors;

@@ -13,7 +13,7 @@
 class NoMixMotion : public PointMotion3D
 {
 public:
-	NoMixMotion(const PointMotion3D& pm, SpatialReconstruction3D const& interpolation, const RiemannSolver3D & rs, const EquationOfState& eos, const vector<std::string>& no_fix = vector<std::string>());
+	NoMixMotion(const PointMotion3D& pm, SpatialReconstruction3D const& interpolation, const RiemannSolver3D & rs, const EquationOfState& eos, double AreaFail = 0.6, double const smooth_surface_least_square_accept = 0.9, const vector<std::string>& no_fix = vector<std::string>());
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		double time, vector<Vector3D> &res) const override;
@@ -28,5 +28,6 @@ private:
 	mutable std::vector<char> lagrangian_cell_;
 	const RiemannSolver3D& rs_;
 	const EquationOfState& eos_;
+	double const AreaFail_, smooth_surface_least_square_accept_;
 };
 #endif //NOMIXMOTION_HPP

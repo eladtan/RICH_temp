@@ -1,4 +1,4 @@
-/*! \file HllcStress.hpp
+/*! \file HllcStressFive.hpp
 \brief HLLC riemann solver on an eulerian grid in 3D
 \details This file is based on a code originally written by Omer Bromberg
 \author Elad Steinberg
