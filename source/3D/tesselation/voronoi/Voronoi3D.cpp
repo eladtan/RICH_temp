@@ -1456,7 +1456,7 @@ void Voronoi3D::BringGhostPointsToBuild()
     while(true) // loop is not really infinite (has 'break')
     {
         iterations++;
-        if(rank == 0) std::cout << "iteration " << iterations << std::endl;
+        // if(rank == 0) std::cout << "iteration " << iterations << std::endl;
 
         auto [smallQueries, bigQueries] = this->CreateBatches(smallPoints, largePoints, firstLargeIteration, currentRadiuses, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints = MirrorPoints(smallQueries, box, normals);

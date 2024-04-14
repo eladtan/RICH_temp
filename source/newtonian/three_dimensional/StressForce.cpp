@@ -21,6 +21,9 @@ namespace
             const double A = tess.GetArea(face_idx);
             Vector3D ustar = ustar_vec[face_idx];
 
+            // if(first == 49 || second == 49)
+            //     std::cout << "ustar for " << first <<", "<<second<<" is " << ustar.x << " " << ustar.y << " " << ustar.z << " " <<std::endl;
+
             if(is_first && is_second)
             {
                 if(is_lagrangian)
@@ -82,10 +85,15 @@ namespace
         Mat33<double> omega, sigma_star, sigmap1, sigma_rot, dstrain;
         Mat33<double> zeros_mat;
         double dEPS, beta;
+
+        // for(size_t i = 0; i < ustar_vec.size(); ++i)
+        //     if(interp_values[i].first.ID == 51 || interp_values[i].second.ID == 51)
+        //         std::cout << "ustar for " << interp_values[i].first.ID <<", "<<interp_values[i].second.ID<<" is " << ustar_vec[i].x << std::endl;
+
         calc_velocity_derivatives(velocity_derivatives, cells, tess, ustar_vec, point_velocities, interp_values, is_lagrangian_);
         for(size_t cell = 0; cell < N; ++cell)
         {
-            if(cells[cell].G > 1) //todo
+            if(cells[cell].G > 1)
             {
                 dstrain = 0.5 * (velocity_derivatives[cell] + velocity_derivatives[cell].transpose()) * dt;
                 omega = velocity_derivatives[cell] * dt - dstrain;
@@ -109,7 +117,6 @@ namespace
         }
         bool is_first, is_second;
         std::vector<face_vec> const & faces = tess.GetAllCellFaces();
-        double tracers_dot = 0;
         for(size_t face_idx = 0; face_idx<ustar_vec.size(); ++face_idx)
         {
             auto [first, second] = tess.GetFaceNeighbors(face_idx);
@@ -121,18 +128,18 @@ namespace
             
             if(fluxes[face_idx].mass > 0)
             {
-                if(first < N)
+                if((first < N) and (left.G > 10))
                     extensives[first].mass_stress -= fluxes[face_idx].mass * dt * A * left.stress;
-                if(second < N)
+                if((second < N) and (right.G > 10))
                     extensives[second].mass_stress += fluxes[face_idx].mass * dt * A * left.stress;
             }
             else
             {
-                if(fluxes[face_idx].mass < 0)
+                if((fluxes[face_idx].mass < 0))
                 {
-                    if(first < N)
+                    if((first < N) and (left.G > 10))
                         extensives[first].mass_stress -= fluxes[face_idx].mass * dt * A * right.stress;
-                    if(second < N)
+                    if((second < N) and (right.G > 10))
                         extensives[second].mass_stress += fluxes[face_idx].mass * dt * A * right.stress;
                 }
             }

@@ -80,32 +80,40 @@ namespace
 				double beta = std::min(std::sqrt(2/(std::numeric_limits<double>::epsilon() + 3.*res[i].stress.J2()))*res[i].Y0, 1.);
 				res[i].stress *= beta;
 				extensive.mass_stress *= beta;
-				res[i].elastic_energy = 0.25 * (res[i].stress.J2())/(res[i].G * res[i].density);
-				extensive.Eelast = res[i].elastic_energy * extensive.mass;
 
 				double sumf = 0;
 				double sumG = 0;
 				double sumY = 0;
-				for(size_t j = 0; j<ComputationalCell3D::tracerNames.size(); ++j)
+				if(strength_arr.size() != 0)
 				{
-					sumG += res[i].tracers[j]/strength_arr[j]->getG(res[i]);
-					sumG += res[i].tracers[j]/strength_arr[j]->getY(res[i]);
-					sumG += res[i].tracers[j];
-				}
-				if(sumG > std::numeric_limits<double>::min())
-				{
-					res[i].G = sumf * sumf/sumG;
-					res[i].Y0 = sumf/sumY;
+					for(size_t j = 0; j<ComputationalCell3D::tracerNames.size(); ++j)
+					{
+						sumG += res[i].tracers[j]/strength_arr[j]->getG(res[i]);
+						sumY += res[i].tracers[j]/strength_arr[j]->getY(res[i]);
+						sumf += res[i].tracers[j];
+					}
+					if(sumG > std::numeric_limits<double>::min())
+					{
+						res[i].G = sumf * sumf/sumG;
+						res[i].Y0 = sumf/sumY;
+					}
+					else
+					{
+						res[i].G = 1e-8;
+						res[i].Y0 = 1e-8;
+					}
 				}
 				else
 				{
 					res[i].G = 1e-8;
 					res[i].Y0 = 1e-8;
 				}
+				res[i].elastic_energy = 0.25 * (res[i].stress.J2())/(res[i].G * res[i].density);
+				extensive.Eelast = res[i].elastic_energy * extensive.mass;
 				double Ek = 0.5 * ScalarProd(extensive.momentum, extensive.momentum) / extensives[i].mass;
 				extensive.internal_energy = extensive.energy - Ek - extensive.Eelast;
 				double energy = extensive.internal_energy / extensive.mass;
-				extensive.energy = extensive.mass*(energy + 0.5*ScalarProd(res[i].velocity, res[i].velocity)) + extensive.Eelast;
+				// extensive.energy = extensive.mass*(energy + 0.5*ScalarProd(res[i].velocity, res[i].velocity)) + extensive.Eelast;
 				for (size_t j = 0; j < Ntracers; ++j)
 					res[i].tracers[j] = extensive.tracers[j] / extensive.mass;
 				// Entropy fix if needed
@@ -188,7 +196,7 @@ namespace
 					}
 					res[i].temperature = eos.de2T(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
 				}
-				if (!(res[i].density > 0) || !(res[i].pressure > 0) || (!std::isfinite(fastabs(extensives[i].momentum)))
+				if (!(res[i].density > 0)  || (!std::isfinite(fastabs(extensives[i].momentum)))) //|| !(res[i].pressure > 0)
 				{
 					UniversalError eo("Negative quantity in cell update");
 					eo.addEntry("Cell index", static_cast<double>(i));

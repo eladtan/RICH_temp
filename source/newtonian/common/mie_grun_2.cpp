@@ -24,6 +24,7 @@ double MieGrun2::dp2c(double d, double p, tvector const& tracers, vector<string>
     double const eta = d/rho0_;
     double const g = (eta-1)*(eta-0.5*gamma_*(eta-1))/((eta-s_*(eta-1))*(eta-s_*(eta-1)));
     double const dgdeta = -(gamma_*(eta-1)-s_*eta+s_-eta)/((eta-s_*(eta-1))*(eta-s_*(eta-1))*(eta-s_*(eta-1)));
+    return a0_;
     return std::sqrt(dgdeta*a0_*a0_ + rho0_*gamma_*p/(d*d));
 }
 

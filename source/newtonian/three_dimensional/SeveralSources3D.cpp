@@ -6,7 +6,7 @@ void SeveralSources3D::operator()(const Tessellation3D &tess, const vector<Compu
 {
     size_t const Nforces = sources_.size();
     for(size_t i = 0; i < Nforces; ++i)
-        sources_[i]->operator()(tess, cells, fluxes, point_velocities, t, dt, extensives);
+        sources_[i]->operator()(tess, cells, fluxes, point_velocities, t, dt, extensives, ustar_vec, face_values);
 }
 
 double SeveralSources3D::SuggestInverseTimeStep(void) const

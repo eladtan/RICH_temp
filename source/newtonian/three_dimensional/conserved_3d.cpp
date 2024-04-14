@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers(), mass_stress(), mass_eps(0), mass_eps_dt(0), Eelast(0) {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
+	Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers(), mass_stress(), mass_eps(0), mass_eps_dt(0), Eelast(0) {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i), mass_stress(), mass_eps(0), mass_eps_dt(0), Eelast(0) {}
 
 namespace
 {
@@ -179,14 +179,14 @@ void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved
 	res.momentum = cell.velocity;
 	res.momentum *= res.mass;
 	res.internal_energy = res.mass*cell.internal_energy;
-	res.energy = res.mass*0.5*ScalarProd(cell.velocity, cell.velocity) + res.internal_energy;
+	res.Eelast = cell.elastic_energy*res.mass;
+	res.energy = res.mass*0.5*ScalarProd(cell.velocity, cell.velocity) + res.internal_energy + res.Eelast;
 	res.Erad = cell.Erad * res.mass;
 	res.Erad_dt = cell.Erad_dt * res.mass;
 	res.Erad_dt_dt = cell.Erad_dt_dt * res.mass;
 	res.mass_stress = cell.stress*res.mass;
 	res.mass_eps  = cell.strain_plastic*res.mass;
 	res.mass_eps_dt = cell.strain_plastic_dt*res.mass;
-	res.Eelast = cell.elastic_energy*res.mass;
 	//size_t N = cell.tracers.size();
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < MAX_TRACERS; ++i)

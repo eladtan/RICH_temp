@@ -299,7 +299,13 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     // Appendices
     for(size_t i = 0; i < appendices.size(); ++i)
     {
-        write_std_vector_to_hdf5(writegroup, (*(appendices.at(i)))(sim), appendices.at(i)->getName());
+        temp = (*(appendices.at(i)))(sim);
+        write_std_vector_to_hdf5(writegroup, temp, appendices.at(i)->getName());
+        if(write_vtu)
+        {
+            vtu_cell_variables.push_back(temp);
+            vtu_cell_variable_names.push_back(appendices.at(i)->getName());
+        }
     }
 
     return vtu;

@@ -109,7 +109,10 @@ namespace
 
 	double TotalEnergyDensity3D(ComputationalCell3D const& p)
 	{
-		return p.density*(0.5*ScalarProd(p.velocity, p.velocity) + p.internal_energy);
+		double Eelast = 0;
+		if(p.G > 0.1)
+			Eelast = 0.25 * p.stress.J2() / p.G;
+		return p.density*(0.5*ScalarProd(p.velocity, p.velocity) + p.internal_energy) + Eelast;
 	}
 
 	Conserved3D starred_state(ComputationalCell3D const& state, double sk, double ss)
@@ -288,7 +291,7 @@ Conserved3D Hllc3D::operator()(ComputationalCell3D const& left, ComputationalCel
 		RotateBack(f_gr, normaldir, left, right);
 	else
 		BoostBack(f_gr, velocity, normaldir, left, right);
-	ustar_vec = normaldir * ws.center;
+	ustar_vec = normaldir * (ws.center + velocity);
 	double pstar_size = CalcPstar(local_left, local_right, local_left.velocity.x, local_right.velocity.x, ws.center, ws.left, ws.right);
 	pstar_vec = normaldir * pstar_size;
 	return f_gr;

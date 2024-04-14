@@ -7,6 +7,8 @@ namespace
 	void AddTracers(ComputationalCell3D const& left, ComputationalCell3D const& right, Conserved3D &res)
 	{
 		size_t ntracers = left.tracers.size();
+		res.mass_stress *= 0;
+		res.Eelast = 0;
 		res.Erad = (res.mass > 0 ? left.Erad : right.Erad) * res.mass;
 		res.Erad_dt = (res.mass > 0 ? left.Erad_dt : right.Erad_dt) * res.mass;
 		res.Erad_dt_dt = (res.mass > 0 ? left.Erad_dt_dt : right.Erad_dt_dt) * res.mass;

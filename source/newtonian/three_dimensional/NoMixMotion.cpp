@@ -12,7 +12,7 @@
 #include <boost/numeric/ublas/lu.hpp>
 #include <boost/numeric/ublas/vector.hpp>
 
-NoMixMotion::NoMixMotion(const PointMotion3D& pm, SpatialReconstruction3D const& interpolation, const RiemannSolver3D & rs, const EquationOfState& eos, const vector<std::string>& no_fix = vector<std::string>()) : pm_(pm), interpolation_(interpolation), no_fix_indeces(), rs_(rs), eos_(eos)
+NoMixMotion::NoMixMotion(const PointMotion3D& pm, SpatialReconstruction3D const& interpolation, const RiemannSolver3D & rs, const EquationOfState& eos, const vector<std::string>& no_fix) : pm_(pm), interpolation_(interpolation), no_fix_indeces(), rs_(rs), eos_(eos)
 {
 	size_t const Nstick = ComputationalCell3D::stickerNames.size();
 	for (size_t i = 0; i < Nstick; ++i)
@@ -27,7 +27,7 @@ namespace
 {
 	bool DifferentCellType(ComputationalCell3D const& left, ComputationalCell3D const& right, size_t const Ntracers, double& mass_ratio)
 	{
-		double const allowed_mix = 0.11;
+		double const allowed_mix = 0.1;
 		mass_ratio = 0;
 		for(size_t i = 0; i < Ntracers; ++i)
 			mass_ratio += left.tracers[i] * right.tracers[i];
@@ -40,7 +40,7 @@ namespace
 		const Vector3D s = tess.GetCellCM(i);
 		const double d = fastabs(s-r);
 		const double R = tess.GetWidth(i);
-		if(d< R * 0.1 || min_d > 0.25)
+		if(d < R * 0.1 || min_d > 0.25)
 			return; 
 		double const v_size = std::max(fastabs(velocity), fastabs(cells[i].velocity));
 		double const cs = eos.de2c(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
@@ -104,12 +104,14 @@ namespace
 					continue;
 				parallel_1 = tess.GetMeshPoint(neighbors[0]) - point;
 				parallel_1 -= lagrangian_direction[i] * ScalarProd(lagrangian_direction[i], parallel_1);
+				// if(fastabs(parallel_1) < 1e-10)
+				// 	std::cout << "i " << i << " point " <<tess.GetMeshPoint(i)<< " parallel_1 "<<parallel_1 <<" lagrangian direction " << lagrangian_direction[i] << std::endl;
 				parallel_1 = normalize(parallel_1);
 				Vector3D const parallel_2 = CrossProduct(parallel_1, lagrangian_direction[i]);
 				Nneighbors > 6 ? m.resize(Nneighbors, 6) : m3.resize(Nneighbors, 3);
 				Nneighbors > 6 ? mtrans.resize(6, Nneighbors) : mtrans3.resize(3, Nneighbors);
 				Zvec.resize(Nneighbors);
-				for(size_t j =0; j < Nneighbors; ++j)
+				for(size_t j = 0; j < Nneighbors; ++j)
 				{
 					Vector3D const diff = tess.GetMeshPoint(neighbors[j]) - point;
 					double const x = ScalarProd(diff, parallel_1);
@@ -155,6 +157,10 @@ namespace
 									std::cout<<m(j, kk)<<" ";
 							}
 							std::cout<<std::endl;
+							std::cout << "i " << i<<" point "<<point<<std::endl;
+							for(size_t j = 0; j < Nneighbors; ++j)
+								std::cout<<tess.GetMeshPoint(neighbors[j])<<" | ";
+							std::cout<<std::endl;
 							throw UniversalError("Bad LU decomposition in NoMixMotion");
 						}
 					}
@@ -192,6 +198,8 @@ namespace
 						throw UniversalError("Bad LU decomposition in NoMixMotion");
 					inverse3.assign(Imatrix3);
 					boost::numeric::ublas::lu_substitute(mprod3, pmatrix3, inverse3);
+					boost::numeric::ublas::prod(boost::numeric::ublas::trans(m3), Zvec, vec_result);
+					boost::numeric::ublas::prod(inverse3, vec_result, vec_result2);
 				}
 				double fix_magnitude = std::max(-1.0, std::min(1.0, 50*vec_result2[0]/widths[i]));
 				v[i] += (fastabs(v[i]) * 0.05 * fix_magnitude) * lagrangian_direction[i];
@@ -286,7 +294,7 @@ namespace
 	}
 
 	void CorrectPointsOverShoot(vector<Vector3D> &v, double dt, Tessellation3D const& tess,std::vector<size_t> const & IDs,std::vector<char>& lagrangian_cell,
-	boost::random::mt19937_64 & gen, boost::random::uniform_01<double> & dist,std::vector<ComputationalCell3D> const & cells, std::vector<Vector3D> const & lagrangian_direction)
+		boost::random::mt19937_64 & gen, boost::random::uniform_01<double> & dist,std::vector<ComputationalCell3D> const & cells, std::vector<Vector3D> const & lagrangian_direction)
 	{
 		// check that we don't go outside grid and that we don't overshoot lagrangian points
 		size_t const n = tess.GetPointNo();
@@ -394,7 +402,7 @@ void NoMixMotion::operator()(const Tessellation3D & tess, const vector<Computati
 			min_d = std::min(min_d, d);
 			if(d < 0.2 * R && no_fix[i] < 0.5)
 				good_lagrangian = false;
-			if(DifferentCellType(face_values[face_index].first, face_values[face_index].second, Ntracers, mass_ratio));
+			if(DifferentCellType(face_values[face_index].first, face_values[face_index].second, Ntracers, mass_ratio))
 			{
 				Vector3D normal = normalize(tess.Normal(face_index));
 				double const vl = ScalarProd(face_values[face_index].first.velocity, normal);
@@ -436,10 +444,10 @@ void NoMixMotion::operator()(const Tessellation3D & tess, const vector<Computati
 			{
 				double new_area = 0;
 				double new_velocity = 0;
-				if(max_area > pure_mix_area * 0.98 && abs(cell_velocity) > std::numeric_limits<double>::min() * 100)
+				if(max_area > pure_mix_area * 0.98 && abs(cell_velocity) > std::numeric_limits<double>::min() * 1000)
 				{
 					double const Umag = abs(v_faces[max_area_index]);
-					if(Umag > std::numeric_limits<double>::min() * 100)
+					if(Umag > std::numeric_limits<double>::min() * 1000)
 						lagrangian_direction_[i] = normalize(v_faces[max_area_index]);
 					else
 						lagrangian_direction_[i] = normalize(Area_vec);
@@ -449,7 +457,7 @@ void NoMixMotion::operator()(const Tessellation3D & tess, const vector<Computati
 				{
 					double const Umag = abs(cell_velocity);
 					if(Umag > std::numeric_limits<double>::min() * 1000)
-						lagrangian_direction_[i] = ((ScalarProd(cell_velocity, Area_vec) > 0 ? 1 : -1 )/ Umag ) * cell_velocity;
+						lagrangian_direction_[i] = ((ScalarProd(cell_velocity, Area_vec) > 0 ? 1 : -1 ) / Umag ) * cell_velocity;
 					else
 						lagrangian_direction_[i] = normalize(Area_vec);
 					Vector3D const v_hat = Umag > std::numeric_limits<double>::min() * 1000 ? cell_velocity * (1.0 / Umag) : lagrangian_direction_[i];
@@ -484,7 +492,7 @@ void NoMixMotion::operator()(const Tessellation3D & tess, const vector<Computati
 					}
 					std::cout<<"lagrangian_direction_ "<<lagrangian_direction_<<" velocities "<<velocities[i]<<std::endl;
 				}
-				if(fastabs(velocities[i]) > 1e2 &&(not local_fix))
+				if(fastabs(velocities[i]) > 1e2 && (not local_fix))
 					calc_dw(velocities[i], i, tess, cells, eos_, mix_area / Area, min_d / fastsqrt(max_face));
 				else
 					if(fastabs(velocities[i]) > 1e2 && local_fix)
@@ -500,7 +508,9 @@ void NoMixMotion::operator()(const Tessellation3D & tess, const vector<Computati
 			}
 		}
 		else
-		lagrangian_cell_[i] = '0';
+			lagrangian_cell_[i] = '0';
+		// if(lagrangian_cell_[i] == '2')
+		// 	std::cout<<"i "<<i<<" ID "<<cells[i].ID<<" position "<<tess.GetMeshPoint(i)<<" lagrangian_direction_ "<<lagrangian_direction_[i]<<std::endl;
 	}
 	int rank = 0;
 #ifdef RICH_MPI
@@ -513,7 +523,7 @@ void NoMixMotion::operator()(const Tessellation3D & tess, const vector<Computati
 	// Fix Lagrangian points that strayed away from the lagrangian surface
 	MakeSmoothSurface(lagrangian_direction_, tess, velocities, lagrangian_cell_, cells, widths);
 	std::vector<size_t> IDs(n);
-	boost::random::mt19937_64 gen(static_cast<size_t>(rank) + static_cast<size_t>(std::pow(10.0, 13 + std::ceil(std::abs(std::log10(time) + 1e-20))) * std::abs(time) + 0.5));
+	boost::random::mt19937_64 gen(static_cast<size_t>(rank) + static_cast<size_t>(std::pow(10.0, 13 + std::ceil(std::log10(std::abs(time) + 1e-20))) * std::abs(time) + 0.5));
 	boost::random::uniform_01<double> dist;
 	CorrectLagrangianNeighbors(velocities, tess, IDs, lagrangian_cell_, gen, dist, cells, lagrangian_direction_);
 	velocities.resize(n);

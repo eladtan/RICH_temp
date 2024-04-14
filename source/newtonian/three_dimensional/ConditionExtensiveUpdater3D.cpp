@@ -38,19 +38,21 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 	{
 		delta = fluxes[i] * dt * tess.GetArea(i);
 		delta.internal_energy = 0;
+		delta.mass_stress *= 0;
+		delta.Eelast = 0;
 		size_t n0 = tess.GetFaceNeighbors(i).first;
 		size_t n1 = tess.GetFaceNeighbors(i).second;
 		if (n0 < N)
 		{
 			extensives[n0] -= delta;
-			extensives[n0].internal_energy -= delta.energy - ScalarProd(cells[n0].velocity, delta.momentum) +
-				0.5 * ScalarProd(cells[n0].velocity, cells[n0].velocity) * delta.mass;
+			// extensives[n0].internal_energy -= delta.energy - ScalarProd(cells[n0].velocity, delta.momentum) +
+			// 	0.5 * ScalarProd(cells[n0].velocity, cells[n0].velocity) * delta.mass;
 		}
 		if (n1 < N)
 		{
 			extensives[n1] += delta;
-			extensives[n1].internal_energy += delta.energy - ScalarProd(cells[n1].velocity, delta.momentum) +
-				0.5 * ScalarProd(cells[n1].velocity, cells[n1].velocity) * delta.mass;
+			// extensives[n1].internal_energy += delta.energy - ScalarProd(cells[n1].velocity, delta.momentum) +
+			// 	0.5 * ScalarProd(cells[n1].velocity, cells[n1].velocity) * delta.mass;
 		}
 	}
 
@@ -181,13 +183,18 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 				size_t N0 = tess.GetFaceNeighbors(temp[j]).first;
 				size_t N1 = tess.GetFaceNeighbors(temp[j]).second;
 				size_t Nother = N1 == i ? N0 : N1;
-				std::cout << "Neigh cell " << Nother << ", density " << cells[Nother].density << " pressure " <<
-					cells[Nother].pressure << " elstic sie "<<cells[Nother].elastic_energy<<" vx " << cells[Nother].velocity.x << " vy " << cells[Nother].velocity.y << " vz "
-					<< cells[Nother].velocity.z << std::endl;
-				for (size_t k = 0; k < ComputationalCell3D::tracerNames.size(); ++k)
+				if (not tess.IsPointOutsideBox(Nother))
 				{
-				  std::cout << ComputationalCell3D::tracerNames[k] << " of other " << cells[Nother].tracers[k] << std::endl;
+					std::cout << "Neigh cell " << Nother << ", density " << cells[Nother].density << " pressure " <<
+						cells[Nother].pressure << " elstic sie "<<cells[Nother].elastic_energy<<" vx " << cells[Nother].velocity.x << " vy " << cells[Nother].velocity.y << " vz "
+						<< cells[Nother].velocity.z << std::endl;
+					for (size_t k = 0; k < ComputationalCell3D::tracerNames.size(); ++k)
+					{
+					std::cout << ComputationalCell3D::tracerNames[k] << " of other " << cells[Nother].tracers[k] << std::endl;
+					}
 				}
+				else
+					std::cout<<"Neigh cell " << Nother << " is ghost point" << std::endl;
 			}
 			throw eo;
 		}

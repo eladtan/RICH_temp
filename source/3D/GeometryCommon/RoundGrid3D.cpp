@@ -5,7 +5,7 @@
 #include <fstream>
 
 vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points, Vector3D const& ll, Vector3D const& ur,
-	size_t NumberIt, Tessellation3D *tess)
+	size_t NumberIt, Tessellation3D *tess, std::function<bool(Vector3D)> const& criteria)
 {
 	Voronoi3D default_tess(ll, ur);
 	if (tess == nullptr)
@@ -30,6 +30,8 @@ vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points, Vector3D const& ll,
 			double R = tess->GetWidth(i);
 			Vector3D s = tess->GetCellCM(i);
 			Vector3D r = tess->GetMeshPoint(i);
+			if(not criteria(r))
+				continue;
 			double d = fastabs(s - r);
 			Vector3D dw;
 			if (d / eta_ / R < 0.95)

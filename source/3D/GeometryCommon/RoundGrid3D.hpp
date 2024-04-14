@@ -18,7 +18,7 @@
 	\return The points that give a rounder tessellation
 */
 vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points,Vector3D const& ll,Vector3D const& ur,
-	size_t NumberIt=10,	Tessellation3D *tess=nullptr);
+	size_t NumberIt=10,	Tessellation3D *tess=nullptr, std::function<bool(Vector3D)> const& criteria = [](Vector3D v){return true;});
 
 #ifdef RICH_MPI
 /*!

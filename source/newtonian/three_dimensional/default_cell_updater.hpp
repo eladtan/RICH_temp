@@ -29,6 +29,7 @@ private:
 	const bool includes_temperature_;
 	mutable size_t entropy_index_;
 	const Diffusion* diffusion_;
+	const vector<StrengthModel*> strength_arr_;
 };
 
 #endif // DEFAULT_CELL_UPDATER_HPP

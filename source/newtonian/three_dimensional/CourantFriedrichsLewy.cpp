@@ -73,13 +73,22 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 		}
 	}
 	res *= cfl_;
+	double dt_all[2];
+	dt_all[0] = res;
+	dt_all[1] = 1.0 / source_.SuggestInverseTimeStep();
 	res = 1.0 / std::max(source_.SuggestInverseTimeStep() / sourcecfl_, 1.0 / res);
 	double old_res = res;
+	int rank = 0;
 #ifdef RICH_MPI
-	double new_res = 0;
-	MPI_Allreduce(&res, &new_res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-	res = new_res;
+	double new_res[2];
+	MPI_Allreduce(&dt_all, &new_res, 2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	res = std::min(new_res[0], new_res[1]);
+	dt_all[0] = new_res[0];
+	dt_all[1] = new_res[1];
 #endif
+	if(rank == 0)
+		std::cout << "Hydro dt: "<<dt_all[0]<<" Source dt: "<<dt_all[1]<<" External dt: " <<dt_first_<<std::endl;
 	if ((first_try_ && dt_first_ > 0) || (last_time_ == time && dt_first_ > 0))
 	{
 		res = std::min(res, dt_first_);

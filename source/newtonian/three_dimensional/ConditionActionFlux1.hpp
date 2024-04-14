@@ -171,7 +171,7 @@ public:
 	\param rs2 Riemann solver with mass flux
 	\param criteria The criteria for calculating mass flux
 	*/
-	explicit LagrangianFlux3D(const LagrangianHLLC3D& rs, double const max_velocity_scale_error=1e5) : rs_(rs), max_velocity_scale_error(max_velocity_scale_error) {}
+	explicit LagrangianFlux3D(const RiemannSolver3D& rs, double const max_velocity_scale_error=1e5) : rs_(rs), max_velocity_scale_error_(max_velocity_scale_error) {}
 
 	void operator()(size_t face_index, const Tessellation3D& tess, const Vector3D& face_velocity,
 		const vector<ComputationalCell3D>& cells, const EquationOfState& eos, const bool aux, Conserved3D &res,
@@ -179,8 +179,8 @@ public:
 		const& face_values, std::vector<Vector3D> const & point_velocities, Vector3D & ustar) const override;
 
 private:
-	const LagrangianHLLC3D& rs_;
-	double const max_velocity_scale_error;
+	const RiemannSolver3D& rs_;
+	double const max_velocity_scale_error_;
 };
 
 //! \brief Checks if a certain face is a boundary face

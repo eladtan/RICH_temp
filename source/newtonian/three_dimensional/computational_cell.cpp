@@ -2,13 +2,13 @@
 
 ComputationalCell3D::ComputationalCell3D(void):
   density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Erad_dt(0),
-  	Erad_dt_dt(0), cs(0), tracers(),stickers() {}
+  	Erad_dt_dt(0), cs(0), tracers(),stickers(), G(0), Y0(0), strain_plastic(0), strain_plastic_dt(0), stress(), elastic_energy(0){}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i,double internal_energy_i,size_t ID_i,
 				     const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(),stickers() {}
+  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(), stickers(), G(0), Y0(0), strain_plastic(0), strain_plastic_dt(0), elastic_energy(0), stress() {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i, double internal_energy_i,size_t ID_i,
@@ -16,7 +16,7 @@ ComputationalCell3D::ComputationalCell3D(double density_i,
 				     const std::array<double,MAX_TRACERS>& tracers_i,
 					 const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i) {}
+  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i), G(0), Y0(0), strain_plastic(0), strain_plastic_dt(0), elastic_energy(0), stress() {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -29,7 +29,7 @@ dt(other.dt),
 Erad(other.Erad),
 Erad_dt(other.Erad_dt),
 Erad_dt_dt(other.Erad_dt_dt),
-cs(other.cs),
+cs(other.cs), G(other.G), Y0(other.Y0), strain_plastic(other.strain_plastic), strain_plastic_dt(other.strain_plastic_dt), stress(other.stress), elastic_energy(other.elastic_energy),
 tracers(other.tracers),
 stickers(other.stickers) {}
 
@@ -211,6 +211,7 @@ void ComputationalCell3D::unserialize
 #ifdef __INTEL_COMPILER
 #pragma ivdep
 #endif
+	counter = 27;
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		tracers[j] = data.at(counter + j);
 	//size_t N2 = stickers.size();
@@ -263,7 +264,7 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	res.elastic_energy += other.elastic_energy*scalar;
 	res.stress += other.stress*scalar;
 	res.strain_plastic += other.strain_plastic*scalar;
-	res.straic_plastic_dt += other.strain_plastic_dt*scalar;
+	res.strain_plastic_dt += other.strain_plastic_dt*scalar;
 	//assert(res.tracers.size() == other.tracers.size());
 	//size_t N = res.tracers.size();
 #ifdef __INTEL_COMPILER
@@ -351,8 +352,8 @@ void ReplaceComputationalCell(ComputationalCell3D & cell, ComputationalCell3D co
 	cell.Erad_dt_dt = other.Erad_dt_dt;
 	cell.cs = other.cs;
 	cell.G = other.G;
-	cell.Y0=other.Y0;
-	cell.stress=other.stress;
+	cell.Y0 = other.Y0;
+	cell.stress = other.stress;
 	cell.elastic_energy = other.elastic_energy;
 	cell.strain_plastic = other.strain_plastic;
 	cell.strain_plastic_dt = other.strain_plastic_dt;

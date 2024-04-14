@@ -1,4 +1,4 @@
-#include "HllcStress.hpp"
+#include "HllcStressFive.hpp"
 #include "../../misc/universal_error.hpp"
 #include "../../misc/utils.hpp"
 
@@ -10,9 +10,11 @@ namespace
 	{
 	public:
 
-		WaveSpeeds(double left_i, Vector3D center_i, double right_i) :left(left_i), center(center_i), right(right_i) {}
+		WaveSpeeds(double left_i, double left_prime_i, Vector3D center_i, double right_prime_i, double right_i) :left(left_i), left_prime(left_prime_i), center(center_i), right_prime(right_prime_i), right(right_i) {}
 		double left;
+		double left_prime;
 		Vector3D center;
+		double right_prime;
 		double right;
 	};
 
@@ -30,7 +32,7 @@ namespace
 		try
 		{
 #endif
-		  cl = eos.de2c(dl, left.internal_energy, left.tracers, ComputationalCell3D::tracerNames);
+		  cl = eos.dp2c(dl, left.pressure, left.tracers, ComputationalCell3D::tracerNames);
 		  cl = std::max(std::numeric_limits<double>::epsilon()*1e2 * std::abs(ul), std::max(std::sqrt(cl*cl + 4*left.G/(3*dl)), std::numeric_limits<double>::min() * 1e6));
 #ifdef RICH_DEBUG
 		}
@@ -40,6 +42,7 @@ namespace
 			throw eo;
 		}
 #endif
+		const double clp = std::max(std::numeric_limits<double>::epsilon()*1e2 * std::abs(ul), std::max(std::sqrt(left.G/dl), std::numeric_limits<double>::min() * 1e6));
 		const double dr = right.density;
 		const double prx = right.pressure - right.stress.at(0,0);
 		const double pry = -right.stress.at(0,1);
@@ -51,7 +54,7 @@ namespace
 		try
 		{
 #endif
-		  cr = eos.de2c(dr, right.internal_energy, right.tracers, ComputationalCell3D::tracerNames);
+		  cr = eos.dp2c(dr, right.pressure, right.tracers, ComputationalCell3D::tracerNames);
 		  cr = std::max(std::numeric_limits<double>::epsilon()*1e2 * std::abs(ur), std::max(std::sqrt(cr*cr + 4*right.G/(3*dr)), std::numeric_limits<double>::min() * 1e6));
 #ifdef RICH_DEBUG
 		}
@@ -61,13 +64,19 @@ namespace
 			throw eo;
 		}
 #endif
+		const double crp = std::max(std::numeric_limits<double>::epsilon()*1e2 * std::abs(ur), std::max(std::sqrt(right.G/dr), std::numeric_limits<double>::min() * 1e6));
 		double sl = std::min(ur - cr, ul - cl);
 		double sr = std::max(ur + cr, ul + cl);
 		double denom = 1.0 / (dl*(sl - ul) - dr * (sr - ur));
 		double us = (prx - plx + dl*ul*(sl-ul)-dr*ur*(sr-ur))*denom;
-		double vs = (pry - ply + dl*vl*(sl-ul)-dr*vr*(sr-ur))*denom;
-		double ws = (prz - plz + dl*wl*(sl-ul)-dr*wr*(sr-ur))*denom;
-		return WaveSpeeds(sl, Vector3D(us, vs, ws), sr);
+		double slp = us - clp;
+		double srp = us + crp;
+		double dsl = dl * (sl - ul) / (sl - us);
+		double dsr = dr * (sr - ur) / (sr - us);
+		const double denom2 = 1.0 / (dsl*(slp - us) - dsr * (srp - us));
+		double vs = (pry - ply + dsl*vl*(slp-ul)-dsr*vr*(srp-ur))*denom2;
+		double ws = (prz - plz + dsl*wl*(slp-ul)-dsr*wr*(srp-ur))*denom2;
+		return WaveSpeeds(sl, slp, Vector3D(us, vs, ws), srp, sr);
 	}
 
 	UniversalError invalid_wave_speeds(ComputationalCell3D const& left, ComputationalCell3D const& right,
@@ -102,7 +111,32 @@ namespace
 			return p.density*(0.5*ScalarProd(p.velocity, p.velocity) + p.internal_energy);
 	}
 
-	Conserved3D starred_state(ComputationalCell3D const& state, double sk, Vector3D ss, Vector3D& pstar)
+	Conserved3D starred_state(ComputationalCell3D const& state, double sk, double skp, Vector3D ss, Vector3D& pstar)
+	{
+		const double dk = state.density;
+		const double pkx = state.pressure - state.stress.at(0,0);
+		const double pky = -state.stress.at(0,1);
+		const double pkz = -state.stress.at(0,2);
+		const double uk = state.velocity.x;
+		const double vk = state.velocity.y;
+		const double wk = state.velocity.z;
+		const double ds = dk * (sk - uk) / (sk - ss.x);
+		const double ek = TotalEnergyDensity3D(state);
+		const double psx = pkx + dk*(uk-ss.x)*(ss.x-sk);
+		const double psy = pky + ds*(vk-ss.y)*(ss.y-skp);
+		const double psz = pkz + ds*(wk-ss.z)*(ss.z-skp);
+		Conserved3D res;
+		res.mass = ds;
+		res.momentum = ds * ss;
+		res.energy = ek * ds / dk - ds * (psx*ss.x - pkx*uk)/(dk*(uk-sk)) - (psy*ss.y + psz*ss.z - pky*vk - pkz*wk)/(ss.x - skp);
+		res.internal_energy = 0;
+		res.mass_eps = 0;
+		res.mass_eps_dt = 0;
+		pstar = Vector3D(psx, psy, psz);
+		return res;
+	}
+
+	Conserved3D primed_state(ComputationalCell3D const& state, double sk, Vector3D ss, Vector3D& pstar)
 	{
 		const double dk = state.density;
 		const double pkx = state.pressure - state.stress.at(0,0);
@@ -114,16 +148,16 @@ namespace
 		const double ds = dk * (sk - uk) / (sk - ss.x);
 		const double ek = TotalEnergyDensity3D(state);
 		const double psx = pkx + dk*(uk-ss.x)*(uk-sk);
-		const double psy = pky + dk*(vk-ss.y)*(uk-sk);
-		const double psz = pkz + dk*(wk-ss.z)*(uk-sk);
 		Conserved3D res;
 		res.mass = ds;
-		res.momentum = ds * ss;
-		res.energy = ek * ds / dk - ds * (psx*ss.x + psy*ss.y + psz*ss.z - pkx*uk - pky*vk - pkz*wk)/(dk*(uk-sk));
+		res.momentum.x = ds * ss.x;
+		res.momentum.y = ds * vk;
+		res.momentum.z = ds * wk;
+		res.energy = ek * ds / dk - ds * (psx * ss.x - pkx*uk)/(dk*(uk-sk));
 		res.internal_energy = 0;
 		res.mass_eps = 0;
 		res.mass_eps_dt = 0;
-		pstar = Vector3D(psx, psy, psz);
+		pstar = Vector3D(psx, pky, pkz);
 		return res;
 	}
 
@@ -170,7 +204,7 @@ namespace
 }
 
 
-Conserved3D HllcStress::operator()(ComputationalCell3D const& left, ComputationalCell3D const& right, double velocity,
+Conserved3D HllcStressFive::operator()(ComputationalCell3D const& left, ComputationalCell3D const& right, double velocity,
 	EquationOfState const& eos, Vector3D const& normaldir, Vector3D & ustar_vec, Vector3D & pstar_vec) const
 {
 	double face_v = 0;	
@@ -230,39 +264,37 @@ Conserved3D HllcStress::operator()(ComputationalCell3D const& left, Computationa
 	{
 		const Conserved3D fl = PrimitiveToFlux(local_left);
 		f_gr = fl;
-		if (fast_flow)
-		{
-			Conserved3D ustate;
-			PrimitiveToConserved(local_left, 1, ustate);
-			f_gr -= ustate * face_v;			
-		}
 	}
-	else if (ws.left <= face_v && ws.center.x >= face_v)
+	else if(ws.left <= face_v && ws.left_prime >= face_v)
 	{
 		const Conserved3D fl = PrimitiveToFlux(local_left);
-		const Conserved3D usl = starred_state(local_left, ws.left, ws.center, pstar_vec);
-		f_gr = fl + ws.left*(usl - ul);
-		if (fast_flow)
-			f_gr -= usl * face_v;
+		const Conserved3D upl = primed_state(local_left, ws.left, ws.center, pstar_vec);
+		f_gr = fl + ws.left*(upl - ul);
 	}
-	else if (ws.center.x < face_v && ws.right >= face_v)
+	else if (ws.left_prime <= face_v && ws.center.x >= face_v)
+	{
+		const Conserved3D fl = PrimitiveToFlux(local_left);
+		const Conserved3D upl = primed_state(local_left, ws.left, ws.center, pstar_vec);
+		const Conserved3D usl = starred_state(local_left, ws.left, ws.left_prime, ws.center, pstar_vec);
+		f_gr = fl + ws.left*(upl - ul) + ws.left_prime*(usl - upl);
+	}
+	else if (ws.center.x < face_v && ws.right_prime >= face_v)
 	{
 		const Conserved3D fr = PrimitiveToFlux(local_right);
-		const Conserved3D usr = starred_state(local_right, ws.right, ws.center, pstar_vec);
-		f_gr = fr + ws.right*(usr - ur);
-		if (fast_flow)
-			f_gr -= usr * face_v;
+		const Conserved3D upr = primed_state(local_right, ws.right, ws.center, pstar_vec);
+		const Conserved3D usr = starred_state(local_right, ws.right, ws.right_prime, ws.center, pstar_vec);
+		f_gr = fr + ws.right*(upr - ur) + ws.right_prime*(usr - upr);
+	}
+	else if (ws.right_prime< face_v && ws.right >= face_v)
+	{
+		const Conserved3D fr = PrimitiveToFlux(local_right);
+		const Conserved3D upr = primed_state(local_right, ws.right, ws.center, pstar_vec);
+		f_gr = fr + ws.right*(upr - ur);
 	}
 	else if (ws.right < face_v)
 	{
 		const Conserved3D fr = PrimitiveToFlux(local_right);
 		f_gr = fr;
-		if (fast_flow)
-		{
-			Conserved3D ustate;
-			PrimitiveToConserved(local_right, 1, ustate);
-			f_gr -= ustate * face_v;
-		}
 	}
 	else
 		throw invalid_wave_speeds(local_left, local_right, velocity, ws.left, ws.center, ws.right);
@@ -276,12 +308,10 @@ Conserved3D HllcStress::operator()(ComputationalCell3D const& left, Computationa
 		if (fast_flow)
 			f_gr -= face_v * HLLstarred_state(local_left, local_right, ws.left, ws.right);
 	}
-	if (fast_flow)
-		RotateBack(f_gr, normaldir, left, right);
-	else
-		BoostBack(f_gr, velocity, normaldir, left, right, R);
+
+	BoostBack(f_gr, velocity, normaldir, left, right, R);
 	ustar_vec = R.transpose() * (ws.center + velocity*Vector3D(1, 0, 0));
-	starred_state(local_left, ws.left, ws.center, pstar_vec);
+	starred_state(local_left, ws.left, ws.left_prime, ws.center, pstar_vec);
 	pstar_vec = R.transpose() * pstar_vec;
 	return f_gr;
 }

@@ -51,5 +51,5 @@ void RotateSolveBack3D(Vector3D const& normal, ComputationalCell3D const& left, 
 
 
 void RotateSolveBack3D(Vector3D const& normal, ComputationalCell3D const& left, ComputationalCell3D const& right,
-	Vector3D const& face_velocity,RiemannSolver3D const& rs, Conserved3D &res,EquationOfState const& eos, Vector3D & ustar_vec)
+	Vector3D const& face_velocity,RiemannSolver3D const& rs, Conserved3D &res,EquationOfState const& eos, Vector3D & ustar_vec);
 #endif // FLUX_CALCULATOR_HPP

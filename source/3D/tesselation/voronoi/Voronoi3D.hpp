@@ -185,9 +185,9 @@ private:
     std::vector<double> radiuses;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
     vector<std::size_t> indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
-    std::vector<Vector3D> allMyPoints;
     std::shared_ptr<RangeFinder> rangeFinder;
   #endif // RICH_MPI
+    std::vector<Vector3D> allMyPoints; 
 
 public:
 

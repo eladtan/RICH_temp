@@ -64,6 +64,7 @@ std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > ConditionActio
 	vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values;
 	interp_(tess, cells, time, face_values);
 	fluxes.resize(tess.GetTotalFacesNumber());
+	ustar_vec.resize(tess.GetTotalFacesNumber());
 	size_t Nloop = fluxes.size();
 	for (size_t i = 0; i < Nloop; ++i)
 	{
@@ -245,6 +246,7 @@ void LagrangianFlux3D::operator()(size_t face_index, const Tessellation3D & tess
 	const vector<ComputationalCell3D>& cells, const EquationOfState & eos, const bool aux, Conserved3D & res, double time, 
 	 std::pair<ComputationalCell3D, ComputationalCell3D> const & face_values, std::vector<Vector3D> const & point_velocities, Vector3D & ustar) const
 {
+	// std::cout << "lag flux for " << face_values.first.ID << " and " << face_values.second.ID << std::endl;
 	const Vector3D normal = normalize(tess.Normal(face_index));
 	double const vl = ScalarProd(face_values.first.velocity, normal);
 	double const vr = ScalarProd(face_values.second.velocity, normal);
@@ -253,7 +255,7 @@ void LagrangianFlux3D::operator()(size_t face_index, const Tessellation3D & tess
 	double const max_velocity_scale = std::max(fastabs(point_velocities[tess.GetFaceNeighbors(face_index).first]), std::max(std::max(std::max(std::abs(vl), std::abs(vr)), face_values.first.cs), face_values.second.cs));
 	RotateSolveBack3D(normal, face_values.first, face_values.second, face_velocity, rs_, res, eos, ustar, pstar);
 
-	if (fastabs(ustar - face_velocity) > max_velocity_scale * max_velocity_scale_error)
+	if (fastabs(ustar - face_velocity) > max_velocity_scale * max_velocity_scale_error_)
 	{
 		return;
 	}

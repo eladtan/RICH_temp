@@ -8,7 +8,10 @@
 #include "computational_cell.hpp"
 
 //! \brief Conserved variables for a 3D computational cell
-class Conserved3D : public Serializable
+class Conserved3D
+#ifdef RICH_MPI
+	: public Serializable
+#endif
 {
 public:
 
