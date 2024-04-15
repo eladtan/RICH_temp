@@ -41,12 +41,12 @@ class Dissipation
                 if(is_first)
                 {
                     result[neigh.first] += A *((UstarPstar.first - ScalarProd(normal, cells[neigh.first].velocity)) * UstarPstar.second
-                        - (UstarPstar.second - cells[neigh.first].pressure) * UstarPstar.first);
+                        + cells[neigh.first].pressure * UstarPstar.first);
                 }
                 if(is_second)
                 {
                     result[neigh.second] -= A *((UstarPstar.first - ScalarProd(normal, cells[neigh.second].velocity)) * UstarPstar.second
-                        - (UstarPstar.second - cells[neigh.second].pressure) * UstarPstar.first);
+                        + cells[neigh.second].pressure * UstarPstar.first);
                 }
             }
         }
