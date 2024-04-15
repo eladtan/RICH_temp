@@ -63,8 +63,8 @@
     'mpicc_gcc'    : "/home/maorm/opt/openmpi-4.1.6/current/bin/mpicc",
     'mpic++_gcc'   : "/home/maorm/opt/openmpi-4.1.6/current/bin/mpic++",
 
-    'mpicc_intel'    : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/mpi/latest/bin/mpicc",
-    'mpic++_intel'   : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/mpi/latest/bin/mpicxx",
+    'mpicc_intel'    : "/software/x86_64/5.14.0/intel/OneApi/2023.2.0/mpi/2021.10.0/bin/mpicc",
+    'mpic++_intel'   : "/software/x86_64/5.14.0/intel/OneApi/2023.2.0/mpi/2021.10.0/bin/mpicxx",
 
 #    'pybind11'   : "/software/x86_64/5.14.0-284.11.1.el9_2.x86_64/pybind11/2.6.1/mock_install/share/cmake/pybind11",
 

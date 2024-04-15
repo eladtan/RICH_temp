@@ -7,7 +7,8 @@
 #include "3D/environment/EnvironmentAgent.h"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 #ifdef RICH_MPI
-    #include "utils/queryAgent/QueryAgent.hpp"
+    #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
+    #include "utils/queryAgent/ThreePhasesQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
 #endif // RICH_MPI
@@ -22,6 +23,48 @@ typedef struct SmallRangeQueryData : public RangeQueryData
     {
         return stream << "[SMALL, max points is " << query.maxPointsToGet << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
+
+    friend inline std::istream &operator>>(std::istream &stream, SmallRangeQueryData &query)
+    {
+        return stream >> query.maxPointsToGet >> query.center >> query.radius;
+    }
+
+    #ifdef RICH_MPI
+        size_t getChunkSize(void) const override
+        {
+            return 1 + 3 + 1 + 1;
+        }
+
+        std::vector<double> serialize(void) const override
+        {
+            std::cout << "here" << std::endl;
+            std::vector<double> data;
+            data.push_back(static_cast<double>(this->pointIdx));
+            data.push_back(this->center.x);
+            data.push_back(this->center.y);
+            data.push_back(this->center.z);
+            data.push_back(static_cast<double>(this->radius));
+            data.push_back(static_cast<double>(this->maxPointsToGet));
+            return data;
+        }
+
+        void unserialize(const std::vector<double> &data) override
+        {
+            size_t index = 0;
+            this->pointIdx = static_cast<size_t>(data[index]);
+            index++;
+            this->center.x = data[index];
+            index++;
+            this->center.y = data[index];
+            index++;
+            this->center.z = data[index];
+            index++;
+            this->radius = static_cast<typename _3DPoint::coord_type>(data[index]);
+            index++;
+            this->maxPointsToGet = static_cast<size_t>(data[index]);
+        }
+
+    #endif // RICH_MPI
 
 } SmallRangeQueryData;
 
@@ -136,7 +179,8 @@ public:
         #ifdef RICH_MPI
             this->ansAgent = new SmallRangeAnswerAgent(rangeFinder, pointsContainer, comm);
             this->talkAgent = new SmallRangeTalkAgent(envAgent, comm);
-            this->queryAgent = new QueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            this->queryAgent = new BusyWaitQueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            // this->queryAgent = new ThreePhasesQueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
         #else // RICH_MPI
             this->ansAgent = new SmallRangeAnswerAgent(rangeFinder);
         #endif // RICH_MPI

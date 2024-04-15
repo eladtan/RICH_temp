@@ -7,7 +7,7 @@
 #include "3D/environment/EnvironmentAgent.h"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 #ifdef RICH_MPI
-    #include "utils/queryAgent/QueryAgent.hpp"
+    #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
 #endif // RICH_MPI
@@ -241,7 +241,7 @@ public:
         #ifdef RICH_MPI
             this->ansAgent = new BigRangeAnswerAgent(rangeFinder, pointsContainer, comm);
             this->talkAgent = new BigRangeTalkAgent(envAgent, comm);
-            this->queryAgent = new QueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            this->queryAgent = new BusyWaitQueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
         #else // RICH_MPI
             this->ansAgent = new BigRangeAnswerAgent(rangeFinder);
         #endif // RICH_MPI
