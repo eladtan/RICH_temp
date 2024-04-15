@@ -23,6 +23,56 @@ struct BigRangeQueryData : public RangeQueryData
     {
         return stream << "[BIG, point is " << query.originalPoint << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
+
+    BigRangeQueryData(const _3DPoint &originalPoint, const _3DPoint &center, typename _3DPoint::coord_type radius, size_t pointIdx, bool askOnlyClose): RangeQueryData(center, radius, pointIdx), originalPoint(originalPoint), askOnlyClose(askOnlyClose)
+    {}
+
+    BigRangeQueryData(): BigRangeQueryData(_3DPoint(), _3DPoint(), 0, 0, false)
+    {}
+
+    #ifdef RICH_MPI
+        size_t getChunkSize(void) const override
+        {
+            return 1 + 3 + 1 + 3 + 1 + 1;
+        }
+
+        std::vector<double> serialize(void) const override
+        {
+            std::vector<double> data;
+            data.push_back(static_cast<double>(this->pointIdx));
+            data.push_back(this->originalPoint.x);
+            data.push_back(this->originalPoint.y);
+            data.push_back(this->originalPoint.z);
+            data.push_back(this->center.x);
+            data.push_back(this->center.y);
+            data.push_back(this->center.z);
+            data.push_back(static_cast<double>(this->radius));
+            data.push_back(this->askOnlyClose? 1 : 0);
+            return data;
+        }
+
+        void unserialize(const std::vector<double> &data) override
+        {
+            size_t index = 0;
+            this->pointIdx = static_cast<size_t>(data[index]);
+            index++;
+            this->originalPoint.x = data[index];
+            index++;
+            this->originalPoint.y = data[index];
+            index++;
+            this->originalPoint.z = data[index];
+            index++;
+            this->center.x = data[index];
+            index++;
+            this->center.y = data[index];
+            index++;
+            this->center.z = data[index];
+            index++;
+            this->radius = static_cast<typename _3DPoint::coord_type>(data[index]);
+            index++;
+            this->askOnlyClose = (data[index] != 0);
+        }
+    #endif // RICH_MPI
 };
 
 /**
