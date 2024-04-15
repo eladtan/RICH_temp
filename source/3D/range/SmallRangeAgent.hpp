@@ -29,6 +29,12 @@ typedef struct SmallRangeQueryData : public RangeQueryData
         return stream >> query.maxPointsToGet >> query.center >> query.radius;
     }
 
+    SmallRangeQueryData(size_t pointIdx, const _3DPoint &center, typename _3DPoint::coord_type radius, size_t maxPointsToGet):
+        RangeQueryData(pointIdx, center, radius), maxPointsToGet(maxPointsToGet)
+    {};
+
+    SmallRangeQueryData(): RangeQueryData(), maxPointsToGet(0){};
+    
     #ifdef RICH_MPI
         size_t getChunkSize(void) const override
         {

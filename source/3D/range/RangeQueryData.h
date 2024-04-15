@@ -12,6 +12,12 @@ struct RangeQueryData
     _3DPoint center;
     typename _3DPoint::coord_type radius;
 
+    RangeQueryData(size_t pointIdx, const _3DPoint &center, typename _3DPoint::coord_type radius):
+        pointIdx(pointIdx), center(center), radius(radius)
+    {};
+
+    RangeQueryData(): pointIdx(0), center(_3DPoint()), radius(0){};
+    
     #ifdef RICH_MPI
 
         size_t getChunkSize(void) const override

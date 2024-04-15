@@ -24,10 +24,10 @@ struct BigRangeQueryData : public RangeQueryData
         return stream << "[BIG, point is " << query.originalPoint << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
 
-    BigRangeQueryData(const _3DPoint &originalPoint, const _3DPoint &center, typename _3DPoint::coord_type radius, size_t pointIdx, bool askOnlyClose): RangeQueryData(center, radius, pointIdx), originalPoint(originalPoint), askOnlyClose(askOnlyClose)
+    BigRangeQueryData(size_t pointIdx, const _3DPoint &center, typename _3DPoint::coord_type radius, const _3DPoint &originalPoint, bool askOnlyClose): RangeQueryData(pointIdx, center, radius), originalPoint(originalPoint), askOnlyClose(askOnlyClose)
     {}
-
-    BigRangeQueryData(): BigRangeQueryData(_3DPoint(), _3DPoint(), 0, 0, false)
+    
+    BigRangeQueryData(): RangeQueryData(), originalPoint(_3DPoint()), askOnlyClose(false)
     {}
 
     #ifdef RICH_MPI
