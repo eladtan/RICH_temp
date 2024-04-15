@@ -106,12 +106,13 @@ protected:
         for(size_t pointIdx = 0; pointIdx < allPoints.size(); pointIdx++)
         {
             const Vector3D &point = allPoints[pointIdx];
-            data.push_back({.indexInAllPoints = pointIdx, 
-                            .point = _3DPoint(point.x, point.y, point.z), 
-                            .radius = radiuses[pointIdx], 
-                            .CM = _3DPoint(previous_CM[pointIdx].x, previous_CM[pointIdx].y, previous_CM[pointIdx].z)
-                           });
-        }
+            data.emplace_back();
+            _3DPointRadius &pointRadius = data.back();
+            pointRadius.indexInAllPoints = pointIdx;
+            pointRadius.point = _3DPoint(point.x, point.y, point.z);
+            pointRadius.radius = radiuses[pointIdx];
+            pointRadius.CM = _3DPoint(previous_CM[pointIdx].x, previous_CM[pointIdx].y, previous_CM[pointIdx].z);
+    }
         
         for(const size_t &pointIdx : indicesToWorkWith)
         {

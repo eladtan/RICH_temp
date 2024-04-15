@@ -156,9 +156,10 @@ private:
                                   const boost::container::flat_map<size_t, size_t> &resultOfBigPoints
                                 );
 
+  void UpdateCMs(void);
   void UpdateRadiuses(const std::vector<Vector3D> &points);
-  void UpdateRangeFinder();
-  
+  void UpdateRangeFinder(void);
+
   #ifdef RICH_MPI
     std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
     void FilterRealGhostPoints();
@@ -213,7 +214,7 @@ private:
 
   std::shared_ptr<RangeFinder> rangeFinder;
   std::vector<double> radiuses;
-  vector<std::size_t> indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
+  Tessellation3D::AllPointsMap indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
   std::vector<Vector3D> allMyPoints;
 
 public:
@@ -316,10 +317,12 @@ public:
     \return List of bounding faces
    */ 
   face_vec const& GetCellFaces(std::size_t index) const override;
-
+  
   vector<Vector3D>& accessMeshPoints(void) override;
 
   const vector<Vector3D>& getMeshPoints(void) const override;
+
+  const Tessellation3D::AllPointsMap &GetIndicesInAllPoints(void) const override;
 
   const std::vector<Vector3D> &getAllPoints(void) const override;
 

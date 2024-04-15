@@ -689,7 +689,7 @@ std::vector<T> MPI_Gatherv_serializable(const std::vector<T> &data, int root, co
 	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
 	if(chunkSize == 0)
 	{
-		return std::vector<std::vector<T>>(size); // no data is being sent
+		return std::vector<T>(); // no data is being sent
 	}
 	
 	int mySendSize = static_cast<int>(data.size());

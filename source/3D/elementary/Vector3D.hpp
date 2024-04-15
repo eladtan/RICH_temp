@@ -12,7 +12,10 @@
 #include <cmath>
 #include <math.h>
 #include "misc/utils.hpp"
-#include "misc/serializable.hpp"
+
+#ifdef RICH_MPI
+	#include "misc/serializable.hpp"
+#endif // RICH_MPI
 
 using std::vector;
 
@@ -29,7 +32,10 @@ namespace
 }
 
 //! \brief 3D Mathematical vector
-class Vector3D : public Serializable
+class Vector3D
+			#ifdef RICH_MPI
+				: public Serializable
+			#endif // RICH_MPI
 {
 public:
     using coord_type = double;
@@ -230,7 +236,9 @@ public:
 		z = my_round(z);
 	}
 
-	inline size_t getChunkSize(void) const
+	#ifdef RICH_MPI
+
+	inline size_t getChunkSize(void) const override
 	{
 		return 3;
 	}
@@ -244,13 +252,15 @@ public:
 		return res;
 	}
 
-	inline void unserialize(const vector<double>& data)
+	inline void unserialize(const vector<double>& data) override
 	{
 		assert(data.size() == 3);
 		x = data[0];
 		y = data[1];
 		z = data[2];
 	}
+
+	#endif // RICH_MPI
 
 	friend std::ostream &operator<<(std::ostream &stream, const Vector3D &vec)
 	{
@@ -274,7 +284,8 @@ public:
 #ifdef __INTEL_COMPILER
 #pragma omp declare simd
 #endif
-	~Vector3D(void) override {}
+
+	~Vector3D(void) = default;
 
 	static const Vector3D max(void)
 	{

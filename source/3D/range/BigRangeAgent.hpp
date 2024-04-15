@@ -48,19 +48,12 @@ private:
         #endif // RICH_MPI
         {}
 
-        std::vector<Vector3D> selfAnswer(const BigRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
+        std::vector<size_t> selfAnswer(const BigRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
         {
             // a big query, bring only the closest point
             std::vector<size_t> indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.originalPoint.x, query.originalPoint.y, query.originalPoint.z), ignore);
             ignore.insert(indicesResult.begin(), indicesResult.end());
-
-            std::vector<Vector3D> result;
-            result.reserve(indicesResult.size());
-            for(const size_t &pointIdx : indicesResult)
-            {
-                result.push_back(this->rangeFinder->getPoint(pointIdx));
-            }
-            return result;
+            return indicesResult;
         }
 
         #ifdef RICH_MPI
@@ -70,7 +63,7 @@ private:
 
                 // a big query, bring only the closest point
                 std::vector<size_t> indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.originalPoint.x, query.originalPoint.y, query.originalPoint.z), ignore);
-                indicesResult = this->pointsContainer.addPointsAsSent<std::vector>(_rank, indicesResult);
+                indicesResult = this->pointsContainer.addPointsAsSent(_rank, indicesResult);
 
                 std::vector<_3DPoint> result;
                 result.reserve(indicesResult.size());
@@ -270,9 +263,9 @@ public:
         };
     #endif // RICH_MPI
 
-    std::vector<std::vector<Vector3D>> selfBatchAnswer(std::queue<BigRangeQueryData> &bigQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(std::queue<BigRangeQueryData> &bigQueriesBatch, boost::container::flat_set<size_t> &ignore)
     {
-        std::vector<std::vector<Vector3D>> result;
+        std::vector<std::vector<size_t>> result;
         std::queue<BigRangeQueryData> queriesBackup;
         while(not bigQueriesBatch.empty())
         {

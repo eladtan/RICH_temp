@@ -48,19 +48,12 @@ private:
         #endif // RICH_MPI
         {}
 
-        std::vector<Vector3D> selfAnswer(const SmallRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
+        std::vector<size_t> selfAnswer(const SmallRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
         {
             // a small query, bring the requested number of points
             std::vector<size_t> indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
             ignore.insert(indicesResult.begin(), indicesResult.end());
-
-            std::vector<Vector3D> result;
-            result.reserve(indicesResult.size());
-            for(const size_t &pointIdx : indicesResult)
-            {
-                result.push_back(this->rangeFinder->getPoint(pointIdx));
-            }
-            return result;
+            return indicesResult;
         }
 
         #ifdef RICH_MPI
@@ -158,9 +151,9 @@ public:
         delete this->ansAgent;
     }
 
-    std::vector<std::vector<Vector3D>> selfBatchAnswer(std::queue<SmallRangeQueryData> &smallQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(std::queue<SmallRangeQueryData> &smallQueriesBatch, boost::container::flat_set<size_t> &ignore)
     {
-        std::vector<std::vector<Vector3D>> result;
+        std::vector<std::vector<size_t>> result;
         std::queue<SmallRangeQueryData> queriesBackup;
         while(not smallQueriesBatch.empty())
         {

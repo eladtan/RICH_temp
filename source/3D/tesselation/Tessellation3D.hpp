@@ -28,6 +28,8 @@ using std::vector;
 class Tessellation3D
 {
 public:
+  using AllPointsMap = boost::container::flat_map<size_t, size_t>;
+
   virtual void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) = 0;
 
   /*! \brief Builds the tessellation
@@ -143,7 +145,9 @@ public:
     \return List of all mesh points
    */
   virtual const vector<Vector3D>& getMeshPoints(void) const = 0;
-  
+
+  virtual const Tessellation3D::AllPointsMap &GetIndicesInAllPoints(void) const = 0;
+
   /*! \brief Returns all the points, even those which are not participating in the build
     \return List of all the points
   */

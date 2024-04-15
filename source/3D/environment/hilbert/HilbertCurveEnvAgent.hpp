@@ -22,7 +22,7 @@ public:
         return this->getCellOwner(this->convertor->xyz2d(point));
     };
 
-    virtual void updatePoints(const std::vector<Vector3D> &newPoints)
+    virtual void updatePoints(const std::vector<Vector3D> &newPoints) override
     {}
 
     virtual inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)

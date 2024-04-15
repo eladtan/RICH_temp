@@ -38,12 +38,17 @@
 {
     "hdf5_include": "/software/x86_64/5.14.0/hdf5/1.14.2/gcc/12.3.0_cxx/include",
     "hdf5_lib_dir": "/software/x86_64/5.14.0/hdf5/1.14.2/gcc/12.3.0_cxx/lib/",
+    
+    "intel_hdf5_include": "/software/x86_64/5.14.0/hdf5/1.14.2/Intel/OneApi-2023.2.0_cxx/include",
+    "intel_hdf5_lib_dir": "/software/x86_64/5.14.0/hdf5/1.14.2/Intel/OneApi-2023.2.0_cxx/lib",
 
     "vtk"         : "/software/x86_64/5.14.0/vtk/9.3.0/gcc/12.3.0/with_mesa/",
     
-    'ifort'    : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/compiler/2024.0/linux/bin/intel64/ifort",
-    'icc'      : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/compiler/2024.0/linux/bin/intel64/icc",
-    'icpc'     : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/compiler/2024.0/linux/bin/intel64/icpc",
+    'vtk_intel':    "/software/x86_64/5.14.0/vtk/9.3.0/Intel/OneApi/2024.0.1/with_mesa",
+
+    'ifort'    : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/compiler/latest/bin/ifort",
+    'icc'      : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/compiler/latest/bin/icc",
+    'icpc'     : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/compiler/latest/bin/icpc",
 
     'gfortran' : "/software/x86_64/5.14.0/gcc/12.3.0/bin/gfortran",
     'gcc'      : "/software/x86_64/5.14.0/gcc/12.3.0/bin/gcc",
@@ -57,6 +62,9 @@
 
     'mpicc_gcc'    : "/home/maorm/opt/openmpi-4.1.6/current/bin/mpicc",
     'mpic++_gcc'   : "/home/maorm/opt/openmpi-4.1.6/current/bin/mpic++",
+
+    'mpicc_intel'    : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/mpi/latest/bin/mpicc",
+    'mpic++_intel'   : "/software/x86_64/5.14.0/intel/OneApi/2024.0.1/mpi/latest/bin/mpicxx",
 
 #    'pybind11'   : "/software/x86_64/5.14.0-284.11.1.el9_2.x86_64/pybind11/2.6.1/mock_install/share/cmake/pybind11",
 

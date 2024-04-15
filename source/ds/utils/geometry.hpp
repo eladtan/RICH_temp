@@ -99,7 +99,7 @@ public:
     {
         for(int i = 0; i < DIM; i++)
         {
-            if(point[i] < ll[i] | point[i] > ur[i])
+            if((point[i] < ll[i]) or (point[i] > ur[i]))
             {
                 return false;
             }
