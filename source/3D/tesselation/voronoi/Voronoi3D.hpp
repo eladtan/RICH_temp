@@ -23,7 +23,6 @@
 #include <array>
 #include <tuple>
 #include <limits>
-#include <queue>
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/multiprecision/cpp_dec_float.hpp>
@@ -134,7 +133,7 @@ private:
   double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
-  void BringSelfGhostPoints(std::queue<BigRangeQueryData> &bigQueries, std::queue<SmallRangeQueryData> &smallQueries,
+  void BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
                               BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                               boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                               boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
@@ -146,7 +145,7 @@ private:
     void BringGhostPointsToBuild();
   #endif // RICH_MPI
 
-  std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
+  std::pair<std::vector<SmallRangeQueryData>, std::vector<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
 
   std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>>
     DetermineNextIterationPoints(size_t iterations,
@@ -168,7 +167,7 @@ private:
     std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const MPI_Comm &comm = MPI_COMM_WORLD) const;
     void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints, const MPI_Comm &comm = MPI_COMM_WORLD);
     void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);  
-    void BringRemoteGhostPoints(std::queue<BigRangeQueryData> &bigQueries, std::queue<SmallRangeQueryData> &smallQueries,
+    void BringRemoteGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
                                       BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints);

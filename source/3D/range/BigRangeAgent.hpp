@@ -1,7 +1,6 @@
 #ifndef BIG_RANGE_AGENT_HPP
 #define BIG_RANGE_AGENT_HPP
 
-#include <queue>
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
@@ -307,24 +306,19 @@ public:
     }
 
     #ifdef RICH_MPI
-        inline QueryBatchInfo<BigRangeQueryData, _3DPoint> runBatch(std::queue<BigRangeQueryData> &queries)
+        inline QueryBatchInfo<BigRangeQueryData, _3DPoint> runBatch(const std::vector<BigRangeQueryData> &queries)
         {
             return this->queryAgent->runBatch(queries);
         };
     #endif // RICH_MPI
 
-    std::vector<std::vector<size_t>> selfBatchAnswer(std::queue<BigRangeQueryData> &bigQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<BigRangeQueryData> &bigQueriesBatch, boost::container::flat_set<size_t> &ignore)
     {
         std::vector<std::vector<size_t>> result;
-        std::queue<BigRangeQueryData> queriesBackup;
-        while(not bigQueriesBatch.empty())
+        for(const BigRangeQueryData &query : bigQueriesBatch)
         {
-            BigRangeQueryData &query = bigQueriesBatch.front();
-            queriesBackup.push(query);
             result.emplace_back(this->ansAgent->selfAnswer(query, ignore));
-            bigQueriesBatch.pop();
         }
-        bigQueriesBatch = std::move(queriesBackup);
         return result;
     }
 

@@ -1,7 +1,6 @@
 #ifndef QUERY_AGENT_HPP
 #define QUERY_AGENT_HPP
 
-#include <queue>
 #include "AnswerAgent.hpp"
 #include "TalkAgent.hpp"
 #include "QueryData.hpp"
@@ -14,7 +13,7 @@ public:
     
     virtual ~QueryAgent() = default;
 
-    virtual QueryBatchInfo<QueryData, AnswerType> runBatch(std::queue<QueryData> &queries) = 0;
+    virtual QueryBatchInfo<QueryData, AnswerType> runBatch(const std::vector<QueryData> &queries) = 0;
     
     virtual std::vector<std::vector<size_t>> &getRecvData() = 0;
     

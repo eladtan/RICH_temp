@@ -60,8 +60,8 @@
     # 'mpicc_gcc'    : "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0/bin/mpicc",
     # 'mpic++_gcc'   : "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0/bin/mpic++",
 
-    'mpicc_gcc'    : "/home/maorm/opt/openmpi-4.1.6/current/bin/mpicc",
-    'mpic++_gcc'   : "/home/maorm/opt/openmpi-4.1.6/current/bin/mpic++",
+    'mpicc_gcc'    : "/software/x86_64/5.14.0/openmpi/4.1.6_with_ucc/gcc/12.3.0/bin/mpicc",
+    'mpic++_gcc'   : "/software/x86_64/5.14.0/openmpi/4.1.6_with_ucc/gcc/12.3.0/bin/mpic++",
 
     'mpicc_intel'    : "/software/x86_64/5.14.0/intel/OneApi/2023.2.0/mpi/2021.10.0/bin/mpicc",
     'mpic++_intel'   : "/software/x86_64/5.14.0/intel/OneApi/2023.2.0/mpi/2021.10.0/bin/mpicxx",

@@ -324,7 +324,7 @@ namespace
         point_vec old;
         size_t const N = indeces.size();
         double const small_fraction = 1e-14;
-        double const medium_fraction = 3e-1;
+        // double const medium_fraction = 3e-1;
         // Find correct normal
         Vector3D good_normal;
         for(size_t i = 0; i < N; ++i)
@@ -1492,10 +1492,10 @@ void Voronoi3D::UpdateRangeFinder()
  * \author Maor Mizrachi
  * \brief Creates a batch for a cycle (iteration) in the ghost points bringing loop
 */
-std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Voronoi3D::CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations)
+std::pair<std::vector<SmallRangeQueryData>, std::vector<BigRangeQueryData>> Voronoi3D::CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations)
 {
-    std::queue<SmallRangeQueryData> smallQueries;
-    std::queue<BigRangeQueryData> bigQueries;
+    std::vector<SmallRangeQueryData> smallQueries;
+    std::vector<BigRangeQueryData> bigQueries;
     boost::container::flat_set<size_t> tetraToCancel;
 
     if(iterations == 1)
@@ -1504,12 +1504,12 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
         for(const size_t &pointIdx : smallPoints)
         {
             const Vector3D &point = this->del_.points_[pointIdx];
-            SmallRangeQueryData query;
+            smallQueries.emplace_back();
+            SmallRangeQueryData &query = smallQueries.back();
             query.pointIdx = pointIdx;
             query.center = {point.x, point.y, point.z};
             query.radius = currentRadiuses[pointIdx];
             query.maxPointsToGet = RANGE_MAX_POINTS_TO_GET + 1;
-            smallQueries.push(query);
 
             if(currentRadiuses[pointIdx] <= 0)
             {
@@ -1546,14 +1546,14 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
                     // do not cancel the tetra if we ask only close
                     tetraToCancel.insert(tetraIdx);
                 }
-                BigRangeQueryData query;
+                bigQueries.emplace_back();
+                BigRangeQueryData &query = bigQueries.back();
                 query.pointIdx = pointIdx;
                 query.center = {center.x, center.y, center.z};
                 query.radius = radius;
                 query.originalPoint = {point.x, point.y, point.z};
                 query.askOnlyClose = askOnlyClose;
                 // add the tetra to the list of tetrahedra to clear (mark as 'not new')
-                bigQueries.push(query);
             }
         }
 
@@ -1573,12 +1573,12 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
                 throw eo;
             }
 
-            SmallRangeQueryData query;
+            smallQueries.emplace_back();
+            SmallRangeQueryData &query = smallQueries.back();
             query.pointIdx = pointIdx;
             query.center = {point.x, point.y, point.z};
             query.radius = radius;
             query.maxPointsToGet = RANGE_MAX_POINTS_TO_GET + 1;
-            smallQueries.push(query);
         }
     }
 
@@ -1594,18 +1594,13 @@ std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> Vorono
  * \brief Gets a list of query, and tests for creating mirror points. In the end of this procedure, `mirroredPoints` contains pairs of <faceIdx, pointIdx>, of points that should be mirrored, in relative to which faces
 */
 template<typename QueryDataType>
-std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<QueryDataType> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
+std::vector<std::pair<size_t, size_t>> MirrorPoints(const std::vector<QueryDataType> &queries, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
 {   
     static_assert(std::is_convertible<QueryDataType*, RangeQueryData*>::value, "MirrorPoints: QueryDataType must inherit 'RangeQueryData'");
 
     std::vector<std::pair<size_t, size_t>> mirroredPoints;
-    std::queue<QueryDataType> queriesBackup;
-    while(!queries.empty())
+    for(const QueryDataType &query : queries)
     {
-        QueryDataType query = queries.front();
-        queries.pop();
-        queriesBackup.push(query);
-
         // check for mirroring:
         Sphere sphere(Vector3D(query.center), query.radius);
         size_t pointIdx = query.pointIdx;
@@ -1617,11 +1612,10 @@ std::vector<std::pair<size_t, size_t>> MirrorPoints(std::queue<QueryDataType> &q
             mirroredPoints.push_back(std::make_pair(faceIdx, pointIdx));
         }
     }
-    queries = std::move(queriesBackup);
     return mirroredPoints;
 }
 
-void Voronoi3D::BringSelfGhostPoints(std::queue<BigRangeQueryData> &bigQueries, std::queue<SmallRangeQueryData> &smallQueries,
+void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
                                         BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
@@ -1629,44 +1623,40 @@ void Voronoi3D::BringSelfGhostPoints(std::queue<BigRangeQueryData> &bigQueries, 
 {
     std::vector<Vector3D> newPoints;
     {
-        std::queue<SmallRangeQueryData> smallQueriesBackup;
         std::vector<std::vector<size_t>> selfSmallQueriesAnswers = smallRangeAgent.selfBatchAnswer(smallQueries, selfIgnorePoints);
+        size_t i = 0;
         for(const std::vector<size_t> &newSmallQueriesPoints : selfSmallQueriesAnswers)
         {
-            const SmallRangeQueryData &query = smallQueries.front();
+            const SmallRangeQueryData &query = smallQueries[i];
             for(const size_t &pointIdxInAll : newSmallQueriesPoints)
             {
                 this->indicesInAllMyPoints[this->del_.points_.size() + newPoints.size()] = pointIdxInAll;
                 newPoints.push_back(this->allMyPoints[pointIdxInAll]);
             }
-            smallQueries.pop();
             numOfResultsForSmallPoints[query.pointIdx] = newSmallQueriesPoints.size();
-            smallQueriesBackup.push(query);
+            i++;
         }
-        smallQueries = std::move(smallQueriesBackup);
     }
     {
-        std::queue<BigRangeQueryData> bigQueriesBackup;
         std::vector<std::vector<size_t>> selfBigQueriesAnswers = bigRangeAgent.selfBatchAnswer(bigQueries, selfIgnorePoints);
+        size_t i = 0;
         for(const std::vector<size_t> &newBigQueriesPoints : selfBigQueriesAnswers)
         {
-            const BigRangeQueryData &query = bigQueries.front();
+            const BigRangeQueryData &query = bigQueries[i];
             for(const size_t &pointIdxInAll : newBigQueriesPoints)
             {
                 this->indicesInAllMyPoints[this->del_.points_.size() + newPoints.size()] = pointIdxInAll;
                 newPoints.push_back(this->allMyPoints[pointIdxInAll]);
             }
-            bigQueries.pop();
             numOfResultsForBigPoints[query.pointIdx] = newBigQueriesPoints.size();
-            bigQueriesBackup.push(query);
+            i++;
         }
-        bigQueries = std::move(bigQueriesBackup);
     }
     this->del_.BuildExtra(newPoints);
 }
 
 #ifdef RICH_MPI
-    void Voronoi3D::BringRemoteGhostPoints(std::queue<BigRangeQueryData> &bigQueries, std::queue<SmallRangeQueryData> &smallQueries,
+    void Voronoi3D::BringRemoteGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
                                         BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints)

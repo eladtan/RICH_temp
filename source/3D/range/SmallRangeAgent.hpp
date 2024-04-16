@@ -1,7 +1,6 @@
 #ifndef SMALL_RANGE_AGENT_HPP
 #define SMALL_RANGE_AGENT_HPP
 
-#include <queue>
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
@@ -115,7 +114,7 @@ private:
 
                 // a small query, bring the requested number of points
                 indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
-                indicesResult = this->pointsContainer.addPointsAsSent<std::vector>(_rank, indicesResult);
+                indicesResult = this->pointsContainer.addPointsAsSent(_rank, indicesResult);
 
                 result.reserve(indicesResult.size());
                 for(const size_t &pointIdx : indicesResult)
@@ -201,23 +200,18 @@ public:
         delete this->ansAgent;
     }
 
-    std::vector<std::vector<size_t>> selfBatchAnswer(std::queue<SmallRangeQueryData> &smallQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<SmallRangeQueryData> &smallQueriesBatch, boost::container::flat_set<size_t> &ignore)
     {
         std::vector<std::vector<size_t>> result;
-        std::queue<SmallRangeQueryData> queriesBackup;
-        while(not smallQueriesBatch.empty())
+        for(const SmallRangeQueryData &query : smallQueriesBatch)
         {
-            SmallRangeQueryData &query = smallQueriesBatch.front();
-            queriesBackup.push(query);
             result.emplace_back(this->ansAgent->selfAnswer(query, ignore));
-            smallQueriesBatch.pop();
         }
-        smallQueriesBatch = std::move(queriesBackup);
         return result;
     }
 
     #ifdef RICH_MPI
-        inline QueryBatchInfo<SmallRangeQueryData, _3DPoint> runBatch(std::queue<SmallRangeQueryData> &queries)
+        inline QueryBatchInfo<SmallRangeQueryData, _3DPoint> runBatch(const std::vector<SmallRangeQueryData> &queries)
         {
             return this->queryAgent->runBatch(queries);
         };

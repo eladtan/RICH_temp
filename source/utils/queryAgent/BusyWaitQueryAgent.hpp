@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
-#include <queue>
 #include <vector>
 #include <mpi.h>
 
@@ -42,7 +41,7 @@ public:
 
     virtual ~BusyWaitQueryAgent() = default;
     
-    QueryBatchInfo<QueryData, AnswerType> runBatch(std::queue<QueryData> &queries) override;
+    QueryBatchInfo<QueryData, AnswerType> runBatch(const std::vector<QueryData> &queries) override;
     inline std::vector<std::vector<size_t>> &getRecvData() override{return this->recvData;};
     inline std::vector<int> &getRecvProc() override{return this->recvProcessorsRanks;};
 
@@ -316,7 +315,7 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::rearrangeResult(_queryBatchInfo 
 }
 
 template<typename QueryData, typename AnswerType>
-QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>::runBatch(std::queue<QueryData> &queries)
+QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>::runBatch(const std::vector<QueryData> &queries)
 {
 
     this->receivedUntilNow = 0; // reset the receive counter
@@ -356,8 +355,7 @@ QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>:
     {
         if(!this->finishedMyQueries)
         {
-            QueryData queryData = queries.front();
-            queries.pop();
+            const QueryData &queryData = queries[i];
             queriesInfo.push_back({queryData, i, std::vector<AnswerType>()});
             _queryInfo &query = queriesInfo.back();
 
