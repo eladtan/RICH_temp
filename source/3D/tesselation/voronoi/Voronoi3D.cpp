@@ -1369,7 +1369,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
  * \author Maor Mizrachi
  * \brief Gets a point, its radius, a box and the normals to the box's faces, and returns the faces indices that the sphere (around `point`, in the given `radius`) intersects
 */
-std::vector<size_t> CheckToMirror(const Sphere &sphere, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
+std::vector<size_t> CheckToMirror(const Sphere<Vector3D> &sphere, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
 {
     std::vector<size_t> facesItCuts;
     // std::cout << "point = " << point << ", radius = " << radius << std::endl;
@@ -1602,7 +1602,7 @@ std::vector<std::pair<size_t, size_t>> MirrorPoints(const std::vector<QueryDataT
     for(const QueryDataType &query : queries)
     {
         // check for mirroring:
-        Sphere sphere(Vector3D(query.center), query.radius);
+        Sphere<Vector3D> sphere(Vector3D(query.center), query.radius);
         size_t pointIdx = query.pointIdx;
 
         std::vector<size_t> facesItCuts = CheckToMirror(sphere, box, normals);
@@ -2402,7 +2402,7 @@ inline double Voronoi3D::GetRadius(std::size_t index)
     return this->R_[index];
 }
 
-void Voronoi3D::FindIntersectionsSingle(vector<Face> const &box, std::size_t point, Sphere &sphere,
+void Voronoi3D::FindIntersectionsSingle(vector<Face> const &box, std::size_t point, Sphere<Vector3D> &sphere,
                                                                                 vector<size_t> &intersecting_faces, std::vector<double> &Rtemp, std::vector<Vector3D> &vtemp)
 {
     intersecting_faces.clear();
@@ -2469,7 +2469,7 @@ vector<std::pair<std::size_t, std::size_t>> Voronoi3D::SerialFirstIntersections(
 
     //    vector<std::size_t> point_neigh;
     vector<std::pair<std::size_t, std::size_t>> res;
-    Sphere sphere;
+    Sphere<Vector3D> sphere;
     vector<unsigned char> will_check(Norg_, 0);
     std::size_t cur_loc;
     std::stack<std::size_t> check_stack;
@@ -2523,7 +2523,7 @@ vector<std::pair<std::size_t, std::size_t>> Voronoi3D::SerialFindIntersections(b
     vector<Face> box = box_faces_.empty() ? BuildBox(ll_, ur_) : box_faces_;
     vector<std::size_t> point_neigh;
     vector<std::pair<std::size_t, std::size_t>> res;
-    Sphere sphere;
+    Sphere<Vector3D> sphere;
     vector<unsigned char> checked(Norg_, 0), will_check(Norg_, 0);
     std::size_t cur_loc;
     if (first_run)

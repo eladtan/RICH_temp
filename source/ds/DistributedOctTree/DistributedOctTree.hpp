@@ -40,9 +40,9 @@ public:
     void print() const{this->octTree->print();};
     #endif // DEBUG_MODE
 
-    boost::container::flat_set<int> getIntersectingRanks(const _Sphere<T> &sphere) const;
+    boost::container::flat_set<int> getIntersectingRanks(const Sphere<T> &sphere) const;
     
-    inline boost::container::flat_set<int> getIntersectingRanks(const T &center, const typename T::coord_type radius) const{return this->getIntersectingRanks(_Sphere<T>(center, radius));};
+    inline boost::container::flat_set<int> getIntersectingRanks(const T &center, const typename T::coord_type radius) const{return this->getIntersectingRanks(Sphere<T>(center, radius));};
     
     int getDepth() const{return this->octTree->getDepth();};
     
@@ -54,21 +54,29 @@ public:
 
     inline std::vector<T> getMyValues() const{return this->getRankValues(this->rank);};
 
-    std::vector<_BoundingBox<T>> getRankBoundingBoxes(int _rank) const;
+    std::vector<BoundingBox<T>> getRankBoundingBoxes(int _rank) const;
 
-    std::vector<_BoundingBox<T>> getRankBoundingBoxesUnique(int _rank) const;
+    std::vector<BoundingBox<T>> getRankBoundingBoxesUnique(int _rank) const;
 
-    inline std::vector<_BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
+    inline std::vector<BoundingBox<T>> getMyBoundingBoxes() const{return this->getRankBoundingBoxes(this->rank);};
 
-    inline std::vector<_BoundingBox<T>> getMyBoundingBoxesUnique() const{return this->getRankBoundingBoxesUnique(this->rank);};
+    inline std::vector<BoundingBox<T>> getMyBoundingBoxesUnique() const{return this->getRankBoundingBoxesUnique(this->rank);};
 
-    std::vector<std::vector<_BoundingBox<T>>> getBoundingBoxesOfRanks(void) const;
+    std::vector<std::vector<BoundingBox<T>>> getBoundingBoxesOfRanks(void) const;
 
-    std::vector<_BoundingBox<T>> getBigBoundingBoxesOfRanks(void) const;
+    std::vector<BoundingBox<T>> getBigBoundingBoxesOfRanks(void) const;
 
     std::vector<std::vector<direction_t>> getRankDirections(int _rank) const;
 
+    inline std::vector<const DistributedOctTreeNode*> getRankNodes(int _rank) const
+    {
+        return this->getValuesIf([](const DistributedOctTreeNode *node){return node->value.owners.empty();}, 
+                            [&_rank](const DistributedOctTreeNode *node){return std::find(node->value.owners.cbegin(), node->value.owners.cend(), _rank) != node->value.owners.cend();});
+    }
+
     inline std::vector<std::vector<direction_t>> getMyDirections() const{return this->getRankDirections(this->rank);};
+
+    inline std::vector<const DistributedOctTreeNode*> getMyNodes() const{return this->getRankNodes(this->rank);};
 
     template<typename U>
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> getClosestFurthestPointsByRanks(const U &point) const;
@@ -287,10 +295,10 @@ void DistributedOctTree<T, max_ranks_per_leaf>::buildTree(const OctTree<T> *tree
 }
 
 template<typename T, int max_ranks_per_leaf>
-boost::container::flat_set<int> DistributedOctTree<T, max_ranks_per_leaf>::getIntersectingRanks(const _Sphere<T> &sphere) const
+boost::container::flat_set<int> DistributedOctTree<T, max_ranks_per_leaf>::getIntersectingRanks(const Sphere<T> &sphere) const
 {
     boost::container::flat_set<int> ranks;
-    for(const RankedValue &point : this->octTree->range(_Sphere<RankedValue>(sphere.center, sphere.radius)))
+    for(const RankedValue &point : this->octTree->range(Sphere<RankedValue>(sphere.center, sphere.radius)))
     {
         size_t numOwners = point.owners.size();
         for(size_t i = 0; i < numOwners; i++)
@@ -403,9 +411,9 @@ std::vector<T> DistributedOctTree<T, max_ranks_per_leaf>::getRankValues(int _ran
 }
 
 template<typename T, int max_ranks_per_leaf>
-std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxes(int _rank) const
+std::vector<BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxes(int _rank) const
 {
-    std::vector<_BoundingBox<T>> boxes;
+    std::vector<BoundingBox<T>> boxes;
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
 
@@ -436,7 +444,7 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankB
             if(std::find(node->value.owners.cbegin(), node->value.owners.cend(), _rank) != node->value.owners.cend())
             {
                 // is an owner
-                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL(), node->boundingBox.getUR()));
+                boxes.emplace_back(BoundingBox<T>(node->boundingBox.getLL(), node->boundingBox.getUR()));
             }
         }
     }
@@ -444,9 +452,9 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankB
 }
 
 template<typename T, int max_ranks_per_leaf>
-std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxesUnique(int _rank) const
+std::vector<BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankBoundingBoxesUnique(int _rank) const
 {
-    std::vector<_BoundingBox<T>> boxes;
+    std::vector<BoundingBox<T>> boxes;
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
 
@@ -476,7 +484,7 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankB
             if(*std::min_element(node->value.owners.cbegin(), node->value.owners.cend()) == _rank)
             {
                 // is an owner
-                boxes.emplace_back(_BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
+                boxes.emplace_back(BoundingBox<T>(node->boundingBox.getLL().value, node->boundingBox.getUR().value));
             }
         }
     }
@@ -484,9 +492,9 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getRankB
 }
 
 template<typename T, int max_ranks_per_leaf>
-std::vector<std::vector<_BoundingBox<T>>> DistributedOctTree<T, max_ranks_per_leaf>::getBoundingBoxesOfRanks(void) const
+std::vector<std::vector<BoundingBox<T>>> DistributedOctTree<T, max_ranks_per_leaf>::getBoundingBoxesOfRanks(void) const
 {
-    std::vector<std::vector<_BoundingBox<T>>> boxes(this->size);
+    std::vector<std::vector<BoundingBox<T>>> boxes(this->size);
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
 
@@ -523,9 +531,9 @@ std::vector<std::vector<_BoundingBox<T>>> DistributedOctTree<T, max_ranks_per_le
 }
 
 template<typename T, int max_ranks_per_leaf>
-std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getBigBoundingBoxesOfRanks(void) const
+std::vector<BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getBigBoundingBoxesOfRanks(void) const
 {
-    const _BoundingBox<T> &rootBB = this->octTree->getRoot()->boundingBox;
+    const BoundingBox<T> &rootBB = this->octTree->getRoot()->boundingBox;
     std::vector<std::pair<T, T>> boxes(this->size, {rootBB.getUR(), rootBB.getLL()});
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
@@ -565,10 +573,10 @@ std::vector<_BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getBigBo
             }
         }
     }
-    std::vector<_BoundingBox<T>> returnBoundingBoxes;
+    std::vector<BoundingBox<T>> returnBoundingBoxes;
     for(int _rank = 0; _rank < this->size; _rank++)
     {
-        returnBoundingBoxes.push_back(_BoundingBox<T>(boxes[_rank].first, boxes[_rank].second));
+        returnBoundingBoxes.push_back(BoundingBox<T>(boxes[_rank].first, boxes[_rank].second));
     }
     return returnBoundingBoxes;
 }

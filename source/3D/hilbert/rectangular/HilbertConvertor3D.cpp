@@ -4,7 +4,7 @@ HilbertConvertor3D::HilbertConvertor3D(const Vector3D &ll, const Vector3D &ur, s
 {
     this->ll = ll;
     this->ur = ur;
-    this->spaceBoundingBox = _BoundingBox<Vector3D>(ll, ur);
+    this->spaceBoundingBox = BoundingBox<Vector3D>(ll, ur);
     this->changeOrder(order);
 }
 

@@ -10,7 +10,7 @@ template<typename T, int max_ranks_per_leaf, int max_directions_size>
 struct OctTreeRankedValue
 {
     using coord_type = typename T::coord_type;
-    using Raw_type = T;
+    using Raw_type = typename is_raw_type_defined<T>::type;
 
     T value;
     boost::container::small_vector<int, max_ranks_per_leaf> owners; // ranks of the owners (if several)

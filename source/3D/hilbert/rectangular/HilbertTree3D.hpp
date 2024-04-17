@@ -23,7 +23,7 @@ class HilbertTree3DNode
 public:
     explicit HilbertTree3DNode(HilbertTree3DNode *parent): parent(parent){};
     
-    _BoundingBox<Vector3D> boundingBox;
+    BoundingBox<Vector3D> boundingBox;
     hilbert_index_t d_start, d_end;
     size_t num_points; // number of points in the subtree
     std::vector<HilbertTree3DNode*> children;
@@ -72,12 +72,12 @@ public:
     ~HilbertTree3D();
 
     template<typename U>
-    RanksSet getIntersectingRanks(const _Sphere<U> &sphere) const;
+    RanksSet getIntersectingRanks(const Sphere<U> &sphere) const;
 
     template<typename U>
     inline RanksSet getIntersectingRanks(const U &point, typename U::coord_type radius) const
     {
-        return this->getIntersectingRanks(_Sphere<U>(point, radius));
+        return this->getIntersectingRanks(Sphere<U>(point, radius));
     }
 
     template<typename U>
@@ -87,14 +87,14 @@ public:
         void print() const{this->printHelper(this->root);};
     #endif // DEBUG_MODE
 
-    std::vector<_BoundingBox<Vector3D>> getRankBoundingBoxes(int _rank) const;
+    std::vector<BoundingBox<Vector3D>> getRankBoundingBoxes(int _rank) const;
     
-    inline std::vector<_BoundingBox<Vector3D>> getMyBoundingBoxes() const
+    inline std::vector<BoundingBox<Vector3D>> getMyBoundingBoxes() const
     {
         return this->getRankBoundingBoxes(this->rank);
     }
 
-    std::vector<std::vector<_BoundingBox<Vector3D>>> getBoundingBoxesOfRanks(void) const;
+    std::vector<std::vector<BoundingBox<Vector3D>>> getBoundingBoxesOfRanks(void) const;
 
     std::vector<const Node*> getValuesIf(const std::function<bool(const Node*)> ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const;
 };
@@ -203,7 +203,7 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
     const std::pair<DirectionVector3D, DirectionVector3D> &boundingBox = convertor->getBoundingBox(current_args);
     const DirectionVector3D &ll = boundingBox.first;       
     const DirectionVector3D &ur = boundingBox.second;       
-    currentNode->boundingBox = _BoundingBox<Vector3D>(convertor->WidthHeightDepthToXYZ(ll.x, ll.y, ll.z), convertor->WidthHeightDepthToXYZ(ur.x, ur.y, ur.z));
+    currentNode->boundingBox = BoundingBox<Vector3D>(convertor->WidthHeightDepthToXYZ(ll.x, ll.y, ll.z), convertor->WidthHeightDepthToXYZ(ur.x, ur.y, ur.z));
 
     std::pair<int, int> ranksMatching = {0, this->size - 1};
 
@@ -345,7 +345,7 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTree(const HilbertConvertor3D *conv
 
 template<int max_ranks_per_leaf>
 template<typename U>
-typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per_leaf>::getIntersectingRanks(const _Sphere<U> &sphere) const
+typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per_leaf>::getIntersectingRanks(const Sphere<U> &sphere) const
 {
     RanksSet result;
     this->nodes_stack.push_back(this->root);
@@ -458,9 +458,9 @@ std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_ty
 }
 
 template<int max_leaf_ranks>
-std::vector<_BoundingBox<Vector3D>> HilbertTree3D<max_leaf_ranks>::getRankBoundingBoxes(int _rank) const
+std::vector<BoundingBox<Vector3D>> HilbertTree3D<max_leaf_ranks>::getRankBoundingBoxes(int _rank) const
 {
-    std::vector<_BoundingBox<Vector3D>> result;
+    std::vector<BoundingBox<Vector3D>> result;
 
     this->nodes_stack.push_back(this->root);
     while(not this->nodes_stack.empty())
@@ -490,9 +490,9 @@ std::vector<_BoundingBox<Vector3D>> HilbertTree3D<max_leaf_ranks>::getRankBoundi
 }
 
 template<int max_leaf_ranks>
-std::vector<std::vector<_BoundingBox<Vector3D>>> HilbertTree3D<max_leaf_ranks>::getBoundingBoxesOfRanks(void) const
+std::vector<std::vector<BoundingBox<Vector3D>>> HilbertTree3D<max_leaf_ranks>::getBoundingBoxesOfRanks(void) const
 {
-    std::vector<std::vector<_BoundingBox<Vector3D>>> result(this->size);
+    std::vector<std::vector<BoundingBox<Vector3D>>> result(this->size);
 
     this->nodes_stack.push_back(this->root);
     while(not this->nodes_stack.empty())

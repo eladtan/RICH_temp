@@ -103,8 +103,8 @@ private:
     \param Rtemp TBA
     \param vtemp TBA
    */
-  void FindIntersectionsSingle(vector<Face> const& box, std::size_t point, Sphere &sphere,
-			       vector<size_t> &intersecting_faces,std::vector<double> &Rtemp,std::vector<Vector3D> &vtemp);
+  void FindIntersectionsSingle(vector<Face> const& box, std::size_t point, Sphere<Vector3D> &sphere,
+			       vector<size_t> &intersecting_faces, std::vector<double> &Rtemp, std::vector<Vector3D> &vtemp);
 
   std::size_t GetFirstPointToCheck(void)const;
 

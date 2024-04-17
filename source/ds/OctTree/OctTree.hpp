@@ -42,7 +42,7 @@ public:
         friend class OctTree;
 
     public:
-        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(_BoundingBox<Raw_type>(ll, ur)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(BoundingBox<Raw_type>(ll, ur)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -50,7 +50,7 @@ public:
             }
         }
 
-        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(_BoundingBox<Raw_type>(point, point)), parent(nullptr), height(0), depth(0)
+        inline OctTreeNode(const T &point): isLeaf(true), value(point), boundingBox(BoundingBox<Raw_type>(point, point)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -92,7 +92,7 @@ public:
 
         bool isLeaf; // if a leaf
         T value; // if a leaf, that's a point value, otherwise, thats the value for partition
-        _BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
+        BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
         std::array<OctTreeNode*, CHILDREN> children; // if a leaf, all children are nullptr
         OctTreeNode *parent;
         int height; // height of a leaf is 0
@@ -198,7 +198,21 @@ public:
     }
 
     template<typename U>
-    const OctTreeNode *findNodeContainingBoundingBox(const _BoundingBox<U> &boundingBox) const; // TODO: necessary? What about just find value of that node?
+    inline OctTreeNode *findNode(const U &point)
+    {
+        OctTreeNode *node = this->tryFind(point);
+        if(node == nullptr)
+        {
+            UniversalError eo("OctTree: could not find a point");
+            eo.addEntry("Value", point);
+            throw eo;
+        }
+        return node;
+    }
+
+
+    template<typename U>
+    const OctTreeNode *findNodeContainingBoundingBox(const BoundingBox<U> &boundingBox) const; // TODO: necessary? What about just find value of that node?
 
     template<typename U>
     inline T findParent(const U &point) const
@@ -266,10 +280,10 @@ public:
     inline size_t getSize() const{return this->treeSize;};
 
     template<typename U, typename FilterFunction = DefaultFilterFunction>
-    std::vector<T> range(const _Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
+    std::vector<T> range(const Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
 
     template<typename U, typename FilterFunction = DefaultFilterFunction>
-    std::pair<T, typename T::coord_type> getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
+    std::pair<T, typename T::coord_type> getClosestPointInSphere(const Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
 
     const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const;
 
@@ -404,7 +418,7 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::tryFind(const U &point) cons
 
 template<typename T>
 template<typename U>
-const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBox(const _BoundingBox<U> &boundingBox) const
+const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBox(const BoundingBox<U> &boundingBox) const
 {
     const OctTreeNode *current = this->getRoot();
     const U &BB_center = (boundingBox.getLL() + boundingBox.getUR()) * 0.5;
@@ -644,7 +658,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::removeLeaf(OctTreeNode *node)
 
 template<typename T>
 template<typename U, typename FilterFunction>
-std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
+std::vector<T> OctTree<T>::range(const Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
 {
     std::vector<T> result;
     size_t resultSize = 0;
@@ -691,7 +705,7 @@ std::vector<T> OctTree<T>::range(const _Sphere<U> &sphere, size_t N, const Filte
 
 template<typename T>
 template<typename U, typename FilterFunction>
-std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
+std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
 {
     this->nodes_stack.push_back(this->getRoot());
 

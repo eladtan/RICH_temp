@@ -9,7 +9,7 @@ template<typename T>
 struct MassedValue : public Serializable
 {
     using coord_type = typename T::coord_type;
-    using Raw_type = T;
+    using Raw_type = typename is_raw_type_defined<T>::type;
 
     T value;
     T CM; // center of mass

@@ -14,7 +14,7 @@
 
 struct GravityNodeData : Serializable
 {
-    _BoundingBox<Vector3D> boundingBox;
+    BoundingBox<Vector3D> boundingBox;
     gravity_result_t mass;
     Vector3D CM;
     std::array<double, 6> Q;
@@ -74,7 +74,7 @@ public:
             myUR[1] = std::max<double>(myUR[1], point[1]);
             myUR[2] = std::max<double>(myUR[2], point[2]);
         }
-        this->myData.boundingBox = _BoundingBox<Vector3D>(myLL, myUR);
+        this->myData.boundingBox = BoundingBox<Vector3D>(myLL, myUR);
         const GravityTree<Vector3D>::Node *gravityTreeRoot = gravityTree->getOctTree()->getRoot();
         this->myData.CM = gravityTreeRoot->value.CM;
         this->myData.mass = gravityTreeRoot->value.mass;
@@ -95,7 +95,7 @@ private:
     public:
         Node *parent;
         std::vector<Node*> children;
-        _BoundingBox<Vector3D> boundingBox;
+        BoundingBox<Vector3D> boundingBox;
         GravityNodeData value;
         int owner;
         bool isLeaf;
@@ -225,7 +225,7 @@ void DistributedGravityTree::updateData(DistributedGravityTree::Node *node)
             newUR[2] = std::max<double>(newUR[2], child->boundingBox.getUR()[2]);
         }
     }
-    node->boundingBox = _BoundingBox<Vector3D>(newLL, newUR);
+    node->boundingBox = BoundingBox<Vector3D>(newLL, newUR);
     value.CM = value.CM  / value.mass;
 
     // reset Q

@@ -37,7 +37,7 @@ public:
     ~RangeTree() override{this->deleteSubtree(this->getRoot());};
 
     template<typename InputIterator>
-    inline RangeTree(const InputIterator &first, const InputIterator &last, int dimensions): RangeTree<T>(){for(InputIterator it = first; it != last; it++) this->insert(*it);}
+    inline RangeTree(const InputIterator &first, const InputIterator &last, int dimensions): RangeTree<T>(dimensions){for(InputIterator it = first; it != last; it++) this->insert(*it);}
 ;
     template<typename RandomAccessIterator>
     inline void build(RandomAccessIterator first, RandomAccessIterator last){assert(this->treeSize == 0); std::sort(first, last, this->compare); this->setRoot(this->buildHelper(first, last));};

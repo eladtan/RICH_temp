@@ -108,7 +108,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
 std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const
 {
     // first, find my LL and UR
-    Vector3D myLL(Vector3D::max()), myUR(Vector3D::lowest());
+    Vector3D myLL(std::numeric_limits<double>::max()), myUR(std::numeric_limits<double>::lowest());
     size_t N = tess.GetPointNo();
     for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
     {
