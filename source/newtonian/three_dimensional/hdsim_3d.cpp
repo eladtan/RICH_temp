@@ -762,7 +762,7 @@ size_t& HDSim3D::GetMaxID(void)
 	return Max_ID_;
 }
 
-double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matrix_builder, bool const no_hydro)
+double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_builder, bool const no_hydro)
 {
 	int total_iters = 0;
 	double const CG_eps = 1e-11;
@@ -871,7 +871,9 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		if(not to_calc)
 			continue;
 		double const equlibrium_factor = std::abs(cells_[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells_[i].temperature ? 0.05 : 1;
-		double const diff = equlibrium_factor * std::abs(cells_[i].Erad * cells_[i].density - old_Er[i]) / (cells_[i].Erad * cells_[i].density + 0.02 * max_Er);
+		double diff = equlibrium_factor * std::abs(cells_[i].Erad * cells_[i].density - old_Er[i]) / (cells_[i].Erad * cells_[i].density + 0.02 * max_Er);
+		if(matrix_builder.fleck_factor[i] < 0.5)
+			diff *= 0.1;
 		if(diff > max_diff)
 		{
 			max_diff = diff;

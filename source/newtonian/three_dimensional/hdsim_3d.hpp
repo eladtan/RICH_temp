@@ -12,6 +12,7 @@
 #include "extensive_updater3d.hpp"
 #include "SourceTerm3D.hpp"
 #include "Radiation/conj_grad_solve.hpp"
+#include "Radiation/Diffusion.hpp"
 
 //! \brief Three dimensional simulation
 class HDSim3D
@@ -151,7 +152,7 @@ public:
   */
   size_t & GetMaxID(void);
 
-  double RadiationTimeStep(double const dt, CG::MatrixBuilder const& matrix_builder, bool const nohydro = false);
+  double RadiationTimeStep(double const dt, Diffusion const& matrix_builder, bool const nohydro = false);
 
   double getTimeStep(void) const {return dt_;}
 
