@@ -40,13 +40,13 @@ class Dissipation
                 auto UstarPstar = rs_.GetUstarPstar(face_values[i].first, face_values[i].second, eos_, normal);
                 if(is_first)
                 {
-                    result[neigh.first] += A *((UstarPstar.first - ScalarProd(normal, cells[neigh.first].velocity)) * UstarPstar.second
-                        + cells[neigh.first].pressure * UstarPstar.first);
+                    result[neigh.first] -= A *((UstarPstar.first - ScalarProd(normal, cells[neigh.first].velocity)) * UstarPstar.second
+                        - cells[neigh.first].pressure * UstarPstar.first);
                 }
                 if(is_second)
                 {
-                    result[neigh.second] -= A *((UstarPstar.first - ScalarProd(normal, cells[neigh.second].velocity)) * UstarPstar.second
-                        + cells[neigh.second].pressure * UstarPstar.first);
+                    result[neigh.second] += A *((UstarPstar.first - ScalarProd(normal, cells[neigh.second].velocity)) * UstarPstar.second
+                        - cells[neigh.second].pressure * UstarPstar.first);
                 }
             }
         }
