@@ -16,7 +16,7 @@ namespace
                 ++index;
             else
             {
-                if(index == 3 && std::abs(*(x_begin + index) -  xi) < 1e-13)
+                if(index == 3 && std::abs(*(x_begin + index - 1) -  xi) < 1e-13)
                     --index;
                 else
                 {
