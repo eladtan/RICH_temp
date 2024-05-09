@@ -69,7 +69,20 @@ namespace CG
     std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
-
+/**
+ * @brief Performs the BiCGSTAB (Biconjugate Gradient Stabilized) method to solve the linear system A*x=b.
+ * 
+ * @param tolerance The tolerance for the solution. The method stops when the relative residual norm is less than or equal to this value.
+ * @param total_iters Reference to an integer that will store the total number of iterations performed by the method.
+ * @param tess The 3D tessellation used to discretize the problem.
+ * @param cells The computational cells associated with the tessellation.
+ * @param dt The time step for the problem.
+ * @param matrix_builder A reference to an object that implements the MatrixBuilder interface, used to build the A matrix and b vector.
+ * @param time The current time of the simulation.
+ * @param sub_x_solution Reference to a vector that will store the solution x.
+ * 
+ * @return A vector containing the solution x.
+ */
     std::vector<double> BiCGSTAB(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
