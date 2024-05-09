@@ -804,7 +804,7 @@ double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_build
 		bool good_try = true;
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
 
-		new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
+		new_Er = CG::BiCGSTAB(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
 		max_iter_done = std::max(max_iter_done, total_iters);
 		double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 #ifdef RICH_MPI
@@ -907,13 +907,13 @@ double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_build
 		pt_.updateCycle();
 	}
 	double grow_factor = 1.25;
-	if(max_iter_done > 150)
+	if(max_iter_done > 200)
 		grow_factor = 1.02;
 	else
-		if(max_iter_done > 75)
+		if(max_iter_done > 125)
 			grow_factor = 1.05;
 
-	double new_dt = dt * std::min(0.15 / max_diff, grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
+	double new_dt = dt * std::min(0.15 / max_diff, grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter), 0.0));
 	if(max_iter_done > 300)
 		new_dt = dt * 0.9;
 	return new_dt;
