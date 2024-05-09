@@ -1,6 +1,6 @@
 #include "conj_grad_solve.hpp"
 #include <limits>
-
+#include <vectorclass.h>
 namespace CG
 {
     // Matrix times vector
@@ -30,7 +30,7 @@ namespace CG
 
     std::vector<double> vector_rescale(std::vector<double> const& a, std::vector<double> const& b)
     {
-        size_t const N = a.size();
+        size_t const N = a.size(); 
         if(a.size() != b.size())
             throw UniversalError("Sizes do not match in vector_rescale");
         std::vector<double> res(N);
@@ -48,12 +48,39 @@ namespace CG
         size_t n = u.size();
         result.resize(n, 0);
         for (size_t j = 0; j < n; j++)
-            result[j] = a * u[j] + b * v[j];
+            result[j] = a * u[j];
+        for (size_t j = 0; j < n; j++)
+            result[j] += b * v[j];
+    }
+
+    double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v) // need to pass it the buffer where to keep the result
+    {
+        if(sub_u.size() != sub_v.size())
+            throw UniversalError("Unequal vector sizes in vec_lin_combo");
+        size_t length = sub_u.size();
+
+        double sub_prod = 0;
+        size_t length4 = length / 4;
+        size_t loop_number = length4 * 4;
+        for(size_t i = 0; i < loop_number; i += 4)
+        {
+            Vec4d _u(sub_u[i], sub_u[i+1], sub_u[i+2], sub_u[i+3]);
+            Vec4d _v(sub_v[i], sub_v[i+1], sub_v[i+2], sub_v[i+3]);
+            Vec4d _uv = _u * _v;
+            sub_prod += ((_uv[0] + _uv[1]) + (_uv[2] + _uv[3]));
+        }
+        for(size_t i = loop_number; i < length; i++)
+            sub_prod += sub_u[i] * sub_v[i];
+#ifdef RICH_MPI
+        // do a reduction over sub_prod to get the total dot product
+        MPI_Allreduce(MPI_IN_PLACE, &sub_prod, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        return sub_prod;
     }
 
 
     // performs a reduction over the sub-vectors which are passed to it... All_Reduce broadcasts the value to all procs
-    double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v) // need to pass it the buffer where to keep the result
+    double mpi_dot_product2(const std::vector<double> &sub_u, const std::vector<double> &sub_v) // need to pass it the buffer where to keep the result
     {
         if(sub_u.size() != sub_v.size())
             throw UniversalError("Unequal vector sizes in vec_lin_combo");
@@ -128,7 +155,8 @@ namespace CG
         mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
         // Find maximum value of A, this is used for normalization of the error
         double maxA[2] = {0, 0};
-        for(size_t i = 0; i < A.size(); ++i)
+        size_t const Na = A.size();
+        for(size_t i = 0; i < Na ; ++i)
         {
             maxA[0] = std::max(maxA[0], std::abs(sub_x[i]));
             maxA[1] = std::max(maxA[1], std::abs(b[i]));
@@ -263,8 +291,223 @@ namespace CG
         if(not good_end)
         {
             total_iters = max_iter;
+            std::vector<double> volumes = tess.GetAllVolumes();
+#ifdef RICH_MPI
+			MPI_exchange_data2(tess, volumes, true);
+#endif
             if(rank == 0)
 	      std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<std::endl;
+            if(rank == max_data[0].mpi_id)
+            {
+                std::vector<size_t> neigh = tess.GetNeighbors(max_loc0);
+                double min_volume = std::numeric_limits<double>::max(), max_volume = 0;
+                for(size_t k = 0; k < neigh.size(); ++k)
+                {
+                    if(not tess.IsPointOutsideBox(neigh[k]))
+                    {
+                        min_volume = std::min(min_volume, volumes[neigh[k]]);
+                        max_volume = std::max(max_volume, volumes[neigh[k]]);
+                    }
+                }
+                std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
+                <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<" volume "<<tess.GetVolume(max_loc0)<<" max volume "<<max_volume<<" min volume "<<min_volume<<std::endl; 
+            }
+            if(rank == max_data[1].mpi_id)
+            {
+                std::vector<size_t> neigh = tess.GetNeighbors(max_loc1);
+                double min_volume = std::numeric_limits<double>::max(), max_volume = 0;
+                for(size_t k = 0; k < neigh.size(); ++k)
+                {
+                    if(not tess.IsPointOutsideBox(neigh[k]))
+                    {
+                        min_volume = std::min(min_volume, volumes[neigh[k]]);
+                        max_volume = std::max(max_volume, volumes[neigh[k]]);
+                    }
+                }
+                std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
+                <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<" volume "<<tess.GetVolume(max_loc1)<<" max volume "<<max_volume<<" min volume "<<min_volume<<std::endl; 
+            }
+	    if(rank == max_data[2].mpi_id)
+	      std::cout<<"rank "<<rank<<" i "<<max_loc2<<" sub_x "<<sub_x[max_loc2]<<std::endl;
+        std::fill_n(sub_x.begin(), sub_x.size(), -1.0);
+	    // throw UniversalError("CG did not converge");
+        }
+#ifdef RICH_MPI
+        MPI_exchange_data2(tess, sub_x, true);
+#endif
+        return sub_x;
+    }
+    
+    std::vector<double> BiCGSTAB(const double tolerance, int &total_iters,
+        Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution)  //total_iters is to store # of iters in it
+    {
+        size_t Nlocal = tess.GetPointNo();
+        
+        // NOTE: when using MPI with > 1 proc, A will be only a sub-matrix (a subset of rows) of the full matrix
+        // since we are 1D decomposing the matrix by rows
+        // b will be the full vector
+
+        int nprocs = 1, rank = 0;
+    #ifdef RICH_MPI
+        MPI_Comm_size (MPI_COMM_WORLD, &nprocs);
+        MPI_Comm_rank (MPI_COMM_WORLD, &rank);
+    #endif
+        int const max_iter = 1000;
+
+        mat A;
+        size_t_mat A_indeces;
+        std::vector<double> b;
+        std::vector<double> sub_x; // this is for the initial guess
+        matrix_builder.BuildMatrix(tess, A, A_indeces, cells, dt, b, sub_x, time);
+        std::vector<double> M; // The preconditioner
+        build_M(A, A_indeces, M);
+        std::vector<double> r_old, sub_a_times_p;
+        std::vector<double> sub_r;
+#ifdef RICH_MPI
+        MPI_exchange_data2(tess, sub_x, true);
+#endif
+        mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+        // Find maximum value of A, this is used for normalization of the error
+        double maxA[2] = {0, 0};
+        for(size_t i = 0; i < A.size(); ++i)
+        {
+            maxA[0] = std::max(maxA[0], std::abs(sub_x[i]));
+            maxA[1] = std::max(maxA[1], std::abs(b[i]));
+        }       
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &maxA, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);  
+        double rho0 = mpi_dot_product(sub_r, sub_r);  
+        std::vector<double> sub_p(sub_r), sub_r0(sub_r);
+        sub_p.resize(Nlocal);
+        sub_x.resize(Nlocal);
+        sub_r0.resize(Nlocal);
+        sub_p = vector_rescale(sub_p, M);
+        std::vector<double> y(Nlocal, 0), z(Nlocal, 0), v(Nlocal, 0), h(Nlocal, 0), s(Nlocal, 0), t(Nlocal, 0);
+        std::vector<double> old_x = sub_x;
+        size_t Ntotal = Nlocal;
+        double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
+        double const delta_init = sub_r_sqrd;
+        // double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
+        if(rank == 0)
+            std::cout<<"CG init delta "<<delta_init<<std::endl;
+        double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
+        bool good_end = false;
+        struct
+        {
+            double val;
+            int mpi_id;
+        }max_data[3];
+        max_data[0].mpi_id = rank;
+        max_data[1].mpi_id = rank;
+        max_data[2].mpi_id = rank;
+        
+        size_t max_loc0 = 0, max_loc1 = 0, max_loc2 = 0;
+        // Main Conjugate Gradient loop
+        // this loop must be serial b/c CG is an iterative method
+
+        sub_p = sub_r;
+
+        for (int i = 0; i < max_iter; i++) {
+            // note: make sure matrix is big enough for the number of processors you are using!
+            max_data[2].mpi_id = rank;
+            max_data[0].mpi_id = rank;
+            // r_old = sub_r;                 // Store previous residual
+            sub_r_sqrd_old = sub_r_sqrd;  // save a recalculation of r_old^2 later
+
+            y = vector_rescale(sub_p, M);
+#ifdef RICH_MPI
+            MPI_exchange_data2(tess, y, true);
+#endif
+            mat_times_vec(A, A_indeces, y, v);
+            y.resize(Nlocal);
+            double const alpha = rho0 / mpi_dot_product(sub_r0, v);
+            vec_lin_combo(1.0, sub_x, alpha, y, h);
+            vec_lin_combo(1.0, sub_r, -alpha, v, s);
+            z = vector_rescale(s, M);
+#ifdef RICH_MPI
+            MPI_exchange_data2(tess, z, true);
+#endif
+            mat_times_vec(A, A_indeces, z, t);
+            z.resize(Nlocal);
+            double const up = mpi_dot_product(vector_rescale(t, M), vector_rescale(s, M));
+            double const down = mpi_dot_product(vector_rescale(t, M), vector_rescale(t, M));
+            double const w = up / down;
+            old_x = sub_x;
+            vec_lin_combo(1.0, h, w, z, sub_x);
+            vec_lin_combo(1.0, s, -w, t, sub_r);
+            sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
+            
+            // Convergence test
+            if (sub_r_sqrd < delta_init * tolerance)
+            {
+                max_data[0].val = 0;
+                max_data[1].val = 0;
+                max_data[2].val = 0;
+                for(size_t j = 0; j < Nlocal; ++j)
+                {
+                    double const local_scale = std::abs(b[j]);
+                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))))
+                    {
+                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9)));
+                        max_loc1 = j;
+                    }
+                    if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
+                    {
+                        max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
+                        max_loc0 = j;
+                    }
+                    if(sub_x[j] < 0)
+                    {
+                        max_loc2 = j;
+                        max_data[2].val = 1;
+                    }
+                }
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+#endif       
+                if(max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                    if(rank == 0)
+                        std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
+                    if(rank == max_data[0].mpi_id)
+                        std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
+                        <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
+                    if(rank == max_data[1].mpi_id)
+                        std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
+                        <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
+                    total_iters = i;
+                    good_end = true;
+#ifdef RICH_MPI
+                    MPI_exchange_data2(tess, sub_x, true);
+#endif
+                    mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+                    sub_x.resize(Nlocal);
+                    vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
+                    sub_x_solution.resize(Nlocal);
+                    for(size_t k = 0; k < Nlocal; ++k)
+                    {
+                        sub_x_solution[k] = sub_x[k] + sub_r[k] / (tess.GetVolume(k) * 7e10 * 7e10 * 7e10);
+                        if(sub_x_solution[k] < sub_x[k] * 0.5)
+                            sub_x_solution[k] = sub_x[k] * 0.5;
+                        if(sub_x_solution[k] > sub_x[k] * 2)
+                            sub_x_solution[k] = sub_x[k] * 2;
+                    }
+
+                    break;
+                }
+            }
+            double const rho0_new = mpi_dot_product(sub_r0, sub_r);
+            double const beta = rho0_new * alpha / (w * rho0);
+            vec_lin_combo(1.0, sub_p, -w, v, t);
+            vec_lin_combo(1.0, sub_r, beta, t, sub_p); 
+            rho0 = rho0_new;
+        }
+        if(not good_end)
+        {
+            if(rank == 0)
+	            std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<std::endl;
             if(rank == max_data[0].mpi_id)
                 std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
                 <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
@@ -281,5 +524,4 @@ namespace CG
 #endif
         return sub_x;
     }
-
 }

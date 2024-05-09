@@ -69,6 +69,14 @@ namespace CG
     std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
+
+    std::vector<double> BiCGSTAB(const double tolerance, int &total_iters,
+        Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
+
+    double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
+
+    double mpi_dot_product2(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
 }
 
 #endif
