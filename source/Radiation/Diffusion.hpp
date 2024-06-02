@@ -124,7 +124,7 @@ class DiffusionClosedBox : public DiffusionBoundaryCalculator
 };
 
 //! \brief Class for calculating diffusion matrix data for the CG solver
-class Diffusion : public CG::MatrixBuilder
+class Diffusion : public RadiationDriver
 {
 public:
 /*!
