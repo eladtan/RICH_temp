@@ -47,6 +47,9 @@ namespace CG
             \param x0 The initial solution guess
             \param current_time The time
         */
+
+        virtual ~MatrixBuilder() = default;
+
         virtual void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const = 0;
         /*!
