@@ -14,9 +14,11 @@ logger = logging.getLogger("build_program.main")
 root_dir = str(pathlib.Path(__file__).parent.parent.absolute())
 sys.path.append(root_dir)
 
+ENERGY_GROUPS_NUM = 3
+
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definitionOfReal=8):
     warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
-    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g"
+    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={ENERGY_GROUPS_NUM}"
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX "
     
