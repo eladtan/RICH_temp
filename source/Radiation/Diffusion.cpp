@@ -334,7 +334,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 }
 
 void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-        std::vector<double>const& full_CG_result, std::vector<double> const& CG_result)const
+        std::vector<double>const& full_CG_result, std::vector<double> const& CG_result) const
 {
     double const max_v = 0.1 * CG::speed_of_light * time_scale_ / length_scale_;
     Vector3D dummy_v;
