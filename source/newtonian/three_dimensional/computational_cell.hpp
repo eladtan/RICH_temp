@@ -9,9 +9,12 @@
 #include <array>
 #include "3D/elementary/Vector3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
+#include <boost/container/small_vector.hpp>
 #ifdef RICH_MPI
 	#include "misc/serializable.hpp"
 #endif // RICH_MPI
+
+#define ENERGY_GROUPS_NUM 0
 
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
@@ -42,6 +45,9 @@ public:
 	
 	//! \brief Radiation enregy per unit mass
 	double Erad;
+
+	//! \brief The radiation energy per unit mass in a given energy group
+	boost::container::small_vector<double, ENERGY_GROUPS_NUM> Eg;
 
 	double Erad_dt;
 
