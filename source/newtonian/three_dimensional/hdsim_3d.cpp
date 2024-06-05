@@ -795,69 +795,36 @@ double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_build
 #endif
 	double total_elapsed_time = 0;
 	double dt_try = dt;
-	std::vector<double> new_Er, new_Er_full;
 	size_t reduce_counter = 0;
-	std::vector<ComputationalCell3D> cells;
 	int max_iter_done = 0;
+
+
+	matrix_builder.prestep(tess_);
+
 	while(total_elapsed_time < dt * 0.9999999)
 	{
-		cells = cells_;
-		std::vector<Conserved3D> extensives(extensive_);
-		bool good_try = true;
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
 
-		new_Er = CG::BiCGSTAB(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
+		bool step_success = matrix_builder.step(CG_eps, total_iters, tess_, cells_, extensive_, dt_try, pt_.getTime());
+
 		max_iter_done = std::max(max_iter_done, total_iters);
-		double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
-#ifdef RICH_MPI
-		MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#endif
-		double min_Er = 1;
-		for(size_t i = 0; i < N; ++i)
-		{
-			if(new_Er[i] < 0 && std::abs(new_Er[i]) < 1e-9 * max_Er)
-				new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature);
-			min_Er = std::min(min_Er, new_Er[i]);
-		}
-#ifdef RICH_MPI
-		MPI_Allreduce(MPI_IN_PLACE, &min_Er, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-#endif
-		if(min_Er < 0)
+		
+		if(not step_success)
 		{
 			reduce_counter++;
-			good_try = false;
 			dt_try *= 0.5;
 			if(rank == 0)
-				std::cout<<"Negative Er, Reducing dt, new dt "<<dt_try<<std::endl;
+				std::cout<<"Reducing dt, new dt "<<dt_try<<std::endl;
+			
 			if(dt_try < 0.001 * dt)
 				throw UniversalError("too small dt in RadiationTimeStep");
 		}
-		else
-		{
-			int good_run = 1;
-			try
-			{
-				matrix_builder.PostCG(tess_, extensive_, dt_try, cells_, new_Er, new_Er_full);		
-			}
-			catch(UniversalError const& eo)
-			{
-				good_run = 0;
-			}
-			if(good_run == 0)
-			{
-				good_try = false;
-				dt_try *= 0.5;
-				if(rank == 0)
-					std::cout<<"Reducing PostCG dt, new dt "<<dt_try<<std::endl;
-				extensive_ = extensives;
-				cells_ = cells;
-				if(dt_try < 0.001 * dt)
-					throw UniversalError("too small dt in RadiationTimeStep");
-			}
-		}
-		if(good_try)
+		else {
 			total_elapsed_time += dt_try;
+		}
 	}
+
+	matrix_builder.poststep();
 	size_t const Nzero = matrix_builder.zero_cells_.size();
 	std::vector<size_t> zero_indeces;
 	for(size_t i = 0; i < Nzero; ++i)
@@ -872,7 +839,7 @@ double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_build
 				to_calc = false;
 		if(not to_calc)
 			continue;
-		double const equlibrium_factor = std::abs(cells_[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells_[i].temperature ? 0.05 : 1;
+		double const equlibrium_factor = std::abs(cells_[i].temperature - std::pow(matrix_builder.new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells_[i].temperature ? 0.05 : 1;
 		double diff = equlibrium_factor * std::abs(cells_[i].Erad * cells_[i].density - old_Er[i]) / (cells_[i].Erad * cells_[i].density + 0.02 * max_Er);
 		if(matrix_builder.fleck_factor[i] < 0.5)
 			diff *= 0.1;
@@ -899,8 +866,8 @@ double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_build
 	if(rank == max_data.mpi_id)
 	{
 		std::cout<<"Radiation time step ID "<<cells_[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells_[max_loc].Erad * cells_[max_loc].density<<
-		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<
-		" width "<<tess_.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(matrix_builder.new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<
+		" width "<<tess_.GetWidth(max_loc)<<" Tgas_old "<<cells_[max_loc].temperature<<std::endl;
 		matrix_builder.PrintDebugData(max_loc);
 	}
 	if(no_hydro)

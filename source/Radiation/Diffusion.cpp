@@ -92,6 +92,68 @@ bool Diffusion::poststep() const {
     return false;
 }
 
+bool Diffusion::step(double const tolerance, 
+                     int& total_iters, 
+                     Tessellation3D const& tess, 
+                     std::vector<ComputationalCell3D>& cells,
+                     std::vector<Conserved3D>& extensives,
+                     double const dt,
+                     double const time) const {
+    
+    int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+
+    std::size_t const N = tess.GetPointNo();
+    new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
+    
+    double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
+
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+
+    double min_Er = 1.0;
+    for(std::size_t i=0; i < N; ++i){
+        if(new_Er[i] < 0.0 && std::abs(new_Er[i]) < 1e-9 * max_Er){
+            new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells[i].temperature * cells[i].temperature * cells[i].temperature * cells[i].temperature);
+        }
+
+        min_Er = std::min(min_Er, new_Er[i]);
+    }
+
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &min_Er, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+
+    if(min_Er < 0){
+        if(rank == 0){
+			std::cout<<"Negative Er!"<<std::endl;
+        }
+
+        return false;
+    }
+
+    extensives_temp = extensives;
+    cells_temp = cells;
+
+    try {
+        PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
+    } catch(UniversalError const& eo) {
+        if(rank == 0){
+            std::cout<< "PostCG Exception:" << std::endl;
+            std::cout<< eo.getErrorMessage() << std::endl;
+        }
+        
+        extensives = std::move(extensives_temp);
+        cells = cells_temp;
+        return false;
+    }
+
+    return true;
+}
+
 void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
     double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const
 {
