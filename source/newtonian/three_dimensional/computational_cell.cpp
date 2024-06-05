@@ -1,14 +1,14 @@
 #include "computational_cell.hpp"
 
 ComputationalCell3D::ComputationalCell3D(void):
-  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg({}), Erad_dt(0),
+  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0),
   	Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i,double internal_energy_i,size_t ID_i,
 				     const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
+  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i,
 				     double pressure_i, double internal_energy_i,size_t ID_i,
@@ -16,7 +16,7 @@ ComputationalCell3D::ComputationalCell3D(double density_i,
 				     const std::array<double,MAX_TRACERS>& tracers_i,
 					 const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i),dt(0) {}
+  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),

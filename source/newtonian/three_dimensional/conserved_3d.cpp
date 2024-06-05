@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
+	Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
 
 namespace
 {
