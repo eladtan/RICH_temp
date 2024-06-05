@@ -23,12 +23,17 @@ public:
 
         virtual ~RadiationDriver() = default;
 
+        virtual bool prestep(Tessellation3D const& tess) const = 0;
+
         virtual bool step(double const tolerance, 
                           int& total_iters, 
                           Tessellation3D const& tess, 
-                          std::vector<ComputationalCell3D> const& cells,
+                          std::vector<ComputationalCell3D>& cells,
+                          std::vector<Conserved3D>& extensives, 
                           double const dt,
-                          double const time) = 0;
+                          double const time) const = 0;
+        
+        virtual bool poststep() const = 0; 
 
     bool const flux_limiter_;
     bool const hydro_on_;
