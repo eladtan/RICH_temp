@@ -109,6 +109,9 @@ bool Diffusion::step(double const tolerance,
 #ifdef RICH_MPI
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
+    
+    extensives_temp = extensives;
+    cells_temp = cells;
 
     std::size_t const N = tess.GetPointNo();
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
@@ -139,9 +142,6 @@ bool Diffusion::step(double const tolerance,
 
         return false;
     }
-
-    extensives_temp = extensives;
-    cells_temp = cells;
 
     try {
         PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
