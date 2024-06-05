@@ -172,8 +172,18 @@ public:
     }
 
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
-    mutable std::vector<double> sigma_planck, sigma_s, fleck_factor, D, R2, cell_flux_limiter;
     DiffusionBoundaryCalculator const& boundary_calc_;
+    
+    mutable std::vector<double> sigma_planck;
+    mutable std::vector<double> sigma_s;
+    mutable std::vector<double> fleck_factor; 
+    mutable std::vector<double> D; 
+    mutable std::vector<double> R2; 
+    mutable std::vector<double> cell_flux_limiter;
+    mutable std::vector<double> new_Er;
+    mutable std::vector<double> new_Er_full;
+    mutable std::vector<ComputationalCell3D> cells_temp;
+    mutable std::vector<Conserved3D> extensives_temp;
 };
 
 //! D=D0*rho^alpha*T^beta
