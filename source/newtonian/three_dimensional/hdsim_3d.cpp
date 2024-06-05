@@ -269,7 +269,9 @@ void HDSim3D::timeAdvance2(void)
 		extensive_ = VectorValues(extensive_, order);
 		cells_ = VectorValues(cells_, order);
 		point_vel = VectorValues(point_vel, order);
+#ifdef RICH_MPI
 		tess_.PreparePoints(mesh, order);
+#endif
 	}
 	MovePoints(tess_, point_vel, dt);
 	t1 = get_time();

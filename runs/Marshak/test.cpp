@@ -16,7 +16,7 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
-#include "source/3D/GeometryCommon/hdf_write.hpp"
+#include "source/3D/output/write3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/DiffusionForce.hpp"
@@ -147,14 +147,12 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
-	std::string eos_location("/home/esternberg/RICH/data/EOS/");
-	std::string STA_location("/home/esternberg/RICH/data/STA/");
-	double const dmin_eos = -22;
-	double const dmax_eos = 1.1;
-	double const dd_eos = 0.05;
-	double const Tmin_eos = 0.2;
-	double const Tmax_eos = 8.0;
-	double const dT_eos = 0.01;
+	std::string eos_location("/home/itamarg/workspace/RICH/data/EOS/");
+	std::string STA_location("/home/itamarg/workspace/RICH/data/STA/");
+	double const dmin_eos = -50.656872045869001;
+	double const dmax_eos = 6.815166376138933;
+	double const dd_eos = 0.095310179804322;
+
 	double const lscale = 7e10;
 	double const mscale = 2e33;
 	double const tscale = 1603;
@@ -175,12 +173,10 @@ int main(void)
 	size_t const Nx = 128;
 	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
 	Voronoi3D tess(ll, ur);
-#ifdef RICH_MPI
-	Voronoi3D tproc(ll, ur);
-#endif
+
 	int counter = 0;
 	ComputationalCell3D init_cell;
-	double const T = 300;
+	double const T = 2000;
 	try
 	{
 		init_cell.density = 1 * lscale * lscale * lscale / mscale;
@@ -195,18 +191,15 @@ int main(void)
 		throw;
 	}
 
-	
-#ifdef RICH_MPI
-	vector<Vector3D> procpoints = RoundGrid3DSingle(RandRectangular(ws, ll, ur), ll, ur);
-	tproc.Build(procpoints);
-#endif
 
-	vector<Vector3D> points = CartesianMesh(Nx, 1, 1, ll, ur
+	vector<Vector3D> points; 
+	if(rank == 0)
+		points = CartesianMesh(Nx, 1, 1, ll, ur);
 #ifdef RICH_MPI
-		, &tproc
+	tess.BuildParallel(points);
+#else
+	tess.Build(points);
 #endif
-		);
-	tess.BuildHilbert(points);
 	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
 
 	Hllc3D rs;

@@ -177,13 +177,13 @@ private:
   std::array<Vector3D, 4> temp_points_;
   std::array<Vector3D, 5> temp_points2_;
   std::vector<Face> box_faces_;
+  std::vector<Vector3D> allMyPoints;
   
   #ifdef RICH_MPI
     std::shared_ptr<PointsManager> pointsManager;
     std::vector<double> radiuses;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
     vector<std::size_t> indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
-    std::vector<Vector3D> allMyPoints;
     std::shared_ptr<RangeFinder> rangeFinder;
   #endif // RICH_MPI
 
