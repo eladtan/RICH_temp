@@ -143,12 +143,17 @@ public:
     
     ~Diffusion();
 
+    bool prestep(Tessellation3D const& tess) const override;
+
     bool step(double const tolerance, 
               int& total_iters, 
               Tessellation3D const& tess, 
-              std::vector<ComputationalCell3D> const& cells,
+              std::vector<ComputationalCell3D>& cells,
+              std::vector<Conserved3D>& extensives,
               double const dt,
-              double const time) { return true; }
+              double const time) const override;
+
+    bool poststep() const override;
 
     void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells, 
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;

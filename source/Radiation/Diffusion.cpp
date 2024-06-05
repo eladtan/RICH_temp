@@ -60,6 +60,38 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
     return compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck, sigma_s, Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck);
 }
 
+bool Diffusion::prestep(Tessellation3D const& tess) const {
+    auto const N = tess.GetPointNo();
+    
+    sigma_planck.resize(N, 0.0);
+    sigma_s.resize(N, 0.0);
+    fleck_factor.resize(N, 0.0);
+    D.resize(N, 0.0);
+    R2.resize(N, 0.0);
+    cell_flux_limiter.resize(N, 0.0);
+
+    new_Er.resize(N, 0.0);
+    new_Er_full.resize(N, 0.0);
+    
+    cells_temp.resize(N);
+    extensives_temp.resize(N);
+
+    return true;
+}
+
+bool Diffusion::poststep() const {
+    // sigma_planck.clear();
+    // sigma_s.clear();
+    // fleck_factor.clear();
+    // D.clear();
+    // R2.clear();
+    
+    std::vector<ComputationalCell3D>().swap(cells_temp);
+    std::vector<Conserved3D>().swap(extensives_temp);
+
+    return false;
+}
+
 void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
     double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const
 {
