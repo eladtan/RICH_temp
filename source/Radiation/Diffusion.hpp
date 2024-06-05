@@ -139,19 +139,9 @@ public:
               std::vector<std::string> const zero_cells = std::vector<std::string> (), 
               bool const flux_limiter = true, 
               bool const hydro_on = true, 
-              bool const compton_on = false) : 
-                                                D_coefficient_calcualtor(D_coefficient_calc),
-                                                boundary_calc_(boundary_calc), 
-                                                sigma_planck(),
-                                                sigma_s(), 
-                                                fleck_factor(), 
-                                                RadiationDriver(eos, 
-                                                                zero_cells, 
-                                                                flux_limiter, 
-                                                                hydro_on, 
-                                                                compton_on) {}
+              bool const compton_on = false);
     
-    ~Diffusion() override = default;
+    ~Diffusion();
 
     bool step(double const tolerance, 
               int& total_iters, 

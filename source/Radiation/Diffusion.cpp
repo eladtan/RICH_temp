@@ -23,6 +23,28 @@ namespace CG
     }
 }
 
+Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
+                     DiffusionBoundaryCalculator const& boundary_calc,
+                     EquationOfState const& eos, 
+                     std::vector<std::string> const zero_cells, 
+                     bool const flux_limiter, 
+                     bool const hydro_on, 
+                     bool const compton_on) : 
+                                                        D_coefficient_calcualtor(D_coefficient_calc),
+                                                        boundary_calc_(boundary_calc), 
+                                                        sigma_planck(),
+                                                        sigma_s(), 
+                                                        fleck_factor(),
+                                                        new_Er(),
+                                                        new_Er_full(),
+                                                        RadiationDriver(eos, 
+                                                                        zero_cells, 
+                                                                        flux_limiter, 
+                                                                        hydro_on, 
+                                                                        compton_on) {}
+
+Diffusion::~Diffusion() {}
+
 double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const
 {
     ComputationalCell3D cell_cgs(cell);
