@@ -95,6 +95,21 @@ private:
                          std::vector<double>& b, 
                          std::vector<double>& x0, 
                          double const current_time) const; 
+
+    void PostCGGroup(std::size_t const group,
+                     Tessellation3D const& tess, 
+                     std::vector<Conserved3D>& extensives, 
+                     double const dt, 
+                     std::vector<ComputationalCell3D>& cells,
+                     std::vector<double>const& CG_result, 
+                     std::vector<double> const&  full_CG_result) const;
+    
+    void PostCGGray(Tessellation3D const& tess, 
+                     std::vector<Conserved3D>& extensives, 
+                     double const dt, 
+                     std::vector<ComputationalCell3D>& cells,
+                     std::vector<double>const& CG_result, 
+                     std::vector<double> const&  full_CG_result) const;
 };
 
 #endif
