@@ -63,6 +63,18 @@ public:
 
     std::vector<ComputationalCell3D> cells_temp;
     std::vector<Conserved3D> extensives_temp;
+
+    mutable std::vector<std::vector<double>> sigma_planck_group; // [group][cell]
+    mutable std::vector<std::vector<double>> D_group; // [group][cell]
+    mutable std::vector<std::vector<double>> R2_group; // [group][cell]
+    mutable std::vector<std::vector<double>> cell_flux_limiter_group; // [group][cell]
+    
+    mutable std::vector<double> new_Eg; 
+    mutable std::vector<double> new_Eg_full; 
+
+    mutable std::vector<double> new_Er;
+    mutable std::vector<double> new_Er_full; 
+
 };
 
 #endif

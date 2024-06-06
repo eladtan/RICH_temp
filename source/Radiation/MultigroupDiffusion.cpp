@@ -11,6 +11,14 @@ MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculato
                                                                 grey(false),
                                                                 cells_temp(),
                                                                 extensives_temp(),
+                                                                sigma_planck_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                D_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                R2_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                cell_flux_limiter_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                new_Eg(),
+                                                                new_Eg_full(),
+                                                                new_Er(),
+                                                                new_Er_full(),
                                                                 RadiationDriver(eos,
                                                                                 zero_cells,
                                                                                 flux_limiter,
@@ -20,12 +28,22 @@ MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculato
 MultigroupDiffusion::~MultigroupDiffusion() {}
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
+    auto const N = tess.GetPointNo();
+
+    sigma_planck_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    D_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    R2_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    cell_flux_limiter_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    
+    new_Eg.resize(N, 0.0);
+    new_Eg_full.resize(N, 0.0);
+    new_Er.resize(N, 0.0);
+    new_Er_full.resize(N, 0.0);
 
     return true;
 }
 
 bool MultigroupDiffusion::poststep() const {
-
     return true;
 }
 
