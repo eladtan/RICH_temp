@@ -75,6 +75,25 @@ public:
     mutable std::vector<double> new_Er;
     mutable std::vector<double> new_Er_full; 
 
+private:
+    void BuildMatrixGroup(std::size_t energy_group,
+                          Tessellation3D const& tess, 
+                          mat& A, 
+                          size_t_mat& A_indeces, 
+                          std::vector<ComputationalCell3D> const& cells, 
+                          double const dt, 
+                          std::vector<double>& b, 
+                          std::vector<double>& x0, 
+                          double const current_time) const;
+
+    void BuildMatrixGray(Tessellation3D const& tess, 
+                         mat& A, 
+                         size_t_mat& A_indeces, 
+                         std::vector<ComputationalCell3D> const& cells, 
+                         double const dt, 
+                         std::vector<double>& b, 
+                         std::vector<double>& x0, 
+                         double const current_time) const; 
 };
 
 #endif
