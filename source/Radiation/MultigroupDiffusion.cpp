@@ -68,7 +68,12 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                                       std::vector<double>& b, 
                                       std::vector<double>& x0, 
                                       double const current_time) const {
-
+    if(gray){
+        BuildMatrixGray(tess, A, A_indeces, cells, dt, b, x0, current_time);
+    } else {
+        assert(current_group < ENERGY_GROUPS_NUM);
+        BuildMatrixGroup(current_group, tess, A, A_indeces, cells, dt, b, x0, current_time);
+    }
 }
 
 void MultigroupDiffusion::PostCG(Tessellation3D const& tess, 
