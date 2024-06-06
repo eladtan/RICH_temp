@@ -78,6 +78,17 @@ bool MultigroupDiffusion::step(double const tolerance,
 	ComputationalCell3D cdummy;
 	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
 #endif
+
+    std::size_t constexpr max_iter=1;
+    for(std::size_t iter=1; iter <= max_iter; ++iter){    
+        gray = false;
+        for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+            current_group=g;
+            new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
+
+            PostCG(tess, extensives, dt, cells, new_Eg, new_Eg_full);
+        }
+    }
     return true;
 }
 
