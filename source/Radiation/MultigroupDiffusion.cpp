@@ -45,6 +45,9 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
 }
 
 bool MultigroupDiffusion::poststep() const {
+    std::vector<ComputationalCell3D>().swap(cells_temp);
+    std::vector<ComputationalCell3D>().swap(cells_cgs);
+    std::vector<Conserved3D>().swap(extensives_temp);
     return true;
 }
 
