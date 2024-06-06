@@ -59,6 +59,25 @@ bool MultigroupDiffusion::step(double const tolerance,
                                double const dt,
                                double const time) const {
 
+    auto const N = tess.GetPointNo();
+
+    extensives_temp = extensives;
+    cells_temp = cells;
+    
+    cells_cgs = cells;
+    for(std::size_t i=0; i<N; ++i){
+        cells_cgs[i].density *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
+        cells_cgs[i].Erad *= length_scale_ * length_scale_ / (time_scale_ * time_scale_);
+        cells_cgs[i].velocity *= length_scale_ / time_scale_;
+        for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+            cells_cgs[i].Eg[g] *= length_scale_ * length_scale_ / (time_scale_ * time_scale_);
+        }
+    }
+
+#ifdef RICH_MPI
+	ComputationalCell3D cdummy;
+	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
+#endif
     return true;
 }
 
