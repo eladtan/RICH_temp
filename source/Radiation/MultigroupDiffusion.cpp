@@ -10,6 +10,7 @@ MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculato
                                                                 current_group(0),
                                                                 gray(false),
                                                                 cells_temp(),
+                                                                cells_cgs(),
                                                                 extensives_temp(),
                                                                 sigma_planck_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 D_group(ENERGY_GROUPS_NUM, std::vector<double>()),
