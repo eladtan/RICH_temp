@@ -106,4 +106,11 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
                                  std::vector<double>const& CG_result, 
                                  std::vector<double> const&  full_CG_result) const {
 
+    if(gray){
+        PostCGGray(tess, extensives, dt, cells, CG_result, full_CG_result);
+    } else {
+        assert(current_group < ENERGY_GROUPS_NUM);
+
+        PostCGGroup(current_group, tess, extensives, dt, cells, CG_result, full_CG_result);
+    }
 }
