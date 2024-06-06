@@ -58,8 +58,8 @@ public:
 
     MultigroupDiffusionCoefficientCalculator const& D_coefficient_calculator;
 
-    std::size_t current_group;
-    bool gray;
+    mutable std::size_t current_group;
+    mutable bool gray;
 
     std::vector<ComputationalCell3D> cells_temp;
     std::vector<Conserved3D> extensives_temp;
