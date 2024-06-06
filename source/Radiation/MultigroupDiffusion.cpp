@@ -1,10 +1,12 @@
 #include "MultigroupDiffusion.hpp"
 
-MultigroupDiffusion::MultigroupDiffusion(EquationOfState const& eos,
+MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculator const& D_coefficient_calc, 
+                                         EquationOfState const& eos,
                                          std::vector<std::string> const zero_cells,
                                          bool const flux_limiter,
                                          bool const hydro_on,
                                          bool const compton_on):
+                                                                D_coefficient_calculator(D_coefficient_calc),
                                                                 current_group(0),
                                                                 grey(false),
                                                                 cells_temp(),

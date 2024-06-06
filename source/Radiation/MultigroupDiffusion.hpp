@@ -19,7 +19,8 @@ public:
 
 class MultigroupDiffusion : public RadiationDriver {
 public:
-    MultigroupDiffusion(EquationOfState const& eos,
+    MultigroupDiffusion(MultigroupDiffusionCoefficientCalculator const& D_coefficient_calc, 
+                        EquationOfState const& eos,
                         std::vector<std::string> const zero_cells,
                         bool const flux_limiter,
                         bool const hydro_on,
@@ -42,8 +43,7 @@ public:
     void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells, 
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;
 
-    void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-        std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result) const override;
+    MultigroupDiffusionCoefficientCalculator const& D_coefficient_calculator;
 
     std::size_t current_group;
     bool grey;
