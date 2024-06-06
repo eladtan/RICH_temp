@@ -8,7 +8,7 @@ MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculato
                                          bool const compton_on):
                                                                 D_coefficient_calculator(D_coefficient_calc),
                                                                 current_group(0),
-                                                                grey(false),
+                                                                gray(false),
                                                                 cells_temp(),
                                                                 extensives_temp(),
                                                                 sigma_planck_group(ENERGY_GROUPS_NUM, std::vector<double>()),
