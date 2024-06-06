@@ -61,8 +61,9 @@ public:
     mutable std::size_t current_group;
     mutable bool gray;
 
-    std::vector<ComputationalCell3D> cells_temp;
-    std::vector<Conserved3D> extensives_temp;
+    mutable std::vector<ComputationalCell3D> cells_temp;
+    mutable std::vector<ComputationalCell3D> cells_cgs;
+    mutable std::vector<Conserved3D> extensives_temp;
 
     mutable std::vector<std::vector<double>> sigma_planck_group; // [group][cell]
     mutable std::vector<std::vector<double>> D_group; // [group][cell]
