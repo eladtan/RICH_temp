@@ -10,7 +10,9 @@ class MultigroupDiffusionCoefficientCalculator {
 public:
     virtual double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const =0;
 
-    virtual double CalcPlanckOpacityGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
+    virtual double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
+
+    virtual double CalcScatteringCoefficientGroup(ComputationalCell3D const&, std::size_t const group) const = 0;
 
     virtual double CalcDiffusionCoefficientGray(ComputationalCell3D const& cell) const = 0;
 
