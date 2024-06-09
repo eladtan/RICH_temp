@@ -79,6 +79,10 @@ bool MultigroupDiffusion::step(double const tolerance,
 	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
 #endif
 
+    calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs);
+    calculate_planck_integrals(tess, cells_cgs);
+    calculate_group_diffusion_coefficients(tess, cells_cgs);
+
     std::size_t constexpr max_iter=1;
     for(std::size_t iter=1; iter <= max_iter; ++iter){    
         gray = false;
