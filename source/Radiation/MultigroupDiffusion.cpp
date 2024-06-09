@@ -109,6 +109,16 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
         BuildMatrixGroup(current_group, tess, A, A_indeces, cells, dt, b, x0, current_time);
     }
 }
+void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess, 
+                                          mat& A, 
+                                          size_t_mat& A_indeces, 
+                                          std::vector<ComputationalCell3D> const& cells, 
+                                          double const dt, 
+                                          std::vector<double>& b, 
+                                          std::vector<double>& x0, 
+                                          double const current_time) const {
+
+}
 
 void MultigroupDiffusion::PostCG(Tessellation3D const& tess, 
                                  std::vector<Conserved3D>& extensives, 
