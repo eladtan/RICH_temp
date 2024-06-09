@@ -125,3 +125,66 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
         PostCGGroup(current_group, tess, extensives, dt, cells, CG_result, full_CG_result);
     }
 }
+
+void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
+                                                                                 std::vector<ComputationalCell3D> const& cells) const {
+    auto const N = tess.GetPointNo();
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        for(std::size_t i=0; i < N; ++i){
+            auto const& cell = cells[i];
+
+            sigma_absorption_group[g][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cell, g);
+
+            if(sigma_absorption_group[g][i] < 0.){
+                throw UniversalError("negative absorption coefficient");
+            }
+
+            sigma_scattering_group[g][i] = coefficient_calculator.CalcScatteringCoefficientGroup(cell, g);
+
+            if(sigma_scattering_group[g][i] < 0.){
+                throw UniversalError("negative scattering coefficient");
+            }
+        }
+    }
+}
+
+void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
+                                                     std::vector<ComputationalCell3D> const& cells) const {
+    
+    auto const N = tess.GetPointNo();
+
+    for(std::size_t i=0; i<N; ++i){
+        auto const& cell = cells[i];
+        double const kT = CG::boltzmann_constant * cell.temperature;
+        double planck_sum = 0.0;
+        for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+
+            double const a = energy_groups_boundary[g] / kT;
+            double const b = energy_groups_boundary[g+1] / kT;
+
+            double const bg = planck_integral(a, b);
+
+            planck_sum += bg;
+        }
+
+        if(planck_sum < (1. - 1e-4) and get_radiation_energy_density(cell.temperature) > 1e-3*cell.internal_energy*cell.density){
+            throw UniversalError("bad groups! planckian not covered well!");
+        }
+    }
+}
+
+void MultigroupDiffusion::calculate_group_diffusion_coefficients(Tessellation3D const& tess,
+                                                                 std::vector<ComputationalCell3D> const& cells) const {
+
+    auto const N = tess.GetPointNo();
+
+    for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+        for(std::size_t i=0; i<N; ++i){
+            D_group[g][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells[i], g);
+
+            if(D_group[g][i] < 0.0){
+                throw UniversalError("negative group diffusion coefficient");
+            }
+        }
+    }
+}

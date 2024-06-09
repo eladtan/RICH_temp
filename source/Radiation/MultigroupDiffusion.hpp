@@ -68,7 +68,9 @@ public:
     mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable std::vector<Conserved3D> extensives_temp;
 
-    mutable std::vector<std::vector<double>> sigma_planck_group; // [group][cell]
+    mutable std::vector<std::vector<double>> sigma_absorption_group; // [group][cell]
+    mutable std::vector<std::vector<double>> sigma_scattering_group; // [group][cell]
+    mutable std::vector<std::vector<double>> planck_integal_group; // [group][cell]
     mutable std::vector<std::vector<double>> D_group; // [group][cell]
     mutable std::vector<std::vector<double>> R2_group; // [group][cell]
     mutable std::vector<std::vector<double>> cell_flux_limiter_group; // [group][cell]
@@ -113,6 +115,17 @@ private:
                      std::vector<ComputationalCell3D>& cells,
                      std::vector<double>const& CG_result, 
                      std::vector<double> const&  full_CG_result) const;
+
+    void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
+                                                                std::vector<ComputationalCell3D> const& cells) const;
+
+    void calculate_planck_integrals(Tessellation3D const& tess,
+                                    std::vector<ComputationalCell3D> const& cells) const;
+
+    void calculate_group_diffusion_coefficients(Tessellation3D const& tess,
+                                                std::vector<ComputationalCell3D> const& cells) const;
+};
+
 using boost::math::pow;
 static inline double get_radiation_energy_density(double const T) { return CG::radiation_constant*pow<4>(T); }
 static inline double get_temperature(double const radiation_energy_density) { return std::sqrt(std::sqrt(radiation_energy_density/CG::radiation_constant)); }
