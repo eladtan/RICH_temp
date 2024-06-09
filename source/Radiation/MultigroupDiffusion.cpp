@@ -131,6 +131,68 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
         BuildMatrixGroup(current_group, tess, A, A_indeces, cells, dt, b, x0, current_time);
     }
 }
+
+void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
+                                           Tessellation3D const& tess, 
+                                           mat& A, 
+                                           size_t_mat& A_indeces, 
+                                           std::vector<ComputationalCell3D> const& cells, 
+                                           double const dt, 
+                                           std::vector<double>& b, 
+                                           std::vector<double>& x0, 
+                                           double const current_time) const {
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+
+    std::size_t const Nlocal = tess.GetPointNo();
+    double const dt_cgs = dt * time_scale_;
+    double const cdt = CG::speed_of_light*dt_cgs;
+
+    x0.resize(Nlocal, 0.0);
+    b.resize(Nlocal, 0.0);
+    // build the `initial guess` and `b`
+    for(std::size_t i=0; i<Nlocal; ++i){
+        auto const cell_cgs = cells_cgs[i];
+        
+        // build the initial guess
+        x0[i] = cell_cgs.Eg[group];
+
+        auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
+
+        // build `b` vector, first term
+        b[i] = volume_cgs * cell_cgs.Eg[group];
+
+        // second term
+        auto const bg = planck_integal_group[group][i];
+        auto const Um = get_radiation_energy_density(cell_cgs.temperature);
+        auto const cdtkgbg = cdt*sigma_absorption_group[group][i]*bg;
+        b[i] += volume_cgs*cdtkgbg*Um;
+    }
+
+#ifdef RICH_MPI
+    MPI_exchange_data2(tess, D_group[group], true);
+#endif
+
+    // Find maximum number of neighbors and allocate data
+    // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
+    // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
+    
+    // In Diffusion max_neighbors is used at the end it seems unessecary
+    std::size_t max_neighbors = 0;
+    for(std::size_t i=0; i < Nlocal; ++i){
+        max_neighbors = std::max(max_neighbors, tess.GetNeighbors(i).size());
+    }
+    ++max_neighbors;
+
+    A.clear(); 
+    A.resize(Nlocal);
+    A_indeces.clear();
+    A_indeces.resize(Nlocal);
+    
+}
+
 void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess, 
                                           mat& A, 
                                           size_t_mat& A_indeces, 

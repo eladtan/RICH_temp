@@ -87,7 +87,7 @@ public:
     mutable std::vector<double> new_Er_full; 
 
 private:
-    void BuildMatrixGroup(std::size_t energy_group,
+    void BuildMatrixGroup(std::size_t group,
                           Tessellation3D const& tess, 
                           mat& A, 
                           size_t_mat& A_indeces, 
