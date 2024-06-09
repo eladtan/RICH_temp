@@ -126,6 +126,25 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
     }
 }
 
+void MultigroupDiffusion::PostCGGroup(std::size_t const group,
+                                      Tessellation3D const& tess, 
+                                      std::vector<Conserved3D>& extensives, 
+                                      double const dt, 
+                                      std::vector<ComputationalCell3D>& cells,
+                                      std::vector<double>const& CG_result, 
+                                      std::vector<double> const&  full_CG_result) const {
+
+}
+
+void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess, 
+                                     std::vector<Conserved3D>& extensives, 
+                                     double const dt, 
+                                     std::vector<ComputationalCell3D>& cells,
+                                     std::vector<double>const& CG_result, 
+                                     std::vector<double> const&  full_CG_result) const {
+
+}
+
 void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                                  std::vector<ComputationalCell3D> const& cells) const {
     auto const N = tess.GetPointNo();
