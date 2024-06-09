@@ -1,4 +1,7 @@
 #include "MultigroupDiffusion.hpp"
+#include "planck_integral/planck_integral.hpp"
+
+using boost::math::pow;
 
 MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                                          std::vector<double> const& energy_groups_boundary_,
