@@ -1,18 +1,24 @@
 #include "MultigroupDiffusion.hpp"
 
-MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculator const& D_coefficient_calc, 
+MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
+                                         std::vector<double> const& energy_groups_boundary_,
+                                         MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
                                          EquationOfState const& eos,
                                          std::vector<std::string> const zero_cells,
                                          bool const flux_limiter,
                                          bool const hydro_on,
                                          bool const compton_on):
-                                                                D_coefficient_calculator(D_coefficient_calc),
+                                                                coefficient_calculator(coefficient_calc),
+                                                                energy_groups_center(energy_groups_center_),
+                                                                energy_groups_boundary(energy_groups_boundary_),
                                                                 current_group(0),
                                                                 gray(false),
                                                                 cells_temp(),
                                                                 cells_cgs(),
                                                                 extensives_temp(),
-                                                                sigma_planck_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                sigma_absorption_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                sigma_scattering_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                planck_integal_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 D_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 R2_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 cell_flux_limiter_group(ENERGY_GROUPS_NUM, std::vector<double>()),
@@ -24,14 +30,26 @@ MultigroupDiffusion::MultigroupDiffusion(MultigroupDiffusionCoefficientCalculato
                                                                                 zero_cells,
                                                                                 flux_limiter,
                                                                                 hydro_on,
-                                                                                compton_on) {}
+                                                                                compton_on) {
+
+    if(energy_groups_center.size() != ENERGY_GROUPS_NUM){
+        std::cout << "bad energy_groups_center.size()" << std::endl;
+        exit(1);
+    }
+
+    if(energy_groups_boundary.size() != ENERGY_GROUPS_NUM + 1){
+        std::cout << "bad energy_groups_boundary.size()" << std::endl;
+        exit(1);
+    }
+}
 
 MultigroupDiffusion::~MultigroupDiffusion() {}
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
     auto const N = tess.GetPointNo();
 
-    sigma_planck_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    sigma_absorption_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    planck_integal_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
     D_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
     R2_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
     cell_flux_limiter_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
