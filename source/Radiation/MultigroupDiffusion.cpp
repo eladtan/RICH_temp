@@ -289,18 +289,31 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
     }
 }
 
-void MultigroupDiffusion::calculate_group_diffusion_coefficients(Tessellation3D const& tess,
-                                                                 std::vector<ComputationalCell3D> const& cells) const {
-
+void MultigroupDiffusion::calculate_gray_absorption_and_scattering_coefficients(Tessellation3D const& tess,
+                                                                                std::vector<ComputationalCell3D> const& cells) const {
     auto const N = tess.GetPointNo();
+    std::fill(sigma_absorption_planck.begin(), sigma_absorption_planck.end(), 0.0);
+    std::fill(sigma_absorption_average.begin(), sigma_absorption_average.end(), 0.0);
+    std::fill(sigma_scattering_gray.begin(), sigma_scattering_gray.end(), 0.0);
 
-    for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
-        for(std::size_t i=0; i<N; ++i){
-            D_group[g][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells[i], g);
+    for(std::size_t i=0; i<N; ++i){
+        double sum_U = 0.0;
+        auto const& cell = cells[i];
+        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+            double const sigma = sigma_absorption_group[g][i];
+            double const bg = planck_integal_group[g][i];
+            double const Ug = cell.Eg[g];
+            
+            sigma_absorption_planck[i] += sigma * bg;
+            sigma_absorption_average[i] += sigma * Ug;
+            sigma_scattering_gray[i] += sigma * Ug;
 
-            if(D_group[g][i] < 0.0){
-                throw UniversalError("negative group diffusion coefficient");
-            }
+            sum_U += Ug;
+        }
+
+        if(sum_U > std::numeric_limits<double>::min()*1e40) {
+            sigma_absorption_average[i] /= sum_U;
+            sigma_scattering_gray[i] /= sum_U;
         }
     }
 }

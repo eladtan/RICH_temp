@@ -123,8 +123,8 @@ private:
     void calculate_planck_integrals(Tessellation3D const& tess,
                                     std::vector<ComputationalCell3D> const& cells) const;
 
-    void calculate_group_diffusion_coefficients(Tessellation3D const& tess,
-                                                std::vector<ComputationalCell3D> const& cells) const;
+    void calculate_gray_absorption_and_scattering_coefficients(Tessellation3D const& tess,
+                                                               std::vector<ComputationalCell3D> const& cells) const;
 };
 
 
