@@ -624,7 +624,13 @@ void MultigroupDiffusion::PostCGGroup(std::size_t const group,
                                       std::vector<ComputationalCell3D>& cells,
                                       std::vector<double>const& CG_result, 
                                       std::vector<double> const&  full_CG_result) const {
+    
 
+    auto const N = tess.GetPointNo();
+
+    for(std::size_t i=0; i<N; ++i){
+        cells[i].Eg[group] = full_CG_result[i];
+    }
 }
 
 void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess, 
