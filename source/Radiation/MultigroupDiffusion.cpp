@@ -1,3 +1,4 @@
+#include "Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
 #include "MultigroupDiffusion.hpp"
 #include "planck_integral/planck_integral.hpp"
 
