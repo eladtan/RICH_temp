@@ -639,7 +639,93 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
                                      std::vector<ComputationalCell3D>& cells,
                                      std::vector<double>const& CG_result, 
                                      std::vector<double> const&  full_CG_result) const {
+    
+    auto const N = tess.GetPointNo();
+    std::vector<size_t> neighbors;
+    face_vec faces;
 
+    double Einit = 0.0;
+    for(std::size_t i = 0; i < N; ++i){
+        Einit += extensives[i].Erad + extensives[i].energy;
+    }
+
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &Einit, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
+
+    int good_end = 1;
+    
+    double const dt_cgs = dt * time_scale_;
+    double const cdt = CG::speed_of_light*dt_cgs;
+
+    for(std::size_t i=0; i < N; ++i){
+        double const old_e_therm = extensives[i].internal_energy;
+        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+
+        extensives[i].Erad = CG_result[i] * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+
+        double const T = cells[i].temperature;
+        double const kp = sigma_absorption_planck[i];
+        double const kr = sigma_absorption_average[i];
+        double const Um = get_radiation_energy_density(T);
+
+        double dE = fleck_factor[i] * cdt * (kr*full_CG_result[i] - kp*Um);
+
+        dE *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+
+        extensives[i].energy += dE;
+        extensives[i].internal_energy += dE;
+
+        // other terms
+
+        cells[i].Erad = extensives[i].Erad / extensives[i].mass;
+        cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
+
+        try{
+            cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+            cells[i].temperature = eos_.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+
+            cells[i].velocity = extensives[i].momentum / extensives[i].mass;    
+
+        } catch(UniversalError &eo){
+            reportError(eo);
+            good_end = 0;
+            break;
+        }
+    }
+
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    bool was_bad = false;
+    if(good_end == 0){
+        std::cout<<"Zero good_end rank "<<rank<<std::endl;
+        was_bad = true; 
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &good_end, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if(was_bad){
+        std::cout<<"rank "<<rank<<" good_end "<<good_end<<std::endl;
+    }
+#endif
+
+    if(good_end = 0){
+        throw UniversalError("Negative energy in PostCGGray");
+    }
+
+    double Efinal = 0;
+    for(std::size_t i=0; i<N; ++i){
+        Efinal += extensives[i].Erad + extensives[i].energy;
+    }
+
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+
+    if(rank == 0){
+        std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << ", rel_error = " << std::abs((Einit - Efinal))/Efinal << std::endl;
+    }
 }
 
 void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
