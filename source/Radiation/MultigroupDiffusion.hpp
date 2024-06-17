@@ -131,10 +131,5 @@ private:
                                                 std::vector<ComputationalCell3D> const& cells) const;
 };
 
-using boost::math::pow;
-static inline double get_radiation_energy_density(double const T) { return CG::radiation_constant*pow<4>(T); }
-static inline double get_temperature(double const radiation_energy_density) { return std::sqrt(std::sqrt(radiation_energy_density/CG::radiation_constant)); }
-static inline double get_radiation_cv(double const T) { return 4.0*CG::radiation_constant*pow<3>(T); }
-
 
 #endif
