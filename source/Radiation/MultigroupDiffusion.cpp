@@ -387,7 +387,218 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                                           std::vector<double>& b, 
                                           std::vector<double>& x0, 
                                           double const current_time) const {
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 
+    std::size_t const Nlocal = tess.GetPointNo();
+    double const dt_cgs = dt * time_scale_;
+    double const cdt = CG::speed_of_light*dt_cgs;
+
+    x0.resize(Nlocal, 0.0);
+    b.resize(Nlocal, 0.0);
+
+    for(std::size_t i=0; i<Nlocal; ++i){
+        auto const cell_cgs = cells_cgs[i];
+        
+        // build the initial guess
+        // TODO:INITIAL GUESS SHOULD BE THE SUM OF THE NEW GROUP ENERGIES?
+        x0[i] = cell_cgs.Erad; 
+
+        auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
+
+        // build `b` vector, first term
+        b[i] = volume_cgs * cell_cgs.Erad;
+
+        // fleck factor
+        double const sigma_planck = sigma_absorption_planck[i];
+        double const T = cell_cgs.temperature;
+        double cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
+        
+        // TODO: What is energy ratio (see Diffusion.cpp same line)
+        cv *= mass_scale_ / (pow<2>(time_scale_)*length_scale_);
+        double const cv_bar = cv / get_radiation_cv(T);
+        double const f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, sigma_planck);
+
+        if(f < 0){
+            throw UniversalError("Negative fleck factor");
+        }
+        fleck_factor[i] = f;
+        
+        // second term 
+        double const Um = get_radiation_energy_density(T);
+        double const cdtkpf = cdt*sigma_planck*f;
+        b[i] += volume_cgs * cdtkpf * Um;
+    }
+
+    // Initialize Matrx
+    A.clear();
+    A.resize(Nlocal);
+    A_indeces.clear();
+    A_indeces.reserve(Nlocal);
+    
+    // Add the emission term to the matrix
+    for(std::size_t i=0; i < Nlocal; ++i){
+        A_indeces[i].push_back(i);
+
+        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+        double const T = cells_cgs[i].temperature;
+
+        double cdtkrf = cdt*sigma_absorption_average[i]*fleck_factor[i];
+
+        A[i].push_back(volume*(1.0 + cdtkrf));
+
+        if(A[i][0] < 0){
+            std::cout << "Negative A[i][i] in matrix build" << std::endl;
+        }
+    }
+
+    // find max_abs_grad_E for flux_limiter limiter gradient factor
+    std::vector<std::size_t> neighbors;
+    face_vec faces;
+
+    if(flux_limiter_){
+        for(std::size_t i=0; i < Nlocal; ++i){
+            double abs_grad_E_temp = 0.0;
+            
+            tess.GetNeighbors(i, neighbors);
+            faces = tess.GetCellFaces(i);
+
+            auto const Nneighbors = neighbors.size();
+            double const Er_i = cells_cgs[i].Erad * cells_cgs[i].density;
+
+            for(std::size_t j=0; j < Nneighbors; ++j){
+                std::size_t neighbor_j = neighbors[j];
+                if(neighbor_j < Nlocal || !tess.IsPointOutsideBox(neighbor_j)){
+                    double const Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density;
+                    auto const abs_dE = std::abs(Er_i - Er_j);
+                    auto const abs_grad_E = abs_dE * fastabs(grad[faces[j]]);
+
+                    abs_grad_E_temp = std::max(abs_grad_E_temp, abs_grad_E);
+                }
+            }
+
+            max_abs_grad_E[i] = abs_grad_E_temp;
+        }
+
+#ifdef RICH_MPI
+        MPI_exchange_data2(tess, max_abs_grad_E, true);
+#endif 
+    }
+
+    // Add the diffusion terms
+    for(std::size_t i=0; i < Nlocal; ++i){
+        faces = tess.GetCellFaces(i);
+
+        tess.GetNeighbors(i, neighbors);
+        std::size_t const Nneighbors = neighbors.size();
+
+        Vector3D const r_i = tess.GetMeshPoint(i);
+        
+        auto& cell_i = cells_cgs[i]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient 
+        double const Er_i = cell_i.Erad;
+
+        for(std::size_t j=0; j < Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+            auto& cell_j = cells_cgs[neighbor_j]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient
+
+            auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+            
+            double const abs_r_ij = abs(r_ij);
+            r_ij *= 1.0 / abs_r_ij;
+
+            double Er_j = 0.0;
+
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                Er_j = cell_j.Erad * cell_j.density;
+
+                if(i < neighbor_j){
+                    auto const& face_j = faces[j];
+                    Vector3D const& gradient = grad[face_j];
+
+                    double const T_i = cell_i.temperature;
+                    double const T_j = cell_j.temperature;
+                    double const max_T = std::max(T_i, T_j);
+
+                    cell_i.temperature = max_T;
+                    cell_j.temperature = max_T;
+
+                    double lambdaD_i_to_j = 0.0;
+                    double lambdaD_j_to_i = 0.0;
+                    double sum_U_i = 0.0;
+                    double sum_U_j = 0.0;
+                    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+                        double const Dg_i = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_i, g);
+                        double const Dg_j = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_j, g);
+
+                        double const Dg_ij = 2.0 * Dg_i * Dg_j / (Dg_i + Dg_j);
+
+                        double lambda_g = 1.0;
+                        if(flux_limiter_){
+                            // TODO: add grad_factor to both here and to gray
+                            double const Eg_old_i = cells[i].Eg[g] * pow<2>(length_scale_) / pow<2>(time_scale_);
+                            double const Eg_old_j = cells[i].Eg[g] * pow<2>(length_scale_) / pow<2>(time_scale_);
+                            double const dEg = Eg_old_i - Eg_old_j;
+                            lambda_g = CG::CalcSingleFluxLimiter(gradient*dEg, Dg_ij, 0.5*(Eg_old_i + Eg_old_j));
+                        }
+
+                        double const lambda_gD = lambda_g * Dg_ij;
+
+                        lambdaD_i_to_j += lambda_gD * cell_i.Eg[g];
+                        sum_U_i += cell_i.Eg[g];
+
+                        lambdaD_j_to_i += lambda_gD * cell_j.Eg[g];
+                        sum_U_j += cell_j.Eg[g];
+                    }
+
+                    lambdaD_i_to_j /= sum_U_i;
+                    lambdaD_i_to_j /= sum_U_j;
+
+                    cell_i.temperature = T_i;
+                    cell_j.temperature = T_j;
+
+                    double const A_j = tess.GetArea(face_j) * pow<2>(length_scale_);
+                    double const flux_factor = dt_cgs * ScalarProd(gradient, r_ij) * A_j;
+                    
+                    double const flux_i_to_j = flux_factor * lambdaD_i_to_j;
+
+                    A[i][0] += flux_i_to_j;
+                    
+                    double const flux_j_to_i = flux_factor * lambdaD_j_to_i;
+                    A[i].push_back(-flux_j_to_i);
+                    A_indeces[i].push_back(neighbor_j);
+
+                    if(neighbor_j < Nlocal){
+                        A[neighbor_j][0] += flux_j_to_i; 
+                        A[neighbor_j].push_back(-flux_i_to_j);
+                        A_indeces[neighbor_j].push_back(i);
+                    }
+                }
+            } else { // boundary conditions
+
+            }
+        }
+    }
+
+    // Find maximum number of neighbors and allocate data
+    // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
+    // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
+    
+    std::size_t max_neighbors = 0;
+    for(std::size_t i=0; i < Nlocal; ++i){
+        max_neighbors = std::max(max_neighbors, tess.GetNeighbors(i).size());
+    }
+    ++max_neighbors;
+    
+    for(std::size_t i=0; i < Nlocal; ++i){
+        A[i].resize(max_neighbors, 0);
+        A_indeces[i].resize(max_neighbors, max_size_t);
+
+        if(A[i][0] < 0){
+            std::cout << "Negative A in matrix build" << std::endl;
+        }
+    }
 }
 
 void MultigroupDiffusion::PostCG(Tessellation3D const& tess, 
