@@ -23,13 +23,19 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 sigma_absorption_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 sigma_scattering_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 planck_integal_group(ENERGY_GROUPS_NUM, std::vector<double>()),
-                                                                D_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 R2_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 cell_flux_limiter_group(ENERGY_GROUPS_NUM, std::vector<double>()),
+                                                                sigma_absorption_planck(),
+                                                                sigma_absorption_average(),
+                                                                sigma_scattering_gray(),
+                                                                fleck_factor(),
                                                                 new_Eg(),
                                                                 new_Eg_full(),
                                                                 new_Er(),
                                                                 new_Er_full(),
+                                                                max_abs_grad_E(),
+                                                                max_neighbor_abs_grad_E(),
+                                                                grad(),
                                                                 RadiationDriver(eos,
                                                                                 zero_cells,
                                                                                 flux_limiter,
@@ -60,8 +66,42 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
     
     new_Eg.resize(N, 0.0);
     new_Eg_full.resize(N, 0.0);
+    
+    sigma_absorption_planck.resize(N, 0.0);
+    sigma_absorption_average.resize(N, 0.0);
+    sigma_scattering_gray.resize(N, 0.0);
+    fleck_factor.resize(N, 0.0);
+
     new_Er.resize(N, 0.0);
     new_Er_full.resize(N, 0.0);
+
+    max_abs_grad_E.resize(N, 0.0);
+    max_neighbor_abs_grad_E.resize(N, 0.0);
+
+
+    auto const Nfaces = tess.GetTotalFacesNumber();
+    grad.resize(Nfaces);
+
+    std::vector<std::size_t> neighbors;
+    face_vec faces; 
+    for(std::size_t i=0; i < N; ++i){
+        tess.GetNeighbors(i, neighbors);
+        faces = tess.GetCellFaces(i);
+
+        Vector3D CM_i = tess.GetCellCM(i); 
+
+        auto const Nneighbors = neighbors.size();
+        for(std::size_t j=0; j < Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                if(i < neighbor_j){
+                    Vector3D const CM_ij = CM_i - tess.GetCellCM(neighbor_j);
+                    grad[faces[j]] = CM_ij * (1.0 / (length_scale_*ScalarProd(CM_ij, CM_ij)));
+                }
+            }
+        }
+    }
 
     return true;
 }

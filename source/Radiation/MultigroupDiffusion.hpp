@@ -72,9 +72,14 @@ public:
     mutable std::vector<std::vector<double>> sigma_absorption_group; // [group][cell]
     mutable std::vector<std::vector<double>> sigma_scattering_group; // [group][cell]
     mutable std::vector<std::vector<double>> planck_integal_group; // [group][cell]
-    mutable std::vector<std::vector<double>> D_group; // [group][cell]
     mutable std::vector<std::vector<double>> R2_group; // [group][cell]
     mutable std::vector<std::vector<double>> cell_flux_limiter_group; // [group][cell]
+
+    mutable std::vector<double> sigma_absorption_planck;
+    mutable std::vector<double> sigma_absorption_average;
+    mutable std::vector<double> sigma_scattering_gray;
+    mutable std::vector<double> fleck_factor;
+    
     
     mutable std::vector<double> new_Eg; 
     mutable std::vector<double> new_Eg_full; 
@@ -82,6 +87,10 @@ public:
     mutable std::vector<double> new_Er;
     mutable std::vector<double> new_Er_full; 
 
+    mutable std::vector<double> max_abs_grad_E;
+    mutable std::vector<double> max_neighbor_abs_grad_E;
+
+    mutable std::vector<Vector3D> grad; // gradient ij for i < j
 private:
     void BuildMatrixGroup(std::size_t group,
                           Tessellation3D const& tess, 
