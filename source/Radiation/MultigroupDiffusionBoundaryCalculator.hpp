@@ -8,7 +8,7 @@ public:
     MultigroupDiffusionBoundaryCalculator(std::vector<double> const& energy_groups_center_,
                                           std::vector<double> const& energy_groups_boundary_);
 
-    virtual ~MultigroupDiffusionBoundaryCalculator();
+    virtual ~MultigroupDiffusionBoundaryCalculator() = default;
 
     virtual void setBoundaryValuesGroup(std::size_t const group,
                                         Tessellation3D const& tess,
@@ -60,7 +60,7 @@ public:
                                     std::vector<double> const& energy_group_center_,
                                     std::vector<double> const& energy_group_boundary_);
 
-    ~MultigroupDiffusionSideBoundary();
+    ~MultigroupDiffusionSideBoundary() = default;
 
     void setBoundaryValuesGroup(std::size_t const group,
                                 Tessellation3D const& tess,

@@ -53,8 +53,6 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     }
 }
 
-MultigroupDiffusion::~MultigroupDiffusion() {}
-
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
     auto const N = tess.GetPointNo();
 

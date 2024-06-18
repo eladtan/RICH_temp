@@ -48,8 +48,6 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                                             hydro_on, 
                                                             compton_on) {}
 
-Diffusion::~Diffusion() {}
-
 double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const
 {
     ComputationalCell3D cell_cgs(cell);

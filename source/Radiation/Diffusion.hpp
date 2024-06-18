@@ -144,7 +144,7 @@ public:
               bool const hydro_on = true, 
               bool const compton_on = false);
     
-    ~Diffusion();
+    ~Diffusion() = default;
 
     bool prestep(Tessellation3D const& tess) const override;
 

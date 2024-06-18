@@ -27,7 +27,7 @@ public:
                         bool const hydro_on,
                         bool const compton_on);
 
-    ~MultigroupDiffusion();
+    ~MultigroupDiffusion() = default;
 
     bool prestep(Tessellation3D const& tess) const override;
 

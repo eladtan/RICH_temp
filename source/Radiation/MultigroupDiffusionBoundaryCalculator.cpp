@@ -9,8 +9,6 @@ MultigroupDiffusionBoundaryCalculator
                                         std::vector<double> const& energy_groups_boundary_) : energy_groups_center(energy_groups_center_),
                                                                                               energy_groups_boundary(energy_groups_boundary_) {}
 
-MultigroupDiffusionBoundaryCalculator::~MultigroupDiffusionBoundaryCalculator() {}
-
 MultigroupDiffusionSideBoundary
 ::MultigroupDiffusionSideBoundary(double const temperature_,
                                   std::vector<double> const& energy_groups_center_,
@@ -23,8 +21,6 @@ MultigroupDiffusionSideBoundary
         Ug[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], temperature);
     }
 }
-
-MultigroupDiffusionSideBoundary::~MultigroupDiffusionSideBoundary() {}
 
 void MultigroupDiffusionSideBoundary::setBoundaryValuesGray(Tessellation3D const& tess,
                                                             std::size_t const index,
