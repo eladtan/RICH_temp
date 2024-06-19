@@ -159,6 +159,10 @@ public:
 
     bool poststep() const override;
 
+    double calculate_dt(double const dt,
+                        Tessellation3D& tess, 
+                        std::vector<ComputationalCell3D>& cells) const override;
+
     void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells, 
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;
 

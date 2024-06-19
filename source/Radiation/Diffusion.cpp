@@ -1,6 +1,10 @@
 #include "Diffusion.hpp"
 #include <boost/math/special_functions.hpp>
 
+#ifdef RICH_MPI
+#include "mpi/mpi_commands.hpp"
+#endif
+
 namespace CG
 {
      // LP flux limiter taken from "EQUATIONS AND ALGORITHMS FOR MIXED-FRAME FLUX-LIMITED DIFFUSION RADIATION HYDRODYNAMICS"
@@ -103,6 +107,71 @@ bool Diffusion::poststep() const {
     std::vector<Conserved3D>().swap(extensives_temp);
 
     return false;
+}
+
+double Diffusion::calculate_dt(double const dt,
+                               Tessellation3D& tess, 
+                               std::vector<ComputationalCell3D>& cells) const {
+
+    int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+
+	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif	
+
+    auto const N = tess.GetPointNo();            
+    size_t const Nzero = zero_cells_.size();
+	std::vector<size_t> zero_indeces;
+	for(size_t i = 0; i < Nzero; ++i)
+		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
+	double max_diff = std::numeric_limits<double>::min() * 100;
+	int max_loc = 0;
+	for(size_t i = 0; i < N; ++i)
+	{
+		bool to_calc = true;
+		for(size_t j = 0; j < Nzero; ++j)
+			if(cells[i].stickers[zero_indeces[j]])
+				to_calc = false;
+		if(not to_calc)
+			continue;
+		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
+		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Er);
+		if(fleck_factor[i] < 0.5)
+			diff *= 0.1;
+		if(diff > max_diff)
+		{
+			max_diff = diff;
+			max_loc = i;
+		}
+	}
+
+	struct
+    {
+        double val;
+        int mpi_id;
+    }max_data;
+    
+    max_data.mpi_id = rank;
+    max_data.val = max_diff;
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+	max_diff = max_data.val;
+	ComputationalCell3D cdummy;
+	MPI_exchange_data(tess, cells, true, &cdummy);	
+#endif
+	if(rank == max_data.mpi_id)
+	{
+		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
+		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
+		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		PrintDebugData(max_loc);
+	}
+
+    return dt * 0.15 / max_diff;
 }
 
 bool Diffusion::step(double const tolerance, 

@@ -37,6 +37,10 @@ public:
         
         virtual bool poststep() const = 0; 
 
+        virtual double calculate_dt(double const dt,
+                                    Tessellation3D& tess, 
+                                    std::vector<ComputationalCell3D>& cells) const = 0;
+
     bool const flux_limiter_;
     bool const hydro_on_;
     bool const compton_on_;

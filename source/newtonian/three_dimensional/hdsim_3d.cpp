@@ -771,36 +771,19 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 	size_t const N = tess_.GetPointNo();
 	if(N == 0)
 		std::cout<<"Zero cells in RadiationTimeStep"<<std::endl;
-	std::vector<double> old_Er(N, 0);
-	for(size_t i = 0; i < N; ++i)
-	{
-		old_Er[i] = cells_[i].Erad * cells_[i].density;
-		if(old_Er[i] < 0)
-		{
-			UniversalError eo("negative Erad");
-			eo.addEntry("i", i);
-			eo.addEntry("old_Er", old_Er[i]);
-			eo.addEntry("ID", cells_[i].ID);
-			eo.addEntry("density", cells_[i].density);
-			throw eo;
-		}
-	}
-	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
-#ifdef RICH_MPI
-	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#endif	
+
 	int rank = 0;
 #ifdef RICH_MPI
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
+
 	double total_elapsed_time = 0;
 	double dt_try = dt;
 	size_t reduce_counter = 0;
 	int max_iter_done = 0;
 
 
-	matrix_builder.prestep(tess_);
-
+	matrix_builder.prestep(tess_, cells_);
 	while(total_elapsed_time < dt * 0.9999999)
 	{
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
@@ -825,51 +808,8 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 	}
 
 	matrix_builder.poststep();
-	size_t const Nzero = matrix_builder.zero_cells_.size();
-	std::vector<size_t> zero_indeces;
-	for(size_t i = 0; i < Nzero; ++i)
-		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, matrix_builder.zero_cells_[i]));
-	double max_diff = std::numeric_limits<double>::min() * 100;
-	int max_loc = 0;
-	for(size_t i = 0; i < N; ++i)
-	{
-		bool to_calc = true;
-		for(size_t j = 0; j < Nzero; ++j)
-			if(cells_[i].stickers[zero_indeces[j]])
-				to_calc = false;
-		if(not to_calc)
-			continue;
-		double const equlibrium_factor = std::abs(cells_[i].temperature - std::pow(matrix_builder.new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells_[i].temperature ? 0.05 : 1;
-		double diff = equlibrium_factor * std::abs(cells_[i].Erad * cells_[i].density - old_Er[i]) / (cells_[i].Erad * cells_[i].density + 0.02 * max_Er);
-		if(matrix_builder.fleck_factor[i] < 0.5)
-			diff *= 0.1;
-		if(diff > max_diff)
-		{
-			max_diff = diff;
-			max_loc = i;
-		}
-	}
-
-	struct
-    {
-        double val;
-        int mpi_id;
-    }max_data;
-    max_data.mpi_id = rank;
-    max_data.val = max_diff;
-#ifdef RICH_MPI
-	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-	max_diff = max_data.val;
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess_, cells_, true, &cdummy);	
-#endif
-	if(rank == max_data.mpi_id)
-	{
-		std::cout<<"Radiation time step ID "<<cells_[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells_[max_loc].Erad * cells_[max_loc].density<<
-		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(matrix_builder.new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<
-		" width "<<tess_.GetWidth(max_loc)<<" Tgas_old "<<cells_[max_loc].temperature<<std::endl;
-		matrix_builder.PrintDebugData(max_loc);
-	}
+	
+	
 	if(no_hydro)
 	{
 		pt_.updateTime(dt);
@@ -882,7 +822,8 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 		if(max_iter_done > 125)
 			grow_factor = 1.05;
 
-	double new_dt = dt * std::min(0.15 / max_diff, grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter), 0.0));
+	double new_dt = matrix_builder.calculate_dt(dt, tess_, cells_);
+	new_dt = std::min(new_dt, dt*grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter), 0.0));
 	if(max_iter_done > 300)
 		new_dt = dt * 0.9;
 	return new_dt;
