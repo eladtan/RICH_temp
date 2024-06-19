@@ -340,7 +340,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             for(std::size_t j=0; j < Nneighbors; ++j){
                 std::size_t const neighbor_j = neighbors[j];
                 if(neighbor_j < Nlocal || !tess.IsPointOutsideBox(neighbor_j)){
-                    double const Eg_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density;
+                    double const Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
                     auto const abs_dE = std::abs(Eg_i - Eg_j);
                     auto const abs_grad_E = abs_dE * fastabs(grad[faces[j]]);
 
@@ -355,9 +355,6 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         MPI_exchange_data2(tess, max_abs_grad_E, true);
 #endif 
     }
-
-    
-
 
     // Add the diffusion terms
     for(std::size_t i=0; i < Nlocal; ++i){
