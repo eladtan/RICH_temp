@@ -208,6 +208,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     cells_cgs = cells;
     for(std::size_t i=0; i<N; ++i){
         cells_cgs[i].density *= mass_scale_ / pow<3>(length_scale_);
+        cells_cgs[i].internal_energy *= pow<2>(length_scale_) / pow<2>(time_scale_);
         cells_cgs[i].Erad *= pow<2>(length_scale_) / pow<2>(time_scale_);
         cells_cgs[i].velocity *= length_scale_ / time_scale_;
         for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
