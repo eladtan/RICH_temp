@@ -7,14 +7,16 @@ using boost::math::pow;
 MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                                          std::vector<double> const& energy_groups_boundary_,
                                          MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
+                                         MultigroupDiffusionBoundaryCalculator const& boundary_calc,
                                          EquationOfState const& eos,
                                          std::vector<std::string> const zero_cells,
                                          bool const flux_limiter,
                                          bool const hydro_on,
                                          bool const compton_on):
-                                                                coefficient_calculator(coefficient_calc),
                                                                 energy_groups_center(energy_groups_center_),
                                                                 energy_groups_boundary(energy_groups_boundary_),
+                                                                coefficient_calculator(coefficient_calc),
+                                                                boundary_calculator(boundary_calc),
                                                                 current_group(0),
                                                                 gray(false),
                                                                 cells_temp(),
@@ -353,6 +355,11 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
                 }
 
             } else { // boundary condition
+                if(i < neighbor_j){
+                    boundary_calculator.setBoundaryValuesGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, tess.GetArea(faces[j])*pow<2>(length_scale_), A[i][0], b[i], faces[j]);
+                }
+
+                boundary_calculator.getOutSideValuesGroup(group, tess, cells_cgs, i, neighbor_j, new_Eg, Eg_j, dummy_v);
             }
         }
     }
@@ -574,7 +581,11 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                     }
                 }
             } else { // boundary conditions
+                if(i < neighbor_j){
+                    boundary_calculator.setBoundaryValuesGray(tess, i, neighbor_j, dt_cgs, cells_cgs, tess.GetArea(faces[j]) * pow<2>(length_scale_), A[i][0], b[i], faces[j]);
+                }
 
+                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_j, dummy_v);
             }
         }
     }

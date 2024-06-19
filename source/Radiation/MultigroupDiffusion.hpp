@@ -13,7 +13,8 @@ class MultigroupDiffusion : public RadiationDriver {
 public:
     MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                         std::vector<double> const& energy_groups_boundary_,
-                        MultigroupDiffusionCoefficientCalculator const& coefficient_calc, 
+                        MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
+                        MultigroupDiffusionBoundaryCalculator const& boundary_calc, 
                         EquationOfState const& eos,
                         std::vector<std::string> const zero_cells,
                         bool const flux_limiter,
@@ -51,6 +52,7 @@ public:
                 std::vector<double> const&  full_CG_result) const override;
 
     MultigroupDiffusionCoefficientCalculator const& coefficient_calculator;
+    MultigroupDiffusionBoundaryCalculator const& boundary_calculator;
     
     std::vector<double> const energy_groups_center;
     std::vector<double> const energy_groups_boundary;
