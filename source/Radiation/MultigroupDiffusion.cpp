@@ -588,7 +588,6 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
 
         for(std::size_t j=0; j < Nneighbors; ++j){
             std::size_t const neighbor_j = neighbors[j];
-            auto& cell_j = cells_cgs[neighbor_j]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient
 
             auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
             
@@ -598,6 +597,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             double Er_j = 0.0;
 
             if(!tess.IsPointOutsideBox(neighbor_j)){
+                auto& cell_j = cells_cgs[neighbor_j]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient
                 Er_j = cell_j.Erad * cell_j.density;
 
                 if(i < neighbor_j){
