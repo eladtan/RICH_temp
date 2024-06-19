@@ -98,13 +98,7 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     return true;
 }
 
-bool Diffusion::poststep() const {
-    // sigma_planck.clear();
-    // sigma_s.clear();
-    // fleck_factor.clear();
-    // D.clear();
-    // R2.clear();
-    
+bool Diffusion::poststep() const {    
     std::vector<ComputationalCell3D>().swap(cells_temp);
     std::vector<Conserved3D>().swap(extensives_temp);
 
