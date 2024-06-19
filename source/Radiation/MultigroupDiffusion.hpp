@@ -4,17 +4,10 @@
 #include "RadiationDriver.hpp"
 #include "conj_grad_solve.hpp"
 #include "boost/math/special_functions/pow.hpp"
+#include "MultigroupDiffusionCoefficientCalculator.hpp"
+#include "MultigroupDiffusionBoundaryCalculator.hpp"
 
 using namespace CG;
-
-class MultigroupDiffusionCoefficientCalculator {
-public:
-    virtual double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const =0;
-
-    virtual double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
-
-    virtual double CalcScatteringCoefficientGroup(ComputationalCell3D const&, std::size_t const group) const = 0;
-};
 
 class MultigroupDiffusion : public RadiationDriver {
 public:
