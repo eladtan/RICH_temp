@@ -764,7 +764,7 @@ size_t& HDSim3D::GetMaxID(void)
 	return Max_ID_;
 }
 
-double HDSim3D::RadiationTimeStep(double const dt, Diffusion const& matrix_builder, bool const no_hydro)
+double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix_builder, bool const no_hydro)
 {
 	int total_iters = 0;
 	double const CG_eps = 1e-11;

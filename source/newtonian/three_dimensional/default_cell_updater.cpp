@@ -61,7 +61,7 @@ namespace
 
 	void regular_update(std::vector<ComputationalCell3D> &res, std::vector<Conserved3D> & extensives,
 		Tessellation3D const& tess, size_t entropy_index,
-		EquationOfState const& eos, bool const includes_temperature, const Diffusion* diffusion)
+		EquationOfState const& eos, bool const includes_temperature, const RadiationDriver* diffusion)
 	{
 		size_t Nloop = tess.GetPointNo();
 		size_t Ntracers = ComputationalCell3D::tracerNames.size();
@@ -295,7 +295,7 @@ namespace
 
 }
 
-DefaultCellUpdater::DefaultCellUpdater(bool SR, double G, bool const includes_temperature, const Diffusion* diffusion) :SR_(SR), G_(G), includes_temperature_(includes_temperature), diffusion_(diffusion), entropy_index_(9999999) {}
+DefaultCellUpdater::DefaultCellUpdater(bool SR, double G, bool const includes_temperature, const RadiationDriver* diffusion) :SR_(SR), G_(G), includes_temperature_(includes_temperature), diffusion_(diffusion), entropy_index_(9999999) {}
 
 void DefaultCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
 	const Tessellation3D& tess, vector<Conserved3D>& extensives) const
