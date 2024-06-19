@@ -33,8 +33,10 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 fleck_factor(),
                                                                 new_Eg(),
                                                                 new_Eg_full(),
+                                                                old_Eg(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 new_Er(),
                                                                 new_Er_full(),
+                                                                old_Er(),
                                                                 max_abs_grad_E(),
                                                                 max_neighbor_abs_grad_E(),
                                                                 grad(),
@@ -55,7 +57,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     }
 }
 
-bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
+bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
+                                  std::vector<ComputationalCell3D> const& cells) const {
     auto const N = tess.GetPointNo();
 
     sigma_absorption_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
@@ -74,9 +77,21 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess) const {
     new_Er.resize(N, 0.0);
     new_Er_full.resize(N, 0.0);
 
+    old_Er.resize(N, 0.0);
+
     max_abs_grad_E.resize(N, 0.0);
     max_neighbor_abs_grad_E.resize(N, 0.0);
 
+    for(std::size_t i=0; i < N; ++i){
+        old_Er[i] = cells[i].Erad * cells[i].density;
+    }
+
+    for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+        old_Eg[g].resize(N, 0.0);
+        for(std::size_t i=0; i < N; ++i){
+            old_Eg[g][i] = cells[i].Eg[g] * cells[i].density;
+        }
+    }
 
     auto const Nfaces = tess.GetTotalFacesNumber();
     grad.resize(Nfaces);

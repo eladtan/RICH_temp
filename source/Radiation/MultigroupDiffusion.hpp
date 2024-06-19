@@ -23,7 +23,8 @@ public:
 
     ~MultigroupDiffusion() = default;
 
-    bool prestep(Tessellation3D const& tess) const override;
+    bool prestep(Tessellation3D const& tess,
+                 std::vector<ComputationalCell3D> const& cells) const override;
 
     bool step(double const tolerance, 
               int& total_iters, 
@@ -74,13 +75,16 @@ public:
     mutable std::vector<double> sigma_absorption_average;
     mutable std::vector<double> sigma_scattering_gray;
     mutable std::vector<double> fleck_factor;
-    
-    
+
     mutable std::vector<double> new_Eg; 
     mutable std::vector<double> new_Eg_full; 
 
+    mutable std::vector<std::vector<double>> old_Eg;
+
     mutable std::vector<double> new_Er;
     mutable std::vector<double> new_Er_full; 
+
+    mutable std::vector<double> old_Er;
 
     mutable std::vector<double> max_abs_grad_E;
     mutable std::vector<double> max_neighbor_abs_grad_E;
