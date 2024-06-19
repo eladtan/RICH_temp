@@ -523,7 +523,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
     A.clear();
     A.resize(Nlocal);
     A_indeces.clear();
-    A_indeces.reserve(Nlocal);
+    A_indeces.resize(Nlocal);
     
     // Add the emission term to the matrix
     for(std::size_t i=0; i < Nlocal; ++i){
