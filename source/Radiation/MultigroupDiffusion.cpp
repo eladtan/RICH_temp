@@ -826,7 +826,7 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
         for(std::size_t i=0; i < N; ++i){
             auto const& cell = cells[i];
 
-            sigma_absorption_group[g][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cell, g);
+            sigma_absorption_group[g][i] = coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g);
 
             if(sigma_absorption_group[g][i] < 0.){
                 throw UniversalError("negative absorption coefficient");
