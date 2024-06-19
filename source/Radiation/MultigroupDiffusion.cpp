@@ -327,6 +327,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
     // find max_abs_grad_E for flux_limiter limiter gradient factor
     std::vector<std::size_t> neighbors;
     face_vec faces;
+    Vector3D dummy_v;
     if(flux_limiter_){
         for(std::size_t i=0; i < Nlocal; ++i){
             double abs_grad_E_temp = 0.0;
