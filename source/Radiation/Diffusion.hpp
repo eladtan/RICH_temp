@@ -146,7 +146,8 @@ public:
     
     ~Diffusion() = default;
 
-    bool prestep(Tessellation3D const& tess) const override;
+    bool prestep(Tessellation3D const& tess,
+                 std::vector<ComputationalCell3D> const& cells) const override;
 
     bool step(double const tolerance, 
               int& total_iters, 
@@ -185,6 +186,7 @@ public:
     mutable std::vector<double> cell_flux_limiter;
     mutable std::vector<double> new_Er;
     mutable std::vector<double> new_Er_full;
+    mutable std::vector<double> old_Er;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
 };

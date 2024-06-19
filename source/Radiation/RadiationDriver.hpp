@@ -24,7 +24,8 @@ public:
 
         virtual ~RadiationDriver() = default;
 
-        virtual bool prestep(Tessellation3D const& tess) const = 0;
+        virtual bool prestep(Tessellation3D const& tess,
+                             std::vector<ComputationalCell3D> const& cells) const = 0;
 
         virtual bool step(double const tolerance, 
                           int& total_iters, 

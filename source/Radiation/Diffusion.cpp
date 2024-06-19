@@ -40,6 +40,7 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                              cell_flux_limiter(),
                                              new_Er(),
                                              new_Er_full(),
+                                             old_Er(),
                                              cells_temp(),
                                              extensives_temp(),
                                              RadiationDriver(eos, 
@@ -63,7 +64,8 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
     return compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck, sigma_s, Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck);
 }
 
-bool Diffusion::prestep(Tessellation3D const& tess) const {
+bool Diffusion::prestep(Tessellation3D const& tess,
+                        std::vector<ComputationalCell3D> const& cells) const {
     auto const N = tess.GetPointNo();
     
     sigma_planck.resize(N, 0.0);
@@ -75,9 +77,23 @@ bool Diffusion::prestep(Tessellation3D const& tess) const {
 
     new_Er.resize(N, 0.0);
     new_Er_full.resize(N, 0.0);
-    
+    old_Er.resize(N, 0.0);
+
     cells_temp.resize(N);
     extensives_temp.resize(N);
+
+    for(std::size_t i=0; i < N; ++i){
+        old_Er[i] = cells[i].Erad * cells[i].density;
+
+        if(old_Er[i] < 0.0){
+            UniversalError eo("negative Erad");
+ 			eo.addEntry("i", i);
+			eo.addEntry("old_Er", old_Er[i]);
+			eo.addEntry("ID", cells[i].ID);
+			eo.addEntry("density", cells[i].density);
+            throw eo;
+        }
+    }
 
     return true;
 }
