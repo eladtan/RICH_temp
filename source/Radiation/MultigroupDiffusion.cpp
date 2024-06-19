@@ -860,7 +860,8 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
             planck_sum += bg;
         }
 
-        if(planck_sum < (1. - 1e-4) and get_radiation_energy_density(cell.temperature) > 1e-3*cell.internal_energy*cell.density){
+        if(planck_sum < (1. - 1e-4) and 
+           get_radiation_energy_density(cell.temperature) > 1e-3*cell.internal_energy*cell.density){
             throw UniversalError("bad groups! planckian not covered well!");
         }
     }
