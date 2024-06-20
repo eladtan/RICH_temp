@@ -36,8 +36,9 @@ void MultigroupDiffusionSideBoundary::setBoundaryValuesGray(Tessellation3D const
 
     double const R = tess.GetWidth(index);
     if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4)){
-        A += 0.5 * CG::speed_of_light * dt * Area;
-        b += 2.0 * Area * dt * Ur;
+        double const D_dr_boundary = 0.5 * CG::speed_of_light * dt * Area;
+        A += D_dr_boundary;
+        b += D_dr_boundary * Ur;
     } 
 }
 
@@ -72,8 +73,9 @@ void MultigroupDiffusionSideBoundary::setBoundaryValuesGroup(std::size_t const g
     
     double const R = tess.GetWidth(index);
     if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
-        A += 0.5 * CG::speed_of_light * dt * Area;
-        b += 2.0 * Area * dt * Ug[group];
+        double const D_dr_boundary = 0.5 * CG::speed_of_light * dt * Area;
+        A += D_dr_boundary;
+        b += D_dr_boundary*Ug[group];
     }
 }
 
