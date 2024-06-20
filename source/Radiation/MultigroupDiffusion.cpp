@@ -637,7 +637,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                     }
 
                     lambdaD_i_to_j /= sum_U_i;
-                    lambdaD_i_to_j /= sum_U_j;
+                    lambdaD_j_to_i /= sum_U_j;
 
                     cell_i.temperature = T_i;
                     cell_j.temperature = T_j;
