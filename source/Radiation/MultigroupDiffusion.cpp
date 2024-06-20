@@ -765,7 +765,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         double const kr = sigma_absorption_average[i];
         double const Um = get_radiation_energy_density(T);
 
-        double dE = fleck_factor[i] * cdt * (kr*full_CG_result[i] - kp*Um);
+        double dE = volume * fleck_factor[i] * cdt * (kr*full_CG_result[i] - kp*Um);
 
         dE *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
