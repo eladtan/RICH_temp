@@ -779,7 +779,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 
         try{
             cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
-            cells[i].temperature = eos_.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+            cells[i].pressure = eos_.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
 
             cells[i].velocity = extensives[i].momentum / extensives[i].mass;    
 
