@@ -854,6 +854,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
 
             double const bg = planck_integral(a, b);
 
+            planck_integal_group[g][i] = bg;
             planck_sum += bg;
         }
 
