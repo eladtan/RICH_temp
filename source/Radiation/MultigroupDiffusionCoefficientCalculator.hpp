@@ -2,6 +2,7 @@
 #define MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
 
 #include "conj_grad_solve.hpp"
+#include <functional>
 
 class MultigroupDiffusionCoefficientCalculator {
 public:
@@ -15,7 +16,7 @@ public:
 
     virtual double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
 
-    virtual double CalcScatteringCoefficientGroup(ComputationalCell3D const&, std::size_t const group) const = 0;
+    virtual double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
 
     std::vector<double> const energy_groups_center;
     std::vector<double> const energy_groups_boundary;
@@ -33,7 +34,7 @@ class GraySTAopacity : public MultigroupDiffusionCoefficientCalculator {
 
         double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const;
 
-        double CalcScatteringCoefficientGroup(ComputationalCell3D const&, std::size_t const group) const;
+        double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const;
 };
 
 double interpolateTable(double const T, double const d, 
@@ -42,8 +43,24 @@ double interpolateTable(double const T, double const d,
                         std::vector<std::vector<double>> const& data,
 		                double const T_high_slope = 0);
 
-// class PowerLawOpacity : public MultigroupDiffusionCoefficientCalculator {
-    
-// };
+
+class AnalyticOpacity : public MultigroupDiffusionCoefficientCalculator {
+    public:
+        AnalyticOpacity(std::function<double(double const, double const, std::size_t const)> diffusion_coefficient_groups_function_,
+                        std::function<double(double const, double const, std::size_t const)> sigma_absorption_groups_function_,
+                        std::function<double(double const, double const, std::size_t const)> sigma_scattering_groups_function_,
+                        std::vector<double> const& energy_groups_center_,
+                        std::vector<double> const& energy_groups_boundary_);
+
+        double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const;
+
+        double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const;
+
+        double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const;
+
+        std::function<double(double const, double const, std::size_t const)> const diffusion_coefficient_groups_function;
+        std::function<double(double const, double const, std::size_t const)> const sigma_absorption_groups_function;
+        std::function<double(double const, double const, std::size_t const)> const sigma_scattering_groups_function;
+};
 
 #endif // MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
