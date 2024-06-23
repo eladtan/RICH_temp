@@ -315,7 +315,6 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         A_indeces[i].push_back(i);
 
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
-        double const T = cells_cgs[i].temperature;
 
         double cdtkg = cdt * sigma_absorption_group[group][i];
 
@@ -826,7 +825,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 #endif
 
     if(rank == 0){
-        std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << ", rel_error = " << std::abs((Einit - Efinal))/Efinal << std::endl;
+        std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
     }
 }
 
