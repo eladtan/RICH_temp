@@ -287,13 +287,14 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
     for(std::size_t i=0; i<Nlocal; ++i){
         auto const cell_cgs = cells_cgs[i];
         
+        double const Eg_i = cell_cgs.Eg[group]*cell_cgs.density;
         // build the initial guess
-        x0[i] = cell_cgs.Eg[group];
+        x0[i] = Eg_i;
 
         auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
 
         // build `b` vector, first term
-        b[i] = volume_cgs * cell_cgs.Eg[group];
+        b[i] = volume_cgs * Eg_i;
 
         // second term
         auto const bg = planck_integal_group[group][i];
@@ -493,14 +494,15 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
     for(std::size_t i=0; i<Nlocal; ++i){
         auto const cell_cgs = cells_cgs[i];
         
+        double const Er_i = cell_cgs.Erad * cell_cgs.density; 
         // build the initial guess
         // TODO:INITIAL GUESS SHOULD BE THE SUM OF THE NEW GROUP ENERGIES?
-        x0[i] = cell_cgs.Erad; 
+        x0[i] = Er_i;
 
         auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
 
         // build `b` vector, first term
-        b[i] = volume_cgs * cell_cgs.Erad;
+        b[i] = volume_cgs * Er_i;
 
         // fleck factor
         double const sigma_planck = sigma_absorption_planck[i];
@@ -587,8 +589,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
 
         Vector3D const r_i = tess.GetMeshPoint(i);
         
-        auto& cell_i = cells_cgs[i]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient 
-        double const Er_i = cell_i.Erad;
+        auto& cell_cgs_i = cells_cgs[i]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient 
+        double const Er_i = cell_cgs_i.Erad * cell_cgs_i.density;
 
         for(std::size_t j=0; j < Nneighbors; ++j){
             std::size_t const neighbor_j = neighbors[j];
@@ -601,53 +603,58 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             double Er_j = 0.0;
 
             if(!tess.IsPointOutsideBox(neighbor_j)){
-                auto& cell_j = cells_cgs[neighbor_j]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient
-                Er_j = cell_j.Erad * cell_j.density;
+                auto& cell_cgs_j = cells_cgs[neighbor_j]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient
+                Er_j = cell_cgs_j.Erad * cell_cgs_j.density;
 
                 if(i < neighbor_j){
                     auto const& face_j = faces[j];
                     Vector3D const& gradient = grad[face_j];
 
-                    double const T_i = cell_i.temperature;
-                    double const T_j = cell_j.temperature;
+                    double const T_i = cell_cgs_i.temperature;
+                    double const T_j = cell_cgs_j.temperature;
                     double const max_T = std::max(T_i, T_j);
 
-                    cell_i.temperature = max_T;
-                    cell_j.temperature = max_T;
+                    cell_cgs_i.temperature = max_T;
+                    cell_cgs_j.temperature = max_T;
 
                     double lambdaD_i_to_j = 0.0;
                     double lambdaD_j_to_i = 0.0;
                     double sum_U_i = 0.0;
                     double sum_U_j = 0.0;
                     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-                        double const Dg_i = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_i, g);
-                        double const Dg_j = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_j, g);
+                        double const Dg_i = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_cgs_i, g);
+                        double const Dg_j = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_cgs_j, g);
 
                         double const Dg_ij = 2.0 * Dg_i * Dg_j / (Dg_i + Dg_j);
 
                         double lambda_g = 1.0;
                         if(flux_limiter_){
                             // TODO: add grad_factor to both here and to gray
-                            double const Eg_old_i = cells[i].Eg[g] * pow<2>(length_scale_) / pow<2>(time_scale_);
-                            double const Eg_old_j = cells[i].Eg[g] * pow<2>(length_scale_) / pow<2>(time_scale_);
+                            // Using old Eg for consistency with the group step
+                            double const Eg_old_i = cell_cgs_i.Eg[g]*cell_cgs_i.density;
+                            double const Eg_old_j = cell_cgs_j.Eg[g]*cell_cgs_j.density;
                             double const dEg = Eg_old_i - Eg_old_j;
                             lambda_g = CG::CalcSingleFluxLimiter(gradient*dEg, Dg_ij, 0.5*(Eg_old_i + Eg_old_j));
                         }
 
                         double const lambda_gD = lambda_g * Dg_ij;
+                        
+                        // cell_cgs holds the old Eg but after the group step we need to use cells.
+                        double const Eg_i = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        double const Eg_j = cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
 
-                        lambdaD_i_to_j += lambda_gD * cell_i.Eg[g];
-                        sum_U_i += cell_i.Eg[g];
+                        lambdaD_i_to_j += lambda_gD * Eg_i;
+                        sum_U_i += Eg_i;
 
-                        lambdaD_j_to_i += lambda_gD * cell_j.Eg[g];
-                        sum_U_j += cell_j.Eg[g];
+                        lambdaD_j_to_i += lambda_gD * Eg_j;
+                        sum_U_j += Eg_j;
                     }
 
                     lambdaD_i_to_j /= sum_U_i;
                     lambdaD_j_to_i /= sum_U_j;
 
-                    cell_i.temperature = T_i;
-                    cell_j.temperature = T_j;
+                    cell_cgs_i.temperature = T_i;
+                    cell_cgs_j.temperature = T_j;
 
                     double const A_j = tess.GetArea(face_j) * pow<2>(length_scale_);
                     double const flux_factor = dt_cgs * ScalarProd(gradient, r_ij) * A_j;
@@ -724,7 +731,7 @@ void MultigroupDiffusion::PostCGGroup(std::size_t const group,
     auto const N = tess.GetPointNo();
 
     for(std::size_t i=0; i<N; ++i){
-        cells[i].Eg[group] = full_CG_result[i];
+        cells[i].Eg[group] = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100) * pow<2>(time_scale_) / (cells[i].density * mass_scale_ / length_scale_);
     }
 }
 
@@ -885,7 +892,8 @@ void MultigroupDiffusion::calculate_gray_absorption_and_scattering_coefficients(
         for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
             double const sigma = sigma_absorption_group[g][i];
             double const bg = planck_integal_group[g][i];
-            double const Ug = cell.Eg[g];
+            // the change of units is not really important since we are averaging with Ug as weights i.e. the units cancel. But it is for consistency.
+            double const Ug = cell.Eg[g] * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_);
             
             sigma_absorption_planck[i] += sigma * bg;
             sigma_absorption_average[i] += sigma * Ug;
