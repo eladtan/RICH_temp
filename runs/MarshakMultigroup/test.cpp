@@ -37,6 +37,7 @@ namespace fs = std::filesystem;
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
 #include <source/Radiation/planck_integral/planck_integral.hpp>
+#include <algorithm>
 
 typedef std::array<double, 4> state_type;
 
@@ -54,7 +55,7 @@ int main(void)
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
     std::vector<double> energy_groups_center =    {  0.1, 0.4, 1.0, 3.0, 10., 100., 500.};
-    std::vector<double> energy_groups_boundary = {0.001, 0.2, 0.6, 1.4, 4.6, 15.4, 200., 1000.};
+    std::vector<double> energy_groups_boundary = {1e-7, 0.2, 0.6, 1.4, 4.6, 15.4, 200., 1000.};
 
     
     for(auto& val : energy_groups_center) val *= kev;
@@ -93,14 +94,18 @@ int main(void)
 	double const T = 2000;
 	try
 	{
-		init_cell.density = 1 * lscale * lscale * lscale / mscale;
+		init_cell.density = 0.5 * lscale * lscale * lscale / mscale;
 		init_cell.temperature = T;
 		init_cell.pressure = eos.dT2p(init_cell.density, init_cell.temperature);
 		init_cell.internal_energy = eos.dp2e(init_cell.density, init_cell.pressure);
 		init_cell.Erad = CG::radiation_constant * T * T * T * T * tscale * tscale / (init_cell.density * mscale / lscale);
         for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
             init_cell.Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T);
+			init_cell.Eg[g] *= tscale * tscale / (init_cell.density * mscale / lscale); 
+			init_cell.Eg[g]  = std::max(init_cell.Eg[g], init_cell.Erad*1e-8);
         }
+
+		std::cout << "Erad=" << init_cell.Erad << ", sumEg=" << std::accumulate(init_cell.Eg.begin(), init_cell.Eg.end(), 0.0) << std::endl; 
 	}
 	catch (UniversalError const &eo)
 	{
@@ -127,7 +132,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
 	
 	MultigroupDiffusionSideBoundary D_boundary(1.1605e7, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), true, false, false);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
