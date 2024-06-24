@@ -89,6 +89,7 @@ public:
     mutable std::vector<double> new_Er_full; 
 
     mutable std::vector<double> old_Er;
+    mutable std::vector<double> old_Tm; 
 
     mutable std::vector<double> max_abs_grad_E;
     mutable std::vector<double> max_neighbor_abs_grad_E;

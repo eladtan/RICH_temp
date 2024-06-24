@@ -37,6 +37,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 new_Er(),
                                                                 new_Er_full(),
                                                                 old_Er(),
+                                                                old_Tm(),
                                                                 max_abs_grad_E(),
                                                                 max_neighbor_abs_grad_E(),
                                                                 grad(),
@@ -79,12 +80,14 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     new_Er_full.resize(N, 0.0);
 
     old_Er.resize(N, 0.0);
+    old_Tm.resize(N, 0.0);
 
     max_abs_grad_E.resize(N, 0.0);
     max_neighbor_abs_grad_E.resize(N, 0.0);
 
     for(std::size_t i=0; i < N; ++i){
         old_Er[i] = cells[i].Erad * cells[i].density;
+        old_Tm[i] = cells[i].temperature;
     }
 
     for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
@@ -137,6 +140,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 #endif
 
 	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
+    double max_Tm = *std::max_element(old_Tm.begin(), old_Tm.end());
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif	
@@ -157,9 +161,12 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 		if(not to_calc)
 			continue;
 		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
-		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Er);
-		if(fleck_factor[i] < 0.5)
-			diff *= 0.1;
+		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density+0.02*max_Er);
+        diff = std::max(diff, equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].temperature+0.02*max_Tm));
+
+        for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+            diff = std::max(diff, equlibrium_factor* std::abs(cells[i].Eg[g]*cells[i].density - old_Eg[g][i]) / (cells[i].Eg[g]*cells[i].density + 1e-8*max_Er));
+        }
 		if(diff > max_diff)
 		{
 			max_diff = diff;
@@ -185,7 +192,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 	{
 		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
 		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
-		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_Tm[max_loc]<<std::endl;
 		PrintDebugData(max_loc);
 	}
 
