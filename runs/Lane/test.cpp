@@ -16,7 +16,8 @@
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/ConservativeForce3D.hpp"
 #include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
-#include "source/3D/output/hdf_write.hpp"
+#include "source/3D/output/write3D.hpp"
+#include "utils/debug/vtune.h"
 #include <filesystem>
 #include <fenv.h>
 namespace fs = std::filesystem;
@@ -105,6 +106,7 @@ int main(void)
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
+    vtune_stop();
 	MPI_Init(NULL, NULL);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
@@ -147,7 +149,7 @@ int main(void)
     );
     ptemp.insert(ptemp.end(), ptemp2.begin(), ptemp2.end());
     ptemp.insert(ptemp.end(), ptemp3.begin(), ptemp3.end());
-    vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15
+    vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 5
 #ifdef RICH_MPI
     , &tess
 #endif
@@ -155,7 +157,7 @@ int main(void)
 	points = tess.getMeshPoints();
 	points.resize(tess.GetPointNo());
 	std::cout<<"Rank "<<rank<<" point no "<<tess.GetPointNo()<<std::endl;
-    tess.BuildHilbert(points);
+    tess.BuildParallel(points);
 	if (rank == 0)
 		std::cout << "Finished build" << std::endl;
     IdealGas eos(5.0 / 3.0);
@@ -190,7 +192,15 @@ int main(void)
 	sim = std::make_unique<HDSim3D>(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
     double const tf = 5000;
     std::vector<Vector3D> acc_result;
+    // for(size_t j = 0; j < 100; ++j)
+    MPI_Barrier(MPI_COMM_WORLD);
+    double time_start = MPI_Wtime();
+    vtune_start();
     acc(tess, sim->getCells(), std::vector<Conserved3D>(), 0, acc_result);
+    vtune_stop();
+    double time_end = MPI_Wtime();
+    if(rank == 0)
+        std::cout<<"Run time "<<time_end - time_start<<std::endl;
     Az az;
     Ax ax;
     Ay ay;
@@ -206,6 +216,9 @@ int main(void)
     diag.push_back(&ay);
     diag.push_back(&az);
 	WriteSnapshot3D(*sim, "init.h5", diag);
+
+
+
 //     double old_dt = 0, step_time = 0, old_t = 0;
 // #ifdef RICH_MPI
 //     double step_tstart = MPI_Wtime();

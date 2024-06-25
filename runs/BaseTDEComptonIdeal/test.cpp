@@ -538,7 +538,7 @@ namespace
 	{
 	private:
 		double domain_size_, Mbh_, Mstar_, Rstar_, beta_;
-		OndrejEOS const &eos_;
+		EquationOfState const &eos_;
 
 	public:
 		void SetSize(double s)
@@ -546,7 +546,7 @@ namespace
 			domain_size_ = s;
 		}
 
-		RemoveBig(double domain_size, OndrejEOS const &eos, double Mbh, double Mstar, double Rstar, double beta) : domain_size_(domain_size), eos_(eos), Mbh_(Mbh), Mstar_(Mstar), Rstar_(Rstar), beta_(beta) {}
+		RemoveBig(double domain_size, EquationOfState const &eos, double Mbh, double Mstar, double Rstar, double beta) : domain_size_(domain_size), eos_(eos), Mbh_(Mbh), Mstar_(Mstar), Rstar_(Rstar), beta_(beta) {}
 
 		std::pair<vector<size_t>, vector<double>> ToRemove(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
@@ -625,7 +625,7 @@ namespace
 		}
 	};
 
-	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time)
+	ComputationalCell3D GetReferenceCell(EquationOfState const &eos, Tessellation3D const &tess, double time)
 	{
 		double M = 1;
 		ComputationalCell3D reference;
@@ -637,9 +637,9 @@ namespace
 		double const Tref = 500;
 		double const Tgas = 1e7;
 		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 * 7e10 / (2e33 * reference.density);
-		reference.pressure = eos.dT2p(reference.density, Tgas, reference.tracers);
+		reference.internal_energy = eos.dT2e(reference.density, Tgas, reference.tracers);
+		reference.pressure = eos.de2p(reference.density, reference.internal_energy, reference.tracers);
 		reference.velocity = Vector3D();
-		reference.internal_energy = eos.dp2e(reference.density, reference.pressure, reference.tracers);
 		reference.temperature = Tgas;
 		reference.tracers[0] = (eos.dp2s(reference.density, reference.pressure, reference.tracers));
 		reference.tracers[1] = (0);
@@ -648,7 +648,7 @@ namespace
 		return reference;
 	}
 
-	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n)
+	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, EquationOfState const &eos, double const Punits, double const n)
 	{
 		double endfactor = 0;
 		vector<double> xsi;
@@ -687,7 +687,7 @@ namespace
 				double const P = K * std::pow(res[i].density, 1 + 1.0 / n);
 				double const a = CG::radiation_constant;
 				double const d= res[i].density;
-				auto f = [&eos, d, P, a, Punits](double const x){return P - eos.dT2p(d, x) - Punits * a * x * x * x * x / 3;};
+				auto f = [&eos, d, P, a, Punits](double const x){return P - eos.de2p(d, eos.dT2e(d, x)) - Punits * a * x * x * x * x / 3;};
 				boost::math::tools::eps_tolerance<double> tol(10);
 				std::uintmax_t it = 150;
 				std::pair<double, double> Tres = boost::math::tools::bracket_and_solve_root(f, 1e4, 2.0, false, tol, it);
@@ -791,7 +791,7 @@ int main(void)
 	double const beta =  read_number("beta.txt");
 	// std::cout<<"Here9"<<std::endl;
 	std::stringstream ss;
-	ss<<"R"<<R<<"M"<<M<<"BH"<<Mbh<<"beta"<<beta<<"S"<<static_cast<size_t>(smooth_factor*100)<<"n"<<n<<"Compton";
+	ss<<"R"<<R<<"M"<<M<<"BH"<<Mbh<<"beta"<<beta<<"S"<<static_cast<size_t>(smooth_factor*100)<<"n"<<n<<"ComptonIdeal";
 #ifdef hi_res
 	ss<<"HiRes";
 #endif
@@ -839,7 +839,8 @@ int main(void)
 	double const tscale = 1603;
 	if (rank == 0)
 		std::cout << "start eos" << std::endl;
-	OndrejEOS eos(dmin_eos, dmax_eos, dd_eos, eos_location + "Pfile.txt", eos_location + "csfile.txt", eos_location + "Sfile.txt", eos_location + "Ufile.txt", eos_location + "Tfile.txt", eos_location + "CVfile.txt", lscale, mscale, tscale);
+	IdealGas eos(5.0 / 3.0, CG::boltzmann_constant * tscale * tscale / (lscale * lscale * 0.61 * 1.67e-24), 1, 0);
+	// OndrejEOS eos(dmin_eos, dmax_eos, dd_eos, eos_location + "Pfile.txt", eos_location + "csfile.txt", eos_location + "Sfile.txt", eos_location + "Ufile.txt", eos_location + "Tfile.txt", eos_location + "CVfile.txt", lscale, mscale, tscale);
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
 	//Radiation

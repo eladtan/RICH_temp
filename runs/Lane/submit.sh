@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --ntasks=192
+#SBATCH --ntasks=128
 ##SBATCH --partition=rome
 #SBATCH --partition=genoa
 #SBATCH --time=0:18:00
