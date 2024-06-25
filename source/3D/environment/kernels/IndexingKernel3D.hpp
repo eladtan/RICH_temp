@@ -7,7 +7,9 @@
 class IndexingKernel3D
 {
 public:
+    virtual ~IndexingKernel3D() = default;
     virtual Vector3D operator()(const Vector3D &vector) const = 0;
+    inline Vector3D operator()(double x, double y, double z) const{return this->operator()(Vector3D(x, y, z));};
 };
 
 #endif // HILBERT_INDEXING_HPP

@@ -13,8 +13,7 @@
 #include <assert.h>
 #include <mpi.h>
 
-#define MEDIAN_TAG 2049
-#define NO_VALUES_TAG 2050
+#include "misc/universal_error.hpp"
 
 namespace
 {

@@ -8,17 +8,25 @@
 
 #include "kernels/IndexingKernel3D.hpp"
 
+/**
+ * \author Maor Mizrachi
+ * \brief The environment agent is responsible for "knowing" the environment. It can calculate the ranks that intersect a sphere, or calculate the owner of a certain point.
+*/
 class EnvironmentAgent
 {
 public:
     using RanksSet = boost::container::flat_set<int>;
 
+    virtual ~EnvironmentAgent() = default;
+    
     inline EnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): ll(ll), ur(ur), comm(comm)
     {
         MPI_Comm_rank(this->comm, &this->rank);
         MPI_Comm_size(this->comm, &this->size);
     };
+
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;
+
     virtual int getOwner(const Vector3D &point) const = 0;
 
 protected:

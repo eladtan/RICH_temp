@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include "EnvironmentAgent.h"
-#include "3D/hilbert/HilbertConvertor.hpp"
+#include "3D/hilbert/rectangular/HilbertConvertor3D.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 
 #define AVERAGE_INTERSECT 128
@@ -15,8 +15,8 @@ class HilbertEnvironmentAgent : public EnvironmentAgent
 public:
     using CellsSet = boost::container::flat_set<hilbert_index_t>;
 
-    inline HilbertEnvironmentAgent(const IndexingKernel3D *indexing, const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD):
-            EnvironmentAgent(ll, ur, comm), indexing(indexing)
+    inline HilbertEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, int order, const MPI_Comm &comm = MPI_COMM_WORLD):
+            EnvironmentAgent(ll, ur, comm)
     {
         this->setOrder(order);
     };
@@ -27,7 +27,7 @@ public:
     
     CellsSet getIntersectingCells(const Vector3D &center, double radius) const;
     
-    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(Hilbert3DConvertor::xyz2d((*this->indexing)(point), this->order));};
+    inline int getOwner(const Vector3D &point) const override{return this->getCellOwner(this->convertor->xyz2d(point));};
     
     inline int getCellOwner(hilbert_index_t d) const
     {
@@ -47,7 +47,7 @@ private:
     int order;
     int rank, size;
     std::vector<hilbert_index_t> range;
-    const IndexingKernel3D *indexing = nullptr;
+    HilbertConvertor3D *convertor = nullptr;
 
     inline void setOrder(int order)
     {
@@ -57,6 +57,7 @@ private:
         }
         this->order = std::min<int>(order, MAX_HILBERT_ORDER);
         this->sidesLengths = (this->ur - this->ll) / pow(2, this->order);
+        this->convertor->changeOrder(this->order);
     }
 };
 
@@ -127,7 +128,8 @@ typename HilbertEnvironmentAgent::CellsSet HilbertEnvironmentAgent::getIntersect
                 if(std::abs(((closestX - center.x) * (closestX - center.x) + (closestY - center.y) * (closestY - center.y) + (closestZ - center.z) * (closestZ - center.z)) - (radius * radius)) <= EPSILON)
                 {
                     // the testing point is inside the circle iff the whole cube intersects the circle
-                    hilbertCells.insert(Hilbert3DConvertor::xyz2d((*this->indexing)(Vector3D(_x + (this->sidesLengths.x) / 2, _y + (this->sidesLengths.y) / 2, _z + (this->sidesLengths.z) / 2)), this->order));
+                    coord_t mid_x = _x + (this->sidesLengths.x) / 2, mid_y = _y + (this->sidesLengths.y) / 2, mid_z = _z + (this->sidesLengths.z) / 2;
+                    hilbertCells.insert(this->convertor->xyz2d(mid_x, mid_y, mid_z));
                 }
             }
         }

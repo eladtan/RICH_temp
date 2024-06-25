@@ -93,7 +93,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 			Vector3D const& v = cells[loc].velocity;
 			double c = eos.dp2c(cells[loc].density, cells[loc].pressure, cells[loc].tracers, ComputationalCell3D::tracerNames);
 			std::cout << "Min dt="<<res<<", cell ID " << cells[loc].ID << " width " << tess.GetWidth(loc) << " c "
-				<< c << " cell v " << cells[loc].velocity.x << "," << cells[loc].velocity.y << "," << cells[loc].velocity.z << std::endl;
+				<< c << " cell v " << cells[loc].velocity.x << "," << cells[loc].velocity.y << "," << cells[loc].velocity.z <<" dt_org "<<old_res<<" dt_force "<<1.0 / source_.SuggestInverseTimeStep()<<" dt_rad "<<dt_first_<<" density "<<cells[loc].density<<std::endl;
 			face_vec const& faces = tess.GetCellFaces(loc);
 			size_t Nloop = faces.size();
 			for (size_t j = 0; j < Nloop; ++j)

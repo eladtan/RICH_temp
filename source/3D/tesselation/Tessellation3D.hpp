@@ -37,7 +37,10 @@ public:
   
   /*! \brief Tesselation build, using hilbert curve.
   */
-  virtual void BuildHilbert(vector<Vector3D> const& points) = 0;
+  virtual void BuildHilbert(vector<Vector3D> const& points, bool suppressBalancing = false) = 0;
+
+  virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
+
   #endif // RICH_MPI
 
   /*! \brief Get Total number of mesh generating points

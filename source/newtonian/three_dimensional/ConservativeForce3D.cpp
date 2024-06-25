@@ -1,4 +1,7 @@
 #include "ConservativeForce3D.hpp"
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
 
 namespace
 {
@@ -34,9 +37,19 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 	vector<Vector3D> acc;
 	acc_(tess, cells, fluxes, t, acc);
 	dt_ = 0;
+	size_t loc = 0;
+	int rank = 0;
+ #ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 	for (size_t i = 0; i < N; ++i)
 	{
-		dt_ = std::max(dt_, std::sqrt(fastabs(acc[i])/ tess.GetWidth(i)));
+		double const res_temp = fastsqrt(fastabs(acc[i])/ tess.GetWidth(i));
+		if (res_temp > dt_)
+		{
+			dt_ = res_temp;
+			loc = i;
+		}
 		double volume = tess.GetVolume(i);
 		double Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
 		extensives[i].momentum += volume*cells[i].density*acc[i]*dt;
@@ -53,6 +66,20 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 			extensives[i].energy += Eknew - Ek;
 		}
 	}
+	struct
+		{
+			double val;
+			int mpi_id;
+		}max_data;
+		max_data.mpi_id = rank;
+		max_data.val = dt_;
+#ifdef RICH_MPI   
+    MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    dt_ = max_data.val;
+#endif
+    if(rank == max_data.mpi_id)
+        std::cout<<"ConservativeForce3D dt ID "<<cells[loc].ID<<" width "<< tess.GetWidth(loc)<<" r "<<fastabs(tess.GetMeshPoint(loc))<<" acc "<<fastabs(acc[loc])<<" next dt "<<dt_<<std::endl;
+
 }
 
 Acceleration3D::~Acceleration3D(void) {}

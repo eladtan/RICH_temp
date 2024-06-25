@@ -7,7 +7,6 @@ import sys
 # importing modules from this package
 from .buildutils import lmod
 from .buildutils import run_make
-import gen_version
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("build_program.main")
@@ -152,6 +151,9 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         if not os.path.isdir(config_dir):
             os.makedirs(config_dir)
         
+        # remove unnecessary files
+        remove_unnecessary_files(src_dir)
+
         #run cmake for the specific config
         logger.info("Running cmake")
         cmake = _run_cmake(build_dir=build_dir,
@@ -165,8 +167,6 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
         if os.path.islink(short_exe_path):
             os.remove(short_exe_path)   
 
-        # remove unnecessary files
-        remove_unnecessary_files(src_dir)
 
         #run make   
         logger.info("Running make")

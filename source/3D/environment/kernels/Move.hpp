@@ -6,17 +6,17 @@
 class Move : public IndexingKernel3D
 {
 public:
-    inline Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *indexing = nullptr): moveVec(vector), indexing(indexing){};
+    inline Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr): moveVec(vector), beforeIndexing(beforeIndexing){};
 
     inline Vector3D operator()(const Vector3D &vector) const override
     {
-        Vector3D vec = (this->indexing == nullptr)? vector : (*this->indexing)(vector);
+        Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
         return vec - moveVec;
     };
 
 private:
     Vector3D moveVec;
-    const IndexingKernel3D *indexing;
+    const IndexingKernel3D *beforeIndexing;
 };
 
 #endif // MOVE_KERNEL_HPP

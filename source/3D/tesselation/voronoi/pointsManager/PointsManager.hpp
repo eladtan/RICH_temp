@@ -13,7 +13,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 
-#define BALANCE_FACTOR 1.1
+#define BALANCE_FACTOR 1.05
 
 /**
  * \author Maor Mizrachi
@@ -27,6 +27,12 @@ struct PointsExchangeResult
     std::vector<std::vector<size_t>> sentIndicesToProcessors;
     std::vector<size_t> indicesToSelf;
 };
+
+typedef struct _3DPointRadius
+{
+    _3DPoint point;
+    double radius;
+} _3DPointRadius;
 
 /**
  * \author Maor Mizrachi
@@ -42,6 +48,8 @@ public:
     };
 
     virtual ~PointsManager() = default;
+
+    PointsManager &operator=(const PointsManager &other) = delete;
 
     virtual PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) = 0;
 
@@ -59,27 +67,29 @@ public:
         int I_say = (mySize >= (BALANCE_FACTOR * static_cast<double>(ideal)))? 1 : 0; // if I say 'rebalance' or not
         int rebalance = 0; // if someone says 'rebalance' or not
         MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if(rebalance > 0 and this->rank == 0)
+        if((rebalance > 0) and (this->rank == 0))
         {
             std::cout << "doing rebalance" << std::endl;
         }
         return (rebalance > 0);
     };
 
-    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses)
+    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool doRebalance = true)
     {
-        if(this->checkForRebalance(points))
+        // if envAgent is null, the `exchange` will perform an initialization as well.
+        // `rebalance` is used only when the environment agent is initialized.
+        if(this->getEnvironmentAgent() != nullptr and doRebalance and this->checkForRebalance(points))
         {
             this->rebalance(points);
+            return this->exchange(points, radiuses);
         }
         return this->exchange(points, radiuses);
     }
 
 protected:
     MPI_Comm comm;
-    int size;
-    int rank;
     Vector3D ll, ur;
+    int rank, size;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
@@ -117,12 +127,6 @@ protected:
             toReturn.newRadiuses.push_back(_point.radius);
         }
         return toReturn;
-    };
-
-    inline PointsExchangeResult pointsExchangeByEnvAgent(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
-    {
-        const EnvironmentAgent *envAgent = this->getEnvironmentAgent();
-        return this->pointsExchange([envAgent](const _3DPointRadius &_point){return envAgent->getOwner(Vector3D(_point.point.x, _point.point.y, _point.point.z));}, points, radiuses);
     };
 };
 

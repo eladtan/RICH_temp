@@ -8,8 +8,9 @@
 typedef double coord_t;
 typedef unsigned long int hilbert_index_t;
 
+#define SIGN(x) ((x > 0) - (x < 0))
 
-#define EPSILON 1e-12
+#define EPSILON 1e-12 // redefined (already defined in 'Vector3D.hpp')
 
 typedef struct _3DPoint
 {
@@ -65,20 +66,5 @@ inline typename _3DPoint::coord_type fastabs(_3DPoint const& v)
 {
 	return fastsqrt((v.x * v.x) + (v.y * v.y) + (v.z * v.z));
 }
-
-typedef struct _3DPointRadius
-{
-    _3DPoint point;
-    double radius;
-} _3DPointRadius;
-
-
-typedef struct _2DPoint
-{
-    using coord_type = coord_t;
-
-    coord_type x;
-    coord_type y;
-} _2DPoint;
 
 #endif // _HILBERT_TYPES_H

@@ -12,10 +12,6 @@ class GravityTree;
 template<typename T, typename BB>
 bool ShouldOpenBox(const T &point, const BB &boundingBox, const T &centerOfMass, double thetaSquared)
 {
-    if(boundingBox.contains(point))
-    {
-        return true;
-    }
     typename T::coord_type width = boundingBox.getWidthSquared();
     Vec4d diff(point[0] - centerOfMass[0], point[1] - centerOfMass[1], point[2] - centerOfMass[2], 0);
     Vec4d squared = diff * diff;
@@ -67,6 +63,7 @@ public:
     struct MassedValue
     {
         using coord_type = typename T::coord_type;
+        using Raw_type = T;
 
         T value;
         T CM; // center of mass
@@ -79,14 +76,22 @@ public:
         inline MassedValue operator-(const MassedValue &other) const{return MassedValue(this->value - other.value);};
         inline MassedValue operator*(typename T::coord_type scalar) const{return MassedValue(this->value * scalar);};
         inline MassedValue operator/(typename T::coord_type scalar) const{return this->operator*(1 / scalar);};
-        inline bool operator==(const MassedValue &other) const{return this->value == other.value;};
+        inline bool operator==(const T &other) const{return this->value == other;};
+        inline bool operator==(const MassedValue &other) const{return this->operator==(other.value);};
         inline bool operator!=(const MassedValue &other) const{return !this->operator==(other);};
         inline friend std::ostream &operator<<(std::ostream &stream, const MassedValue &value)
         {
             stream << "[Point: " << value.value << ", Mass: " << value.mass << ", CM: " << value.CM << ", Q: (" << value.Q[0] << ", " << value.Q[1] << ", " << value.Q[2] << ", " << value.Q[3] << ", " << value.Q[4] << ", " << value.Q[5] << ")]";
             return stream;
         };
-        explicit inline MassedValue(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass){};
+        explicit inline MassedValue(const T &value, gravity_result_t mass): value(value), CM(value), mass(mass)
+        {
+            // reset Q
+            for(int i = 0; i < 6; i++)
+            {
+                this->Q[i] = 0;
+            }
+        };
         explicit inline MassedValue(const T &value): MassedValue(value, 0){};
         explicit inline MassedValue(): MassedValue(T(), 0){};
     };
@@ -112,18 +117,7 @@ public:
 
     inline void calculateMasses(){this->calculateMassHelper(this->octTree->getRoot());};
 
-    inline bool build(const std::vector<MassedPoint<T>> &points)
-    {
-        for(const MassedPoint<T> &_point : points)
-        {
-            if(!this->octTree->insert(MassedValue(_point.point, _point.mass)))
-            {
-                throw UniversalError("Can not add a point (" + std::to_string(_point.point.x) + ", " + std::to_string(_point.point.y) + ", " + std::to_string(_point.point.z) + ") to the gravity tree");
-            }
-        }
-        this->calculateMasses();
-        return true;
-    }
+    bool build(const std::vector<MassedPoint<T>> &points);
 
     inline bool find(const T &point){return this->octTree->find(point);};
 
@@ -131,12 +125,102 @@ public:
 
     T gravity(const T &point, const direction_t *directions = nullptr) const;
 
+    void addExternalValues(const std::vector<MassedValue> &values);
+
+    std::vector<std::pair<octnode_id_t, MassedValue>> getOpenNodesData(const T &point) const;
+
     inline bool getQuadrupole() const{return this->quadrupole;};
 
-    inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;}; // todo: can remove?
+    inline const OctTree<MassedValue> *getOctTree() const{return this->octTree;};
 
     inline double getTheta() const{return this->theta;};
 };
+
+template<typename T>
+bool GravityTree<T>::build(const std::vector<MassedPoint<T>> &points)
+{
+    for(const MassedPoint<T> &_point : points)
+    {
+        MassedValue value(_point.point, _point.mass);
+        if(!this->octTree->insert(value))
+        {
+            std::stringstream valueStr;
+            valueStr << value;
+            throw UniversalError("Can not add a point (" + valueStr.str() + ") to the gravity tree");
+        }
+    }
+    this->calculateMasses();
+    return true;
+
+}
+
+template<typename T>
+void GravityTree<T>::addExternalValues(const std::vector<MassedValue> &values)
+{
+    for(const MassedValue &value : values)
+    {
+        MassedValue correctedValue;
+        correctedValue.value = value.CM;
+        correctedValue.CM = value.CM;
+        correctedValue.mass = value.mass;
+        for(int i = 0; i < 6; i++)
+        {
+            correctedValue.Q[i] = value.Q[i];
+        }
+        if(!this->octTree->insert(correctedValue))
+        {
+            std::stringstream valueStr;
+            valueStr << correctedValue;
+            throw UniversalError("Can not add a point (" + valueStr.str() + ") to the gravity tree");
+        }
+    }
+    this->calculateMasses();
+}
+
+template<typename T>
+std::vector<std::pair<octnode_id_t, typename GravityTree<T>::MassedValue>> GravityTree<T>::getOpenNodesData(const T &point) const
+{
+    std::vector<std::pair<octnode_id_t, MassedValue>> values;
+    const Node *startingNode = this->octTree->getRoot();
+    stack.push_back({startingNode, startingNode->boundingBox.contains(point)});
+
+    while(!stack.empty())
+    {
+        const Node *node = stack[stack.size() - 1].first;
+        bool containsPoint = stack[stack.size() - 1].second;
+        stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        // always push the child that contains the node
+        if(!node->isLeaf and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
+        {
+            int childContains = -1;
+            // open the box
+            if(containsPoint)
+            {
+                childContains = node->getChildNumberContaining(point); // child index that contains that node
+                stack.push_back({node->children[childContains], true});
+            }
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                if(i == childContains)
+                {
+                    continue;
+                }
+                stack.push_back({node->children[i], false});
+            }
+        }
+        else
+        {
+            values.push_back({node->id, node->value});
+        }
+    }
+    return values;
+}
 
 template<typename T>
 void GravityTree<T>::calculateMassHelper(Node *node)
@@ -145,15 +229,11 @@ void GravityTree<T>::calculateMassHelper(Node *node)
     {
         return;
     }
+
     MassedValue &value = node->value;
     typename T::coord_type *Q = value.Q;
-    // reset Q
-    for(int i = 0; i < 6; i++)
-    {
-        Q[i] = 0;
-    }
 
-    if(!node->isValue)
+    if(!node->isLeaf)
     {
         // internal node
         // the mass should be the accumulative mass. Calculate also the center of mass
@@ -171,6 +251,12 @@ void GravityTree<T>::calculateMassHelper(Node *node)
             }
         }
         value.CM = value.CM  / value.mass;
+
+        // reset Q
+        for(int i = 0; i < 6; i++)
+        {
+            Q[i] = 0;
+        }
 
         // calculate Q
         if(this->quadrupole)
@@ -196,10 +282,6 @@ void GravityTree<T>::calculateMassHelper(Node *node)
             Q[5] = -Q[0] - Q[3];
         }
     }
-    else
-    {
-        value.CM = value.value;
-    }
 }
 
 template<typename T>
@@ -221,7 +303,7 @@ T GravityTree<T>::gravity(const T &point, const direction_t *directions) const
         }
 
         // always push the child that contains the node
-        if(!node->isValue and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
+        if(!node->isLeaf and (containsPoint or ShouldOpenBox(point, node->boundingBox, node->value.CM, this->thetaSquared)))
         {
             int childContains = -1;
             // open the box

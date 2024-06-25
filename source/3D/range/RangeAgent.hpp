@@ -4,11 +4,11 @@
 #ifdef RICH_MPI
 
 #include "utils/queryAgent/QueryAgent.hpp"
-#include "utils/queryAgent/DuplicationRemover.hpp"
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/environment/DistributedOctEnvAgent.hpp"
+#include "3D/environment/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/DistributedOctEnvAgent.hpp" 
 
 #define ASK_ONLY_CLOSE 0
 #define ASK_ALL 1
@@ -17,20 +17,22 @@ typedef struct RangeQueryData
 {
     size_t pointIndex;
     _3DPoint center;
-    _3DPoint extraPoint;
+    _3DPoint point;
     coord_t radius;
+    bool bigQuery; // if a big query, only one point is being returned (the closest point)
     size_t maxPointsToGet;
-    char whoToAsk;
+    char whoToAsk; // in a case of a big query, we can ask all the ranks, or only the close ranks (see `ASK_ALL` and `ASK_ONLY_CLOSE`)
 
-    friend std::ostream &operator<<(std::ostream &stream, const RangeQueryData &query)
+    friend inline std::ostream &operator<<(std::ostream &stream, const RangeQueryData &query)
     {
-        stream << "[center " << query.center << ", radius " << query.radius << ", extra point " << query.extraPoint << ", max2get " << query.maxPointsToGet << "]";
-        return stream;
+        if(query.bigQuery)
+        {
+            return stream << "[BIG, point is " << query.point << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
+        }
+        return stream << "[SMALL, max points is " << query.maxPointsToGet << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
 
 } RangeQueryData;
-
-#define NO_MAX_POINTS 1000000000
 
 /**
  * The range agent is responsible for running batches of range queries. A batch is a collection of queries, and a range query is an instance of the `RangeQueryData` class, containing a point and a requested radius.
@@ -39,71 +41,61 @@ typedef struct RangeQueryData
 */
 class RangeAgent
 {
+public:
+    using SmartEnvironmentAgent = DistributedOctEnvironmentAgent;
+
 private:
     class RangeAnswerAgent : public AnswerAgent<RangeQueryData, _3DPoint>
     {
         friend class RangeAgent;
 
     public:
-        RangeAnswerAgent(const RangeFinder *rangeFinder): rangeFinder(rangeFinder){};
-
-        std::vector<size_t> clearDuplication(const std::vector<size_t> &unfilteredResult, int _rank)
+        RangeAnswerAgent(const RangeFinder *rangeFinder, const MPI_Comm &comm = MPI_COMM_WORLD): rangeFinder(rangeFinder)
         {
-            std::vector<int> &sentProc = this->sentProc;
-            std::vector<std::vector<size_t>> &sentData = this->sentData;
-            std::vector<RangeFinder::_set<size_t>> &sentDataSet = this->sentDataSet;
-            std::vector<size_t> result;
-
-            if(unfilteredResult.empty())
-            {
-                return result;
-            }
-            size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
-            if(rankIdx == sentProc.size())
-            {
-                // `_rank` is new
-                sentProc.push_back(_rank);
-                sentData.emplace_back(std::vector<size_t>());
-                sentDataSet.emplace_back(RangeFinder::_set<size_t>());
-            }
-            RangeFinder::_set<size_t> &_rankSet = sentDataSet[rankIdx];
-
-            for(const size_t &dataIdx : unfilteredResult)
-            {
-                if(_rankSet.find(dataIdx) == _rankSet.end())
-                {
-                    // `_data` was not sent before
-                    result.push_back(dataIdx);
-                    _rankSet.insert(dataIdx);
-                    sentData[rankIdx].push_back(dataIdx);
-                }
-            }
-            return result;
-        }
+            int size;
+            MPI_Comm_size(comm, &size);
+            this->sentDataSet.resize(size, RangeFinder::_set<size_t>());
+        };
 
         std::vector<_3DPoint> answer(const RangeQueryData &query, int _rank) override
         {
             std::vector<_3DPoint> result;
             std::vector<size_t> indicesResult;
 
-            if(query.maxPointsToGet == 1)
+            size_t rankIndex = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
+            const RangeFinder::_set<size_t> &ignore = this->sentDataSet[_rank];
+
+            if(query.bigQuery)
             {
-                size_t rankIndex = std::distance(this->sentProc.begin(), std::find(this->sentProc.begin(), this->sentProc.end(), _rank));
-                const RangeFinder::_set<size_t> &ignore = (rankIndex == this->sentProc.size())? RangeFinder::_set<size_t>() : sentDataSet[rankIndex];
-                indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z), ignore);
+                // a big query, bring only the closest point
+                indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.point.x, query.point.y, query.point.z), ignore);
             }
             else
             {
-                indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+                // a small query, bring the requested number of points
+                indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
+            }
+           
+            if(indicesResult.empty())
+            {
+                return result; // result empty
             }
 
-            indicesResult = this->clearDuplication(indicesResult, _rank);
+            if(rankIndex == this->sentProc.size())
+            {
+                // `_rank` is new
+                this->sentProc.push_back(_rank);
+                this->sentData.emplace_back(std::vector<size_t>());
+            }
 
             result.reserve(indicesResult.size());
             for(const size_t &pointIdx : indicesResult)
             {
                 result.push_back(_3DPoint(this->rangeFinder->getPoint(pointIdx)));
+                this->sentDataSet[_rank].insert(pointIdx);
+                this->sentData[rankIndex].push_back(pointIdx);
             }
+
             return result;
         }
 
@@ -126,13 +118,19 @@ private:
 
         inline EnvironmentAgent::RanksSet getTalkList(const RangeQueryData &query) const override
         {
-            const DistributedOctEnvironmentAgent *distributedOctAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
+            // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
             EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+            if(intersectingRanks.empty())
+            {
+                throw UniversalError("In range talk agent, should not reach here: the intersecting ranks list should at least contain the rank itself");
+            }
             if(intersectingRanks.size() == 1)
             {
                 return intersectingRanks;
             }
-            if(query.maxPointsToGet != 1 or distributedOctAgent == nullptr)
+
+            const SmartEnvironmentAgent *smartAgent = dynamic_cast<const SmartEnvironmentAgent*>(this->envAgent);
+            if((not query.bigQuery) or smartAgent == nullptr)
             {
                 return intersectingRanks;
             }
@@ -141,6 +139,7 @@ private:
             {
                 return intersectingRanks;
             }
+
             // otherwise, the queries requests to ask only the close ranks
             // we calculate the closest distances from the point, to all the other ranks.
             std::vector<std::pair<double, double>> distances;
@@ -153,8 +152,7 @@ private:
             else
             {
                 // not in cache, calculate it and insert to the cache
-                Vector3D point(query.extraPoint.x, query.extraPoint.y, query.extraPoint.z);
-                distances = distributedOctAgent->getOctTree()->getClosestFurthestPointsByRanks(point);
+                distances = smartAgent->getClosestFurthestPointsByRanks(query.point);
                 this->resultCache.insert({query.pointIndex, distances});
             }
             // get the closest rank
@@ -174,6 +172,7 @@ private:
             }
             if(minDistRank > static_cast<size_t>(this->size))
             {
+                std::cout << "min dist rank is " << minDistRank << std::endl;
                 // in fact, should not reach here, if intersectingRanks.size() > 1
                 throw UniversalError("In range talk agent, should not reach here (no rank found)");
             }
@@ -245,9 +244,9 @@ public:
     inline std::vector<int> &getRecvProc(){return this->queryAgent->getRecvProc();};
 
 private:
-    AnswerAgent<RangeQueryData, _3DPoint> *ansAgent;
+    RangeAnswerAgent *ansAgent;
+    RangeTalkAgent *talkAgent;
     QueryAgent<RangeQueryData, _3DPoint> *queryAgent;
-    TalkAgent<RangeQueryData> *talkAgent;
 };
 
 #endif // RICH_MPI

@@ -1,4 +1,5 @@
 #include <iostream>
+#include "3D/elementary/Vector3D.hpp"
 
 struct _3DPoint
 {
@@ -17,24 +18,21 @@ struct _3DPoint
     inline _3DPoint operator/(double constant) const{return this->operator*(1/constant);};
     inline bool operator==(const _3DPoint &other) const{return this->x == other.x and this->y == other.y and this->z == other.z;};
     inline bool operator!=(const _3DPoint &other) const{return !(this->operator==(other));};
-    friend std::ostream &operator<<(std::ostream &stream, const _3DPoint &point);
-    friend std::istream &operator>>(std::istream &stream, _3DPoint &point);
+    inline coord_type fastabs() const{return fastsqrt((this->x * this->x) + (this->y * this->y) + (this->z * this->z));}
+    friend inline std::ostream &operator<<(std::ostream &stream, const _3DPoint &point)
+    {
+        return stream << "(" << point.x << ", " << point.y << ", " << point.z << ")";
+    }
+    friend inline std::istream &operator>>(std::istream &stream, _3DPoint &point)
+    {
+        std::string str;
+        std::getline(stream, str, '(');
+        std::getline(stream, str, ',');
+        point.x = std::stod(str);
+        std::getline(stream, str, ',');
+        point.y = std::stod(str);
+        std::getline(stream, str, ')');
+        point.z = std::stod(str);
+        return stream;
+    }
 };
-
-std::ostream &operator<<(std::ostream &stream, const _3DPoint &point)
-{
-    return stream << "(" << point.x << ", " << point.y << ", " << point.z << ")";
-}
-
-std::istream &operator>>(std::istream &stream, _3DPoint &point)
-{
-    std::string str;
-    std::getline(stream, str, '(');
-    std::getline(stream, str, ',');
-    point.x = std::stod(str);
-    std::getline(stream, str, ',');
-    point.y = std::stod(str);
-    std::getline(stream, str, ')');
-    point.z = std::stod(str);
-    return stream;
-}

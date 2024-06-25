@@ -98,7 +98,7 @@ namespace CG
 
     std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
-        double const dt, MatrixBuilder const& matrix_builder, double const time)  //total_iters is to store # of iters in it
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution)  //total_iters is to store # of iters in it
     {
         size_t Nlocal = tess.GetPointNo();
         
@@ -111,7 +111,7 @@ namespace CG
         MPI_Comm_size (MPI_COMM_WORLD, &nprocs);
         MPI_Comm_rank (MPI_COMM_WORLD, &rank);
     #endif
-        int const max_iter = 15000;
+        int const max_iter = 25000;
 
         mat A;
         size_t_mat A_indeces;
@@ -150,9 +150,9 @@ namespace CG
 #endif
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
-        double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
+        // double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
         if(rank == 0)
-            std::cout<<"CG init error: "<<std::sqrt(sub_r_sqrd_convergence / Ntotal) / maxA [1]<<" delta "<<delta_init<<std::endl;
+            std::cout<<"CG init delta "<<delta_init<<std::endl;
         double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
         bool good_end = false;
         struct
@@ -163,11 +163,14 @@ namespace CG
         max_data[0].mpi_id = rank;
         max_data[1].mpi_id = rank;
         max_data[2].mpi_id = rank;
-
+        
+        size_t max_loc0 = 0, max_loc1 = 0, max_loc2 = 0;
         // Main Conjugate Gradient loop
         // this loop must be serial b/c CG is an iterative method
         for (int i = 0; i < max_iter; i++) {
             // note: make sure matrix is big enough for the number of processors you are using!
+            max_data[2].mpi_id = rank;
+            max_data[0].mpi_id = rank;
             r_old = sub_r;                 // Store previous residual
             sub_r_sqrd_old = sub_r_sqrd;  // save a recalculation of r_old^2 later
 
@@ -193,7 +196,6 @@ namespace CG
                 vec_lin_combo(1.0, sub_r, -alpha, sub_a_times_p, result1);
             sub_r = result1;
 
-            size_t max_loc0 = 0, max_loc1 = 0;
             max_data[0].val = 0;
             max_data[1].val = 0;
             max_data[2].val = 0;
@@ -211,22 +213,24 @@ namespace CG
                      max_loc0 = j;
                 }
                 if(sub_x[j] < 0)
+                {
+                    max_loc2 = j;
                     max_data[2].val = 1;
+                }
             }
-            sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
+
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+#endif
             old_result2 = result2;
             result2 = vector_rescale(sub_r, M);
             sub_r_sqrd = mpi_dot_product(sub_r, result2);
-
-    #ifdef RICH_MPI
-            MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-    #endif
             // recall that we can't have a 'break' within an openmp parallel region, so end it here then all threads are merged, and the convergence is checked
             // Convergence test
             if (sub_r_sqrd < delta_init * tolerance//std::sqrt(sub_r_sqrd_convergence / Ntotal) < tolerance * maxA [1]
-                && max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && max_data[2].val < 0.5) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                && max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 50 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                 if(rank == 0)
-                    std:: cout << "Converged at iter = " << i <<" error "<<std::sqrt(sub_r_sqrd_convergence / Ntotal) / maxA[1]<<" delta "<<sub_r_sqrd<<std::endl;
+                    std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
                 if(rank == max_data[0].mpi_id)
                     std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
                     <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
@@ -235,12 +239,19 @@ namespace CG
                     <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
                 total_iters = i;
                 good_end = true;
+#ifdef RICH_MPI
+                MPI_exchange_data2(tess, sub_x, true);
+#endif
+                sub_x_solution = sub_x;
+                mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+                sub_x.resize(Nlocal);
+                vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
                 break;
             }
             old_x = sub_x;
             vec_lin_combo(1.0, result2, -1.0, old_result2, result3);   
             double const  Polak_Ribiere = mpi_dot_product(sub_r, result3);
-            beta = Polak_Ribiere / sub_r_sqrd_old;       
+            beta = std::max(0.0, Polak_Ribiere / sub_r_sqrd_old);       
             
             vec_lin_combo(1.0, result2, beta, sub_p, result3);             // Next gradient
             sub_p = result3;
@@ -250,7 +261,20 @@ namespace CG
     #endif
         }
         if(not good_end)
-            throw UniversalError("CG did not converge");
+        {
+            if(rank == 0)
+	      std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<std::endl;
+            if(rank == max_data[0].mpi_id)
+                std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
+                <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
+            if(rank == max_data[1].mpi_id)
+                std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
+                <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
+	    if(rank == max_data[2].mpi_id)
+	      std::cout<<"rank "<<rank<<" i "<<max_loc2<<" sub_x "<<sub_x[max_loc2]<<std::endl;
+        std::fill_n(sub_x.begin(), sub_x.size(), -1.0);
+	    // throw UniversalError("CG did not converge");
+        }
 #ifdef RICH_MPI
         MPI_exchange_data2(tess, sub_x, true);
 #endif

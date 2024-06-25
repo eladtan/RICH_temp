@@ -1,0 +1,165 @@
+{
+    "python.pythonPath": "/software/x86_64/3.10.0/python/3.7.2/bin/python3",
+    "files.associations": {
+        "array": "cpp",
+        "*.tcc": "cpp",
+        "dense": "cpp",
+        "geometry": "cpp",
+        "*.ipp": "cpp",
+        "optional": "cpp",
+        "istream": "cpp",
+        "ostream": "cpp",
+        "system_error": "cpp",
+        "functional": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "variant": "cpp",
+        "random": "cpp",
+        "memory": "cpp",
+        "cctype": "cpp",
+        "clocale": "cpp",
+        "cmath": "cpp",
+        "cstdarg": "cpp",
+        "cstddef": "cpp",
+        "cstdio": "cpp",
+        "cstdlib": "cpp",
+        "cstring": "cpp",
+        "ctime": "cpp",
+        "cwchar": "cpp",
+        "cwctype": "cpp",
+        "atomic": "cpp",
+        "strstream": "cpp",
+        "complex": "cpp",
+        "cstdint": "cpp",
+        "deque": "cpp",
+        "forward_list": "cpp",
+        "list": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "vector": "cpp",
+        "exception": "cpp",
+        "algorithm": "cpp",
+        "iterator": "cpp",
+        "map": "cpp",
+        "memory_resource": "cpp",
+        "numeric": "cpp",
+        "set": "cpp",
+        "string": "cpp",
+        "string_view": "cpp",
+        "fstream": "cpp",
+        "initializer_list": "cpp",
+        "iomanip": "cpp",
+        "iosfwd": "cpp",
+        "iostream": "cpp",
+        "limits": "cpp",
+        "new": "cpp",
+        "sstream": "cpp",
+        "stdexcept": "cpp",
+        "streambuf": "cpp",
+        "cfenv": "cpp",
+        "cinttypes": "cpp",
+        "typeindex": "cpp",
+        "typeinfo": "cpp",
+        "valarray": "cpp",
+        "bit": "cpp",
+        "thread": "cpp",
+        "bitset": "cpp",
+        "chrono": "cpp",
+        "ratio": "cpp",
+        "compare": "cpp",
+        "codecvt": "cpp",
+        "concepts": "cpp",
+        "condition_variable": "cpp",
+        "mutex": "cpp",
+        "numbers": "cpp",
+        "semaphore": "cpp",
+        "stop_token": "cpp",
+        "*.txx": "cpp"
+    },
+    "cmake.configureOnOpen": true,
+
+    // maor:
+    "git.autofetch": true,
+    "[python]": {
+        "editor.formatOnType": true
+    },
+    "editor.fontSize": 18,
+    "files.autoSave": "afterDelay",
+    "editor.cursorSmoothCaretAnimation": "on",
+    "terminal.integrated.enableMultiLinePasteWarning": false,
+    "explorer.confirmDelete": false,
+    "workbench.editor.closeOnFileDelete": true,
+    "workbench.colorTheme": "Atom One Dark",
+
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            {
+                "scope": "variable.other.property",
+                "settings": {
+                    "fontStyle": "italic",
+                    "foreground": "#E06C75"
+                }
+            },
+            // {
+            //     "scope": "entity.name.type",
+            //     "settings": {
+            //         "foreground": "#6ab479"
+            //     }
+            // },
+            {
+                "scope": "entity.name.function.macro",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "entity.name.function.member.cpp",
+                "settings": {
+                    "foreground": "#2596be",
+                    "fontStyle": "italic"
+                }
+            },
+            {
+                "scope": "variable.language.this.cpp, variable.language.this.java",
+                "settings": {
+                    "foreground": "#EA99A2",
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "entity.name.namespace",
+                "settings": {
+                    "fontStyle": "bold",
+                    "foreground": "#6ab467"
+                }
+            },
+            {
+                "scope": "entity.name.function.macro",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "variable.other.readwrite, entity.name.variable, variable.other.constant, variable.other.local.cpp",
+                "settings": {
+                    "foreground": "#a2acb9"
+                }
+            },
+            {
+                "scope": "variable.other.constant",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            }
+        ]        
+    },
+    "C_Cpp.files.exclude": 
+    {
+        "*.h5": true,
+        "*.txt": true,
+        "*.vtu": true,
+        "**/.vscode": true,
+        "**/.vs": true
+    }
+}

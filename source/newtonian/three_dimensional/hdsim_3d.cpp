@@ -255,8 +255,10 @@ void HDSim3D::timeAdvance2(void)
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), dt);
 	vector<Conserved3D> mid_extensives(extensive_);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
+	auto t1 = get_time();
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
-
+	auto t2 = get_time();
+	DisplayTime(t1, t2, "Source time");
 	if (pt_.cycle % 10 == 0)
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
@@ -267,11 +269,12 @@ void HDSim3D::timeAdvance2(void)
 		extensive_ = VectorValues(extensive_, order);
 		cells_ = VectorValues(cells_, order);
 		point_vel = VectorValues(point_vel, order);
+		tess_.PreparePoints(mesh, order);
 	}
 	MovePoints(tess_, point_vel, dt);
-	auto t1 = get_time();
+	t1 = get_time();
 	UpdateTessellation(tess_, point_vel, dt);
-	auto t2 = get_time();
+	t2 = get_time();
 	DisplayTime(t1, t2, "Voronoi build time");
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -293,7 +296,10 @@ pt_.updateTime(dt);
 pt_.updateCycle();
 CalcFaceVelocities(tess_, point_vel, face_vel);
 face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt);
+t1 = get_time();
 source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
+t2 = get_time();
+DisplayTime(t1, t2, "Second source time");
 eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
@@ -765,25 +771,95 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		std::cout<<"Zero cells in RadiationTimeStep"<<std::endl;
 	std::vector<double> old_Er(N, 0);
 	for(size_t i = 0; i < N; ++i)
+	{
 		old_Er[i] = cells_[i].Erad * cells_[i].density;
-	std::vector<double> new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt, matrix_builder, pt_.getTime());
+		if(old_Er[i] < 0)
+		{
+			UniversalError eo("negative Erad");
+			eo.addEntry("i", i);
+			eo.addEntry("old_Er", old_Er[i]);
+			eo.addEntry("ID", cells_[i].ID);
+			eo.addEntry("density", cells_[i].density);
+			throw eo;
+		}
+	}
 	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif	
-	size_t const Nzero = matrix_builder.zero_cells_.size();
-	std::vector<size_t> zero_indeces;
-	for(size_t i = 0; i < Nzero; ++i)
-		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, matrix_builder.zero_cells_[i]));
-
-	matrix_builder.PostCG(tess_, extensive_, dt, cells_, new_Er);
-
-	double max_diff = std::numeric_limits<double>::min() * 100;
-	int max_loc = 0;
 	int rank = 0;
 #ifdef RICH_MPI
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
+	double total_elapsed_time = 0;
+	double dt_try = dt;
+	std::vector<double> new_Er, new_Er_full;
+	size_t reduce_counter = 0;
+	std::vector<ComputationalCell3D> cells;
+	while(total_elapsed_time < dt * 0.9999999)
+	{
+		cells = cells_;
+		std::vector<Conserved3D> extensives(extensive_);
+		bool good_try = true;
+		dt_try = std::min(dt_try, dt - total_elapsed_time);
+
+		new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
+		double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		double min_Er = 1;
+		for(size_t i = 0; i < N; ++i)
+		{
+			if(new_Er[i] < 0 && std::abs(new_Er[i]) < 1e-9 * max_Er)
+				new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature);
+			min_Er = std::min(min_Er, new_Er[i]);
+		}
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &min_Er, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+		if(min_Er < 0)
+		{
+			reduce_counter++;
+			good_try = false;
+			dt_try *= 0.5;
+			if(rank == 0)
+				std::cout<<"Negative Er, Reducing dt, new dt "<<dt_try<<std::endl;
+			if(dt_try < 0.001 * dt)
+				throw UniversalError("too small dt in RadiationTimeStep");
+		}
+		else
+		{
+			int good_run = 1;
+			try
+			{
+				matrix_builder.PostCG(tess_, extensive_, dt_try, cells_, new_Er, new_Er_full);		
+			}
+			catch(UniversalError const& eo)
+			{
+				good_run = 0;
+			}
+			if(good_run == 0)
+			{
+				good_try = false;
+				dt_try *= 0.5;
+				if(rank == 0)
+					std::cout<<"Reducing PostCG dt, new dt "<<dt_try<<std::endl;
+				extensive_ = extensives;
+				cells_ = cells;
+				if(dt_try < 0.001 * dt)
+					throw UniversalError("too small dt in RadiationTimeStep");
+			}
+		}
+		if(good_try)
+			total_elapsed_time += dt_try;
+	}
+	size_t const Nzero = matrix_builder.zero_cells_.size();
+	std::vector<size_t> zero_indeces;
+	for(size_t i = 0; i < Nzero; ++i)
+		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, matrix_builder.zero_cells_[i]));
+	double max_diff = std::numeric_limits<double>::min() * 100;
+	int max_loc = 0;
 	for(size_t i = 0; i < N; ++i)
 	{
 		bool to_calc = true;
@@ -815,12 +891,16 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 	MPI_exchange_data(tess_, cells_, true, &cdummy);	
 #endif
 	if(rank == max_data.mpi_id)
+	{
 		std::cout<<"Radiation time step ID "<<cells_[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells_[max_loc].Erad * cells_[max_loc].density<<
-		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<std::endl;
+		" diff "<<max_diff<<" Tgas "<<cells_[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells_[max_loc].density<<
+		" width "<<tess_.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		matrix_builder.PrintDebugData(max_loc);
+	}
 	if(no_hydro)
 	{
 		pt_.updateTime(dt);
 		pt_.updateCycle();
 	}
-	return dt * std::min(0.075 / max_diff, 1.15);
+	return dt * std::min(0.1 / max_diff, 1.25) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
 }

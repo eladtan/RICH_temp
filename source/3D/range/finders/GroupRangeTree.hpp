@@ -1,16 +1,13 @@
 #ifndef _GROUP_RANGE_TREE_FINDER_HPP
 #define _GROUP_RANGE_TREE_FINDER_HPP
 
-#include "ds/GroupTree/GroupTree.h"
-#include "ds/GroupRangeTree/GroupRangeTree.h"
-#include "ds/GroupTree/GroupTree.cpp" // todo: not good
-#include "ds/GroupRangeTree/GroupRangeTree.cpp" // todo: not good
+#include "ds/GroupRangeTree/GroupRangeTree.hpp"
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 
 #define DIMENSIONS 3
 
-template<int N>
+template<int GroupSize>
 class GroupRangeTreeFinder : public RangeFinder
 {
 public:
@@ -21,14 +18,15 @@ public:
 
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        return std::vector<size_t>();
+        throw UniversalError("GroupRangeTreeFinder::closestPointInSphere not implemented");
     }
 
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
-    inline std::vector<size_t> range(const Vector3D &center, double radius) const override{
+    inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
+    {
         std::vector<size_t> toReturn;
-        for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius))
+        for(const IndexedVector3D &vec : this->groupRangeTree->circularRange(center, radius, N, [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);
         }
@@ -38,12 +36,12 @@ public:
 
 private:
     std::vector<Vector3D> myPoints;
-    GroupRangeTree<IndexedVector3D, N> *groupRangeTree;
+    GroupRangeTree<IndexedVector3D, GroupSize> *groupRangeTree;
 };
 
-template<int N>
+template<int GroupSize>
 template<typename RandomAccessIterator>
-GroupRangeTreeFinder<N>::GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
+GroupRangeTreeFinder<GroupSize>::GroupRangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
 {
     size_t index = 0;
     std::vector<IndexedVector3D> data;
@@ -55,12 +53,12 @@ GroupRangeTreeFinder<N>::GroupRangeTreeFinder(RandomAccessIterator first, Random
         data.push_back(idx_vec);
         index++;
     }
-    this->groupRangeTree = new GroupRangeTree<IndexedVector3D, N>(DIMENSIONS);
+    this->groupRangeTree = new GroupRangeTree<IndexedVector3D, GroupSize>(DIMENSIONS);
     this->groupRangeTree->build(data.begin(), data.end());
 }
 
-template<int N>
-GroupRangeTreeFinder<N>::~GroupRangeTreeFinder()
+template<int GroupSize>
+GroupRangeTreeFinder<GroupSize>::~GroupRangeTreeFinder()
 {
     delete this->groupRangeTree;
 }
