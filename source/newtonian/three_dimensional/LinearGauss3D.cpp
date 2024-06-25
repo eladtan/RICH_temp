@@ -67,7 +67,7 @@ namespace
 		std::vector<Vector3D> c_ij)
 	{
 		size_t n = neighbor_centers.size();
-		if (n > 60)
+		if (n > 100)
 			std::cout << "Cell has too many neighbors in calc naive slope, Cell x cor " << center.x <<
 			" Cell y cor " << center.y << " Cell z cor " << center.z << std::endl;
 		// Create the matrix to invert and the vector to compare
