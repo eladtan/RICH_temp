@@ -38,7 +38,7 @@ public:
 private:
 
 	void calc_dw(Vector3D &velocty, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
-		const vector<Vector3D> & velocities, vector<char> const& nomove) const;
+		const vector<Vector3D> & velocities, vector<char> const& nomove, std::vector<double> const& volumes) const;
 
 	void calc_dw(Vector3D &velocty, size_t i, const Tessellation3D& tess, double dt, vector<ComputationalCell3D> const& cells,
 		vector<Vector3D> & velocities, vector<char> const& nomove)const;

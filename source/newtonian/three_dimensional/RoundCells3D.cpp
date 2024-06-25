@@ -91,7 +91,8 @@ namespace
 	}
 }
 
-void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Vector3D> & velocities, vector<char> const& nomove) const
+void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Vector3D> & velocities, 
+	vector<char> const& nomove, std::vector<double> const& volumes) const
 {
 	const Vector3D r = tess.GetMeshPoint(i);
 	const Vector3D s = tess.GetCellCM(i);
@@ -114,7 +115,19 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		throw eo;
 	}
 #endif
-	velocity += chi_ * c * (s - r) / std::max(R, d);
+	double volume_increase = 1;
+	double const my_volume = volumes[i];
+	std::vector<size_t> neigh = tess.GetNeighbors(i);
+	size_t const Nneigh = neigh.size();
+	for(size_t j = 0; j < Nneigh; ++j)
+	{
+		if(not tess.IsPointOutsideBox(neigh[j]))
+		{
+			volume_increase = std::max(volume_increase, std::min(5.0, std::pow(my_volume / volumes[neigh[j]], 0.333)));
+			c =std::max(fastabs(cells[neigh[j]].velocity), c);
+		}
+	}
+	velocity += volume_increase * chi_ * c * (s - r) / std::max(R, d);
 	SlowDown(velocity, tess, R, i, velocities, nomove);
 }
 
@@ -216,6 +229,10 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 	double dt, vector<Vector3D> &velocities)const
 {
 	pm_.ApplyFix(tess, cells, time, dt, velocities);
+	std::vector<double> volumes = tess.GetAllVolumes();
+#ifdef RICH_MPI
+	MPI_exchange_data2(tess, volumes, true);
+#endif
 #ifdef RICH_MPI
 	Vector3D vdummy;
 	MPI_exchange_data(tess, velocities, true,&vdummy);
@@ -265,7 +282,7 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 		for (size_t i = 0; i < n; ++i)
 		{
 			if (nomove[i] == 0)
-				calc_dw(velocities.at(i), i, tess, cells, velocities, nomove);
+				calc_dw(velocities.at(i), i, tess, cells, velocities, nomove, volumes);
 			else
 				velocities.at(i) = Vector3D();
 		}
