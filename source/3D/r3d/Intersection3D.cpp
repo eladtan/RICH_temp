@@ -363,7 +363,7 @@ bool GetPoly(Tessellation3D const & oldtess, size_t oldcell, r3d_poly &poly, poi
 	vector<r3d_rvec3> points(npoints);
 	vector<int*> ptrs(faceinds.size());
 	OrganizeToPolyData(faceinds, numvertsperface, all_indeces, all_vertices, points, ptrs);
-	if (points.size() > 256)
+	if (points.size() >= 256)
 	{
 		std::cout << "Too many points in cells refine " << points.size() << std::endl;
 		return false;
