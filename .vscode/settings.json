@@ -75,7 +75,12 @@
         "numbers": "cpp",
         "semaphore": "cpp",
         "stop_token": "cpp",
-        "*.txx": "cpp"
+        "*.txx": "cpp",
+        "csignal": "cpp",
+        "any": "cpp",
+        "charconv": "cpp",
+        "source_location": "cpp",
+        "shared_mutex": "cpp"
     },
     "cmake.configureOnOpen": true,
 
@@ -161,5 +166,6 @@
         "*.vtu": true,
         "**/.vscode": true,
         "**/.vs": true
-    }
+    },
+    "cmake.sourceDirectory": "/home/elads/RICH/r3d"
 }
