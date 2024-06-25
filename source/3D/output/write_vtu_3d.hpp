@@ -29,6 +29,15 @@ void write_vtu_3d(std::filesystem::path const& file_name,
 			   std::size_t cycle,
                Tessellation3D const& tess);
 
+void write_vtu_3d_points(std::filesystem::path const& file_name,
+            std::vector<std::string> const& point_variable_names,
+			   std::vector<std::vector<double>> const& point_variables,
+			   std::vector<std::string> const& point_vectors_names,
+			   std::vector<std::vector<Vector3D> > const& point_vectors,
+			   double const time,
+			   std::size_t cycle,
+               Tessellation3D const& tess);
+
 } //namespace
 
 #endif /* WRITE_VTU_HPP_ */
