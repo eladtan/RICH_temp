@@ -269,7 +269,9 @@ void HDSim3D::timeAdvance2(void)
 		extensive_ = VectorValues(extensive_, order);
 		cells_ = VectorValues(cells_, order);
 		point_vel = VectorValues(point_vel, order);
+		#ifdef RICH_MPI
 		tess_.PreparePoints(mesh, order);
+		#endif
 	}
 	MovePoints(tess_, point_vel, dt);
 	t1 = get_time();
@@ -803,7 +805,7 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		bool good_try = true;
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
 
-		new_Er = CG::conj_grad_solver(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
+		new_Er = CG::BiCGSTAB(CG_eps, total_iters, tess_, cells_ , dt_try, matrix_builder, pt_.getTime(), new_Er_full);
 		double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 #ifdef RICH_MPI
 		MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -812,7 +814,10 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		for(size_t i = 0; i < N; ++i)
 		{
 			if(new_Er[i] < 0 && std::abs(new_Er[i]) < 1e-9 * max_Er)
+			{
 				new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature * cells_[i].temperature);
+				new_Er_full[i] = new_Er[i];
+			}
 			min_Er = std::min(min_Er, new_Er[i]);
 		}
 #ifdef RICH_MPI
@@ -902,5 +907,5 @@ double HDSim3D::RadiationTimeStep(double const dt, CG::MatrixBuilder const& matr
 		pt_.updateTime(dt);
 		pt_.updateCycle();
 	}
-	return dt * std::min(0.1 / max_diff, 1.25) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
+	return dt * std::min(0.15 / max_diff, 1.25) * std::pow(0.5, std::max(static_cast<double>(reduce_counter) - 1, 0.0));
 }
