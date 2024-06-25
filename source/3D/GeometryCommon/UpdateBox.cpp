@@ -134,8 +134,8 @@ void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, do
 #ifdef RICH_MPI
 		tess.BuildHilbert(mypoints);
 		MPI_exchange_data(tess, cells, false, &reference_cell);
-		Conserved3D e_dummy;
-		MPI_exchange_data(tess, sim.getExtensives(), false, &e_dummy);
+		// Conserved3D e_dummy;
+		// MPI_exchange_data(tess, sim.getExtensives(), false, &e_dummy);
 		MPI_exchange_data(tess, cells, true, &reference_cell);
 #else // RICH_MPI
 		tess.Build(mypoints);
