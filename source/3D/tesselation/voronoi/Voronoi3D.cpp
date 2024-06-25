@@ -1485,7 +1485,8 @@ void Voronoi3D::BuildHilbert(const std::vector<Vector3D> &points, bool suppressR
         {
             CM_[Nghost_.at(i).at(j)] = incoming[i][j];
         }
-    }   
+    }
+    MPI_exchange_data2(*this, volume_, true);
 }
 
 #endif // RICH_MPI
