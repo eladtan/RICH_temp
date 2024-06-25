@@ -107,7 +107,7 @@ double IdealGas::sd2p(double s, double d, tvector const& /*tracers*/, vector<str
 
 double IdealGas::dT2cv(double const d, double const T, tvector const& /*tracers*/, vector<string> const& /*tracernames*/) const
 {
-	return f_ * beta_ * std::pow(T, beta_ - 1) * std::pow(d, -mu_);
+	return f_ * beta_ * std::pow(T, beta_ - 1) * std::pow(d,1 - mu_);
 }
 
 double IdealGas::de2T(double const d, double const e, tvector const& /*tracers*/, vector<string> const& /*tracernames*/) const
