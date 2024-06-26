@@ -179,7 +179,7 @@ int main(void)
 	double const T = 2000;
 	try
 	{
-		init_cell.density = 1 * lscale * lscale * lscale / mscale;
+		init_cell.density = 0.5 * lscale * lscale * lscale / mscale;
 		init_cell.temperature = T;
 		init_cell.pressure = eos.dT2p(init_cell.density, init_cell.temperature);
 		init_cell.internal_energy = eos.dp2e(init_cell.density, init_cell.pressure);
@@ -210,7 +210,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
 	
 	DiffusionSideBoundary D_boundary(1.1605e7);
-	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), true, false);
+	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;

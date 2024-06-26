@@ -54,12 +54,19 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
-    std::vector<double> energy_groups_center =    {  0.1, 0.4, 1.0, 3.0, 10., 100., 500.};
-    std::vector<double> energy_groups_boundary = {1e-7, 0.2, 0.6, 1.4, 4.6, 15.4, 200., 1000.};
+	
+	std::size_t const G = 30;
+	std::vector<double> energy_groups_center(G);
+	std::vector<double> energy_groups_boundary(G+1);
 
-    
-    for(auto& val : energy_groups_center) val *= kev;
-    for(auto& val : energy_groups_boundary) val *= kev;
+	double const Emin = kev*1e-4;
+	double const Emax = kev*1e2;
+	
+	energy_groups_boundary[0] = Emin;
+	for(std::size_t g=0; g < G; ++g){
+		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
+		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
+	}
 
 	std::string eos_location("/home/itamarg/workspace/RICH/data/EOS/");
 	std::string STA_location("/home/itamarg/workspace/RICH/data/STA/");
