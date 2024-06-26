@@ -46,9 +46,9 @@ double interpolateTable(double const T, double const d,
 
 class AnalyticOpacity : public MultigroupDiffusionCoefficientCalculator {
     public:
-        AnalyticOpacity(std::function<double(double const, double const, std::size_t const)> diffusion_coefficient_groups_function_,
-                        std::function<double(double const, double const, std::size_t const)> sigma_absorption_groups_function_,
-                        std::function<double(double const, double const, std::size_t const)> sigma_scattering_groups_function_,
+        AnalyticOpacity(std::function<double(ComputationalCell3D const&, std::size_t const)> diffusion_coefficient_groups_function_,
+                        std::function<double(ComputationalCell3D const&, std::size_t const)> sigma_absorption_groups_function_,
+                        std::function<double(ComputationalCell3D const&, std::size_t const)> sigma_scattering_groups_function_,
                         std::vector<double> const& energy_groups_center_,
                         std::vector<double> const& energy_groups_boundary_);
 
@@ -58,9 +58,9 @@ class AnalyticOpacity : public MultigroupDiffusionCoefficientCalculator {
 
         double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const;
 
-        std::function<double(double const, double const, std::size_t const)> const diffusion_coefficient_groups_function;
-        std::function<double(double const, double const, std::size_t const)> const sigma_absorption_groups_function;
-        std::function<double(double const, double const, std::size_t const)> const sigma_scattering_groups_function;
+        std::function<double(ComputationalCell3D const&, std::size_t const)> const diffusion_coefficient_groups_function;
+        std::function<double(ComputationalCell3D const&, std::size_t const)> const sigma_absorption_groups_function;
+        std::function<double(ComputationalCell3D const&, std::size_t const)> const sigma_scattering_groups_function;
 };
 
 #endif // MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
