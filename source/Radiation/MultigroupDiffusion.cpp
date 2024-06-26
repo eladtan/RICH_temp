@@ -210,10 +210,12 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
 		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
 		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_Tm[max_loc]<<std::endl;
+        
+        std::cout << "which one " << max_which << std::endl;
 		PrintDebugData(max_loc);
 	}
 
-    return dt * 0.15 / max_diff;
+    return std::min(dt * 0.1 / max_diff, dt*1.1);
 }
 
 bool MultigroupDiffusion::step(double const tolerance, 
