@@ -141,8 +141,10 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 
 	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
     double max_Tm = *std::max_element(old_Tm.begin(), old_Tm.end());
+
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &max_Tm, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif	
 
     auto const N = tess.GetPointNo();            
@@ -151,24 +153,39 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 	for(size_t i = 0; i < Nzero; ++i)
 		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
 	double max_diff = std::numeric_limits<double>::min() * 100;
+    int max_which = 0;
 	int max_loc = 0;
 	for(size_t i = 0; i < N; ++i)
 	{
+        int which_one = 0;
 		bool to_calc = true;
 		for(size_t j = 0; j < Nzero; ++j)
 			if(cells[i].stickers[zero_indeces[j]])
 				to_calc = false;
 		if(not to_calc)
 			continue;
-		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
-		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density+0.02*max_Er);
-        diff = std::max(diff, equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].temperature+0.02*max_Tm));
+		double const equlibrium_factor = 1.0; //std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
+		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density+0.01*max_Er);
+
+        double const temp = equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].temperature+0.02*max_Tm);
+        
+        if(temp > diff){
+            which_one = 1;
+            diff = temp;
+        }
 
         for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
-            diff = std::max(diff, equlibrium_factor* std::abs(cells[i].Eg[g]*cells[i].density - old_Eg[g][i]) / (cells[i].Eg[g]*cells[i].density + 1e-8*max_Er));
+            double const temp = equlibrium_factor* std::abs(cells[i].Eg[g]*cells[i].density - old_Eg[g][i]) / (cells[i].Eg[g]*cells[i].density + 0.01/ENERGY_GROUPS_NUM*max_Er);
+            if(temp > diff){
+                which_one = 2 + g;
+                diff = temp;
+            }
         }
+		// if(fleck_factor[i] < 0.5)
+			// diff *= 0.1;
 		if(diff > max_diff)
 		{
+            max_which = which_one;
 			max_diff = diff;
 			max_loc = i;
 		}
