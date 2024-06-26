@@ -15,6 +15,8 @@
 
 #include "misc/universal_error.hpp"
 
+class UniversalError;
+
 namespace
 {
     template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
@@ -170,6 +172,5 @@ std::vector<T> getBorders(std::vector<T> &input, const Comparator &comp = [](con
 
     return getStatOrders(input, stats, comp);
 }
-
 
 #endif // _RICH_BALANCE2_HPP

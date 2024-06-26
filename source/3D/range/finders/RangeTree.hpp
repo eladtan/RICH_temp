@@ -13,16 +13,13 @@ class RangeTreeFinder : public RangeFinder
 public:
     template<typename RandomAccessIterator>
     RangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last);
+    
     inline RangeTreeFinder(std::vector<Vector3D> &myPoints): RangeTreeFinder(myPoints.begin(), myPoints.end()){};
-    ~RangeTreeFinder();
+    
+    inline ~RangeTreeFinder() override{delete this->rangeTree;};
 
     inline const Vector3D &getPoint(size_t index) const override{return this->myPoints[index];};
 
-    std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
-    {
-        throw UniversalError("RangeTreeFinder::closestPointInSphere not implemented");
-    }
-    
     inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
         std::vector<size_t> toReturn;
@@ -40,7 +37,7 @@ private:
 };
 
 template<typename RandomAccessIterator>
-RangeTreeFinder::RangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
+inline RangeTreeFinder::RangeTreeFinder(RandomAccessIterator first, RandomAccessIterator last)
 {
     std::vector<IndexedVector3D> data;
     size_t index = 0;
@@ -56,11 +53,6 @@ RangeTreeFinder::RangeTreeFinder(RandomAccessIterator first, RandomAccessIterato
     }
     this->rangeTree = new RangeTree<IndexedVector3D>(DIMENSIONS);
     this->rangeTree->build(data.begin(), data.end());
-}
-
-RangeTreeFinder::~RangeTreeFinder()
-{
-    delete this->rangeTree;
 }
 
 #endif // _RANGE_TREE_FINDER_HPP

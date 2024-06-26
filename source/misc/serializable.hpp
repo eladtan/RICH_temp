@@ -7,6 +7,11 @@
 #include "lazy_list.hpp"
 #include <boost/foreach.hpp>
 
+class Serializable;
+
+template<typename T>
+using is_serializable = std::is_convertible<T*, Serializable*>;
+
 using std::vector;
 using std::size_t;
 
@@ -14,6 +19,8 @@ using std::size_t;
 class Serializable
 {
 public:
+  //! \brief Class destructor
+  inline virtual ~Serializable(void) = default;
 
   /*! \brief Returns the size of array needed to store all data
     \returns Size of array
@@ -29,9 +36,6 @@ public:
     \param data List of numbers
    */
   virtual void unserialize(const vector<double>& data) = 0;
-
-  //! \brief Class destructor
-  inline virtual ~Serializable(void) = default;
 };
 
 namespace {

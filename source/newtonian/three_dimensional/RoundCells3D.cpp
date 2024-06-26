@@ -162,7 +162,8 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	  cs = eos_.dp2c(cells[i].density, cells[i].pressure,	cells[i].tracers, ComputationalCell3D::tracerNames);
+	  cs = std::max(min_dw_, cells[i].cs);
+	//   cs = eos_.dp2c(cells[i].density, cells[i].pressure,	cells[i].tracers, ComputationalCell3D::tracerNames); // todo: removed by Maor
 #ifdef RICH_DEBUG
 	}
 	catch (UniversalError &eo)
@@ -180,8 +181,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		try
 		{
 #endif
-			cs = std::max(cs, eos_.dp2c(cells[neigh[j]].density, cells[neigh[j]].pressure,
-						    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
+			cs = std::max(cs, cells[neigh[j]].cs);
 			cs = std::max(cs, fastabs(cells[neigh[j]].velocity));
 			min_R = std::min(min_R, tess.GetWidth(neigh[j]));
 #ifdef RICH_DEBUG

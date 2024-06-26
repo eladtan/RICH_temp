@@ -18,6 +18,7 @@
 #define NUMBER_OF_SHAPES 24
 #define MAX_ROTATION_LENGTH 5
 #define PI 3.14159
+#define MAX_HILBERT_RECURSIVE_CALLS 250
 
 using std::vector;
 

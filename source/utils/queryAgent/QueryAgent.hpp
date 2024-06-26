@@ -14,6 +14,10 @@
 #include <boost/container/flat_set.hpp>
 #include <unordered_set>
 
+#ifdef TIMING
+    #include <chrono>
+#endif // TIMING
+
 #include "3D/environment/EnvironmentAgent.h"
 #include "AnswerAgent.hpp"
 #include "TalkAgent.hpp"
@@ -50,6 +54,11 @@ struct QueryBatchInfo
     std::vector<QueryInfo<QueryData, AnswerType>> queriesAnswers;
     std::vector<AnswerType> result;
     std::vector<std::vector<AnswerType>> dataByRanks;
+    #ifdef TIMING
+        std::chrono::_V2::system_clock::time_point beginClockTime; 
+        double finishSubmittingTime;
+        double receivedAllTime;
+    #endif // TIMING
 };
 
 template<typename QueryData, typename AnswerType>
@@ -72,20 +81,18 @@ public:
     void sendQuery(const QueryInfo<QueryData, AnswerType> &query);
     QueryBatchInfo<QueryData, AnswerType> runBatch(std::queue<QueryData> &queries);
 
-    inline std::vector<std::vector<size_t>> &getSentData(){return this->answerAgent->getSentData();};
-    inline std::vector<int> &getSentProc(){return this->answerAgent->getSentProc();};
     inline std::vector<std::vector<size_t>> &getRecvData(){return this->recvData;};
     inline std::vector<int> &getRecvProc(){return this->recvProcessorsRanks;};
 
 private:
     MPI_Comm comm;
     int rank, size;
+    const TalkAgent<QueryData> *talkAgent; // answers to whom we should talk to, given a query
+    AnswerAgent<QueryData, AnswerType> *answerAgent; // an answer agent
     std::vector<MPI_Request> requests;
     std::vector<std::vector<char>> buffers; // send buffers, so that they will not be allocated on the stack
     size_t receivedUntilNow; // number of answers I received until now
     size_t shouldReceiveInTotal; // number of answers I have to receive (to know when to finish)
-    AnswerAgent<QueryData, AnswerType> *answerAgent; // an answer agent
-    const TalkAgent<QueryData> *talkAgent; // answers to whom we should talk to, given a query
     bool sendToSelf; // should send queries to self
     bool finishedMyQueries; // if finished to answer my queries
     int finishedReceived; // number of 'finish' messages received
@@ -96,7 +103,7 @@ private:
 
     void rearrangeResult(_queryBatchInfo &queriesBatch);
 
-    void sendFinish();
+    void sendFinish(_queryBatchInfo &queriesBatch);
     int checkForFinishMessages() const;
     void flushBuffer(int _rank);
     inline void flushAll(){for(int i = 0; i < this->size; i++) this->flushBuffer(i);};
@@ -145,14 +152,17 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
         // decode the message - id first, then length, then the data itself
         long int id;
         long int length;
-        int pos = 0;
 
         id = *reinterpret_cast<long int*>(buffer.data()); // decode id
         length = *reinterpret_cast<long int*>(buffer.data() + sizeof(long int)); // decode length
 
         if(id < 0 or static_cast<size_t>(id) >= queries.size())
         {
-            throw UniversalError("In QueryAgent::receiveQueries, id of answered query " + std::to_string(id) + " is illegal (expected 0-"+ std::to_string(queries.size()) + ")");
+            UniversalError eo("QueryAgent::receiveQueries, id of answered query is illegal");
+            eo.addEntry("Id", id);
+            eo.addEntry("Expected range", "0-" + std::to_string(queries.size()));
+            eo.addEntry("Received Query", *reinterpret_cast<const QueryData*>(buffer.data()));
+            throw eo;
         }
         if(length > 0)
         {
@@ -171,7 +181,9 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
         {
             if(length < 0)
             {
-                throw UniversalError("In QueryAgent::receiveQueries, length of query is negative");
+                UniversalError eo("In QueryAgent::receiveQueries, length of query is negative");
+                eo.addEntry("Length", length);
+                throw eo;
             }
         }
         MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
@@ -179,7 +191,7 @@ void QueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &batch)
 
     if(this->finishedMyQueries and this->shouldReceiveInTotal == this->receivedUntilNow)
     {
-        this->sendFinish();
+        this->sendFinish(batch);
     }
 }
 
@@ -271,8 +283,13 @@ void QueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo &query)
 }
 
 template<typename QueryData, typename AnswerType>
-void QueryAgent<QueryData, AnswerType>::sendFinish()
+void QueryAgent<QueryData, AnswerType>::sendFinish(_queryBatchInfo &queriesBatch)
 {
+    #ifdef TIMING
+        std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+        queriesBatch.receivedAllTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+    #endif // TIMING
+
     int dummy;
     for(int _rank = 0; _rank < this->size; _rank++)
     {
@@ -301,7 +318,9 @@ void QueryAgent<QueryData, AnswerType>::flushBuffer(int _rank)
 {
     if((_rank < 0) or (_rank >= this->size))
     {
-        throw UniversalError("Invalid rank (" + std::to_string(_rank) + "), in QueryAgent::flushBuffer");
+        UniversalError eo("QueryAgent::flushBuffer: invalid rank buffer flush");
+        eo.addEntry("Rank", _rank);
+        throw eo;
     }
     int bufferIdx = this->ranksBufferIdx[_rank];
     if(bufferIdx == UNDEFINED_BUFFER_IDX)
@@ -341,6 +360,7 @@ void QueryAgent<QueryData, AnswerType>::rearrangeResult(_queryBatchInfo &queries
 template<typename QueryData, typename AnswerType>
 QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatch(std::queue<QueryData> &queries)
 {
+
     this->receivedUntilNow = 0; // reset the receive counter
     this->shouldReceiveInTotal = 0; // reset the should-be-received counter
     for(std::vector<size_t> &_receivedDataFromRank : this->recvData)
@@ -354,18 +374,25 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     this->requests.reserve(10 * originalQueriesNum); // heuristic
     this->requests.clear();
     _queryBatchInfo queriesBatch;
+    #ifdef TIMING
+        queriesBatch.beginClockTime std::chrono::system_clock::now();
+    #endif // TIMING
+
     queriesBatch.queriesAnswers.reserve(originalQueriesNum);
     std::vector<_queryInfo> &queriesInfo = queriesBatch.queriesAnswers;
     queriesBatch.dataByRanks.resize(this->size);
     this->finishedMyQueries = queries.empty();
     this->finishedReceived = 0;
     size_t i = 0;
-    bool notEmpty = false;
-    
+
     // if doesn't have any queries, send a finish message
     if(this->finishedMyQueries)
     {
-        this->sendFinish();
+        this->sendFinish(queriesBatch);
+        #ifdef TIMING
+            std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+            queriesBatch.finishSubmittingTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+        #endif // TIMING
     }
     while((!this->finishedMyQueries) or (this->finishedReceived < this->size))
     {
@@ -381,11 +408,16 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
             {
                 // send the rest of the waiting (buffered) requests
                 this->flushAll();
+                #ifdef TIMING
+                    std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+                    queriesBatch.finishSubmittingTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+                #endif // TIMING
+
                 this->finishedMyQueries = true;
                 // if had several queries, but no communication was needed, send a finish message
                 if(this->shouldReceiveInTotal == 0)
                 {
-                    this->sendFinish();
+                    this->sendFinish(queriesBatch);
                 }
             }
         }
@@ -408,20 +440,8 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
                     this->finishedReceived += this->checkForFinishMessages();
                     break;
                 default:
-                {
-                    std::cerr << "Rank " + std::to_string(this->rank) + " received unrecognized tag: " + std::to_string(status.MPI_TAG) + ", from rank " + std::to_string(status.MPI_SOURCE) << std::endl;
                     throw UniversalError("Rank " + std::to_string(this->rank) + " received unrecognized tag: " + std::to_string(status.MPI_TAG) + ", from rank " + std::to_string(status.MPI_SOURCE));
-                }
             }
-
-            // if(i % RECEIVE_AUTOFLUSH_NUM == 0 and this->shouldReceiveInTotal > this->receivedUntilNow)
-            // {
-            //     this->receiveQueries(queriesBatch);
-            // }
-            // if(i % QUERY_AUTOFLUSH_NUM == 0)
-            // {
-            //     this->answerQueries();
-            // }
         }
         ++i;
     }
@@ -430,6 +450,11 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
     {
         MPI_Waitall(this->requests.size(), &(*(this->requests.begin())), MPI_STATUSES_IGNORE); // make sure any query was indeed received
     }
+
+    #ifdef TIMING
+        std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+        queriesBatch.finishTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
+    #endif // TIMING
 
     // add to the list the processors that sent us a message for the first time
     for(int _rank = 0; _rank < this->size; _rank++)

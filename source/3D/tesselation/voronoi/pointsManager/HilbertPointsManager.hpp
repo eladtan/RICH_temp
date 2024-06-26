@@ -3,27 +3,30 @@
 
 #ifdef RICH_MPI
 
+#include <numeric>
 #include <memory>
 #include "PointsManager.hpp"
 #include "3D/environment/kernels/Identity.hpp" // for default kernelization
-#include "3D/environment/DistributedOctEnvAgent.hpp"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 
 #define SPACE_FACTOR 1e-5
 
 class HilbertPointsManager : public PointsManager
 {
 public:
-    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const IndexingKernel3D> &indexing = std::shared_ptr<const IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD)
-        : PointsManager(ll, ur, comm), envAgent(nullptr), hilbertOrder(0), convertor(nullptr)
+    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD)
+        : PointsManager(ll, ur, comm), envAgent(nullptr), convertor(nullptr)
     {
         if(indexing.get() == nullptr)
         {
-            this->indexing = std::shared_ptr<const Identity>(new Identity()); // default kernel
+            this->indexing = std::shared_ptr<const Kernelization3D::Identity>(new Kernelization3D::Identity()); // default kernel
+            this->customIndexingIsSet = false;
         }
         else
         {
             this->indexing = indexing;
+            this->customIndexingIsSet = true;
         }
     }
 
@@ -40,22 +43,22 @@ public:
 
     HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;
 
-    PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) override;
+    PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) override;
 
     void rebalance(const std::vector<Vector3D> &points) override;
 
-    const IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
+    const Kernelization3D::IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
     
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
-    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses);
+    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM);
 
-    int hilbertOrder;
+    HilbertCurveEnvironmentAgent *envAgent;
     HilbertConvertor3D *convertor;
-    DistributedOctEnvironmentAgent *envAgent;
-    std::shared_ptr<const IndexingKernel3D> indexing;
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
     std::vector<hilbert_index_t> responsibilityRange;
+    bool customIndexingIsSet;
 };
 
 #endif // RICH_MPI

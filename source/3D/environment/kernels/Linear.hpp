@@ -4,20 +4,23 @@
 #include "3D/elementary/Mat33.hpp"
 #include "IndexingKernel3D.hpp"
 
-class Linear : public IndexingKernel3D
+namespace Kernelization3D
 {
-public:
-    inline Linear(const Mat33<double> &transformation = Mat33<double>(), const IndexingKernel3D *beforeIndexing = nullptr): transformation(transformation), beforeIndexing(beforeIndexing){};
-
-    inline Vector3D operator()(const Vector3D &vector) const override
+    class Linear : public IndexingKernel3D
     {
-        Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-        return this->transformation * vec;
-    };
+    public:
+        inline Linear(const Mat33<double> &transformation = Mat33<double>(), const IndexingKernel3D *beforeIndexing = nullptr): transformation(transformation), beforeIndexing(beforeIndexing){};
 
-private:
-    Mat33<double> transformation;
-    const IndexingKernel3D *beforeIndexing;
-};
+        inline Vector3D operator()(const Vector3D &vector) const override
+        {
+            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
+            return this->transformation * vec;
+        };
+
+    private:
+        Mat33<double> transformation;
+        const IndexingKernel3D *beforeIndexing;
+    };
+}
 
 #endif // LINEAR_KERNEL_HPP

@@ -23,7 +23,7 @@ namespace
     }
 }
 
-Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
+Vector3D Kernelization3D::Frustrum::find_S(const std::vector<Face> &faces) const
 {    
     // first find the parallel faces
     std::vector<Vector3D> normals;
@@ -79,19 +79,22 @@ Vector3D Frustrum::find_S(const std::vector<Face> &faces) const
 
     if(intersection1 != intersection2)
     {
-        std::stringstream intersection1Str, intersection2Str;
-        intersection1Str << intersection1;
-        intersection2Str << intersection2;
-        throw UniversalError("Body is not a frustrum (two distinct points of intersection: " + intersection1Str.str() + ", " + intersection2Str.str() + ")");
+        UniversalError eo("Body is not a frustrum (two distinct intersections and heads)");
+		eo.addEntry("head 1", intersection1);
+		eo.addEntry("head 2", intersection2);
+		throw eo;
     }
     return intersection1;
 }
 
-Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing, const IndexingKernel3D *afterIndexing)
+Kernelization3D::Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *indexing, const IndexingKernel3D *afterIndexing)
 {
     if(faces.size() != NUM_FACES)
     {
-        throw UniversalError("Can not use 'Frustrum' kernelization when there are not " + std::to_string(NUM_FACES) + " faces (given " + std::to_string(faces.size()) + ")");
+
+        UniversalError eo("Can not use 'Frustrum' kernelization when there are not " + std::to_string(NUM_FACES) + " faces");
+        eo.addEntry("Faces", faces.size());
+        throw eo;
     }
 
     std::vector<Vector3D> allVertices;
@@ -139,14 +142,6 @@ Frustrum::Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *index
         }
     }
 
-    // if((normalBase1 != Vector3D(0, 0, 1) and normalBase1 != Vector3D(0, 0, -1)) or (normalBase2 != Vector3D(0, 0, 1) and normalBase2 != Vector3D(0, 0, -1)))
-    // {
-    //     // this message is thrown in order to calculate whether the summit is "above" or "below" the frustrum (the terms "above" and "below" are not clear otherwise)
-    //     throw UniversalError("Currently, frustrum kernel is supported only when the bases are parallel to the XY plane");
-    // }
-    // bool summitAbove = (point4.z > kerneledFaces[0].vertices[0].z) and (point4.z > kerneledFaces[1].vertices[0].z);
-    // std::cout << "summit above: " << summitAbove << std::endl;
-    // const IndexingKernel3D *preAfterIndexing = (not summitAbove)? new Linear(Mat33<double>(1, 0, 0, 0, 1, 0, 0, 0, -1), afterIndexing) : afterIndexing; // multiply axis z by -1, before activating the rectangle (because the summit will get negative value there)
     this->afterIndexing = afterIndexing;
 }
 

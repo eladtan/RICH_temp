@@ -26,6 +26,9 @@ public:
 	//! \brief Radiation energy
 	double Erad;
 
+	//! \brief The radiation energy in a given energy group
+	boost::container::small_vector<double, ENERGY_GROUPS_NUM> Eg;
+
 	double Erad_dt;
 
 	double Erad_dt_dt;

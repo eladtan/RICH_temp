@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
+	Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Eg({}), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
 
 namespace
 {
@@ -51,6 +51,8 @@ Conserved3D& Conserved3D::operator-=(const Conserved3D& diff)
 	Erad_dt_dt -= diff.Erad_dt_dt;
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		tracers[i] -= diff.tracers[i];
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		Eg[i] -= diff.Eg[i];
 	return *this;
 }
 
@@ -65,13 +67,15 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 	Erad_dt_dt += diff.Erad_dt_dt;
 	for (size_t i = 0; i < tracers.size(); ++i)
 		tracers[i] += diff.tracers[i];
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		Eg[i] += diff.Eg[i];
 	return *this;
 }
 
 #ifdef RICH_MPI
 size_t Conserved3D::getChunkSize(void) const
 {
-	return 9 + tracers.size();
+	return 9 + tracers.size() + ENERGY_GROUPS_NUM;
 }
 
 vector<double> Conserved3D::serialize(void) const
@@ -90,6 +94,9 @@ vector<double> Conserved3D::serialize(void) const
 	//size_t N = tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res[j + counter] = tracers[j];
+	counter += MAX_TRACERS;
+	for (size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res[j + counter] = Eg[j];
 	return res;
 }
 
@@ -109,6 +116,9 @@ void Conserved3D::unserialize(const vector<double>& data)
 	//size_t N = tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		tracers[j] = data.at(counter + j);
+	counter += MAX_TRACERS;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		Eg[j] = data.at(counter + j);
 }
 #endif
 
@@ -119,6 +129,8 @@ Conserved3D operator*(double s, const Conserved3D& c)
 		s*c.energy, s*c.internal_energy,
 		s*c.tracers);
 	res.Erad = s * c.Erad;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] = s * c.Eg[j];
 	res.Erad_dt = s * c.Erad_dt;
 	res.Erad_dt_dt = s * c.Erad_dt_dt;
 	return res;
@@ -138,6 +150,8 @@ Conserved3D operator/(const Conserved3D& c, double s)
 		c.energy * s_1, c.internal_energy * s_1,
 		s_1 * c.tracers);
 	res.Erad = c.Erad * s_1;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] = s_1 * c.Eg[j];
 	res.Erad_dt = c.Erad_dt * s_1;
 	res.Erad_dt_dt = c.Erad_dt_dt * s_1;
 	return res;
@@ -157,6 +171,8 @@ void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		res.tracers[i] = cell.tracers[i] * res.mass;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		res.Eg[i] = cell.Eg[i] * res.mass;
 }
 
 void PrimitiveToConservedSR(ComputationalCell3D const& cell, double vol, Conserved3D &res, EquationOfState const& eos)
@@ -175,6 +191,8 @@ void PrimitiveToConservedSR(ComputationalCell3D const& cell, double vol, Conserv
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < N; ++i)
 		res.tracers[i] = cell.tracers[i] * res.mass;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		res.Eg[i] = cell.Eg[i] * res.mass;
 }
 
 Conserved3D operator+(Conserved3D const& p1, Conserved3D const& p2)
@@ -203,5 +221,7 @@ Conserved3D& Conserved3D::operator*=(double s)
 	size_t N = this->tracers.size();
 	for (size_t j = 0; j < N; ++j)
 		this->tracers[j] *= s;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		this->Eg[j] *= s;
 	return *this;
 }

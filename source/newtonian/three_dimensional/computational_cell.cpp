@@ -1,22 +1,20 @@
 #include "computational_cell.hpp"
 
 ComputationalCell3D::ComputationalCell3D(void):
-  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Erad_dt(0),
-  	Erad_dt_dt(0), tracers(),stickers() {}
+  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg({}), Erad_dt(0),
+  	Erad_dt_dt(0), cs(0), tracers(),stickers()
+{}
 
-ComputationalCell3D::ComputationalCell3D(double density_i,
-				     double pressure_i,double internal_energy_i,size_t ID_i,
-				     const Vector3D& velocity_i):
+ComputationalCell3D::ComputationalCell3D(double density_i, double pressure_i, double internal_energy_i, size_t ID_i, const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers(),stickers() {}
+  velocity(velocity_i), Erad(0), Eg({}) Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(),stickers()
+{}
 
-ComputationalCell3D::ComputationalCell3D(double density_i,
-				     double pressure_i, double internal_energy_i,size_t ID_i,
-				     const Vector3D& velocity_i,
-				     const std::array<double,MAX_TRACERS>& tracers_i,
-					 const std::array<bool,MAX_STICKERS>& stickers_i):
+ComputationalCell3D::ComputationalCell3D(double density_i, double pressure_i, double internal_energy_i,size_t ID_i, const Vector3D& velocity_i, 
+										const std::array<double,MAX_TRACERS>& tracers_i, const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers(tracers_i),stickers(stickers_i) {}
+  velocity(velocity_i), Erad(0), Eg({}) Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i)
+{}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -25,12 +23,14 @@ internal_energy(other.internal_energy),
 temperature(other.temperature),
 ID(other.ID),
 velocity(other.velocity),
+dt(other.dt),
 Erad(other.Erad),
+Eg(other.Eg),
 Erad_dt(other.Erad_dt),
 Erad_dt_dt(other.Erad_dt_dt),
+cs(other.cs),
 tracers(other.tracers),
 stickers(other.stickers) {}
-
 
 ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& other)
 {
@@ -39,9 +39,12 @@ ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& o
 	internal_energy = other.internal_energy;
 	temperature = other.temperature;
 	velocity = other.velocity;
+	dt = other.dt;
 	Erad = other.Erad;
+	Eg = other.Eg;
 	Erad_dt = other.Erad_dt;
 	Erad_dt_dt = other.Erad_dt_dt;
+	cs = other.cs;
 	tracers = other.tracers;
 	stickers = other.stickers;
 	ID = other.ID;
@@ -55,9 +58,11 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 	this->internal_energy += other.internal_energy;
 	this->velocity += other.velocity;
 	this->temperature += other.temperature;
+	this->dt = std::min<double>(this->dt, other.dt); // todo: correct?
 	this->Erad += other.Erad;
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;
+	this->cs = std::max<double>(this->cs, other.cs); // todo: correct?
 	//assert(this->tracers.size() == other.tracers.size());
 	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
@@ -65,6 +70,8 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] += other.tracers[j];
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+	    this->Eg[j] += other.Eg[j];
 	return *this;
 }
 
@@ -75,9 +82,11 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 	this->internal_energy -= other.internal_energy;
 	this->velocity -= other.velocity;
 	this->temperature -= other.temperature;
+	this->dt = std::min<double>(this->dt, other.dt); // todo: correct?
 	this->Erad -= other.Erad;
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;	
+	this->cs = std::max<double>(this->cs, other.cs); // todo: correct?
 	//assert(this->tracers.size() == other.tracers.size());
 	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
@@ -85,6 +94,8 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] -= other.tracers[j];
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+	    this->Eg[j] -= other.Eg[j];
 	return *this;
 }
 
@@ -98,9 +109,12 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->Erad *= s;
 	this->Erad_dt *= s;
 	this->Erad_dt_dt *= s;
+	this->cs *= s; // todo: correct?
 	//size_t N = this->tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] *= s;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+	    this->Eg[j] *= s;
 	return *this;
 }
 
@@ -110,7 +124,7 @@ vector<string> ComputationalCell3D::stickerNames;
 #ifdef RICH_MPI
 size_t ComputationalCell3D::getChunkSize(void) const
 {
-	return 11 + tracers.size() + stickers.size();
+	return 13 + tracers.size() + stickers.size() + ENERGY_GROUPS_NUM;
 }
 
 vector<double> ComputationalCell3D::serialize(void) const
@@ -121,13 +135,15 @@ vector<double> ComputationalCell3D::serialize(void) const
 	res.at(2) = velocity.x;
 	res.at(3) = velocity.y;
 	res.at(4) = velocity.z;
-	res.at(5) = internal_energy;
-	res.at(6) = temperature;
-	res.at(7) = static_cast<double>(ID);
-	res.at(8) = Erad;
-	res.at(9) = Erad_dt;
-	res.at(10) = Erad_dt_dt;
-	size_t counter = 11;
+	res.at(5) = dt;
+	res.at(6) = internal_energy;
+	res.at(7) = temperature;
+	res.at(8) = static_cast<double>(ID);
+	res.at(9) = Erad;
+	res.at(10) = Erad_dt;
+	res.at(11) = Erad_dt_dt;
+	res.at(12) = cs;
+	size_t counter = 13;
 	//size_t N = tracers.size();
 #ifdef __INTEL_COMPILER
 #pragma ivdep
@@ -140,6 +156,9 @@ vector<double> ComputationalCell3D::serialize(void) const
 #endif
 	for (size_t j = 0; j < MAX_STICKERS; ++j)
 		res[j + counter + MAX_TRACERS] = stickers[j] ? 1 : 0;
+	counter += MAX_TRACERS + MAX_STICKERS;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res[j + counter] = Eg[j];
 	return res;
 }
 
@@ -152,13 +171,15 @@ void ComputationalCell3D::unserialize
 	velocity.x = data.at(2);
 	velocity.y = data.at(3);
 	velocity.z = data.at(4);
-	internal_energy = data.at(5);
-	temperature = data.at(6);
-	ID = static_cast<size_t>(std::llround(data.at(7)));
-	Erad = data.at(8);
-	Erad_dt = data.at(9);
-	Erad_dt_dt = data.at(10);
-	size_t counter = 11;
+	dt = data.at(5);
+	internal_energy = data.at(6);
+	temperature = data.at(7);
+	ID = static_cast<size_t>(std::llround(data.at(8)));
+	Erad = data.at(9);
+	Erad_dt = data.at(10);
+	Erad_dt_dt = data.at(11);
+	cs = data.at(12);
+	size_t counter = 13;
 	//size_t N = tracers.size();
 #ifdef __INTEL_COMPILER
 #pragma ivdep
@@ -171,6 +192,9 @@ void ComputationalCell3D::unserialize
 #endif
 	for (size_t i = 0; i < MAX_STICKERS; ++i)
 		stickers[i] = data.at(counter + MAX_TRACERS + i)>0.5;
+	counter += MAX_TRACERS + MAX_STICKERS;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+	    Eg[j] = data.at(counter + j);
 }
 
 size_t Slope3D::getChunkSize(void) const
@@ -219,6 +243,8 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] += other.tracers[j] * scalar;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] += other.Eg[j] * scalar;
 }
 
 ComputationalCell3D operator+(ComputationalCell3D const& p1, ComputationalCell3D const& p2)
@@ -249,7 +275,10 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 	//size_t N = res.tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] *= s_1;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] *= s_1;
 	res.velocity = res.velocity * s_1;
+	res.cs = res.cs * s_1; // todo: correct?
 	return res;
 }
 
@@ -266,7 +295,10 @@ ComputationalCell3D operator*(ComputationalCell3D const& p, double s)
 	//size_t N = res.tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res.tracers[j] *= s;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] *= s;
 	res.velocity = res.velocity * s;
+	res.cs = res.cs * s; // todo: correct?
 	return res;
 }
 
@@ -282,10 +314,13 @@ void ReplaceComputationalCell(ComputationalCell3D & cell, ComputationalCell3D co
 	cell.internal_energy = other.internal_energy;
 	cell.ID = other.ID;
 	cell.velocity = other.velocity;
+	cell.dt = other.dt;
 	cell.temperature = other.temperature;
 	cell.Erad = other.Erad;
+	cell.Eg = other.Eg;
 	cell.Erad_dt = other.Erad_dt;
 	cell.Erad_dt_dt = other.Erad_dt_dt;
+	cell.cs = other.cs;
 	//size_t N = other.tracers.size();
 	//cell.tracers.resize(N);
 #ifdef __INTEL_COMPILER

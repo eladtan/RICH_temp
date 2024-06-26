@@ -7,17 +7,22 @@
 #define COMPUTATIONAL_CELL3D_HPP 1
 
 #include <array>
-#include "../../3D/elementary/Vector3D.hpp"
+#include "3D/elementary/Vector3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
+#include <boost/container/small_vector.hpp>
 #ifdef RICH_MPI
-#include "../../misc/serializable.hpp"
+	#include "misc/serializable.hpp"
 #endif // RICH_MPI
+
+#define ENERGY_GROUPS_NUM 0
 
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
+						#ifdef RICH_MPI
+							: public Serializable
+						#endif // RICH_MPI
 {
 public:
-
 	//! \brief Density
 	double density;
 
@@ -36,12 +41,20 @@ public:
 	//! \brief Velocity
 	Vector3D velocity;
 
+	double dt;
+	
 	//! \brief Radiation enregy per unit mass
 	double Erad;
+
+	//! \brief The radiation energy per unit mass in a given energy group
+	boost::container::small_vector<double, ENERGY_GROUPS_NUM> Eg;
 
 	double Erad_dt;
 
 	double Erad_dt_dt;
+
+	//! \brief The sound speed
+	double cs;
 
   static vector<string> tracerNames;
   static vector<string> stickerNames;
@@ -87,7 +100,7 @@ public:
     \param other Source
    */
   ComputationalCell3D(const ComputationalCell3D& other);
-
+	
 	/*! \brief Self increment operator
 	\param other Addition
 	\return Reference to self
@@ -115,20 +128,18 @@ public:
   /*! \brief Get size of chunks
     \return Chunk size in bytes
    */
-	size_t getChunkSize(void) const;
+	size_t getChunkSize(void) const override;
 
   /*! \brief Decompose cell into list of numbers
     \return List of numbers
    */
-	vector<double> serialize(void) const;
+	vector<double> serialize(void) const override;
 
   /*! \brief Reconstruct cell from series of numbers
     \param data List of numbers
    */
-	void unserialize
-		(const vector<double>& data);
+	void unserialize(const vector<double>& data) override;
 #endif // RICH_MPI
-
 };
 
 /*! \brief Term by term addition

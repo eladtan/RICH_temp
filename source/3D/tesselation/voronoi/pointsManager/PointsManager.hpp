@@ -26,12 +26,15 @@ struct PointsExchangeResult
     std::vector<int> sentProcessors;
     std::vector<std::vector<size_t>> sentIndicesToProcessors;
     std::vector<size_t> indicesToSelf;
+    std::vector<Vector3D> newCMs;
 };
 
 typedef struct _3DPointRadius
 {
+    size_t indexInAllPoints;
     _3DPoint point;
     double radius;
+    _3DPoint CM;
 } _3DPointRadius;
 
 /**
@@ -51,7 +54,7 @@ public:
 
     PointsManager &operator=(const PointsManager &other) = delete;
 
-    virtual PointsExchangeResult exchange(const std::vector<Vector3D> &points, const std::vector<double> &radiuses) = 0;
+    virtual PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) = 0;
 
     virtual void rebalance(const std::vector<Vector3D> &points) = 0;
 
@@ -74,57 +77,67 @@ public:
         return (rebalance > 0);
     };
 
-    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, bool doRebalance = true)
+    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool doRebalance = true)
     {
         // if envAgent is null, the `exchange` will perform an initialization as well.
         // `rebalance` is used only when the environment agent is initialized.
-        if(this->getEnvironmentAgent() != nullptr and doRebalance and this->checkForRebalance(points))
+        if((this->getEnvironmentAgent() != nullptr) and doRebalance and this->checkForRebalance(points))
         {
             this->rebalance(points);
-            return this->exchange(points, radiuses);
         }
         return this->exchange(points, radiuses);
     }
 
 protected:
-    MPI_Comm comm;
     Vector3D ll, ur;
+    MPI_Comm comm;
     int rank, size;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
     */
     template<typename DetermineFunc>
-    PointsExchangeResult pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &points, const std::vector<double> &radiuses) const
+    PointsExchangeResult pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) const
     {
+        std::vector<bool> participating(allPoints.size(), false);
         std::vector<_3DPointRadius> data;
-        data.reserve(points.size());
-        for(size_t i = 0; i < points.size(); i++)
+        data.reserve(allPoints.size());
+        for(size_t pointIdx = 0; pointIdx < allPoints.size(); pointIdx++)
         {
-            const Vector3D &point = points[i];
-            const double radius = radiuses[i];
-            data.push_back({_3DPoint(point.x, point.y, point.z), radius});
+            const Vector3D &point = allPoints[pointIdx];
+            data.push_back({.indexInAllPoints = pointIdx, 
+                            .point = _3DPoint(point.x, point.y, point.z), 
+                            .radius = radiuses[pointIdx], 
+                            .CM = _3DPoint(previous_CM[pointIdx].x, previous_CM[pointIdx].y, previous_CM[pointIdx].z)
+                           });
+        }
+        
+        for(const size_t &pointIdx : indicesToWorkWith)
+        {
+            participating[pointIdx] = true;
         }
 
-        ExchangeAnswer<_3DPointRadius> answer = dataExchange(data, func, this->comm);
+        // re-build the function so that it maintains the points that are not participating
+        auto new_func = [&func, this, &participating](const _3DPointRadius &point){return ((not participating[point.indexInAllPoints])? this->rank : func(point));};
+        ExchangeAnswer<_3DPointRadius> answer = dataExchange(data, new_func, this->comm);
 
         // arrange the return value data structure
         PointsExchangeResult toReturn;
-
+        
         toReturn.indicesToSelf = std::move(answer.indicesToMe);
         toReturn.sentProcessors = std::move(answer.processesSend);
         toReturn.sentIndicesToProcessors = std::move(answer.indicesToProcesses);
 
         std::vector<_3DPointRadius> &ans = answer.output;
-        std::vector<Vector3D> pointAns;
-        std::vector<double> radiusesAns;
         toReturn.newPoints.reserve(ans.size());
         toReturn.newRadiuses.reserve(ans.size());
+        toReturn.newCMs.reserve(ans.size());
 
         for(const _3DPointRadius &_point : ans)
         {
             toReturn.newPoints.emplace_back(Vector3D(_point.point.x, _point.point.y, _point.point.z));
             toReturn.newRadiuses.push_back(_point.radius);
+            toReturn.newCMs.emplace_back(Vector3D(_point.CM.x, _point.CM.y, _point.CM.z));
         }
         return toReturn;
     };

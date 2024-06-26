@@ -15,7 +15,7 @@
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 //#include "source/newtonian/three_dimensional/hdf5_diagnostics_3d.hpp"
-#include "source/3D/output/hdf_write.hpp"
+#include "source/3D/output/write3D.hpp"
 #include <fstream>
 
 using std::cout;
@@ -23,11 +23,9 @@ using std::endl;
 using std::pair;
 using std::ofstream;
 
-namespace {
-
-  double random_float
-  (double low,
-   double high)
+namespace
+{
+  double random_float(double low, double high)
   {
     const double x = static_cast<double>(rand())/
       static_cast<double>(RAND_MAX);
@@ -48,7 +46,7 @@ namespace {
   }
 
   bool is_inside(const Vector3D& point,
-		 const pair<Vector3D, Vector3D>& boundary)
+         const pair<Vector3D, Vector3D>& boundary)
   {
     return point.x > boundary.first.x &&
       point.y > boundary.first.y &&
@@ -65,8 +63,8 @@ namespace {
   {
     vector<Vector3D> res(n);
     generate(res.begin(),
-	     res.end(),
-	     [&](){return generate_random_point(r_min, r_max);});
+         res.end(),
+         [&](){return generate_random_point(r_min, r_max);});
     return res;
   }
 
@@ -76,12 +74,12 @@ namespace {
    const double weight=0.1)
   {
     Voronoi3D tess(boundary.first,
-		   boundary.second);
+           boundary.second);
     tess.Build(points);
     vector<Vector3D> res(points.size());
     for(size_t i=0;i<points.size();++i)
       res.at(i) = tess.GetMeshPoint(i) + 
-	weight*(tess.GetCellCM(i)- tess.GetMeshPoint(i));
+    weight*(tess.GetCellCM(i)- tess.GetMeshPoint(i));
     return res;
   }
 
@@ -93,12 +91,12 @@ namespace {
     const double outer_radius = abs(boundary.first - boundary.second);
     vector<Vector3D> raw = 
       generate_initial_grid(n,
-			    outer_radius*inner_ratio,
-			    outer_radius);
+                outer_radius*inner_ratio,
+                outer_radius);
     vector<Vector3D> res;
     for(size_t i=0;i<raw.size();++i){
       if(is_inside(raw.at(i), boundary))
-	res.push_back(raw.at(i));
+    res.push_back(raw.at(i));
     }
     for(size_t i=0;i<50;++i)
       res = lloyd_iteration(res, boundary);
@@ -116,8 +114,8 @@ namespace {
       res.at(i).pressure = r < 1e-2 ? 1e2 : 1e-9;
       res.at(i).velocity = Vector3D(0,0,0);
       res.at(i).internal_energy =
-	eos.dp2e(res.at(i).density,
-		 res.at(i).pressure);
+    eos.dp2e(res.at(i).density,
+         res.at(i).pressure);
     }
     return res;
   }
@@ -135,8 +133,8 @@ namespace {
       ghost_(),
       interp_(ghost_),
       fc_({{&cond_bulk_, &action_bulk_},
-	    {&cond_boundary_, &action_boundary_}},
-	interp_) {}
+        {&cond_boundary_, &action_boundary_}},
+    interp_) {}
 
     ConditionActionFlux1& getFluxCalculator(void)
     {
@@ -162,7 +160,7 @@ namespace {
     (const pair<Vector3D, Vector3D>& boundary,
      const vector<Vector3D>& points):
       tess(boundary.first,
-	   boundary.second)
+       boundary.second)
     {
       tess.Build(points);
     }
@@ -171,25 +169,25 @@ namespace {
   };
 
 class SimData
-  {
+{
   public:
 
     SimData(void):
       boundary_(Vector3D(-1, -1, -1),
-		Vector3D(1, 1, 1)),
+        Vector3D(1, 1, 1)),
       init_points_(create_grid(boundary_,
-			      2000,
-			      1e-3)),
+                  2000,
+                  1e-3)),
       /*      tess_(boundary_.first,
-	    boundary_.second),
+        boundary_.second),
       */
       td_(boundary_, init_points_),
       eos_(5./3.),
       bpm_(),
       point_motion_(bpm_,
-		    eos_,
-		    boundary_.first,
-		    boundary_.second),
+            eos_,
+            boundary_.first,
+            boundary_.second),
       source_term_(),
       tsf_(0.3, 0.3, source_term_),
       fcd_(),
@@ -236,9 +234,9 @@ class SimData
     double res = 0;
     for(size_t i=0;i<sim.getCells().size();++i){
       if(sim.getCells().at(i).pressure>p_thres){
-	const Vector3D r = sim.getTesselation().GetMeshPoint(i);
-	const double radius = abs(r);
-	res = std::max(res, radius);
+    const Vector3D r = sim.getTesselation().GetMeshPoint(i);
+    const double radius = abs(r);
+    res = std::max(res, radius);
       }
     }
     return res;
@@ -249,15 +247,15 @@ class SimData
   public:
 
     TrackShockRadius(const string& fname,
-		     const double p_thres):
+             const double p_thres):
       fname_(fname), p_thres_(p_thres)  {}
 
     void operator()(HDSim3D& sim)
     {
       const double time = sim.getTime();
       const double radius =
-	estimate_shock_radius(sim,
-			      p_thres_);
+    estimate_shock_radius(sim,
+                  p_thres_);
       trajectory_.push_back({time, radius});
     }
 
@@ -265,8 +263,8 @@ class SimData
     {
       ofstream f(fname_.c_str());
       for(size_t i=0;i<trajectory_.size();++i)
-	f << trajectory_.at(i).first << " "
-	  << trajectory_.at(i).second << endl;
+    f << trajectory_.at(i).first << " "
+      << trajectory_.at(i).second << endl;
       f.close();
     }
 
@@ -283,7 +281,7 @@ class SimData
     //    write_snapshot_to_hdf5(sim, "initial.h5");
     WriteSnapshot3D(sim, "initial.h5");
     TrackShockRadius diag("shock_trajectory.txt",
-			  1e-3);
+              1e-3);
     while(sim.getTime()<tf){
       sim.timeAdvance();
       diag(sim);

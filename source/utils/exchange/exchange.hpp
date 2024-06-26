@@ -18,7 +18,7 @@ struct ExchangeAnswer
 
 namespace
 {
-    #define EXCHANGE_DATA_SEND_TAG 1999
+    #define EXCHANGE_DATA_SEND_TAG 2605
 
     template<typename T>
     void initializeReceive(ExchangeAnswer<T> &answer, const std::vector<size_t> &sizes, std::vector<MPI_Request> &requests, const MPI_Comm &comm)
@@ -47,8 +47,7 @@ namespace
 
             answer.processesRecv.push_back(_rank);
             answer.answerByProcesses.emplace_back(std::vector<T>());
-
-            std::vector<T> &answerVec = answer.answerByProcesses[answer.answerByProcesses.size() - 1];
+            std::vector<T> &answerVec = answer.answerByProcesses.back();
             answerVec.resize(sizes[_rank]);
             requests.push_back(MPI_REQUEST_NULL);
             MPI_Irecv(&answerVec[0], sizeof(T) * sizes[_rank], MPI_BYTE, _rank, EXCHANGE_DATA_SEND_TAG, comm, &requests[requests.size() - 1]);

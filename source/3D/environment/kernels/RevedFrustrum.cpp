@@ -23,7 +23,7 @@ namespace
     }
 }
 
-Vector3D RevedFrustrum::find_S(const std::vector<Face> &faces) const
+Vector3D Kernelization3D::RevedFrustrum::find_S(const std::vector<Face> &faces) const
 {    
     // first find the parallel faces
     std::vector<Vector3D> normals;
@@ -79,15 +79,15 @@ Vector3D RevedFrustrum::find_S(const std::vector<Face> &faces) const
 
     if(intersection1 != intersection2)
     {
-        std::stringstream intersection1Str, intersection2Str;
-        intersection1Str << intersection1;
-        intersection2Str << intersection2;
-        throw UniversalError("Body is not a frustrum (two distinct points of intersection: " + intersection1Str.str() + ", " + intersection2Str.str() + ")");
+        UniversalError eo("Body is not a frustrum (two distinct intersections and heads)");
+		eo.addEntry("head 1", intersection1);
+		eo.addEntry("head 2", intersection2);
+		throw eo;
     }
     return intersection1;
 }
 
-RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing, const IndexingKernel3D *afterIndexing)
+Kernelization3D::RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing, const IndexingKernel3D *afterIndexing)
 {
     if(faces.size() != NUM_FACES)
     {

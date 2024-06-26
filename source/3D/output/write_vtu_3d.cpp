@@ -1,71 +1,50 @@
 #include "write_vtu_3d.hpp"
-#include <set>
-#include <cassert>
 
-#ifdef RICH_MPI
-	#include <mpi.h>
-#endif
+namespace write_vtu3d
+{
+	void write_vtu_3d(std::filesystem::path const& file_name,
+				std::vector<std::string> const& cell_variable_names,
+				std::vector<std::vector<double>> const& cell_variables,
+				std::vector<std::string> const& cell_vectors_names,
+				std::vector<std::vector<Vector3D> > const& cell_vectors,
+				double const time,
+				std::size_t cycle,
+				Tessellation3D const& tess){
+		std::vector<Vector3D> const& vertices = tess.GetFacePoints();
+		std::size_t const num_vertices = vertices.size();
+		std::size_t const num_cells = tess.GetPointNo();
 
-#include <vtkUnstructuredGrid.h>
-#include <vtkCellData.h>
-#include <vtkPointData.h>
-#include <vtkCellArray.h>
-#include <vtkDoubleArray.h>
-#include <vtkIntArray.h>
-#include <vtkXMLUnstructuredGridWriter.h>
-#include <vtkXMLPUnstructuredGridWriter.h>
-#include <vtkPolyhedron.h>
-#include <vtkDataArray.h>
-#include <vtkIdList.h>
-#include <vtkPoints.h>
-#include <vtkProperty.h>
-#include <vtkNew.h>
+		#ifdef RICH_MPI
+			int mpi_rank;
+			int mpi_size;
+			MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+			MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+		#endif
+		
+		vtkNew<vtkUnstructuredGrid> ugrid;
 
-#ifdef RICH_MPI
-	#include <vtkMPI.h>
-	#include <vtkMPICommunicator.h>
-	#include <vtkMPIController.h>
-#endif
+		// ----------- time and cycle
+		// see https://www.visitusers.org/index.php?title=Time_and_Cycle_in_VTK_files
 
-namespace write_vtu3d{
-
-void write_vtu_3d(std::filesystem::path const& file_name,
-            std::vector<std::string> const& cell_variable_names,
-			   std::vector<std::vector<double>> const& cell_variables,
-			   std::vector<std::string> const& cell_vectors_names,
-			   std::vector<std::vector<Vector3D> > const& cell_vectors,
-			   double const time,
-			   std::size_t cycle,
-               Tessellation3D const& tess){
-	std::vector<Vector3D> const& vertices = tess.GetFacePoints();
-	std::size_t const num_vertices = vertices.size();
-	std::size_t const num_cells = tess.GetPointNo();
-
-	#ifdef RICH_MPI
-		int mpi_rank;
-		int mpi_size;
-		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-		MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-	#endif
-	
-	vtkNew<vtkUnstructuredGrid> ugrid;
-
-	// ----------- time and cycle
-	// see https://www.visitusers.org/index.php?title=Time_and_Cycle_in_VTK_files
-
-	// time
-    vtkNew<vtkDoubleArray> td;
-    td->SetName("TIME");
-    td->SetNumberOfTuples(1);
-    td->SetTuple1(0, time);
-    ugrid->GetFieldData()->AddArray(td);
-	
-	// cycle
-    vtkNew<vtkIntArray> cd;
-    cd->SetName("CYCLE");
-    cd->SetNumberOfTuples(1);
-    cd->SetTuple1(0, cycle);
-    ugrid->GetFieldData()->AddArray(cd);
+		// time
+		if(time != std::numeric_limits<double>::max())
+		{
+			vtkNew<vtkDoubleArray> td;
+			td->SetName("TIME");
+			td->SetNumberOfTuples(1);
+			td->SetTuple1(0, time);
+			ugrid->GetFieldData()->AddArray(td);
+		}
+		
+		// cycle
+		if(cycle != std::numeric_limits<size_t>::max())
+		{
+			vtkNew<vtkIntArray> cd;
+			cd->SetName("CYCLE");
+			cd->SetNumberOfTuples(1);
+			cd->SetTuple1(0, cycle);
+			ugrid->GetFieldData()->AddArray(cd);
+		}
 
 	// ----------- grid vertices coordinates
 	// see https://kitware.github.io/vtk-examples/site/Cxx/GeometricObjects/QuadraticHexahedron/
@@ -114,44 +93,44 @@ void write_vtu_3d(std::filesystem::path const& file_name,
 	// see here:
 	// https://paraview.paraview.narkive.com/GUqqKIK1/assign-scalars-vectors-to-mesh-points-in-vtkrectilineargrid-c
 
-	// cell scalars data
-	for(std::size_t var_index=0; var_index<cell_variable_names.size(); ++var_index){
-		vtkNew<vtkDoubleArray> var_data;
-		var_data->SetName(cell_variable_names[var_index].c_str());
-		var_data->SetNumberOfComponents(1);
-      	var_data->SetNumberOfValues(num_cells);
-		auto const& var = cell_variables[var_index];
-		assert(var.size() == num_cells);
-		for(std::size_t cell=0; cell<num_cells; ++cell){
-			var_data->SetValue(cell, var[cell]);
+		// cell scalars data
+		for(std::size_t var_index=0; var_index<cell_variable_names.size(); ++var_index){
+			vtkNew<vtkDoubleArray> var_data;
+			var_data->SetName(cell_variable_names[var_index].c_str());
+			var_data->SetNumberOfComponents(1);
+			var_data->SetNumberOfValues(num_cells);
+			auto const& var = cell_variables[var_index];
+			assert(var.size() == num_cells);
+			for(std::size_t cell=0; cell<num_cells; ++cell){
+				var_data->SetValue(cell, var[cell]);
+			}
+			ugrid->GetCellData()->AddArray(var_data);
 		}
-		ugrid->GetCellData()->AddArray(var_data);
-	}
 
-	// write mpi rank as a cell centered data
-	#ifdef RICH_MPI
-		vtkNew<vtkIntArray> var_mpi_rank;
-		var_mpi_rank->SetName(std::string("mpi_rank").c_str());
-		var_mpi_rank->SetNumberOfComponents(1);
-		var_mpi_rank->SetNumberOfValues(num_cells);
-		for(std::size_t cell=0; cell<num_cells; ++cell){
-			var_mpi_rank->SetValue(cell, mpi_rank);
-		}
-		ugrid->GetCellData()->AddArray(var_mpi_rank);
-	#endif
+		// write mpi rank as a cell centered data
+		#ifdef RICH_MPI
+			vtkNew<vtkIntArray> var_mpi_rank;
+			var_mpi_rank->SetName(std::string("mpi_rank").c_str());
+			var_mpi_rank->SetNumberOfComponents(1);
+			var_mpi_rank->SetNumberOfValues(num_cells);
+			for(std::size_t cell=0; cell<num_cells; ++cell){
+				var_mpi_rank->SetValue(cell, mpi_rank);
+			}
+			ugrid->GetCellData()->AddArray(var_mpi_rank);
+		#endif
 
-	// cell vector data
-	for(std::size_t var_index=0; var_index<cell_vectors_names.size(); ++var_index){
-		vtkNew<vtkDoubleArray> var_data;
-		var_data->SetName(cell_vectors_names[var_index].c_str());
-		var_data->SetNumberOfComponents(3);
-		var_data->SetNumberOfTuples(num_cells);
-		auto const& var = cell_vectors[var_index];
-		for(std::size_t cell=0; cell<num_cells; ++cell){
-			var_data->SetTuple3(cell, var[cell].x, var[cell].y, var[cell].z);
+		// cell vector data
+		for(std::size_t var_index=0; var_index<cell_vectors_names.size(); ++var_index){
+			vtkNew<vtkDoubleArray> var_data;
+			var_data->SetName(cell_vectors_names[var_index].c_str());
+			var_data->SetNumberOfComponents(3);
+			var_data->SetNumberOfTuples(num_cells);
+			auto const& var = cell_vectors[var_index];
+			for(std::size_t cell=0; cell<num_cells; ++cell){
+				var_data->SetTuple3(cell, var[cell].x, var[cell].y, var[cell].z);
+			}
+			ugrid->GetCellData()->AddArray(var_data);
 		}
-		ugrid->GetCellData()->AddArray(var_data);
-	}
 
 
 	// ------------ write the 'pieced' .pvtu file
