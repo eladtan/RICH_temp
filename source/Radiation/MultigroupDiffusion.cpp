@@ -250,22 +250,47 @@ bool MultigroupDiffusion::step(double const tolerance,
     calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs);
     calculate_planck_integrals(tess, cells_cgs);
 
-    std::size_t constexpr max_iter=1;
+    std::size_t constexpr max_iter=4;
     for(std::size_t iter=1; iter <= max_iter; ++iter){    
         gray = false;
+        
+        std::size_t tot_iters = 0;
         for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
             current_group=g;
             new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full);
 
+            tot_iters += total_iters;
             PostCG(tess, extensives, dt, cells, new_Eg, new_Eg_full);
         }
+
         
         calculate_gray_absorption_and_scattering_coefficients(tess, cells);
 
         gray = true;
         new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
 
+        tot_iters += total_iters;
+        std::cout << "iter " << iter << " tot_iters " << tot_iters << std::endl;
+
         PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
+
+        if(iter < max_iter){
+            cells_cgs = cells;
+            for(std::size_t i=0; i<N; ++i){
+                cells_cgs[i].density *= mass_scale_ / pow<3>(length_scale_);
+                cells_cgs[i].internal_energy *= pow<2>(length_scale_) / pow<2>(time_scale_);
+                cells_cgs[i].Erad *= pow<2>(length_scale_) / pow<2>(time_scale_);
+                cells_cgs[i].velocity *= length_scale_ / time_scale_;
+                for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+                    cells_cgs[i].Eg[g] *= pow<2>(length_scale_) / pow<2>(time_scale_);
+                }
+            }
+
+#ifdef RICH_MPI
+            ComputationalCell3D cdummy;
+            MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
+#endif
+        }
     }
 
     return true;
@@ -320,7 +345,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
 
         // build `b` vector, first term
-        b[i] = volume_cgs * Eg_i;
+        b[i] = volume_cgs * old_Eg[group][i];
 
         // second term
         auto const bg = planck_integal_group[group][i];
@@ -419,7 +444,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
                     // calculate the diffusion coefficient on the boundary using the maximal temperature of the cells
                     double const T_i = cell_i.temperature;
                     double const T_j = cell_j.temperature;
-                    double const max_T = std::max(T_i, T_j);
+                    double const max_T = std::max(old_Tm[i], old_Tm[j]);
 
                     cell_j.temperature = max_T;
                     cell_i.temperature = max_T;
@@ -527,11 +552,11 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
 
         // build `b` vector, first term
-        b[i] = volume_cgs * Er_i;
+        b[i] = volume_cgs * old_Er[i];
 
         // fleck factor
         double const sigma_planck = sigma_absorption_planck[i];
-        double const T = cell_cgs.temperature;
+        double const T = old_Tm[i];
         double cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
         
         // TODO: What is energy ratio (see Diffusion.cpp same line)
@@ -561,7 +586,6 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         A_indeces[i].push_back(i);
 
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
-        double const T = cells_cgs[i].temperature;
 
         double cdtkrf = cdt*sigma_absorption_average[i]*fleck_factor[i];
 
@@ -637,7 +661,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
 
                     double const T_i = cell_cgs_i.temperature;
                     double const T_j = cell_cgs_j.temperature;
-                    double const max_T = std::max(T_i, T_j);
+                    double const max_T = std::max(old_Tm[i], old_Tm[j]);
 
                     cell_cgs_i.temperature = max_T;
                     cell_cgs_j.temperature = max_T;
@@ -792,7 +816,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 
         extensives[i].Erad = CG_result[i] * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
-        double const T = cells[i].temperature;
+        double const T  = old_Tm[i];
         double const kp = sigma_absorption_planck[i];
         double const kr = sigma_absorption_average[i];
         double const Um = get_radiation_energy_density(T);
@@ -801,8 +825,8 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 
         dE *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
-        extensives[i].energy += dE;
-        extensives[i].internal_energy += dE;
+        extensives[i].energy = extensives_temp[i].energy + dE;
+        extensives[i].internal_energy = extensives_temp[i].internal_energy + dE;
 
         // other terms
 
@@ -850,9 +874,12 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
     MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
+
+#ifdef DEBUG
     if(rank == 0){
         std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
     }
+#endif
 }
 
 void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
@@ -884,7 +911,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
 
     for(std::size_t i=0; i<N; ++i){
         auto const& cell = cells[i];
-        double const kT = CG::boltzmann_constant * cell.temperature;
+        double const kT = CG::boltzmann_constant * old_Tm[i];
         double planck_sum = 0.0;
         for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
 
@@ -898,7 +925,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
         }
 
         if(planck_sum < (1. - 1e-4) and 
-           get_radiation_energy_density(cell.temperature) > 1e-3*cell.internal_energy*cell.density){
+           get_radiation_energy_density(old_Tm[i]) > 1e-3*cell.internal_energy*cell.density){
             throw UniversalError("bad groups! planckian not covered well!");
         }
     }
