@@ -14,11 +14,10 @@ logger = logging.getLogger("build_program.main")
 root_dir = str(pathlib.Path(__file__).parent.parent.absolute())
 sys.path.append(root_dir)
 
-ENERGY_GROUPS_NUM = 0
 
-def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definitionOfReal=8):
+def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None, definitionOfReal=8):
     warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
-    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={ENERGY_GROUPS_NUM}"
+    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)}"
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX "
     
@@ -145,7 +144,7 @@ def fix_r3d(root_dir):
             for line in fin:
                 fout.write(line.replace('@R3D_MAX_VERTS@', '256'))
 
-def build_program(*, configs, make_dir, src_dir, test_dir):
+def build_program(*, configs, make_dir, src_dir, test_dir, args=None):
     """Build the program with the desired configurations."""
     exe_name = "rich"
     logger.debug(f"args:\nconfigs = {configs}\nroot_dir = {root_dir}\nmake_dir = {make_dir}\nsrc_dir = {src_dir}\ntest_dir = {test_dir}")
@@ -172,12 +171,15 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
                             exe_name=exe_name,
                             config=config,
                             SysLibsDict=SysLibsDict,
-                            test_dir=test_dir)
+                            test_dir=test_dir,
+                            args=args)
         assert cmake.returncode == 0, f"Running cmake for {config} failed"
 
         short_exe_path = os.path.join(config_dir, exe_name)
         if os.path.islink(short_exe_path):
             os.remove(short_exe_path)   
+
+        print(f"ENERGY_GROUPS_NUM = {args.energy_groups_num}")
 
         #run make   
         logger.info("Running make")
