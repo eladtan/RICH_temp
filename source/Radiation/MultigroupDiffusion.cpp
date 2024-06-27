@@ -345,7 +345,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
 
         // build `b` vector, first term
-        b[i] = volume_cgs * old_Eg[group][i];
+        b[i] = volume_cgs * old_Eg[group][i] * mass_scale_ / (length_scale_*pow<2>(time_scale_));
 
         // second term
         auto const bg = planck_integal_group[group][i];
@@ -552,7 +552,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         auto const volume_cgs = tess.GetVolume(i) * pow<3>(length_scale_);
 
         // build `b` vector, first term
-        b[i] = volume_cgs * old_Er[i];
+        b[i] = volume_cgs * old_Er[i]* mass_scale_ / (length_scale_*pow<2>(time_scale_));
 
         // fleck factor
         double const sigma_planck = sigma_absorption_planck[i];
@@ -910,7 +910,6 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
     auto const N = tess.GetPointNo();
 
     for(std::size_t i=0; i<N; ++i){
-        auto const& cell = cells[i];
         double const kT = CG::boltzmann_constant * old_Tm[i];
         double planck_sum = 0.0;
         for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
@@ -924,6 +923,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
             planck_sum += bg;
         }
 
+        auto const& cell = cells_cgs[i];
         if(planck_sum < (1. - 1e-4) and 
            get_radiation_energy_density(old_Tm[i]) > 1e-3*cell.internal_energy*cell.density){
             throw UniversalError("bad groups! planckian not covered well!");
