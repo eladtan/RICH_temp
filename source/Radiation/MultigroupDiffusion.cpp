@@ -380,7 +380,9 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
     std::vector<std::size_t> neighbors;
     face_vec faces;
     Vector3D dummy_v;
-    if(flux_limiter_){
+    if(flux_limiter_ && group == 0){
+        // this depends on the order and the assumption is that it is done before the gray step
+        // TODO: MOVE TO PRESTEP
         for(std::size_t i=0; i < Nlocal; ++i){
             double abs_grad_E_temp = 0.0;
             
@@ -388,13 +390,14 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             faces = tess.GetCellFaces(i);
 
             auto const Nneighbors = neighbors.size();
-            double const Eg_i = cells_cgs[i].Eg[group] * cells_cgs[i].density;
+            // won't work with iterations
+            double const Er_i = cells_cgs[i].Erad * cells_cgs[i].density;
 
             for(std::size_t j=0; j < Nneighbors; ++j){
                 std::size_t const neighbor_j = neighbors[j];
                 if(neighbor_j < Nlocal || !tess.IsPointOutsideBox(neighbor_j)){
-                    double const Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
-                    auto const abs_dE = std::abs(Eg_i - Eg_j);
+                    double const Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density;
+                    auto const abs_dE = std::abs(Er_i - Er_j);
                     auto const abs_grad_E = abs_dE * fastabs(grad[faces[j]]);
 
                     abs_grad_E_temp = std::max(abs_grad_E_temp, abs_grad_E);
@@ -462,17 +465,13 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
                     if(flux_limiter_){
                         double const dEg = Eg_i - Eg_j;
 
-                        // double const gradE_magnitude = std::max(std::abs(fastabs(gradient)*dEg), std::numeric_limits<double>::min()*1e40);
-                        // double grad_factor = 1.0;
+                        double const gradE_magnitude = std::max(std::abs(fastabs(gradient)*dEg), std::numeric_limits<double>::min()*1e40);
 
                         max_neighbor_abs_grad_E[i] = std::max(max_neighbor_abs_grad_E[i], max_abs_grad_E[neighbor_j]);
 
-                        // grad_factor = std::max(0.15 * (max_abs_grad_E[i] + max_abs_grad_E[neighbor_j])/gradE_magnitude, 1.0);
+                        double const grad_factor = std::max(0.15 * (max_abs_grad_E[i] + max_abs_grad_E[neighbor_j])/gradE_magnitude, 1.0);
 
-                        // lambda = CG::CalcSingleFluxLimiter(gradient*dEg*grad_factor, D_ij, 0.5*(Eg_i + Eg_j));
-                        
-                        // TODO: add grad_factor to both here and to gray
-                        lambda = CG::CalcSingleFluxLimiter(gradient*dEg, D_ij, 0.5*(Eg_i + Eg_j));
+                        lambda = CG::CalcSingleFluxLimiter(gradient*dEg*grad_factor, D_ij, 0.5*(Eg_i + Eg_j));
                     }
 
                     double const lambdaD = lambda*D_ij;
@@ -600,34 +599,6 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
     std::vector<std::size_t> neighbors;
     face_vec faces;
     Vector3D dummy_v;
-    if(flux_limiter_){
-        for(std::size_t i=0; i < Nlocal; ++i){
-            double abs_grad_E_temp = 0.0;
-            
-            tess.GetNeighbors(i, neighbors);
-            faces = tess.GetCellFaces(i);
-
-            auto const Nneighbors = neighbors.size();
-            double const Er_i = cells_cgs[i].Erad * cells_cgs[i].density;
-
-            for(std::size_t j=0; j < Nneighbors; ++j){
-                std::size_t neighbor_j = neighbors[j];
-                if(neighbor_j < Nlocal || !tess.IsPointOutsideBox(neighbor_j)){
-                    double const Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density;
-                    auto const abs_dE = std::abs(Er_i - Er_j);
-                    auto const abs_grad_E = abs_dE * fastabs(grad[faces[j]]);
-
-                    abs_grad_E_temp = std::max(abs_grad_E_temp, abs_grad_E);
-                }
-            }
-
-            max_abs_grad_E[i] = abs_grad_E_temp;
-        }
-
-#ifdef RICH_MPI
-        MPI_exchange_data2(tess, max_abs_grad_E, true);
-#endif 
-    }
 
     // Add the diffusion terms
     for(std::size_t i=0; i < Nlocal; ++i){
@@ -683,7 +654,12 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                             double const Eg_old_i = cell_cgs_i.Eg[g]*cell_cgs_i.density;
                             double const Eg_old_j = cell_cgs_j.Eg[g]*cell_cgs_j.density;
                             double const dEg = Eg_old_i - Eg_old_j;
-                            lambda_g = CG::CalcSingleFluxLimiter(gradient*dEg, Dg_ij, 0.5*(Eg_old_i + Eg_old_j));
+
+                            double const gradE_magnitude = std::max(std::abs(fastabs(gradient)*dEg), std::numeric_limits<double>::min()*1e40);
+
+                            double grad_factor = std::max(0.15 * (max_abs_grad_E[i] + max_abs_grad_E[neighbor_j])/gradE_magnitude, 1.0);                            
+
+                            lambda_g = CG::CalcSingleFluxLimiter(gradient*dEg*grad_factor, Dg_ij, 0.5*(Eg_old_i + Eg_old_j));
                         }
 
                         double const lambda_gD = lambda_g * Dg_ij;
