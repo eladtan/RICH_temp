@@ -60,7 +60,7 @@ int main(void)
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
 
-	std::size_t const G = 30;
+	std::size_t const G = ENERGY_GROUPS_NUM;
 	std::vector<double> energy_groups_center(G);
 	std::vector<double> energy_groups_boundary(G+1);
 
