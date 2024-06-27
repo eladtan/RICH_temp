@@ -210,7 +210,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
 	
 	DiffusionSideBoundary D_boundary(1.1605e7);
-	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
+	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), /*flux_limiter*/false, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;

@@ -20,9 +20,6 @@
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/DiffusionForce.hpp"
-#include "source/Radiation/MultigroupDiffusion.hpp"
-#include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
-#include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include "source/newtonian/three_dimensional/LagrangianExtensiveUpdater3D.hpp"
@@ -36,13 +33,109 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include <source/Radiation/planck_integral/planck_integral.hpp>
-#include <algorithm>
 
 typedef std::array<double, 4> state_type;
 
-static constexpr double ev = 1.602176634e-12;
-static constexpr double kev = 1e3*ev;
+namespace
+{
+	double InterpolateTable(double const T, double const d, std::vector<double> const& T_, std::vector<double> const& rho_, std::vector<std::vector<double>> const& data,
+		double const T_high_slope = 0)
+	{
+		size_t const slope_length = 7;
+		if(T < T_[0])
+		{
+			if(d < rho_[0])
+			{
+				double const d_slope = (data[0][slope_length - 1] -data[0][0]) / (rho_[slope_length - 1] - rho_[0]);
+				double const T_slope = (data[slope_length - 1][0] -data[0][0]) / (T_[slope_length - 1] - T_[0]);
+				return std::exp(data[0][0] + d_slope * (d - rho_[0]) + T_slope * (T - T_[0]));
+			}
+			else
+			{	
+				double const data_T0 = BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d);
+				double const T_slope = (BiLinearInterpolation(T_, rho_, data, T_[slope_length - 1], d) - data_T0) / (T_[slope_length - 1] - T_[0]);
+				return std::exp(BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d) + T_slope * (T - T_[0]));
+			}
+		}
+		if(T > T_.back())
+		{
+			if(d < rho_[0])
+			{
+				double const d_slope = (data[T_.size() - 1][slope_length - 1] -data[T_.size() - 1][0]) / (rho_[slope_length - 1] - rho_[0]);
+				return std::exp(data[T_.size() - 1][0] + d_slope * (d - rho_[0]) + T_high_slope * (T - T_.back()));
+			}
+			else
+				return std::exp(BiLinearInterpolation(T_, rho_, data, T_.back() * 0.99999, d) + T_high_slope * (T - T_.back()));
+		}
+		if(d < rho_[0])
+		{
+			double const data_d0 = BiLinearInterpolation(T_, rho_, data, T, rho_[0] * 0.9999);
+			double const d_slope =(BiLinearInterpolation(T_, rho_, data, T, rho_[slope_length - 1]) - data_d0) / (rho_[slope_length - 1] - rho_[0]);
+			return std::exp(BiLinearInterpolation(T_, rho_, data, T, rho_[0] * 0.9999) + d_slope * (d - rho_[0]));
+		}
+		return std::exp(BiLinearInterpolation(T_, rho_, data, T, d));
+	}
+
+	class STAopacity: public DiffusionCoefficientCalculator
+	{
+	private:
+		std::vector<double> rho_, T_;
+		std::vector<std::vector<double>> rossland_, planck_, scatter_;
+
+	public:
+		STAopacity(std::string file_directory)
+		{
+			size_t const Nmatrix = 128;
+			std::vector<double> temp = read_vector(file_directory + "ross.txt");
+			rossland_.resize(Nmatrix);
+			for(size_t i = 0; i < Nmatrix; ++i)
+			{
+				rossland_[i].resize(Nmatrix);
+				for(size_t j = 0; j < Nmatrix; ++j)
+					rossland_[i][j] = temp[i * Nmatrix + j];
+			}
+			temp = read_vector(file_directory +"planck.txt");
+			planck_.resize(Nmatrix);
+			for(size_t i = 0; i < Nmatrix; ++i)
+			{
+				planck_[i].resize(Nmatrix);
+				for(size_t j = 0; j < Nmatrix; ++j)
+					planck_[i][j] = temp[i * Nmatrix + j];
+			}
+			temp = read_vector(file_directory +"scatter.txt");
+			scatter_.resize(Nmatrix);
+			for(size_t i = 0; i < Nmatrix; ++i)
+			{
+				scatter_[i].resize(Nmatrix);
+				for(size_t j = 0; j < Nmatrix; ++j)
+					scatter_[i][j] = temp[i * Nmatrix + j];
+			}
+			T_ = read_vector(file_directory +"T.txt");
+			rho_ = read_vector(file_directory +"rho.txt");
+		}
+
+		double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const override
+		{
+			double const T = std::log(cell.temperature);
+			double const d = std::log(cell.density);
+			return CG::speed_of_light / (3 * InterpolateTable(T, d, T_, rho_, rossland_));
+		}
+
+		double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+		{
+			double const T = std::log(cell.temperature);
+			double const d = std::log(cell.density);
+			return InterpolateTable(T, d, T_, rho_, planck_, -3.5);
+		}
+
+		double CalcScatteringOpacity(ComputationalCell3D const& cell) const override
+		{
+			double const T = std::log(cell.temperature);
+			double const d = std::log(cell.density);
+			return InterpolateTable(T, d, T_, rho_, scatter_);
+		}
+	};
+}
 
 int main(void)
 {
@@ -54,20 +147,6 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
-	
-	std::size_t const G = ENERGY_GROUPS_NUM;
-	std::vector<double> energy_groups_center(G);
-	std::vector<double> energy_groups_boundary(G+1);
-
-	double const Emin = kev*1e-4;
-	double const Emax = kev*1e2;
-	
-	energy_groups_boundary[0] = Emin;
-	for(std::size_t g=0; g < G; ++g){
-		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
-		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
-	}
-
 	std::string eos_location("/home/itamarg/workspace/RICH/data/EOS/");
 	std::string STA_location("/home/itamarg/workspace/RICH/data/STA/");
 	double const dmin_eos = -50.656872045869001;
@@ -86,9 +165,8 @@ int main(void)
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
 	//Radiation
-	GraySTAopacity opacity(STA_location);
-	
-    if (rank == 0)
+	STAopacity opacity(STA_location);
+	if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
 	const double width = 10 / lscale;
@@ -106,13 +184,6 @@ int main(void)
 		init_cell.pressure = eos.dT2p(init_cell.density, init_cell.temperature);
 		init_cell.internal_energy = eos.dp2e(init_cell.density, init_cell.pressure);
 		init_cell.Erad = CG::radiation_constant * T * T * T * T * tscale * tscale / (init_cell.density * mscale / lscale);
-        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-            init_cell.Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T);
-			init_cell.Eg[g] *= tscale * tscale / (init_cell.density * mscale / lscale); 
-			init_cell.Eg[g]  = std::max(init_cell.Eg[g], init_cell.Erad*1e-8);
-        }
-
-		std::cout << "Erad=" << init_cell.Erad << ", sumEg=" << std::accumulate(init_cell.Eg.begin(), init_cell.Eg.end(), 0.0) << std::endl; 
 	}
 	catch (UniversalError const &eo)
 	{
@@ -138,12 +209,12 @@ int main(void)
 	Lagrangian3D bpm;
 	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
 	
-	MultigroupDiffusionSideBoundary D_boundary(1.1605e7, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), /*flux_limiter*/true, false, false);
+	DiffusionSideBoundary D_boundary(1.1605e7);
+	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), /*flux_limiter*/true, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
-	ZeroForce3D force = ZeroForce3D();
+	DiffusionForce force(matrix_builder, eos);
 
 	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
 
