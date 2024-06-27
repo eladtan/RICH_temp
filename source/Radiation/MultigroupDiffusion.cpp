@@ -790,14 +790,17 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         double const old_e_therm = extensives[i].internal_energy;
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
 
-        extensives[i].Erad = CG_result[i] * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+        double const CG_res = std::max(CG_result[i], std::numeric_limits<double>::min()*1e100);
+        double const full_CG_res = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+        
+        extensives[i].Erad = CG_res * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
         double const T  = old_Tm[i];
         double const kp = sigma_absorption_planck[i];
         double const kr = sigma_absorption_average[i];
         double const Um = get_radiation_energy_density(T);
 
-        double dE = volume * fleck_factor[i] * cdt * (kr*full_CG_result[i] - kp*Um);
+        double dE = volume * fleck_factor[i] * cdt * (kr*full_CG_res - kp*Um);
 
         dE *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
