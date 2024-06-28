@@ -1,5 +1,7 @@
 #include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
+#include "source/3D/output/write_vtu_3d.hpp"
+#include "source/3D/output/hdf_write.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
 #include "source/misc/mesh_generator3D.hpp"
@@ -16,7 +18,6 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
-#include "source/3D/GeometryCommon/hdf_write.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/DiffusionForce.hpp"
@@ -147,8 +148,8 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
-	std::string eos_location("/home/esternberg/RICH/data/EOS/");
-	std::string STA_location("/home/esternberg/RICH/data/STA/");
+	std::string eos_location("/home/elads/RICH/data/EOS/");
+	std::string STA_location("/home/elads/RICH/data/STA/");
 	double const dmin_eos = -22;
 	double const dmax_eos = 1.1;
 	double const dd_eos = 0.05;
@@ -172,12 +173,11 @@ int main(void)
 		std::cout << "end sta" << std::endl;
 
 	const double width = 10 / lscale;
-	size_t const Nx = 128;
-	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
+	size_t const Nx = 128 * 5;//*128;
+	size_t const Ny = 10;
+	size_t const Nz = 10;
+	Vector3D ll(0, -0.5 * width * Ny / Nx, -0.5 * width * Nz / Nx), ur(width, 0.5 * width * Ny / Nx, 0.5 * width * Nz / Nx);
 	Voronoi3D tess(ll, ur);
-#ifdef RICH_MPI
-	Voronoi3D tproc(ll, ur);
-#endif
 	int counter = 0;
 	ComputationalCell3D init_cell;
 	double const T = 300;
@@ -195,18 +195,14 @@ int main(void)
 		throw;
 	}
 
-	
-#ifdef RICH_MPI
-	vector<Vector3D> procpoints = RoundGrid3DSingle(RandRectangular(ws, ll, ur), ll, ur);
-	tproc.Build(procpoints);
-#endif
-
-	vector<Vector3D> points = CartesianMesh(Nx, 1, 1, ll, ur
-#ifdef RICH_MPI
-		, &tproc
-#endif
-		);
+	vector<Vector3D> points;
+	if(rank == 0)
+		points = CartesianMesh(Nx, Ny, Nz, ll, ur);
+#ifdef RICH_MPI		
 	tess.BuildHilbert(points);
+	#else
+	tess.Build(points);
+	#endif
 	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
 
 	Hllc3D rs;
@@ -251,17 +247,20 @@ int main(void)
 	double old_dt = init_dt;
 	vector<DiagnosticAppendix3D *> appendices;
 	WriteSnapshot3D(sim, "init.h5", appendices, true);
+	auto t1 = std::chrono::high_resolution_clock::now();
 	while (sim.getTime() < tf)
 	{
-		if (sim.getCycle() % 1 == 0)
+		if (sim.getCycle() % 100 == 0)
 		{
 			if (rank == 0)
-
-				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << std::endl;
+			{
+				std::cout<<std::endl;
+				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt "<<old_dt<<std::endl;
+			}
 		}
 		if (sim.getTime() > nextT)
 		{
-			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
+			// WriteSnapshot3D(sim, "snapnew_" + int2str(counter) + ".h5", appendices, true);
 			nextT = sim.getTime() + dt_output;
 			++counter;
 		}
@@ -277,6 +276,9 @@ int main(void)
 			throw;
 		}
 	}
+	auto t2 = std::chrono::high_resolution_clock::now();
+	if(rank == 0)
+		std::cout<<"run time took "<< std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()<<" seconds"<<std::endl;
 	std::cout<<"Done"<<std::endl;
 #ifdef RICH_MPI
 	MPI_Finalize();
