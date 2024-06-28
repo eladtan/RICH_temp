@@ -15,8 +15,8 @@
 #include "3D/range/finders/GroupRangeTree.hpp"
 #include "3D/range/finders/HashBruteForce.hpp"
 #include "3D/range/finders/SmartBruteForce.hpp"
-#include "3D/environment/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/HilbertEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 
 #include "3D/environment/kernels/Rectangle.hpp"
 #include "3D/environment/kernels/SameRectangle.hpp"

@@ -53,9 +53,6 @@ public:
 
 	double Erad_dt_dt;
 
-	//! \brief The sound speed
-	double cs;
-
   static vector<string> tracerNames;
   static vector<string> stickerNames;
 

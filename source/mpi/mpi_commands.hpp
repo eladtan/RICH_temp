@@ -15,7 +15,6 @@
 #include "stdint.h"
 
 #define MPI_TIMED_BARRIER_TAG 110503
-#define MPI_EXCHANGE_ALL_TO_ALL_TAG 708
 
 using std::vector;
 
@@ -545,6 +544,13 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	int size;
 	MPI_Comm_size(comm, &size);
 
+	if(data.size() != static_cast<size_t>(size))
+	{
+		UniversalError eo("MPI_Exchange_all_to_all: data size must be equal to the number of ranks");
+		eo.addEntry("Size", data.size());
+		throw eo;
+	}
+
 	// agree the chunk size
 	size_t chunkSize = (data.empty() or data[0].empty())? 0 : data[0][0].getChunkSize();
 	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
@@ -613,6 +619,99 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	}
 
 	return resultByRanks;
+}
+
+template<typename T>
+T MPI_Bcast_serializable(const T &data, int root, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");
+
+	int rank, size;
+	MPI_Comm_rank(comm, &rank);
+	MPI_Comm_size(comm, &size);
+
+	size_t chunkSize = data.getChunkSize();
+	std::vector<double> recv(chunkSize);
+	if(rank == root)
+	{
+		recv = data.serialize();
+	}
+	MPI_Bcast(recv.data(), chunkSize, MPI_DOUBLE, root, comm);
+	T result;
+	result.unserialize(recv);
+	return result;
+}
+
+template<typename T>
+std::vector<T> MPI_Spread(std::vector<T> const& data, int root, const MPI_Comm &comm)
+{
+	int rank, size;
+	MPI_Comm_rank(comm, &rank);
+	MPI_Comm_size(comm, &size);
+
+	if(size == 1)
+	{
+        return data;
+    }
+
+	size_t totalSize;
+	if(rank == root)
+	{
+		totalSize = data.size();
+	}
+	MPI_Bcast(&totalSize, 1, MPI_UNSIGNED_LONG, root, comm);
+
+	if(totalSize == 0)
+	{
+        return std::vector<T>();
+    }
+
+	size_t elementSize;
+	if(rank == root)
+	{
+		elementSize = data[0].getChunkSize();
+	}
+	MPI_Bcast(&elementSize, 1, MPI_UNSIGNED_LONG, root, comm);
+
+	std::vector<double> myDataSerialized;
+	if(rank == root)
+	{
+		for(const T &value : data)
+		{
+			std::vector<double> serialized = value.serialize();
+            myDataSerialized.insert(myDataSerialized.end(), serialized.begin(), serialized.end());
+		}
+	}
+
+	size_t idealSize = totalSize / size;
+	size_t currentSize = 0;
+	std::vector<int> displs;
+	std::vector<int> counts;
+	for(int _rank = 0; _rank < size; _rank++)
+	{
+		size_t _begin = _rank * idealSize;
+		size_t _end = (_rank == size - 1) ? totalSize : (_rank + 1) * idealSize;
+		size_t length = (_end - _begin);
+		counts.push_back(static_cast<int>(length * elementSize));
+		displs.push_back(static_cast<int>(currentSize));
+		currentSize += length * elementSize;
+	}
+
+	int myRecvNum = counts[rank];
+	std::vector<double> recvDataSerialized(myRecvNum);
+	MPI_Scatterv(myDataSerialized.data(), counts.data(), displs.data(), MPI_DOUBLE, recvDataSerialized.data(), myRecvNum, MPI_DOUBLE, root, comm);
+
+	std::vector<T> toReturn;
+	for(int i = 0; i < myRecvNum / elementSize; i++)
+	{
+		std::vector<double> elementData;
+		for(int j = 0; j < elementSize; j++)
+			elementData.push_back(recvDataSerialized.at(i * elementSize + j));
+		T value;
+		value.unserialize(elementData);
+		toReturn.push_back(value);
+	}
+	return toReturn;
 }
 
 #endif //RICH_MPI

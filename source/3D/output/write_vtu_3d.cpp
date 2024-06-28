@@ -1,4 +1,5 @@
 #include "write_vtu_3d.hpp"
+#include <set>
 
 namespace write_vtu3d
 {

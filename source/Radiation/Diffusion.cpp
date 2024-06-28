@@ -599,7 +599,7 @@ void DiffusionClosedBox::SetMomentumTermBoundary(Tessellation3D const& tess, siz
         double& /*b*/, size_t const /*face_index*/, double const fleck_factor, double const flux_limiter, 
         double const D, double const sigma_planck)const
 {
-     Vector3D r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
+    Vector3D r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
     double const r_ij_size = abs(r_ij);
     r_ij *= 1.0 / r_ij_size;
     double const momentum_relativity_term = -0.5 * fleck_factor * dt * flux_limiter * Area * 
@@ -627,7 +627,7 @@ double PowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell
 
 double PowerLawOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const
 {
-    return CG::speed_of_light / (3 * CalcDiffusionCoefficient(cell));
+    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
 }
 
 void DiffusionXInflowBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 

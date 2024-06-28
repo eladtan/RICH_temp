@@ -5,7 +5,6 @@ import pathlib
 import sys
 
 # importing modules from this package
-from .buildutils import lmod
 from .buildutils import run_make
 
 logging.basicConfig(level=logging.DEBUG)
@@ -140,14 +139,7 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
 
     with open(os.path.join(root_dir, "compilation", "SystemLibsLinks.py"), "r") as f:
         SysLibsDict = eval(f.read())
-    assert "lmod" in SysLibsDict.keys(), f"Did not find lmod link in SysLibsDict"
-
-    with open(os.path.join(root_dir, "compilation", "ModulesToLoad.py"), "r") as f:
-        modules = eval(f.read())
-    
-    for m in modules:
-        logger.info(f"loading module {m}")
-        lmod.module(SysLibsDict["lmod"], "load", m)
+ 
 
 # Fix issue in r3d
     with open(os.path.join(root_dir,"r3d/config/r3d-config.h.in"), "r") as fin:

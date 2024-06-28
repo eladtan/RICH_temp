@@ -85,7 +85,8 @@ public:
         {
             this->rebalance(points);
         }
-        return this->exchange(points, radiuses);
+        PointsExchangeResult result = this->exchange(points, indicesToWorkWith, radiuses, previous_CM); 
+        return result;
     }
 
 protected:

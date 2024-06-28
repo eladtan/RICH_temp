@@ -16,7 +16,7 @@ public:
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& fluxes, const double time, vector<Vector3D> &acc) const
     {
-        std::vector<Vector3D> points = tess.getMeshPoints();
+        std::vector<Vector3D> points = tess.GetAllCM();
         points.resize(tess.GetPointNo());
         std::vector<gravity_result_t> masses;
         masses.reserve(points.size());
@@ -27,7 +27,7 @@ public:
         std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
 
         #ifdef RICH_MPI
-            DistributedGravityCalculator agent(points, masses, boundaries.first, boundaries.second, this->theta, this->quadrupole);
+            DistributedGravityCalculator agent(tess, masses, this->theta, this->quadrupole);
             acc = agent.getAcceleration(points);
         #else // RICH_MPI
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);

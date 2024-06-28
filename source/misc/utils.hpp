@@ -563,6 +563,8 @@ template<class T> vector<std::size_t> sort_index(const vector<T> & arr);
 
 template<class T> vector<std::size_t> sort_index(const vector<T> & arr)
 {
+	if(arr.size() == 0)
+		return vector<std::size_t>();
 	vector<std::size_t> res(arr.size());
 	for (std::size_t i = 0; i < res.size(); ++i)
 		res[i] = i;

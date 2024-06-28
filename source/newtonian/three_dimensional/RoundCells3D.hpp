@@ -27,7 +27,7 @@ public:
 	\param dt_speed The speed in units of radius/dt
 	*/
 	RoundCells3D(const PointMotion3D& pm, const EquationOfState& eos,
-		double chi = 0.25, double eta = 0.02, bool cold = false,double min_dw=0,double dt_speed=0.01,
+		double chi = 1.25, double eta = 0.02, bool cold = false,double min_dw=0,double dt_speed=0.01,
 		const vector<std::string>& no_move=vector<std::string>());
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,

@@ -275,6 +275,16 @@ public:
 #pragma omp declare simd
 #endif
 	~Vector3D(void) override {}
+
+	static const Vector3D max(void)
+	{
+		return Vector3D(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
+	}
+
+	static const Vector3D min(void)
+	{
+		return Vector3D(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
+	}
 };
 
 /*! \brief Norm of a vector
@@ -388,7 +398,7 @@ inline double ScalarProd(Vector3D const& v1, Vector3D const& v2)
 */
 inline double CalcAngle(Vector3D const& v1, Vector3D const& v2)
 {
-	return std::acos(std::max(-1.0, std::min(-1.0, ScalarProd(v1, v2) / (abs(v1) * abs(v2)))));
+	return std::acos(std::max(-1.0, std::min(1.0, ScalarProd(v1, v2) / (abs(v1) * abs(v2)))));
 }
 
 /*! \brief Calculates the projection of one vector in the direction of the second
