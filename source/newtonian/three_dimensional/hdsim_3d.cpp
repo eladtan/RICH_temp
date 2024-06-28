@@ -205,32 +205,13 @@ namespace
 		else
 			points = *orgpoints;
 		points.resize(tess.GetPointNo());
-		double total_move = 0;
 		if(orgpoints != nullptr)
 		{
 			size_t const N = points.size();
 			for (size_t i = 0; i < N; ++i)
-			{
 				points[i] += point_vel[i] * dt;
-				total_move += abs(point_vel[i]);
-			}
 		}
-		else
-		{
-			size_t const N = points.size();
-			for (size_t i = 0; i < N; ++i)
-				total_move += abs(point_vel[i]);
-		}
-#ifdef RICH_MPI
-		MPI_Allreduce(MPI_IN_PLACE, &total_move, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-#endif // RICH_MPI
 		
-//		std::cout<<"total move: "<<total_move<<" orgpoints "<<orgpoints<<std::endl;
-		if(total_move < std::numeric_limits<double>::min() * 100)
-		{
-			// std::cout<<"skip tessellation update"<<std::endl;
-			return;
-		}
 		#ifdef RICH_MPI
 		tess.BuildParallel(points);
 		#else // RICH_MPI
@@ -278,35 +259,38 @@ void HDSim3D::timeAdvance2(void)
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
-	// if (pt_.cycle % 10 == 0)
-	// {
-	// 	vector<Vector3D>& mesh = tess_.accessMeshPoints();
-	// 	mesh.resize(tess_.GetPointNo());
-	// 	vector<size_t> order = HilbertOrder3D(mesh);
-	// 	mesh = VectorValues(mesh, order);
-	// 	mid_extensives = VectorValues(mid_extensives, order);
-	// 	extensive_ = VectorValues(extensive_, order);
-	// 	cells_ = VectorValues(cells_, order);
-	// 	point_vel = VectorValues(point_vel, order);
-	// 	#ifdef RICH_MPI
-	// 	tess_.PreparePoints(mesh, order);
-	// 	#endif
-	// }
-	MovePoints(tess_, point_vel, dt);
-	t1 = get_time();
-	UpdateTessellation(tess_, point_vel, dt);
-	t2 = get_time();
-	DisplayTime(t1, t2, "Voronoi build time ");
-#ifdef RICH_MPI
-	// Keep relevant points
+	if (pt_.cycle % 10 == 0 && pm_.MovedPoints())
+	{
+		vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		mesh.resize(tess_.GetPointNo());
+		vector<size_t> order = HilbertOrder3D(mesh);
+		mesh = VectorValues(mesh, order);
+		mid_extensives = VectorValues(mid_extensives, order);
+		extensive_ = VectorValues(extensive_, order);
+		cells_ = VectorValues(cells_, order);
+		point_vel = VectorValues(point_vel, order);
+		#ifdef RICH_MPI
+		tess_.PreparePoints(mesh, order);
+		#endif
+	}
 	Conserved3D edummy;
 	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess_, mid_extensives, false, &edummy);
-	MPI_exchange_data(tess_, extensive_, false, &edummy);
-	MPI_exchange_data(tess_, cells_, false, &cdummy);
-	MPI_exchange_data(tess_, point_vel, false, &vdummy);
-	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+	if(pm_.MovedPoints())
+	{
+		MovePoints(tess_, point_vel, dt);
+		t1 = get_time();
+		UpdateTessellation(tess_, point_vel, dt);
+		t2 = get_time();
+		DisplayTime(t1, t2, "Voronoi build time ");
+#ifdef RICH_MPI
+		// Keep relevant points
+		MPI_exchange_data(tess_, mid_extensives, false, &edummy);
+		MPI_exchange_data(tess_, extensive_, false, &edummy);
+		MPI_exchange_data(tess_, cells_, false, &cdummy);
+		MPI_exchange_data(tess_, point_vel, false, &vdummy);
+		MPI_exchange_data(tess_, point_vel, true, &vdummy);
 #endif
+	}
 
 cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
