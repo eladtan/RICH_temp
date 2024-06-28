@@ -116,9 +116,9 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
             }
             double const v_mid = ScalarProd(0.5 * (velocity_outside + cells[i].velocity), r_ij);
             if(v_mid > 0)
-                dE += Er_outside * tess.GetArea(faces[j]) * dt * v_mid * (0.5 - 0.5 * R2_outside);
+                dE += Er_outside * tess.GetArea(faces[j]) * dt * ScalarProd(r_ij, velocity_outside) * (0.5 - 0.5 * R2_outside);
             else
-                dE += (0.5 - 0.5 * R2[i]) * new_Er[i] * tess.GetArea(faces[j]) * dt * v_mid;
+                dE += (0.5 - 0.5 * R2[i]) * new_Er[i] * tess.GetArea(faces[j]) * dt * ScalarProd(r_ij, cells[i].velocity);
             
         }
         extensives[i].Erad += dE ;
