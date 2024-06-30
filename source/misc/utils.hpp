@@ -13,6 +13,7 @@
 #include <iostream>
 #include "boost/container/flat_map.hpp"
 #include <limits>
+#include <cmath>
 
 using std::vector;
 
@@ -897,5 +898,24 @@ template<class S, class T> T& safe_retrieve
 #pragma omp declare simd
 #endif
 double fastsqrt(double x);
+
+
+/**
+ * Function to perform 2D interpolation on a given table.
+ *
+ * @param x The x-coordinate for interpolation.
+ * @param y The y-coordinate for interpolation.
+ * @param x_vec The vector of x-coordinates for the table.
+ * @param y_vec The vector of y-coordinates for the table.
+ * @param data The 2D data table.
+ * @param x_vec_high_slope The slope for x-values greater than the maximum x-value in the table.
+ * @param slope_length The number of points to use for calculating the slope.
+ *
+ * @return The interpolated value at the given (x, y) coordinates.
+ *
+ * @throws UniversalError If the size of x_vec or y_vec is less than or equal to slope_length.
+ */
+double Interpolate2DTable(double const x, double const y, std::vector<double> const& x_vec, std::vector<double> const& y_vec, std::vector<std::vector<double>> const& data,
+        double const x_vec_high_slope = 0, size_t const slope_length = 5);
 
 #endif // UTILS_HPP
