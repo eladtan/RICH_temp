@@ -58,7 +58,7 @@ public:
             }
         }
 
-        inline OctTreeNode(OctTreeNode &&other): isLeaf(other.isLeaf), value(other.value), boundingBox(other.boundingBox)
+        inline OctTreeNode(OctTreeNode &&other): isLeaf(other.isLeaf), value(other.value), boundingBox(other.boundingBox), height(other.height), depth(other.depth)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
@@ -298,7 +298,7 @@ void OctTree<T>::deleteSubtree(OctTreeNode *node)
 }
 
 template<typename T>
-OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isLeaf(false), parent(parent), depth(0)
+OctTree<T>::OctTreeNode::OctTreeNode(OctTreeNode *parent, int childNumber): isLeaf(false), parent(parent), height(0), depth(0)
 {
     assert(parent != nullptr);
 
@@ -423,28 +423,16 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBo
 template<typename T>
 void OctTree<T>::OctTreeNode::fixHeightsRecursively()
 {
-    if(this->parent == nullptr)
-    {
-        this->depth = 0;
-        return;
-    }
-    bool leaf = true;
-    for(int i = 0; i < CHILDREN; i++)
-    {
-        if(this->children[i] != nullptr)
-        {
-            leaf = false;
-            break;
-        }
-    }
-    if(leaf)
+    if(this->isLeaf)
     {
         this->height = 0;
     }
-    this->parent->fixHeightsRecursively();
-
-    this->parent->height = std::max<int>(this->parent->height, this->height + 1);
-    this->depth = this->parent->depth + 1;
+    if(this->parent != nullptr)
+    {
+        this->parent->height = std::max<int>(this->parent->height, this->height + 1);
+        this->parent->fixHeightsRecursively();
+    }
+    this->depth = (this->parent == nullptr)? 0 : this->parent->depth + 1;
 }
 
 template<typename T>

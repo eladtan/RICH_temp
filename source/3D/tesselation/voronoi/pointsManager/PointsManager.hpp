@@ -77,15 +77,15 @@ public:
         return (rebalance > 0);
     };
 
-    PointsExchangeResult update(const std::vector<Vector3D> &points, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool doRebalance = true)
+    PointsExchangeResult update(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool doRebalance = true)
     {
         // if envAgent is null, the `exchange` will perform an initialization as well.
         // `rebalance` is used only when the environment agent is initialized.
-        if((this->getEnvironmentAgent() != nullptr) and doRebalance and this->checkForRebalance(points))
+        if((this->getEnvironmentAgent() != nullptr) and doRebalance and this->checkForRebalance(allPoints))
         {
-            this->rebalance(points);
+            this->rebalance(allPoints);
         }
-        PointsExchangeResult result = this->exchange(points, indicesToWorkWith, radiuses, previous_CM); 
+        PointsExchangeResult result = this->exchange(allPoints, indicesToWorkWith, radiuses, previous_CM); 
         return result;
     }
 

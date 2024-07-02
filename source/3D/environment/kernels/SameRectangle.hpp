@@ -16,7 +16,7 @@ public:
     inline SameRectangle(const std::vector<Vector3D> &vertices = std::vector<Vector3D>(), const Kernelization3D::IndexingKernel3D *indexing = nullptr): indexing(indexing)
     {
         Vector3D ll(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
-        Vector3D ur(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
+        Vector3D ur(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
         
 
         for(const Vector3D &vertex : vertices)
@@ -33,7 +33,7 @@ public:
         this->scaleIndexing = Kernelization3D::Scale(Vector3D(max_scale, max_scale, max_scale));
     }
     
-    SameRectangle(const Vector3D &ll, const Vector3D &ur, const Kernelization3D::IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    SameRectangle(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
     {
         double const max_scale = std::max(ur.z - ll.z, std::max(ur.x - ll.x, ur.y - ll.y));
         this->moveIndexing = Kernelization3D::Move(ll);

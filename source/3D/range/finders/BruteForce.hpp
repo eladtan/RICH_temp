@@ -17,7 +17,7 @@ public:
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
         size_t closestSoFarIndex = std::numeric_limits<size_t>::max();
-        double closestSoFar = std::numeric_limits<double>::min();
+        double closestSoFar = std::numeric_limits<double>::max();
         const Vector3D *_points = this->points.data();
         for(size_t i = 0; i < this->pointsSize; i++)
         {

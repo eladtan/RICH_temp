@@ -45,7 +45,7 @@ public:
         this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
     }
 
-    const DistributedOctTree<Vector3D> *getOctTree() const{return this->distributedOctTree;};
+    const DistributedOctTree_Type *getOctTree() const{return this->distributedOctTree;};
 
     inline int getOrder() const{return this->order;};
     

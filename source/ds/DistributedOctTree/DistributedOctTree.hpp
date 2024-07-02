@@ -13,6 +13,7 @@
 #include "ds/OctTree/OctTree.hpp"
 #include "RankedValue.hpp"
 
+
 #ifdef DEBUG_MODE
 #include <iostream>
 #endif // DEBUG_MODE
@@ -47,6 +48,8 @@ public:
     int getDepth() const{return this->octTree->getDepth();};
     
     OctTree<RankedValue> *getOctTree(){return this->octTree;};
+
+    const OctTree<RankedValue> *getOctTree() const{return this->octTree;};
 
     std::vector<T> getRankValues(int _rank) const;
 
@@ -304,7 +307,7 @@ template<typename U>
 std::vector<std::pair<typename T::coord_type, typename T::coord_type>> DistributedOctTree<T, max_ranks_per_leaf>::getClosestFurthestPointsByRanks(const U &point) const
 {
     const typename T::coord_type &maxVal = std::numeric_limits<typename T::coord_type>::max();
-    const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::min();
+    const typename T::coord_type &minVal = std::numeric_limits<typename T::coord_type>::lowest();
     
     std::pair<T, T> initialPair = std::make_pair<T, T>(T(maxVal, maxVal, maxVal), T(minVal, minVal, minVal));
     std::vector<std::pair<typename T::coord_type, typename T::coord_type>> distances(this->size, {maxVal, minVal});

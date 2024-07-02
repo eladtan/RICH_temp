@@ -58,7 +58,7 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
 {
     std::vector<Vector3D> kerneledVectors;
     Vector3D kerneledLL(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
-    Vector3D kerneledUR(std::numeric_limits<double>::min(), std::numeric_limits<double>::min(), std::numeric_limits<double>::min());
+    Vector3D kerneledUR(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
     kerneledVectors.reserve(points.size());
 
     for(const Vector3D &point : points)
