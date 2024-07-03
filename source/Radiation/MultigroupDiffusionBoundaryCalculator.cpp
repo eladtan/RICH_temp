@@ -96,3 +96,40 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGroup(std::size_t const gr
     }
 }
 
+void MultigroupDiffusionSideBoundary::setMomentumTermBoundaryGray(Tessellation3D const& tess,
+                                                                  std::size_t const index,
+                                                                  std::size_t const outside_point,
+                                                                  double dt,
+                                                                  std::vector<ComputationalCell3D> const& cells,
+                                                                  double const momentum_term_coefficient,
+                                                                  double& A,
+                                                                  double& b) const {
+    // this is not true since the momentum term needs to also be weight by the energy density of the groups We should use the energy!
+    
+    // double const R = tess.GetWidth(index);
+    // if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
+    //     A += dt * momentum_term_coefficient;
+    //     b -= dt * momentum_term_coefficient * Ur;
+    // } else {
+    //     A += 2.0 * dt * momentum_term_coefficient;
+    // }
+}
+
+void MultigroupDiffusionSideBoundary::setMomentumTermBoundaryGroup(std::size_t const group,
+                                                                  Tessellation3D const& tess,
+                                                                  std::size_t const index,
+                                                                  std::size_t const outside_point,
+                                                                  double dt,
+                                                                  std::vector<ComputationalCell3D> const& cells,
+                                                                  double const momentum_term_coefficient,
+                                                                  double& A,
+                                                                  double& b) const {
+    double const R = tess.GetWidth(index);
+
+    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
+        A += dt * momentum_term_coefficient;
+        b -= dt * momentum_term_coefficient * Ug[group];
+    } else {
+        A += 2.0 * dt * momentum_term_coefficient;
+    }
+}
