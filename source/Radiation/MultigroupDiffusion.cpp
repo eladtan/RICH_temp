@@ -25,8 +25,6 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 sigma_absorption_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 sigma_scattering_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 planck_integal_group(ENERGY_GROUPS_NUM, std::vector<double>()),
-                                                                R2_group(ENERGY_GROUPS_NUM, std::vector<double>()),
-                                                                cell_flux_limiter_group(ENERGY_GROUPS_NUM, std::vector<double>()),
                                                                 sigma_absorption_planck(),
                                                                 sigma_absorption_average(),
                                                                 sigma_scattering_gray(),
@@ -65,8 +63,6 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     sigma_absorption_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
     sigma_scattering_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
     planck_integal_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
-    R2_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
-    cell_flux_limiter_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
     
     new_Eg.resize(N, 0.0);
     new_Eg_full.resize(N, 0.0);

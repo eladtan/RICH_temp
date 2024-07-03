@@ -72,8 +72,6 @@ public:
     mutable std::vector<std::vector<double>> sigma_absorption_group; // [group][cell]
     mutable std::vector<std::vector<double>> sigma_scattering_group; // [group][cell]
     mutable std::vector<std::vector<double>> planck_integal_group; // [group][cell]
-    mutable std::vector<std::vector<double>> R2_group; // [group][cell]
-    mutable std::vector<std::vector<double>> cell_flux_limiter_group; // [group][cell]
 
     mutable std::vector<double> sigma_absorption_planck;
     mutable std::vector<double> sigma_absorption_average;
