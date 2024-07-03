@@ -132,3 +132,29 @@ double AnalyticOpacity::CalcScatteringCoefficientGroup(ComputationalCell3D const
                                                        std::size_t const group) const {
     return sigma_scattering_groups_function(cell, group);
 }
+
+GrayPowerLawOpacity::GrayPowerLawOpacity(double const D0, 
+                                         double const alpha, 
+                                         double const beta, 
+                                         double const planck0, 
+                                         double const alpha_planck, 
+                                         double const beta_planck) : D0_(D0),
+                                                                     alpha_(alpha),
+                                                                     beta_(beta),
+                                                                     planck0_(planck0),
+                                                                     alpha_planck_(alpha_planck),
+                                                                     beta_planck_(beta_planck),
+                                                                     MultigroupDiffusionCoefficientCalculator(std::vector<double>(), std::vector<double>()) {}
+
+        
+double GrayPowerLawOpacity::CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+    return D0_ * std::pow(cell.density, alpha_) * std::pow(cell.temperature, beta_);
+}
+
+double GrayPowerLawOpacity::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
+}
+
+double GrayPowerLawOpacity::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+    return 0.0;
+}
