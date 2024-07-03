@@ -39,6 +39,10 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 max_abs_grad_E(),
                                                                 max_neighbor_abs_grad_E(),
                                                                 grad(),
+                                                                lambda_face_gray(),
+                                                                sigma_ratio_lambda_face_gray(),
+                                                                lambda_cell_gray(),
+                                                                sigma_ratio_lambda_cell_gray(),
                                                                 RadiationDriver(eos,
                                                                                 zero_cells,
                                                                                 flux_limiter,
@@ -95,6 +99,12 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
 
     auto const Nfaces = tess.GetTotalFacesNumber();
     grad.resize(Nfaces);
+    
+    lambda_face_gray.resize(Nfaces, std::pair<double, double>(0.0, 0.0));
+    sigma_ratio_lambda_face_gray.resize(Nfaces, std::pair<double, double>(0.0, 0.0));
+
+    lambda_cell_gray.resize(N, 0.0);
+    sigma_ratio_lambda_cell_gray.resize(N, 0.0);
 
     std::vector<std::size_t> neighbors;
     face_vec faces; 

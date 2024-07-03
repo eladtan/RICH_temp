@@ -93,6 +93,12 @@ public:
     mutable std::vector<double> max_neighbor_abs_grad_E;
 
     mutable std::vector<Vector3D> grad; // gradient ij for i < j
+    
+    mutable std::vector<std::pair<double, double>> lambda_face_gray;
+    mutable std::vector<std::pair<double, double>> sigma_ratio_lambda_face_gray;
+    mutable std::vector<double> lambda_cell_gray;
+    mutable std::vector<double> sigma_ratio_lambda_cell_gray;
+
 private:
     void BuildMatrixGroup(std::size_t group,
                           Tessellation3D const& tess, 
