@@ -166,6 +166,12 @@ namespace
 							eo.addEntry("Cell id", static_cast<double>(res[i].ID));
 							throw eo;
 						}
+						
+
+						// update group energies
+						for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+							res[i].Eg[g] = extensive.Eg[g] / extensive.mass;
+						}
 					}
 					res[i].temperature = eos.de2T(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
 					if(res[i].temperature < 1e3)
