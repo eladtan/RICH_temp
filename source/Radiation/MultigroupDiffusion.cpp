@@ -1021,6 +1021,8 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
     auto const N = tess.GetPointNo();
     std::vector<size_t> neighbors;
     face_vec faces;
+    Vector3D dummy_v;
+    Vector3D dP;
 
     double Einit = 0.0;
     for(std::size_t i = 0; i < N; ++i){
@@ -1042,21 +1044,25 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
 
         double const CG_res = std::max(CG_result[i], std::numeric_limits<double>::min()*1e100);
-        double const full_CG_res = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+        double const full_CG_res_i = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
         
         extensives[i].Erad = CG_res * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
         double const T  = old_Tm[i];
         double const kp = sigma_absorption_planck[i];
         double const kr = sigma_absorption_average[i];
+        double const f = fleck_factor[i];
         double const Um = get_radiation_energy_density(T);
 
-        double dE = volume * fleck_factor[i] * cdt * (kr*full_CG_res - kp*Um);
-
-        dE *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
-
-        extensives[i].energy = extensives_temp[i].energy + dE;
-        extensives[i].internal_energy = extensives_temp[i].internal_energy + dE;
+        // absorption + emission
+        double dE_absorption_emission = volume * f * cdt * (kr*full_CG_res_i - kp*Um);
+        dE_absorption_emission *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+        
+        extensives[i].energy = extensives_temp[i].energy;
+        extensives[i].energy += dE_absorption_emission;
+        
+        extensives[i].internal_energy = extensives_temp[i].internal_energy;
+        extensives[i].internal_energy += dE_absorption_emission;
 
         // other terms
 
