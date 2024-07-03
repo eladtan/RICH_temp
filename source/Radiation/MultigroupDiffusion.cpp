@@ -1064,6 +1064,51 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         extensives[i].internal_energy = extensives_temp[i].internal_energy;
         extensives[i].internal_energy += dE_absorption_emission;
 
+        // relativity term
+        double dE_relativity = 0.0;
+        tess.GetNeighbors(i, neighbors);
+        std::size_t const Nneighbors = neighbors.size();
+        faces = tess.GetCellFaces(i);
+        
+        auto const r_i = tess.GetMeshPoint(i);
+        double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+
+        for(std::size_t j=0; j<Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+            auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+            r_ij *= 1.0 / abs(r_ij);
+            double const A_ij = tess.GetArea(faces[j]);
+
+            double const momentum_relativity_coefficient_j = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
+
+            double relativity_term_neighbor_j = 0.0;
+            if(tess.GetFaceNeighbors(faces[j]).first == i){
+                relativity_term_neighbor_j = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_face_gray[faces[j]].first;
+            } else {
+                assert(tess.GetFaceNeighbors(faces[j]).second == i);
+                relativity_term_neighbor_j = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_face_gray[faces[j]].second;
+            }
+
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                double const full_CG_res_j = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+
+                dE_relativity -= relativity_term_neighbor_j * full_CG_res_j;
+            } else {
+                double Er_outside;
+                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er, Er_outside, dummy_v);
+                dE_relativity -= relativity_term_neighbor_j * Er_outside;
+            }
+
+            double const relativity_term_i = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_cell_gray[i];
+
+            dE_relativity -= relativity_term_i * full_CG_res_i;
+        }
+
+        dE_relativity *= pow<2>(time_scale_) * length_scale_ / mass_scale_;
+
+        extensives[i].energy += dE_relativity;
+        extensives[i].internal_energy += dE_relativity;
+
         // other terms
 
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
