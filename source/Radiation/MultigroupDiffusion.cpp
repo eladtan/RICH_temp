@@ -506,6 +506,79 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         }
     }
 
+    // momentum relativity _term  
+    Vector3D grad_Eg(0.0, 0.0, 0.0);
+    for(std::size_t i=0; i<Nlocal; ++i){
+        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+        
+        faces = tess.GetCellFaces(i);
+        tess.GetNeighbors(i, neighbors);
+        std::size_t const Nneighbors = neighbors.size();
+
+        Vector3D const r_i = tess.GetMeshPoint(i);
+        double const Eg_i = cells_cgs[i].Eg[group] * cells_cgs[i].density;
+
+        grad_Eg.Set(0.0, 0.0, 0.0); 
+        for(std::size_t j=0; j<Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+            double const Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
+
+            auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+            r_ij *= 1.0 / abs(r_ij);
+            
+            grad_Eg += r_ij * (0.5*tess.GetArea(faces[j])*(Eg_i + Eg_j));
+        }
+        grad_Eg *= -(1.0 / volume) * pow<2>(length_scale_);
+
+        double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
+        if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i]){
+            grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]/grad_magnitude;
+        }
+
+        double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
+        double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_cell, Eg_i) : 1.0;
+
+        double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity ) + 1e-2)); // limit velocity to 0.1*speed_of_light
+
+        for(std::size_t j=0; j<Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+
+            Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+            r_ij *= 1.0 / abs(r_ij);
+
+            Vector3D const& gradient = grad[faces[j]];
+            Vector3D const proj_grad = r_ij * ScalarProd(gradient, r_ij); // projection of the gradient to the face normal
+
+            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+            double const sigma_rossland = Dg_cell * 3.0 / CG::speed_of_light;
+            double const sigma_abs = sigma_absorption_group[group][i];
+            
+            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
+            
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                double const momentum_relativity_term = dt_cgs* momentum_term_coefficient;
+                
+                A[i][0] += momentum_relativity_term;
+                
+                // TODO:: this seems slow.. we can probably speed this up using a simple counter 
+                auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
+
+                if(it == A_indeces[i].end()){
+                    throw UniversalError("Key not equal in multigroup diffusion");
+                }
+
+                std::size_t const neighbor_counter = static_cast<std::size_t>(it - A_indeces[i].begin());
+                if(A_indeces[i][neighbor_counter] != neighbor_j){
+                    throw UniversalError("Key not equal in multigroup diffusion");
+                }
+
+                A[i][neighbor_counter] += momentum_relativity_term;
+            } else {
+                boundary_calculator.setMomentumTermBoundaryGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, momentum_term_coefficient, A[i][0], b[i]);
+            }
+        }
+    }
+
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
