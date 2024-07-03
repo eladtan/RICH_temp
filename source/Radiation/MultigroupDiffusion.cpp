@@ -787,6 +787,175 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         }
     }
 
+    // add the momentum terms
+    Vector3D grad_Eg(0.0, 0.0, 0.0);
+    std::vector<double> relativity_term_neighbors;
+    std::vector<double> momentum_term_neighbors;
+    std::vector<double> lambda_neighbors;
+    std::vector<double> sigma_ratio_lambda_neighbors;
+
+    for(std::size_t i=0; i < Nlocal; ++i){
+        double const f = fleck_factor[i];
+        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+
+        faces = tess.GetCellFaces(i);
+        tess.GetNeighbors(i, neighbors);
+        std::size_t const Nneighbors = neighbors.size();
+
+        
+        relativity_term_neighbors.resize(Nneighbors, 0.0);
+        std::fill(relativity_term_neighbors.begin(), relativity_term_neighbors.end(), 0.0);
+        
+        momentum_term_neighbors.resize(Nneighbors, 0.0);
+        std::fill(momentum_term_neighbors.begin(), momentum_term_neighbors.end(), 0.0);
+
+        lambda_neighbors.resize(Nneighbors, 0.0);
+        std::fill(lambda_neighbors.begin(), lambda_neighbors.end(), 0.0);
+
+        sigma_ratio_lambda_neighbors.resize(Nneighbors, 0.0);
+        std::fill(sigma_ratio_lambda_neighbors.begin(), sigma_ratio_lambda_neighbors.end(), 0.0);
+
+        Vector3D const r_i = tess.GetMeshPoint(i);
+
+        double lambda_i = 0.0;
+        double sigma_ratio_lambda_i = 0.0;
+
+        double relativity_term_i = 0.0;
+        double momentum_term_i = 0.0;
+
+        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+            grad_Eg.Set(0.0, 0.0, 0.0);
+
+            double const Eg_i = cells_cgs[i].Eg[g] * cells_cgs[i].density;
+
+            for(std::size_t j=0; j < Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
+                double const Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
+                
+                auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+
+                grad_Eg += r_ij * (0.5*tess.GetArea(faces[j])*(Eg_i + Eg_j));
+            }
+
+            grad_Eg *= -(1.0/volume) * pow<2>(length_scale_);
+            double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
+
+            if(grad_magnitude < max_neighbor_abs_grad_E[i]){
+                grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i] / grad_magnitude;
+            }
+
+            double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g);
+
+            double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_cell, Eg_i) : 1.0;
+            double const sigma_rossland_g = Dg_cell * 3.0 / CG::speed_of_light;
+            double const sigma_abs_g = sigma_absorption_group[g][i];
+
+            lambda_i += lambda_g * cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+            sigma_ratio_lambda_i += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+            
+
+            for(std::size_t j=0; j < Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
+
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    lambda_neighbors[j] += lambda_g * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+                    sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                } else {
+                    double Eg_outside;
+                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_outside, dummy_v);
+
+                    lambda_neighbors[j] += lambda_g * Eg_outside;
+                    sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * Eg_outside;
+                }
+            }
+        }
+
+        auto const sum_Eg_i = std::accumulate(cells[i].Eg.begin(), cells[i].Eg.end(), 0.) * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+        lambda_i /= sum_Eg_i;
+        lambda_cell_gray[i] = lambda_i;
+
+        sigma_ratio_lambda_i /= sum_Eg_i;
+        sigma_ratio_lambda_cell_gray[i] = sigma_ratio_lambda_i;
+        
+        for(std::size_t j=0; j < Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                auto const sum_Eg_j = std::accumulate(cells[neighbor_j].Eg.begin(), cells[neighbor_j].Eg.end(), 0.) * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+                lambda_neighbors[j] /= sum_Eg_j;
+                sigma_ratio_lambda_neighbors[j] /= sum_Eg_j;
+            } else {
+                double Er_outside;
+                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_outside, dummy_v);
+
+                lambda_neighbors[j] /= Er_outside;
+                sigma_ratio_lambda_neighbors[j] /= Er_outside;
+            }
+
+            if(tess.GetFaceNeighbors(faces[j]).first == i){
+                lambda_face_gray[faces[j]].first = lambda_neighbors[j];
+                sigma_ratio_lambda_face_gray[faces[j]].first = sigma_ratio_lambda_neighbors[j];
+            } else {
+                assert(tess.GetFaceNeighbors(faces[j]).second == i);
+                lambda_face_gray[faces[j]].second = lambda_neighbors[j];
+                sigma_ratio_lambda_face_gray[faces[j]].second = sigma_ratio_lambda_neighbors[j];
+            }
+        }
+
+        double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+
+        for(std::size_t j=0; j < Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+
+            Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+            r_ij *= 1.0 / abs(r_ij);
+
+            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+
+            double const momentum_relativity_coefficient = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
+
+            double const relativity_term_i = momentum_relativity_coefficient * v_limiter * 2.0 * f * sigma_ratio_lambda_i;
+            
+            double const momentum_term_i = -momentum_relativity_coefficient * lambda_i;
+
+            double const relativity_term_j = momentum_relativity_coefficient * v_limiter * 2.0 * f * sigma_ratio_lambda_neighbors[j];
+
+            double const momentum_term_j = -momentum_relativity_coefficient * lambda_neighbors[j];
+
+            A[i][0] += relativity_term_i;
+            A[i][0] += momentum_term_i;
+
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
+                
+                if(it == A_indeces[i].end()){
+                    throw UniversalError("Key not equal in multigroup diffusion");
+                }
+
+                std::size_t const neighbor_counter = static_cast<std::size_t>(it - A_indeces[i].begin());
+
+                if(A_indeces[i][neighbor_counter] != neighbor_j){
+                    throw UniversalError("Key not equal in multigroup diffusion");
+                }
+
+                A[i][neighbor_counter] += relativity_term_j;
+                A[i][neighbor_counter] += momentum_term_j;
+            } else {
+                double Er_outside;
+                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_outside, dummy_v);
+
+                b[i] -= (relativity_term_j + momentum_term_j)* Er_outside;
+            }
+
+
+        }
+    }
+
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
