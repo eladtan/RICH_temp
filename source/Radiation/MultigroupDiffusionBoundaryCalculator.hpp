@@ -21,11 +21,11 @@ public:
                                         double& b,
                                         std::size_t const face_index) const = 0;
     
-    virtual void getOutSideValuesGroup(std::size_t const group,
+    virtual void getOutsideValuesGroup(std::size_t const group,
                                        Tessellation3D const& tess,
-                                       std::vector<ComputationalCell3D> const& cells,
                                        std::size_t const index,
                                        std::size_t const outside_point,
+                                       std::vector<ComputationalCell3D> const& cells,
                                        std::vector<double> const& new_Eg,
                                        double& Eg_outside,
                                        Vector3D& v_outside) const = 0;
@@ -73,11 +73,11 @@ public:
                                 double& b,
                                 std::size_t const face_index) const override;
     
-    void getOutSideValuesGroup(std::size_t const group,
+    void getOutsideValuesGroup(std::size_t const group,
                                Tessellation3D const& tess,
-                               std::vector<ComputationalCell3D> const& cells,
                                std::size_t const index,
                                std::size_t const outside_point,
+                               std::vector<ComputationalCell3D> const& cells,
                                std::vector<double> const& new_Eg,
                                double& Eg_outside,
                                Vector3D& v_outside) const override;

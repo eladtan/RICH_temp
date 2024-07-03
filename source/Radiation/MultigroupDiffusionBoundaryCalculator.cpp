@@ -79,11 +79,11 @@ void MultigroupDiffusionSideBoundary::setBoundaryValuesGroup(std::size_t const g
     }
 }
 
-void MultigroupDiffusionSideBoundary::getOutSideValuesGroup(std::size_t const group,
+void MultigroupDiffusionSideBoundary::getOutsideValuesGroup(std::size_t const group,
                                                             Tessellation3D const& tess,
-                                                            std::vector<ComputationalCell3D> const& cells,
                                                             std::size_t const index,
                                                             std::size_t const outside_point,
+                                                            std::vector<ComputationalCell3D> const& cells,
                                                             std::vector<double> const& new_Eg,
                                                             double& Eg_outside,
                                                             Vector3D& /*v_outside*/) const {
