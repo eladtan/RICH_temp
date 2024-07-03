@@ -501,7 +501,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
                     boundary_calculator.setBoundaryValuesGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, tess.GetArea(faces[j])*pow<2>(length_scale_), A[i][0], b[i], faces[j]);
                 }
 
-                boundary_calculator.getOutSideValuesGroup(group, tess, cells_cgs, i, neighbor_j, new_Eg, Eg_j, dummy_v);
+                boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_j, dummy_v);
             }
         }
     }
