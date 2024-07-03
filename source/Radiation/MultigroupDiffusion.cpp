@@ -1109,6 +1109,63 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         extensives[i].energy += dE_relativity;
         extensives[i].internal_energy += dE_relativity;
 
+        // momentum term
+        if(hydro_on_){
+            Vector3D lambda_grad_Er(0.0, 0.0, 0.0);
+            double dE_momentum = 0.0;
+            
+            double mass_i = extensives[i].mass;
+
+            double const old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / mass_i;
+
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                auto const neighbor_j = neighbors[j];
+
+                auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+                double const lambda_i = lambda_cell_gray[i];
+
+                double lambda_j = 0.0;
+                if(tess.GetFaceNeighbors(faces[j]).first == i){
+                    lambda_j = lambda_face_gray[faces[j]].first;
+                } else {
+                    assert(tess.GetFaceNeighbors(faces[j]).second == i);
+                    lambda_j = lambda_face_gray[faces[j]].second;
+                }
+                
+                double Er_j = 0.0;
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    double const full_CG_res_j = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+                    Er_j = full_CG_res_j;
+                } else {
+                    boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er, Er_j, dummy_v);
+                }
+
+
+                lambda_grad_Er += (0.5*A_ij * (lambda_i * full_CG_res_i + lambda_j * Er_j) / 3.0) * r_ij;
+            }
+
+            
+            dP = (dt_cgs * time_scale_ / (length_scale_ * mass_scale_))  * lambda_grad_Er;
+            double const E_dE = ScalarProd(dP, extensives[i].momentum) / mass_i;
+            
+            extensives[i].momentum += dP;
+    
+            double const new_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / mass_i;
+
+            double const dE_dP = -new_Ek + old_Ek + E_dE;
+            extensives[i].Erad += dE_dP;
+
+            if(extensives[i].Erad < 0 && dE_dP < 0 && std::abs(dE_dP) < extensives[i].energy * 0.01) {
+                 extensives[i].Erad -= dE_dP;            
+            }
+
+            extensives[i].energy = extensives[i].internal_energy + new_Ek;
+        }
+
+
         // other terms
 
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
