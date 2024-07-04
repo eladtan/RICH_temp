@@ -523,6 +523,8 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             if(!tess.IsPointOutsideBox(neighbor_j)){
                 Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
             } else {
+                // TODO: change the parameters to getOutsideValuesGroup so it takes Eg_i instead of new_Eg
+                new_Eg[i] = cells_cgs[i].Eg[group] * cells_cgs[i].density;
                 boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_j, dummy_v);
             }
 
@@ -836,6 +838,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                 if(!tess.IsPointOutsideBox(neighbor_j)){
                     Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
                 } else {
+                    // TODO: change the parameters to getOutsideValuesGroup so it takes Eg_i instead of new_Eg
+                    new_Eg[i] = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
                     boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_j, dummy_v);
                 }
                 
@@ -872,6 +876,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                     sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
                 } else {
                     double Eg_outside;
+                    // TODO: change the parameters to getOutsideValuesGroup so it takes Eg_i instead of new_Eg
+                    new_Eg[i] = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
                     boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_outside, dummy_v);
 
                     lambda_neighbors[j] += lambda_g * Eg_outside;
@@ -898,6 +904,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                 sigma_ratio_lambda_neighbors[j] /= sum_Eg_j;
             } else {
                 double Er_outside;
+                // TODO: change the parameters to getOutsideValuesGray so it takes Er_i instead of new_Er
+                new_Er[i] = cells[i].Erad * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
                 boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_outside, dummy_v);
 
                 lambda_neighbors[j] /= Er_outside;
@@ -954,6 +962,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                 A[i][neighbor_counter] += momentum_term_j;
             } else {
                 double Er_outside;
+                // TODO: change the parameters to getOutsideValuesGray so it takes Er_i instead of new_Er
+                new_Er[i] = cells[i].Erad * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
                 boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_outside, dummy_v);
 
                 b[i] -= (relativity_term_j + momentum_term_j)* Er_outside;
@@ -1102,7 +1112,8 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
                 dE_relativity -= relativity_term_neighbor_j * full_CG_res_j;
             } else {
                 double Er_outside;
-                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er, Er_outside, dummy_v);
+                // Question to elad, using full_CG_result for Er_j means that Er_j will be the value at the new time step and isn't it inconsistent with the source term? It doesnot suppose to matter that much though
+                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result, Er_outside, dummy_v);
                 dE_relativity -= relativity_term_neighbor_j * Er_outside;
             }
 
@@ -1147,7 +1158,8 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
                     double const full_CG_res_j = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
                     Er_j = full_CG_res_j;
                 } else {
-                    boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er, Er_j, dummy_v);
+                    // Question to elad, using full_CG_result for Er_j means that Er_j will be the value at the new time step and isn't it inconsistent with the source term? It doesnot suppose to matter that much though
+                    boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result, Er_j, dummy_v);
                 }
 
 
