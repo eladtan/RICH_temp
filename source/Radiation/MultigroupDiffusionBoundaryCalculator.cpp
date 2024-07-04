@@ -153,7 +153,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
                                                                 double& b,
                                                                 std::size_t const face_index) const {
     double const R = tess.GetWidth(index);
-    if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x  + R*1e-4)){
+    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
         double const Eg_j = left_state_.Eg[group] * left_state_.density;
         double const Eg_i = cells[index].Eg[group] * cells[index].density;
 
@@ -178,7 +178,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
         
         A += flux;
         b += flux * Eg_j;
-    } else if (tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x - R*1e-4)){
+    } else if (tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x - R*1e-4)){
         double const Eg_j = right_state_.Eg[group] * right_state_.density;
         double const Eg_i = cells[index].Eg[group] * cells[index].density;
 
@@ -242,7 +242,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
                                                                std::size_t const face_index) const {
     double const R = tess.GetWidth(index);
 
-    if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x + R*1e-4)){
+    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
         double const dx = tess.GetCellCM(index).x - tess.GetBoxCoordinates().first.x;
         Vector3D const gradient = Vector3D(1.0, 0.0, 0.0) * (1.0 / (2.0 * dx));
         Vector3D const r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
@@ -271,7 +271,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
         }
 
         lambdaD_i /= sum_Eg_i;
-        lambdaD_i /= sum_Eg_j;
+        lambdaD_j /= sum_Eg_j;
 
         double const flux_coefficient = ScalarProd(gradient, r_ij * (tess.GetArea(face_index) / abs(r_ij))) * dt;
         
@@ -279,9 +279,9 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
         double const flux_j_to_i = flux_coefficient * lambdaD_j;
 
         A += flux_i_to_j;
-        b += flux_j_to_i * left_state_.Erad;
+        b += flux_j_to_i * left_state_.Erad * left_state_.density;
 
-    } else if (tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x - R*1e-4)){
+    } else if (tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x - R*1e-4)){
         double const dx = tess.GetBoxCoordinates().second.x - tess.GetCellCM(index).x;
         Vector3D const gradient = Vector3D(-1.0, 0.0, 0.0) * (1.0 / (2.0 * dx));
         Vector3D const r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
@@ -320,7 +320,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
         double const flux_j_to_i = flux_coefficient * lambdaD_j;
 
         A += flux_i_to_j;
-        b += flux_j_to_i * right_state_.Erad;
+        b += flux_j_to_i * right_state_.Erad * right_state_.density;
     }
 }
 
@@ -334,7 +334,7 @@ void MultigroupDiffusionXInflowBoundary::getOutsideValuesGray(Tessellation3D con
     double const R = tess.GetWidth(index);
 
     if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4)){
-        Er_outside = left_state_.Erad;
+        Er_outside = left_state_.Erad * left_state_.density;
         v_outside  = left_state_.velocity;
     } else if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x - R * 1e-4)) {
         Er_outside = right_state_.Erad;
@@ -361,12 +361,12 @@ void MultigroupDiffusionXInflowBoundary::setMomentumTermBoundaryGroup(std::size_
 
     double const R = tess.GetWidth(index);
 
-    if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x + R * 1e-4)){
+    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4)){
         A += momentum_term_coefficient;
         b -= momentum_term_coefficient * left_state_.Eg[group] * left_state_.density;
-    } else if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x - R * 1e-4)){
+    } else if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x - R * 1e-4)){
         A += momentum_term_coefficient;
-        b -= momentum_term_coefficient * right_state_.Eg[group] * left_state_.density;
+        b -= momentum_term_coefficient * right_state_.Eg[group] * right_state_.density;
     } else {
         A += 2.0 * momentum_term_coefficient;
     }
@@ -384,12 +384,12 @@ void MultigroupDiffusionXInflowBoundary::setMomentumTermBoundaryGray(Tessellatio
     
     double const R = tess.GetWidth(index);
     
-    if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x + R*1e-4)){
+    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
         A += momentum_term_coefficient_i;
         b -= momentum_term_coefficient_i * left_state_.Erad * left_state_.density;
-    } else if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x - R*1e-4)) {
+    } else if(tess.GetMeshPoint(index).x < (tess.GetMeshPoint(outside_point).x - R*1e-4)) {
         A += momentum_term_coefficient_j;
-        b -= momentum_term_coefficient_j * right_state_.Erad * left_state_.density;
+        b -= momentum_term_coefficient_j * right_state_.Erad * right_state_.density;
     } else {
         A += momentum_term_coefficient_i + momentum_term_coefficient_j;
     }
