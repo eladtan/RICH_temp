@@ -65,7 +65,8 @@ public:
                                              std::size_t const outside_point,
                                              double dt,
                                              std::vector<ComputationalCell3D> const& cells,
-                                             double const momentum_term_coefficient,
+                                             double const momentum_term_coefficient_i,
+                                             double const momentum_term_coefficient_j, 
                                              double& A,
                                              double& b) const = 0;
 
@@ -136,7 +137,8 @@ public:
                                      std::size_t const outside_point,
                                      double dt,
                                      std::vector<ComputationalCell3D> const& cells,
-                                     double const momentum_term_coefficient,
+                                     double const momentum_term_coefficient_i,
+                                     double const momentum_term_coefficient_j,
                                      double& A,
                                      double& b) const override;
     private:
@@ -205,7 +207,8 @@ class MultigroupDiffusionXInflowBoundary : public MultigroupDiffusionBoundaryCal
                                         std::size_t const outside_point,
                                         double dt,
                                         std::vector<ComputationalCell3D> const& cells,
-                                        double const momentum_term_coefficient,
+                                        double const momentum_term_coefficient_i,
+                                        double const momentum_term_coefficient_j,
                                         double& A,
                                         double& b) const override;
     private:

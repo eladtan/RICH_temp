@@ -560,8 +560,8 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             
             double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
             
+            double const momentum_relativity_term = dt_cgs* momentum_term_coefficient;
             if(!tess.IsPointOutsideBox(neighbor_j)){
-                double const momentum_relativity_term = dt_cgs* momentum_term_coefficient;
                 
                 A[i][0] += momentum_relativity_term;
                 
@@ -579,7 +579,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
 
                 A[i][neighbor_counter] += momentum_relativity_term;
             } else {
-                boundary_calculator.setMomentumTermBoundaryGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, momentum_term_coefficient, A[i][0], b[i]);
+                boundary_calculator.setMomentumTermBoundaryGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, momentum_relativity_term, A[i][0], b[i]);
             }
         }
     }
@@ -942,10 +942,11 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
 
             double const momentum_term_j = -momentum_relativity_coefficient * lambda_neighbors[j];
 
-            A[i][0] += relativity_term_i;
-            A[i][0] += momentum_term_i;
 
             if(!tess.IsPointOutsideBox(neighbor_j)){
+                A[i][0] += relativity_term_i;
+                A[i][0] += momentum_term_i;
+
                 auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
                 
                 if(it == A_indeces[i].end()){
@@ -961,12 +962,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                 A[i][neighbor_counter] += relativity_term_j;
                 A[i][neighbor_counter] += momentum_term_j;
             } else {
-                double Er_outside;
-                // TODO: change the parameters to getOutsideValuesGray so it takes Er_i instead of new_Er
-                new_Er[i] = cells[i].Erad * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
-                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_outside, dummy_v);
-
-                b[i] -= (relativity_term_j + momentum_term_j)* Er_outside;
+                boundary_calculator.setMomentumTermBoundaryGray(tess, i, neighbor_j, dt_cgs, cells_cgs, relativity_term_i + momentum_term_i, relativity_term_j + momentum_term_j, A[i][0], b[i]);
             }
 
 
