@@ -1108,7 +1108,6 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
                 dE_relativity -= relativity_term_neighbor_j * full_CG_res_j;
             } else {
                 double Er_outside;
-                // Question to elad, using full_CG_result for Er_j means that Er_j will be the value at the new time step and isn't it inconsistent with the source term? It doesnot suppose to matter that much though
                 boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result, Er_outside, dummy_v);
                 dE_relativity -= relativity_term_neighbor_j * Er_outside;
             }
@@ -1154,7 +1153,6 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
                     double const full_CG_res_j = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
                     Er_j = full_CG_res_j;
                 } else {
-                    // Question to elad, using full_CG_result for Er_j means that Er_j will be the value at the new time step and isn't it inconsistent with the source term? It doesnot suppose to matter that much though
                     boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result, Er_j, dummy_v);
                 }
 
