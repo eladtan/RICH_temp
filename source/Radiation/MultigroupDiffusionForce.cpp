@@ -15,7 +15,7 @@ MultigroupDiffusionForce::MultigroupDiffusionForce(MultigroupDiffusion const& mu
 void MultigroupDiffusionForce::operator()(Tessellation3D const& tess, 
                                           std::vector<ComputationalCell3D> const& cells,
                                           std::vector<Conserved3D> const& fluxes,
-                                          std::vector<Vector3D> point_velocities, 
+                                          std::vector<Vector3D> const& point_velocities, 
                                           double const t,
                                           double const dt,
                                           std::vector<Conserved3D>& extensives) const {
