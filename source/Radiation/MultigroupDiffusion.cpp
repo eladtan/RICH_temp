@@ -500,8 +500,6 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
                 if(i < neighbor_j){
                     boundary_calculator.setBoundaryValuesGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, tess.GetArea(faces[j])*pow<2>(length_scale_), A[i][0], b[i], faces[j]);
                 }
-
-                boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_j, dummy_v);
             }
         }
     }
@@ -786,8 +784,6 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                 if(i < neighbor_j){
                     boundary_calculator.setBoundaryValuesGray(tess, i, neighbor_j, dt_cgs, cells_cgs, tess.GetArea(faces[j]) * pow<2>(length_scale_), A[i][0], b[i], faces[j]);
                 }
-
-                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_j, dummy_v);
             }
         }
     }
