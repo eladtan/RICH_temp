@@ -163,7 +163,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
 
         // max temperature?
         double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[index], group);
-        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[outside_point], group);
+        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(left_state_, group);
         
         // this is supposed to be harmonic probably but for the sake of sake
         double const Dg_ij = 0.5 * (Dg_i + Dg_j);
@@ -189,7 +189,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
         
         // max temperature?
         double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[index], group);
-        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[outside_point], group);
+        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(right_state_, group);
         
         // this is supposed to be harmonic probably but for the sake of sake
         double Dg_ij = 0.5 * (Dg_i + Dg_j);
@@ -256,7 +256,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
             double const Eg_i = cells[index].Eg[g] * cells[index].density;
 
             double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[index], g);
-            double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[outside_point], g);
+            double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(left_state_, g);
 
             double Dg_ij = 0.5 * (Dg_i + Dg_j);
             double const lambda_g_ij = CG::CalcSingleFluxLimiter(gradient * (Eg_i - Eg_j), Dg_ij, 0.5*(Eg_i + Eg_j));
@@ -296,7 +296,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
             double const Eg_i = cells[index].Eg[g] * cells[index].density;
 
             double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[index], g);
-            double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[outside_point], g);
+            double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(right_state_, g);
 
             double Dg_ij = 0.5 * (Dg_i + Dg_j);
             double const lambda_g_ij = CG::CalcSingleFluxLimiter(gradient * (Eg_i - Eg_j), Dg_ij, 0.5*(Eg_i + Eg_j));
