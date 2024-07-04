@@ -342,7 +342,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
     b.resize(Nlocal, 0.0);
     // build the `initial guess` and `b`
     for(std::size_t i=0; i<Nlocal; ++i){
-        auto const cell_cgs = cells_cgs[i];
+        auto const& cell_cgs = cells_cgs[i];
         
         double const Eg_i = cell_cgs.Eg[group]*cell_cgs.density;
         // build the initial guess
@@ -1296,13 +1296,14 @@ void MultigroupDiffusion::calculate_gray_absorption_and_scattering_coefficients(
         auto const& cell = cells[i];
         for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
             double const sigma = sigma_absorption_group[g][i];
+            double const sigma_scattering = sigma_scattering_group[g][i];
             double const bg = planck_integal_group[g][i];
             // the change of units is not really important since we are averaging with Ug as weights i.e. the units cancel. But it is for consistency.
             double const Ug = cell.Eg[g] * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_);
             
             sigma_absorption_planck[i] += sigma * bg;
             sigma_absorption_average[i] += sigma * Ug;
-            sigma_scattering_gray[i] += sigma * Ug;
+            sigma_scattering_gray[i] += sigma_scattering * Ug;
 
             sum_U += Ug;
         }
