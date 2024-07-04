@@ -148,9 +148,7 @@ public:
 
 class MultigroupDiffusionXInflowBoundary : public MultigroupDiffusionBoundaryCalculator {
     public:
-        MultigroupDiffusionXInflowBoundary(std::vector<double> const& energy_group_center_,
-                                           std::vector<double> const& energy_group_boundary_,
-                                           ComputationalCell3D const& left_state,
+        MultigroupDiffusionXInflowBoundary(ComputationalCell3D const& left_state,
                                            ComputationalCell3D const& right_state,
                                            MultigroupDiffusionCoefficientCalculator const& coefficient_calculator);
 

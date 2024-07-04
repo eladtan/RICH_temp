@@ -135,14 +135,12 @@ void MultigroupDiffusionSideBoundary::setMomentumTermBoundaryGroup(std::size_t c
     }
 }
 
-MultigroupDiffusionXInflowBoundary::MultigroupDiffusionXInflowBoundary(std::vector<double> const& energy_groups_center_,
-                                                                       std::vector<double> const& energy_groups_boundary_,
-                                                                       ComputationalCell3D const& left_state,
+MultigroupDiffusionXInflowBoundary::MultigroupDiffusionXInflowBoundary(ComputationalCell3D const& left_state,
                                                                        ComputationalCell3D const& right_state,
                                                                        MultigroupDiffusionCoefficientCalculator const& coefficient_calculator) : left_state_(left_state),
                                                                                                  right_state_(right_state),
                                                                                                  coefficient_calculator_(coefficient_calculator),
-                                                                                                 MultigroupDiffusionBoundaryCalculator(energy_groups_center_, energy_groups_boundary_) {}
+                                                                                                 MultigroupDiffusionBoundaryCalculator(std::vector<double>(), std::vector<double>()) {}
 
 void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t const group,
                                                                 Tessellation3D const& tess,
