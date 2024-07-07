@@ -174,16 +174,6 @@ namespace
 						}
 					}
 					res[i].temperature = eos.de2T(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
-					if(res[i].temperature < 1e3)
-					{
-						res[i].temperature = 1e3;
-						res[i].internal_energy = eos.dT2e(res[i].density, 1e3, res[i].tracers, ComputationalCell3D::tracerNames);
-						res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
-						res[i].tracers[entropy_index] = eos.dp2s(res[i].density, res[i].pressure, res[i].tracers, ComputationalCell3D::tracerNames);
-						extensive.tracers[entropy_index] = res[i].tracers[entropy_index] * extensive.mass;
-						extensive.internal_energy = res[i].internal_energy * extensive.mass;
-						extensive.energy = extensive.internal_energy + 0.5 * ScalarProd(extensive.momentum, extensive.momentum) / extensive.mass;
-					}
 				}
 				if (!(res[i].density > 0) || !(res[i].pressure > 0) || (!std::isfinite(fastabs(extensives[i].momentum))))
 				{
