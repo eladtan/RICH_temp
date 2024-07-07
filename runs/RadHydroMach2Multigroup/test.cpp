@@ -133,8 +133,8 @@ int main(void)
 	std::vector<double> energy_groups_center(G);
 	std::vector<double> energy_groups_boundary(G+1);
 
-	double const Emin = ev*1e-4;
-	double const Emax = ev*1e2;
+	double const Emin = ev*1e-3;
+	double const Emax = ev;
 	
 	energy_groups_boundary[0] = Emin;
 	for(std::size_t g=0; g < G; ++g){
