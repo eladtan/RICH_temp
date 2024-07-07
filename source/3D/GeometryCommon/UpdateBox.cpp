@@ -1,8 +1,9 @@
 #include "UpdateBox.hpp"
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
+#include "source/3D/environment/kernels/Rectangle.hpp"
 
-void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, double const volume_fraction, ComputationalCell3D const& reference_cell)
+void UpdateBox(Voronoi3D &tess, HDSim3D &sim, double const min_velocity, double const volume_fraction, ComputationalCell3D const& reference_cell)
 {
 	std::vector<ComputationalCell3D>& cells = sim.getCells();
 	std::vector<Conserved3D>& extensives = sim.getExtensives();
@@ -97,7 +98,8 @@ void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, do
 			std::cout << "Old vol " << oldv << " New vol " << newv << std::endl;
 			std::cout << "Point number " << Np << std::endl;
 		}
-		tess.SetBox(recvmin, recvmax);		
+		tess.SetBox(recvmin, recvmax);
+		// tess.SetKernel(new Rectangle(recvmin, recvmax));		
 		std::vector<Vector3D> mypoints = tess.getMeshPoints();
 		mypoints.resize(N);
 		cells.resize(N);
@@ -135,7 +137,7 @@ void UpdateBox(Tessellation3D &tess, HDSim3D &sim, double const min_velocity, do
 		tess.BuildParallel(mypoints);
 		MPI_exchange_data(tess, cells, false, &reference_cell);
 		// Conserved3D e_dummy;
-		// MPI_exchange_data(tess, sim.getExtensives(), false, &e_dummy);
+		// MPI_exchange_data(tess, extensives, false, &e_dummy);
 		MPI_exchange_data(tess, cells, true, &reference_cell);
 #else // RICH_MPI
 		tess.Build(mypoints);

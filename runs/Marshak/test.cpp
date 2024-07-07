@@ -15,6 +15,7 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
+#include "source/3D/output/write3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/DiffusionForce.hpp"
@@ -63,10 +64,10 @@ int main(void)
 	Voronoi3D tess(ll, ur);
 	int counter = 0;
 	ComputationalCell3D init_cell;
-	double const T = 1e3;
+	double const T = 2000;
 	try
 	{
-		init_cell.density = 1 * lscale * lscale * lscale / mscale;
+		init_cell.density = 0.5 * lscale * lscale * lscale / mscale;
 		init_cell.temperature = T;
 		init_cell.pressure = eos.dT2p(init_cell.density, init_cell.temperature);
 		init_cell.internal_energy = eos.dp2e(init_cell.density, init_cell.pressure);

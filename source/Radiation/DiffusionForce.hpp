@@ -14,7 +14,7 @@ public:
       const vector<Conserved3D>& fluxes,const vector<Vector3D>& point_velocities, const double t, double dt,
       vector<Conserved3D> &extensives) const;
 
-    double SuggestInverseTimeStep(void)const;
+    double SuggestInverseTimeStep(void) const;
     
 private:
     Diffusion const& diffusion_;

@@ -1,6 +1,10 @@
 #include "Diffusion.hpp"
 #include <boost/math/special_functions.hpp>
 
+#ifdef RICH_MPI
+#include "mpi/mpi_commands.hpp"
+#endif
+
 namespace CG
 {
      // LP flux limiter taken from "EQUATIONS AND ALGORITHMS FOR MIXED-FRAME FLUX-LIMITED DIFFUSION RADIATION HYDRODYNAMICS"
@@ -23,6 +27,32 @@ namespace CG
     }
 }
 
+Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
+                     DiffusionBoundaryCalculator const& boundary_calc,
+                     EquationOfState const& eos, 
+                     std::vector<std::string> const zero_cells, 
+                     bool const flux_limiter, 
+                     bool const hydro_on, 
+                     bool const compton_on) : 
+                                             D_coefficient_calcualtor(D_coefficient_calc),
+                                             boundary_calc_(boundary_calc), 
+                                             sigma_planck(),
+                                             sigma_s(), 
+                                             fleck_factor(),
+                                             D(),
+                                             R2(),
+                                             cell_flux_limiter(),
+                                             new_Er(),
+                                             new_Er_full(),
+                                             old_Er(),
+                                             cells_temp(),
+                                             extensives_temp(),
+                                             RadiationDriver(eos, 
+                                                            zero_cells, 
+                                                            flux_limiter, 
+                                                            hydro_on, 
+                                                            compton_on) {}
+
 double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const
 {
     ComputationalCell3D cell_cgs(cell);
@@ -36,6 +66,174 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
     Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
     double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
     return compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck, sigma_s, Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck);
+}
+
+bool Diffusion::prestep(Tessellation3D const& tess,
+                        std::vector<ComputationalCell3D> const& cells) const {
+    auto const N = tess.GetPointNo();
+    
+    sigma_planck.resize(N, 0.0);
+    sigma_s.resize(N, 0.0);
+    fleck_factor.resize(N, 0.0);
+    D.resize(N, 0.0);
+    R2.resize(N, 0.0);
+    cell_flux_limiter.resize(N, 0.0);
+
+    new_Er.resize(N, 0.0);
+    new_Er_full.resize(N, 0.0);
+    old_Er.resize(N, 0.0);
+
+    cells_temp.resize(N);
+    extensives_temp.resize(N);
+
+    for(std::size_t i=0; i < N; ++i){
+        old_Er[i] = cells[i].Erad * cells[i].density;
+
+        if(old_Er[i] < 0.0){
+            UniversalError eo("negative Erad");
+ 			eo.addEntry("i", i);
+			eo.addEntry("old_Er", old_Er[i]);
+			eo.addEntry("ID", cells[i].ID);
+			eo.addEntry("density", cells[i].density);
+            throw eo;
+        }
+    }
+
+    return true;
+}
+
+bool Diffusion::poststep() const {    
+    std::vector<ComputationalCell3D>().swap(cells_temp);
+    std::vector<Conserved3D>().swap(extensives_temp);
+
+    return false;
+}
+
+double Diffusion::calculate_dt(double const dt,
+                               Tessellation3D& tess, 
+                               std::vector<ComputationalCell3D>& cells) const {
+
+    int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+
+	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif	
+
+    auto const N = tess.GetPointNo();            
+    size_t const Nzero = zero_cells_.size();
+	std::vector<size_t> zero_indeces;
+	for(size_t i = 0; i < Nzero; ++i)
+		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
+	double max_diff = std::numeric_limits<double>::min() * 100;
+	int max_loc = 0;
+	for(size_t i = 0; i < N; ++i)
+	{
+		bool to_calc = true;
+		for(size_t j = 0; j < Nzero; ++j)
+			if(cells[i].stickers[zero_indeces[j]])
+				to_calc = false;
+		if(not to_calc)
+			continue;
+		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
+		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Er);
+		if(fleck_factor[i] < 0.5)
+			diff *= 0.1;
+		if(diff > max_diff)
+		{
+			max_diff = diff;
+			max_loc = i;
+		}
+	}
+
+	struct
+    {
+        double val;
+        int mpi_id;
+    }max_data;
+    
+    max_data.mpi_id = rank;
+    max_data.val = max_diff;
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+	max_diff = max_data.val;
+	ComputationalCell3D cdummy;
+	MPI_exchange_data(tess, cells, true, &cdummy);	
+#endif
+	if(rank == max_data.mpi_id)
+	{
+		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
+		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
+		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		PrintDebugData(max_loc);
+	}
+
+    return dt * 0.15 / max_diff;
+}
+
+bool Diffusion::step(double const tolerance, 
+                     int& total_iters, 
+                     Tessellation3D const& tess, 
+                     std::vector<ComputationalCell3D>& cells,
+                     std::vector<Conserved3D>& extensives,
+                     double const dt,
+                     double const time) const {
+    
+    int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+    
+    extensives_temp = extensives;
+    cells_temp = cells;
+
+    std::size_t const N = tess.GetPointNo();
+    new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
+    
+    double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
+
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+
+    double min_Er = 1.0;
+    for(std::size_t i=0; i < N; ++i){
+        if(new_Er[i] < 0.0 && std::abs(new_Er[i]) < 1e-9 * max_Er){
+            new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells[i].temperature * cells[i].temperature * cells[i].temperature * cells[i].temperature);
+        }
+
+        min_Er = std::min(min_Er, new_Er[i]);
+    }
+
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &min_Er, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+
+    if(min_Er < 0){
+        if(rank == 0){
+			std::cout<<"Negative Er!"<<std::endl;
+        }
+
+        return false;
+    }
+
+    try {
+        PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
+    } catch(UniversalError const& eo) {
+        if(rank == 0){
+            std::cout<< "PostCG Exception:" << std::endl;
+            std::cout<< eo.getErrorMessage() << std::endl;
+        }
+        
+        extensives = std::move(extensives_temp);
+        cells = cells_temp;
+        return false;
+    }
+
+    return true;
 }
 
 void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
@@ -96,12 +294,18 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         double const energy_ratio = Cv * cells[i].temperature / (cells[i].internal_energy * cells[i].density);
         Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
         double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
-        // double const beta = std::max(1.0, 0.3 / energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
         fleck_factor[i] = compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck[i], sigma_s[i], Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck[i]);
         if(fleck_factor[i] < 0)
             throw UniversalError("Negative fleck_factor");
         b[i] = volume * Er;
-        x0[i] = std::min(1.75 * Er, std::max(0.25 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt * time_scale_  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt * dt * time_scale_ * time_scale_));//std::max(Er + 0.5 * std::min(fleck_factor[i] * dt * sigma_planck[i] * CG::speed_of_light * time_scale_, 1.0) * (CG::radiation_constant * T * T * T * T - Er), 0.25 * Er);
+        double const Um = CG::radiation_constant * T * T * T * T;
+        if(fleck_factor[i] < 0.8 && Um > Er)
+        {
+            double const prefactor = fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i];
+            x0[i] = (Er + prefactor * Um) / (1 + prefactor);
+        }
+        else
+            x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt * time_scale_  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt * dt * time_scale_ * time_scale_));//std::max(Er + 0.5 * std::min(fleck_factor[i] * dt * sigma_planck[i] * CG::speed_of_light * time_scale_, 1.0) * (CG::radiation_constant * T * T * T * T - Er), 0.25 * Er);
         b[i] += volume * fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant * time_scale_;
         Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt * time_scale_ * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
     }
@@ -129,7 +333,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
         double const T = cells_cgs[i].temperature;
         A[i].push_back(volume * (1 + fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * time_scale_));
-        if(compton_on_)
+        if(compton_on_ && cells[i].tracers[1] > 0.5)
         {
             double const Tr = std::pow(new_Er[i] / CG::radiation_constant, 0.25);
 	        double const pre_factor = fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
@@ -224,8 +428,8 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                     double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(grad_E) * (Er - Er_j)));
                     double grad_factor = 1;
                     max_neighbor_R[i] = std::max(max_neighbor_R[i], max_R[neighbor_j]);
-                    if(grad_magnitude < 0.05 * (max_R[i] + max_R[neighbor_j]))
-                        grad_factor = 0.05 * (max_R[i] + max_R[neighbor_j]) / grad_magnitude;
+                    if(grad_magnitude < 0.15 * (max_R[i] + max_R[neighbor_j]))
+                        grad_factor = 0.15 * (max_R[i] + max_R[neighbor_j]) / grad_magnitude;
                     double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * ((Er - Er_j) * grad_factor), mid_D, 0.5 * (Er + Er_j)) : 1;
                     mid_D *= flux_limiter;
                     double const flux = ((self_zero || set_to_zero) ? tess.GetArea(faces[j]) * dt * CG::speed_of_light * 0.5 : ScalarProd(grad_E, r_ij) * tess.GetArea(faces[j]) * dt * mid_D) * length_scale_ * length_scale_ * time_scale_; 
@@ -328,7 +532,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 }
 
 void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-        std::vector<double>const& CG_result, std::vector<double> const& full_CG_result)const
+        std::vector<double>const& full_CG_result, std::vector<double> const& CG_result) const
 {
     double const max_v = 0.1 * CG::speed_of_light * time_scale_ / length_scale_;
     Vector3D dummy_v;
@@ -349,6 +553,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         Einit += extensives[i].Erad + extensives[i].energy;
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &Einit, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
 #endif
 
     int good_end = 1;
@@ -374,6 +579,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
             compton_term = pre_factor * (old_Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
             compton_term = pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
+            compton_term *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
             dE += pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
         }
         dE *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
@@ -522,32 +728,53 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double const old_Edot = cells[i].Erad_dt;
         cells[i].Erad_dt = (extensives[i].Erad / extensives[i].mass - cells[i].Erad) / dt;
         cells[i].Erad_dt_dt = (cells[i].Erad_dt - old_Edot) / dt;
+        if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt))
+            std::cout<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
-        cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
-        cells[i].pressure = eos_.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
-        cells[i].velocity = extensives[i].momentum / extensives[i].mass;
-        
-        if(entropy)
+        try
         {
-            cells[i].tracers[entropy_index] = eos_.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
-            extensives[i].tracers[entropy_index] = cells[i].tracers[entropy_index] * extensives[i].mass;
+            cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+            cells[i].pressure = eos_.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+            cells[i].velocity = extensives[i].momentum / extensives[i].mass;    
+            if(entropy)
+            {
+                cells[i].tracers[entropy_index] = eos_.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
+                extensives[i].tracers[entropy_index] = cells[i].tracers[entropy_index] * extensives[i].mass;
+            }
         }
-
+        catch(UniversalError &eo)
+        {
+            reportError(eo);
+            good_end = 0;
+            break;
+        }
     }
+    int rank = 0;
 #ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    bool was_bad = false;
+    if(good_end == 0)
+    {
+        std::cout<<"Zero good_end rank "<<rank<<std::endl;
+        was_bad = true;
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &good_end, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if(was_bad)
+        std::cout<<"rank "<<rank<<" good_end "<<good_end<<std::endl;
 #endif
     if(good_end == 0)
+    {
+        // std::cout<<"throwing error"<<std::endl;
         throw UniversalError("Negative energy in POSTCG");
+    }
 
     double Efinal = 0;
     for(size_t i = 0; i < N; ++i)
         Efinal += extensives[i].Erad + extensives[i].energy;
-    int rank = 0;
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
     // if(rank == 0)
     //     std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;

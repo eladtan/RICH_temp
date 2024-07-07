@@ -12,6 +12,8 @@ namespace
 		res.Erad_dt_dt = (res.mass > 0 ? left.Erad_dt_dt : right.Erad_dt_dt) * res.mass;
 		for (size_t i = 0; i < ntracers; ++i)
 			res.tracers[i] = (res.mass>0 ? left.tracers[i] : right.tracers[i])*res.mass;
+		for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+			res.Eg[i] = (res.mass>0 ? left.Eg[i] : right.Eg[i])*res.mass;
 	}
 }
 

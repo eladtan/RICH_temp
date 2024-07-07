@@ -8,6 +8,8 @@ parser.add_argument("--test_name", default="", help="The name of the test to com
 
 parser.add_argument("--make_dir", default=root_dir, help="The relative path to the build directory")
 
+parser.add_argument("--energy_groups_num", default="0", help="The number of energy groups for a multigroup run")
+
 # possible configurations
 config_params = [
     ["intel", "gnu"],
@@ -43,4 +45,6 @@ test_dir = os.path.join(root_dir, f"runs/{args.test_name}")
 build_program(configs=args.configs,
                             make_dir=make_dir,
                             src_dir=src_dir,
-                            test_dir=test_dir)
+                            test_dir=test_dir,
+                            args=args)
+
