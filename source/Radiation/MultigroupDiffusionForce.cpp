@@ -60,7 +60,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
             faces = tess.GetCellFaces(i);
             tess.GetNeighbors(i, neighbors);
 
-            std::size_t Nneighbors = neighbors.size();
+            std::size_t const Nneighbors = neighbors.size();
 
             Vector3D const r_i = tess.GetMeshPoint(i);
 
