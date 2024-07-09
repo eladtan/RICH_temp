@@ -12,9 +12,11 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          std::vector<std::string> const zero_cells,
                                          bool const flux_limiter,
                                          bool const hydro_on,
-                                         bool const compton_on):
+                                         bool const compton_on,
+                                         bool const doppler_on):
                                                                 energy_groups_center(energy_groups_center_),
                                                                 energy_groups_boundary(energy_groups_boundary_),
+                                                                energy_groups_width(ENERGY_GROUPS_NUM, 0.0),
                                                                 coefficient_calculator(coefficient_calc),
                                                                 boundary_calculator(boundary_calc),
                                                                 current_group(0),
@@ -43,6 +45,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 sigma_ratio_lambda_face_gray(),
                                                                 lambda_cell_gray(),
                                                                 sigma_ratio_lambda_cell_gray(),
+                                                                doppler_on_(doppler_on),
+                                                                R2(3, std::vector<double>()),
                                                                 RadiationDriver(eos,
                                                                                 zero_cells,
                                                                                 flux_limiter,
@@ -57,6 +61,10 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     if(energy_groups_boundary.size() != ENERGY_GROUPS_NUM + 1){
         std::cout << "bad energy_groups_boundary.size()" << std::endl;
         exit(1);
+    }
+
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        energy_groups_width[g] = energy_groups_boundary[g+1] - energy_groups_boundary[g];
     }
 }
 
@@ -127,6 +135,7 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
         }
     }
 
+    R2 = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
     return true;
 }
 
@@ -299,6 +308,8 @@ bool MultigroupDiffusion::step(double const tolerance,
         }
     }
 
+    if(doppler_on_) solve_doppler_shift(tess, cells, dt);
+    
     return true;
 }
 
@@ -1314,3 +1325,237 @@ void MultigroupDiffusion::calculate_gray_absorption_and_scattering_coefficients(
         }
     }
 }
+
+void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
+                                              std::vector<ComputationalCell3D>& cells,
+                                              double const dt) const {
+
+    double const dt_cgs = dt * time_scale_;
+    auto const N = tess.GetPointNo();
+    
+    double max_change_doppler = 0.0;
+    std::size_t max_group = 0;
+    std::size_t max_cell = 0;
+    double old_energy = 0.0;
+
+    std::vector<std::size_t> neighbors;
+    face_vec faces;
+    Vector3D dummy_v;
+    Vector3D grad_Eg(0.0, 0.0, 0.0);
+    ComputationalCell3D dummy_cell;
+
+    for(std::size_t n=0; n < R2.size(); ++n){
+        std::fill(R2[n].begin(), R2[n].end(), 0.0);
+    }
+
+#ifdef RICH_MPI    
+    MPI_exchange_data2(tess, new_Eg, true);
+    MPI_exchange_data2(tess, R2[0],  true);
+    MPI_exchange_data2(tess, R2[1],  true);
+    MPI_exchange_data2(tess, R2[2],  true);
+#endif
+
+    for(std::size_t i=0; i<N; ++i){
+        new_Eg[i] = cells[i].Eg[0] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+    }
+
+    // build R2 for the 0 energy group 
+    for(std::size_t i=0; i < N; ++i){
+        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+        
+        faces = tess.GetCellFaces(i);
+        tess.GetNeighbors(i, neighbors);
+        std::size_t const Nneighbors = neighbors.size();
+
+        Vector3D const r_i = tess.GetMeshPoint(i);
+        
+        grad_Eg.Set(0.0, 0.0, 0.0);
+        for(std::size_t j=0; j < Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+
+            Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+            r_ij *= abs(r_ij);
+
+            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+
+            double Eg_mid = 0.0;
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                Eg_mid = 0.5*(new_Eg[i] + new_Eg[neighbor_j]);
+            } else {
+                boundary_calculator.getOutsideValuesGroup(0, tess, i, neighbor_j, cells, new_Eg, Eg_mid, dummy_v);
+                
+                Eg_mid += new_Eg[i];
+                Eg_mid *= 0.5;
+            }
+            
+            grad_Eg += r_ij * (A_ij * Eg_mid);
+        }
+
+        grad_Eg *= -1.0 / volume;
+
+        dummy_cell = cells[i];
+        dummy_cell.density *= mass_scale_ / pow<3>(length_scale_);
+
+        double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(dummy_cell, 0);
+
+        double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg, new_Eg[i]) : 1.0;
+
+        R2[2][i] = flux_limiter_ ? lambda_g / 3.0 + pow<2>(lambda_g * abs(grad_Eg) * Dg / (CG::speed_of_light * new_Eg[i])) : 1.0 / 3.0;
+    }
+
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        // for the discretization we need R2 for the groups g-1, g, g+1
+        // R2[0] -> g-1
+        // R2[1] -> g
+        // R2[2] -> g+1 
+        std::swap(R2[1], R2[0]);
+        std::swap(R2[2], R2[1]);
+
+        if(g+1 < ENERGY_GROUPS_NUM){
+            for(std::size_t i=0; i<N; ++i){
+                new_Eg[i] = cells[i].Eg[g+1] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+            }
+
+            // build R2 for the g+1 energy group 
+            for(std::size_t i=0; i < N; ++i){
+                double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+                
+                faces = tess.GetCellFaces(i);
+                tess.GetNeighbors(i, neighbors);
+                std::size_t const Nneighbors = neighbors.size();
+
+                Vector3D const r_i = tess.GetMeshPoint(i);
+                
+                grad_Eg.Set(0.0, 0.0, 0.0);
+                for(std::size_t j=0; j < Nneighbors; ++j){
+                    std::size_t const neighbor_j = neighbors[j];
+
+                    Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                    r_ij *= abs(r_ij);
+                    double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+
+                    double Eg_mid = 0.0;
+                    if(!tess.IsPointOutsideBox(neighbor_j)){
+                        Eg_mid = 0.5*(new_Eg[i] + new_Eg[neighbor_j]);
+                    } else {
+                        boundary_calculator.getOutsideValuesGroup(g+1, tess, i, neighbor_j, cells, new_Eg, Eg_mid, dummy_v);
+                        
+                        Eg_mid += new_Eg[i];
+                        Eg_mid *= 0.5;
+                    }
+                    
+                    grad_Eg += r_ij * (A_ij * Eg_mid);
+                }
+
+                grad_Eg *= -1.0 / volume;
+
+                dummy_cell = cells[i];
+                dummy_cell.density *= mass_scale_ / pow<3>(length_scale_);
+
+                double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(dummy_cell, g+1);
+
+                double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg, new_Eg[i]) : 1.0;
+
+                R2[2][i] = flux_limiter_ ? lambda_g / 3.0 + pow<2>(lambda_g * abs(grad_Eg) * Dg / (CG::speed_of_light * new_Eg[i])) : 1.0 / 3.0;
+            }
+        }
+
+        for(std::size_t i=0; i < N; ++i){
+            tess.GetNeighbors(i, neighbors);
+            auto const Nneighbors = neighbors.size();
+            
+            faces = tess.GetCellFaces(i);
+
+            double const Eg_i = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+            Vector3D const& velocity_i = cells[i].velocity * length_scale_ / time_scale_;
+            Vector3D const r_i = tess.GetMeshPoint(i);
+
+            double divergence = 0.0;
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                std::size_t neighbor_j = neighbors[j];
+                bool const is_outside = tess.IsPointOutsideBox(neighbor_j);
+
+                Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+                
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+
+                Vector3D velocity_j;
+                if(!is_outside){
+                    velocity_j = cells[neighbor_j].velocity * length_scale_ / time_scale_;
+                } else {
+                    double dummyEg;
+                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg, dummyEg, velocity_j);
+                    velocity_j *= length_scale_ / time_scale_;
+                }
+                double const v_mid = ScalarProd(r_ij, velocity_i + velocity_j) / 2.0;
+
+                
+                double const nu_g   = energy_groups_center[g];
+                double const dnu_g  = energy_groups_width[g];
+
+                if(v_mid > 0.0){
+                    double const v_ij = ScalarProd(r_ij, velocity_j);
+                    
+                    std::size_t which_R2 = neighbor_j;
+                    if(g+1 < ENERGY_GROUPS_NUM){
+                        double const nu_g1  = energy_groups_center[g+1];
+                        double const dnu_g1 = energy_groups_width[g+1];
+                        
+                        double Eg1_j;
+                        if(!is_outside){
+                            Eg1_j = cells[neighbor_j].Eg[g+1] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        } else {
+                            new_Eg[i] = cells[i].Eg[g+1] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                            boundary_calculator.getOutsideValuesGroup(g+1, tess, i, neighbor_j, cells, new_Eg, Eg1_j, dummy_v);
+
+                            which_R2 = i;
+                        }
+                        
+                        divergence += A_ij * v_ij * 0.5 * nu_g1 * Eg1_j * (1.0 - R2[2][which_R2]) / dnu_g1;
+                    } 
+                    
+                    double Eg_j;
+                    if(!is_outside){
+                        Eg_j = cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        which_R2 = neighbor_j;
+                    } else {
+                        new_Eg[i] = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg, Eg_j, dummy_v);
+                        which_R2 = i;
+                    }
+
+                    divergence -= A_ij * v_ij * 0.5 * nu_g * Eg_j * (1.0 - R2[1][which_R2]) / dnu_g;
+                } else {
+                    double const v_ij = ScalarProd(r_ij, velocity_i);
+                    
+                    if (g > 0){    
+                        double const nu_gm1  = energy_groups_center[g-1];
+                        double const dnu_gm1 = energy_groups_width[g-1];
+                        
+                        double const Egm1_i = cells[i].Eg[g-1] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        
+
+                        divergence -= A_ij * v_ij * 0.5 * nu_gm1 * Egm1_i * (1.0 - R2[0][i]) / dnu_gm1;
+                    }
+
+                    double const Eg_i  = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+                    divergence += A_ij * v_ij * 0.5 * nu_g * Eg_i * (1.0 - R2[1][i]) / dnu_g;
+                }    
+            }
+
+            double const change = abs(dt_cgs*divergence);
+            if(change > max_change_doppler){
+                max_change_doppler = change;   
+                max_group = g;
+                max_cell = i;
+                old_energy = cells[i].Eg[g];
+            }
+            
+            cells[i].Eg[g] += dt_cgs * divergence / cells[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
+        }
+    }
+
+    std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler << std::endl;
+} 
