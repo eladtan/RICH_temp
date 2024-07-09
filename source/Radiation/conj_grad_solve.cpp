@@ -412,6 +412,10 @@ namespace CG
 
         for (int i = 0; i < max_iter; i++) {
             // note: make sure matrix is big enough for the number of processors you are using!
+            if(std::abs(rho0) < std::numeric_limits<double>::min()*1e100){
+                good_end = true;
+                break;
+            }
             max_data[2].mpi_id = rank;
             max_data[0].mpi_id = rank;
             // r_old = sub_r;                 // Store previous residual
@@ -423,7 +427,8 @@ namespace CG
 #endif
             mat_times_vec(A, A_indeces, y, v);
             y.resize(Nlocal);
-            double const alpha = rho0 / mpi_dot_product(sub_r0, v);
+            double const sub_r0_v = mpi_dot_product(sub_r0, v);
+            double const alpha = std::abs(sub_r0_v) < std::numeric_limits<double>::min()*1e100 ? 0.0 : rho0 / sub_r0_v;
             vec_lin_combo(1.0, sub_x, alpha, y, h);
             vec_lin_combo(1.0, sub_r, -alpha, v, s);
             z = vector_rescale(s, M);
@@ -434,15 +439,25 @@ namespace CG
             z.resize(Nlocal);
             double const up = mpi_dot_product(vector_rescale(t, M), vector_rescale(s, M));
             double const down = mpi_dot_product(vector_rescale(t, M), vector_rescale(t, M));
-            double const w = up / down;
+            double const w = std::abs(up) < std::numeric_limits<double>::min()*1e10 ? 0.0 : up / down;
+            
             old_x = sub_x;
             vec_lin_combo(1.0, h, w, z, sub_x);
             vec_lin_combo(1.0, s, -w, t, sub_r);
             sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
             
+            double const error = mpi_dot_product(sub_r, sub_r) / mpi_dot_product2(b, b);
             // Convergence test
-            if (sub_r_sqrd < delta_init * tolerance)
+            if (error < tolerance)
             {
+                double max_sub_x = 0.0;
+                for(std::size_t j=0; j < Nlocal; ++j){
+                    max_sub_x = std::max(max_sub_x, sub_x[j]);
+                }
+
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
                 max_data[0].val = 0;
                 max_data[1].val = 0;
                 max_data[2].val = 0;
@@ -454,12 +469,12 @@ namespace CG
                         max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9)));
                         max_loc1 = j;
                     }
-                    if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
-                    {
-                        max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
-                        max_loc0 = j;
-                    }
-                    if(sub_x[j] < 0)
+                    // if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
+                    // {
+                    //     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
+                    //     max_loc0 = j;
+                    // }
+                    if(sub_x[j] < -max_sub_x*1e-10)
                     {
                         max_loc2 = j;
                         max_data[2].val = 1;
