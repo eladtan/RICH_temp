@@ -289,7 +289,7 @@ bool MultigroupDiffusion::step(double const tolerance,
 
         PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
 
-        if(iter < max_iter){
+        if(iter <= max_iter){
             cells_cgs = cells;
             for(std::size_t i=0; i<N; ++i){
                 cells_cgs[i].density *= mass_scale_ / pow<3>(length_scale_);
