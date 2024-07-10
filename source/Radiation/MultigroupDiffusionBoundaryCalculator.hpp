@@ -27,7 +27,7 @@ public:
                                        std::size_t const index,
                                        std::size_t const outside_point,
                                        std::vector<ComputationalCell3D> const& cells,
-                                       std::vector<double> const& new_Eg,
+                                       double const Eg_i,
                                        double& Eg_outside,
                                        Vector3D& v_outside) const = 0;
     
@@ -56,7 +56,7 @@ public:
                                       std::size_t const index,
                                       std::size_t const outside_point,
                                       std::vector<ComputationalCell3D> const& cells,
-                                      std::vector<double> const& new_Er,
+                                      double const Er_i,
                                       double& Er_outside,
                                       Vector3D& v_outside) const = 0;
     
@@ -100,7 +100,7 @@ public:
                                std::size_t const index,
                                std::size_t const outside_point,
                                std::vector<ComputationalCell3D> const& cells,
-                               std::vector<double> const& new_Eg,
+                               double const Eg_i,
                                double& Eg_outside,
                                Vector3D& v_outside) const override;
     
@@ -128,7 +128,7 @@ public:
                               std::size_t const index,
                               std::size_t const outside_point,
                               std::vector<ComputationalCell3D> const& cells,
-                              std::vector<double> const& new_Er,
+                              double const Er_i,
                               double& Er_outside,
                               Vector3D& v_outside) const override;
     
@@ -170,7 +170,7 @@ class MultigroupDiffusionXInflowBoundary : public MultigroupDiffusionBoundaryCal
                                 std::size_t const index,
                                 std::size_t const outside_point,
                                 std::vector<ComputationalCell3D> const& cells,
-                                std::vector<double> const& new_Eg,
+                                double const Eg_i,
                                 double& Eg_outside,
                                 Vector3D& v_outside) const override;
         
@@ -198,7 +198,7 @@ class MultigroupDiffusionXInflowBoundary : public MultigroupDiffusionBoundaryCal
                                 std::size_t const index,
                                 std::size_t const outside_point,
                                 std::vector<ComputationalCell3D> const& cells,
-                                std::vector<double> const& new_Er,
+                                double const Er_i,
                                 double& Er_outside,
                                 Vector3D& v_outside) const override;
         
