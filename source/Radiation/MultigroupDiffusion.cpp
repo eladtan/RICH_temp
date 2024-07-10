@@ -569,9 +569,32 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             double const sigma_rossland = Dg_cell * 3.0 / CG::speed_of_light;
             double const sigma_abs = sigma_absorption_group[group][i];
             
-            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
+            double const nu_g = energy_groups_center[group];
             
-            double const momentum_relativity_term = dt_cgs* momentum_term_coefficient;
+            double sigma_p;
+            double sigma_m;
+            double dnu;
+            
+            if(group == 0){
+                sigma_p = sigma_absorption_group[group+1][i];
+                sigma_m = sigma_absorption_group[group][i];
+                dnu = energy_groups_center[group+1]-energy_groups_center[group];
+            } else if(group+1 == ENERGY_GROUPS_NUM){
+                sigma_p = sigma_absorption_group[group][i];
+                sigma_m = sigma_absorption_group[group-1][i];
+                dnu = energy_groups_center[group]-energy_groups_center[group-1];
+            } else {
+                sigma_p = sigma_absorption_group[group+1][i];
+                sigma_m = sigma_absorption_group[group-1][i];
+                dnu = energy_groups_center[group+1]-energy_groups_center[group-1];
+            }
+            
+            double const dsigma_abs_dnu = doppler_on_ ? (sigma_p - sigma_m) / dnu : 0.0; 
+
+            
+            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0 + nu_g*dsigma_abs_dnu) * ScalarProd(cells_cgs[i].velocity, r_ij);
+            
+            double const momentum_relativity_term = dt_cgs * momentum_term_coefficient;
             if(!tess.IsPointOutsideBox(neighbor_j)){
                 
                 A[i][0] += momentum_relativity_term;
