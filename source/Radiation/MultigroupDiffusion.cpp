@@ -1379,7 +1379,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 #endif
 
     for(std::size_t i=0; i<N; ++i){
-        new_Eg[i] = cells[i].Eg[0] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+        new_Eg[i] = cells_cgs[i].Eg[0] * cells_cgs[i].density;
     }
 
     // build R2 for the 0 energy group 
@@ -1416,8 +1416,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
         grad_Eg *= -1.0 / volume;
 
-        dummy_cell = cells[i];
-        dummy_cell.density *= mass_scale_ / pow<3>(length_scale_);
+        dummy_cell = cells_cgs[i];
 
         double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(dummy_cell, 0);
 
@@ -1436,7 +1435,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
         if(g+1 < ENERGY_GROUPS_NUM){
             for(std::size_t i=0; i<N; ++i){
-                new_Eg[i] = cells[i].Eg[g+1] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                new_Eg[i] = cells_cgs[i].Eg[g+1] * cells_cgs[i].density;
             }
 
             // build R2 for the g+1 energy group 
@@ -1472,8 +1471,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
                 grad_Eg *= -1.0 / volume;
 
-                dummy_cell = cells[i];
-                dummy_cell.density *= mass_scale_ / pow<3>(length_scale_);
+                dummy_cell = cells_cgs[i];
 
                 double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(dummy_cell, g+1);
 
@@ -1489,8 +1487,8 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
             
             faces = tess.GetCellFaces(i);
 
-            double const Eg_i = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
-            Vector3D const& velocity_i = cells[i].velocity * length_scale_ / time_scale_;
+            double const Eg_i = cells_cgs[i].Eg[g] * cells_cgs[i].density;
+            Vector3D const& velocity_i = cells_cgs[i].velocity;
             Vector3D const r_i = tess.GetMeshPoint(i);
 
             double divergence = 0.0;
@@ -1505,7 +1503,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
                 Vector3D velocity_j;
                 if(!is_outside){
-                    velocity_j = cells[neighbor_j].velocity * length_scale_ / time_scale_;
+                    velocity_j = cells_cgs[neighbor_j].velocity;
                 } else {
                     double dummyEg;
                     boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg, dummyEg, velocity_j);
@@ -1527,9 +1525,9 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                         
                         double Eg1_j;
                         if(!is_outside){
-                            Eg1_j = cells[neighbor_j].Eg[g+1] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                            Eg1_j = cells_cgs[neighbor_j].Eg[g+1] * cells_cgs[neighbor_j].density;
                         } else {
-                            new_Eg[i] = cells[i].Eg[g+1] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                            new_Eg[i] = cells_cgs[i].Eg[g+1] * cells_cgs[i].density;
                             boundary_calculator.getOutsideValuesGroup(g+1, tess, i, neighbor_j, cells, new_Eg, Eg1_j, dummy_v);
 
                             which_R2 = i;
@@ -1540,10 +1538,10 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                     
                     double Eg_j;
                     if(!is_outside){
-                        Eg_j = cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
                         which_R2 = neighbor_j;
                     } else {
-                        new_Eg[i] = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        new_Eg[i] = cells_cgs[i].Eg[g] * cells_cgs[i].density;
                         boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg, Eg_j, dummy_v);
                         which_R2 = i;
                     }
@@ -1556,13 +1554,13 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                         double const nu_gm1  = energy_groups_center[g-1];
                         double const dnu_gm1 = energy_groups_width[g-1];
                         
-                        double const Egm1_i = cells[i].Eg[g-1] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        double const Egm1_i = cells_cgs[i].Eg[g-1] * cells_cgs[i].density;
                         
 
                         divergence -= A_ij * v_ij * 0.5 * nu_gm1 * Egm1_i * (1.0 - R2[0][i]) / dnu_gm1;
                     }
 
-                    double const Eg_i  = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                    double const Eg_i  = cells_cgs[i].Eg[g] * cells_cgs[i].density;
 
                     divergence += A_ij * v_ij * 0.5 * nu_g * Eg_i * (1.0 - R2[1][i]) / dnu_g;
                 }    
@@ -1576,7 +1574,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                 old_energy = cells[i].Eg[g];
             }
             
-            cells[i].Eg[g] += dt_cgs * divergence / cells[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
+            cells[i].Eg[g] += dt_cgs * divergence / cells_cgs[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
         }
     }
 
