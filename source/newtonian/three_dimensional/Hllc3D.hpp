@@ -22,6 +22,9 @@ public:
 
 	Conserved3D operator()(ComputationalCell3D const& left,	ComputationalCell3D const& right,double velocity,
 		EquationOfState const& eos, Vector3D const& normaldir) const override;
+
+	std::pair<double, double> GetUstarPstar(ComputationalCell3D const& left, ComputationalCell3D const& right,
+		EquationOfState const& eos, Vector3D const& normaldir) const;
 };
 
 #endif //HLLC3D_HPP
