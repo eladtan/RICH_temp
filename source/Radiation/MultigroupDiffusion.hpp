@@ -20,7 +20,8 @@ public:
                         std::vector<std::string> const zero_cells,
                         bool const flux_limiter,
                         bool const hydro_on,
-                        bool const compton_on);
+                        bool const compton_on,
+                        bool const doppler_on);
 
     ~MultigroupDiffusion() = default;
 
@@ -59,11 +60,17 @@ public:
                 std::vector<double>const& CG_result, 
                 std::vector<double> const&  full_CG_result) const override;
 
+    void solve_doppler_shift(Tessellation3D const& tess,
+                             std::vector<ComputationalCell3D>& cells,
+                             double const dt) const;
+                             
+
     MultigroupDiffusionCoefficientCalculator const& coefficient_calculator;
     MultigroupDiffusionBoundaryCalculator const& boundary_calculator;
     
     std::vector<double> const energy_groups_center;
     std::vector<double> const energy_groups_boundary;
+    std::vector<double> energy_groups_width;
 
     mutable std::size_t current_group;
     mutable bool gray;
@@ -101,6 +108,12 @@ public:
     mutable std::vector<std::pair<double, double>> sigma_ratio_lambda_face_gray;
     mutable std::vector<double> lambda_cell_gray;
     mutable std::vector<double> sigma_ratio_lambda_cell_gray;
+
+
+    bool const doppler_on_;
+    // for doppler step
+    mutable std::vector<std::vector<double>> R2;
+    mutable std::vector<std::vector<double>> D;
 
 private:
     void BuildMatrixGroup(std::size_t group,
@@ -147,7 +160,15 @@ private:
                                                                std::vector<ComputationalCell3D> const& cells) const;
 
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
+
+    // helper functions
+    void calculate_lambda_g_and_R2_g(std::size_t const group,
+                            Tessellation3D const& tess,
+                            std::vector<ComputationalCell3D> const& cells,
+                            std::vector<double>& lambda_g,
+                            std::vector<double>& R2_g) const; 
 };
+
 
 
 #endif

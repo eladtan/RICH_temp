@@ -183,8 +183,8 @@ namespace CG
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
         // double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
-        if(rank == 0)
-            std::cout<<"CG init delta "<<delta_init<<std::endl;
+        // if(rank == 0)
+        //     std::cout<<"CG init delta "<<delta_init<<std::endl;
         double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
         bool good_end = false;
         struct
@@ -417,6 +417,10 @@ namespace CG
 
         for (int i = 0; i < max_iter; i++) {
             // note: make sure matrix is big enough for the number of processors you are using!
+            if(std::abs(rho0) < std::numeric_limits<double>::min()*1e100){
+                good_end = true;
+                break;
+            }
             max_data[2].mpi_id = rank;
             max_data[0].mpi_id = rank;
             // r_old = sub_r;                 // Store previous residual
@@ -452,9 +456,18 @@ namespace CG
             vec_lin_combo(1.0, s, -w, t, sub_r);
             sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
             
+            double const error = mpi_dot_product(sub_r, sub_r) / mpi_dot_product2(b, b);
             // Convergence test
-            if (sub_r_sqrd < delta_init * tolerance)
+            if (error < tolerance)
             {
+                double max_sub_x = 0.0;
+                for(std::size_t j=0; j < Nlocal; ++j){
+                    max_sub_x = std::max(max_sub_x, sub_x[j]);
+                }
+
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
                 max_data[0].val = 0;
                 max_data[1].val = 0;
                 max_data[2].val = 0;
