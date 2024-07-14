@@ -113,6 +113,17 @@ Snapshot3D ReadSnapshot3DHelper(H5File &file, H5File &globalfile, Group &read_lo
                     res.cells.at(i).stickers.at(j) = (stickers.at(j).at(i) == 1);
                 }
             }
+            for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g)
+            {
+                if(H5Lexists(read_location.getId(), ("Eg_" + std::to_string(g)).c_str(), H5P_DEFAULT ) > 0)
+                {
+                    auto Eg_temp = read_double_vector_from_hdf5(read_location, "Eg_" + std::to_string(g));
+                     for(size_t i = 0; i < res.cells.size(); ++i)
+                        res.cells.at(i).Eg[g] = Eg_temp[i];
+                }
+                else
+                    throw UniversalError("Missing energy group Eg_" + std::to_string(g) + " in snapshot");
+            }
         }
 
         // Volume
