@@ -152,7 +152,14 @@ private:
 
     void calculate_gray_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                std::vector<ComputationalCell3D> const& cells) const;
+    // helper functions
+    void calculate_lambda_g_and_R2_g(std::size_t const group,
+                            Tessellation3D const& tess,
+                            std::vector<ComputationalCell3D> const& cells,
+                            std::vector<double>& lambda_g,
+                            std::vector<double>& R2_g) const; 
 };
+
 
 
 #endif

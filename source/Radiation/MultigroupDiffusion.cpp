@@ -1360,64 +1360,8 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
     Vector3D grad_Eg(0.0, 0.0, 0.0);
     ComputationalCell3D dummy_cell;
 
-    for(std::size_t n=0; n < R2.size(); ++n){
-        std::fill(R2[n].begin(), R2[n].end(), 0.0);
-    }
-
-#ifdef RICH_MPI    
-    MPI_exchange_data2(tess, new_Eg, true);
-    MPI_exchange_data2(tess, R2[0],  true);
-    MPI_exchange_data2(tess, R2[1],  true);
-    MPI_exchange_data2(tess, R2[2],  true);
-#endif
-
-
-    // ADD FIRST DOPPLER SHIFT ELEMENTS
-    // build R2 for the 0 energy group 
-    for(std::size_t i=0; i < N; ++i){
-        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
-        
-        faces = tess.GetCellFaces(i);
-        tess.GetNeighbors(i, neighbors);
-        std::size_t const Nneighbors = neighbors.size();
-
-        double const Eg_i = cells_cgs[i].Eg[0] * cells_cgs[i].density;
-        Vector3D const r_i = tess.GetMeshPoint(i);
-        
-        grad_Eg.Set(0.0, 0.0, 0.0);
-        for(std::size_t j=0; j < Nneighbors; ++j){
-            std::size_t const neighbor_j = neighbors[j];
-
-            Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-            r_ij *= abs(r_ij);
-
-            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
-
-            double const Eg_j = cells_cgs[neighbor_j].Eg[0] * cells_cgs[neighbor_j].density;
-
-            double Eg_mid = 0.0;
-            if(!tess.IsPointOutsideBox(neighbor_j)){
-                Eg_mid = 0.5*(Eg_i + Eg_j);
-            } else {
-                boundary_calculator.getOutsideValuesGroup(0, tess, i, neighbor_j, cells, Eg_i, Eg_mid, dummy_v);
-                
-                Eg_mid += Eg_i;
-                Eg_mid *= 0.5;
-            }
-            
-            grad_Eg += r_ij * (A_ij * Eg_mid);
-        }
-
-        grad_Eg *= -1.0 / volume;
-
-        dummy_cell = cells_cgs[i];
-
-        double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(dummy_cell, 0);
-
-        double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg, new_Eg[i]) : 1.0;
-
-        R2[2][i] = flux_limiter_ ? lambda_g / 3.0 + pow<2>(lambda_g * abs(grad_Eg) * Dg / (CG::speed_of_light * new_Eg[i])) : 1.0 / 3.0;
-    }
+    std::vector<double> lambda_g_dummy(N, 0.0);
+    calculate_lambda_g_and_R2_g(0, tess, cells, lambda_g_dummy, R2[2]);
 
     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
         // for the discretization we need R2 for the groups g-1, g, g+1
@@ -1428,50 +1372,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
         std::swap(R2[2], R2[1]);
 
         if(g+1 < ENERGY_GROUPS_NUM){
-            // build R2 for the g+1 energy group 
-            for(std::size_t i=0; i < N; ++i){
-                double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
-                
-                faces = tess.GetCellFaces(i);
-                tess.GetNeighbors(i, neighbors);
-                std::size_t const Nneighbors = neighbors.size();
-
-                double const Eg_i = cells_cgs[i].Eg[g+1] * cells_cgs[i].density;
-                Vector3D const r_i = tess.GetMeshPoint(i);
-                
-                grad_Eg.Set(0.0, 0.0, 0.0);
-                for(std::size_t j=0; j < Nneighbors; ++j){
-                    std::size_t const neighbor_j = neighbors[j];
-
-                    Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-                    r_ij *= abs(r_ij);
-                    double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
-
-                    double const Eg_j = cells_cgs[neighbor_j].Eg[g+1] * cells_cgs[neighbor_j].density;
-
-                    double Eg_mid = 0.0;
-                    if(!tess.IsPointOutsideBox(neighbor_j)){
-                        Eg_mid = 0.5*(Eg_i + Eg_j);
-                    } else {
-                        boundary_calculator.getOutsideValuesGroup(g+1, tess, i, neighbor_j, cells, Eg_i, Eg_mid, dummy_v);
-                        
-                        Eg_mid += Eg_i;
-                        Eg_mid *= 0.5;
-                    }
-                    
-                    grad_Eg += r_ij * (A_ij * Eg_mid);
-                }
-
-                grad_Eg *= -1.0 / volume;
-
-                dummy_cell = cells_cgs[i];
-
-                double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(dummy_cell, g+1);
-
-                double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg, new_Eg[i]) : 1.0;
-
-                R2[2][i] = flux_limiter_ ? lambda_g / 3.0 + pow<2>(lambda_g * abs(grad_Eg) * Dg / (CG::speed_of_light * new_Eg[i])) : 1.0 / 3.0;
-            }
+            calculate_lambda_g_and_R2_g(g+1, tess, cells, lambda_g_dummy, R2[2]);
         }
 
         for(std::size_t i=0; i < N; ++i){
@@ -1506,6 +1407,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                     boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, dummyEg, velocity_j);
                     velocity_j *= length_scale_ / time_scale_;
                 }
+                
                 double const v_mid = ScalarProd(r_ij, velocity_i + velocity_j) / 2.0;
 
                 
@@ -1575,4 +1477,68 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
     }
 
     std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler << std::endl;
-} 
+void MultigroupDiffusion::calculate_lambda_g_and_R2_g(std::size_t const group,
+                                                      Tessellation3D const& tess,
+                                                      std::vector<ComputationalCell3D> const& cells,
+                                                      std::vector<double>& lambda_g,
+                                                      std::vector<double>& R2_g) const {
+    
+    std::size_t const N = tess.GetPointNo();
+    
+    std::vector<std::size_t> neighbors;
+    face_vec faces;
+    
+    Vector3D dummy_v;
+
+    lambda_g.resize(N, 0.0);
+    R2_g.resize(N, 0.0);
+
+    if(flux_limiter_){
+        std::fill(lambda_g.begin(), lambda_g.end(), 1.0);
+        std::fill(R2_g.begin(), R2_g.end(), 1.0/3.0);
+    }
+
+    Vector3D grad_Eg(0.0, 0.0, 0.0);
+    for(std::size_t i=0; i < N; ++i){
+        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+        
+        faces = tess.GetCellFaces(i);
+        tess.GetNeighbors(i, neighbors);
+
+        std::size_t const Nneighbors = neighbors.size();
+
+        double const Eg_i = cells_cgs[i].Eg[group] * cells_cgs[i].density;
+        Vector3D const r_i = tess.GetMeshPoint(i);
+
+        grad_Eg.Set(0.0, 0.0, 0.0);
+        for(std::size_t j=0; j<Nneighbors; ++j){
+            std::size_t const neighbor_j = neighbors[j];
+
+            Vector3D const r_ij = normalize(r_i - tess.GetMeshPoint(neighbor_j));
+
+            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+
+            double Eg_mid;
+            if(!tess.IsPointOutsideBox(neighbor_j)){
+                double const Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
+                Eg_mid = 0.5 * (Eg_i + Eg_j);
+            } else {
+                boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells, Eg_i, Eg_mid, dummy_v);
+                Eg_mid += Eg_i;
+                Eg_mid *= 0.5;
+            }
+
+            grad_Eg += r_ij * (A_ij * Eg_mid);
+        }
+
+        grad_Eg *= -1.0 / volume;
+
+        double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
+        
+        double const lam = CG::CalcSingleFluxLimiter(grad_Eg, Dg, Eg_i);
+        lambda_g[i] = lam;
+        
+        double const lam_R_g = lam * abs(grad_Eg) * Dg / (CG::speed_of_light * Eg_i);
+        R2_g[i] = lam/3.0 + pow<2>(lam_R_g);
+    }
+}
