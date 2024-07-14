@@ -1,6 +1,5 @@
 #include "Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
 #include "MultigroupDiffusion.hpp"
-#include "planck_integral/planck_integral.hpp"
 
 using boost::math::pow;
 
@@ -248,13 +247,17 @@ bool MultigroupDiffusion::step(double const tolerance,
         }
     }
 
+    int rank = 0;
 #ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	ComputationalCell3D cdummy;
 	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
 #endif
 
     calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs);
     calculate_planck_integrals(tess, cells_cgs);
+    calculate_gray_absorption_and_scattering_coefficients(tess, cells);
+    calculate_fleck_factor(tess, cells, dt * time_scale_);
 
     std::size_t constexpr max_iter=1;
     for(std::size_t iter=1; iter <= max_iter; ++iter){    
@@ -268,15 +271,15 @@ bool MultigroupDiffusion::step(double const tolerance,
             tot_iters += total_iters;
             PostCG(tess, extensives, dt, cells, new_Eg, new_Eg_full);
         }
-
-        
+      
         calculate_gray_absorption_and_scattering_coefficients(tess, cells);
 
         gray = true;
         new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
 
         tot_iters += total_iters;
-        std::cout << "iter " << iter << " tot_iters " << tot_iters << std::endl;
+        if(rank == 0)
+            std::cout << "iter " << iter << " tot_iters " << tot_iters << std::endl;
 
         PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
 
@@ -523,6 +526,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             if(!tess.IsPointOutsideBox(neighbor_j)){
                 Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
             } else {
+                // TODO set all values of new_Eg before this loop
                 // TODO: change the parameters to getOutsideValuesGroup so it takes Eg_i instead of new_Eg
                 new_Eg[i] = cells_cgs[i].Eg[group] * cells_cgs[i].density;
                 boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_j, dummy_v);
@@ -555,10 +559,10 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             Vector3D const proj_grad = r_ij * ScalarProd(gradient, r_ij); // projection of the gradient to the face normal
 
             double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
-            double const sigma_rossland = Dg_cell * 3.0 / CG::speed_of_light;
+            double const sigma_rossland = CG::speed_of_light / (Dg_cell * 3.0);
             double const sigma_abs = sigma_absorption_group[group][i];
             
-            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
+            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (fleck_factor[i] * v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
             
             double const momentum_relativity_term = dt_cgs* momentum_term_coefficient;
             if(!tess.IsPointOutsideBox(neighbor_j)){
@@ -637,20 +641,9 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         // build `b` vector, first term
         b[i] = volume_cgs * old_Er[i]* mass_scale_ / (length_scale_*pow<2>(time_scale_));
 
-        // fleck factor
         double const sigma_planck = sigma_absorption_planck[i];
         double const T = old_Tm[i];
-        double cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
-        
-        // TODO: What is energy ratio (see Diffusion.cpp same line)
-        cv *= mass_scale_ / (pow<2>(time_scale_)*length_scale_);
-        double const cv_bar = cv / get_radiation_cv(T);
-        double const f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, sigma_planck);
-
-        if(f < 0){
-            throw UniversalError("Negative fleck factor");
-        }
-        fleck_factor[i] = f;
+        double const f = fleck_factor[i];
         
         // second term 
         double const Um = get_radiation_energy_density(T);
@@ -749,8 +742,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                         double const lambda_gD = lambda_g * Dg_ij;
                         
                         // cell_cgs holds the old Eg but after the group step we need to use cells.
-                        double const Eg_i = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
-                        double const Eg_j = cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                        double const Eg_i = cells[i].Eg[g] * cells[i].density * mass_scale_ /(length_scale_ * pow<2>(time_scale_));
+                        double const Eg_j = cells[neighbor_j].Eg[g] * cells[neighbor_j].density * mass_scale_ /(length_scale_ * pow<2>(time_scale_));
 
                         lambdaD_i_to_j += lambda_gD * Eg_i;
                         sum_U_i += Eg_i;
@@ -839,7 +832,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                     Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
                 } else {
                     // TODO: change the parameters to getOutsideValuesGroup so it takes Eg_i instead of new_Eg
-                    new_Eg[i] = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                    new_Eg[i] = cells[i].Eg[g] * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
                     boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_j, dummy_v);
                 }
                 
@@ -852,32 +845,32 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             grad_Eg *= -(1.0/volume) * pow<2>(length_scale_);
             double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
 
-            if(grad_magnitude < max_neighbor_abs_grad_E[i]){
+            if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i]){
                 grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i] / grad_magnitude;
             }
 
             double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g);
 
             double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_cell, Eg_i) : 1.0;
-            double const sigma_rossland_g = Dg_cell * 3.0 / CG::speed_of_light;
+            double const sigma_rossland_g = CG::speed_of_light / (3.0 * Dg_cell);
             double const sigma_abs_g = sigma_absorption_group[g][i];
 
-            lambda_i += lambda_g * cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+            lambda_i += lambda_g * cells[i].Eg[g] * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
 
-            sigma_ratio_lambda_i += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+            sigma_ratio_lambda_i += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[i].Eg[g] * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
             
 
             for(std::size_t j=0; j < Nneighbors; ++j){
                 std::size_t const neighbor_j = neighbors[j];
 
                 if(!tess.IsPointOutsideBox(neighbor_j)){
-                    lambda_neighbors[j] += lambda_g * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                    lambda_neighbors[j] += lambda_g * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
 
-                    sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                    sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
                 } else {
                     double Eg_outside;
                     // TODO: change the parameters to getOutsideValuesGroup so it takes Eg_i instead of new_Eg
-                    new_Eg[i] = cells[i].Eg[g] * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                    new_Eg[i] = cells[i].Eg[g] * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
                     boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, new_Eg, Eg_outside, dummy_v);
 
                     lambda_neighbors[j] += lambda_g * Eg_outside;
@@ -886,7 +879,7 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             }
         }
 
-        auto const sum_Eg_i = std::accumulate(cells[i].Eg.begin(), cells[i].Eg.end(), 0.) * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+        auto const sum_Eg_i = std::accumulate(cells[i].Eg.begin(), cells[i].Eg.end(), 0.) * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
 
         lambda_i /= sum_Eg_i;
         lambda_cell_gray[i] = lambda_i;
@@ -898,14 +891,14 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             std::size_t const neighbor_j = neighbors[j];
 
             if(!tess.IsPointOutsideBox(neighbor_j)){
-                auto const sum_Eg_j = std::accumulate(cells[neighbor_j].Eg.begin(), cells[neighbor_j].Eg.end(), 0.) * cells[neighbor_j].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                auto const sum_Eg_j = std::accumulate(cells[neighbor_j].Eg.begin(), cells[neighbor_j].Eg.end(), 0.) * cells[neighbor_j].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
 
                 lambda_neighbors[j] /= sum_Eg_j;
                 sigma_ratio_lambda_neighbors[j] /= sum_Eg_j;
             } else {
                 double Er_outside;
                 // TODO: change the parameters to getOutsideValuesGray so it takes Er_i instead of new_Er
-                new_Er[i] = cells[i].Erad * cells[i].density * pow<2>(length_scale_) / pow<2>(time_scale_);
+                new_Er[i] = cells[i].Erad * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
                 boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells_cgs, new_Er, Er_outside, dummy_v);
 
                 lambda_neighbors[j] /= Er_outside;
@@ -1090,7 +1083,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
             std::size_t const neighbor_j = neighbors[j];
             auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
             r_ij *= 1.0 / abs(r_ij);
-            double const A_ij = tess.GetArea(faces[j]);
+            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
 
             double const momentum_relativity_coefficient_j = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
 
@@ -1103,7 +1096,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
             }
 
             if(!tess.IsPointOutsideBox(neighbor_j)){
-                double const full_CG_res_j = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+                double const full_CG_res_j = std::max(full_CG_result[neighbor_j], std::numeric_limits<double>::min()*1e100);
 
                 dE_relativity -= relativity_term_neighbor_j * full_CG_res_j;
             } else {
@@ -1117,7 +1110,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
             dE_relativity -= relativity_term_i * full_CG_res_i;
         }
 
-        dE_relativity *= pow<2>(time_scale_) * length_scale_ / mass_scale_;
+        dE_relativity *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
         extensives[i].energy += dE_relativity;
         extensives[i].internal_energy += dE_relativity;
@@ -1150,7 +1143,7 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
                 
                 double Er_j = 0.0;
                 if(!tess.IsPointOutsideBox(neighbor_j)){
-                    double const full_CG_res_j = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+                    double const full_CG_res_j = std::max(full_CG_result[neighbor_j], std::numeric_limits<double>::min()*1e100);
                     Er_j = full_CG_res_j;
                 } else {
                     boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result, Er_j, dummy_v);
@@ -1180,7 +1173,6 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 
 
         // other terms
-
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
 
@@ -1226,11 +1218,32 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 #endif
 
 
-#ifdef DEBUG
+// #ifdef DEBUG
     if(rank == 0){
         std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
     }
-#endif
+// #endif
+}
+
+void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const
+{
+    size_t const N = tess.GetPointNo();
+    for(size_t i = 0; i < N; ++i)
+    {
+        double const sigma_planck = sigma_absorption_planck[i];
+        double const T = old_Tm[i];
+        double cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
+        
+        // TODO: What is energy ratio (see Diffusion.cpp same line)
+        cv *= mass_scale_ / (pow<2>(time_scale_)*length_scale_);
+        double const cv_bar = cv / get_radiation_cv(T);
+        double const f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, sigma_planck);
+
+        if(f < 0){
+            throw UniversalError("Negative fleck factor");
+        }
+        fleck_factor[i] = f;
+    }
 }
 
 void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,

@@ -10,6 +10,8 @@ public:
     MultigroupDiffusionCoefficientCalculator(std::vector<double> const& energy_groups_center_,
                                              std::vector<double> const& energy_groups_boundary_);
 
+    MultigroupDiffusionCoefficientCalculator() = default;
+
     virtual ~MultigroupDiffusionCoefficientCalculator() = default;
 
     virtual double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
@@ -18,8 +20,8 @@ public:
 
     virtual double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const = 0;
 
-    std::vector<double> const energy_groups_center;
-    std::vector<double> const energy_groups_boundary;
+    std::vector<double> energy_groups_center;
+    std::vector<double> energy_groups_boundary;
 };
 
 class GraySTAopacity : public MultigroupDiffusionCoefficientCalculator {
