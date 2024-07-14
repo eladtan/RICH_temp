@@ -405,8 +405,7 @@ void MultigroupDiffusionOpenBoundary::setBoundaryValuesGroup(std::size_t const g
                             double const Area,
                             double& A,
                             double& b,
-                            std::size_t const face_index) const
-{
+                            std::size_t const face_index) const {
     A += Area * dt * 0.5 * CG::speed_of_light;
 }
 
@@ -415,11 +414,10 @@ void MultigroupDiffusionOpenBoundary::getOutsideValuesGroup(std::size_t const gr
                             std::size_t const index,
                             std::size_t const outside_point,
                             std::vector<ComputationalCell3D> const& cells,
-                            std::vector<double> const& new_Eg,
+                            double const Eg_i,
                             double& Eg_outside,
-                            Vector3D& v_outside) const
-{
-    Eg_outside = new_Eg[index] * 1e-20;
+                            Vector3D& v_outside) const {
+    Eg_outside = Eg_i * 1e-20;
     v_outside = cells[index].velocity;
 }
 
@@ -431,8 +429,7 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGroup(std::size_t c
                                     std::vector<ComputationalCell3D> const& cells,
                                     double const momentum_term_coefficient,
                                     double& A,
-                                    double& b) const
-{
+                                    double& b) const {
     A += momentum_term_coefficient;
 }
 
@@ -444,8 +441,7 @@ void MultigroupDiffusionOpenBoundary::setBoundaryValuesGray(Tessellation3D const
                             double const Area, 
                             double& A,
                             double& b,
-                            std::size_t const face_index) const
-{
+                            std::size_t const face_index) const {
     A += Area * dt * 0.5 * CG::speed_of_light;
 }
 
@@ -453,11 +449,10 @@ void MultigroupDiffusionOpenBoundary::getOutsideValuesGray(Tessellation3D const&
                             std::size_t const index,
                             std::size_t const outside_point,
                             std::vector<ComputationalCell3D> const& cells,
-                            std::vector<double> const& new_Er,
+                            double const Er_i,
                             double& Er_outside,
-                            Vector3D& v_outside) const
-{
-    Er_outside = new_Er[index] * 1e-20;
+                            Vector3D& v_outside) const {
+    Er_outside = Er_i * 1e-20;
     v_outside = cells[index].velocity;
 }
 
@@ -469,8 +464,7 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                                     double const momentum_term_coefficient_i,
                                     double const momentum_term_coefficient_j,
                                     double& A,
-                                    double& b) const
-{
+                                    double& b) const {
     A += momentum_term_coefficient_i;
 }
 
@@ -483,19 +477,17 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                                 double const Area,
                                 double& A,
                                 double& b,
-                                std::size_t const face_index) const
-{}
+                                std::size_t const face_index) const {}
     
     void MultigroupDiffusionClosedBoundary::getOutsideValuesGroup(std::size_t const group,
                                Tessellation3D const& tess,
                                std::size_t const index,
                                std::size_t const outside_point,
                                std::vector<ComputationalCell3D> const& cells,
-                               std::vector<double> const& new_Eg,
+                               double const Eg_i,
                                double& Eg_outside,
-                               Vector3D& v_outside) const
-{
-    Eg_outside = new_Eg[index];
+                               Vector3D& v_outside) const {
+    Eg_outside = Eg_i;
 }
     
     void MultigroupDiffusionClosedBoundary::setMomentumTermBoundaryGroup(std::size_t const group,
@@ -506,8 +498,7 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                                       std::vector<ComputationalCell3D> const& cells,
                                       double const momentum_term_coefficient,
                                       double& A,
-                                      double& b) const
-{
+                                      double& b) const {
     A += 2 * momentum_term_coefficient;
 }
     
@@ -519,18 +510,16 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                                double const Area, 
                                double& A,
                                double& b,
-                               std::size_t const face_index) const
-{}
+                               std::size_t const face_index) const {}
 
     void MultigroupDiffusionClosedBoundary::getOutsideValuesGray(Tessellation3D const& tess,
                               std::size_t const index,
                               std::size_t const outside_point,
                               std::vector<ComputationalCell3D> const& cells,
-                              std::vector<double> const& new_Er,
+                              double const Er_i,
                               double& Er_outside,
-                              Vector3D& v_outside) const
-{
-    Er_outside = new_Er[index];;
+                              Vector3D& v_outside) const {
+    Er_outside = Er_i;
     v_outside = cells[index].velocity;
 }
 
@@ -542,7 +531,6 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                                      double const momentum_term_coefficient_i,
                                      double const momentum_term_coefficient_j,
                                      double& A,
-                                     double& b) const
-{
+                                     double& b) const {
     A += (momentum_term_coefficient_i + momentum_term_coefficient_j);
 }
