@@ -106,8 +106,11 @@ public:
     mutable std::vector<double> lambda_cell_gray;
     mutable std::vector<double> sigma_ratio_lambda_cell_gray;
 
+
     bool const doppler_on_;
+    // for doppler step
     mutable std::vector<std::vector<double>> R2;
+    mutable std::vector<std::vector<double>> D;
 
 private:
     void BuildMatrixGroup(std::size_t group,
