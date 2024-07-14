@@ -633,6 +633,12 @@ namespace
 		res.xderivative.Erad_dt_dt = 0;
 		res.yderivative.Erad_dt_dt = 0;
 		res.zderivative.Erad_dt_dt = 0;
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			res.xderivative.Eg[j] = 0;
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			res.yderivative.Eg[j] = 0;
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			res.zderivative.Eg[j] = 0;
 		res.xderivative.temperature = 0;
 		res.yderivative.temperature = 0;
 		res.zderivative.temperature = 0;
