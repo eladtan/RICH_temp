@@ -43,7 +43,7 @@ public:
             acc.clear();
             for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                acc.push_back(gravTree.gravity(point));
+                acc.push_back(gravTree.gravity(points[pointIdx]));
             }
         #endif // RICH_MPI
 
