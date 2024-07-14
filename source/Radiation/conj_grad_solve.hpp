@@ -50,6 +50,16 @@ namespace CG
 
         virtual ~MatrixBuilder() = default;
 
+        /**
+         * @brief Virtual function to get the length scale used in the CG method.
+         * 
+         * This function returns the length scale used in the CG method. The default implementation returns 1.0.
+         * Derived classes may override this function to provide their own length scale.
+         * 
+         * @return A double representing the length scale.
+         */
+        virtual double GetLengthScale() const {return 1.0;}
+
         virtual void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const = 0;
         /*!
