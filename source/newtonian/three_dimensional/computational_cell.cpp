@@ -28,6 +28,20 @@ Erad_dt_dt(other.Erad_dt_dt),
 tracers(other.tracers),
 stickers(other.stickers) {}
 
+std::ostream& operator<<(std::ostream &stream, const ComputationalCell3D &cell)
+{
+	stream << "(density=" << cell.density<<" pressure="<<cell.pressure<<" temperature="<<cell.temperature<<" sie="<<cell.internal_energy<<" ID="<<cell.ID<<" velocity="<<cell.velocity
+		<<" Erad="<<cell.Erad;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		stream<<" Eg["<<i<<"]="<<cell.Eg[i];
+	for(size_t i = 0; i < ComputationalCell3D::tracerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::tracerNames[i]<<"="<<cell.tracers[i];
+	for(size_t i = 0; i < ComputationalCell3D::stickerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::stickerNames[i]<<"="<<cell.stickers[i];
+	stream<< ")";
+	return stream;
+}
+
 ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& other)
 {
 	density = other.density;

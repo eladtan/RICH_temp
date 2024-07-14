@@ -119,6 +119,21 @@ public:
 	*/
 	ComputationalCell3D& operator=(ComputationalCell3D const& other);
 
+/**
+ * \brief Overloaded output stream operator for ComputationalCell3D class.
+ *
+ * This operator allows for convenient printing of ComputationalCell3D objects to an output stream.
+ * The output format is a space-separated list of the cell's properties: density, pressure, internal energy,
+ * temperature, ID, velocity components (x, y, z), Erad, Eg (energy groups), 
+ * tracer values, and sticker values.
+ *
+ * \param stream The output stream to which the cell's data will be written.
+ * \param cell The ComputationalCell3D object to be printed.
+ *
+ * \return The output stream with the cell's data appended.
+ */
+	friend std::ostream &operator<<(std::ostream &stream, const ComputationalCell3D &cell);
+
 #ifdef RICH_MPI
   /*! \brief Get size of chunks
     \return Chunk size in bytes
