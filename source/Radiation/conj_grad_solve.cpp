@@ -1,6 +1,10 @@
 #include "conj_grad_solve.hpp"
 #include <limits>
 #include <vectorclass.h>
+#include "boost/math/special_functions/pow.hpp"
+
+using boost::math::pow;
+
 namespace CG
 {
     // Matrix times vector
@@ -111,7 +115,7 @@ namespace CG
                 if(sub_A_indices[i][j] == i)
                 {
                     M[i] = 1.0 / sub_A_values[i][j];
-                    //M[i] = 1.0;
+                    // M[i] = 1.0;
                     break;
                 }
             }
@@ -230,14 +234,14 @@ namespace CG
             for(size_t j = 0; j < Nlocal; ++j)
             {
                 double const local_scale = std::abs(b[j]);
-                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-4))))
+                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))))
                 {
-                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-4)));
+                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9)));
                     max_loc1 = j;
                 }
-                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-4))
+                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
                 {
-                     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-4);
+                     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
                      max_loc0 = j;
                 }
                 if(sub_x[j] < 0)
@@ -256,7 +260,7 @@ namespace CG
             // recall that we can't have a 'break' within an openmp parallel region, so end it here then all threads are merged, and the convergence is checked
             // Convergence test
             if (sub_r_sqrd < delta_init * tolerance//std::sqrt(sub_r_sqrd_convergence / Ntotal) < tolerance * maxA [1]
-                && max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 50 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                && max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                 if(rank == 0)
                     std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
                 if(rank == max_data[0].mpi_id)
@@ -409,6 +413,7 @@ namespace CG
         // this loop must be serial b/c CG is an iterative method
 
         sub_p = sub_r;
+        double max_sub_x = 0;
 
         for (int i = 0; i < max_iter; i++) {
             // note: make sure matrix is big enough for the number of processors you are using!
@@ -420,7 +425,12 @@ namespace CG
             max_data[0].mpi_id = rank;
             // r_old = sub_r;                 // Store previous residual
             sub_r_sqrd_old = sub_r_sqrd;  // save a recalculation of r_old^2 later
-
+            if(std::min(sub_r_sqrd_old, std::abs(rho0)) < std::numeric_limits<double>::min()*1e100){
+                good_end = true;
+                sub_x_solution = sub_x;
+                sub_x_solution.resize(Nlocal);
+                break;
+            }
             y = vector_rescale(sub_p, M);
 #ifdef RICH_MPI
             MPI_exchange_data2(tess, y, true);
@@ -439,8 +449,8 @@ namespace CG
             z.resize(Nlocal);
             double const up = mpi_dot_product(vector_rescale(t, M), vector_rescale(s, M));
             double const down = mpi_dot_product(vector_rescale(t, M), vector_rescale(t, M));
-            double const w = std::abs(up) < std::numeric_limits<double>::min()*1e10 ? 0.0 : up / down;
-            
+            double const w = up / down;
+            max_sub_x = 0;
             old_x = sub_x;
             vec_lin_combo(1.0, h, w, z, sub_x);
             vec_lin_combo(1.0, s, -w, t, sub_r);
@@ -462,6 +472,11 @@ namespace CG
                 max_data[1].val = 0;
                 max_data[2].val = 0;
                 for(size_t j = 0; j < Nlocal; ++j)
+                    max_sub_x = std::max(max_sub_x, std::abs(sub_x[j]));
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+                for(size_t j = 0; j < Nlocal; ++j)
                 {
                     double const local_scale = std::abs(b[j]);
                     if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))))
@@ -469,12 +484,12 @@ namespace CG
                         max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9)));
                         max_loc1 = j;
                     }
-                    // if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
-                    // {
-                    //     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
-                    //     max_loc0 = j;
-                    // }
-                    if(sub_x[j] < -max_sub_x*1e-10)
+                    if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
+                    {
+                        max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
+                        max_loc0 = j;
+                    }
+                    if(sub_x[j] < -max_sub_x * 1e-20)
                     {
                         max_loc2 = j;
                         max_data[2].val = 1;
@@ -484,14 +499,14 @@ namespace CG
                 MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif       
                 if(max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
-                //     if(rank == 0)
-                //         std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
-                //     if(rank == max_data[0].mpi_id)
-                //         std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                //         <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
-                //     if(rank == max_data[1].mpi_id)
-                //         std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                //         <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
+                    // if(rank == 0)
+                    //     std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
+                    // if(rank == max_data[0].mpi_id)
+                    //     std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
+                    //     <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
+                    // if(rank == max_data[1].mpi_id)
+                    //     std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
+                    //     <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
                     total_iters = i;
                     good_end = true;
 #ifdef RICH_MPI
@@ -503,8 +518,10 @@ namespace CG
                     sub_x_solution.resize(Nlocal);
                     for(size_t k = 0; k < Nlocal; ++k)
                     {
-                        sub_x_solution[k] = sub_x[k] + sub_r[k] / (tess.GetVolume(k) * 7e10 * 7e10 * 7e10);
-                        if(sub_x_solution[k] < sub_x[k] * 0.5)
+                        sub_x_solution[k] = sub_x[k] + sub_r[k] / (tess.GetVolume(k) * pow<3>(matrix_builder.GetLengthScale()));
+                        if(sub_x_solution[k] < 0)
+                            sub_x_solution[k] = sub_x[k];
+                        if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] > 0)
                             sub_x_solution[k] = sub_x[k] * 0.5;
                         if(sub_x_solution[k] > sub_x[k] * 2)
                             sub_x_solution[k] = sub_x[k] * 2;

@@ -11,22 +11,16 @@
 #include "../two_dimensional/computational_cell_2d.hpp"
 #include <boost/container/small_vector.hpp>
 #ifdef RICH_MPI
-#include "misc/serializable.hpp"
+	#include "misc/serializable.hpp"
 #endif // RICH_MPI
 
-
-#ifndef ENERGY_GROUPS_NUM
-#define ENERGY_GROUPS_NUM 3
-#endif
-
  //! \brief Container for the hydrodynamic variables
-class ComputationalCell3D 
-#ifdef RICH_MPI
-: public Serializable
-#endif
+class ComputationalCell3D
+						#ifdef RICH_MPI
+							: public Serializable
+						#endif // RICH_MPI
 {
 public:
-
 	//! \brief Density
 	double density;
 
@@ -56,9 +50,6 @@ public:
 	double Erad_dt;
 
 	double Erad_dt_dt;
-
-	//! \brief The sound speed
-	double cs;
 
   static vector<string> tracerNames;
   static vector<string> stickerNames;
@@ -104,7 +95,7 @@ public:
     \param other Source
    */
   ComputationalCell3D(const ComputationalCell3D& other);
-
+	
 	/*! \brief Self increment operator
 	\param other Addition
 	\return Reference to self
@@ -128,6 +119,21 @@ public:
 	*/
 	ComputationalCell3D& operator=(ComputationalCell3D const& other);
 
+/**
+ * \brief Overloaded output stream operator for ComputationalCell3D class.
+ *
+ * This operator allows for convenient printing of ComputationalCell3D objects to an output stream.
+ * The output format is a space-separated list of the cell's properties: density, pressure, internal energy,
+ * temperature, ID, velocity components (x, y, z), Erad, Eg (energy groups), 
+ * tracer values, and sticker values.
+ *
+ * \param stream The output stream to which the cell's data will be written.
+ * \param cell The ComputationalCell3D object to be printed.
+ *
+ * \return The output stream with the cell's data appended.
+ */
+	friend std::ostream &operator<<(std::ostream &stream, const ComputationalCell3D &cell);
+
 #ifdef RICH_MPI
   /*! \brief Get size of chunks
     \return Chunk size in bytes
@@ -144,7 +150,6 @@ public:
    */
 	void unserialize(const vector<double>& data) override;
 #endif // RICH_MPI
-
 };
 
 /*! \brief Term by term addition

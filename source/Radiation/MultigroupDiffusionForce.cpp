@@ -136,21 +136,15 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
                     R2_g_outside = R2_g[i];
                     density_outside = cells[i].density;
                 }
-
-                bool is_cell_i = (tess.GetFaceNeighbors(faces[j]).first == i && fluxes[faces[j]].mass > 0.0) || (tess.GetFaceNeighbors(faces[j]).first != i && fluxes[faces[j]].mass < 0.0);
-
                 double dEg_ij = 0.0;
-                if(is_cell_i){
-                    dEg_ij = 0.5*(1.0 - R2_g[i]) * new_Eg[i] * tess.GetArea(faces[j]) * dt * ScalarProd(r_ij, cells[i].velocity);
-                    
-                    dEr[faces[j]] += dEg_ij*cells[i].Eg[g];
-                } else {
-                    dEg_ij = 0.5*(1.0 - R2_g_outside) * Eg_outside * tess.GetArea(faces[j]) * dt * ScalarProd(r_ij, velocity_outside);
-                    
-                    dEr[faces[j]] += dEg_ij*Eg_outside;
-                }
+                if(((tess.GetFaceNeighbors(faces[j]).second == i) && fluxes[faces[j]].mass < 0.0) || ((tess.GetFaceNeighbors(faces[j]).first == i) && fluxes[faces[j]].mass > 0.0))
+                    dEg_ij = -std::abs(fluxes[faces[j]].mass) * 0.5 * (1.0 - R2_g[i]) * cells[i].Eg[g] * tess.GetArea(faces[j]) * dt ;
+                else
+                    dEg_ij = std::abs(fluxes[faces[j]].mass) * 0.5 * (1.0 - R2_g_outside) * Eg_outside * tess.GetArea(faces[j]) * dt / density_outside;
 
-                extensives[i].Eg[g] += dEg_ij;   
+                dEr[faces[j]] += dEg_ij;
+                
+                extensives[i].Eg[g] += dEg_ij;
             }
         }
     }
@@ -196,7 +190,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
 
             double Er_outside = 0.0;
             if(!is_outside) {
-                Er_outside = extensives[neighbors[j]].Erad;
+                Er_outside = new_Er[neighbors[j]];
             } else {
                 multigroup_diffusion_.boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er[i], Er_outside, dummy_v);
             }
@@ -208,7 +202,6 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
                 dEr_ij = dEr[faces[j]]/sum_Eg * Er_outside;
 
             }
-
             extensives[i].Erad += dEr_ij;
         }
     }

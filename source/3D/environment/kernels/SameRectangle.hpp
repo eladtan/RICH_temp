@@ -10,10 +10,10 @@
 #include "Scale.hpp"
 #include "IndexingKernel3D.hpp"
 
-class SameRectangle : public IndexingKernel3D
+class SameRectangle : public Kernelization3D::IndexingKernel3D
 {
 public:
-    inline SameRectangle(const std::vector<Vector3D> &vertices = std::vector<Vector3D>(), const IndexingKernel3D *indexing = nullptr): indexing(indexing)
+    inline SameRectangle(const std::vector<Vector3D> &vertices = std::vector<Vector3D>(), const Kernelization3D::IndexingKernel3D *indexing = nullptr): indexing(indexing)
     {
         Vector3D ll(std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max());
         Vector3D ur(std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest());
@@ -29,15 +29,15 @@ public:
             ur.z = std::max(ur.z, vertex.z);
         }
         double const max_scale = std::max(ur.z - ll.z, std::max(ur.x - ll.x, ur.y - ll.y));
-        this->moveIndexing = Move(ll);
-        this->scaleIndexing = Scale(Vector3D(max_scale, max_scale, max_scale));
+        this->moveIndexing = Kernelization3D::Move(ll);
+        this->scaleIndexing = Kernelization3D::Scale(Vector3D(max_scale, max_scale, max_scale));
     }
     
     SameRectangle(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *indexing = nullptr): indexing(indexing)
     {
         double const max_scale = std::max(ur.z - ll.z, std::max(ur.x - ll.x, ur.y - ll.y));
-        this->moveIndexing = Move(ll);
-        this->scaleIndexing = Scale(Vector3D(max_scale, max_scale, max_scale));
+        this->moveIndexing = Kernelization3D::Move(ll);
+        this->scaleIndexing = Kernelization3D::Scale(Vector3D(max_scale, max_scale, max_scale));
     }
 
     inline Vector3D operator()(const Vector3D &vector) const override
@@ -47,9 +47,9 @@ public:
     };
 
 private:
-    const IndexingKernel3D *indexing;
-    Move moveIndexing;
-    Scale scaleIndexing;
+    const Kernelization3D::IndexingKernel3D *indexing;
+    Kernelization3D::Move moveIndexing;
+    Kernelization3D::Scale scaleIndexing;
 };
 
 #endif // RECTANGULAR_KERNEL_HPP

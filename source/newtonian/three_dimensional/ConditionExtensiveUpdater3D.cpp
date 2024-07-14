@@ -77,6 +77,9 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 				break;
 			}
 		}
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			if(extensives[i].Eg[j] < 0)
+				throw UniversalError("Negative energy group");
 		// check cell
 		if (!(extensives[i].mass > 0) || !(extensives[i].energy > 0) || (!(extensives[i].internal_energy > 0) && (!entropy)) ||
 			(!std::isfinite(fastabs(extensives[i].momentum))) || (entropy && extensives[i].tracers[entropy_index] < 0))

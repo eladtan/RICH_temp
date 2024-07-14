@@ -76,12 +76,11 @@
         "semaphore": "cpp",
         "stop_token": "cpp",
         "*.txx": "cpp",
-        "csetjmp": "cpp",
         "csignal": "cpp",
         "any": "cpp",
-        "shared_mutex": "cpp",
         "charconv": "cpp",
-        "source_location": "cpp"
+        "source_location": "cpp",
+        "shared_mutex": "cpp"
     },
     "cmake.configureOnOpen": true,
 
@@ -180,6 +179,5 @@
         "**/.vscode": true,
         "**/.vs": true
     },
-    "cmake.sourceDirectory": "/home/esternberg/RICH/r3d",
-    "fortran.fortls.disabled": true
+    "cmake.sourceDirectory": "/home/elads/RICH/r3d"
 }

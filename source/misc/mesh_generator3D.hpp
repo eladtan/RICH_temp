@@ -21,21 +21,19 @@
 \param nz Number of points along the z axis
 \param lower_left Lower left point
 \param upper_right Upper right point
-\param tproc Tessellation of the domain decompesition
 \return Set of three dimensional points
 */
 vector<Vector3D> CartesianMesh(std::size_t nx, std::size_t ny, std::size_t nz, Vector3D const& lower_left,
-	Vector3D const& upper_right, Voronoi3D const* tproc = nullptr);
+	Vector3D const& upper_right);
 
 /*!
 \brief Generates a random grid with uniform point density and a constant seed
 \param PointNum The number of points.
 \param ll The lower left point of the domain
 \param ur The upper right point of the domain
-\param tproc Tessellation of the domain decompesition
 \return List of three dimensional points
 */
-vector<Vector3D> RandRectangular(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, Voronoi3D const* tproc = nullptr);
+vector<Vector3D> RandRectangular(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur);
 
 /*! \brief Generates a random grid with uniform point density and a constant seed
   \param PointNum Number of points
@@ -53,11 +51,10 @@ vector<Vector3D> RandRectangular(std::size_t PointNum, Vector3D const& ll, Vecto
   \param Rmin Inner radius
   \param Rmax Outer radius
   \param center Sphere centre
-  \param tproc Meta tessellation
   \return List of points
  */
 vector<Vector3D> RandSphereR(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,
-	const Vector3D& center = Vector3D(),Voronoi3D const* tproc = nullptr);
+	const Vector3D& center = Vector3D());
 
 /*! \brief Generate random point inside a sphere
   \param PointNum Number of points
@@ -66,11 +63,10 @@ vector<Vector3D> RandSphereR(std::size_t PointNum, Vector3D const& ll, Vector3D 
   \param Rmin Inner radius
   \param Rmax Outer radius
   \param center Sphere centre
-  \param tproc Meta tessellation
   \return List of points
  */
 vector<Vector3D> RandSphereR2(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur,double Rmin,double Rmax
-	, const Vector3D& center = Vector3D(), Voronoi3D const* tproc = nullptr);
+	, const Vector3D& center = Vector3D());
 
 /*! \brief Generate random point inside a sphere
   \param PointNum Number of points
@@ -79,11 +75,10 @@ vector<Vector3D> RandSphereR2(std::size_t PointNum, Vector3D const& ll, Vector3D
   \param Rmin Inner radius
   \param Rmax Outer radius
   \param center Sphere centre
-  \param tproc Meta tessellation
   \return List of points
  */
 vector<Vector3D> RandSphereR1(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,
-	const Vector3D& center = Vector3D(),Voronoi3D const* tproc = nullptr);
+	const Vector3D& center = Vector3D());
 
 /*! \brief Generate random point inside a sphere
   \param PointNum Number of points
@@ -93,21 +88,9 @@ vector<Vector3D> RandSphereR1(std::size_t PointNum, Vector3D const& ll, Vector3D
   \param Rmax Outer radius
   \param a Point density slope
   \param center Sphere centre
-  \param tproc Meta tessellation
   \return List of points
  */
-vector<Vector3D> RandSphereRa(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,double a, Vector3D const& center,
-	Voronoi3D const* tproc = nullptr);
-
-#ifdef RICH_MPI
-/*!
-\brief Generates a random grid with uniform point density and a constant seed
-\param PointNum The total number of points to be in all cpus combined.
-\param tproc The tessellation of the processors
-\return List of three dimensional points
-*/
-vector<Vector3D> RandPointsMPI(Voronoi3D const& tproc, size_t PointNum);
-#endif
+vector<Vector3D> RandSphereRa(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,double a, Vector3D const& center);
 
 #endif //MESHGENERATOR3D_HPP
 

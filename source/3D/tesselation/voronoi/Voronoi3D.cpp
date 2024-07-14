@@ -1,4 +1,29 @@
 #include "Voronoi3D.hpp"
+#include "../../elementary/Mat33.hpp"
+#include "../utils/Predicates3D.hpp"
+#include "misc/utils.hpp"
+#include "misc/io3D.hpp"
+#include "3D/GeometryCommon/Intersections.hpp"
+#include "misc/int2str.hpp"
+
+#ifdef RICH_MPI
+
+#include "3D/range/finders/BruteForce.hpp"
+#include "3D/range/finders/RangeTree.hpp"
+#include "3D/range/finders/OctTree.hpp"
+#include "3D/range/finders/KDTree.hpp"
+#include "3D/range/finders/GroupRangeTree.hpp"
+#include "3D/range/finders/HashBruteForce.hpp"
+#include "3D/range/finders/SmartBruteForce.hpp"
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
+
+#include "3D/environment/kernels/Rectangle.hpp"
+#include "3D/environment/kernels/SameRectangle.hpp"
+
+#endif // RICH_MPI
+
+// #define VORONOI_DEBUG
 
 bool PointInPoly(Tessellation3D const &tess, Vector3D const &point, std::size_t index)
 {
@@ -1814,10 +1839,11 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         {
             CM_[Nghost_.at(i).at(j)] = incoming[i][j];
         }
-    }   
+    }
 
     // save the list of the real ghost points
     this->FilterRealGhostPoints();
+    MPI_exchange_data2(*this, volume_, true);
 }
 
 #endif // RICH_MPI
@@ -2748,10 +2774,12 @@ const vector<Vector3D> &Voronoi3D::getMeshPoints(void) const
     return del_.points_;
 }
 
-const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
-{
-    return this->allMyPoints;
-}
+#ifdef RICH_MPI
+    const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
+    {
+        return this->allMyPoints;
+    }
+#endif // RICH_MPI
 
 vector<std::size_t> Voronoi3D::GetNeighbors(std::size_t index) const
 {
@@ -2903,10 +2931,12 @@ size_t &Voronoi3D::GetPointNo(void)
     return Norg_;
 }
 
-size_t Voronoi3D::GetAllPointsNo(void) const
-{
-    return this->allMyPoints.size();
-}
+#ifdef RICH_MPI
+    size_t Voronoi3D::GetAllPointsNo(void) const
+    {
+        return this->allMyPoints.size();
+    }
+#endif // RICH_MPI
 
 std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
 {

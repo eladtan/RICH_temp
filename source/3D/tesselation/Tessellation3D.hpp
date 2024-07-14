@@ -58,10 +58,12 @@ public:
   */
   virtual size_t GetPointNo(void) const = 0;
 
-  /*! \brief Returns the number of all the points, even those which are not participating in the build
-    \return Number of all the points
-  */
-  virtual size_t GetAllPointsNo(void) const = 0;
+  #ifdef RICH_MPI
+    /*! \brief Returns the number of all the points, even those which are not participating in the build
+      \return Number of all the points
+    */
+    virtual size_t GetAllPointsNo(void) const = 0;
+  #endif // RICH_MPI
 
   /*! \brief Get number of points
     \return Number of all points
@@ -137,11 +139,13 @@ public:
    */
   virtual const vector<Vector3D>& getMeshPoints(void) const = 0;
   
-  /*! \brief Returns all the points, even those which are not participating in the build
-    \return List of all the points
-  */
-  virtual const std::vector<Vector3D> &getAllPoints(void) const = 0;
-
+  #ifdef RICH_MPI
+    /*! \brief Returns all the points, even those which are not participating in the build
+      \return List of all the points
+    */
+    virtual const std::vector<Vector3D> &getAllPoints(void) const = 0;
+  #endif // RICH_MPI
+  
   /*!
     \brief Returns a reference to the points composing the faces vector
     \returns The reference

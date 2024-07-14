@@ -146,6 +146,8 @@ public:
     
     ~Diffusion() = default;
 
+    double GetLengthScale() const override {return length_scale_;}
+
     bool prestep(Tessellation3D const& tess,
                  std::vector<ComputationalCell3D> const& cells) const override;
 

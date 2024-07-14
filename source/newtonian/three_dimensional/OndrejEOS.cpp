@@ -55,10 +55,14 @@ namespace
     }
 }
 
-OndrejEOS::OndrejEOS(double mind, double maxd, double dd, std::string const &Pfile, std::string const &csfile,
+OndrejEOS::OndrejEOS(std::string const& density_file, std::string const &Pfile, std::string const &csfile,
                      std::string const &Sfile, std::string const &Ufile, std::string const &Tfile, std::string const &CVfile, double lscale, double mscale, double tscale)
-    : mind_(mind), maxd_(maxd), dd_(dd), lscale_(lscale), mscale_(mscale), tscale_(tscale)
+    : lscale_(lscale), mscale_(mscale), tscale_(tscale)
 {
+    auto density = read_vector(density_file);
+    mind_ = density[0];
+    maxd_ = density.back();
+    dd_ = density[1] - density[0];
     P_ = read_vector(Pfile);
     cs_ = read_vector(csfile);
     S_ = read_vector(Sfile);
@@ -249,3 +253,4 @@ double OndrejEOS::sd2p(double s, double d, tvector const &tracers, vector<string
     else
         return tscale_ * tscale_ * lscale_ * std::exp(InterpData2(std::log(d_cgs), std::log(s_cgs), S_, P_)) / mscale_;
 }
+

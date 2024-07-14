@@ -35,6 +35,8 @@ public:
 	virtual void ApplyFix(Tessellation3D const& tess, vector<ComputationalCell3D> const& cells, double time,
 		double dt, vector<Vector3D> &velocities)const;
 
+	virtual bool MovedPoints() const {return true;}
+	
   //! \brief Class destructor
   virtual ~PointMotion3D(void);
 };

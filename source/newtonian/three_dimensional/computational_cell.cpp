@@ -2,21 +2,16 @@
 
 ComputationalCell3D::ComputationalCell3D(void):
   density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0),
-  	Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
+  	Erad_dt_dt(0), tracers({}),stickers(),dt(0) {}
 
-ComputationalCell3D::ComputationalCell3D(double density_i,
-				     double pressure_i,double internal_energy_i,size_t ID_i,
-				     const Vector3D& velocity_i):
+ComputationalCell3D::ComputationalCell3D(double density_i, double pressure_i, double internal_energy_i, size_t ID_i, const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}
+  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), tracers({}),stickers(),dt(0) {}
 
-ComputationalCell3D::ComputationalCell3D(double density_i,
-				     double pressure_i, double internal_energy_i,size_t ID_i,
-				     const Vector3D& velocity_i,
-				     const std::array<double,MAX_TRACERS>& tracers_i,
-					 const std::array<bool,MAX_STICKERS>& stickers_i):
+ComputationalCell3D::ComputationalCell3D(double density_i, double pressure_i, double internal_energy_i,size_t ID_i, const Vector3D& velocity_i, 
+										const std::array<double,MAX_TRACERS>& tracers_i, const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), cs(0), tracers(tracers_i),stickers(stickers_i),dt(0) {}
+  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), tracers(tracers_i),stickers(stickers_i),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -30,10 +25,22 @@ Erad(other.Erad),
 Eg(other.Eg),
 Erad_dt(other.Erad_dt),
 Erad_dt_dt(other.Erad_dt_dt),
-cs(other.cs),
 tracers(other.tracers),
 stickers(other.stickers) {}
 
+std::ostream& operator<<(std::ostream &stream, const ComputationalCell3D &cell)
+{
+	stream << "(density=" << cell.density<<" pressure="<<cell.pressure<<" temperature="<<cell.temperature<<" sie="<<cell.internal_energy<<" ID="<<cell.ID<<" velocity="<<cell.velocity
+		<<" Erad="<<cell.Erad;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		stream<<" Eg["<<i<<"]="<<cell.Eg[i];
+	for(size_t i = 0; i < ComputationalCell3D::tracerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::tracerNames[i]<<"="<<cell.tracers[i];
+	for(size_t i = 0; i < ComputationalCell3D::stickerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::stickerNames[i]<<"="<<cell.stickers[i];
+	stream<< ")";
+	return stream;
+}
 
 ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& other)
 {
@@ -47,7 +54,6 @@ ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& o
 	Eg = other.Eg;
 	Erad_dt = other.Erad_dt;
 	Erad_dt_dt = other.Erad_dt_dt;
-	cs = other.cs;
 	tracers = other.tracers;
 	stickers = other.stickers;
 	ID = other.ID;
@@ -65,9 +71,6 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 	this->Erad += other.Erad;
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;
-	this->cs = std::max<double>(this->cs, other.cs); // todo: correct?
-	//assert(this->tracers.size() == other.tracers.size());
-	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
 #pragma omp simd
 #endif
@@ -89,9 +92,6 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 	this->Erad -= other.Erad;
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;	
-	this->cs = std::max<double>(this->cs, other.cs); // todo: correct?
-	//assert(this->tracers.size() == other.tracers.size());
-	//size_t N = this->tracers.size();
 #ifdef __INTEL_COMPILER
 #pragma ivdep
 #endif
@@ -112,9 +112,6 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->Erad *= s;
 	this->Erad_dt *= s;
 	this->Erad_dt_dt *= s;
-	this->cs *= s; // todo: correct?
-	this->dt *= s;
-	//size_t N = this->tracers.size();
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		this->tracers[j] *= s;
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
@@ -128,7 +125,7 @@ vector<string> ComputationalCell3D::stickerNames;
 #ifdef RICH_MPI
 size_t ComputationalCell3D::getChunkSize(void) const
 {
-	return 13 + tracers.size() + stickers.size() + ENERGY_GROUPS_NUM;
+	return 12 + tracers.size() + stickers.size() + ENERGY_GROUPS_NUM;
 }
 
 vector<double> ComputationalCell3D::serialize(void) const
@@ -146,9 +143,7 @@ vector<double> ComputationalCell3D::serialize(void) const
 	res.at(9) = Erad;
 	res.at(10) = Erad_dt;
 	res.at(11) = Erad_dt_dt;
-	res.at(12) = cs;
-	size_t counter = 13;
-	//size_t N = tracers.size();
+	size_t counter = 12;
 #ifdef __INTEL_COMPILER
 #pragma ivdep
 #endif
@@ -182,9 +177,7 @@ void ComputationalCell3D::unserialize
 	Erad = data.at(9);
 	Erad_dt = data.at(10);
 	Erad_dt_dt = data.at(11);
-	cs = data.at(12);
-	size_t counter = 13;
-	//size_t N = tracers.size();
+	size_t counter = 12;
 #ifdef __INTEL_COMPILER
 #pragma ivdep
 #endif
@@ -283,8 +276,6 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 		res.Eg[j] *= s_1;
 	res.velocity = res.velocity * s_1;
-	res.cs = res.cs * s_1; // todo: correct?
-	res.dt *= s_1;
 	return res;
 }
 
@@ -304,8 +295,6 @@ ComputationalCell3D operator*(ComputationalCell3D const& p, double s)
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 		res.Eg[j] *= s;
 	res.velocity = res.velocity * s;
-	res.cs = res.cs * s; // todo: correct?
-	res.dt *= s;
 	return res;
 }
 
@@ -327,16 +316,11 @@ void ReplaceComputationalCell(ComputationalCell3D & cell, ComputationalCell3D co
 	cell.Eg = other.Eg;
 	cell.Erad_dt = other.Erad_dt;
 	cell.Erad_dt_dt = other.Erad_dt_dt;
-	cell.cs = other.cs;
-	//size_t N = other.tracers.size();
-	//cell.tracers.resize(N);
 #ifdef __INTEL_COMPILER
 #pragma omp simd
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		cell.tracers[j] = other.tracers[j];
-	//N = other.stickers.size();
-	//cell.stickers.resize(N);
 #ifdef __INTEL_COMPILER
 #pragma ivdep
 #endif

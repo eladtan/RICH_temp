@@ -6,6 +6,7 @@
 #include "boost/math/special_functions/pow.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
+#include "planck_integral/planck_integral.hpp"
 
 using namespace CG;
 
@@ -23,6 +24,8 @@ public:
                         bool const doppler_on);
 
     ~MultigroupDiffusion() = default;
+
+    double GetLengthScale() const override {return length_scale_;}
 
     bool prestep(Tessellation3D const& tess,
                  std::vector<ComputationalCell3D> const& cells) const override;
@@ -155,6 +158,9 @@ private:
 
     void calculate_gray_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                std::vector<ComputationalCell3D> const& cells) const;
+
+    void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
+
     // helper functions
     void calculate_lambda_g_and_R2_g(std::size_t const group,
                             Tessellation3D const& tess,

@@ -64,7 +64,7 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
     double Cv = eos_.dT2cv(cell.density, T, cell.tracers, ComputationalCell3D::tracerNames);
     double const energy_ratio = Cv * cell.temperature / (cell.internal_energy * cell.density);
     Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
-    double const beta = std::max(1.0, 0.3 / energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
+    double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
     return compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck, sigma_s, Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck);
 }
 
@@ -476,7 +476,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(gradE[i], Dcell, Er_for_limit[i]) : 1;
         cell_flux_limiter[i] = flux_limiter;
         Vector3D const CM = tess.GetCellCM(i);
-        double const v_ratio = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+        double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
@@ -571,7 +571,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double e_absorb = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * full_CG_result[i] * volume * time_scale_;
         double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume * time_scale_;
         double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
-        if(compton_on_ && cells[i].tracers[1] > 0.5)
+        if(compton_on_)
         {
             double const old_Er = cells[i].Erad * cells[i].density * mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
             old_Tr = std::pow(old_Er / CG::radiation_constant, 0.25);
@@ -633,7 +633,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 
         double total_relativity = 0;
         double etherm_mid = extensives[i].internal_energy;
-        double const v_ratio = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells[i].velocity) * length_scale_ / time_scale_ + 1e-2));
+        double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells[i].velocity) * length_scale_ / time_scale_ + 1e-2));
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
@@ -776,8 +776,8 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
-    if(rank == 0)
-        std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
+    // if(rank == 0)
+    //     std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
 }
 
 void DiffusionSideBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 
@@ -826,7 +826,7 @@ void DiffusionClosedBox::SetMomentumTermBoundary(Tessellation3D const& tess, siz
         double& /*b*/, size_t const /*face_index*/, double const fleck_factor, double const flux_limiter, 
         double const D, double const sigma_planck)const
 {
-     Vector3D r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
+    Vector3D r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
     double const r_ij_size = abs(r_ij);
     r_ij *= 1.0 / r_ij_size;
     double const momentum_relativity_term = -0.5 * fleck_factor * dt * flux_limiter * Area * 
@@ -854,7 +854,7 @@ double PowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell
 
 double PowerLawOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const
 {
-    return CG::speed_of_light / (3 * CalcDiffusionCoefficient(cell));
+    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
 }
 
 void DiffusionXInflowBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 

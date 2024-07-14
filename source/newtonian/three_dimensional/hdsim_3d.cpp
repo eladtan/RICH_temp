@@ -30,7 +30,7 @@ namespace
 			if(rank == 0)
 				std::cout<<msg<<" "<<t2 - t1<<" seconds"<<std::endl;
 		#else
-			std::cout<<msg<< std::chrono::duration_cast<std::chrono::seconds>(t2 - t1).count()<<" seconds"<<std::endl;
+			std::cout<<msg<< std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()<<" mseconds"<<std::endl;
 		#endif
 	}
 }
@@ -211,7 +211,7 @@ namespace
 			for (size_t i = 0; i < N; ++i)
 				points[i] += point_vel[i] * dt;
 		}
-
+		
 		#ifdef RICH_MPI
 		tess.BuildParallel(points);
 		#else // RICH_MPI
@@ -258,8 +258,8 @@ void HDSim3D::timeAdvance2(void)
 	auto t1 = get_time();
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
 	auto t2 = get_time();
-	DisplayTime(t1, t2, "Source time");
-	if (pt_.cycle % 10 == 0)
+	DisplayTime(t1, t2, "Source time ");
+	if (pt_.cycle % 10 == 0 && pm_.MovedPoints())
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
 		mesh.resize(tess_.GetPointNo());
@@ -273,21 +273,24 @@ void HDSim3D::timeAdvance2(void)
 		tess_.PreparePoints(mesh, order);
 #endif
 	}
-	MovePoints(tess_, point_vel, dt);
-	t1 = get_time();
-	UpdateTessellation(tess_, point_vel, dt);
-	t2 = get_time();
-	DisplayTime(t1, t2, "Voronoi build time");
-#ifdef RICH_MPI
-	// Keep relevant points
 	Conserved3D edummy;
 	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess_, mid_extensives, false, &edummy);
-	MPI_exchange_data(tess_, extensive_, false, &edummy);
-	MPI_exchange_data(tess_, cells_, false, &cdummy);
-	MPI_exchange_data(tess_, point_vel, false, &vdummy);
-	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+	if(pm_.MovedPoints())
+	{
+		MovePoints(tess_, point_vel, dt);
+		t1 = get_time();
+		UpdateTessellation(tess_, point_vel, dt);
+		t2 = get_time();
+		DisplayTime(t1, t2, "Voronoi build time ");
+#ifdef RICH_MPI
+		// Keep relevant points
+		MPI_exchange_data(tess_, mid_extensives, false, &edummy);
+		MPI_exchange_data(tess_, extensive_, false, &edummy);
+		MPI_exchange_data(tess_, cells_, false, &cdummy);
+		MPI_exchange_data(tess_, point_vel, false, &vdummy);
+		MPI_exchange_data(tess_, point_vel, true, &vdummy);
 #endif
+	}
 
 cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
@@ -301,7 +304,7 @@ face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.get
 t1 = get_time();
 source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
 t2 = get_time();
-DisplayTime(t1, t2, "Second source time");
+DisplayTime(t1, t2, "Second source time ");
 eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
