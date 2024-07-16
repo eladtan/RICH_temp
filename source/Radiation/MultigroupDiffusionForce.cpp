@@ -137,11 +137,12 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
                     density_outside = cells[i].density;
                 }
                 double dEg_ij = 0.0;
-                if(((tess.GetFaceNeighbors(faces[j]).second == i) && fluxes[faces[j]].mass < 0.0) || ((tess.GetFaceNeighbors(faces[j]).first == i) && fluxes[faces[j]].mass > 0.0))
+                if(((tess.GetFaceNeighbors(faces[j]).second == i) && fluxes[faces[j]].mass < 0.0) || ((tess.GetFaceNeighbors(faces[j]).first == i) && fluxes[faces[j]].mass > 0.0)){
+                    // I dont understand this part why use the mass flux ? there should at least be some division by a density or something
                     dEg_ij = -std::abs(fluxes[faces[j]].mass) * 0.5 * (1.0 - R2_g[i]) * cells[i].Eg[g] * tess.GetArea(faces[j]) * dt ;
-                else
+                } else {
                     dEg_ij = std::abs(fluxes[faces[j]].mass) * 0.5 * (1.0 - R2_g_outside) * Eg_outside * tess.GetArea(faces[j]) * dt / density_outside;
-
+                }
                 dEr[faces[j]] += dEg_ij;
                 
                 extensives[i].Eg[g] += dEg_ij;
