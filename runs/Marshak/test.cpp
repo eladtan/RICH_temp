@@ -44,8 +44,8 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
-	std::string eos_location("/home/elads/RICH/data/EOS/");
-	std::string STA_location("/home/elads/RICH/data/STA/");
+	std::string eos_location("/home/itamarg/workspace/RICH/data/EOS/");
+	std::string STA_location("/home/itamarg/workspace/RICH/data/STA/");
 
 	double const lscale = 7e10;
 	double const mscale = 2e33;
@@ -57,9 +57,9 @@ int main(void)
 	STAgreyOpacity opacity(STA_location);
 
 	const double width = 1e9 / lscale;
-	size_t const Nx = 128 * 5;
-	size_t const Ny = 10;
-	size_t const Nz = 10;
+	size_t const Nx = 128;
+	size_t const Ny = 3;
+	size_t const Nz = 3;
 	Vector3D ll(0, -0.5 * width * Ny / Nx, -0.5 * width * Nz / Nx), ur(width, 0.5 * width * Ny / Nx, 0.5 * width * Nz / Nx);
 	Voronoi3D tess(ll, ur);
 	int counter = 0;
@@ -97,7 +97,7 @@ int main(void)
 	Eulerian3D pm;
 	
 	DiffusionSideBoundary D_boundary(1.1605e7); // 1 kev
-	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), true, false, true);
+	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -121,9 +121,9 @@ int main(void)
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
-	double init_dt = 0.1 / tscale;
+	double init_dt = 1e-15 / tscale;
 	double const dt_output = 1e7 / tscale;
-	double const tf = dt_output * 10;
+	double const tf = dt_output * 5;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
 	double old_dt = init_dt;
