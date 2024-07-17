@@ -376,7 +376,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
 
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
 
-        double cdtkg = cdt * sigma_absorption_group[group][i];
+        double cdtkg = std::min(cdt * sigma_absorption_group[group][i], max_coupling_strength);
 
         A[i].push_back(volume*(1.0 + cdtkg));
 
@@ -562,7 +562,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             double const sigma_rossland = CG::speed_of_light / (Dg_cell * 3.0);
             double const sigma_abs = sigma_absorption_group[group][i];
             
-            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (fleck_factor[i] * v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
+            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0) * ScalarProd(cells_cgs[i].velocity, r_ij);
             
             double const momentum_relativity_term = dt_cgs* momentum_term_coefficient;
             if(!tess.IsPointOutsideBox(neighbor_j)){
@@ -1015,6 +1015,16 @@ void MultigroupDiffusion::PostCGGroup(std::size_t const group,
         cells[i].Eg[group] =  full_CG_res_i * pow<2>(time_scale_) / (cells[i].density * mass_scale_ / length_scale_);
         extensives[i].Eg[group] = full_CG_res_i * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
     }
+#ifdef RICH_MPI
+    size_t const Ncells_total = cells.size();
+    double const min_value = std::numeric_limits<double>::min() * 1e20;
+    for(size_t i = N; i < Ncells_total; ++i)
+    {
+        double const full_CG_res_i = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+        if(cells[i].density > min_value)
+            cells[i].Eg[group] = full_CG_res_i * pow<2>(time_scale_) / (cells[i].density * mass_scale_ / length_scale_);
+    }
+#endif
 }
 
 void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess, 
@@ -1175,6 +1185,21 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         // other terms
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
+        if(!(cells[i].internal_energy > 0))// ||  cells[i].ID == 79650)
+        {
+            UniversalError eo("negative internal energy in PostCGGray");
+            eo.addEntry("Cell", i);
+            eo.addEntry("ID", cells[i].ID);
+            eo.addEntry("Internal Energy", extensives[i].internal_energy);
+            eo.addEntry("Mass", extensives[i].mass);
+            eo.addEntry("dE_relativity", dE_relativity);
+            eo.addEntry("dE_absorption_emission", dE_absorption_emission);
+            eo.addEntry("kr*full_CG_res_i", kr*full_CG_res_i);
+            eo.addEntry("kp*Um", kp*Um);
+            eo.addEntry("kr", kr);
+            eo.addEntry("kp", kp);
+            throw eo;
+        }
 
         try{
             cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
