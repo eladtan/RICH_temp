@@ -183,8 +183,8 @@ namespace CG
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
         // double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
-        if(rank == 0)
-            std::cout<<"CG init delta "<<delta_init<<std::endl;
+        // if(rank == 0)
+        //     std::cout<<"CG init delta "<<delta_init<<std::endl;
         double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
         bool good_end = false;
         struct
@@ -547,7 +547,7 @@ namespace CG
             sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
             
             // Convergence test
-            if (sub_r_sqrd < delta_init * tolerance)
+             if (sub_r_sqrd < delta_init * tolerance)
             {
                 if(CheckConvergence(sub_x, rank, Nlocal, b, maxA, sub_r, old_x, i, total_iters, sub_r_sqrd, delta_init, tess,  cells, sub_x_solution, A, A_indeces, sub_a_times_p, matrix_builder, M))
                 {

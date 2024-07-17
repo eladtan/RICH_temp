@@ -60,7 +60,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
             faces = tess.GetCellFaces(i);
             tess.GetNeighbors(i, neighbors);
 
-            std::size_t Nneighbors = neighbors.size();
+            std::size_t const Nneighbors = neighbors.size();
 
             Vector3D const r_i = tess.GetMeshPoint(i);
 
@@ -75,7 +75,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
                 if(!tess.IsPointOutsideBox(neighbor_j)){
                     Eg_mid = 0.5 * (new_Eg[i] + new_Eg[neighbor_j]);
                 } else {
-                    multigroup_diffusion_.boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg, Eg_mid, dummy_v);
+                    multigroup_diffusion_.boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg[i], Eg_mid, dummy_v);
 
                     Eg_mid += new_Eg[i];
                     Eg_mid *= 0.5;
@@ -132,7 +132,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
                     R2_g_outside = R2_g[neighbor_j];
                     density_outside = cells[neighbor_j].density;
                 } else {
-                    multigroup_diffusion_.boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg, Eg_outside, velocity_outside);
+                    multigroup_diffusion_.boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, new_Eg[i], Eg_outside, velocity_outside);
                     R2_g_outside = R2_g[i];
                     density_outside = cells[i].density;
                 }
@@ -178,7 +178,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
                 if(!is_outside){
                     Eg_outside = cells[neighbors[j]].Eg[g];
                 } else {
-                    multigroup_diffusion_.boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbors[j], cells, new_Eg, Eg_outside, dummy_v);
+                    multigroup_diffusion_.boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbors[j], cells, new_Eg[i], Eg_outside, dummy_v);
                 }
 
                 if(is_cell_i){
@@ -192,7 +192,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
             if(!is_outside) {
                 Er_outside = new_Er[neighbors[j]];
             } else {
-                multigroup_diffusion_.boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er, Er_outside, dummy_v);
+                multigroup_diffusion_.boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, new_Er[i], Er_outside, dummy_v);
             }
 
             double dEr_ij = 0.0;

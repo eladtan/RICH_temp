@@ -47,7 +47,7 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGray(Tessellation3D const&
                                                            std::size_t const index,
                                                            std::size_t const outside_point,
                                                            std::vector<ComputationalCell3D> const& cells,
-                                                           std::vector<double> const& new_Er,
+                                                           double const Er_i,
                                                            double& Er_outside,
                                                            Vector3D& v_outside) const {
     double const R = tess.GetWidth(index);
@@ -55,7 +55,7 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGray(Tessellation3D const&
     if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4)){
         Er_outside = Ur;
     } else {
-        Er_outside = new_Er[index];
+        Er_outside = Er_i;
     }
 
     v_outside = cells[index].velocity;
@@ -85,7 +85,7 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGroup(std::size_t const gr
                                                             std::size_t const index,
                                                             std::size_t const outside_point,
                                                             std::vector<ComputationalCell3D> const& cells,
-                                                            std::vector<double> const& new_Eg,
+                                                            double const Eg_i,
                                                             double& Eg_outside,
                                                             Vector3D& /*v_outside*/) const {
     
@@ -93,7 +93,7 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGroup(std::size_t const gr
     if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)){
         Eg_outside = Ug[group];
     } else {
-        Eg_outside = new_Eg[index];
+        Eg_outside = Eg_i;
     }
 }
 
@@ -211,7 +211,7 @@ void MultigroupDiffusionXInflowBoundary::getOutsideValuesGroup(std::size_t const
                                                                std::size_t const index,
                                                                std::size_t const outside_point,
                                                                std::vector<ComputationalCell3D> const& cells,
-                                                               std::vector<double> const& new_Eg,
+                                                               double const Eg_i,
                                                                double& Eg_outside,
                                                                Vector3D& v_outside) const {
     double const R = tess.GetWidth(index);
@@ -223,7 +223,7 @@ void MultigroupDiffusionXInflowBoundary::getOutsideValuesGroup(std::size_t const
         Eg_outside = right_state_.Eg[group] * right_state_.density;
         v_outside  = right_state_.velocity;
     } else {
-        Eg_outside = new_Eg[index];
+        Eg_outside = Eg_i;
         Vector3D const normal = normalize(tess.GetMeshPoint(outside_point) - tess.GetMeshPoint(index));
 
         v_outside = cells[index].velocity;
@@ -328,7 +328,7 @@ void MultigroupDiffusionXInflowBoundary::getOutsideValuesGray(Tessellation3D con
                                                               std::size_t const index,
                                                               std::size_t const outside_point,
                                                               std::vector<ComputationalCell3D> const& cells,
-                                                              std::vector<double> const& new_Er,
+                                                              double const Er_i,
                                                               double& Er_outside,
                                                               Vector3D& v_outside) const { 
     double const R = tess.GetWidth(index);
@@ -340,7 +340,7 @@ void MultigroupDiffusionXInflowBoundary::getOutsideValuesGray(Tessellation3D con
         Er_outside = right_state_.Erad;
         v_outside  = right_state_.velocity;
     } else {
-        Er_outside = new_Er[index];
+        Er_outside = Er_i;
 
         Vector3D const normal = normalize(tess.GetMeshPoint(outside_point) - tess.GetMeshPoint(index));
 
