@@ -17,12 +17,12 @@
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
 #include "source/3D/output/write3D.hpp"
+#include "source/3D/output/read3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
+#include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
-#include "source/Radiation/DiffusionForce.hpp"
+#include "source/Radiation/MultigroupDiffusionForce.hpp"
 #include "source/Radiation/MultigroupDiffusion.hpp"
-#include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
-#include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include "source/newtonian/three_dimensional/LagrangianExtensiveUpdater3D.hpp"
@@ -36,15 +36,12 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include <source/Radiation/planck_integral/planck_integral.hpp>
-#include <algorithm>
+#include "source/3D/environment/kernels/Rectangle.hpp"
+#include "source/newtonian/three_dimensional/Dissipation.hpp"
 
-typedef std::array<double, 4> state_type;
-
-static constexpr double ev = 1.602176634e-12;
-static constexpr double kev = 1e3*ev;
-
-class STAMGopacity: public MultigroupDiffusionCoefficientCalculator
+namespace
+{
+	class STAMGopacity: public MultigroupDiffusionCoefficientCalculator
 	{
 	private:
 		std::vector<double> rho_, T_;
@@ -167,7 +164,7 @@ class STAMGopacity: public MultigroupDiffusionCoefficientCalculator
 			return sig;
 		}
 	};
-
+}
 
 int main(void)
 {
@@ -179,79 +176,93 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
-	
-	std::string eos_location("/home/elads/RICH_itamar/data/EOS/");
-	std::string STA_location("/home/elads/RICH_itamar/data/STA/");
-
 	double const lscale = 7e10;
 	double const mscale = 2e33;
 	double const tscale = 1603;
-	if (rank == 0)
-		std::cout << "start eos" << std::endl;
+    std::string eos_location("/home/elads/RICH_itamar/data/EOS/");
+	std::string STA_location("/home/elads/RICH_itamar/data/STA/MG/");
 	OndrejEOS eos(eos_location + "density.txt", eos_location + "Pfile.txt", eos_location + "csfile.txt", eos_location + "Sfile.txt", eos_location + "Ufile.txt", eos_location + "Tfile.txt", eos_location + "CVfile.txt", lscale, mscale, tscale);
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
 	//Radiation
-	// GrayPowerLawOpacity opacity(CG::speed_of_light / (3 * 0.848902), 0, 0, 3.93e19, 0, -3);
-	STAMGopacity opacity("/home/elads/RICH_itamar/data/STA/MG/");
-	
-    if (rank == 0)
+	STAMGopacity opacity(STA_location);
+
+	ComputationalCell3D c_opac;
+	c_opac.density = 0.1;
+	c_opac.temperature = 10000;
+	double d_temp = opacity.CalcAbsorptionCoefficientGroup(c_opac, 1);
+	c_opac.temperature = 1e7;
+	d_temp = opacity.CalcAbsorptionCoefficientGroup(c_opac, 1);
+	c_opac.density = 1e-7;
+	d_temp = opacity.CalcAbsorptionCoefficientGroup(c_opac, 1);
+	if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
-	const double width = 1e11 / lscale;
-	size_t const Nx = 256;
-	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
+	const double width = 5;
+	Vector3D ll(-width, -width, -width), ur(width, width, width);
 	Voronoi3D tess(ll, ur);
 
-	int counter = 0;
-	ComputationalCell3D init_cell;
-	double const T = 2000;
-	try
-	{
-		init_cell.density = 1e-8 * 0.5 * lscale * lscale * lscale / mscale;
-		init_cell.temperature = T;
-		init_cell.pressure = eos.dT2p(init_cell.density, init_cell.temperature);
-		init_cell.internal_energy = eos.dp2e(init_cell.density, init_cell.pressure);
-		init_cell.Erad = CG::radiation_constant * T * T * T * T * tscale * tscale / (init_cell.density * mscale / lscale);
-        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-            init_cell.Eg[g] = planck_energy_density_group_integral(opacity.energy_groups_boundary[g], opacity.energy_groups_boundary[g+1], T);
-			init_cell.Eg[g] *= tscale * tscale / (init_cell.density * mscale / lscale); 
-			init_cell.Eg[g]  = std::max(init_cell.Eg[g], init_cell.Erad*1e-8);
-        }
-
-		std::cout << "Erad=" << init_cell.Erad << ", sumEg=" << std::accumulate(init_cell.Eg.begin(), init_cell.Eg.end(), 0.0) << std::endl; 
-	}
-	catch (UniversalError const &eo)
-	{
-		reportError(eo);
-		throw;
-	}
-
-
-	vector<Vector3D> points; 
-	if(rank == 0)
-		points = CartesianMesh(Nx, 1, 1, ll, ur);
+	vector<ComputationalCell3D> cells;
+	std::vector<Vector3D> ptemp;
+    int np = 1e3;
+    if(rank == 0)
+    {
+        ptemp = RandSphereR1(np, ll, ur, 0, 1.1, Vector3D());
+        vector<Vector3D> ptemp2 = RandSphereR(np / 2, ll, ur, 0.8 , 1.05, Vector3D());
+        vector<Vector3D> ptemp3 = RandSphereR2(np / 4, ll, ur, 1, 1.4 * width, Vector3D());
+        ptemp.insert(ptemp.end(), ptemp2.begin(), ptemp2.end());
+        ptemp.insert(ptemp.end(), ptemp3.begin(), ptemp3.end());
+    }
 #ifdef RICH_MPI
-	tess.BuildParallel(points);
-#else
-	tess.Build(points);
+    ptemp = MPI_Spread(ptemp, 0, MPI_COMM_WORLD);
 #endif
-	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
+    try
+    {
+        vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15);
+#ifdef RICH_MPI
+        tess.BuildParallel(points);
+#else
+        tess.Build(points);
+#endif
+        size_t const N = tess.GetPointNo();
+        cells.resize(N);
+        for(size_t i = 0; i < N; ++i)
+        {
+            double const r = abs(tess.GetMeshPoint(i));
+            cells[i].density = 1e-9 / (r * r + 0.01);
+            cells[i].temperature = r > 0.2 ? 1e4 : 1e6;
+            cells[i].internal_energy = eos.dT2e(cells[i].density, cells[i].temperature);
+            cells[i].pressure = eos.dT2p(cells[i].density, cells[i].temperature);
+            double const T = cells[i].temperature;
+            cells[i].Erad = 7.5657e-15 * T * T * T * T * tscale * tscale * lscale / (mscale * cells[i].density);
+            size_t const Ng = ENERGY_GROUPS_NUM;
+            for(size_t g = 0; g < Ng; ++g)
+                cells[i].Eg[g] = std::max(cells[i].Erad * 1e-12, planck_energy_density_group_integral(opacity.energy_groups_boundary[g], opacity.energy_groups_boundary[g+1], T) * tscale * tscale * lscale / (mscale * cells[i].density));
+        }       
+    }
+    catch (UniversalError const &eo)
+    {
+        reportError(eo);
+        throw;
+    }
+	if (rank == 0)
+		std::cout << "Finished build" << std::endl;
+	std::cout<<"Rank "<<rank<<" has "<<tess.GetPointNo()<<" points "<<" and "<<cells.size()<<" cells "<<std::endl;
 
 	Hllc3D rs;
 	RigidWallGenerator3D ghost;
 	LinearGauss3D interp(eos, ghost, true, 0.2, 0.25, 0.75);
 
 	Lagrangian3D bpm;
-	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
-	
-	MultigroupDiffusionSideBoundary D_boundary(1.1605e7, opacity.energy_groups_center, opacity.energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
+	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
+
+	MultigroupDiffusionClosedBoundary D_boundary;
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true/*false*/, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
-	ZeroForce3D force = ZeroForce3D();
 
+	std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
 	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
@@ -265,40 +276,64 @@ int main(void)
 
 	vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
 	ConditionExtensiveUpdater3D eu(eu_sequence);
+	std::vector<std::shared_ptr<SourceTerm3D>> forces;
 
+	forces.push_back(rad_force);
+	SeveralSources3D force(forces);
+	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (),	false);
 
-
-	CourantFriedrichsLewy tsf(0.25, 1, force);
-
-	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
-
-	double init_dt = 1e8 * 1e-13 / tscale;
-	double const dt_output = 1e-9 / tscale;
-	double const tf = 1e8 * 1e-8 / tscale;
+	std::unique_ptr<HDSim3D> sim;
+	sim = std::make_unique<HDSim3D>(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
+	double init_dt = 1e-6;
+    double output_dt = 1e-3;
+    double nextT = output_dt;
 	tsf.SetTimeStep(init_dt);
-	double nextT = dt_output;
-	double old_dt = init_dt;
-	vector<DiagnosticAppendix3D *> appendices;
-	WriteSnapshot3D(sim, "init.h5", appendices, true);
-	while (sim.getTime() < tf)
+    double old_dt = init_dt;
+    double old_t = 0;
+	double step_time = 0;
+    int counter = 0;
+	while (sim->getTime() < output_dt * 100)
 	{
-		if (sim.getCycle() % 1 == 0)
+		if (sim->getCycle() % 1 == 0)
 		{
+			int ntotal = tess.GetPointNo();
+#ifdef RICH_MPI
+			MPI_Barrier(MPI_COMM_WORLD);
+			MPI_Allreduce(MPI_IN_PLACE, &ntotal, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+#endif
 			if (rank == 0)
-
-				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << std::endl;
+			{
+				std::cout<<std::endl;
+				std::cout << "Point num " << ntotal << " dt " << old_dt << " run time " << step_time << std::endl;
+				std::cout << "Cycle " << sim->getCycle() << " Time " << sim->getTime() <<" next time output "<<nextT<<std::endl;
+			}
 		}
-		if (sim.getTime() > nextT)
+		if (sim->getTime() > nextT)
 		{
-			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
-			nextT = sim.getTime() + dt_output;
+			WriteSnapshot3D(*sim, "snap_" + int2str(counter) + ".h5");
+			nextT = sim->getTime() + output_dt;
 			++counter;
 		}
 		try
 		{
-			double new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
+#ifdef RICH_MPI
+            double step_tstart = MPI_Wtime();
+#endif
+			double new_dt = sim->RadiationTimeStep(old_dt, matrix_builder, /*true*/ false);
 			tsf.SetTimeStep(new_dt);
-			old_dt = new_dt;
+			if (rank == 0)
+				std::cout << "Finished rad step" << std::endl;
+			sim->timeAdvance2();
+			if (rank == 0)
+				std::cout << "Finished hydro step" << std::endl;
+			old_dt = sim->getTime() - old_t;
+
+			// old_dt = new_dt;
+
+			old_t = sim->getTime();
+#ifdef RICH_MPI
+			step_time = MPI_Wtime() - step_tstart;
+#endif
 		}
 		catch (UniversalError const &eo)
 		{
@@ -306,8 +341,9 @@ int main(void)
 			throw;
 		}
 	}
-	std::cout<<"Done"<<std::endl;
 #ifdef RICH_MPI
+    if(rank == 0)
+	   std::cout<<"Done sim"<<std::endl;
 	MPI_Finalize();
 #endif
 	return 0;
