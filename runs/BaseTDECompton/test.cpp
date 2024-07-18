@@ -21,7 +21,8 @@
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
-#include "source/Radiation/DiffusionForce.hpp"
+#include "source/Radiation/MultigroupDiffusionForce.hpp"
+#include "source/Radiation/MultigroupDiffusion.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include "source/newtonian/three_dimensional/LagrangianExtensiveUpdater3D.hpp"
@@ -53,10 +54,6 @@ namespace
 
 		std::vector<double> operator()(const HDSim3D& sim) const
 		{
-			int rank = 0;
-			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-			if(rank == 0)
-				std::cout<<"Starting dissipation diag"<<std::endl;
 			return dissipation_.CalcDissipation(sim);
 		}
 
@@ -273,16 +270,22 @@ namespace
 		box_points.second.x += x0[0];
 		box_points.second.y += x0[1];
 		sim.getTesselation().SetBox(box_points.first, box_points.second);
+#ifdef RICH_MPI
 		sim.getTesselation().BuildParallel(points);
 		ComputationalCell3D cdummy;
-		MPI_exchange_data(sim.getTesselation(), cells, false, &cdummy);;
+		MPI_exchange_data(sim.getTesselation(), cells, false, &cdummy);
+#else
+		sim.getTesselation().Build(points);
+#endif
 	}
 
 	void CheckIfFullGravityIsNeeded(HDSim3D &sim, std::string const& gravity_name, double const Rstar,
 		double const Mstar, double const MBH, double const beta, std::string const& restart_name)
 	{
 		int rank = 0;
+#ifdef RICH_MPI
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 		if(sim.getTime() > 5)
 		{
 			double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
@@ -299,7 +302,9 @@ namespace
 					break;
 				}
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &need_update, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
 			if(rank == 0)
 				std::cout<<x0[0]<<","<<x0[1]<<std::endl;
 			if((x0[1] > 0.1 && x0[2] > 0.1) || need_update == 1)
@@ -325,127 +330,127 @@ namespace
 		}
 	}
 	
-	double InterpolateTable(double const T, double const d, std::vector<double> const& T_, std::vector<double> const& rho_, std::vector<std::vector<double>> const& data,
-		double const T_high_slope = 0)
-	{
-		size_t const slope_length = 7;
-		if(T < T_[0])
-		{
-			if(d < rho_[0])
-			{
-				double const d_slope = (data[0][slope_length - 1] -data[0][0]) / (rho_[slope_length - 1] - rho_[0]);
-				double const T_slope = (data[slope_length - 1][0] -data[0][0]) / (T_[slope_length - 1] - T_[0]);
-				return std::exp(data[0][0] + d_slope * (d - rho_[0]) + T_slope * (T - T_[0]));
-			}
-			else
-			{
-				if(d >= rho_.back())
-				{
-					double const d_slope = (data[0][rho_.size() - slope_length - 1] -data[0][data[0].size() - 1]) / (rho_[data[0].size() - slope_length - 1] - rho_.back());
-					double const T_slope = (data[slope_length - 1][rho_.size() - 1] -data[0][rho_.size() - 1]) / (T_[slope_length - 1] - T_[0]);
-					return std::exp(data[0][rho_.size() - 1] + d_slope * (d - rho_.back()) + T_slope * (T - T_[0]));
-				}
-				else
-				{	
-					double const data_T0 = BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d);
-					double const T_slope = (BiLinearInterpolation(T_, rho_, data, T_[slope_length - 1], d) - data_T0) / (T_[slope_length - 1] - T_[0]);
-					return std::exp(BiLinearInterpolation(T_, rho_, data, T_[0] * 1.00001, d) + T_slope * (T - T_[0]));
-				}
-			}
-		}
-		if(T > T_.back())
-		{
-			if(d < rho_[0])
-			{
-				double const d_slope = (data[T_.size() - 1][slope_length - 1] -data[T_.size() - 1][0]) / (rho_[slope_length - 1] - rho_[0]);
-				return std::exp(data[T_.size() - 1][0] + d_slope * (d - rho_[0]) + T_high_slope * (T - T_.back()));
-			}
-			else
-			{
-				if(d >= rho_.back())
-				{
-					size_t const Tsize = T_.size() - 1;
-					double const d_slope = (data[Tsize][rho_.size() - slope_length - 1] -data[Tsize][rho_.size() - 1]) / (rho_[rho_.size() - slope_length - 1] - rho_.back());
-					return std::exp(data[T_.size() - 1][0] + d_slope * (d - rho_.back()) + T_high_slope * (T - T_.back()));
-				}
-				else
-					return std::exp(BiLinearInterpolation(T_, rho_, data, T_.back() * 0.99999, d) + T_high_slope * (T - T_.back()));
-			}
-		}
-		if(d < rho_[0])
-		{
-			double const data_d0 = BiLinearInterpolation(T_, rho_, data, T, rho_[0] * 0.9999);
-			double const d_slope =(BiLinearInterpolation(T_, rho_, data, T, rho_[slope_length - 1]) - data_d0) / (rho_[slope_length - 1] - rho_[0]);
-			return std::exp(BiLinearInterpolation(T_, rho_, data, T, rho_[0] * 0.9999) + d_slope * (d - rho_[0]));
-		}
-		if(d >=  rho_.back())
-		{
-			double const data_d0 = BiLinearInterpolation(T_, rho_, data, T, rho_.back() * 0.9999);
-			double const d_slope =(BiLinearInterpolation(T_, rho_, data, T, rho_[rho_.size() - slope_length - 1]) - data_d0) / (rho_[rho_.size() - slope_length - 1] - rho_.back());
-			return std::exp(BiLinearInterpolation(T_, rho_, data, T, rho_.back() * 0.9999) + d_slope * (d - rho_.back()));
-		}
-		return std::exp(BiLinearInterpolation(T_, rho_, data, T, d));
-	}
-
-	class STAopacity: public DiffusionCoefficientCalculator
+	class STAMGopacity: public MultigroupDiffusionCoefficientCalculator
 	{
 	private:
 		std::vector<double> rho_, T_;
-		std::vector<std::vector<double>> rossland_, planck_, scatter_;
+		std::vector<std::vector<std::vector<double>>> rossland_, planck_, scatter_;
 	public:
-		STAopacity(std::string file_directory)   
+		STAMGopacity(std::string file_directory) 
 		{
-			size_t const Nmatrix = 128;
-			std::vector<double> temp = read_vector(file_directory + "ross.txt");
-			rossland_.resize(Nmatrix);
-			for(size_t i = 0; i < Nmatrix; ++i)
-			{
-				rossland_[i].resize(Nmatrix);
-				for(size_t j = 0; j < Nmatrix; ++j)
-					rossland_[i][j] = temp[i * Nmatrix + j];
-			}
-			temp = read_vector(file_directory +"planck.txt");
-			planck_.resize(Nmatrix);
-			for(size_t i = 0; i < Nmatrix; ++i)
-			{
-				planck_[i].resize(Nmatrix);
-				for(size_t j = 0; j < Nmatrix; ++j)
-					planck_[i][j] = temp[i * Nmatrix + j];
-			}
-			temp = read_vector(file_directory +"scatter.txt");
-			scatter_.resize(Nmatrix);
-			for(size_t i = 0; i < Nmatrix; ++i)
-			{
-				scatter_[i].resize(Nmatrix);
-				for(size_t j = 0; j < Nmatrix; ++j)
-					scatter_[i][j] = temp[i * Nmatrix + j];
-			}
+			energy_groups_boundary = read_vector(file_directory + "frequency_edges.txt");   
+			for(double& Egb : energy_groups_boundary)
+			    Egb *= 11604.5 * CG::boltzmann_constant;
+			energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
+			size_t const Ng = energy_groups_boundary.size() - 1;
 			T_ = read_vector(file_directory +"T.txt");
+			// Convert from ev to kelvin
+			for(size_t i = 0; i < T_.size(); ++i)
+			{
+				T_[i] *= 11604.5;
+				T_[i] = std::log(T_[i]);
+			}
+			size_t const Nt = T_.size();
 			rho_ = read_vector(file_directory +"rho.txt");
+			size_t const Nrho = rho_.size();
+			for(size_t i = 0; i < Nrho; ++i)
+				rho_[i] = std::log(rho_[i]);
+			rossland_.resize(Ng);
+			planck_.resize(Ng);
+			scatter_.resize(Ng);
+			for(size_t i = 0; i < Ng; ++i)
+			{
+				auto temp_ross = read_vector(file_directory +"sigma_rossland_" + std::to_string(i + 1) + ".txt");
+				auto temp_ross_abs = read_vector(file_directory +"sigma_absorption_rossland_" + std::to_string(i + 1) + ".txt");
+				auto temp_scattering = read_vector(file_directory +"sigma_scattering_planck_" + std::to_string(i + 1) + ".txt");
+				rossland_[i].resize(Nrho);
+				planck_[i].resize(Nrho);
+				scatter_[i].resize(Nrho);
+				for(size_t j = 0; j < Nrho; ++j)
+				{	
+					rossland_[i][j].resize(Nt);
+					planck_[i][j].resize(Nt);
+					scatter_[i][j].resize(Nt);
+					for(size_t k = 0; k < Nt; ++k)
+					{
+						rossland_[i][j][k] = std::log(temp_ross[j * Nt + k]) + rho_[j];
+						planck_[i][j][k] = std::log(temp_ross_abs[j * Nt + k]) + rho_[j];
+						scatter_[i][j][k] = std::log(temp_scattering[j * Nt + k]) + rho_[j];
+					}
+				}
+			}
 		}
 
-		double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const override
+		double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, size_t const group) const override
 		{
-			double const T = std::log(cell.temperature);
-			double const d = std::log(cell.density);
-			double const sig = InterpolateTable(T, d, T_, rho_, rossland_);
-			if(sig < 1e-100)
-				std::cout<<"Small rossland, d "<<d<<" T "<<T<<" ID "<<cell.ID<<std::endl;
+			double T = std::log(cell.temperature);
+			double d = std::log(cell.density);
+			double d_ratio = 1;
+			if(d < rho_[0])
+			{
+				d_ratio = rho_[0] / d;
+				d = rho_[0];
+			}
+			if(d > rho_.back())
+			{
+				d_ratio = rho_.back() / d;
+				d = rho_.back();
+			}
+			if(T < T_[0])
+				T = T_[0];
+			if(T > T_.back())
+			    T = T_.back();
+			double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
 			return CG::speed_of_light / (3 * sig);
 		}
 
-		double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+		double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
 		{
-			double const T = std::log(cell.temperature);
-			double const d = std::log(cell.density);
-			return InterpolateTable(T, d, T_, rho_, planck_, -3.5);
+			double T = std::log(cell.temperature);
+			double d = std::log(cell.density);
+			double d_ratio = 1, T_ratio = 1;
+			if(d < rho_[0])
+			{
+				d_ratio = rho_[0] / d;
+				d = rho_[0];
+			}
+			if(d > rho_.back())
+			{
+				d_ratio = rho_.back() / d;
+				d = rho_.back();
+			}
+			if(T < T_[0])
+				T = T_[0];
+			if(T > T_.back())
+			{
+				T_ratio = std::exp(-1.5 * (T - T_.back()));
+			    T = T_.back();
+			}
+			double const sig = std::exp(BiLinearInterpolation(rho_, T_, planck_[group], d, T)) * d_ratio * T_ratio;
+			return sig;
 		}
 
-		double CalcScatteringOpacity(ComputationalCell3D const& cell) const override
+		double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
 		{
-			double const T = std::log(cell.temperature);
-			double const d = std::log(cell.density);
-			return InterpolateTable(T, d, T_, rho_, scatter_);
+			double T = std::log(cell.temperature);
+			double d = std::log(cell.density);
+			double d_ratio = 1;
+			if(d < rho_[0])
+			{
+				d_ratio = rho_[0] / d;
+				d = rho_[0];
+			}
+			if(d > rho_.back())
+			{
+				d_ratio = rho_.back() / d;
+				d = rho_.back();
+			}
+			if(T < T_[0])
+				T = T_[0];
+			if(T > T_.back())
+			    T = T_.back();
+			double const sig = std::exp(BiLinearInterpolation(rho_, T_, scatter_[group], d, T)) * d_ratio;
+			return sig;
 		}
 	};
 
@@ -620,7 +625,7 @@ namespace
 		}
 	};
 
-	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time)
+	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time, std::vector<double> const& energy_groups_boundary)
 	{
 		double M = 1;
 		ComputationalCell3D reference;
@@ -631,6 +636,10 @@ namespace
 		reference.density = mindensity;
 		double const Tref = 500;
 		double const Tgas = 1e7;
+		size_t const Ng = energy_groups_boundary.size() - 1;
+		double const Erad_factor = boost::math::pow<4>(Tref / 1e6) / Ng;
+		for(size_t g = 0; g < Ng; ++g)
+			reference.Eg[g] = Erad_factor * planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], 1e6) * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.pressure = eos.dT2p(reference.density, Tgas, reference.tracers);
 		reference.velocity = Vector3D();
@@ -643,21 +652,21 @@ namespace
 		return reference;
 	}
 
-	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n)
+	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n, std::vector<double> const& energy_groups_boundary)
 	{
 		double endfactor = 0;
 		vector<double> xsi;
 		vector<double> theta;
 		if(n > 2)
 		{
-			xsi = read_vector("/home/esternberg/RICH/data/xsi3.txt");
-			theta = read_vector("/home/esternberg/RICH/data/theta3.txt");
+			xsi = read_vector("/home/elads/RICH_itamar/data/xsi3.txt");
+			theta = read_vector("/home/elads/RICH_itamar/data/theta3.txt");
 			endfactor = 2.0182359;
 		}
 		else
 		{
-			xsi = read_vector("/home/esternberg/RICH/data/xsi32.txt");
-			theta = read_vector("/home/esternberg/RICH/data/theta32.txt");
+			xsi = read_vector("/home/elads/RICH_itamar/data/xsi32.txt");
+			theta = read_vector("/home/elads/RICH_itamar/data/theta32.txt");
 			endfactor = 2.714055;
 		}
 		xsi[0] = 0;
@@ -668,7 +677,7 @@ namespace
 
 		size_t N = tess.GetPointNo();
 		vector<ComputationalCell3D> res(N);
-		ComputationalCell3D reference = GetReferenceCell(eos, tess, 0);
+		ComputationalCell3D reference = GetReferenceCell(eos, tess, 0, energy_groups_boundary);
 		for (size_t i = 0; i < N; ++i)
 		{
 			Vector3D const &point = tess.GetMeshPoint(i);
@@ -691,6 +700,9 @@ namespace
 				res[i].tracers[4] = 0;
 				res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy);
 				res[i].Erad = 7.5657e-15 * T * T * T * T * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
+				size_t const Ng = energy_groups_boundary.size() - 1;
+				for(size_t g = 0; g < Ng; ++g)
+					res[i].Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T) * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
 				res[i].temperature = T;
 			}
 			else
@@ -775,7 +787,7 @@ int main(void)
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
 	// std::cout<<"Here5"<<std::endl;
-	std::string run_directory("/scratch-shared/esternberg/");
+	std::string run_directory("/home/elads/TDEMG/");
 	// std::cout<<"Here6"<<std::endl;
 	double const R = read_number("Rstar.txt");
 	// std::cout<<"Here7"<<std::endl;
@@ -794,7 +806,7 @@ int main(void)
 		std::cout<<"Creating directory "<<ss.str()<<std::endl;
 	std::string const run_name = ss.str();
 	run_directory += run_name + "/";
-	fs::create_directory(run_directory.c_str());
+	fs::create_directories(run_directory.c_str());
 	double const Rt = R * std::pow(Mbh / M, 0.333333);
 	double const Rp = Rt / beta;
 	double const apocenter = Rt * std::pow(Mbh / M, 0.333333);
@@ -811,8 +823,8 @@ int main(void)
 		std::filesystem::last_write_time(counter_name, std::filesystem::file_time_type::clock::now());
 	}
 	std::string gravity_name = run_directory + "gravity.txt";
-	std::string eos_location("/home/esternberg/RICH/data/EOS/");
-	std::string STA_location("/home/esternberg/RICH/data/STA/");
+	std::string eos_location("/home/elads/RICH_itamar/data/EOS/");
+	std::string STA_location("/home/elads/RICH_itamar/data/STA/");
 	bool const full_gravity = fs::exists(gravity_name);
 	if(full_gravity)
 		std::filesystem::last_write_time(gravity_name, std::filesystem::file_time_type::clock::now());
@@ -824,28 +836,22 @@ int main(void)
 	}
 	if(rank == 0)
 		std::cout<<"Full gravity "<<full_gravity<<std::endl;
-	double const dmin_eos = -50.656872045869001;
-	double const dmax_eos = 6.815166376138933;
-	double const dd_eos = 0.095310179804322;
 	double const lscale = 7e10;
 	double const mscale = 2e33;
 	double const tscale = 1603;
 	if (rank == 0)
 		std::cout << "start eos" << std::endl;
-	OndrejEOS eos(dmin_eos, dmax_eos, dd_eos, eos_location + "Pfile.txt", eos_location + "csfile.txt", eos_location + "Sfile.txt", eos_location + "Ufile.txt", eos_location + "Tfile.txt", eos_location + "CVfile.txt", lscale, mscale, tscale);
+	OndrejEOS eos(eos_location + "density.txt", eos_location + "Pfile.txt", eos_location + "csfile.txt", eos_location + "Sfile.txt", eos_location + "Ufile.txt", eos_location + "Tfile.txt", eos_location + "CVfile.txt", lscale, mscale, tscale);
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
 	//Radiation
-	STAopacity opacity(STA_location);
+	STAMGopacity opacity("/home/elads/RICH_itamar/data/STA/MG/");
 	if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
 	const double width = 5;
 	Vector3D ll(-width, -width, -width), ur(width, width, width);
 	Voronoi3D tess(ll, ur);
-#ifdef RICH_MPI
-	Voronoi3D tproc(ll, ur);
-#endif
 
 	vector<ComputationalCell3D> cells;
 	double tstart = 0, t_restart = -100;
@@ -853,7 +859,10 @@ int main(void)
 	if (restart)
 	{
 		int hdf5_rank = -1;
-		int NranksInFile = GetNumberOfRanksInHDF(file_name + int2str(counter) + ".h5");
+		int NranksInFile = 1;
+#ifdef RICH_MPI
+		NranksInFile = GetNumberOfRanksInHDF(file_name + int2str(counter) + ".h5");
+#endif
 		if(rank == 0)
 			std::cout<<"Reading from file "<<file_name + int2str(counter) + ".h5 file has "<<NranksInFile<<" ranks"<<std::endl;
 		snap = ReadSnapshot3D(file_name + int2str(counter) + ".h5"
@@ -913,9 +922,13 @@ int main(void)
 			std::cout<<"Box is ll="<<ll<<" ur="<<ur<<std::endl;
 		tess.SetBox(snap.ll, snap.ur);
 		// tess.SetKernel(new Rectangle(ll, ur));
+#ifdef RICH_MPI
 		tess.BuildParallel(snap.mesh_points);
 		ComputationalCell3D cdummy;
 		MPI_exchange_data(tess, snap.cells, false, &cdummy);
+#else
+	tess.Build(snap.mesh_points);
+#endif
 		cells = snap.cells;
 		ComputationalCell3D::tracerNames = snap.tracerstickernames.first;
 	}
@@ -924,33 +937,32 @@ int main(void)
 		double startfactor = 3;
 		double fstart = -acos(2 * Rp / (startfactor * Rt) - 1);
 		tstart = 0.3333333 * sqrt(2 * Rp * Rp * Rp / Mbh) * tan(0.5 * fstart) * (3 + tan(0.5 * fstart) * tan(0.5 * fstart));
-#ifdef RICH_MPI
-		vector<Vector3D> procpoints = RoundGrid3DSingle(RandSphereR2(ws, ll, ur, 0, width), ll, ur);
-		tproc.Build(procpoints);
-#endif
 		size_t const np = std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4));
-		vector<Vector3D> ptemp = RandSphereR1(np, ll, ur, 0, R * 1.1, Vector3D()
+		vector<Vector3D> ptemp;
+		if(rank == 0)
+		{
+			ptemp = RandSphereR1(np, ll, ur, 0, R * 1.1, Vector3D());
+			vector<Vector3D> ptemp2 = RandSphereR(np / 2, ll, ur, 0.8 * R, R * 1.05, Vector3D());
+			vector<Vector3D> ptemp3 = RandSphereR2(np / 4, ll, ur, R, 1.4 * width, Vector3D());
+			ptemp.insert(ptemp.end(), ptemp2.begin(), ptemp2.end());
+			ptemp.insert(ptemp.end(), ptemp3.begin(), ptemp3.end());
+		}
 #ifdef RICH_MPI
-		, &tproc
+		ptemp = MPI_Spread(ptemp, 0, MPI_COMM_WORLD);
 #endif
-		);
-		vector<Vector3D> ptemp2 = RandSphereR(np / 2, ll, ur, 0.8 * R, R * 1.05, Vector3D()
-#ifdef RICH_MPI
-		, &tproc
-#endif
-		);
-		vector<Vector3D> ptemp3 = RandSphereR2(np / 4, ll, ur, R, 1.4 * width, Vector3D()
-#ifdef RICH_MPI
-		, &tproc
-#endif
-		);
-		ptemp.insert(ptemp.end(), ptemp2.begin(), ptemp2.end());
-		ptemp.insert(ptemp.end(), ptemp3.begin(), ptemp3.end());
 		try
 		{
 			vector<Vector3D> points = RoundGrid3D(ptemp, ll, ur, 15);
+			if (rank == 0)
+				std::cout << "Starting build" << std::endl;
+#ifdef RICH_MPI
 			tess.BuildParallel(points);
-			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale, n);
+#else
+			tess.Build(points);
+#endif
+			if (rank == 0)
+				std::cout << "Finished build" << std::endl;
+			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale, n, opacity.energy_groups_boundary);
 		}
 		catch (UniversalError const &eo)
 		{
@@ -960,8 +972,6 @@ int main(void)
 		ComputationalCell3D::tracerNames.push_back("Entropy");
 		ComputationalCell3D::tracerNames.push_back("Star");
 	}
-	if (rank == 0)
-		std::cout << "Finished build" << std::endl;
 	std::cout<<"Rank "<<rank<<" has "<<tess.GetPointNo()<<" points "<<" and "<<cells.size()<<" cells "<<std::endl;
 
 	Hllc3D rs;
@@ -972,12 +982,13 @@ int main(void)
 	Lagrangian3D bpm;
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
-	DiffusionOpenBoundary D_boundary;
-	Diffusion matrix_builder(opacity, D_boundary, eos, std::vector<std::string> (), true, true, true);
+	MultigroupDiffusionOpenBoundary D_boundary;
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
-	std::shared_ptr<DiffusionForce> rad_force = std::make_shared<DiffusionForce>(matrix_builder, eos);
+
+	std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
 	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
@@ -1017,7 +1028,7 @@ int main(void)
 	tsf.SetTimeStep(init_dt);
 	if (rank == 0)
 		std::cout << "Restart time " << sim->getTime() << std::endl;
-	ComputationalCell3D reference_cell = GetReferenceCell(eos, tess, sim->getTime());
+	ComputationalCell3D reference_cell = GetReferenceCell(eos, tess, sim->getTime(), matrix_builder.energy_groups_boundary);
 	double tf = 6 * std::sqrt(apocenter * apocenter * apocenter / Mbh);
 	double mindt = 0.001;
 	double nextT = 0;
@@ -1075,15 +1086,15 @@ int main(void)
 	{
 		if (sim->getCycle() % 1 == 0)
 		{
-#ifdef RICH_MPI
 			int ntotal = tess.GetPointNo();
-			int total_ntotal = 0;
-			MPI_Reduce(&ntotal, &total_ntotal, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+#ifdef RICH_MPI
+			MPI_Barrier(MPI_COMM_WORLD);
+			MPI_Allreduce(MPI_IN_PLACE, &ntotal, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+#endif
 			if (rank == 0)
 			{
 				std::cout<<std::endl;
-				std::cout << "Point num " << total_ntotal << " dt " << old_dt << " run time " << step_time << std::endl;
-#endif
+				std::cout << "Point num " << ntotal << " dt " << old_dt << " run time " << step_time << std::endl;
 				std::cout << "Cycle " << sim->getCycle() << " Time " << sim->getTime() << std::endl;
 			}
 		}
@@ -1093,10 +1104,8 @@ int main(void)
 				std::cout<<"Starting writing file "<<file_name + int2str(counter) + ".h5"<<std::endl;
 			interp(tess, sim->getCells(), 0, dissipation.face_values);
 			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true);
-#ifdef RICH_MPI
 			if (rank == 0)
-#endif
-			write_int(counter, counter_name);
+				write_int(counter, counter_name);
 			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.1 * std::pow(std::abs(sim->getTime()), 0.666666));
 			++counter;
 			dissipation.face_values.clear();
@@ -1129,7 +1138,7 @@ int main(void)
 			// double new_dt = sim->RadiationTimeStep(old_dt * 0.89, matrix_builder);
 			// sim->RadiationTimeStep(old_dt * 1e-3, matrix_builder);
 			// sim->RadiationTimeStep(old_dt * 1e-3, matrix_builder);
-			double new_dt = sim->RadiationTimeStep(old_dt * 1, matrix_builder);
+			double new_dt = sim->RadiationTimeStep(old_dt, matrix_builder);
 			tsf.SetTimeStep(new_dt);
 			if (rank == 0)
 				std::cout << "Finished rad step" << std::endl;
@@ -1146,7 +1155,7 @@ int main(void)
 			old_t = sim->getTime();
 			if(not full_gravity)
 				CheckIfFullGravityIsNeeded(*sim, gravity_name, R, M, Mbh, beta, restart_name);
-			reference_cell = GetReferenceCell(eos, tess, sim->getTime());
+			reference_cell = GetReferenceCell(eos, tess, sim->getTime(), matrix_builder.energy_groups_boundary);
 			if (sim->getCycle() % 7 == 0)
 			{
 				UpdateBox(tess, *sim, 0.5, 1e-5, reference_cell);

@@ -313,7 +313,7 @@ bool MultigroupDiffusion::step(double const tolerance,
         }
     }
 
-    if(doppler_on_) solve_doppler_shift(tess, cells, dt);
+    if(doppler_on_) solve_doppler_shift(tess, cells, dt, extensives);
     
     return true;
 }
@@ -388,7 +388,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
 
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
 
-        double cdtkg = cdt * sigma_absorption_group[group][i];
+        double cdtkg = std::min(cdt * sigma_absorption_group[group][i], max_coupling_strength);
 
         A[i].push_back(volume*(1.0 + cdtkg));
 
@@ -1045,6 +1045,16 @@ void MultigroupDiffusion::PostCGGroup(std::size_t const group,
         extensives[i].Eg[group] = full_CG_res_i * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
         cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
     }
+#ifdef RICH_MPI
+    size_t const Ncells_total = cells.size();
+    double const min_value = std::numeric_limits<double>::min() * 1e20;
+    for(size_t i = N; i < Ncells_total; ++i)
+    {
+        double const full_CG_res_i = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
+        if(cells[i].density > min_value)
+            cells[i].Eg[group] = full_CG_res_i * pow<2>(time_scale_) / (cells[i].density * mass_scale_ / length_scale_);
+    }
+#endif
 }
 
 void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess, 
@@ -1205,6 +1215,21 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         // other terms
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
+        if(!(cells[i].internal_energy > 0))// ||  cells[i].ID == 79650)
+        {
+            UniversalError eo("negative internal energy in PostCGGray");
+            eo.addEntry("Cell", i);
+            eo.addEntry("ID", cells[i].ID);
+            eo.addEntry("Internal Energy", extensives[i].internal_energy);
+            eo.addEntry("Mass", extensives[i].mass);
+            eo.addEntry("dE_relativity", dE_relativity);
+            eo.addEntry("dE_absorption_emission", dE_absorption_emission);
+            eo.addEntry("kr*full_CG_res_i", kr*full_CG_res_i);
+            eo.addEntry("kp*Um", kp*Um);
+            eo.addEntry("kr", kr);
+            eo.addEntry("kp", kp);
+            throw eo;
+        }
 
         try{
             cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
@@ -1360,7 +1385,7 @@ void MultigroupDiffusion::calculate_gray_absorption_and_scattering_coefficients(
 
 void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                                               std::vector<ComputationalCell3D>& cells,
-                                              double const dt) const {
+                                              double const dt, std::vector<Conserved3D>& extensives) const {
 
     double const dt_cgs = dt * time_scale_;
     auto const N = tess.GetPointNo();
@@ -1378,6 +1403,12 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
     std::vector<double> lambda_g_dummy(N, 0.0);
     calculate_lambda_g_and_R2_g(0, tess, cells, lambda_g_dummy, R2[2]);
+
+    struct
+    {
+        double val;
+        int mpi_id;
+    }max_data;
 
     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
         // for the discretization we need R2 for the groups g-1, g, g+1
@@ -1405,8 +1436,6 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
             double divergence = 0.0;
             for(std::size_t j=0; j<Nneighbors; ++j){
                 std::size_t neighbor_j = neighbors[j];
-
-                double const Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
 
                 bool const is_outside = tess.IsPointOutsideBox(neighbor_j);
 
@@ -1480,21 +1509,31 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                 }    
             }
 
-            double const change = abs(dt_cgs*divergence);
+            double const change = std::abs(dt_cgs*divergence) / (cells_cgs[i].Eg[g] * extensives[i].mass * mass_scale_);
             if(change > max_change_doppler){
                 max_change_doppler = change;   
                 max_group = g;
                 max_cell = i;
-                old_energy = cells[i].Eg[g];
+                old_energy = cells_cgs[i].Eg[g] / cells_cgs[i].density;
             }
 
             double const dEg = dt_cgs * divergence;
             
-            cells[i].Eg[g] += dEg / cells_cgs[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
+            extensives[i].Eg[g] += dEg * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
         }
     }
-
-    std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler << std::endl;
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif   
+    max_data.val = max_change_doppler;
+    max_data.mpi_id = rank;
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+#endif
+if(rank == max_data.mpi_id)
+    std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler <<" ID "<<cells[max_cell].ID<<" old Eg:"<<cells[max_cell].Eg[max_group]<<" new Eg:"<<
+    extensives[max_cell].Eg[max_group] / extensives[max_cell].mass<<" T "<<cells[max_cell].temperature<<std::endl;
 
     for(std::size_t n=0; n<D.size(); ++n){
         std::fill(D[n].begin(), D[n].end(), 0.0);
@@ -1512,7 +1551,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
         if(g+1 < ENERGY_GROUPS_NUM){
             for(std::size_t i=0; i < N; ++i){
-                D[2][i] = coefficient_calculator.CalcAbsorptionCoefficientGroup(cells_cgs[i], g+1);
+                D[2][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g+1);
             }
         } else {
             D[2] = D[1];
@@ -1559,6 +1598,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
 
             Vector3D grad_Eg_p(0.0, 0.0, 0.0);
             Vector3D grad_Eg_m(0.0, 0.0, 0.0);
+            Vector3D grad_Eg;
             for(std::size_t j=0; j < Nneighbors; ++j){
                 std::size_t const neighbor_j = neighbors[j];
 
@@ -1584,17 +1624,23 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
             
                 grad_Eg_p += r_ij * (0.5*A_ij*(Enu_gp_i + Enu_gp_j));
                 grad_Eg_m += r_ij * (0.5*A_ij*(Enu_gm_i + Enu_gm_j));
+                grad_Eg += r_ij * (0.5*A_ij*(Eg_j + Eg_i));
             }
-
+            double const lambda = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg * (1.0 / (pow<3>(length_scale_) * tess.GetVolume(i))), D[1][i], Eg_i) : 1;
             double const dEp = dt_cgs*nu_g_p * sigma_p * Dp * ScalarProd(cells_cgs[i].velocity, grad_Eg_p) / CG::speed_of_light;
 
             double const dEm = -dt_cgs * nu_g_m * sigma_m * Dm * ScalarProd(cells_cgs[i].velocity, grad_Eg_m) / CG::speed_of_light;
 
-            double const dEg = (dEp + dEm) / cells_cgs[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
+            double const dEg = lambda * (dEp + dEm) / cells_cgs[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
             
-            cells[i].Eg[g] += dEg; 
+            extensives[i].Eg[g] += dEg * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
+            cells[i].Eg[g] = extensives[i].Eg[g] / extensives[i].mass;
         }
     }
+#ifdef RICH_MPI
+    ComputationalCell3D cdummy;
+	MPI_exchange_data(tess, cells, true, &cdummy);	
+#endif
 } 
 
 void MultigroupDiffusion::calculate_lambda_g_and_R2_g(std::size_t const group,
