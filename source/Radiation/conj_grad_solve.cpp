@@ -394,6 +394,7 @@ namespace CG
         size_t Ntotal = Nlocal;
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
+        double const scale_b = mpi_dot_product(b, b);
         // double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
         // if(rank == 0)
         //     std::cout<<"CG init delta "<<delta_init<<std::endl;
@@ -456,7 +457,7 @@ namespace CG
             vec_lin_combo(1.0, s, -w, t, sub_r);
             sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
             
-            double const error = mpi_dot_product(sub_r, sub_r) / mpi_dot_product2(b, b);
+            double const error = mpi_dot_product(sub_r, sub_r) / scale_b;
             // Convergence test
             if (error < tolerance)
             {
