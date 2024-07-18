@@ -624,6 +624,34 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             }
         }
     }  else {
+        for(std::size_t i=0; i<Nlocal; ++i){
+            double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+            
+            faces = tess.GetCellFaces(i);
+            tess.GetNeighbors(i, neighbors);
+            std::size_t const Nneighbors = neighbors.size();
+
+            Vector3D const r_i = tess.GetMeshPoint(i);
+
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
+
+                auto const r_ij = normalize(r_i - tess.GetMeshPoint(neighbor_j));
+
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+                Vector3D velocity_j;
+
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    velocity_j = cells_cgs[neighbor_j].velocity;
+                } else {
+                    double dummyEg_i, dummy_Eg_j;
+                    boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, dummyEg_i, dummy_Eg_j, velocity_j);
+                }
+                // TODO add the R2_g part 
+                A[i][0] += -0.5*ScalarProd(cells_cgs[i].velocity+velocity_j, r_ij) * A_ij / 3.0;
+            }
+        }
+    }
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
