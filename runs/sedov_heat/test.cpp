@@ -54,6 +54,8 @@ namespace
 			    Egb *= 11604.5 * CG::boltzmann_constant;
 			energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
 			size_t const Ng = energy_groups_boundary.size() - 1;
+			for(size_t i = 0; i < Ng; ++i)
+				energy_groups_center[i] = std::sqrt(energy_groups_boundary[i]*energy_groups_boundary[i + 1]);
 			T_ = read_vector(file_directory +"T.txt");
 			// Convert from ev to kelvin
 			for(size_t i = 0; i < T_.size(); ++i)
@@ -204,7 +206,7 @@ int main(void)
 
 	vector<ComputationalCell3D> cells;
 	std::vector<Vector3D> ptemp;
-    int np = 1e3;
+    int np = 1e4;
     if(rank == 0)
     {
         ptemp = RandSphereR1(np, ll, ur, 0, 1.1, Vector3D());
@@ -257,7 +259,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
 	MultigroupDiffusionClosedBoundary D_boundary;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true/*false*/, false);
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true/*false*/, false, true);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;

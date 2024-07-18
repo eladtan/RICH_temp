@@ -343,6 +343,8 @@ namespace
 			    Egb *= 11604.5 * CG::boltzmann_constant;
 			energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
 			size_t const Ng = energy_groups_boundary.size() - 1;
+			for(size_t i = 0; i < Ng; ++i)
+				energy_groups_center[i] = std::sqrt(energy_groups_boundary[i]*energy_groups_boundary[i + 1]);
 			T_ = read_vector(file_directory +"T.txt");
 			// Convert from ev to kelvin
 			for(size_t i = 0; i < T_.size(); ++i)
@@ -983,7 +985,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
 	MultigroupDiffusionOpenBoundary D_boundary;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true, false);
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true, false, true);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -1074,13 +1076,13 @@ int main(void)
 	double step_time = 0;
 	double const restart_wtime = 25000;
 	double const min_dt_output = 0.02 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
-	if(not restart)
-	{
-		interp(tess, sim->getCells(), 0, dissipation.face_values);
-		WriteSnapshot3D(*sim, "init.h5", appendices, true);
-		dissipation.face_values.clear();
-		dissipation.face_values.shrink_to_fit();
-	}
+	// if(not restart)
+	// {
+	// 	interp(tess, sim->getCells(), 0, dissipation.face_values);
+	// 	WriteSnapshot3D(*sim, "init.h5", appendices, true);
+	// 	dissipation.face_values.clear();
+	// 	dissipation.face_values.shrink_to_fit();
+	// }
 	
 	while (sim->getTime() < tf)
 	{
