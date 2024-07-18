@@ -900,7 +900,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                     sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
                 } else {
                     double Eg_outside;
-                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, Eg_i, Eg_outside, dummy_v);
+                    double const Eg_i_current = cells[i].Eg[g] * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));                    
+                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, Eg_i_current, Eg_outside, dummy_v);
 
                     lambda_neighbors[j] += lambda_g * Eg_outside;
                     sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * Eg_outside;
