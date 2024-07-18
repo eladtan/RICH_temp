@@ -549,9 +549,10 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         }
         grad_Eg *= -(1.0 / volume) * pow<2>(length_scale_);
 
-        double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
-        if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i]){
-            grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]/grad_magnitude;
+        double const grad_magnitude = fastabs(grad_Eg);
+        if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i] && grad_magnitude > std::numeric_limits<double>::min() * 1e40){
+            grad_Eg *= 1.0 / grad_magnitude; // normalize the gradient
+            grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]; // bound it from below
         }
 
         double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
@@ -874,10 +875,12 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             }
 
             grad_Eg *= -(1.0/volume) * pow<2>(length_scale_);
-            double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
+            
+            double const grad_magnitude = fastabs(grad_Eg);
 
-            if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i]){
-                grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i] / grad_magnitude;
+            if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i] && grad_magnitude > std::numeric_limits<double>::min() * 1e40){
+                grad_Eg *= 1.0 / grad_magnitude; // normalize the gradient
+                grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]; // bound it from below
             }
 
             double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g);
