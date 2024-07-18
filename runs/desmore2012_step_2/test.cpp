@@ -164,7 +164,7 @@ int main(void)
 	
     double const Tb = kev_kelvin;
 	MultigroupDiffusionSideBoundary D_boundary(Tb, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false, true);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
