@@ -1040,8 +1040,8 @@ void MultigroupDiffusion::PostCGGroup(std::size_t const group,
     for(std::size_t i=0; i<N; ++i){
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
         double const full_CG_res_i = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
-        cells[i].Eg[group] =  full_CG_res_i * pow<2>(time_scale_) / (cells[i].density * mass_scale_ / length_scale_);
         extensives[i].Eg[group] = full_CG_res_i * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+        cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
     }
 }
 
