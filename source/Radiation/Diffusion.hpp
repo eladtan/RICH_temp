@@ -33,7 +33,7 @@ virtual double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const =
 */
 virtual double CalcPlanckOpacity(ComputationalCell3D const& cell) const = 0;
 
-virtual double CalcScatteringOpacity(ComputationalCell3D const& cell) const {return 0;}
+virtual double CalcScatteringOpacity(ComputationalCell3D const& cell) const { return 0.0; }
 };
 
 //! \brief Class for assigning boundary conditions for diffusion

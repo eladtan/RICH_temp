@@ -160,7 +160,7 @@ int main(void)
 	
     double const Tb = kev_kelvin;
 	MultigroupDiffusionSideBoundary D_boundary(Tb, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -215,7 +215,7 @@ int main(void)
 			double new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			// new_dt=std::min(new_dt,1e-12);
+			new_dt=std::min(new_dt,3e-12);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;

@@ -360,7 +360,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
     for(std::size_t i=0; i<Nlocal; ++i){
         auto const& cell_cgs = cells_cgs[i];
         
-        double const Eg_i = cell_cgs.Eg[group]*cell_cgs.density;
+        double const Eg_i = cell_cgs.Eg[group] * cell_cgs.density;
         // build the initial guess
         x0[i] = Eg_i;
 
@@ -375,13 +375,12 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         auto const cdtkgbg = cdt*sigma_absorption_group[group][i]*bg;
         b[i] += volume_cgs*cdtkgbg*Um;
     }
-
+    
     // Initialize Matrix
     A.clear(); 
     A.resize(Nlocal);
     A_indeces.clear();
     A_indeces.resize(Nlocal);
-    
 
     // Add the emission term to the matrix
     for(std::size_t i=0; i < Nlocal; ++i){
@@ -549,9 +548,10 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         }
         grad_Eg *= -(1.0 / volume) * pow<2>(length_scale_);
 
-        double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
-        if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i]){
-            grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]/grad_magnitude;
+        double const grad_magnitude = fastabs(grad_Eg);
+        if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i] && grad_magnitude > std::numeric_limits<double>::min() * 1e40){
+            grad_Eg *= 1.0 / grad_magnitude; // normalize the gradient
+            grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]; // bound it from below
         }
 
         double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
@@ -620,7 +620,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             }
         }
     }
-
+    
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
@@ -705,7 +705,6 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         }
     }
 
-    // find max_abs_grad_E for flux_limiter limiter gradient factor
     std::vector<std::size_t> neighbors;
     face_vec faces;
     Vector3D dummy_v;
@@ -874,10 +873,12 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             }
 
             grad_Eg *= -(1.0/volume) * pow<2>(length_scale_);
-            double const grad_magnitude = std::max(fastabs(grad_Eg), std::numeric_limits<double>::min()*1e40);
+            
+            double const grad_magnitude = fastabs(grad_Eg);
 
-            if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i]){
-                grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i] / grad_magnitude;
+            if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i] && grad_magnitude > std::numeric_limits<double>::min() * 1e40){
+                grad_Eg *= 1.0 / grad_magnitude; // normalize the gradient
+                grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]; // bound it from below
             }
 
             double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g);
@@ -900,7 +901,8 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
                     sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * cells[neighbor_j].Eg[g] * cells[neighbor_j].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
                 } else {
                     double Eg_outside;
-                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, Eg_i, Eg_outside, dummy_v);
+                    double const Eg_i_current = cells[i].Eg[g] * cells[i].density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));                    
+                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells_cgs, Eg_i_current, Eg_outside, dummy_v);
 
                     lambda_neighbors[j] += lambda_g * Eg_outside;
                     sigma_ratio_lambda_neighbors[j] += (sigma_abs_g * lambda_g / sigma_rossland_g) * Eg_outside;
@@ -1040,8 +1042,8 @@ void MultigroupDiffusion::PostCGGroup(std::size_t const group,
     for(std::size_t i=0; i<N; ++i){
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
         double const full_CG_res_i = std::max(full_CG_result[i], std::numeric_limits<double>::min()*1e100);
-        cells[i].Eg[group] =  full_CG_res_i * pow<2>(time_scale_) / (cells[i].density * mass_scale_ / length_scale_);
         extensives[i].Eg[group] = full_CG_res_i * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+        cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
     }
 #ifdef RICH_MPI
     size_t const Ncells_total = cells.size();

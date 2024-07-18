@@ -8,8 +8,7 @@
 #include "source/newtonian/common/ideal_gas.hpp"
 #include "source/newtonian/three_dimensional/Hllc3D.hpp"
 #include "source/misc/simple_io.hpp"
-#include "source/newtonian/three_dimensional/Lagrangian3D.hpp"
-#include "source/newtonian/three_dimensional/RoundCells3D.hpp"
+#include "source/newtonian/three_dimensional/eulerian_3d.hpp"
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
 #include "source/newtonian/three_dimensional/ConditionActionFlux1.hpp"
 #include "source/newtonian/three_dimensional/ConditionExtensiveUpdater3D.hpp"
@@ -39,7 +38,6 @@ namespace fs = std::filesystem;
 #include <source/Radiation/planck_integral/planck_integral.hpp>
 #include <algorithm>
 
-typedef std::array<double, 4> state_type;
 
 static constexpr double ev = 1.602176634e-12;
 static constexpr double kev = 1e3*ev;
@@ -180,8 +178,28 @@ int main(void)
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
 	
-	std::string eos_location("/home/elads/RICH_itamar/data/EOS/");
-	std::string STA_location("/home/elads/RICH_itamar/data/STA/");
+	std::size_t const G = ENERGY_GROUPS_NUM;
+	std::vector<double> energy_groups_center(G);
+	std::vector<double> energy_groups_boundary(G+1);
+
+	double const Emin = kev*1e-4;
+	double const Emax = kev*1e3;
+	
+	energy_groups_boundary[0] = Emin;
+	for(std::size_t g=0; g < G; ++g){
+		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
+		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
+	}
+
+	// std::vector<double> energy_groups_center =    {  0.1, 0.4, 1.0, 3.0, 10., 100., 500.};
+    // std::vector<double> energy_groups_boundary = {1e-7, 0.2, 0.6, 1.4, 4.6, 15.4, 200., 1000.};
+
+    
+    // for(auto& val : energy_groups_center) val *= kev;
+    // for(auto& val : energy_groups_boundary) val *= kev;
+
+	std::string eos_location("/home/itamarg/workspace/RICH/data/EOS/");
+	std::string STA_location("/home/itamarg/workspace/RICH/data/STA/");
 
 	double const lscale = 7e10;
 	double const mscale = 2e33;
@@ -198,11 +216,12 @@ int main(void)
     if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
-	const double width = 1e11 / lscale;
-	size_t const Nx = 256;
-	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
+	const double width = 1e9 / lscale;
+	size_t const Nx = 128;
+	size_t const Ny = 3;
+	size_t const Nz = 3;
+	Vector3D ll(0, -0.5 * width * Ny / Nx, -0.5 * width * Nz / Nx), ur(width, 0.5 * width * Ny / Nx, 0.5 * width * Nz / Nx);
 	Voronoi3D tess(ll, ur);
-
 	int counter = 0;
 	ComputationalCell3D init_cell;
 	double const T = 2000;
@@ -228,25 +247,25 @@ int main(void)
 	}
 
 
-	vector<Vector3D> points; 
+	vector<Vector3D> points;
 	if(rank == 0)
-		points = CartesianMesh(Nx, 1, 1, ll, ur);
-#ifdef RICH_MPI
+		points = CartesianMesh(Nx, Ny, Nz, ll, ur);
+#ifdef RICH_MPI	
+	points = MPI_Spread(points, 0, MPI_COMM_WORLD);	
 	tess.BuildParallel(points);
-#else
+	#else
 	tess.Build(points);
-#endif
+	#endif
 	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
 
 	Hllc3D rs;
 	RigidWallGenerator3D ghost;
-	LinearGauss3D interp(eos, ghost, true, 0.2, 0.25, 0.75);
+	LinearGauss3D interp(eos, ghost);
 
-	Lagrangian3D bpm;
-	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
+	Eulerian3D pm;
 	
-	MultigroupDiffusionSideBoundary D_boundary(1.1605e7, opacity.energy_groups_center, opacity.energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false);
+	MultigroupDiffusionSideBoundary D_boundary(1.1605e7, energy_groups_center, energy_groups_boundary);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -270,7 +289,7 @@ int main(void)
 
 	CourantFriedrichsLewy tsf(0.25, 1, force);
 
-	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
+	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
 	double init_dt = 1e8 * 1e-13 / tscale;
 	double const dt_output = 1e-9 / tscale;
@@ -278,19 +297,21 @@ int main(void)
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
 	double old_dt = init_dt;
-	vector<DiagnosticAppendix3D *> appendices;
-	WriteSnapshot3D(sim, "init.h5", appendices, true);
+
+	auto t1 = std::chrono::high_resolution_clock::now();
 	while (sim.getTime() < tf)
 	{
 		if (sim.getCycle() % 1 == 0)
 		{
 			if (rank == 0)
-
-				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << std::endl;
+			{
+				std::cout<<std::endl;
+				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt "<<old_dt<<std::endl;
+			}
 		}
 		if (sim.getTime() > nextT)
 		{
-			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
+			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5");
 			nextT = sim.getTime() + dt_output;
 			++counter;
 		}
@@ -306,6 +327,10 @@ int main(void)
 			throw;
 		}
 	}
+	WriteSnapshot3D(sim, "final.h5");
+	auto t2 = std::chrono::high_resolution_clock::now();
+	if(rank == 0)
+		std::cout<<"run time took "<< std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()<<" seconds"<<std::endl;
 	std::cout<<"Done"<<std::endl;
 #ifdef RICH_MPI
 	MPI_Finalize();
