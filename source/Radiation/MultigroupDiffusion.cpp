@@ -1435,8 +1435,6 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
             for(std::size_t j=0; j<Nneighbors; ++j){
                 std::size_t neighbor_j = neighbors[j];
 
-                double const Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
-
                 bool const is_outside = tess.IsPointOutsideBox(neighbor_j);
 
                 Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
@@ -1532,7 +1530,8 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
     MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif
 if(rank == max_data.mpi_id)
-    std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler <<" ID "<<cells[max_cell].ID<<std::endl;
+    std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler <<" ID "<<cells[max_cell].ID<<" old Eg:"<<cells[max_cell].Eg[max_group]<<" new Eg:"<<
+    extensives[max_cell].Eg[max_group] / extensives[max_cell].mass<<" T "<<cells[max_cell].temperature<<std::endl;
 
     for(std::size_t n=0; n<D.size(); ++n){
         std::fill(D[n].begin(), D[n].end(), 0.0);
