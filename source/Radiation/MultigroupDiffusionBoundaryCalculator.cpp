@@ -415,11 +415,11 @@ void MultigroupDiffusionOpenBoundary::getOutsideValuesGroup(std::size_t const gr
                             std::size_t const index,
                             std::size_t const outside_point,
                             std::vector<ComputationalCell3D> const& cells,
-                            std::vector<double> const& new_Eg,
+                            double const Eg_i,
                             double& Eg_outside,
                             Vector3D& v_outside) const
 {
-    Eg_outside = new_Eg[index] * 1e-20;
+    Eg_outside = Eg_i * 1e-20;
     v_outside = cells[index].velocity;
 }
 
@@ -453,11 +453,11 @@ void MultigroupDiffusionOpenBoundary::getOutsideValuesGray(Tessellation3D const&
                             std::size_t const index,
                             std::size_t const outside_point,
                             std::vector<ComputationalCell3D> const& cells,
-                            std::vector<double> const& new_Er,
+                            double const Er_i,
                             double& Er_outside,
                             Vector3D& v_outside) const
 {
-    Er_outside = new_Er[index] * 1e-20;
+    Er_outside = Er_i * 1e-20;
     v_outside = cells[index].velocity;
 }
 
@@ -491,11 +491,11 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                                std::size_t const index,
                                std::size_t const outside_point,
                                std::vector<ComputationalCell3D> const& cells,
-                               std::vector<double> const& new_Eg,
+                               double const Eg_i,
                                double& Eg_outside,
                                Vector3D& v_outside) const
 {
-    Eg_outside = new_Eg[index];
+    Eg_outside = Eg_i;
 }
     
     void MultigroupDiffusionClosedBoundary::setMomentumTermBoundaryGroup(std::size_t const group,
@@ -526,11 +526,11 @@ void MultigroupDiffusionOpenBoundary::setMomentumTermBoundaryGray(Tessellation3D
                               std::size_t const index,
                               std::size_t const outside_point,
                               std::vector<ComputationalCell3D> const& cells,
-                              std::vector<double> const& new_Er,
+                              double const Er_i,
                               double& Er_outside,
                               Vector3D& v_outside) const
 {
-    Er_outside = new_Er[index];;
+    Er_outside = Er_i;
     v_outside = cells[index].velocity;
 }
 

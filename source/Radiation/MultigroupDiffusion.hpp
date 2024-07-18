@@ -62,7 +62,7 @@ public:
 
     void solve_doppler_shift(Tessellation3D const& tess,
                              std::vector<ComputationalCell3D>& cells,
-                             double const dt) const;
+                             double const dt, std::vector<Conserved3D>& extensives) const;
                              
 
     MultigroupDiffusionCoefficientCalculator const& coefficient_calculator;
