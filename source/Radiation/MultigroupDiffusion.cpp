@@ -1133,12 +1133,9 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         extensives[i].internal_energy = extensives_temp[i].internal_energy;
         extensives[i].internal_energy += dE_absorption_emission;
 
-        // relativity term
-        double dE_relativity = 0.0;
         tess.GetNeighbors(i, neighbors);
         std::size_t const Nneighbors = neighbors.size();
         faces = tess.GetCellFaces(i);
-        
         auto const r_i = tess.GetMeshPoint(i);
         
         // relativity term
