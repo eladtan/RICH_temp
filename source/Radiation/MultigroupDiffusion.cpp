@@ -12,7 +12,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          bool const flux_limiter,
                                          bool const hydro_on,
                                          bool const compton_on,
-                                         bool const doppler_on):
+                                         bool const doppler_on,
+                                         bool const mix_frame_on):
                                                                 energy_groups_center(energy_groups_center_),
                                                                 energy_groups_boundary(energy_groups_boundary_),
                                                                 energy_groups_width(ENERGY_GROUPS_NUM, 0.0),
@@ -45,6 +46,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 lambda_cell_gray(),
                                                                 sigma_ratio_lambda_cell_gray(),
                                                                 doppler_on_(doppler_on),
+                                                                mix_frame_on_(mix_frame_on),
                                                                 R2(3, std::vector<double>()),
                                                                 D(3, std::vector<double>()),
                                                                 RadiationDriver(eos,
@@ -519,108 +521,109 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         }
     }
 
-    // momentum relativity _term  
-    Vector3D grad_Eg(0.0, 0.0, 0.0);
-    for(std::size_t i=0; i<Nlocal; ++i){
-        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
-        
-        faces = tess.GetCellFaces(i);
-        tess.GetNeighbors(i, neighbors);
-        std::size_t const Nneighbors = neighbors.size();
-
-        Vector3D const r_i = tess.GetMeshPoint(i);
-        double const Eg_i = cells_cgs[i].Eg[group] * cells_cgs[i].density;
-
-        grad_Eg.Set(0.0, 0.0, 0.0); 
-        for(std::size_t j=0; j<Nneighbors; ++j){
-            std::size_t const neighbor_j = neighbors[j];
-            double Eg_j;
-            if(!tess.IsPointOutsideBox(neighbor_j)){
-                Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
-            } else {
-                boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, Eg_i, Eg_j, dummy_v);
-            }
-
-            auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-            r_ij *= 1.0 / abs(r_ij);
+    if(mix_frame_on_){
+        // momentum relativity _term  
+        Vector3D grad_Eg(0.0, 0.0, 0.0);
+        for(std::size_t i=0; i<Nlocal; ++i){
+            double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
             
-            grad_Eg += r_ij * (0.5*tess.GetArea(faces[j])*(Eg_i + Eg_j));
-        }
-        grad_Eg *= -(1.0 / volume) * pow<2>(length_scale_);
+            faces = tess.GetCellFaces(i);
+            tess.GetNeighbors(i, neighbors);
+            std::size_t const Nneighbors = neighbors.size();
 
-        double const grad_magnitude = fastabs(grad_Eg);
-        if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i] && grad_magnitude > std::numeric_limits<double>::min() * 1e40){
-            grad_Eg *= 1.0 / grad_magnitude; // normalize the gradient
-            grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]; // bound it from below
-        }
+            Vector3D const r_i = tess.GetMeshPoint(i);
+            double const Eg_i = cells_cgs[i].Eg[group] * cells_cgs[i].density;
 
-        double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
-        double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_cell, Eg_i) : 1.0;
-
-        double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity ) + 1e-2)); // limit velocity to 0.1*speed_of_light
-
-        for(std::size_t j=0; j<Nneighbors; ++j){
-            std::size_t const neighbor_j = neighbors[j];
-
-            Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-            r_ij *= 1.0 / abs(r_ij);
-
-            Vector3D const& gradient = grad[faces[j]];
-            Vector3D const proj_grad = r_ij * ScalarProd(gradient, r_ij); // projection of the gradient to the face normal
-
-            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
-            double const sigma_rossland = CG::speed_of_light / (Dg_cell * 3.0);
-            double const sigma_abs = sigma_absorption_group[group][i];
-            
-            double const nu_g = energy_groups_center[group];
-            
-            double sigma_p;
-            double sigma_m;
-            double dnu;
-            
-            if(group == 0){
-                sigma_p = sigma_absorption_group[group+1][i];
-                sigma_m = sigma_absorption_group[group][i];
-                dnu = energy_groups_center[group+1]-energy_groups_center[group];
-            } else if(group+1 == ENERGY_GROUPS_NUM){
-                sigma_p = sigma_absorption_group[group][i];
-                sigma_m = sigma_absorption_group[group-1][i];
-                dnu = energy_groups_center[group]-energy_groups_center[group-1];
-            } else {
-                sigma_p = sigma_absorption_group[group+1][i];
-                sigma_m = sigma_absorption_group[group-1][i];
-                dnu = energy_groups_center[group+1]-energy_groups_center[group-1];
-            }
-            
-            double const dsigma_abs_dnu = doppler_on_ ? (sigma_p - sigma_m) / dnu : 0.0; 
-
-            
-            double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0 + nu_g*dsigma_abs_dnu) * ScalarProd(cells_cgs[i].velocity, r_ij);
-            
-            double const momentum_relativity_term = dt_cgs * momentum_term_coefficient;
-            if(!tess.IsPointOutsideBox(neighbor_j)){
-                
-                A[i][0] += momentum_relativity_term;
-                
-                // TODO:: this seems slow.. we can probably speed this up using a simple counter 
-                auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
-
-                if(it == A_indeces[i].end()){
-                    throw UniversalError("Key not equal in multigroup diffusion");
+            grad_Eg.Set(0.0, 0.0, 0.0); 
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
+                double Eg_j;
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    Eg_j = cells_cgs[neighbor_j].Eg[group] * cells_cgs[neighbor_j].density;
+                } else {
+                    boundary_calculator.getOutsideValuesGroup(group, tess, i, neighbor_j, cells_cgs, Eg_i, Eg_j, dummy_v);
                 }
 
-                std::size_t const neighbor_counter = static_cast<std::size_t>(it - A_indeces[i].begin());
-                if(A_indeces[i][neighbor_counter] != neighbor_j){
-                    throw UniversalError("Key not equal in multigroup diffusion");
-                }
+                auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+                
+                grad_Eg += r_ij * (0.5*tess.GetArea(faces[j])*(Eg_i + Eg_j));
+            }
+            grad_Eg *= -(1.0 / volume) * pow<2>(length_scale_);
 
-                A[i][neighbor_counter] += momentum_relativity_term;
-            } else {
-                boundary_calculator.setMomentumTermBoundaryGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, momentum_relativity_term, A[i][0], b[i]);
+            double const grad_magnitude = fastabs(grad_Eg);
+            if(grad_magnitude < 0.5 * max_neighbor_abs_grad_E[i] && grad_magnitude > std::numeric_limits<double>::min() * 1e40){
+                grad_Eg *= 1.0 / grad_magnitude; // normalize the gradient
+                grad_Eg *= 0.5 * max_neighbor_abs_grad_E[i]; // bound it from below
+            }
+
+            double const Dg_cell = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
+            double const lambda_g = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_cell, Eg_i) : 1.0;
+
+            double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity ) + 1e-2)); // limit velocity to 0.1*speed_of_light
+
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
+
+                Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+
+                Vector3D const& gradient = grad[faces[j]];
+                Vector3D const proj_grad = r_ij * ScalarProd(gradient, r_ij); // projection of the gradient to the face normal
+
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+                double const sigma_rossland = CG::speed_of_light / (Dg_cell * 3.0);
+                double const sigma_abs = sigma_absorption_group[group][i];
+                
+                double const nu_g = energy_groups_center[group];
+                
+                double sigma_p;
+                double sigma_m;
+                double dnu;
+                
+                if(group == 0){
+                    sigma_p = sigma_absorption_group[group+1][i];
+                    sigma_m = sigma_absorption_group[group][i];
+                    dnu = energy_groups_center[group+1]-energy_groups_center[group];
+                } else if(group+1 == ENERGY_GROUPS_NUM){
+                    sigma_p = sigma_absorption_group[group][i];
+                    sigma_m = sigma_absorption_group[group-1][i];
+                    dnu = energy_groups_center[group]-energy_groups_center[group-1];
+                } else {
+                    sigma_p = sigma_absorption_group[group+1][i];
+                    sigma_m = sigma_absorption_group[group-1][i];
+                    dnu = energy_groups_center[group+1]-energy_groups_center[group-1];
+                }
+                
+                double const dsigma_abs_dnu = doppler_on_ ? (sigma_p - sigma_m) / dnu : 0.0; 
+
+                
+                double const momentum_term_coefficient = -0.5 * (lambda_g / 3.0) * A_ij * (v_limiter * 2.0 * sigma_abs / sigma_rossland - 1.0 + nu_g*dsigma_abs_dnu) * ScalarProd(cells_cgs[i].velocity, r_ij);
+                
+                double const momentum_relativity_term = dt_cgs * momentum_term_coefficient;
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    
+                    A[i][0] += momentum_relativity_term;
+                    
+                    // TODO:: this seems slow.. we can probably speed this up using a simple counter 
+                    auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
+
+                    if(it == A_indeces[i].end()){
+                        throw UniversalError("Key not equal in multigroup diffusion");
+                    }
+
+                    std::size_t const neighbor_counter = static_cast<std::size_t>(it - A_indeces[i].begin());
+                    if(A_indeces[i][neighbor_counter] != neighbor_j){
+                        throw UniversalError("Key not equal in multigroup diffusion");
+                    }
+
+                    A[i][neighbor_counter] += momentum_relativity_term;
+                } else {
+                    boundary_calculator.setMomentumTermBoundaryGroup(group, tess, i, neighbor_j, dt_cgs, cells_cgs, momentum_relativity_term, A[i][0], b[i]);
+                }
             }
         }
-    }
-    
+    }  else {
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
@@ -945,52 +948,54 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
             }
         }
 
-        double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+        if(mix_frame_on_){
+            double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
 
-        for(std::size_t j=0; j < Nneighbors; ++j){
-            std::size_t const neighbor_j = neighbors[j];
+            for(std::size_t j=0; j < Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
 
-            Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-            r_ij *= 1.0 / abs(r_ij);
+                Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
 
-            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
 
-            double const momentum_relativity_coefficient = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
+                double const momentum_relativity_coefficient = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
 
-            double const relativity_term_i = momentum_relativity_coefficient * v_limiter * 2.0 * f * sigma_ratio_lambda_i;
-            
-            double const momentum_term_i = -momentum_relativity_coefficient * lambda_i;
-
-            double const relativity_term_j = momentum_relativity_coefficient * v_limiter * 2.0 * f * sigma_ratio_lambda_neighbors[j];
-
-            double const momentum_term_j = -momentum_relativity_coefficient * lambda_neighbors[j];
-
-
-            if(!tess.IsPointOutsideBox(neighbor_j)){
-                A[i][0] += relativity_term_i;
-                A[i][0] += momentum_term_i;
-
-                auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
+                double const relativity_term_i = momentum_relativity_coefficient * v_limiter * 2.0 * f * sigma_ratio_lambda_i;
                 
-                if(it == A_indeces[i].end()){
-                    throw UniversalError("Key not equal in multigroup diffusion");
+                double const momentum_term_i = -momentum_relativity_coefficient * lambda_i;
+
+                double const relativity_term_j = momentum_relativity_coefficient * v_limiter * 2.0 * f * sigma_ratio_lambda_neighbors[j];
+
+                double const momentum_term_j = -momentum_relativity_coefficient * lambda_neighbors[j];
+
+
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    A[i][0] += relativity_term_i;
+                    A[i][0] += momentum_term_i;
+
+                    auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
+                    
+                    if(it == A_indeces[i].end()){
+                        throw UniversalError("Key not equal in multigroup diffusion");
+                    }
+
+                    std::size_t const neighbor_counter = static_cast<std::size_t>(it - A_indeces[i].begin());
+
+                    if(A_indeces[i][neighbor_counter] != neighbor_j){
+                        throw UniversalError("Key not equal in multigroup diffusion");
+                    }
+
+                    A[i][neighbor_counter] += relativity_term_j;
+                    A[i][neighbor_counter] += momentum_term_j;
+                } else {
+                    boundary_calculator.setMomentumTermBoundaryGray(tess, i, neighbor_j, dt_cgs, cells_cgs, relativity_term_i + momentum_term_i, relativity_term_j + momentum_term_j, A[i][0], b[i]);
                 }
-
-                std::size_t const neighbor_counter = static_cast<std::size_t>(it - A_indeces[i].begin());
-
-                if(A_indeces[i][neighbor_counter] != neighbor_j){
-                    throw UniversalError("Key not equal in multigroup diffusion");
-                }
-
-                A[i][neighbor_counter] += relativity_term_j;
-                A[i][neighbor_counter] += momentum_term_j;
-            } else {
-                boundary_calculator.setMomentumTermBoundaryGray(tess, i, neighbor_j, dt_cgs, cells_cgs, relativity_term_i + momentum_term_i, relativity_term_j + momentum_term_j, A[i][0], b[i]);
-            }
-
-
+            } 
+        } else {
         }
     }
+
 
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
@@ -1117,43 +1122,49 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
         faces = tess.GetCellFaces(i);
         
         auto const r_i = tess.GetMeshPoint(i);
-        double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+        
+        // relativity term
+        double dE_relativity = 0.0;
+        if(mix_frame_on_){
+            
+            double const v_limiter = std::min(1.0, 0.1 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
 
-        for(std::size_t j=0; j<Nneighbors; ++j){
-            std::size_t const neighbor_j = neighbors[j];
-            auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-            r_ij *= 1.0 / abs(r_ij);
-            double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                std::size_t const neighbor_j = neighbors[j];
+                auto r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
 
-            double const momentum_relativity_coefficient_j = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
+                double const momentum_relativity_coefficient_j = -0.5 * dt_cgs * A_ij * ScalarProd(cells_cgs[i].velocity, r_ij) / 3.0;
 
-            double relativity_term_neighbor_j = 0.0;
-            if(tess.GetFaceNeighbors(faces[j]).first == i){
-                relativity_term_neighbor_j = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_face_gray[faces[j]].first;
-            } else {
-                assert(tess.GetFaceNeighbors(faces[j]).second == i);
-                relativity_term_neighbor_j = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_face_gray[faces[j]].second;
+                double relativity_term_neighbor_j = 0.0;
+                if(tess.GetFaceNeighbors(faces[j]).first == i){
+                    relativity_term_neighbor_j = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_face_gray[faces[j]].first;
+                } else {
+                    assert(tess.GetFaceNeighbors(faces[j]).second == i);
+                    relativity_term_neighbor_j = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_face_gray[faces[j]].second;
+                }
+
+                if(!tess.IsPointOutsideBox(neighbor_j)){
+                    double const full_CG_res_j = std::max(full_CG_result[neighbor_j], std::numeric_limits<double>::min()*1e100);
+
+                    dE_relativity -= relativity_term_neighbor_j * full_CG_res_j;
+                } else {
+                    double Er_outside;
+                    boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result[i], Er_outside, dummy_v);
+                    dE_relativity -= relativity_term_neighbor_j * Er_outside;
+                }
+
+                double const relativity_term_i = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_cell_gray[i];
+
+                dE_relativity -= relativity_term_i * full_CG_res_i;
             }
 
-            if(!tess.IsPointOutsideBox(neighbor_j)){
-                double const full_CG_res_j = std::max(full_CG_result[neighbor_j], std::numeric_limits<double>::min()*1e100);
+            dE_relativity *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
 
-                dE_relativity -= relativity_term_neighbor_j * full_CG_res_j;
-            } else {
-                double Er_outside;
-                boundary_calculator.getOutsideValuesGray(tess, i, neighbor_j, cells, full_CG_result[i], Er_outside, dummy_v);
-                dE_relativity -= relativity_term_neighbor_j * Er_outside;
-            }
-
-            double const relativity_term_i = momentum_relativity_coefficient_j * v_limiter * 2.0 * f * sigma_ratio_lambda_cell_gray[i];
-
-            dE_relativity -= relativity_term_i * full_CG_res_i;
+            extensives[i].energy += dE_relativity;
+            extensives[i].internal_energy += dE_relativity;
         }
-
-        dE_relativity *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
-
-        extensives[i].energy += dE_relativity;
-        extensives[i].internal_energy += dE_relativity;
 
         // momentum term
         if(hydro_on_){
@@ -1401,240 +1412,252 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
     Vector3D grad_Eg(0.0, 0.0, 0.0);
     ComputationalCell3D dummy_cell;
 
-    std::vector<double> lambda_g_dummy(N, 0.0);
-    calculate_lambda_g_and_R2_g(0, tess, cells, lambda_g_dummy, R2[2]);
+    if(mix_frame_on_){
 
-    struct
-    {
-        double val;
-        int mpi_id;
-    }max_data;
+    // #ifdef RICH_MPI    
+    //     MPI_exchange_data2(tess, new_Eg, true);
+    //     MPI_exchange_data2(tess, R2[0],  true);
+    //     MPI_exchange_data2(tess, R2[1],  true);
+    //     MPI_exchange_data2(tess, R2[2],  true);
+    // #endif
 
-    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-        // for the discretization we need R2 for the groups g-1, g, g+1
-        // R2[0] -> g-1
-        // R2[1] -> g
-        // R2[2] -> g+1 
-        std::swap(R2[1], R2[0]);
-        std::swap(R2[2], R2[1]);
+        std::vector<double> lambda_g_dummy(N, 0.0);
+        calculate_lambda_g_and_R2_g(0, tess, cells, lambda_g_dummy, R2[2]);
 
-        if(g+1 < ENERGY_GROUPS_NUM){
-            calculate_lambda_g_and_R2_g(g+1, tess, cells, lambda_g_dummy, R2[2]);
-        }
+        struct
+        {
+            double val;
+            int mpi_id;
+        }max_data;
 
-        for(std::size_t i=0; i < N; ++i){
-            tess.GetNeighbors(i, neighbors);
-            auto const Nneighbors = neighbors.size();
-            
-            faces = tess.GetCellFaces(i);
+        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+            // for the discretization we need R2 for the groups g-1, g, g+1
+            // R2[0] -> g-1
+            // R2[1] -> g
+            // R2[2] -> g+1 
+            std::swap(R2[1], R2[0]);
+            std::swap(R2[2], R2[1]);
 
-            double const Eg_i = cells_cgs[i].Eg[g] * cells_cgs[i].density;
-            Vector3D const& velocity_i = cells_cgs[i].velocity;
-            
-            Vector3D const r_i = tess.GetMeshPoint(i);
+            if(g+1 < ENERGY_GROUPS_NUM){
+                calculate_lambda_g_and_R2_g(g+1, tess, cells, lambda_g_dummy, R2[2]);
+            }
 
-            double divergence = 0.0;
-            for(std::size_t j=0; j<Nneighbors; ++j){
-                std::size_t neighbor_j = neighbors[j];
-
-                bool const is_outside = tess.IsPointOutsideBox(neighbor_j);
-
-                Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
-                r_ij *= 1.0 / abs(r_ij);
+            for(std::size_t i=0; i < N; ++i){
+                tess.GetNeighbors(i, neighbors);
+                auto const Nneighbors = neighbors.size();
                 
-                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+                faces = tess.GetCellFaces(i);
 
-                Vector3D velocity_j;
-                if(!is_outside){
-                    velocity_j = cells_cgs[neighbor_j].velocity;
-                } else {
-                    double dummyEg;
-                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, dummyEg, velocity_j);
-                    velocity_j *= length_scale_ / time_scale_;
-                }
+                double const Eg_i = cells_cgs[i].Eg[g] * cells_cgs[i].density;
+                Vector3D const& velocity_i = cells_cgs[i].velocity;
                 
-                double const v_mid = ScalarProd(r_ij, velocity_i + velocity_j) / 2.0;
+                Vector3D const r_i = tess.GetMeshPoint(i);
 
-                
-                double const nu_g   = energy_groups_center[g];
-                double const dnu_g  = energy_groups_width[g];
+                double divergence = 0.0;
+                for(std::size_t j=0; j<Nneighbors; ++j){
+                    std::size_t neighbor_j = neighbors[j];
 
-                if(v_mid > 0.0){
-                    double const v_ij = ScalarProd(r_ij, velocity_j);
+                    bool const is_outside = tess.IsPointOutsideBox(neighbor_j);
+
+                    Vector3D r_ij = r_i - tess.GetMeshPoint(neighbor_j);
+                    r_ij *= 1.0 / abs(r_ij);
                     
-                    std::size_t which_R2 = neighbor_j;
-                    if(g+1 < ENERGY_GROUPS_NUM){
-                        double const nu_g1  = energy_groups_center[g+1];
-                        double const dnu_g1 = energy_groups_width[g+1];
-                        
-                        double Eg1_j;
-                        if(!is_outside){
-                            Eg1_j = cells_cgs[neighbor_j].Eg[g+1] * cells_cgs[neighbor_j].density;
-                        } else {
-                            double const Eg1_i = cells_cgs[i].Eg[g+1] * cells_cgs[i].density;
-                            boundary_calculator.getOutsideValuesGroup(g+1, tess, i, neighbor_j, cells, Eg1_i, Eg1_j, dummy_v);
+                    double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
 
+                    Vector3D velocity_j;
+                    if(!is_outside){
+                        velocity_j = cells_cgs[neighbor_j].velocity;
+                    } else {
+                        double dummyEg;
+                        boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, dummyEg, velocity_j);
+                        velocity_j *= length_scale_ / time_scale_;
+                    }
+
+                    double const v_mid = ScalarProd(r_ij, velocity_i + velocity_j) / 2.0;
+
+                    
+                    double const nu_g   = energy_groups_center[g];
+                    double const dnu_g  = energy_groups_width[g];
+
+                    if(v_mid > 0.0){
+                        double const v_ij = ScalarProd(r_ij, velocity_j);
+                        
+                        std::size_t which_R2 = neighbor_j;
+                        if(g+1 < ENERGY_GROUPS_NUM){
+                            double const nu_g1  = energy_groups_center[g+1];
+                            double const dnu_g1 = energy_groups_width[g+1];
+                            
+                            double Eg1_j;
+                            if(!is_outside){
+                                Eg1_j = cells_cgs[neighbor_j].Eg[g+1] * cells_cgs[neighbor_j].density;
+                            } else {
+                                double const Eg1_i = cells_cgs[i].Eg[g+1] * cells_cgs[i].density;
+                                boundary_calculator.getOutsideValuesGroup(g+1, tess, i, neighbor_j, cells, Eg1_i, Eg1_j, dummy_v);
+
+                                which_R2 = i;
+                            }
+                            
+                            divergence += A_ij * v_ij * 0.5 * nu_g1 * Eg1_j * (1.0 - R2[2][which_R2]) / dnu_g1;
+                        } 
+                        
+                        double Eg_j;
+                        if(!is_outside){
+                            Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
+                            which_R2 = neighbor_j;
+                        } else {
+                            boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, Eg_j, dummy_v);
                             which_R2 = i;
                         }
-                        
-                        divergence += A_ij * v_ij * 0.5 * nu_g1 * Eg1_j * (1.0 - R2[2][which_R2]) / dnu_g1;
-                    } 
-                    
-                    double Eg_j;
-                    if(!is_outside){
-                        Eg_j = cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
-                        which_R2 = neighbor_j;
+
+                        divergence -= A_ij * v_ij * 0.5 * nu_g * Eg_j * (1.0 - R2[1][which_R2]) / dnu_g;
                     } else {
-                        boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, Eg_j, dummy_v);
-                        which_R2 = i;
-                    }
-
-                    divergence -= A_ij * v_ij * 0.5 * nu_g * Eg_j * (1.0 - R2[1][which_R2]) / dnu_g;
-                } else {
-                    double const v_ij = ScalarProd(r_ij, velocity_i);
-                    
-                    if (g > 0){    
-                        double const nu_gm1  = energy_groups_center[g-1];
-                        double const dnu_gm1 = energy_groups_width[g-1];
+                        double const v_ij = ScalarProd(r_ij, velocity_i);
                         
-                        double const Egm1_i = cells_cgs[i].Eg[g-1] * cells_cgs[i].density;
-                        
+                        if (g > 0){    
+                            double const nu_gm1  = energy_groups_center[g-1];
+                            double const dnu_gm1 = energy_groups_width[g-1];
+                            
+                            double const Egm1_i = cells_cgs[i].Eg[g-1] * cells_cgs[i].density;
+                            
 
-                        divergence -= A_ij * v_ij * 0.5 * nu_gm1 * Egm1_i * (1.0 - R2[0][i]) / dnu_gm1;
-                    }
+                            divergence -= A_ij * v_ij * 0.5 * nu_gm1 * Egm1_i * (1.0 - R2[0][i]) / dnu_gm1;
+                        }
 
-                    double const Eg_i  = cells_cgs[i].Eg[g] * cells_cgs[i].density;
+                        double const Eg_i  = cells_cgs[i].Eg[g] * cells_cgs[i].density;
 
-                    divergence += A_ij * v_ij * 0.5 * nu_g * Eg_i * (1.0 - R2[1][i]) / dnu_g;
-                }    
-            }
-
-            double const change = std::abs(dt_cgs*divergence) / (cells_cgs[i].Eg[g] * extensives[i].mass * mass_scale_);
-            if(change > max_change_doppler){
-                max_change_doppler = change;   
-                max_group = g;
-                max_cell = i;
-                old_energy = cells_cgs[i].Eg[g] / cells_cgs[i].density;
-            }
-
-            double const dEg = dt_cgs * divergence;
-            
-            extensives[i].Eg[g] += dEg * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
-        }
-    }
-    int rank = 0;
-#ifdef RICH_MPI
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif   
-    max_data.val = max_change_doppler;
-    max_data.mpi_id = rank;
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-#endif
-if(rank == max_data.mpi_id)
-    std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler <<" ID "<<cells[max_cell].ID<<" old Eg:"<<cells[max_cell].Eg[max_group]<<" new Eg:"<<
-    extensives[max_cell].Eg[max_group] / extensives[max_cell].mass<<" T "<<cells[max_cell].temperature<<std::endl;
-
-    for(std::size_t n=0; n<D.size(); ++n){
-        std::fill(D[n].begin(), D[n].end(), 0.0);
-    }
-    
-    // ADD SECOND DOPPLER SHIFT ELEMENT
-    for(std::size_t i=0; i < N; ++i){
-        D[2][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], 0);
-    }
-    D[1] = D[2];
-
-    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-        std::swap(D[1], D[0]);
-        std::swap(D[2], D[1]);
-
-        if(g+1 < ENERGY_GROUPS_NUM){
-            for(std::size_t i=0; i < N; ++i){
-                D[2][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g+1);
-            }
-        } else {
-            D[2] = D[1];
-        }
-        
-
-        std::size_t const gp = g+1 < ENERGY_GROUPS_NUM ? g+1 : g;
-        std::size_t const gm = g > 0 ? g-1 : g;
-
-        double const nu_g_p = energy_groups_boundary[g+1];
-        double const nu_g_m = energy_groups_boundary[g];
-        
-        double const dnu_g = energy_groups_width[g];
-        double const dnu_g_p = energy_groups_width[gp];
-        double const dnu_g_m = energy_groups_width[gm];
-
-        for(std::size_t i=0; i < N; ++i){
-            
-            double const sigma_g = coefficient_calculator.CalcScatteringCoefficientGroup(cells_cgs[i], g);
-            
-            double const sigma_g1 = coefficient_calculator.CalcScatteringCoefficientGroup(cells_cgs[i], gp);
-
-            double const sigma_gm1 = coefficient_calculator.CalcScatteringCoefficientGroup(cells_cgs[i], gm);
-            
-            double const sigma_p = 0.5*(sigma_g1 + sigma_g);
-            double const sigma_m = 0.5*(sigma_g + sigma_gm1);
-
-            double const Dp = 0.5*(D[2][i] + D[1][i]);
-            double const Dm = 0.5*(D[1][i] + D[0][i]);
-
-            tess.GetNeighbors(i, neighbors);
-            std::size_t const Nneighbors = neighbors.size();
-            
-            faces = tess.GetCellFaces(i);
-            
-            double const Eg_i =  cells_cgs[i].Eg[g] * cells_cgs[i].density;
-            double const Egp_i = cells_cgs[i].Eg[gp] * cells_cgs[i].density;
-            double const Egm_i = cells_cgs[i].Eg[gm] * cells_cgs[i].density;
-
-            double const Enu_gp_i = 0.5 * (Egp_i / dnu_g_p + Eg_i / dnu_g);
-            double const Enu_gm_i = 0.5 * (Eg_i / dnu_g    + Egm_i / dnu_g_m);
-            
-            Vector3D const r_i = tess.GetMeshPoint(i);
-
-            Vector3D grad_Eg_p(0.0, 0.0, 0.0);
-            Vector3D grad_Eg_m(0.0, 0.0, 0.0);
-            Vector3D grad_Eg;
-            for(std::size_t j=0; j < Nneighbors; ++j){
-                std::size_t const neighbor_j = neighbors[j];
-
-                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
-
-                Vector3D const r_ij = normalize(r_i - tess.GetMeshPoint(neighbor_j));
-                
-                double Egp_j;
-                double Egm_j;
-                double Eg_j;
-                if(!tess.IsPointOutsideBox(neighbor_j)){
-                    Eg_j =  cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
-                    Egp_j = cells_cgs[neighbor_j].Eg[gp] * cells_cgs[neighbor_j].density;
-                    Egm_j = cells_cgs[neighbor_j].Eg[gm] * cells_cgs[neighbor_j].density;
-                } else {
-                    boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, Eg_j, dummy_v);
-                    boundary_calculator.getOutsideValuesGroup(gp, tess, i, neighbor_j, cells, Egp_i, Egp_j, dummy_v);
-                    boundary_calculator.getOutsideValuesGroup(gm, tess, i, neighbor_j, cells, Egm_i, Egm_j, dummy_v);
+                        divergence += A_ij * v_ij * 0.5 * nu_g * Eg_i * (1.0 - R2[1][i]) / dnu_g;
+                    }    
                 }
 
-                double const Enu_gp_j = 0.5 * (Egp_j / dnu_g_p + Eg_j / dnu_g);
-                double const Enu_gm_j = 0.5 * (Eg_j / dnu_g    + Egm_j / dnu_g_m);
-            
-                grad_Eg_p += r_ij * (0.5*A_ij*(Enu_gp_i + Enu_gp_j));
-                grad_Eg_m += r_ij * (0.5*A_ij*(Enu_gm_i + Enu_gm_j));
-                grad_Eg += r_ij * (0.5*A_ij*(Eg_j + Eg_i));
+                double const change = std::abs(dt_cgs*divergence) / (cells_cgs[i].Eg[g] * extensives[i].mass * mass_scale_);
+                if(change > max_change_doppler){
+                    max_change_doppler = change;   
+                    max_group = g;
+                    max_cell = i;
+                    old_energy = cells_cgs[i].Eg[g] / cells_cgs[i].density;
+                }
+
+                double const dEg = dt_cgs * divergence;
+                
+                extensives[i].Eg[g] += dEg * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
             }
-            double const lambda = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg * (1.0 / (pow<3>(length_scale_) * tess.GetVolume(i))), D[1][i], Eg_i) : 1;
-            double const dEp = dt_cgs*nu_g_p * sigma_p * Dp * ScalarProd(cells_cgs[i].velocity, grad_Eg_p) / CG::speed_of_light;
+        }
+        int rank = 0;
+    #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    #endif   
+        max_data.val = max_change_doppler;
+        max_data.mpi_id = rank;
+    #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    #endif
+    if(rank == max_data.mpi_id)
+        std::cout << "Maximum change in energy group " << max_group << " in cell " << max_cell << " due to Doppler effect: " << max_change_doppler <<" ID "<<cells[max_cell].ID<<" old Eg:"<<cells[max_cell].Eg[max_group]<<" new Eg:"<<
+        extensives[max_cell].Eg[max_group] / extensives[max_cell].mass<<" T "<<cells[max_cell].temperature<<std::endl;
 
-            double const dEm = -dt_cgs * nu_g_m * sigma_m * Dm * ScalarProd(cells_cgs[i].velocity, grad_Eg_m) / CG::speed_of_light;
+        for(std::size_t n=0; n<D.size(); ++n){
+            std::fill(D[n].begin(), D[n].end(), 0.0);
+        }
+        
+        // ADD SECOND DOPPLER SHIFT ELEMENT
+        for(std::size_t i=0; i < N; ++i){
+            D[2][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], 0);
+        }
+        D[1] = D[2];
 
-            double const dEg = lambda * (dEp + dEm) / cells_cgs[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
+        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+            std::swap(D[1], D[0]);
+            std::swap(D[2], D[1]);
+
+            if(g+1 < ENERGY_GROUPS_NUM){
+                for(std::size_t i=0; i < N; ++i){
+                    D[2][i] = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g+1);
+                }
+            } else {
+                D[2] = D[1];
+            }
             
-            extensives[i].Eg[g] += dEg * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
-            cells[i].Eg[g] = extensives[i].Eg[g] / extensives[i].mass;
+
+            std::size_t const gp = g+1 < ENERGY_GROUPS_NUM ? g+1 : g;
+            std::size_t const gm = g > 0 ? g-1 : g;
+
+            double const nu_g_p = energy_groups_boundary[g+1];
+            double const nu_g_m = energy_groups_boundary[g];
+            
+            double const dnu_g = energy_groups_width[g];
+            double const dnu_g_p = energy_groups_width[gp];
+            double const dnu_g_m = energy_groups_width[gm];
+
+            for(std::size_t i=0; i < N; ++i){
+                
+                double const sigma_g = coefficient_calculator.CalcScatteringCoefficientGroup(cells_cgs[i], g);
+                
+                double const sigma_g1 = coefficient_calculator.CalcScatteringCoefficientGroup(cells_cgs[i], gp);
+
+                double const sigma_gm1 = coefficient_calculator.CalcScatteringCoefficientGroup(cells_cgs[i], gm);
+                
+                double const sigma_p = 0.5*(sigma_g1 + sigma_g);
+                double const sigma_m = 0.5*(sigma_g + sigma_gm1);
+
+                double const Dp = 0.5*(D[2][i] + D[1][i]);
+                double const Dm = 0.5*(D[1][i] + D[0][i]);
+
+                tess.GetNeighbors(i, neighbors);
+                std::size_t const Nneighbors = neighbors.size();
+                
+                faces = tess.GetCellFaces(i);
+                
+                double const Eg_i =  cells_cgs[i].Eg[g] * cells_cgs[i].density;
+                double const Egp_i = cells_cgs[i].Eg[gp] * cells_cgs[i].density;
+                double const Egm_i = cells_cgs[i].Eg[gm] * cells_cgs[i].density;
+
+                double const Enu_gp_i = 0.5 * (Egp_i / dnu_g_p + Eg_i / dnu_g);
+                double const Enu_gm_i = 0.5 * (Eg_i / dnu_g    + Egm_i / dnu_g_m);
+                
+                Vector3D const r_i = tess.GetMeshPoint(i);
+
+                Vector3D grad_Eg_p(0.0, 0.0, 0.0);
+                Vector3D grad_Eg_m(0.0, 0.0, 0.0);
+                Vector3D grad_Eg;
+                for(std::size_t j=0; j < Nneighbors; ++j){
+                    std::size_t const neighbor_j = neighbors[j];
+
+                    double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+
+                    Vector3D const r_ij = normalize(r_i - tess.GetMeshPoint(neighbor_j));
+                    
+                    double Egp_j;
+                    double Egm_j;
+                    double Eg_j;
+                    if(!tess.IsPointOutsideBox(neighbor_j)){
+                        Eg_j =  cells_cgs[neighbor_j].Eg[g] * cells_cgs[neighbor_j].density;
+                        Egp_j = cells_cgs[neighbor_j].Eg[gp] * cells_cgs[neighbor_j].density;
+                        Egm_j = cells_cgs[neighbor_j].Eg[gm] * cells_cgs[neighbor_j].density;
+                    } else {
+                        boundary_calculator.getOutsideValuesGroup(g, tess, i, neighbor_j, cells, Eg_i, Eg_j, dummy_v);
+                        boundary_calculator.getOutsideValuesGroup(gp, tess, i, neighbor_j, cells, Egp_i, Egp_j, dummy_v);
+                        boundary_calculator.getOutsideValuesGroup(gm, tess, i, neighbor_j, cells, Egm_i, Egm_j, dummy_v);
+                    }
+
+                    double const Enu_gp_j = 0.5 * (Egp_j / dnu_g_p + Eg_j / dnu_g);
+                    double const Enu_gm_j = 0.5 * (Eg_j / dnu_g    + Egm_j / dnu_g_m);
+                
+                    grad_Eg_p += r_ij * (0.5*A_ij*(Enu_gp_i + Enu_gp_j));
+                    grad_Eg_m += r_ij * (0.5*A_ij*(Enu_gm_i + Enu_gm_j));
+                    grad_Eg += r_ij * (0.5*A_ij*(Eg_j + Eg_i));
+                }
+                double const lambda = flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg * (1.0 / (pow<3>(length_scale_) * tess.GetVolume(i))), D[1][i], Eg_i) : 1;
+                double const dEp = dt_cgs*nu_g_p * sigma_p * Dp * ScalarProd(cells_cgs[i].velocity, grad_Eg_p) / CG::speed_of_light;
+
+                double const dEm = -dt_cgs * nu_g_m * sigma_m * Dm * ScalarProd(cells_cgs[i].velocity, grad_Eg_m) / CG::speed_of_light;
+
+                double const dEg = lambda * (dEp + dEm) / cells_cgs[i].density * pow<2>(time_scale_) / (mass_scale_ * length_scale_);
+                
+                extensives[i].Eg[g] += dEg * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
+                cells[i].Eg[g] = extensives[i].Eg[g] / extensives[i].mass;
+            }
+        }
+    } else {
         }
     }
 #ifdef RICH_MPI

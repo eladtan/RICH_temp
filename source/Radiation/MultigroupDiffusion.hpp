@@ -21,7 +21,8 @@ public:
                         bool const flux_limiter,
                         bool const hydro_on,
                         bool const compton_on,
-                        bool const doppler_on);
+                        bool const doppler_on,
+                        bool const mix_frame_on);
 
     ~MultigroupDiffusion() = default;
 
@@ -111,6 +112,7 @@ public:
 
 
     bool const doppler_on_;
+    bool const mix_frame_on_;
     // for doppler step
     mutable std::vector<std::vector<double>> R2;
     mutable std::vector<std::vector<double>> D;
