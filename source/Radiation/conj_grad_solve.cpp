@@ -554,6 +554,7 @@ namespace CG
         }
 #ifdef RICH_MPI
         MPI_exchange_data2(tess, sub_x, true);
+        MPI_exchange_data2(tess, sub_x_solution, true);
 #endif
         return sub_x;
     }
