@@ -360,7 +360,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
     for(std::size_t i=0; i<Nlocal; ++i){
         auto const& cell_cgs = cells_cgs[i];
         
-        double const Eg_i = cell_cgs.Eg[group]*cell_cgs.density;
+        double const Eg_i = cell_cgs.Eg[group] * cell_cgs.density;
         // build the initial guess
         x0[i] = Eg_i;
 
@@ -375,13 +375,12 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         auto const cdtkgbg = cdt*sigma_absorption_group[group][i]*bg;
         b[i] += volume_cgs*cdtkgbg*Um;
     }
-
+    
     // Initialize Matrix
     A.clear(); 
     A.resize(Nlocal);
     A_indeces.clear();
     A_indeces.resize(Nlocal);
-    
 
     // Add the emission term to the matrix
     for(std::size_t i=0; i < Nlocal; ++i){
@@ -621,7 +620,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
             }
         }
     }
-
+    
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
@@ -706,7 +705,6 @@ void MultigroupDiffusion::BuildMatrixGray(Tessellation3D const& tess,
         }
     }
 
-    // find max_abs_grad_E for flux_limiter limiter gradient factor
     std::vector<std::size_t> neighbors;
     face_vec faces;
     Vector3D dummy_v;
