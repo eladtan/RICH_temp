@@ -1740,20 +1740,20 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                     double const dnu_g = energy_groups_width[g];
                     double const dnu_gm = energy_groups_width[gm];
 
-                    double nu_gp = energy_groups_center[gp];
-                    double nu_g = energy_groups_center[g];
-                    double nu_gm = energy_groups_center[gm];
+                    double nu_gp = energy_groups_boundary[gp];
+                    // double nu_g = energy_groups_center[g];
+                    double nu_gm = energy_groups_boundary[g];
                     if(g ==0)
                     {
                         if(div_velocity > 0)
-                            nu_g = 0;
+                            nu_gp = 0;
                         else
                             nu_gm = 0;
                     }
                     if(g == (ENERGY_GROUPS_NUM - 1))
                     {
                         if(div_velocity < 0)
-                            nu_g = 0;
+                            nu_gm = 0;
                         else
                             nu_gp = 0;
                     }
@@ -1761,10 +1761,10 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
                     double dnuE_dnu;
                     if(div_velocity < 0.0){
                         double const Egm_i = cells_cgs[i].Eg[gm] * cells_cgs[i].density;
-                        dnuE_dnu = (nu_g*Eg_i / dnu_g - nu_gm*Egm_i / dnu_gm);
+                        dnuE_dnu = (nu_gp*Eg_i / dnu_g - nu_gm*Egm_i / dnu_gm);
                     } else {
                         double const Egp_i = cells_cgs[i].Eg[gp] * cells_cgs[i].density;
-                        dnuE_dnu = (nu_gp*Egp_i / dnu_gp - nu_g*Eg_i / dnu_g);
+                        dnuE_dnu = (nu_gp*Egp_i / dnu_gp - nu_gm*Eg_i / dnu_g);
                     }
 
                     double const dEg_j = div_velocity * dnuE_dnu * dt_cgs * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
