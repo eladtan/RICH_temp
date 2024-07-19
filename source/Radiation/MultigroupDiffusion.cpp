@@ -374,7 +374,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         // second term
         auto const bg = planck_integal_group[group][i];
         auto const Um = get_radiation_energy_density(cell_cgs.temperature);
-        auto const cdtkgbg = cdt*sigma_absorption_group[group][i]*bg;
+        auto const cdtkgbg = std::min(cdt*sigma_absorption_group[group][i], max_coupling_strength)*bg;
         b[i] += volume_cgs*cdtkgbg*Um;
     }
     
