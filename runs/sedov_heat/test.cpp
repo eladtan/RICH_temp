@@ -257,7 +257,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
 	MultigroupDiffusionClosedBoundary D_boundary;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true/*false*/, false);
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true/*false*/, false, true, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;

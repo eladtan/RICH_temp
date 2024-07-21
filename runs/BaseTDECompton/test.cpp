@@ -637,9 +637,9 @@ namespace
 		double const Tref = 500;
 		double const Tgas = 1e7;
 		size_t const Ng = energy_groups_boundary.size() - 1;
-		double const Erad_factor = boost::math::pow<4>(Tref / 1e6) / Ng;
+		double const Erad_factor = boost::math::pow<4>(Tref / Tgas) / Ng;
 		for(size_t g = 0; g < Ng; ++g)
-			reference.Eg[g] = Erad_factor * planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], 1e6) * 1603 * 1603 * 7e10 / (2e33 * reference.density);
+			reference.Eg[g] = Erad_factor * planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], Tgas) * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.pressure = eos.dT2p(reference.density, Tgas, reference.tracers);
 		reference.velocity = Vector3D();
@@ -983,7 +983,7 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
 	MultigroupDiffusionOpenBoundary D_boundary;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true, false);
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true, false, true, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -1006,9 +1006,10 @@ int main(void)
 	TDEGravity acc(Mbh, M, R, beta, sg, not full_gravity);
 	std::shared_ptr<ConservativeForce3D> gravity_force = std::make_shared<ConservativeForce3D>(acc, false);
 	std::vector<std::shared_ptr<SourceTerm3D>> forces;
+	std::shared_ptr<ZeroForce3D> zero_force = std::make_shared<ZeroForce3D>();
 
 	forces.push_back(gravity_force);
-	forces.push_back(rad_force);
+	forces.push_back(zero_force);
 	SeveralSources3D force(forces);
 	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (),	false);
 
@@ -1139,6 +1140,8 @@ int main(void)
 			// sim->RadiationTimeStep(old_dt * 1e-3, matrix_builder);
 			// sim->RadiationTimeStep(old_dt * 1e-3, matrix_builder);
 			double new_dt = sim->RadiationTimeStep(old_dt, matrix_builder);
+			if(sim->getTime() < -3)
+				new_dt = 1e-4;
 			tsf.SetTimeStep(new_dt);
 			if (rank == 0)
 				std::cout << "Finished rad step" << std::endl;
