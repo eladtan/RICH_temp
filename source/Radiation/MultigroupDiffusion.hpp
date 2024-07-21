@@ -161,9 +161,9 @@ private:
     void calculate_gray_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                std::vector<ComputationalCell3D> const& cells) const;
 
+    // helper functions
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
 
-    // helper functions
     void calculate_lambda_g_and_R2_g(std::size_t const group,
                             Tessellation3D const& tess,
                             std::vector<ComputationalCell3D> const& cells,

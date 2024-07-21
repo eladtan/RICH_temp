@@ -14,6 +14,10 @@
 	#include "misc/serializable.hpp"
 #endif // RICH_MPI
 
+#ifndef ENERGY_GROUPS_NUM
+#define ENERGY_GROUPS_NUM 3
+#endif
+
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
 						#ifdef RICH_MPI
