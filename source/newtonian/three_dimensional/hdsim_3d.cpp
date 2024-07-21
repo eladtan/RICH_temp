@@ -810,6 +810,8 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 		}
 	}
 
+	double new_dt = matrix_builder.calculate_dt(dt, tess_, cells_);
+
 	matrix_builder.poststep();
 	
 	
@@ -825,7 +827,6 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 		if(max_iter_done > 125)
 			grow_factor = 1.05;
 
-	double new_dt = matrix_builder.calculate_dt(dt, tess_, cells_);
 	new_dt = std::min(new_dt, dt*grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter), 0.0));
 	if(max_iter_done > 300)
 		new_dt = dt * 0.9;
