@@ -1327,11 +1327,11 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 #endif
 
 
-// #ifdef DEBUG
+#ifdef DEBUG
     if(rank == 0){
         std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
     }
-// #endif
+#endif
 }
 
 void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const
