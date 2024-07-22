@@ -174,7 +174,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
         double const lambda_gDg_ij = lambda_g_ij * Dg_ij;
 
         // WARNING: This only works if the length scale is 1.0 since tess.GetArea and r_ij are not to scaled! 
-        double const flux = ScalarProd(gradient, r_ij * (tess.GetArea(face_index) / abs(r_ij))) * dt * lambda_gDg_ij;
+        double const flux = ScalarProd(gradient, r_ij * (Area / abs(r_ij))) * dt * lambda_gDg_ij;
         
         A += flux;
         b += flux * Eg_j;
@@ -199,7 +199,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
         double const lambda_gDg_ij = lambda_g_ij * Dg_ij;
         
         // WARNING: This only works if the length scale is 1.0 since tess.GetArea and r_ij are not to scaled! 
-        double const flux = ScalarProd(gradient, r_ij * (tess.GetArea(face_index) / abs(r_ij))) * dt * lambda_gDg_ij;
+        double const flux = ScalarProd(gradient, r_ij * (Area / abs(r_ij))) * dt * lambda_gDg_ij;
         
         A += flux;
         b += flux * Eg_j;
@@ -273,7 +273,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
         lambdaD_i /= sum_Eg_i;
         lambdaD_j /= sum_Eg_j;
 
-        double const flux_coefficient = ScalarProd(gradient, r_ij * (tess.GetArea(face_index) / abs(r_ij))) * dt;
+        double const flux_coefficient = ScalarProd(gradient, r_ij * (Area / abs(r_ij))) * dt;
         
         double const flux_i_to_j = flux_coefficient * lambdaD_i;
         double const flux_j_to_i = flux_coefficient * lambdaD_j;
@@ -314,7 +314,7 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGray(Tessellation3D co
         lambdaD_i /= sum_Eg_i;
         lambdaD_j /= sum_Eg_j;
 
-        double const flux_coefficient = ScalarProd(gradient, r_ij * (tess.GetArea(face_index) / abs(r_ij))) * dt;
+        double const flux_coefficient = ScalarProd(gradient, r_ij * (Area / abs(r_ij))) * dt;
 
         double const flux_i_to_j = flux_coefficient * lambdaD_i;
         double const flux_j_to_i = flux_coefficient * lambdaD_j;
