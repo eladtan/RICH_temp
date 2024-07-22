@@ -30,7 +30,7 @@ namespace CG
     double constexpr radiation_constant = 4 * stefan_boltzman / speed_of_light;
     double constexpr boltzmann_constant = 1.380649e-16;
     double constexpr electron_mass = 9.1093837015e-28;
-    double constexpr max_coupling_strength = 1e4;
+    double constexpr max_coupling_strength = 1e2;
 
     //! \brief Class that build the data for the solution of the linear system A*x=b
     class MatrixBuilder

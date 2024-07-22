@@ -346,7 +346,11 @@ namespace CG
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution)  //total_iters is to store # of iters in it
     {
-        size_t Nlocal = tess.GetPointNo();
+        int slice = 1;
+#ifdef ENERGY_GROUPS_NUM
+        slice = ENERGY_GROUPS_NUM;
+#endif
+        size_t Nlocal = tess.GetPointNo() * slice;
         
         // NOTE: when using MPI with > 1 proc, A will be only a sub-matrix (a subset of rows) of the full matrix
         // since we are 1D decomposing the matrix by rows
@@ -369,7 +373,7 @@ namespace CG
         std::vector<double> r_old, sub_a_times_p;
         std::vector<double> sub_r;
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, sub_x, true);
+        MPI_exchange_data2(tess, sub_x, true, slice);
 #endif
         mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
         // Find maximum value of A, this is used for normalization of the error
@@ -434,7 +438,7 @@ namespace CG
             }
             y = vector_rescale(sub_p, M);
 #ifdef RICH_MPI
-            MPI_exchange_data2(tess, y, true);
+            MPI_exchange_data2(tess, y, true, slice);
 #endif
             mat_times_vec(A, A_indeces, y, v);
             y.resize(Nlocal);
@@ -444,7 +448,7 @@ namespace CG
             vec_lin_combo(1.0, sub_r, -alpha, v, s);
             z = vector_rescale(s, M);
 #ifdef RICH_MPI
-            MPI_exchange_data2(tess, z, true);
+            MPI_exchange_data2(tess, z, true, slice);
 #endif
             mat_times_vec(A, A_indeces, z, t);
             z.resize(Nlocal);
@@ -490,7 +494,7 @@ namespace CG
                     //     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
                     //     max_loc0 = j;
                     // }
-                    if(sub_x[j] < -max_sub_x * 1e-10)
+                    if(sub_x[j] < -max_sub_x * 1e-20)
                     {
                         max_loc2 = j;
                         max_data[2].val = 1;
@@ -511,7 +515,7 @@ namespace CG
                     total_iters = i;
                     good_end = true;
 #ifdef RICH_MPI
-                    MPI_exchange_data2(tess, sub_x, true);
+                    MPI_exchange_data2(tess, sub_x, true, slice);
 #endif
                     mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
                     sub_x.resize(Nlocal);
@@ -519,7 +523,7 @@ namespace CG
                     sub_x_solution.resize(Nlocal);
                     for(size_t k = 0; k < Nlocal; ++k)
                     {
-                        sub_x_solution[k] = sub_x[k] + sub_r[k] / (tess.GetVolume(k) * pow<3>(matrix_builder.GetLengthScale()));
+                        sub_x_solution[k] = sub_x[k] + sub_r[k] / (tess.GetVolume(k / slice) * pow<3>(matrix_builder.GetLengthScale()));
                         if(sub_x_solution[k] < 0)
                             sub_x_solution[k] = sub_x[k];
                         if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] > 0)
@@ -553,8 +557,8 @@ namespace CG
 	    // throw UniversalError("CG did not converge");
         }
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, sub_x, true);
-        MPI_exchange_data2(tess, sub_x_solution, true);
+        MPI_exchange_data2(tess, sub_x, true, slice);
+        MPI_exchange_data2(tess, sub_x_solution, true, slice);
 #endif
         return sub_x;
     }
