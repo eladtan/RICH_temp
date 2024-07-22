@@ -387,7 +387,7 @@ vector<vector<vector<double> > > MPI_exchange_data(const Tessellation3D& tess, v
 }
 
 
-void MPI_exchange_data2(const Tessellation3D& tess, vector<double>& cells, bool ghost_or_sent)
+void MPI_exchange_data2(const Tessellation3D& tess, vector<double>& cells, bool ghost_or_sent, size_t slice)
 {
 	vector<int> correspondents;
 	vector<vector<size_t> > duplicated_points;
@@ -406,21 +406,48 @@ void MPI_exchange_data2(const Tessellation3D& tess, vector<double>& cells, bool 
 	{
 		bool isempty = duplicated_points[i].empty();
 		if (!isempty)
-			tempsend[i] = VectorValues(cells, duplicated_points[i]);
+		{
+			if(slice == 1)
+				tempsend[i] = VectorValues(cells, duplicated_points[i]);
+			else
+			{
+				size_t const Np = duplicated_points[i].size();
+				for(size_t k = 0; k < Np; ++k)
+					for(size_t l = 0; l < slice; ++l)
+				    	tempsend[i].push_back(cells[duplicated_points[i][k] * slice + l]);
+			}
+		}
 	}
 	vector<vector<double> > torecv = MPI_exchange_data(correspondents, tempsend);
 
 	const vector<vector<size_t> >& ghost_indices = tess.GetGhostIndeces();
 	if (ghost_or_sent)
-		cells.resize(tess.GetTotalPointNumber());
+	{
+		cells.resize(tess.GetTotalPointNumber() * slice);
+	}
 	else
+	{
 		cells = VectorValues(cells, tess.GetSelfIndex());
+	}
 	for (size_t i = 0; i < correspondents.size(); ++i)
 	{
 		if (ghost_or_sent)
 		{
-			for (size_t j = 0; j < torecv[i].size(); ++j)
-				cells.at(ghost_indices.at(i).at(j)) = torecv[i][j];
+			if(slice == 1)
+			{
+				for (size_t j = 0; j < torecv[i].size(); ++j)
+					cells.at(ghost_indices.at(i).at(j)) = torecv[i][j];
+				}
+			else
+			{
+				if(torecv[i].size() % slice != 0) throw UniversalError("Slice size does not match");
+				size_t const Np = torecv[i].size() / slice;
+				for(size_t k = 0; k < Np; ++k)
+				{
+					for(size_t l = 0; l < slice; ++l)
+                        cells.at(ghost_indices.at(i).at(k) * slice + l) = torecv[i][k * slice + l];
+				}
+			}
 		}
 		else
 		{
