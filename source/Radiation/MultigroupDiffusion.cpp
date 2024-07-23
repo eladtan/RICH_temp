@@ -358,7 +358,7 @@ bool MultigroupDiffusion::step(double const tolerance,
 //         }
 //     }
 
-    if(doppler_on_) solve_doppler_shift(tess, cells, dt, extensives);
+    // if(doppler_on_) solve_doppler_shift(tess, cells, dt, extensives);
     
     return true;
 }
@@ -613,6 +613,104 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
             }
         }
    }
+
+    // Add doppler
+    if(doppler_on_){
+        for(std::size_t i=0; i<Nlocal; ++i){
+            double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
+
+            faces = tess.GetCellFaces(i);
+            tess.GetNeighbors(i, neighbors);
+
+            std::size_t const Nneighbors = neighbors.size();
+
+            Vector3D const r_i = tess.GetMeshPoint(i);
+            double div_velocity = 0.0;
+
+            for(std::size_t j=0; j<Nneighbors; ++j){
+                Vector3D const r_ij = normalize(r_i - tess.GetMeshPoint(neighbors[j]));
+
+                double const A_ij = tess.GetArea(faces[j]) * pow<2>(length_scale_);
+                Vector3D velocity_j;
+
+                if(!tess.IsPointOutsideBox(neighbors[j])){
+                    velocity_j = cells_cgs[neighbors[j]].velocity;
+                } else {
+                    double dummyEg_i, dummy_Eg_j;
+                    boundary_calculator.getOutsideValuesGray(tess, i, neighbors[j], cells_cgs, dummyEg_i, dummy_Eg_j, velocity_j);
+                }
+
+                Vector3D const v_mid = 0.5 * (cells_cgs[i].velocity + velocity_j);
+                div_velocity -= A_ij * ScalarProd(v_mid, r_ij);
+            }
+
+            for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+                std::size_t gp = g+1 == ENERGY_GROUPS_NUM ? g : g+1;
+                std::size_t gm = g == 0                   ? g : g-1;
+
+                double const dnu_gp = energy_groups_width[gp];
+                double const dnu_g = energy_groups_width[g];
+                double const dnu_gm = energy_groups_width[gm];
+
+                double nu_gp = energy_groups_boundary[gp];
+                // double nu_g = energy_groups_center[g];
+                double nu_gm = energy_groups_boundary[g];
+                if(g ==0)
+                {
+                    if(div_velocity > 0){
+                        nu_gp = 0;
+                    } else {
+                        nu_gm = 0;
+                    }
+                }
+                if(g == (ENERGY_GROUPS_NUM - 1))
+                {
+                    if(div_velocity < 0){
+                        nu_gm = 0;
+                    } else {
+                        nu_gp = 0;
+                    }
+                }
+
+                double const coeff = div_velocity * dt_cgs * pow<2>(time_scale_) / (mass_scale_ * pow<2>(length_scale_));
+                if(div_velocity < 0.0){
+                    A[i * ENERGY_GROUPS_NUM + g][0] += coeff * nu_gp / dnu_g;
+
+                    auto it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + g].begin(), A_indeces[i * ENERGY_GROUPS_NUM + g].end(), i * ENERGY_GROUPS_NUM + gm);
+
+                    if(it == A_indeces[i * ENERGY_GROUPS_NUM + g].end()){
+                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gm] in A_indeces (1)");
+                    } 
+
+                    std::size_t const gm_counter = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + g].begin());
+
+                    if(A_indeces[i * ENERGY_GROUPS_NUM + g][gm_counter] != i*ENERGY_GROUPS_NUM + gm) {
+                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gm] in A_indeces (2)");
+                    }
+
+                    A[i * ENERGY_GROUPS_NUM + g][gm_counter] -= coeff * nu_gm / dnu_gm;
+                } else {
+                    A[i * ENERGY_GROUPS_NUM + g][0] -= coeff * nu_gm / dnu_g;
+
+                    auto it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + g].begin(), A_indeces[i*ENERGY_GROUPS_NUM + g].end(), i * ENERGY_GROUPS_NUM + gp);
+
+                    if(it == A_indeces[i * ENERGY_GROUPS_NUM + g].end()){
+                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gp] in A_indeces (3)");
+                    } 
+
+                    std::size_t const gp_counter = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + g].begin());
+                    
+                    if(A_indeces[i * ENERGY_GROUPS_NUM + g][gp_counter] != i*ENERGY_GROUPS_NUM + gp) {
+                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gp] in A_indeces (4)");
+                    }
+
+                    A[i * ENERGY_GROUPS_NUM + g][gp_counter] += coeff * nu_gp / dnu_gp;
+                }
+
+            }
+        }    
+    }
+
     // Find maximum number of neighbors and allocate data
     // THIS SHOULD BE IN PRESTEP BUT BiCGSTAB CREATES A NEW MATRIX EVERY TIME IT IS CALLED. 
     // MAYBE MATRIX BUILDER SHOULD HOLD A MATRIX AS AN ATTRIBUTE
