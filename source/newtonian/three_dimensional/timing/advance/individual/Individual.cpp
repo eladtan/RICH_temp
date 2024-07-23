@@ -1,4 +1,9 @@
+#if 0
+
 #include "Individual.hpp"
+
+#include "mpi/mpi_exchange_commands.hpp"
+#include "3D/tesselation/mpi_exchange.hpp"
 
 IndividualTimeStep::IndividualTimeStep(HydroTimeAdvance &hydroAdvance, const PointMotion3D &pm, dt_t currentTime):
     TimeStep(hydroAdvance, pm, currentTime)
@@ -34,12 +39,17 @@ dt_t IndividualTimeStep::apply()
     std::vector<Vector3D> points = this->tess.getMeshPoints();
     points.resize(this->tess.GetPointNo());
 
-    auto [point_velocities, face_velocities] = this->CalculateInitialPointFaceVelocities();
-    double bigTimestep = this->determineBigTimestep(face_velocities);
-    this->FixPointFaceVelocities(point_velocities, face_velocities, bigTimestep);
+    if(points.empty())
+    {
+        throw UniversalError("Before using individual advance, a tessellation from all the points must be built");
+    }
+
+    auto [initial_point_velocities, initial_face_velocities] = this->CalculateInitialPointFaceVelocities();
+    double bigTimestep = this->determineBigTimestep(initial_face_velocities);
+    this->FixPointFaceVelocities(initial_point_velocities, initial_face_velocities, bigTimestep);
     
     // first, determine the timesteps required by all cells
-    bigTimestep = this->determineBigTimestep(face_velocities); // determine timestep again, after the fix of velocities
+    bigTimestep = this->determineBigTimestep(initial_face_velocities); // determine timestep again, after the fix of velocities
     this->timestepManager = TimestepManager(bigTimestep);
     for(const ComputationalCell3D &cell : this->cells)
     {
@@ -51,30 +61,28 @@ dt_t IndividualTimeStep::apply()
     while(this->timestepManager.getElapsedTime() < wholeTimeStep)
     {
         dt_t dt = this->timestepManager.getSmallTimestep();
+        
         // step 6: update points array
         points = this->tess.getAllPoints();
-        points.resize(this->tess.GetAllPointsNo());
         size_t originalNumPoint = points.size();
 
         // step 1: determine what are the participating cells indices
         std::vector<size_t> participatingIndices = this->timestepManager.getCellsOfCurrentTime(); // TODO: returns ID, not index
         
-        // step 2: build a tesselation from merely the participants, and their neighbors
-        #ifdef RICH_MPI
-            this->tess.BuildPartiallyParallel(points, participatingIndices);
-        #else // RICH_MPI
-            this->tess.BuildPartially(points, participatingIndices);
-        #endif // RICH_MPI
-
-        #ifdef RICH_MPI
-        // consider points movement between processors - remove sent points
-        size_t pointsStayedAtMeNum = tess.GetSelfIndex().size();
-        this->timestepManager.removeCells(this->cells.begin() + pointsStayedAtMeNum, this->cells.begin() + pointsStayedAtMeNum + originalNumPoint);
-        #endif // RICH_MPI
+        // step 7: advance in time
+        this->currentTime += dt;
+        this->timestepManager.advance();
 
         // step 3: hydrodynamical step part 1 // todo: there's a build inside
-        this->hydroAdvance.beforeAdvance(this->currentTime, dt, point_velocities, face_velocities);
-        
+        this->hydroAdvance.beforeAdvance(participatingIndices, this->currentTime, dt);
+
+        #ifdef RICH_MPI
+        // todo: this part is wrong, should iterate over points, and points that do not appear in `GetSelfIndex()` should be removed, also should be before the exchange communication above (probably)
+        // consider points movement between processors - remove sent points
+        size_t pointsStayedAtMeNum = tess.GetSelfIndex().size();
+        this->timestepManager.removeCells(this->cells.begin() + pointsStayedAtMeNum, this->cells.begin() + originalNumPoint); // todo: correct?
+        #endif // RICH_MPI
+
         // step 4: move and update participating cells (or their neighbors)
         // TODO: needed? there's a thing in hydro advance
         
@@ -91,13 +99,11 @@ dt_t IndividualTimeStep::apply()
         this->timestepManager.addCells(this->cells.begin() + pointsStayedAtMeNum, this->cells.begin() + pointsStayedAtMeNum + tess.GetAllPointsNo());
         #endif // RICH_MPI
 
-        // step 7: advance in time
-        this->currentTime += dt;
-        this->timestepManager.advance();
-
         // step 8: hydrodynamical step part 2
-        this->hydroAdvance.afterAdvance(this->currentTime, dt, point_velocities, face_velocities);
+        this->hydroAdvance.afterAdvance(participatingIndices, this->currentTime, dt);
     }
     // this->hydroAdvance.afterBigAdvance(this->currentTime, bigTimestep, point_velocities, face_velocities);
     return bigTimestep;
 }
+
+#endif

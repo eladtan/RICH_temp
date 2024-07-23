@@ -20,20 +20,22 @@ class HydroTimeAdvance
 {
 public:
     HydroTimeAdvance(Tessellation3D& tess, std::vector<ComputationalCell3D> &cells, vector<Conserved3D> &extensive, const EquationOfState& eos,
-                        const FluxCalculator3D& fc, const CellUpdater3D& cu,
+                        const PointMotion3D& pm, const FluxCalculator3D& fc, const CellUpdater3D& cu,
                         const ExtensiveUpdater3D& eu, const SourceTerm3D& source):
-                        tess(tess), cells(cells), extensive(extensive), eos(eos), fc(fc), cu(cu), eu(eu), source(source)
+                        tess(tess), cells(cells), extensive(extensive), eos(eos), pm(pm), fc(fc), cu(cu), eu(eu), source(source)
     {}
 
     virtual ~HydroTimeAdvance() = default;
 
-    virtual void beforeAdvance(dt_t currentTime, dt_t dt, std::vector<Vector3D> &point_vel, std::vector<Vector3D> &face_vel) = 0;
+    virtual void beforeAdvance(const std::vector<size_t> &participatingIndices, dt_t currentTime, dt_t dt) = 0;
 
-    virtual void afterAdvance(dt_t currentTime, dt_t dt, std::vector<Vector3D> &point_vel, std::vector<Vector3D> &face_vel) = 0;
+    virtual void afterAdvance(const std::vector<size_t> &participatingIndices, dt_t currentTime, dt_t dt) = 0;
 
     inline Tessellation3D &getTessellation(){return this->tess;}
 
     inline std::vector<ComputationalCell3D> &getCells(){return this->cells;}
+
+    inline std::vector<Conserved3D> &getExtensive(){return this->extensive;}
 
     inline const EquationOfState &getEOS() const{return this->eos;}
 
@@ -43,11 +45,14 @@ public:
 
     inline const std::vector<ComputationalCell3D> &getCells() const{return this->cells;}
 
+    inline const std::vector<Conserved3D> &getExtensive() const{return this->extensive;}
+
 protected:
     Tessellation3D& tess;
     std::vector<ComputationalCell3D>& cells;
     vector<Conserved3D> &extensive;
     const EquationOfState& eos;
+    const PointMotion3D& pm;
     const FluxCalculator3D& fc;
     const CellUpdater3D& cu;
     const ExtensiveUpdater3D& eu;

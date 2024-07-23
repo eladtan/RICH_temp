@@ -17,6 +17,7 @@ public:
     
 private:
     const TimeStepFunction3D &tsf;
+    mutable std::vector<size_t> allPointsHelperVector;
 };
 
 #endif // GLOBAL_TIMESTEP_HPP

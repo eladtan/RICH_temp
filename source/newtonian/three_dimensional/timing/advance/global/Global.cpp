@@ -12,9 +12,15 @@ dt_t GlobalTimeStep::apply()
     auto [point_velocities, face_velocities] = this->CalculateInitialPointFaceVelocities();
     double dt = this->tsf(this->tess, this->cells, this->hydroAdvance.getEOS(), face_velocities, this->currentTime);
     this->FixPointFaceVelocities(point_velocities, face_velocities, dt);
-    dt = this->tsf(this->tess, this->cells, this->hydroAdvance.getEOS(), face_velocities, this->currentTime);    
-    this->hydroAdvance.beforeAdvance(this->currentTime, dt, point_velocities, face_velocities);
+    dt = this->tsf(this->tess, this->cells, this->hydroAdvance.getEOS(), face_velocities, this->currentTime);
+
+    this->allPointsHelperVector.resize(this->tess.GetPointNo());
+    std::iota(this->allPointsHelperVector.begin(), this->allPointsHelperVector.end(), 0);
+    
+    this->hydroAdvance.beforeAdvance(this->allPointsHelperVector, this->currentTime, dt);
     this->currentTime += dt;
-    this->hydroAdvance.afterAdvance(this->currentTime, dt, point_velocities, face_velocities);
+    this->allPointsHelperVector.resize(this->tess.GetPointNo());
+    std::iota(this->allPointsHelperVector.begin(), this->allPointsHelperVector.end(), 0);
+    this->hydroAdvance.afterAdvance(this->allPointsHelperVector, this->currentTime, dt);
     return dt;
 }

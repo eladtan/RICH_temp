@@ -4,17 +4,24 @@
 
 void MovePoints(Tessellation3D& tess, std::vector<Vector3D> const& point_vel, double const dt)
 {
-	size_t const N = tess.GetPointNo();
-	std::vector<Vector3D>& points = tess.accessMeshPoints();
+	std::vector<Vector3D>& points = tess.getAllPoints();
+	size_t N = points.size();
+	if(N > point_vel.size())
+	{
+		UniversalError eo("MovePoint: Too many points (N) in all points compared to point_vel size");
+		eo.addEntry("point_vel.size()", point_vel.size());
+		eo.addEntry("N", N);
+		throw eo;
+	}
 	for(size_t i = 0; i < N; ++i)
 		points[i] += point_vel[i] * dt;
 }
 
-void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints)
+void UpdateTessellation(Tessellation3D& tess, const std::vector<size_t> &participatingIndices, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints)
 {
 	vector<Vector3D> points;
 	if (orgpoints == nullptr)
-		points = tess.getMeshPoints();
+		points = tess.getAllPoints();
 	else
 		points = *orgpoints;
 	points.resize(tess.GetPointNo());
@@ -26,9 +33,9 @@ void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel,
 	}
 
 	#ifdef RICH_MPI
-	tess.BuildParallel(points);
+		tess.BuildPartiallyParallel(points, participatingIndices);
 	#else // RICH_MPI
-	tess.Build(points);
+		tess.BuildPartially(points, participatingIndices);
 	#endif // RICH_MPI
 }
 

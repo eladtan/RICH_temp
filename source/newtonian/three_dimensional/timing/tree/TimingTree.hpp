@@ -10,54 +10,9 @@
 #include "3D/tesselation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "ds/OctTree/OctTree.hpp"
+#include "ds/utils/raw_type.h"
 
 #define MAX_ID_OF_CELL 1e15
-
-#ifdef RICH_MPI
-template<typename T>
-class TimeRequestData : public Serializable
-{
-public:
-    explicit inline TimeRequestData(const _BoundingBox<T> &boundingBox_ = _BoundingBox<T>(), dt_t min_time_in_subtree_ = 0, double c_max_plus_v_max_ = 0):
-        boundingBox(boundingBox_), min_time_in_subtree(min_time_in_subtree_), c_max_plus_v_max(c_max_plus_v_max_)
-    {}
-
-    size_t getChunkSize() const override;
-    std::vector<double> serialize() const override;
-    void unserialize(const std::vector<double> &data) override;
-
-    _BoundingBox<T> boundingBox;
-    dt_t min_time_in_subtree;
-    double c_max_plus_v_max;
-};
-
-template<typename T>
-size_t TimeRequestData<T>::getChunkSize() const
-{
-    return 8; // 6 for BB and 2 for two double variables
-}
-
-template<typename T>
-std::vector<double> TimeRequestData<T>::serialize() const
-{
-    std::vector<double> serialized;
-    std::vector<double> serialized_ = this->boundingBox.serialize();
-    serialized.insert(serialized.end(), serialized_.cbegin(), serialized_.cend());
-    serialized.push_back(this->min_time_in_subtree);
-    serialized.push_back(this->c_max_plus_v_max);
-    return serialized;
-}
-
-template<typename T>
-void TimeRequestData<T>::unserialize(const std::vector<double> &data)
-{
-    size_t BBChunkSize = data.size() - 2;
-    std::vector<double> serData(data.cbegin(), data.cbegin() + BBChunkSize);
-    this->boundingBox.unserialize(serData);
-    this->min_time_in_subtree = data[BBChunkSize];
-    this->c_max_plus_v_max = data[BBChunkSize + 1];
-}
-#endif // RICH_MPI
 
 template<typename T>
 class TimingTree;
@@ -80,7 +35,7 @@ dt_t CalculateTau(const typename TimingTree<T>::NodeData &point1, const typename
 }
 
 template<typename T, typename BB_T = T>
-inline bool ShouldOpenNode(const typename TimingTree<T>::NodeData &currentCell, const dt_t &t_current, double other_c_max_plus_v_max, const _BoundingBox<BB_T> &otherCellBoundingBox)
+inline bool ShouldOpenNode(const typename TimingTree<T>::NodeData &currentCell, const BoundingBox<BB_T> &currentCellBoundingBox, const dt_t &t_current, double other_c_max_plus_v_max, const BoundingBox<BB_T> &otherCellBoundingBox)
 {
     // if(currentCell.c_plus_v < EPSILON)
     // {
@@ -91,7 +46,8 @@ inline bool ShouldOpenNode(const typename TimingTree<T>::NodeData &currentCell, 
     //     eo.addEntry("currentCell", currentCell);
     //     throw eo;
     // }
-    typename T::coord_type distanceToCellSquared = otherCellBoundingBox.distanceSquared(currentCell.value);
+    T closestPoint = otherCellBoundingBox.closestPointToOther(currentCellBoundingBox);
+    typename T::coord_type distanceToCellSquared = otherCellBoundingBox.distanceSquared(closestPoint);
     if(t_current == MAX_TIME)
     {
         return true;
@@ -233,6 +189,9 @@ public:
 
     inline bool find(const T &point){return this->octTree->find(point);};
 
+    template<typename BB_T = T>
+    dt_t time(const NodeData &boxValue, const BoundingBox<BB_T> &boxBB) const;
+
     dt_t time(size_t cellID);
 
     void addExternalValues(const std::vector<NodeData> &data);
@@ -329,7 +288,7 @@ void TimingTree<T>::addExternalValues(const std::vector<NodeData> &data)
             throw eo;
         }
     }
-    this->calculateData();
+    // this->calculateData();
 }
 
 template<typename T>
@@ -380,7 +339,8 @@ dt_t TimingTree<T>::time(size_t cellID)
     }
 
     const T &point = this->cellsToPoints.at(cellID);
-    NodeData &pointValue = this->octTree->findValue(point);
+    Node *pointNode = this->octTree->findNode(point);
+    NodeData &pointValue = pointNode->value;
     #ifdef DEBUG_MODE
         if(pointValue.value != point)
         {
@@ -390,9 +350,17 @@ dt_t TimingTree<T>::time(size_t cellID)
             throw eo;
         }
     #endif // DEBUG_MODE
+    pointValue.min_time_in_subtree = this->time(pointValue, pointNode->boundingBox);
+    return pointValue.min_time_in_subtree;
+}
 
+template<typename T>
+template<typename BB_T>
+dt_t TimingTree<T>::time(const NodeData &boxValue, const BoundingBox<BB_T> &boxBB) const
+{
     stack.push_back({this->octTree->getRoot(), true});
-    dt_t time = pointValue.cell_width / (pointValue.cs + pointValue.v_tag_abs);
+    dt_t time = boxValue.cell_width / (boxValue.cs + boxValue.v_tag_abs);
+    const T &point = boxValue.value;
 
     while(!stack.empty())
     {
@@ -406,7 +374,7 @@ dt_t TimingTree<T>::time(size_t cellID)
         }
 
         // always push the child that contains the node
-        if(!node->isLeaf and (containsPoint or ShouldOpenNode<T>(pointValue, time, node->value.c_max_plus_v_max, node->boundingBox)))
+        if(!node->isLeaf and (containsPoint or ShouldOpenNode<T>(boxValue, boxBB, time, node->value.c_max_plus_v_max, node->boundingBox)))
         {
             int childContains = -1;
             // open the box
@@ -426,16 +394,15 @@ dt_t TimingTree<T>::time(size_t cellID)
         }
         else
         {
-            if(pointValue.value == node->value.value)
+            if(boxValue.value == node->value.value)
             {
                 continue;
             }
             // do not open the box
-            dt_t tau = CalculateTau<T>(pointValue, node->value);
+            dt_t tau = CalculateTau<T>(boxValue, node->value);
             time = std::min<dt_t>(time, tau);
         }
     }
-    pointValue.min_time_in_subtree = time;
     return time;
 }
 

@@ -2,10 +2,11 @@
 #define DISTRIBUTED_TIMESTEP_CALCULATOR_HPP
 
 #ifdef RICH_MPI
+
 #include <mpi.h>
-#include "TimingTree.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
+#include "TimeRequestData.hpp"
 #include "3D/hilbert/hilbertTypes.h" // for _3DPoint
 
 #define TIME_POINTS_REQUEST_TAG 606
@@ -40,7 +41,6 @@ private:
     const Tessellation3D &tess; // if the timing tree should be deleted at the end
     const std::vector<Vector3D> &faceVelocities;
     std::vector<ComputationalCell3D> &cells;
-    const DistributedOctTree<NodeData, 1> *distributedTree;
 
     std::vector<std::vector<NodeData>> exchangeImportedValues(void) const;
 };

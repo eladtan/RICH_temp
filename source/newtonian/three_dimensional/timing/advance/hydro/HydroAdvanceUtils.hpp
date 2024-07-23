@@ -7,7 +7,14 @@
 
 void MovePoints(Tessellation3D& tess, std::vector<Vector3D> const& point_vel, double const dt);
 
-void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr);
+void UpdateTessellation(Tessellation3D& tess, const std::vector<size_t> &participatingIndices, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr);
+
+inline void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr)
+{
+	std::vector<size_t> indices(tess.GetPointNo());
+	std::iota(indices.begin(), indices.end(), 0);
+	UpdateTessellation(tess, indices, point_vel, dt, orgpoints);
+}
 
 void ExtensiveAvg(vector<Conserved3D>& res, vector<Conserved3D> const& other);
 

@@ -1,3 +1,5 @@
+#if 0
+
 #include "DistributedTimestepCalculator.hpp"
 
 #ifdef RICH_MPI
@@ -15,7 +17,8 @@ namespace
         bool shouldOpen = false;
         for(const TimeRequestData<T> &request : requestData)
         {
-            if(node->boundingBox.intersects(request.boundingBox) or ShouldOpenNode<T>(node->value, request.min_time_in_subtree, request.c_max_plus_v_max, request.boundingBox))
+            // std::cout << "request is boundingBox: " << request.boundingBox << ", c_max_plus_v_max: " << request.c_max_plus_v_max << ", min_time_in_subtree: " << request.min_time_in_subtree << std::endl;
+            if(node->boundingBox.intersects(request.boundingBox) or ShouldOpenNode<T>(node->value, node->boundingBox, request.min_time_in_subtree, request.c_max_plus_v_max, request.boundingBox))
             {
                 shouldOpen = true;
                 break;
@@ -30,34 +33,36 @@ namespace
         }
         // call recursively to children. If one (or more) has a sent node in its subtree, send all the children instead of me,
         // otherwise, send merely me
-        std::vector<bool> childrenSent(CHILDREN, false);
-        bool oneOfChildrenIsSent = false;
+        
+        // std::vector<bool> childrenSent(CHILDREN, false);
+        // bool oneOfChildrenIsSent = false;
 
         for(int i = 0; i < CHILDREN; i++)
         {
-            childrenSent[i] = calculateSendNodesHelper(node->children[i], requestData, sendNodes);
-            oneOfChildrenIsSent = (oneOfChildrenIsSent or childrenSent[i]);
+            /* childrenSent[i] = */ calculateSendNodesHelper(node->children[i], requestData, sendNodes);
+            // oneOfChildrenIsSent = (oneOfChildrenIsSent or childrenSent[i]);
         }
 
-        if(!oneOfChildrenIsSent)
-        {
-            return false;
-        }
-        else
-        {
-            // send my unsent children
-            for(int i = 0; i < CHILDREN; i++)
-            {
-                if(node->children[i] != nullptr)
-                {
-                    if(!childrenSent[i])
-                    {
-                        sendNodes.push_back(node->children[i]->value);
-                    }
-                }
-            }
-            return true;
-        }
+        // if(!oneOfChildrenIsSent)
+        // {
+        //     return false;
+        // }
+        // else
+        // {
+        //     // send my unsent children
+        //     for(int i = 0; i < CHILDREN; i++)
+        //     {
+        //         if(node->children[i] != nullptr)
+        //         {
+        //             if(!childrenSent[i])
+        //             {
+        //                 sendNodes.push_back(node->children[i]->value);
+        //             }
+        //         }
+        //     }
+        //     return true;
+        // }
+        return false;
     }
 
     template<typename T>
@@ -69,12 +74,17 @@ namespace
     }
 
     template<typename T>
-    inline std::vector<std::vector<typename TimingTree<T>::NodeData>> getNecessaryNodesByRanks(const TimingTree<T> *tree, const std::vector<std::vector<TimeRequestData<T>>> &requestData)
+    inline std::vector<std::vector<dt_t>> getNecessaryNodesByRanks(const TimingTree<T> *tree, const std::vector<std::vector<TimeRequestData<T>>> &requestData)
     {
-        std::vector<std::vector<typename TimingTree<T>::NodeData>> resultByRanks;
-        for(const std::vector<TimeRequestData<T>> &requestDataOfRank : requestData)
+        int size = static_cast<int>(requestData.size());
+        std::vector<std::vector<dt_t>> resultByRanks(size);
+        for(int _rank = 0; _rank < size; _rank++)
         {
-            resultByRanks.emplace_back(getNecessaryNodes(tree, requestDataOfRank));
+            std::vector<dt_t> &result = resultByRanks[_rank];
+            for(const TimeRequestData<T> &request : requestData[_rank])
+            {
+                result.push_back(tree->time(request.value, request.boundingBox));
+            }
         }
         return resultByRanks;
     }
@@ -88,7 +98,6 @@ DistributedTimestepCalculator::DistributedTimestepCalculator(const Vector3D &ll,
     TimingTree<Vector3D> *timingTree = new TimingTree<Vector3D>(ll, ur);
     timingTree->build(tess, cells, faceVelocities);
     this->timingTree = timingTree;
-    this->distributedTree = new DistributedOctTree<NodeData, 1>(this->timingTree->getOctTree(), false /* we use nodes directions (need `detailedNodeInfo` for that) */, this->comm);
 }
 
 DistributedTimestepCalculator::DistributedTimestepCalculator(const Vector3D &ll, const Vector3D &ur, const Tessellation3D &tess, std::vector<ComputationalCell3D> &cells, const std::vector<Vector3D> &faceVelocities, TimingTree<Vector3D> *timingTree, const MPI_Comm &comm):
@@ -97,7 +106,6 @@ DistributedTimestepCalculator::DistributedTimestepCalculator(const Vector3D &ll,
     MPI_Comm_size(this->comm, &this->size);
     MPI_Comm_rank(this->comm, &this->rank);
     this->timingTree = timingTree;
-    this->distributedTree = new DistributedOctTree<NodeData, 1>(this->timingTree->getOctTree(), true /* we use nodes directions (need `detailedNodeInfo` for that) */, this->comm);
 }
    
 DistributedTimestepCalculator::~DistributedTimestepCalculator()
@@ -106,7 +114,6 @@ DistributedTimestepCalculator::~DistributedTimestepCalculator()
     {
         delete this->timingTree;
     }
-    delete this->distributedTree;
 }
 
 /**
@@ -115,18 +122,41 @@ DistributedTimestepCalculator::~DistributedTimestepCalculator()
 std::vector<std::vector<typename DistributedTimestepCalculator::NodeData>> DistributedTimestepCalculator::exchangeImportedValues(void) const
 {
     std::vector<TimeRequestData<Vector3D>> myRequestsToAll;
-    std::vector<std::vector<direction_t>> myDirections = this->distributedTree->getMyDirections();
-    for(const std::vector<direction_t> &direction : myDirections)
     {
-        const typename TimingTree<Vector3D>::Node *node = this->timingTree->getOctTree()->getNodeByDirections(direction.data());
-        TimeRequestData<Vector3D> request(node->boundingBox, node->value.min_time_in_subtree, node->value.cell_width);
-        myRequestsToAll.push_back(request);
+        DistributedOctTree<NodeData, 1> distributedTree(this->timingTree->getOctTree(), true /* we use nodes directions (need `detailedNodeInfo` for that) */, this->comm);
+        // std::vector<std::vector<direction_t>> myDirections = distributedTree.getMyDirections();
+        // std::cout << "rank " << this->rank << " has " << myDirections.size() << " directions" << std::endl;
+        // for(const std::vector<direction_t> &direction : myDirections)
+        // {
+        //     const typename DistributedOctTree<NodeData, 1>::DistributedOctTreeNode *globalNode = distributedTree.getOctTree()->getNodeByDirections(direction.data());
+        //     const typename TimingTree<Vector3D>::Node *node = this->timingTree->getOctTree()->getNodeByDirections(direction.data());
+        //     if(not globalNode->boundingBox.contained(node->boundingBox))
+        //     {
+        //         std::cout << "Rank is " << this->rank << " , its directions are " << direction << ", in global tree that's node of BB " << globalNode->boundingBox << ", and in local " << node->boundingBox << std::endl;
+        //     }
+        //     else
+        //     {
+        //         if(globalNode->parent->boundingBox.contained(node->boundingBox))
+        //         {
+        //             std::cout << "Rank is " << this->rank << " , its directions are " << direction << ", in global tree that's node of BB " << globalNode->boundingBox << ", and in local PARENT " << node->parent->boundingBox << std::endl;
+        //         }
+        //     }
+        //     TimeRequestData<Vector3D> request(node->boundingBox, node->value.min_time_in_subtree, node->value.cell_width);
+        //     myRequestsToAll.push_back(request);
+        // }
+        std::vector<const typename DistributedOctTree<NodeData, 1>::DistributedOctTreeNode*> nodes = distributedTree.getMyNodes();
+        std::cout << "rank " << this->rank << " has " << nodes.size() << " nodes" << std::endl;
+        for(const typename DistributedOctTree<NodeData, 1>::DistributedOctTreeNode *node : nodes)
+        {
+            TimeRequestData<Vector3D> request(node->value, node->value.value.min_time_in_subtree, node->value.value.cell_width);
+            myRequestsToAll.push_back(request);
+        }
     }
     std::vector<std::vector<TimeRequestData<Vector3D>>> requestedData = MPI_All_cast_by_ranks(myRequestsToAll, this->comm);
     // now analyse `requestedData`. For each bounding box and time, determine what bounding boxes should be sent
-    std::vector<std::vector<NodeData>> responseData = getNecessaryNodesByRanks(this->timingTree, requestedData); 
+    std::vector<std::vector<dt_t>> responseData = getNecessaryNodesByRanks(this->timingTree, requestedData); 
     // exchange result
-    std::vector<std::vector<NodeData>> responseAllData = MPI_Exchange_all_to_all(responseData, this->comm);
+    std::vector<std::vector<dt_t>> responseAllData = MPI_Exchange_all_to_all(responseData, this->comm);
     return responseAllData;
 }
 
@@ -146,16 +176,18 @@ std::vector<dt_t> DistributedTimestepCalculator::calculateTimesForIndices(const 
         }
     }
     
+    this->timingTree->calculateSelfTimes(cellsIndices);
+    
     // add the external values, to make the tree 'global'
 
-    this->timingTree->calculateSelfTimes(cellsIndices);
-
     std::vector<std::vector<NodeData>> data = this->exchangeImportedValues();
-    for(const std::vector<NodeData> &responseOfRank : data)
+    for(int _rank = 0; _rank < this->size; _rank++)
     {
+        const std::vector<NodeData> &responseOfRank = data[_rank];
         this->timingTree->addExternalValues(responseOfRank);
     }
-
+    this->timingTree->calculateData();
+    
     // calculate the results
     std::vector<dt_t> times;
     for(const size_t &cellIndex : cellsIndices)
@@ -168,3 +200,5 @@ std::vector<dt_t> DistributedTimestepCalculator::calculateTimesForIndices(const 
 }
 
 #endif // RICH_MPI
+
+#endif // 0
