@@ -119,9 +119,9 @@ protected:
             participating[pointIdx] = true;
         }
 
-        // re-build the function so that it maintains the points that are not participating
-        auto new_func = [&func, this, &participating](const _3DPointRadius &point){return ((not participating[point.indexInAllPoints])? this->rank : func(point));};
-        ExchangeAnswer<_3DPointRadius> answer = dataExchange(data, new_func, this->comm);
+        // // re-build the function so that it maintains the points that are not participating
+        // auto new_func = [&func, this, &participating](const _3DPointRadius &point){return ((not participating[point.indexInAllPoints])? this->rank : func(point));};
+        ExchangeAnswer<_3DPointRadius> answer = dataExchange(data, func, this->comm);
 
         // arrange the return value data structure
         PointsExchangeResult toReturn;

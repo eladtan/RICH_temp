@@ -9,7 +9,6 @@
 #define _USE_MATH_DEFINES
 #endif // _MSC_VER
 
-
 #include <algorithm>
 #include <cfloat>
 #include <stack>
@@ -268,6 +267,8 @@ public:
 
   bool PointInMyDomain(const Vector3D &point) const override;
 
+  int GetOwner(const Vector3D &point) const override;
+
 #endif // RICH_MPI
 
   /*! \brief Dump debug information
@@ -309,8 +310,6 @@ public:
    */
   double GetVolume(std::size_t index) const override;
 
-  int GetOwner(const Vector3D &point) const;
-
   /*! \brief Get cell faces
     \param index Point index
     \return List of bounding faces
@@ -324,6 +323,8 @@ public:
   const Tessellation3D::AllPointsMap &GetIndicesInAllPoints(void) const override;
 
   const std::vector<Vector3D> &getAllPoints(void) const override;
+
+  std::vector<Vector3D> &getAllPoints(void) override;
 
   size_t GetAllPointsNo(void) const override;
 

@@ -345,12 +345,21 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         closestPoint = node->boundingBox.closestPoint(point);
         furthestPoint = node->boundingBox.furthestPoint(point);
         typename T::coord_type closestDist = 0, furthestDist = 0;
-        for(int i = 0; i < DIM; i++)
-        {
-            closestDist += (closestPoint[i] - point[i]) * (closestPoint[i] - point[i]);
-            furthestDist += (furthestPoint[i] - point[i]) * (furthestPoint[i] - point[i]);
-        }
-
+        #ifdef USE_VCL_VECTORIZATION
+            Vec8d diff(closestPoint[0] - point[0], closestPoint[1] - point[1], closestPoint[2] - point[2],
+                        furthestPoint[0] - point[0], furthestPoint[1] - point[1], furthestPoint[2] - point[2],
+                        0, 0);
+            Vec8d dist = diff * diff;
+            closestDist = dist[0] + dist[1] + dist[2];
+            furthestDist = dist[3] + dist[4] + dist[5];
+        #else // USE_VCL_VECTORIZATION
+            closestDist += (closestPoint[0] - point[0]) * (closestPoint[0] - point[0]);
+            furthestDist += (furthestPoint[0] - point[0]) * (furthestPoint[0] - point[0]);
+            closestDist += (closestPoint[1] - point[1]) * (closestPoint[1] - point[1]);
+            furthestDist += (furthestPoint[1] - point[1]) * (furthestPoint[1] - point[1]);
+            closestDist += (closestPoint[2] - point[2]) * (closestPoint[2] - point[2]);
+            furthestDist += (furthestPoint[2] - point[2]) * (furthestPoint[2] - point[2]);
+        #endif // USE_VCL_VECTORIZATION
         size_t numOwners = node->value.owners.size();
 
         for(size_t i = 0; i < numOwners; i++)
@@ -565,11 +574,12 @@ std::vector<BoundingBox<T>> DistributedOctTree<T, max_ranks_per_leaf>::getBigBou
             const T &BB_ur = node->boundingBox.getUR();
             for(int _rank : node->value.owners)
             {
-                for(int i = 0; i < DIM; i++)
-                {
-                    boxes[_rank].first[i] = std::min(boxes[_rank].first[i], BB_ll[i]);
-                    boxes[_rank].second[i] = std::max(boxes[_rank].second[i], BB_ur[i]);
-                }
+                boxes[_rank].first[0] = std::min(boxes[_rank].first[0], BB_ll[0]);
+                boxes[_rank].second[0] = std::max(boxes[_rank].second[0], BB_ur[0]);
+                boxes[_rank].first[1] = std::min(boxes[_rank].first[1], BB_ll[1]);
+                boxes[_rank].second[1] = std::max(boxes[_rank].second[1], BB_ur[1]);
+                boxes[_rank].first[2] = std::min(boxes[_rank].first[2], BB_ll[2]);
+                boxes[_rank].second[2] = std::max(boxes[_rank].second[2], BB_ur[2]);
             }
         }
     }

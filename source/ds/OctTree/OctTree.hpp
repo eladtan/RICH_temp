@@ -721,13 +721,8 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const S
         {
             continue;
         }
-        T closestPointInBox = node->boundingBox.closestPoint(point);
         // calculate distance squared
-        typename T::coord_type dist = 0;
-        for(int i = 0; i < DIM; i++)
-        {
-            dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
-        }
+        typename T::coord_type dist = node->boundingBox.distanceSquared(point);
         if((dist >= closestDistance) or (not SphereBoxIntersection(node->boundingBox, sphere)))
         {
             continue;

@@ -6,12 +6,15 @@
 #ifndef TESSELLATION3D_HPP
 #define TESSELLATION3D_HPP 1
 
+#include <chrono>
 #include <algorithm>
 #include <numeric>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "mpi/mpi_exchange_commands.hpp"
+#include "mpi/mpi_exchanger.hpp"
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;
@@ -47,6 +50,8 @@ public:
   */
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
 
+  virtual int GetOwner(const Vector3D &point) const = 0;
+  
   virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
 
   virtual void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
@@ -152,6 +157,11 @@ public:
     \return List of all the points
   */
   virtual const std::vector<Vector3D> &getAllPoints(void) const = 0;
+
+  /*! \brief Returns all the points, even those which are not participating in the build
+    \return List of all the points
+  */
+  virtual std::vector<Vector3D> &getAllPoints(void) = 0;
 
   /*!
     \brief Returns a reference to the points composing the faces vector
@@ -400,6 +410,13 @@ public:
 \return The box faces
 */
   virtual std::vector<Face> GetBoxFaces(void) const = 0;
+
+  /**
+   * Suppose `partialBuildData` contains correct local data for partial build, and that `allBuildData` have correct values for all the points (non active local).
+   * This collective method updates `partialBuildData` to have the data of both active/non active local and global points.    
+  */
+  template<typename T>
+  void SyncPartialBuildData(std::vector<T> &partialBuildData, std::vector<T> &allBuildData) const;
 };
 
 /*! \brief Create a subset of a vector of points
@@ -408,4 +425,72 @@ public:
   \return Points selected according to list of indices
  */
 point_vec_v VectorValues(std::vector<Vector3D> const&v, point_vec const &index);
+
+template<typename T>
+inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildData, std::vector<T> &allBuildData) const
+{
+  size_t Norg = this->GetPointNo();
+  if(partialBuildData.size() < Norg)
+  {
+    UniversalError eo("Tessellation3D::SyncPartialBuildData: Partial build data has lower size than the number of points");
+    eo.addEntry("Partial build data size", partialBuildData.size());
+    eo.addEntry("Number of points", Norg);
+    throw eo;
+  }
+  const Tessellation3D::AllPointsMap &indicesInAllMyPoints = this->GetIndicesInAllPoints();
+  
+  allBuildData.resize(this->GetAllPointsNo());
+
+  // update CMs of active local points in all points CM vector
+  for(size_t i = 0; i < Norg; i++)
+  {
+      size_t pointIdx = indicesInAllMyPoints.at(i);
+      allBuildData[pointIdx] = partialBuildData[i];
+  }
+
+  // update the CM of local non active points
+  size_t sizeOfMeshPoints = this->getMeshPoints().size();
+  partialBuildData.resize(sizeOfMeshPoints);
+  for(size_t i = Norg; i < sizeOfMeshPoints; i++)
+  {
+      // check if the point is mine. i.e, appears in `indicesInAllMyPoints`. Just copy the CM from there.
+      bool pointIsMine = (indicesInAllMyPoints.find(i) != indicesInAllMyPoints.cend());
+      if(pointIsMine)
+      {
+          size_t pointIdx = indicesInAllMyPoints.at(i);
+          partialBuildData[i] = allBuildData[pointIdx];
+      }
+  }
+
+  #ifdef RICH_MPI
+      std::chrono::_V2::system_clock::time_point start, end;
+      // update the CM of active and not active, but non local points
+
+      start = std::chrono::system_clock::now();
+      // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
+      // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
+      std::vector<std::vector<T>> incoming = MPI_exchange_data(this->GetDuplicatedProcs(), this->GetDuplicatedPoints(), allBuildData);
+      end = std::chrono::system_clock::now();
+      int rank;
+      MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+      if(rank == 0)
+      {
+        std::cout << "Time to exchange data: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << std::endl;
+      }
+      // std::vector<std::vector<T>> incoming = MPI_Exchange_data_seperate(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
+      size_t incomingSize = incoming.size();
+      const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();
+      assert(incomingSize == Nghost.size());
+      for (size_t i = 0; i < incomingSize; ++i)
+      {
+          size_t _size = incoming[i].size();
+          assert(_size == Nghost[i].size());
+          for (size_t j = 0; j < _size; ++j)
+          {
+              partialBuildData[Nghost.at(i).at(j)] = incoming[i][j];
+          }
+      }
+  #endif // RICH_MPI
+}
+
 #endif // TESSELLATION3D_HPP

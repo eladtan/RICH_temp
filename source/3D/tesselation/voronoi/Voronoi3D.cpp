@@ -294,7 +294,7 @@ namespace
                 Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
                 Vec4qb cmp = (_points < _Norg);
             #endif // USE_VCL_VECTORIZATION
-
+            
             for(int j = 0; j < 4; ++j)
             {
                 #ifdef USE_VCL_VECTORIZATION
@@ -767,7 +767,7 @@ bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
     return (this->GetOwner(point) == rank);
 }
 
-int Voronoi3D::GetOwner(const Vector3D &point) const
+inline int Voronoi3D::GetOwner(const Vector3D &point) const
 {
     return this->pointsManager->getEnvironmentAgent()->getOwner(point);
 }
@@ -1181,6 +1181,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     MPI_Allreduce(MPI_IN_PLACE, &canDoRebalance, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
     bool allowRebalance = (canDoRebalance == 1);
 
+    // TODO: here, we need to update the all points, not only `indicesToBuild`
     PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, indicesToBuild, this->radiuses, this->all_CM, allowRebalance); // does rebalancing (if necessary) and exchanging
 
     this->allMyPoints = std::move(exchangeResult.newPoints);
@@ -1190,6 +1191,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
     this->self_index_ = std::move(exchangeResult.indicesToSelf);
 
+    // TODO: indicesToBuild is not valid here since we changed points
     std::vector<bool> active(allPoints.size(), false);
     for(const size_t &idx : indicesToBuild)
     {
@@ -1361,7 +1363,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     this->UpdateCMs();
 
     // save the list of the real ghost points
-    this->FilterRealGhostPoints();
+    // this->FilterRealGhostPoints();
 }
 #endif // RICH_MPI
 
@@ -1388,8 +1390,9 @@ std::vector<size_t> CheckToMirror(const Sphere<Vector3D> &sphere, const std::vec
 void Voronoi3D::UpdateCMs(void)
 {
     // first, calculate CM for active local points
-    this->CalcAllCM(); // Now this->CM_ calculates correct CM for all active points
-    for (std::size_t i = 0; i < FaceNeighbors_.size(); ++i)
+    this->CalcAllCM(); // Now this->CM_ calculates correct CM for all active points, and maybe for more
+    size_t FaceNeighborsSize = FaceNeighbors_.size();
+    for(std::size_t i = 0; i < FaceNeighborsSize; ++i)
     {
         if(this->BoundaryFace(i))
         {
@@ -1397,40 +1400,7 @@ void Voronoi3D::UpdateCMs(void)
         }
     }
 
-    // update CMs of active and local points in all points CM vector
-    for(size_t i = 0; i < this->Norg_; i++)
-    {
-        size_t pointIdx = this->indicesInAllMyPoints[i];
-        this->all_CM[pointIdx] = this->CM_[i];
-    }
-
-    // update the CM of local non active points
-    size_t sizeOfPointsInDelaunay = this->del_.points_.size();
-    this->CM_.resize(sizeOfPointsInDelaunay);
-    for(size_t i = this->Norg_ + 3; i < sizeOfPointsInDelaunay; i++)
-    {
-        // check if the point is mine. i.e, appears in `indicesInAllMyPoints`. Just copy the CM from there.
-        bool pointIsMine = (this->indicesInAllMyPoints.find(i) != this->indicesInAllMyPoints.cend());
-        if(pointIsMine)
-        {
-            this->CM_[i] = this->all_CM[this->indicesInAllMyPoints[i]];
-        }
-    }
-
-    #ifdef RICH_MPI
-        // update the CM of active and not active, but non local points
-        vector<vector<Vector3D>> incoming = MPI_exchange_data(duplicatedprocs_, duplicated_points_, this->all_CM);
-        // Add the recieved CM
-        size_t incomingSize = incoming.size();
-        for (size_t i = 0; i < incomingSize; ++i)
-        {
-            size_t _size = incoming[i].size();
-            for (size_t j = 0; j < _size; ++j)
-            {
-                this->CM_[Nghost_.at(i).at(j)] = incoming[i][j];
-            }
-        }
-    #endif // RICH_MPI
+    this->SyncPartialBuildData(this->CM_, this->all_CM);
 }
 
 void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
@@ -1780,6 +1750,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     
     boost::container::flat_set<size_t> smallPoints; // indices of 'small' points
     boost::container::flat_set<size_t> largePoints; // indices of 'large' points
+    boost::container::flat_map<size_t, size_t> firstLargeIteration;
 
     std::vector<double> currentRadiuses(this->Norg_, RADIUS_UNINITIALIZED);
     for(const std::pair<size_t, size_t> &indices : this->indicesInAllMyPoints)
@@ -1787,6 +1758,9 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         size_t pointIndexInBuild = indices.first;
         size_t pointIndexInAll = indices.second;
         smallPoints.insert(pointIndexInBuild);
+        // largePoints.insert(pointIndexInBuild);
+        // firstLargeIteration.insert({pointIndexInBuild, 0});
+
         if(pointIndexInBuild >= this->Norg_)
         {
             std::cout << "Error: given point index " << pointIndexInBuild << ", while built only with " << this->Norg_ << " points" << std::endl;
@@ -1823,8 +1797,6 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     std::vector<std::pair<size_t, size_t>> allMirrored;
 
     size_t iterations = 0;
-
-    boost::container::flat_map<size_t, size_t> firstLargeIteration;
 
     bool considerOwnPoints = (size == 1) or (this->Norg_ != this->allMyPoints.size()); // there are points which we ignore in this step, so we have, in the range searching, communicate with us as well
     boost::container::flat_set<size_t> selfIgnorePoints;
@@ -2893,6 +2865,11 @@ const Tessellation3D::AllPointsMap &Voronoi3D::GetIndicesInAllPoints(void) const
 }
 
 const std::vector<Vector3D> &Voronoi3D::getAllPoints(void) const
+{
+    return this->allMyPoints;
+}
+
+std::vector<Vector3D> &Voronoi3D::getAllPoints(void)
 {
     return this->allMyPoints;
 }

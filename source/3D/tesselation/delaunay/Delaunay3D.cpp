@@ -559,9 +559,10 @@ void Delaunay3D::BuildExtra(vector<Vector3D> const& points)
 {
   size_t Nstart = points_.size();
   points_.insert(points_.end(), points.begin(), points.end());
+  size_t N = points.size();
   std::vector<size_t> order = HilbertOrder3D(points);
   assert(to_check_.empty());
-  for (std::size_t i = 0; i < points.size(); ++i)
+  for (std::size_t i = 0; i < N; ++i)
   {
       if(InsideBigTetra(points_[order[i] + Nstart],points_,Norg_))
       {

@@ -88,15 +88,8 @@ public:
    */
 	double& operator[](size_t index)
 	{
-		if (index == 0)
-			return x;
-		if (index == 1)
-			return y;
-		if (index == 2)
-			return z;
-		UniversalError eo("Trying to access illegal index of vector");
-		eo.addEntry("index", index);
-		throw eo;
+		double *values[3] = {&this->x, &this->y, &this->z};
+		return *values[index];
 	}
 
   /*! \brief Indexed access to member
@@ -105,13 +98,8 @@ public:
    */
 	double operator[](size_t index) const
 	{
-		if (index == 0)
-			return x;
-		if (index == 1)
-			return y;
-		if (index == 2)
-			return z;
-		throw UniversalError("Trying to access illegal index of vector (index " + std::to_string(index) + ")");
+		double values[3] = {this->x, this->y, this->z};
+		return values[index];
 	}
 
 	/*! \brief Addition
@@ -559,6 +547,9 @@ inline Vector3D& Vector3D::operator=<Vector3D>(const Vector3D& v)
 	z = v.z;
 	return *this;
 }
+
+template<>
+inline Vector3D::Vector3D(const double &x): Vector3D(x, x, x){}
 
 #endif // Vector3D_HPP
 

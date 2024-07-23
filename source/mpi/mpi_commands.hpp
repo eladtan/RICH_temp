@@ -477,12 +477,10 @@ void MPI_exchange_data(const Tessellation3D& tess, vector<char>& cells, bool gho
 
 void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &place);
 
-void MPI_All_cast(const void *buffer_send, int count, MPI_Datatype datatype, void *buffer_recv, MPI_Comm communicator);
-
 template <typename T, template <typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_All_cast_by_ranks(const Container<T, Ts...> &data, const MPI_Comm &comm)
 {
-	static_assert(is_serializable<T>::value, "MPI_Bcast_all_serializable: given type must be serializable");
+	static_assert(is_serializable<T>::value, "MPI_All_cast_by_ranks: given type must be serializable");
 
 	int size;
 	MPI_Comm_size(comm, &size);

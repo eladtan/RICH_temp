@@ -9,6 +9,8 @@
 #include "3D/environment/kernels/Identity.hpp" // for default kernelization
 #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
+#include "3D/hilbert/ordinary/HilbertOrdinaryConvertor3D.hpp"
 
 #define SPACE_FACTOR 1e-5
 

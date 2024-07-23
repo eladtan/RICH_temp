@@ -31,7 +31,7 @@ private:
     bool quadrupole;
     GravityTree<Vector3D> *gravityTree;
     std::vector<std::vector<GravityNodeData>> boundingBoxesOfRanks;
-    mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths;
+    mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths; // used in the recursion. in the i`th vector, saves the relevant ranks for level i in the tree. 
     mutable EnvironmentAgent::RanksSet tempRanks;
     const GravityTree<Vector3D>::Node *realRootOfGravityTree;
 
@@ -73,7 +73,9 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
         }
     }
 
-    this->realRootOfGravityTree = this->gravityTree->getOctTree()->getRoot();
+    // Currently, the gravity tree is a oct-tree of the entire space. However, this processor only controls over a subspace, so most of the children are null.
+    // We need to find the "real root", which is the first node that has more than 1 child.
+    this->realRootOfGravityTree = this->gravityTree->getOctTree()->getRoot();   
     while(true)
     {
         const LocalNode *nonNullChild = nullptr;
@@ -102,7 +104,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
         }
         this->realRootOfGravityTree = nonNullChild;
     }
-    this->boundingBoxesOfRanks = this->calculateBoundingBoxesOfRanks(tess);
+    this->boundingBoxesOfRanks = this->calculateBoundingBoxesOfRanks(this->tess);
 }
 
 std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const
@@ -133,6 +135,7 @@ std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculat
 
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
 {
+    // insert relevant nodes
     {
         std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks;
         {
@@ -150,11 +153,11 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
                 this->gravityTree->addExternalValues(rankData);
             }
 
-            // remove memory of `rankData`
+            // erase memory of `rankData`
             rankData.clear();
             rankData.shrink_to_fit();
         }
-        this->gravityTree->calculateMasses();
+        this->gravityTree->calculateMasses(); // recalculate masses of tree (also recalculates the CMs)
     }
 
     // calculate the results, locally
@@ -201,14 +204,16 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
             if(contained)
             {
                 // check if sphere of radius `w/theta` centered at `localNode->value.CM` intersects with rank `_rank`
-                if(this->tempRanks.empty())
+                if(this->tempRanks.empty()) // may have been already calculated for another `_rank` value
                 {
-                    this->tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, localNode->boundingBox.getWidth() / this->theta));
+                    double radius = localNode->boundingBox.getWidth() / this->theta;
+                    this->tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, radius));
                 }
-                shouldOpen = (this->tempRanks.find(_rank) != this->tempRanks.end());
+                shouldOpen = (this->tempRanks.find(_rank) != this->tempRanks.end()); // if contained in a bounding box of remote, check if the remote really intersects with me
             }
             else
             {
+                // if not contained in any bounding box, check if should be opened by the theta rule
                 shouldOpen = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
                                         [localNode, this](const GravityNodeData &remote)
                                         {

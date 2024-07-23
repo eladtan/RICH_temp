@@ -2,7 +2,7 @@
 #define HILBERT_CURVE_ENVAGENT_HPP
 
 #include "../CurveEnvAgent.hpp"
-#include "3D/hilbert/rectangular/HilbertConvertor3D.hpp"
+#include "3D/hilbert/HilbertConvertor3D.hpp"
 
 class HilbertCurveEnvironmentAgent : public CurveEnvironmentAgent<hilbert_index_t>
 {

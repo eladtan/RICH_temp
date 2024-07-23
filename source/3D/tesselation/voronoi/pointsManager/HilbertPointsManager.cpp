@@ -108,7 +108,8 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     kerneledUR.z += std::abs(SPACE_FACTOR * z_length);
     
     hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, hilbertOrder);
-    this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
+    this->convertor = new HilbertRectangularConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
+    // this->convertor = new HilbertOrdinaryConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
 }
 
 PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
