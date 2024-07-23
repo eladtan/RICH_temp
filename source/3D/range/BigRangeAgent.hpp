@@ -7,6 +7,7 @@
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 #ifdef RICH_MPI
     #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
+    #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
 #endif // RICH_MPI
@@ -202,19 +203,15 @@ private:
 
                 // otherwise, the queries requests to ask only the close ranks
                 // we calculate the closest distances from the point, to all the other ranks.
-                HilbertCurveEnvironmentAgent::DistancesVector distances;
                 // maybe the distances were already computed (check in a cache)
                 auto it = this->resultCache.find(query.pointIdx);
-                if(it != this->resultCache.end())
-                {
-                    distances = (*it).second;
-                }
-                else
+                if(it == this->resultCache.end())
                 {
                     // not in cache, calculate it and insert to the cache
-                    distances = this->getFurthestClosestRanks(query.originalPoint);
-                    this->resultCache.insert(std::pair<size_t, decltype(distances)>({query.pointIdx, distances}));
+                    this->resultCache.insert({query.pointIdx, this->getFurthestClosestRanks(query.originalPoint)});
+                    it = this->resultCache.find(query.pointIdx); // todo: can use previous line
                 }
+                HilbertCurveEnvironmentAgent::DistancesVector &distances = (*it).second;
                 
                 // get the closest rank
                 double minDist = std::numeric_limits<double>::max();
@@ -291,6 +288,7 @@ public:
             this->ansAgent = new BigRangeAnswerAgent(rangeFinder, pointsContainer, comm);
             this->talkAgent = new BigRangeTalkAgent(envAgent, comm);
             this->queryAgent = new BusyWaitQueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            //this->queryAgent = new WaitUntilAnsweredQueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
         #else // RICH_MPI
             this->ansAgent = new BigRangeAnswerAgent(rangeFinder);
         #endif // RICH_MPI

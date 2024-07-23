@@ -8,6 +8,8 @@
 #ifdef RICH_MPI
     #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
     #include "utils/queryAgent/ThreePhasesQueryAgent.hpp"
+    #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
+    #include "utils/queryAgent/thread/ThreadsQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
 #endif // RICH_MPI
@@ -185,7 +187,8 @@ public:
             this->ansAgent = new SmallRangeAnswerAgent(rangeFinder, pointsContainer, comm);
             this->talkAgent = new SmallRangeTalkAgent(envAgent, comm);
             this->queryAgent = new BusyWaitQueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
-            // this->queryAgent = new ThreePhasesQueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            //this->queryAgent = new WaitUntilAnsweredQueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            // this->queryAgent = new ThreadsQueryAgent<SmallRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
         #else // RICH_MPI
             this->ansAgent = new SmallRangeAnswerAgent(rangeFinder);
         #endif // RICH_MPI
