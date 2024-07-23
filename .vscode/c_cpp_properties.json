@@ -16,7 +16,8 @@
             ],
 
             "defines": [
-                "RICH_MPI"
+                "RICH_MPI",
+                "USE_VCL_VECTORIZATION"
             ],
             
             "cStandard": "c11",

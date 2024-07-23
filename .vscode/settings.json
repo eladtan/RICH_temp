@@ -128,7 +128,7 @@
             {
                 "scope": "entity.name.function.member.cpp",
                 "settings": {
-                    "foreground": "#7c82d1",
+                    "foreground": "#8489d7",
                     "fontStyle": "italic"
                 }
             },
