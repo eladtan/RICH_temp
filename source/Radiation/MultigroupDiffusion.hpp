@@ -22,7 +22,8 @@ public:
                         bool const hydro_on,
                         bool const compton_on,
                         bool const doppler_on,
-                        bool const mix_frame_on);
+                        bool const mix_frame_on,
+                        double const minimum_temperature = -1);
 
     ~MultigroupDiffusion() = default;
 
@@ -113,11 +114,13 @@ public:
 
     bool const doppler_on_;
     bool const mix_frame_on_;
+    double const minimum_temperature_;
     // for doppler step
     mutable std::vector<std::vector<double>> R2;
     mutable std::vector<std::vector<double>> D;
 
 private:
+    bool mutable displayed_warning_;
     void BuildMatrixGroup(std::size_t group,
                           Tessellation3D const& tess, 
                           mat& A, 
