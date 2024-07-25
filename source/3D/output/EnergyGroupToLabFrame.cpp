@@ -78,8 +78,6 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
             grad_Eg += r_ij * (0.5 * A_ij * (Eg_fluid_i + Eg_fluid_j));
         }
 
-        grad_Eg *= -1.0 / volume;
-
         cell_temp = cells[i];
         cell_temp.density *= mass_scale / pow<3>(length_scale);
 
@@ -90,7 +88,7 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
         grad_Eg *= volume;
         
         cell_temp.velocity *= length_scale / time_scale;
-        
+
         Eg_lab[i] += 2.0 / (CG::speed_of_light * CG::speed_of_light) * lambda_g[i] * Dg_i * ScalarProd(grad_Eg, cell_temp.velocity);
     }
 
@@ -170,10 +168,6 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
 
         double const lambda_gm = multigroup_.flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Egm, Dgm_i, Egm_fluid_i) : 1.0;
         
-        grad_Egp *= volume;
-        grad_Egm *= volume;
-        grad_Eg  *= volume;
-
         double const lambda_nu_p = (dnu_p * lambda_gp + dnu * lambda_g[i]) / (dnu_p + dnu);
 
         double const lambda_nu_m = (dnu * lambda_g[i] + dnu_m * lambda_gm) / (dnu + dnu_m);
