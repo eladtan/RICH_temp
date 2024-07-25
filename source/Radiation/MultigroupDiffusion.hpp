@@ -12,20 +12,43 @@ using namespace CG;
 
 class MultigroupDiffusion : public RadiationDriver {
 public:
-    MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
-                        std::vector<double> const& energy_groups_boundary_,
-                        MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
-                        MultigroupDiffusionBoundaryCalculator const& boundary_calc, 
-                        EquationOfState const& eos,
-                        std::vector<std::string> const zero_cells,
-                        bool const flux_limiter,
-                        bool const hydro_on,
-                        bool const compton_on,
-                        bool const doppler_on,
-                        bool const mix_frame_on,
-                        double const minimum_temperature = -1);
+    /**
+ * @brief Constructor for the MultigroupDiffusion class.
+ *
+ * Initializes the class with the given parameters and sets up the necessary data structures.
+ *
+ * @param energy_groups_center_ Center energies of the energy groups.
+ * @param energy_groups_boundary_ Boundary energies of the energy groups.
+ * @param coefficient_calc Reference to the MultigroupDiffusionCoefficientCalculator object.
+ * @param boundary_calc Reference to the MultigroupDiffusionBoundaryCalculator object.
+ * @param eos Reference to the EquationOfState object.
+ * @param zero_cells Vector of strings representing the names of cells with zero radiation.
+ * @param flux_limiter Boolean indicating whether to use flux limiter in the diffusion calculation.
+ * @param hydro_on Boolean indicating whether hydrodynamic effects are on.
+ * @param compton_on Boolean indicating whether Compton scattering is on.
+ * @param doppler_on Boolean indicating whether Doppler shift correction is on.
+ * @param mix_frame_on Boolean indicating whether to use mixed frame in the diffusion calculation.
+ * @param minimum_temperature Minimum temperature for the diffusion calculation. Default value is -1.
+ */
+MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
+                    std::vector<double> const& energy_groups_boundary_,
+                    MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
+                    MultigroupDiffusionBoundaryCalculator const& boundary_calc, 
+                    EquationOfState const& eos,
+                    std::vector<std::string> const zero_cells,
+                    bool const flux_limiter,
+                    bool const hydro_on,
+                    bool const compton_on,
+                    bool const doppler_on,
+                    bool const mix_frame_on,
+                    double const minimum_temperature = -1);
 
-    ~MultigroupDiffusion() = default;
+/**
+ * @brief Destructor for the MultigroupDiffusion class.
+ *
+ * Default destructor, does nothing.
+ */
+~MultigroupDiffusion() = default;
 
     double GetLengthScale() const override { return length_scale_; }
 
