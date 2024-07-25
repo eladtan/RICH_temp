@@ -71,11 +71,8 @@ int main(void)
 		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
 		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
 	}
-
-	double const dmin_eos = -50.656872045869001;
-	double const dmax_eos = 6.815166376138933;
-	double const dd_eos = 0.095310179804322;
-
+	ComputationalCell3D::stickerNames.push_back("Left");
+	ComputationalCell3D::stickerNames.push_back("Right");
 	double const lscale = 1.;
 	double const mscale = 1.;
 	double const tscale = 1.;
@@ -100,7 +97,7 @@ int main(void)
     if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
-	const double width = 10 / lscale;
+	const double width = 3 / lscale;
 	size_t const Nx = 128*4;
 	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
 	Voronoi3D tess(ll, ur);
@@ -108,11 +105,11 @@ int main(void)
     using boost::math::pow;
 	AnalyticOpacity opacity(
         [&tess, energy_groups_center, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, std::size_t const group){ 
-			double sigma_0_nom = tess.GetCellCM(cell.ID).x < 2.0 ? sigma_0_nom_left : sigma_0_nom_right;
+			double sigma_0_nom = cell.tracers[0] > 0.5 ? sigma_0_nom_left : sigma_0_nom_right;
 			return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group])/(sigma_0_nom * 3.0);
             },
         [&tess, energy_groups_center, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, std::size_t const group){
-			double sigma_0_nom = tess.GetCellCM(cell.ID).x < 2.0 ? sigma_0_nom_left : sigma_0_nom_right;
+			double sigma_0_nom = cell.tracers[0] > 0.5 ? sigma_0_nom_left : sigma_0_nom_right;
             return sigma_0_nom/(std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group]));
             },
         [](ComputationalCell3D const& cell, std::size_t group) { return 0.0; },
@@ -155,6 +152,13 @@ int main(void)
 	tess.Build(points);
 #endif
 	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
+	for(size_t i=0; i<cells.size(); ++i)
+	{
+		if(tess.GetCellCM(i).x < 2.0)
+			cells[i].tracers[0] = 1.0;
+		else
+			cells[i].tracers[1] = 1.0;
+	}
 
 	Hllc3D rs;
 	RigidWallGenerator3D ghost;
@@ -165,7 +169,7 @@ int main(void)
 	
     double const Tb = kev_kelvin;
 	MultigroupDiffusionSideBoundary D_boundary(Tb, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), true, false, false, true, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -191,7 +195,7 @@ int main(void)
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
-	double init_dt = 1e-13 / tscale;
+	double init_dt = 1e-17 / tscale;
 	double const tf = 1e-9 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
@@ -199,6 +203,7 @@ int main(void)
 	double old_dt = init_dt;
 	vector<DiagnosticAppendix3D *> appendices;
 	WriteSnapshot3D(sim, "init.h5", appendices, true);
+	double new_dt = init_dt;
 	while (sim.getTime() < tf)
 	{
 		if (sim.getCycle() % 1 == 0)
@@ -206,7 +211,7 @@ int main(void)
 			if (rank == 0)
 			{
 				std::cout<<std::endl;
-				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << sim.getTimeStep() << std::endl;
+				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << new_dt << std::endl;
 			}
 		}
 		if (sim.getTime() > nextT)
@@ -217,10 +222,10 @@ int main(void)
 		}
 		try
 		{
-			double new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
+			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt,4e-12);
+			new_dt=std::min(new_dt,1e-12);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
