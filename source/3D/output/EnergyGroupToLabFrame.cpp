@@ -26,7 +26,7 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
 
     std::size_t const N = tess.GetPointNo();
     std::vector<double> Eg_lab(N, 0.0);
-    std::vector<double> Eg_fluid(N, 0.0);
+    std::vector<double> Eg_fluid(cells.size(), 0.0);
 
     std::vector<std::size_t> neighbors;
     face_vec faces;
@@ -39,10 +39,8 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
         Eg_lab[i] = Eg_fluid[i];
     }
 
-#ifdef RICH_MPI
-    MPI_exchange_data2(tess, Eg_fluid, true);
-#endif
-
+    for(size_t i = N + 3; i < cells.size(); ++i)
+        Eg_fluid[i] = cells[i].Eg[group] * cells[i].density * energy_per_volume_scale;
 
     std::vector<double> lambda_g(N, 0.0);
     // second term
@@ -77,6 +75,7 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
 
             grad_Eg += r_ij * (0.5 * A_ij * (Eg_fluid_i + Eg_fluid_j));
         }
+        grad_Eg *= (1.0 / volume);
 
         cell_temp = cells[i];
         cell_temp.density *= mass_scale / pow<3>(length_scale);
@@ -84,8 +83,6 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
         double const Dg_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficientGroup(cell_temp, group);
 
         lambda_g[i] = multigroup_.flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_i, Eg_fluid_i) : 1.0;
-
-        grad_Eg *= volume;
         
         cell_temp.velocity *= length_scale / time_scale;
 
@@ -187,8 +184,8 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
 
         Eg_lab[i] /= energy_per_volume_scale;
         Eg_lab[i] /= cells[i].density;
+        Eg_lab[i] = std::max(Eg_lab[i], 0.0);
     }
-
 
     return Eg_lab;
 }
