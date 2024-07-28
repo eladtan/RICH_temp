@@ -839,6 +839,8 @@ Conserved3D SimpleAMRExtensiveUpdater3D::ConvertPrimitveToExtensive3D(const Comp
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < N; ++i)
 		res.tracers[i] = cell_temp.tracers[i] * mass;
+	for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+		res.Eg[g] = cell_temp.Eg[g] * mass;
 	return res;
 }
 
@@ -920,6 +922,8 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 	}
 	res.Erad = extensive.Erad / extensive.mass;
 	res.temperature = eos.de2T(res.density, res.internal_energy);
+	for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+		res.Eg[g] = extensive.Eg[g] / extensive.mass;
 	return res;
 }
 
