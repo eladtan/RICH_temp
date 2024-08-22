@@ -12,9 +12,6 @@
 #include "extensive_updater3d.hpp"
 #include "SourceTerm3D.hpp"
 #include "Radiation/conj_grad_solve.hpp"
-#include "timing/advance/individual/Individual.hpp"
-#include "timing/advance/global/Global.hpp"
-#include "timing/advance/hydro/TimeAdvance2.hpp"
 
 //! \brief Three dimensional simulation
 class HDSim3D
@@ -86,9 +83,8 @@ public:
 
   //! \brief Advances the simulation in time (first order)
   void timeAdvance();
-
   //! \brief Advances the simulation in time (second order)
-  void timeAdvance2(bool individualTimestep);
+  void timeAdvance2();
 
   /*! \brief Third order time advance
    */

@@ -5,6 +5,35 @@
 #ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
 #endif
+#include <chrono>
+
+namespace
+{
+	#ifdef RICH_MPI
+	double get_time()
+	{
+		return MPI_Wtime();
+	}
+	#else
+	std::chrono::time_point<std::chrono::high_resolution_clock> get_time()
+	{
+		return std::chrono::high_resolution_clock::now();
+	}
+	#endif
+
+	template <class T>
+	void DisplayTime(T const& t1, T const& t2, std::string const& msg)
+	{
+		#ifdef RICH_MPI
+			int rank = -1;
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+			if(rank == 0)
+				std::cout<<msg<<" "<<t2 - t1<<" seconds"<<std::endl;
+		#else
+			std::cout<<msg<< std::chrono::duration_cast<std::chrono::seconds>(t2 - t1).count()<<" seconds"<<std::endl;
+		#endif
+	}
+}
 
 Tessellation3D& HDSim3D::getTesselation(void)
 {
@@ -136,22 +165,141 @@ HDSim3D::HDSim3D(Tessellation3D& tess,
 	}
 }
 
-void HDSim3D::timeAdvance2(bool individualTimestep)
+namespace
 {
-	TimeAdvance2 timeAdvance2(this->tess_, this->cells_, this->extensive_, this->eos_, this->fc_, this->cu_, this->eu_, this->source_);
-	dt_t dt = 0;
-	if(individualTimestep)
+	void CalcFaceVelocities(Tessellation3D const& tess, vector<Vector3D> const& point_vel, vector<Vector3D>& res)
 	{
-		IndividualTimeStep its(timeAdvance2, this->pm_, this->pt_.getTime());
-		dt = its.apply();
+		size_t N = tess.GetTotalFacesNumber();
+		res.resize(N);
+		for (size_t i = 0; i < N; ++i)
+		{
+			if (tess.BoundaryFace(i))
+				res[i] = Vector3D();
+			else
+			{
+				try
+				{
+					res[i] = tess.CalcFaceVelocity(i, point_vel[tess.GetFaceNeighbors(i).first], point_vel[tess.GetFaceNeighbors(i).second]);
+				}
+				catch (UniversalError & /*eo*/)
+				{
+					throw;
+				}
+			}
+		}
 	}
-	else
+
+	void MovePoints(Tessellation3D& tess, std::vector<Vector3D> const& point_vel, double const dt)
 	{
-		GlobalTimeStep gts(timeAdvance2, this->pm_, this->pt_.getTime(), this->tsc_);
-		dt = gts.apply();
+		size_t const N = tess.GetPointNo();
+		std::vector<Vector3D>& points = tess.accessMeshPoints();
+		for(size_t i = 0; i < N; ++i)
+			points[i] += point_vel[i] * dt;
 	}
-	pt_.updateTime(dt);
-	pt_.updateCycle();
+
+	void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr)
+	{
+		vector<Vector3D> points;
+		if (orgpoints == nullptr)
+			points = tess.getMeshPoints();
+		else
+			points = *orgpoints;
+		points.resize(tess.GetPointNo());
+		if(orgpoints != nullptr)
+		{
+			size_t const N = points.size();
+			for (size_t i = 0; i < N; ++i)
+				points[i] += point_vel[i] * dt;
+		}
+
+		#ifdef RICH_MPI
+		tess.BuildParallel(points);
+		#else // RICH_MPI
+		tess.Build(points);
+		#endif // RICH_MPI
+	}
+
+	void ExtensiveAvg(vector<Conserved3D>& res, vector<Conserved3D> const& other)
+	{
+		assert(res.size() == other.size());
+		size_t N = res.size();
+		for (size_t i = 0; i < N; ++i)
+		{
+			res[i] += other[i];
+			res[i] *= 0.5;
+		}
+	}
+}
+
+
+void HDSim3D::timeAdvance2(void)
+{
+	vector<Vector3D> point_vel, face_vel;
+	pm_(tess_, cells_, pt_.getTime(), point_vel);
+#ifdef RICH_MPI
+	Vector3D vdummy;
+	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+#endif
+
+	CalcFaceVelocities(tess_, point_vel, face_vel);
+	double dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
+	pm_.ApplyFix(tess_, cells_, pt_.getTime(), dt, point_vel);
+#ifdef RICH_MPI
+	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+#endif
+	CalcFaceVelocities(tess_, point_vel, face_vel);
+	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
+	dt_ = dt;
+	vector<Conserved3D> fluxes;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
+		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), dt);
+	vector<Conserved3D> mid_extensives(extensive_);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
+	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
+
+	if (pt_.cycle % 10 == 0)
+	{
+		vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		mesh.resize(tess_.GetPointNo());
+		vector<size_t> order = HilbertOrder3D(mesh);
+		mesh = VectorValues(mesh, order);
+		mid_extensives = VectorValues(mid_extensives, order);
+		extensive_ = VectorValues(extensive_, order);
+		cells_ = VectorValues(cells_, order);
+		point_vel = VectorValues(point_vel, order);
+	}
+	MovePoints(tess_, point_vel, dt);
+	auto t1 = get_time();
+	UpdateTessellation(tess_, point_vel, dt);
+	auto t2 = get_time();
+	DisplayTime(t1, t2, "Voronoi build time");
+#ifdef RICH_MPI
+	// Keep relevant points
+	Conserved3D edummy;
+	ComputationalCell3D cdummy;
+	MPI_exchange_data(tess_, mid_extensives, false, &edummy);
+	MPI_exchange_data(tess_, extensive_, false, &edummy);
+	MPI_exchange_data(tess_, cells_, false, &cdummy);
+	MPI_exchange_data(tess_, point_vel, false, &vdummy);
+	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+#endif
+
+cu_(cells_, eos_, tess_, mid_extensives);
+#ifdef RICH_MPI
+MPI_exchange_data(tess_, cells_, true, &cdummy);
+#endif
+
+pt_.updateTime(dt);
+pt_.updateCycle();
+CalcFaceVelocities(tess_, point_vel, face_vel);
+face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt);
+source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
+eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
+ExtensiveAvg(extensive_, mid_extensives);
+cu_(cells_, eos_, tess_, extensive_);
+#ifdef RICH_MPI
+MPI_exchange_data(tess_, cells_, true, &cdummy);
+#endif
 }
 
 void HDSim3D::timeAdvance(void)
@@ -191,6 +339,7 @@ void HDSim3D::timeAdvance(void)
 	pt_.updateTime(dt);
 	pt_.updateCycle();
 }
+
 
 void HDSim3D::timeAdvance3(void)
 {
@@ -271,6 +420,7 @@ void HDSim3D::timeAdvance3(void)
 #endif
 	std::vector<Conserved3D> u2 = mid_extensives;
 	cu_(cells_, eos_, tess_, mid_extensives);
+
 
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
