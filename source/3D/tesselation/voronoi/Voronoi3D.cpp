@@ -713,7 +713,7 @@ void Voronoi3D::BuildInitialize(size_t num_points)
     R_.clear();
     if(num_points > 0) R_.reserve(num_points * 11);
     tetra_centers_.clear();
-     if(num_points > 0) tetra_centers_.reserve(num_points * 11);
+    if(num_points > 0) tetra_centers_.reserve(num_points * 11);
     // Voronoi Data
     del_.Clean();
     FacesInCell_.clear();
@@ -1160,7 +1160,7 @@ void Voronoi3D::SetGhostArray(const std::vector<int> &recvProc, const std::vecto
  * \author Maor Mizrachi
  * \brief Makes load rebalancing if needed, if needed, and initializing the environment agent (the object which is responsible for dividing the space to ranks)
 */
-std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
+std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
 {
     if(this->radiuses.size() < allPoints.size())
     {
@@ -1181,8 +1181,7 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     MPI_Allreduce(MPI_IN_PLACE, &canDoRebalance, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
     bool allowRebalance = (canDoRebalance == 1);
 
-    // TODO: here, we need to update the all points, not only `indicesToBuild`
-    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, indicesToBuild, this->radiuses, this->all_CM, allowRebalance); // does rebalancing (if necessary) and exchanging
+    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, allWeights, indicesToBuild, this->radiuses, this->all_CM, allowRebalance); // does rebalancing (if necessary) and exchanging
 
     this->allMyPoints = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
@@ -1191,10 +1190,10 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
     this->self_index_ = std::move(exchangeResult.indicesToSelf);
 
-    // TODO: indicesToBuild is not valid here since we changed points
-    std::vector<bool> active(allPoints.size(), false);
-    for(const size_t &idx : indicesToBuild)
+    std::vector<bool> active(this->allMyPoints.size(), false);
+    for(const size_t &idx : exchangeResult.participatingIndices)
     {
+        assert(idx < active.size());
         active[idx] = true;
     }
 
@@ -1263,7 +1262,7 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
         OctTree<IndexedVector3D> oldPointsTree(this->ll_, this->ur_, oldPoints);
         newRadiuses = std::vector<double>(newPointsNum);
         for(size_t i = 0; i < newPointsNum; i++)
-        {
+    {
             size_t matchingPointIdx = mask[i];
             double radius;
 
@@ -1285,7 +1284,7 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
     this->radiuses = std::move(newRadiuses);
 }
 
-void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
+void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -1301,7 +1300,8 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
             throw eo;
         }
     }
-    std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, indicesToBuild, suppressRebalancing);
+
+    std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, allWeights, indicesToBuild, suppressRebalancing);
     
     std::vector<size_t> order;
 

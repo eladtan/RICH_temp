@@ -103,4 +103,24 @@ template<class T> vector<T> list_unserialize
   return res;
 }
 
+template<typename T>
+void dump(const T &value, std::vector<double>::iterator it)
+{
+  char *ptr = reinterpret_cast<char*>(const_cast<T*>(&value));
+  for(size_t i = 0; i < sizeof(T); i++, it++)
+  {
+    (*it) = static_cast<double>(ptr[i]);
+  }
+}
+
+template<typename T>
+void load(T &value, std::vector<double>::const_iterator it)
+{
+  char *ptr = reinterpret_cast<char*>(&value);
+  for(size_t i = 0; i < sizeof(T); i++, it++)
+  {
+    ptr[i] = static_cast<char>(*it);
+  }
+}
+
 #endif // SERIALIZABLE_HPP

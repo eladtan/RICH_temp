@@ -159,7 +159,7 @@ private:
   void UpdateRangeFinder(void);
 
   #ifdef RICH_MPI
-    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
+    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
     void FilterRealGhostPoints();
     void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
     void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
@@ -263,7 +263,7 @@ public:
 
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
-  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
+  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
 

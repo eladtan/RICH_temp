@@ -679,7 +679,7 @@ T MPI_Bcast_serializable(const T &data, rank_t root, const MPI_Comm &comm)
 template<typename T>
 std::vector<std::vector<T>> MPI_Exchange_by_ownership_by_ranks(const std::vector<T> &data, const std::function<rank_t(const T&)> &ownership, const MPI_Comm &comm)
 {
-	static_assert(is_serializable<T>::value, "MPI_Exchange_by_ownership: given type must be serializable");
+	static_assert(is_serializable<T>::value, "MPI_Exchange_by_ownership_by_ranks: given type must be serializable");
 
 	rank_t rank, size;
 	MPI_Comm_rank(comm, &rank);
@@ -691,7 +691,7 @@ std::vector<std::vector<T>> MPI_Exchange_by_ownership_by_ranks(const std::vector
 		rank_t _rank = ownership(value);
 		if(_rank < 0 or _rank >= size)
 		{
-			UniversalError eo("MPI_Exchange_by_ownership: ownership function returned invalid rank");
+			UniversalError eo("MPI_Exchange_by_ownership_by_ranks: ownership function returned invalid rank");
 			eo.addEntry("Rank", _rank);
 			eo.addEntry("Size", size);
 			throw eo;
@@ -830,6 +830,20 @@ std::vector<std::vector<T>> MPI_All_cast_by_ranks(const Container<T, Ts...> &dat
 		}
 	}
 	return resultByRanks;
+}
+
+template<typename T, template<typename...> class Container, typename... Ts>
+std::vector<T> MPI_All_cast(const Container<T, Ts...> &data, const MPI_Comm &comm)
+{
+	static_assert(is_serializable<T>::value, "MPI_All_cast: given type must be serializable");
+
+	std::vector<std::vector<T>> resultByRanks = MPI_All_cast_by_ranks(data, comm);
+	std::vector<T> result;
+	for(const std::vector<T> &values : resultByRanks)
+	{
+		result.insert(result.end(), values.cbegin(), values.cend());
+	}
+	return result;
 }
 
 #endif //RICH_MPI

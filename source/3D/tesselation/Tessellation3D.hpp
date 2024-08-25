@@ -52,13 +52,23 @@ public:
 
   virtual int GetOwner(const Vector3D &point) const = 0;
   
-  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
+  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
 
-  virtual void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false)
+  {
+    this->BuildPartiallyParallel(allPoints, std::vector<double>(allPoints.size(), 1.0), indicesToBuild, suppressRebalancing);
+  }
+
+  virtual void BuildParallel(const std::vector<Vector3D> &points, const std::vector<double> &weights, bool suppressRebalancing = false)
   {
       std::vector<size_t> indicesToBuild(points.size());
       std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
-      this->BuildPartiallyParallel(points, indicesToBuild, suppressRebalancing);
+      this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing);
+  }
+
+  inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  {
+      this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing);
   }
 
   virtual const EnvironmentAgent *GetEnvironmentAgent() const = 0;
