@@ -208,19 +208,29 @@ private:
   #ifdef RICH_MPI
     std::shared_ptr<PointsManager> pointsManager;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
+
   #endif // RICH_MPI
 
+  #ifdef RICH_MPI
   std::shared_ptr<RangeFinder> rangeFinder;
   std::vector<double> radiuses;
-  Tessellation3D::AllPointsMap indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
   std::vector<Vector3D> allMyPoints;
+  std::vector<double> allPointsWeights;
+  #endif // RICH_MPI
+
+  Tessellation3D::AllPointsMap indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
 
 public:
 
   #ifdef RICH_MPI
+    const std::vector<double> &GetPointsBuildWeights() const override;
+    
     const EnvironmentAgent *GetEnvironmentAgent() const override;
+    
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
+    
     inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
+    
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);
   #endif // RICH_MPI
 

@@ -143,6 +143,7 @@ protected:
         toReturn.newRadiuses.reserve(ans.size());
         toReturn.newCMs.reserve(ans.size());
         toReturn.newWeights.reserve(ans.size());
+        toReturn.participatingIndices.resize(ans.size(), false);
 
         for(const _3DPointData &_point : ans)
         {
@@ -150,12 +151,14 @@ protected:
             toReturn.newPoints.emplace_back(_point.point.x, _point.point.y, _point.point.z);
             if(_point.participating)
             {
-                toReturn.participatingIndices.push_back(pointIdx);
+                toReturn.participatingIndices[pointIdx] = true;
             }
             toReturn.newRadiuses.push_back(_point.radius);
             toReturn.newCMs.emplace_back(_point.CM.x, _point.CM.y, _point.CM.z);
             toReturn.newWeights.push_back(_point.weight);
         }
+
+        assert(toReturn.newPoints.size() == toReturn.newWeights.size());
         return toReturn;
     };
 };

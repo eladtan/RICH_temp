@@ -588,8 +588,9 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ()),
                                                               #ifdef RICH_MPI
                                                                 pointsManager(std::shared_ptr<PointsManager>()),
+                                                                allMyPoints(), 
                                                               #endif // RICH_MPI
-                                                              allMyPoints(), indicesInAllMyPoints()
+                                                              indicesInAllMyPoints()
 {}
 
 Voronoi3D::Voronoi3D() : Voronoi3D(Vector3D(), Vector3D())
@@ -1189,13 +1190,9 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     this->sentprocs_ = std::move(exchangeResult.sentProcessors);
     this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
     this->self_index_ = std::move(exchangeResult.indicesToSelf);
+    this->allPointsWeights = std::move(exchangeResult.newWeights);
 
-    std::vector<bool> active(this->allMyPoints.size(), false);
-    for(const size_t &idx : exchangeResult.participatingIndices)
-    {
-        assert(idx < active.size());
-        active[idx] = true;
-    }
+    assert(this->allMyPoints.size() == this->allPointsWeights.size());
 
     std::vector<Vector3D> new_points;
     this->indicesInAllMyPoints = Tessellation3D::AllPointsMap();
@@ -1205,19 +1202,8 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     size_t allPointsSize = this->allMyPoints.size();
     for(size_t pointIdx = 0; pointIdx < allPointsSize; pointIdx++)
     {
-        if(pointIdx < numOfSelfPoints)
+        if(exchangeResult.participatingIndices.at(pointIdx))
         {
-            // point belongs to me, but it doesn't mean it's an active point
-            size_t previousPointIdx = this->self_index_[pointIdx];
-            if(active[previousPointIdx])
-            {
-                this->indicesInAllMyPoints[new_points.size()] = pointIdx;
-                new_points.push_back(this->allMyPoints[pointIdx]);
-            }
-        }
-        else
-        {
-            // point has been received, so it's for sure an active
             this->indicesInAllMyPoints[new_points.size()] = pointIdx;
             new_points.push_back(this->allMyPoints[pointIdx]);
         }
@@ -2919,8 +2905,9 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_),
                                                 #ifdef RICH_MPI
                                                     pointsManager(other.pointsManager), indexingToSave(other.indexingToSave),
+                                                    rangeFinder(other.rangeFinder), radiuses(other.radiuses), allMyPoints(other.allMyPoints), allPointsWeights(other.allPointsWeights),
                                                 #endif // RICH_MPI
-                                                rangeFinder(other.rangeFinder), radiuses(other.radiuses), allMyPoints(other.allMyPoints), indicesInAllMyPoints(other.indicesInAllMyPoints)
+                                                indicesInAllMyPoints(other.indicesInAllMyPoints)
                                                 {}
 
 bool Voronoi3D::NearBoundary(std::size_t index) const
@@ -3234,6 +3221,11 @@ void Voronoi3D::SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared
 {
     this->SetBox(ll, ur);
     this->SetKernel(newIndexing);
+}
+
+const std::vector<double> &Voronoi3D::GetPointsBuildWeights() const
+{
+    return this->allPointsWeights;
 }
 
 const EnvironmentAgent *Voronoi3D::GetEnvironmentAgent() const
