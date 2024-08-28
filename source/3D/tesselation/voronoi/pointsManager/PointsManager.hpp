@@ -85,13 +85,16 @@ public:
     {
         // if envAgent is null, the `exchange` will perform an initialization as well.
         // `rebalance` is used only when the environment agent is initialized.
-        if((this->getEnvironmentAgent() != nullptr) and doRebalance and this->checkForRebalance(this->totalWeight))
-        {
-            this->rebalance(allPoints, allWeights);
-        }
         PointsExchangeResult result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
         this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
-        // std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
+        if(doRebalance and this->checkForRebalance(this->totalWeight))
+        {
+            assert(this->getEnvironmentAgent() != nullptr);
+            this->rebalance(allPoints, allWeights);
+            result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
+            this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
+        }
+        std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
         return result;
     }
 

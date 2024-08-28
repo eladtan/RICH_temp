@@ -205,7 +205,7 @@ LocationSpecifier<T> OrderStatisticsJob<T, Comparator>::checkLocalSmallerEqualBi
     assert(result.elementsBefore <= this->values.size());
     assert(result.elementsEqual <= this->values.size());
     assert(result.elementsAfter <= this->values.size());
-    assert((result.elementsBefore + result.elementsEqual + result.elementsAfter) <= this->allLocalWeight);
+    assert((result.elementsBefore + result.elementsEqual + result.elementsAfter) <= this->values.size());
 
     size_t belowIndex = std::distance(this->values.cbegin(), this->subjob.valuesVecBegin);
     size_t equalIndex1 = std::distance(this->values.cbegin(), firstEqual);
@@ -214,6 +214,8 @@ LocationSpecifier<T> OrderStatisticsJob<T, Comparator>::checkLocalSmallerEqualBi
     result.weightBefore += this->getWeightOnBoundaries(belowIndex, equalIndex1);
     result.weightEqual = this->getWeightOnBoundaries(equalIndex1, equalIndex2);
     result.weightAfter += this->getWeightOnBoundaries(equalIndex2, aboveIndex);
+    // assert((result.weightBefore + result.weightEqual + result.weightAfter) <= (this->allLocalWeight * (1 + EPSILON)));
+
     return result;
 }
 
@@ -227,7 +229,13 @@ LocationSpecifier<T> getWeightedMedianOfMedians(const OrderStatisticsJob<T> &job
         myMedianToBcast.push_back(myMedian.value());
     }
     std::vector<LocationSpecifier<T>> medianOfMediansToBcast = MPI_All_cast(myMedianToBcast, job.comm);
-    assert(not medianOfMediansToBcast.empty());
+    if(medianOfMediansToBcast.empty())
+    {
+        UniversalError eo("getWeightedMedianOfMedians: median of medians is empty");
+        eo.addEntry("Statistics to find: ", std::vector<size_t>(job.subjob.orderStatisticsBegin, job.subjob.orderStatisticsEnd));
+        eo.addEntry("Number of all elements", job.allElementsNum);
+        throw eo;
+    }
     std::sort(medianOfMediansToBcast.begin(), medianOfMediansToBcast.end(), 
             [&job](const LocationSpecifier<T> &a, const LocationSpecifier<T> &b) -> bool
             {
@@ -245,8 +253,8 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     assert(std::distance(job.subjob.valuesVecBegin, job.subjob.valuesVecEnd) == std::distance(job.subjob.weightsVecBegin, job.subjob.weightsVecEnd));
     assert(job.subjob.elementsBefore <= job.values.size());
     assert(job.subjob.elementsAfter <= job.values.size());
-    assert(job.subjob.weightBefore <= job.allLocalWeight);
-    assert(job.subjob.weightAfter <= job.allLocalWeight);
+    assert(job.subjob.weightBefore <= job.allLocalWeight * (1 + EPSILON));
+    assert(job.subjob.weightAfter <= job.allLocalWeight * (1 + EPSILON));
       
     // step 1 - if the list of statistics is empty, return
     if(job.subjob.orderStatisticsBegin == job.subjob.orderStatisticsEnd)
@@ -263,9 +271,9 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     // step 4 - get the stat order of the element
     // the element might occupity multiple statisticle orders, if there are any duplications
     // so, we calculate the minimal stat order it occupity, and the maximal one
-    size_t medianOfMediansMinStatOrder = static_cast<size_t>(job.allElementsNum * medianOfMedians.weightBefore / job.allWeight);
-    size_t medianOfMediansMaxStatOrder = static_cast<size_t>(job.allElementsNum * (medianOfMedians.weightBefore + medianOfMedians.weightEqual) / job.allWeight);
-    
+    size_t medianOfMediansMinStatOrder = static_cast<size_t>(std::floor(job.allElementsNum * medianOfMedians.weightBefore / job.allWeight));
+    size_t medianOfMediansMaxStatOrder = static_cast<size_t>(std::ceil(job.allElementsNum * (medianOfMedians.weightBefore + medianOfMedians.weightEqual) / job.allWeight));
+
     // find how many times the median is in the list of the statistics. Cut the list of statistics accordingly
     auto statOrderLastBelow = std::lower_bound(job.subjob.orderStatisticsBegin, job.subjob.orderStatisticsEnd, medianOfMediansMinStatOrder);
     auto statOrderFirstAbove = std::upper_bound(job.subjob.orderStatisticsBegin, job.subjob.orderStatisticsEnd, medianOfMediansMaxStatOrder);
