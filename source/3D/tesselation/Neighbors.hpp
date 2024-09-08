@@ -7,9 +7,6 @@
 #include "Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
-#include <iostream> // TODO REMOVE
-#include "utils/printing/print.hpp" // TODO REMOVE
-
 #ifdef RICH_MPI
     #include <mpi.h>
     #include "mpi/mpi_commands.hpp"
@@ -18,7 +15,7 @@
 struct RemotePoint
 {
     #ifdef RICH_MPI
-        int rank;
+        rank_t rank;
         size_t indexOnRank;
     #else
         size_t index;
@@ -26,7 +23,7 @@ struct RemotePoint
     size_t distance;
 
     #ifdef RICH_MPI
-        RemotePoint(int _rank = -1, size_t _indexOnRank = std::numeric_limits<size_t>::max(), size_t _distance = std::numeric_limits<size_t>::max())
+        RemotePoint(rank_t _rank = -1, size_t _indexOnRank = std::numeric_limits<size_t>::max(), size_t _distance = std::numeric_limits<size_t>::max())
         : rank(_rank), indexOnRank(_indexOnRank), distance(_distance){};
 
         bool operator<(const RemotePoint &other) const
@@ -39,7 +36,7 @@ struct RemotePoint
             return this->rank == other.rank and this->indexOnRank == other.indexOnRank;
         };
     #else // RICH_MPI
-        RemotePoint(size_t _index = std::numeric_limits<size_t>::max()): index(_index){};
+        RemotePoint(size_t _index = std::numeric_limits<size_t>::max(), size_t _distance = std::numeric_limits<size_t>::max()): index(_index), distance(_distance){};
 
         bool operator<(const RemotePoint &other) const
         {
@@ -101,10 +98,12 @@ struct ComputationalCell3DVector3D
 };
 
 #ifdef RICH_MPI
-    PointsToNeighborsMap GetKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = false, const MPI_Comm &comm = MPI_COMM_WORLD);
+    PointsToNeighborsMap GetKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = true, const MPI_Comm &comm = MPI_COMM_WORLD);
 #else // RICH_MPI
-    PointsToNeighborsMap GetKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = false);
+    PointsToNeighborsMap GetKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = true);
 #endif // RICH_MPI
+
+#ifdef RICH_MPI
 
 /*!
 \brief Returns the k neighbors (including all below) from other cpus and their data
@@ -115,4 +114,7 @@ struct ComputationalCell3DVector3D
 \return An array for each point in points, containing neighbors and their data
 */
 std::vector<std::vector<std::pair<ComputationalCell3D, Vector3D>>> GetNeighborCellsPoints(const Tessellation3D &tess, const std::vector<size_t> &points, const std::vector<ComputationalCell3D> &cells, size_t order);
+
+#endif // RICH_MPI
+
 #endif // TESSELLATION3D_NEIGHBORS_HPP

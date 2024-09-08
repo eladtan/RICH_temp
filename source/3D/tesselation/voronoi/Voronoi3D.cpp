@@ -651,7 +651,7 @@ vector<Vector3D> Voronoi3D::CreateBoundaryPoints(vector<std::pair<std::size_t, s
  * gets a point index, and returns the maximal radius of the tetrahedra containing that point.
  * @param index the index of the point (within the points list)
 */
-double Voronoi3D::GetMaxRadius(std::size_t index)
+double Voronoi3D::GetMaxRadius(const size_t &index) const
 {
     std::size_t N = PointTetras_[index].size();
     double res = 0;
@@ -669,7 +669,7 @@ double Voronoi3D::GetMaxRadius(std::size_t index)
  * gets a point index, and returns the minimal radius of the tetrahedra containing that point.
  * @param index the index of the point (within the points list)
 */
-double Voronoi3D::GetMinRadius(std::size_t index)
+double Voronoi3D::GetMinRadius(const size_t &index) const
 {
     std::size_t N = PointTetras_[index].size();
     double res = std::numeric_limits<double>::max();
@@ -1329,8 +1329,35 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         throw eo;
     }
 
+    this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
+                                                                    IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
+    size_t allPointsNum = this->allMyPoints.size();
+    for(size_t pointIdx = 0; pointIdx < allPointsNum; pointIdx++)
+    {
+        const Vector3D &point = activePoints[pointIdx];
+        this->allMyPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
+    }
+
+    if(this->allMyPoints.size() == activePoints.size())
+    {
+        // not a real parital build
+        this->myPointsTree = this->allMyPointsTree;
+    }
+    else
+    {
+        this->myPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
+                                                                        IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
+        for(size_t pointIdx = 0; pointIdx < this->Norg_; pointIdx++)
+        {
+            const Vector3D &point = activePoints[pointIdx];
+            this->myPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
+        }
+    }
+
     this->UpdateRadiuses(activePoints);    
+
     this->UpdateRangeFinder();
+
     this->BringGhostPointsToBuild(MPI_COMM_WORLD);
 
     CM_.resize(del_.points_.size());
@@ -1401,13 +1428,14 @@ void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
         if(this->radiuses[pointIndexAmongAll] <= 0)
         {
             // point does not have a radius from a previous timestep. Initialize a radius
-            this->radiuses[pointIndexAmongAll] = fastsqrt(myOctTree.closestPointDistance(point)); // todo second closest
+            this->radiuses[pointIndexAmongAll] = fastsqrt(this->allMyPointsTree->closestPointDistance(point)); // todo second closest
         }
     }
 }
+
 void Voronoi3D::UpdateRangeFinder()
 {
-    this->rangeFinder = std::make_shared<OctTreeFinder>(this->allMyPoints.begin(), this->allMyPoints.end(), this->ll_, this->ur_);
+    this->rangeFinder = std::make_shared<OctTreeFinder>(this->allMyPointsTree.get(), this->allMyPoints);
     // if(this->rangeFinder.get() == nullptr)
     // {
     //     //BruteForceFinder rangeFinder(this->del_.points_.begin(), this->del_.points_.begin() + this->Norg_);
@@ -2067,6 +2095,7 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     {
         this->radiuses.resize(allPoints.size(), RADIUS_UNINITIALIZED);
     }
+
     if(this->all_CM.size() < allPoints.size())
     {
         this->all_CM.resize(allPoints.size());
@@ -2074,7 +2103,7 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
 
     this->allMyPoints = allPoints;
     // this->radiuses.resize(allPoints.size(), RADIUS_UNINITIALIZED);
-    std::vector<Vector3D> points = VectorValues(allPoints, indicesToBuild);
+    std::vector<Vector3D> activePoints = VectorValues(allPoints, indicesToBuild);
 
     size_t pointsCounter = 0;
     for(const size_t &pointIdx : indicesToBuild)
@@ -2083,7 +2112,7 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
         pointsCounter++;
     }
 
-    this->BuildInitialize(points.size());
+    this->BuildInitialize(activePoints.size());
     // Norg_ = points.size();
     // // Clear data
     // PointTetras_.clear();
@@ -2101,13 +2130,13 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     // area_.clear();
     // Nghost_.clear();
 
-    std::vector<size_t> order = HilbertOrder3D(points);
+    std::vector<size_t> order = HilbertOrder3D(activePoints);
 
     // build delaunay
-    if(not points.empty())
+    if(not activePoints.empty())
     {
-        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(points[0], points[0]);
-        for(const Vector3D &point : points)
+        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(activePoints[0], activePoints[0]);
+        for(const Vector3D &point : activePoints)
         {
             bounding_box.first.x = std::min(bounding_box.first.x, point.x);
             bounding_box.second.x = std::max(bounding_box.second.x, point.x);
@@ -2120,10 +2149,10 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;
         // reportDuplications(new_points);
-        order = HilbertOrder3D(points);
+        order = HilbertOrder3D(activePoints);
         
         // initial build for the points
-        this->del_.Build(points, bounding_box.second, bounding_box.first, order);
+        this->del_.Build(activePoints, bounding_box.second, bounding_box.first, order);
     }
 
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
@@ -2132,7 +2161,33 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     this->tetra_centers_.resize(this->R_.size());
     this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
 
-    this->UpdateRadiuses(points);
+    this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
+                                                                    IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
+    size_t allPointsNum = this->allMyPoints.size();
+    for(size_t pointIdx = 0; pointIdx < allPointsNum; pointIdx++)
+    {
+        const Vector3D &point = activePoints[pointIdx];
+        this->allMyPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
+    }
+
+    if(this->allMyPoints.size() == activePoints.size())
+    {
+        // not a real parital build
+        this->myPointsTree = this->allMyPointsTree;
+    }
+    else
+    {
+        this->myPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
+                                                                        IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
+        for(size_t pointIdx = 0; pointIdx < this->Norg_; pointIdx++)
+        {
+            const Vector3D &point = activePoints[pointIdx];
+            this->myPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
+        }
+    }
+
+    this->UpdateRadiuses(activePoints);
+
     this->UpdateRangeFinder();
 
     #ifdef RICH_MPI
@@ -2320,7 +2375,7 @@ void Voronoi3D::BuildVoronoi(std::vector<size_t> const &order)
         FacesInCell_[i].shrink_to_fit();
 }
 
-inline double Voronoi3D::GetRadius(std::size_t index)
+inline double Voronoi3D::GetRadius(const size_t &index) const
 { 
     R_[index] = (R_[index] < 0)? CalcTetraRadiusCenter(index) : R_[index];
     if(std::isnan(this->R_[index]) or not std::isfinite(this->R_[index]))
@@ -2528,7 +2583,7 @@ vector<std::pair<std::size_t, std::size_t>> Voronoi3D::SerialFindIntersections(b
     return res;
 }
 
-double Voronoi3D::CalcTetraRadiusCenter(std::size_t index)
+double Voronoi3D::CalcTetraRadiusCenter(const size_t &index) const
 {
     Vector3D v2(del_.points_[del_.tetras_[index].points[1]]);
     v2 -= del_.points_[del_.tetras_[index].points[0]];
@@ -2587,7 +2642,7 @@ double Voronoi3D::CalcTetraRadiusCenter(std::size_t index)
     return Rres;
 }
 
-double Voronoi3D::CalcTetraRadiusCenterHiPrecision(std::size_t index)
+double Voronoi3D::CalcTetraRadiusCenterHiPrecision(const size_t &index) const
 {
     std::array<boost::multiprecision::cpp_dec_float_50, 3> V0;
     V0[0] = del_.points_[del_.tetras_[index].points[0]].x;
@@ -2794,6 +2849,11 @@ void Voronoi3D::output_buildextra(std::string const &filename) const
     file_handle.close();
 }
 #endif
+
+size_t Voronoi3D::GetContainingCell(const Vector3D &point) const
+{
+    return this->myPointsTree->closestPoint(point).getIndex();
+}
 
 std::size_t Voronoi3D::GetPointNo(void) const
 {
@@ -3023,6 +3083,11 @@ size_t Voronoi3D::GetAllPointsNo(void) const
 }
 
 std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
+{
+    return FaceNeighbors_;
+}
+
+const std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void) const
 {
     return FaceNeighbors_;
 }

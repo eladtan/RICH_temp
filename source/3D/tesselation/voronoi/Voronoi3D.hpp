@@ -85,8 +85,6 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
-  friend int main(int argc, char *argv[]);
-
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -113,23 +111,31 @@ private:
     \param res Result
    */
   void GetPointToCheck(std::size_t point, vector<unsigned char> const& checked, vector<std::size_t> &res);
+  
   void CalcRigidCM(std::size_t face_index);
-  void GetTetraCM(std::array<Vector3D, 4> const& points, Vector3D &CM)const;
-  double GetTetraVolume(std::array<Vector3D, 4> const& points)const;
-  //  void CalcCellCMVolume(std::size_t index);
-  double GetRadius(std::size_t index);
-  void CalcAllCM(void);
-  vector<std::pair<std::size_t, std::size_t> > SerialFindIntersections(bool first_run);
-  vector<std::pair<std::size_t, std::size_t> > SerialFirstIntersections(void);
-  double CalcTetraRadiusCenterHiPrecision(std::size_t index);
 
-  double CalcTetraRadiusCenter(std::size_t index);
+  void GetTetraCM(std::array<Vector3D, 4> const& points, Vector3D &CM)const;
+
+  double GetTetraVolume(std::array<Vector3D, 4> const& points)const;
+
+  //  void CalcCellCMVolume(std::size_t index);
+
+  double GetRadius(const size_t &index) const;
+
+  void CalcAllCM(void);
+
+  vector<std::pair<std::size_t, std::size_t> > SerialFindIntersections(bool first_run);
+
+  vector<std::pair<std::size_t, std::size_t> > SerialFirstIntersections(void);
+
+  double CalcTetraRadiusCenterHiPrecision(const size_t &index) const;
+
+  double CalcTetraRadiusCenter(const size_t &index) const;
+
   vector<Vector3D> CreateBoundaryPoints(vector<std::pair<std::size_t, std::size_t> > const& to_duplicate,
 					vector<vector<size_t> > &past_duplicate);
   void BuildVoronoi(std::vector<size_t> const& order);
 
-  double GetMaxRadius(std::size_t index);
-  double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   void BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
@@ -154,8 +160,10 @@ private:
                                   const boost::container::flat_map<size_t, size_t> &resultOfBigPoints
                                 );
 
-  void UpdateCMs(void);
   void UpdateRadiuses(const std::vector<Vector3D> &points);
+
+  void UpdateCMs(void);
+  
   void UpdateRangeFinder(void);
 
   #ifdef RICH_MPI
@@ -175,8 +183,8 @@ private:
   Delaunay3D del_;
   //vector<vector<std::size_t> > PointTetras_; // The tetras containing each point
   vector<tetra_vec > PointTetras_; // The tetras containing each point
-  vector<double> R_; // The radius of the sphere of each tetra
-  vector<Vector3D> tetra_centers_;
+  mutable vector<double> R_; // The radius of the sphere of each tetra
+  mutable vector<Vector3D> tetra_centers_;
   // Voronoi Data
   //vector<vector<std::size_t> > FacesInCell_;
   vector<face_vec > FacesInCell_;
@@ -204,19 +212,19 @@ private:
   std::array<Vector3D, 4> temp_points_;
   std::array<Vector3D, 5> temp_points2_;
   std::vector<Face> box_faces_;
-  
+
+  std::shared_ptr<OctTree<IndexedVector3D>> myPointsTree;
+  std::shared_ptr<OctTree<IndexedVector3D>> allMyPointsTree;
   #ifdef RICH_MPI
     std::shared_ptr<PointsManager> pointsManager;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
 
   #endif // RICH_MPI
 
-  #ifdef RICH_MPI
   std::shared_ptr<RangeFinder> rangeFinder;
-  std::vector<double> radiuses;
   std::vector<Vector3D> allMyPoints;
   std::vector<double> allPointsWeights;
-  #endif // RICH_MPI
+  std::vector<double> radiuses;
 
   Tessellation3D::AllPointsMap indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
 
@@ -285,6 +293,12 @@ public:
     \param rank Rank of parallel process
    */
   void BuildDebug(int rank);
+
+  double GetMaxRadius(const size_t &index) const;
+
+  double GetMinRadius(const size_t &index) const;
+
+  size_t GetContainingCell(const Vector3D &point) const override;
 
   std::size_t GetPointNo(void) const override;
 
@@ -471,8 +485,12 @@ public:
   /*! \brief Get all face neighbours
     \return List of pairs of indices to neighbours
    */
-  std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) override
-;
+  std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) override;
+
+  /*! \brief Get all face neighbours
+    \return List of pairs of indices to neighbours
+   */
+  const std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) const override;
 
   /*! \brief List all points in face
     \return List of all points in face

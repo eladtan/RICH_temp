@@ -79,6 +79,8 @@ public:
 
   #endif // RICH_MPI
 
+  virtual size_t GetContainingCell(const Vector3D &point) const = 0;
+  
   /*! \brief Get Total number of mesh generating points
     \return Number of mesh generating points
   */
@@ -336,7 +338,12 @@ public:
   /*! \brief Retrieve all neighbouring points who share a face
     \return List of pairs of indices of all neighbouring points
    */
-  virtual std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) = 0;
+  virtual std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) = 0;
+
+  /*! \brief Retrieve all neighbouring points who share a face
+    \return List of pairs of indices of all neighbouring points
+   */
+  virtual const std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) const = 0;
 
   /*!
     \brief Returns a vector normal to the face whose magnitude is the seperation between the neighboring points
@@ -475,20 +482,20 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
   }
 
   #ifdef RICH_MPI
-      std::chrono::_V2::system_clock::time_point start, end;
+      // std::chrono::_V2::system_clock::time_point start, end;
       // update the CM of active and not active, but non local points
 
-      start = std::chrono::system_clock::now();
+      // start = std::chrono::system_clock::now();
       // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
       // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
       std::vector<std::vector<T>> incoming = MPI_exchange_data(this->GetDuplicatedProcs(), this->GetDuplicatedPoints(), allBuildData);
-      end = std::chrono::system_clock::now();
-      int rank;
-      MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-      if(rank == 0)
-      {
-        std::cout << "Time to exchange data: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << std::endl;
-      }
+      // end = std::chrono::system_clock::now();
+      // int rank;
+      // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+      // if(rank == 0)
+      // {
+      //   std::cout << "Time to exchange data: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << std::endl;
+      // }
       // std::vector<std::vector<T>> incoming = MPI_Exchange_data_seperate(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
       size_t incomingSize = incoming.size();
       const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();

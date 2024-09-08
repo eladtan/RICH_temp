@@ -9,6 +9,8 @@
     #include "misc/serializable.hpp"
 #endif // RICH_MPI
 
+#include <iostream>
+
 #define DIM 3
 
 #define TOLERANCE 1e-12

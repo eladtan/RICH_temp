@@ -94,12 +94,14 @@ void TimeAdvance2::beforeAdvance(const std::vector<size_t> &participatingIndices
 	UpdateTessellation(this->tess, participatingIndices, this->point_vel, dt);
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Voronoi build time");
-
-    MPI_Tessellation_movement_exchange_data(this->tess, this->cells);
-    MPI_Tessellation_movement_exchange_data(this->tess, this->mid_extensives);
-    MPI_Tessellation_movement_exchange_data(this->tess, this->extensive);
-    MPI_Tessellation_movement_exchange_data(this->tess, this->point_vel);
-
+    
+    #ifdef RICH_MPI
+        MPI_Tessellation_movement_exchange_data(this->tess, this->cells);
+        MPI_Tessellation_movement_exchange_data(this->tess, this->mid_extensives);
+        MPI_Tessellation_movement_exchange_data(this->tess, this->extensive);
+        MPI_Tessellation_movement_exchange_data(this->tess, this->point_vel);
+    #endif // RICH_MPI
+    
     this->tess.SyncPartialBuildData(this->activeCells, this->cells);
     this->tess.SyncPartialBuildData(this->activeMidExtensive, this->mid_extensives);
     this->tess.SyncPartialBuildData(this->activeExtensive, this->extensive);

@@ -14,7 +14,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 
-#define BALANCE_FACTOR 1.1
+#define BALANCE_FACTOR 1.2
 
 /**
  * \author Maor Mizrachi
@@ -72,6 +72,10 @@ public:
         MPI_Allreduce(&myWeight, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         double idealWeight = totalWeight / this->size;
         int I_say = (myWeight >= (BALANCE_FACTOR * idealWeight))? 1 : 0; // if I say 'rebalance' or not
+        if(I_say)
+        {
+            std::cout << "my weight is " << myWeight << " and the ideal weight is " << idealWeight << std::endl;
+        }
         int rebalance = 0; // if someone says 'rebalance' or not
         MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
         if((rebalance > 0) and (this->rank == 0))

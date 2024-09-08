@@ -11,14 +11,14 @@ size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t
         Request(size_t _askingPointIdx = std::numeric_limits<size_t>::max(), size_t _remotePointIdxInGhost = std::numeric_limits<size_t>::max())
             : askingPointIdx(_askingPointIdx), remotePointIdxInGhost(_remotePointIdxInGhost){};
 
-        size_t getChunkSize() const override {return 2;};
+        inline size_t getChunkSize() const override {return 2;};
 
-        std::vector<double> serialize() const override
+        inline std::vector<double> serialize() const override
         {
             return {static_cast<double>(this->askingPointIdx), static_cast<double>(this->remotePointIdxInGhost)};
         };
 
-        void unserialize(const std::vector<double> &data) override
+        inline void unserialize(const std::vector<double> &data) override
         {
             this->askingPointIdx = static_cast<size_t>(data[0]);
             this->remotePointIdxInGhost = static_cast<size_t>(data[1]);
@@ -34,9 +34,9 @@ size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t
 
         Response(): Response(std::numeric_limits<size_t>::max(), RemotePoint()) {};
         
-        size_t getChunkSize() const override {return 4;};
+        inline size_t getChunkSize() const override {return 4;};
 
-        std::vector<double> serialize() const override
+        inline std::vector<double> serialize() const override
         {
             std::vector<double> res(4);
             res[0] = static_cast<double>(this->requestID);
@@ -102,7 +102,7 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
         {
             #ifdef RICH_MPI
                 result[pointIdx] = boost::container::flat_set<RemotePoint>({RemotePoint(rank, pointIdx, 0)});
-            #else
+            #else // RICH_MPI
                 result[pointIdx] = boost::container::flat_set<RemotePoint>({RemotePoint(pointIdx, 0)});
             #endif // RICH_MPI
         }
@@ -137,7 +137,7 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
                     requests[rank].push_back({pointIdx, neighbor});
                     continue;
                 }
-                // otherwise, belongs to a ghost
+                // otherwise, belongs to a remote
                 size_t rankIndexInGhostIndices = std::distance(dupProcs.cbegin(), std::find(dupProcs.cbegin(), dupProcs.cend(), _rank));
                 const std::vector<size_t> &ghostsOfRank = tess.GetGhostIndeces()[rankIndexInGhostIndices];
                 size_t ghostIndexInGhost = std::distance(ghostsOfRank.cbegin(), std::find(ghostsOfRank.cbegin(), ghostsOfRank.cend(), neighbor));
@@ -150,7 +150,11 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
         result[pointIdx] = boost::container::flat_set<RemotePoint>();
         if(atMost)
         {
-            result[pointIdx].insert(RemotePoint(rank, pointIdx, 0));
+            #ifdef RICH_MPI
+                result[pointIdx].insert(RemotePoint(rank, pointIdx, 0));
+            #else // RICH_MPI
+                result[pointIdx].insert(RemotePoint(pointIdx, 0));
+            #endif // RICH_MPI
         }
     }
 
@@ -187,7 +191,11 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
     #endif // RICH_MPI
     
     // recurse - get neighbors of neighbors
-    PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, nextSearch, order - 1, atMost, comm);
+    #ifdef RICH_MPI
+        PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, nextSearch, order - 1, atMost, comm);
+    #else // RICH_MPI
+        PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, nextSearch, order - 1, atMost);
+    #endif // RICH_MPI
 
     #ifdef RICH_MPI
         // now, answer back the results
@@ -258,6 +266,8 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
     return result;
 }
 
+#ifdef RICH_MPI
+
 std::vector<std::vector<std::pair<ComputationalCell3D, Vector3D>>> GetNeighborCellsPoints(const Tessellation3D &tess, const std::vector<size_t> &points, const std::vector<ComputationalCell3D> &cells, size_t order)
 {
     PointsToNeighborsMap map = GetKOrderNeighbors(tess, points, order, true);
@@ -307,7 +317,7 @@ std::vector<std::vector<std::pair<ComputationalCell3D, Vector3D>>> GetNeighborCe
                 continue;
             }
             dummy_for_search.local_index = p.indexOnRank;
-            // from the points that were received by the ranl of p, find where p.rank sent the point
+            // from the points that were received by the rank of p, find where p.rank sent the point
             auto it = std::lower_bound(toRecv[p.rank].begin(), toRecv[p.rank].end(), dummy_for_search, [](const ComputationalCell3DVector3D &a, const ComputationalCell3DVector3D &b){return a.local_index < b.local_index;});
             if(it == toRecv[p.rank].end())
             {
@@ -319,6 +329,4 @@ std::vector<std::vector<std::pair<ComputationalCell3D, Vector3D>>> GetNeighborCe
     return result;
 }
 
-/*!
-\brief Returns 
-*/
+#endif // RICH_MPI
