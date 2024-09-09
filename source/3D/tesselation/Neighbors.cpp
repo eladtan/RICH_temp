@@ -319,7 +319,7 @@ std::vector<std::vector<std::pair<ComputationalCell3D, Vector3D>>> GetNeighborCe
             dummy_for_search.local_index = p.indexOnRank;
             // from the points that were received by the rank of p, find where p.rank sent the point
             auto it = std::lower_bound(toRecv[p.rank].begin(), toRecv[p.rank].end(), dummy_for_search, [](const ComputationalCell3DVector3D &a, const ComputationalCell3DVector3D &b){return a.local_index < b.local_index;});
-            if(it == toRecv[p.rank].end())
+            if(it == toRecv[p.rank].end() or (*it).local_index != p.indexOnRank)
             {
                 continue;
             }
