@@ -116,7 +116,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
             f'-DPROJECT_ROOT_DIR={root_dir}',
             f'{build_dir}',
             f'{root_dir}/source']
-    print(cmd)
+    # print(cmd)
     cmake_result = subprocess.run(cmd,
                                   stdout=open(os.path.join(build_dir, config+'_cmake.out'), 'w'),
                                   stderr=open(os.path.join(build_dir, config+'_cmake.err'), 'w'),
