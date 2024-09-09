@@ -560,9 +560,7 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");
 
 	rank_t size;
-	rank_t rank;
 	MPI_Comm_size(comm, &size);
-	MPI_Comm_rank(comm, &rank);
 
 	if(data.size() != static_cast<size_t>(size))
 	{
@@ -583,10 +581,6 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	std::vector<int> sizesToAll(size, 0), sizesFromAll(size, 0);
 	for(rank_t _rank = 0; _rank < size; _rank++)
 	{
-		if(_rank == rank)
-		{
-			continue; // don't send to self
-		}
 		sizesToAll[_rank] = static_cast<int>(data[_rank].size()) * chunkSize;
 		totalSendSize += sizesToAll[_rank];
 		if(_rank > 0)
@@ -602,10 +596,6 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 
 	for(rank_t _rank = 0; _rank < size; _rank++)
 	{
-		if(_rank == rank)
-		{
-			continue; // don't send to self
-		}
 		for(const T &value : data[_rank])
 		{
 			std::vector<double> serialized = value.serialize();
@@ -633,22 +623,15 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
 	std::vector<std::vector<T>> resultByRanks(size);
 	for(rank_t _rank = 0; _rank < size; _rank++)
 	{
-		if(_rank == rank)
+		// receive input
+		size_t NumReceived = sizesFromAll[_rank] / chunkSize;
+		resultByRanks[_rank].reserve(NumReceived);
+		for(size_t j = 0; j < NumReceived; j++)
 		{
-			resultByRanks[_rank] = data[_rank];
-		}
-		else
-		{
-			// receive input
-			size_t NumReceived = sizesFromAll[_rank] / chunkSize;
-			resultByRanks[_rank].reserve(NumReceived);
-			for(size_t j = 0; j < NumReceived; j++)
-			{
-				T value;
-				value.unserialize(std::vector(allDataRecv.cbegin() + i, allDataRecv.cbegin() + i + chunkSize));
-				resultByRanks[_rank].push_back(value);
-				i += chunkSize;
-			}
+			T value;
+			value.unserialize(std::vector(allDataRecv.cbegin() + i, allDataRecv.cbegin() + i + chunkSize));
+			resultByRanks[_rank].push_back(value);
+			i += chunkSize;
 		}
 	}
 
