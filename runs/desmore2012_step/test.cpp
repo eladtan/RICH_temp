@@ -175,7 +175,7 @@ int main(void)
 	matrix_builder.mass_scale_ = mscale;
 	ZeroForce3D force = ZeroForce3D();
 
-	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
+	DefaultCellUpdater cu(false, 0.0, true, 0.0, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
 	RegularFlux3D *regular_flux = new RegularFlux3D(rs);
@@ -195,7 +195,7 @@ int main(void)
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
-	double init_dt = 1e-17 / tscale;
+	double init_dt = 1e-25 / tscale;
 	double const tf = 1e-9 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
@@ -225,7 +225,7 @@ int main(void)
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt,1e-12);
+			new_dt=std::min(new_dt,5e-12);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
