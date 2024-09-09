@@ -237,7 +237,7 @@ int main(void)
             cells[i].Erad = 7.5657e-15 * T * T * T * T * tscale * tscale * lscale / (mscale * cells[i].density);
             size_t const Ng = ENERGY_GROUPS_NUM;
             for(size_t g = 0; g < Ng; ++g)
-                cells[i].Eg[g] = std::max(cells[i].Erad * 1e-12, planck_energy_density_group_integral(opacity.energy_groups_boundary[g], opacity.energy_groups_boundary[g+1], T) * tscale * tscale * lscale / (mscale * cells[i].density));
+                cells[i].Eg[g] = std::max(cells[i].Erad * 1e-12, planck_integral::planck_energy_density_group_integral(opacity.energy_groups_boundary[g], opacity.energy_groups_boundary[g+1], T) * tscale * tscale * lscale / (mscale * cells[i].density));
         }       
     }
     catch (UniversalError const &eo)

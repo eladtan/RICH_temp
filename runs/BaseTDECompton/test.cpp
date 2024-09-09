@@ -639,7 +639,7 @@ namespace
 		size_t const Ng = energy_groups_boundary.size() - 1;
 		double const Erad_factor = boost::math::pow<4>(Tref / Tgas) / Ng;
 		for(size_t g = 0; g < Ng; ++g)
-			reference.Eg[g] = Erad_factor * planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], Tgas) * 1603 * 1603 * 7e10 / (2e33 * reference.density);
+			reference.Eg[g] = Erad_factor * planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], Tgas) * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.pressure = eos.dT2p(reference.density, Tgas, reference.tracers);
 		reference.velocity = Vector3D();
@@ -702,7 +702,7 @@ namespace
 				res[i].Erad = 7.5657e-15 * T * T * T * T * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
 				size_t const Ng = energy_groups_boundary.size() - 1;
 				for(size_t g = 0; g < Ng; ++g)
-					res[i].Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T) * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
+					res[i].Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T) * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
 				res[i].temperature = T;
 			}
 			else

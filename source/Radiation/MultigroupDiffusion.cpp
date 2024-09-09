@@ -240,9 +240,9 @@ double MultigroupDiffusion::calculate_dt(double const dt,
         std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" kr="<<sigma_absorption_average[max_loc]<<std::endl;
         for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
             std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density<<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]<<" bg="<<
-            planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< 
+            planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< 
             " bg_old="<<
-            planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], old_Tm[max_loc]) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
+            planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], old_Tm[max_loc]) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
         std::cout << "which one " << max_which << std::endl;
 		PrintDebugData(max_loc);
 	}
@@ -1963,7 +1963,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
             double const a = energy_groups_boundary[g] / kT;
             double const b = energy_groups_boundary[g+1] / kT;
 
-            double const bg = planck_integral(a, b);
+            double const bg = planck_integral::planck_integral(a, b);
 
             planck_integal_group[i][g] = bg;
             planck_sum += bg;

@@ -19,7 +19,7 @@ MultigroupDiffusionSideBoundary
                                                                                         MultigroupDiffusionBoundaryCalculator(energy_groups_center_, energy_groups_boundary_) {
 
     for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
-        Ug[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], temperature);
+        Ug[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], temperature);
     }
 }
 

@@ -129,7 +129,7 @@ int main(void)
 		init_cell.pressure = eos.de2p(init_cell.density, init_cell.internal_energy, init_cell.tracers, ComputationalCell3D::tracerNames);
 		init_cell.Erad = CG::radiation_constant * T * T * T * T * tscale * tscale / (init_cell.density * mscale / lscale);
         for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-            init_cell.Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T);
+            init_cell.Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T);
 			init_cell.Eg[g] *= tscale * tscale / (init_cell.density * mscale / lscale); 
 			init_cell.Eg[g]  = std::max(init_cell.Eg[g], init_cell.Erad*1e-8);
         }

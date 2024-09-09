@@ -156,7 +156,7 @@ int main(void)
     left_cell.pressure = eos.de2p(left_cell.density, left_cell.internal_energy, left_cell.tracers, ComputationalCell3D::tracerNames);
     left_cell.Erad = CG::radiation_constant * std::pow(left_cell.temperature, 4) / left_cell.density;
     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-        left_cell.Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], left_cell.temperature);
+        left_cell.Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], left_cell.temperature);
         left_cell.Eg[g] /= left_cell.density;
         left_cell.Eg[g] = std::max(left_cell.Eg[g], left_cell.Erad*1e-8);
     }
@@ -168,7 +168,7 @@ int main(void)
     right_cell.internal_energy = eos.dT2e(right_cell.density, right_cell.temperature, right_cell.tracers, ComputationalCell3D::tracerNames);
     right_cell.pressure = eos.de2p(right_cell.density, right_cell.internal_energy, right_cell.tracers, ComputationalCell3D::tracerNames);
     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-        right_cell.Eg[g] = planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], right_cell.temperature);
+        right_cell.Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], right_cell.temperature);
         right_cell.Eg[g] /= right_cell.density;
         right_cell.Eg[g] = std::max(right_cell.Eg[g], right_cell.Erad*1e-8);
     }
