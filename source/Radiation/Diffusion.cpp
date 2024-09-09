@@ -140,8 +140,8 @@ double Diffusion::calculate_dt(double const dt,
 			continue;
 		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
 		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Er);
-		if(fleck_factor[i] < 0.5)
-			diff *= 0.1;
+		// if(fleck_factor[i] < 0.5)
+		// 	diff *= 0.1;
 		if(diff > max_diff)
 		{
 			max_diff = diff;
@@ -491,17 +491,17 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 // double const Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density;
                 // double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (Er - Er_j), mid_D, 0.5 * (Er + Er_j)) : 1;
 
-                double const T1 = cells_cgs[i].temperature;
-                double const T2 = cells_cgs[neighbor_j].temperature;
-                double const maxT = std::max(T1, T2);
-                cells_cgs[i].temperature = maxT;
-                double const D1 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
-                cells_cgs[i].temperature = T1;
-                cells_cgs[neighbor_j].temperature = maxT;
-                double const D2 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[neighbor_j]);
-                cells_cgs[neighbor_j].temperature = T2;
-                double mid_D = 2 * D1 * D2 / (D1 + D2);
-                mid_D = Dcell;
+                // double const T1 = cells_cgs[i].temperature;
+                // double const T2 = cells_cgs[neighbor_j].temperature;
+                // double const maxT = std::max(T1, T2);
+                // cells_cgs[i].temperature = maxT;
+                // double const D1 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
+                // cells_cgs[i].temperature = T1;
+                // cells_cgs[neighbor_j].temperature = maxT;
+                // double const D2 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[neighbor_j]);
+                // cells_cgs[neighbor_j].temperature = T2;
+                // double mid_D = 2 * D1 * D2 / (D1 + D2);
+                double const mid_D = Dcell;
                 double const momentum_relativity_term = -0.5 * dt * flux_limiter * tess.GetArea(faces[j]) * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * length_scale_ * length_scale_ * time_scale_
                     * ScalarProd(cells_cgs[i].velocity, r_ij) / 3;
                 A[i][0] += momentum_relativity_term;
