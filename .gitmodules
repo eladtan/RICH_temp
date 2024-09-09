@@ -13,3 +13,6 @@
 [submodule "source/Radiation/tau_matrix_calculator"]
 	path = source/Radiation/tau_matrix_calculator
 	url = git@github.com:ItamarShmelo/tau_matrix_calculator.git
+[submodule "source/Radiation/planck_integral"]
+	path = source/Radiation/planck_integral
+	url = git@github.com:ItamarShmelo/planck_integral.git
