@@ -10,3 +10,6 @@
 [submodule "analysis_files /radiative_shock"]
 	path = analysis_files/radiative_shock
 	url = git@gitlab.com:menikrief/radiative_shock.git
+[submodule "source/Radiation/tau_matrix_calculator"]
+	path = source/Radiation/tau_matrix_calculator
+	url = git@github.com:ItamarShmelo/tau_matrix_calculator.git
