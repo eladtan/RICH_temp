@@ -2019,12 +2019,21 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
         // TODO: What is energy ratio (see Diffusion.cpp same line)
         cv *= mass_scale_ / (pow<2>(time_scale_)*length_scale_);
         double const cv_bar = cv / get_radiation_cv(T);
-        double const f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, sigma_planck);
+
+        double Gamma = sigma_planck;
+        if(compton_on_){
+            generate_S_and_dSdUm_matrices(cells[i], i);
+            Gamma += calculate_Upsilon(cells[i]);
+        }
+
+        double const f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, Gamma);
 
         if(f < 0){
-            throw UniversalError("Negative fleck factor");
+            throw UniversalError("Negative fleck factor :(");
         }
+        
         fleck_factor[i] = f;
+        Gammas[i] = Gamma;    
     }
 }
 
