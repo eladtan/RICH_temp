@@ -2628,3 +2628,73 @@ void MultigroupDiffusion::calculate_compton_quantities(ComputationalCell3D const
     }
 }
 
+double MultigroupDiffusion::get_implicit_compton_contribution(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, std::size_t const gt, double const dt_cgs) const {
+    assert(cell_id_of_compton_matrices == cell.ID);
+
+    double const volume = tess.GetVolume(cell_index) * pow<3>(length_scale_);
+
+    double const cdt = CG::speed_of_light*dt_cgs;
+    
+    double const T = old_Tm[cell_index];
+    double const cv = eos_.dT2cv(cell.density, T, cell.tracers, ComputationalCell3D::tracerNames)*mass_scale_ / (pow<2>(time_scale_)*length_scale_);
+
+    double const cv_bar = cv / get_radiation_cv(T);
+    double const cdt_cv_bar = cdt / cv_bar;
+
+    double const kg = sigma_absorption_group[cell_index][g];
+    double const kgbg = kg*planck_integal_group[cell_index][g];
+
+    double const f = fleck_factor[cell_index];
+
+    double implicit_contribution = -volume*cdt*S[gt][g];
+    
+    double const Gamma = Gammas[cell_index];
+    double const factor_1_Q = volume*cdt*kgbg*(1.0 - f)/Gamma;
+    implicit_contribution -= factor_1_Q*Q_vector[gt];
+    
+    if(small_rel_diff){
+        double const factor_2_Q = volume*cdt*cdt_cv_bar*f*sum_dSdUm[g];
+        double const kgt = sigma_absorption_group[cell_index][gt];
+
+        implicit_contribution -= factor_2_Q*(kgt + Q_vector[gt]);
+    } else {
+        double Um_old = get_radiation_energy_density(T);
+        implicit_contribution -= factor_1_Q*Um_old*Upsilon_vector[gt];       
+        
+        double const kp = sigma_absorption_planck[cell_index];
+        double const factor_dSdUm = volume*cdt*cdt_cv_bar*f*(Um_old*kp - Q);
+        implicit_contribution += factor_dSdUm * dSdUm[gt][g];
+    }
+
+    return implicit_contribution;
+}
+
+double MultigroupDiffusion::get_implicit_compton_contribution_to_b(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, double const dt_cgs) const {
+    assert(cell_id_of_compton_matrices == cell.ID);
+
+    if(!small_rel_diff) return 0.0;
+
+    double const volume = tess.GetVolume(cell_index) * pow<3>(length_scale_);
+
+    double const cdt = CG::speed_of_light*dt_cgs;
+    
+    double const T = old_Tm[cell_index];
+    double const cv = eos_.dT2cv(cell.density, T, cell.tracers, ComputationalCell3D::tracerNames)*mass_scale_ / (pow<2>(time_scale_)*length_scale_);
+
+    double const cv_bar = cv / get_radiation_cv(T);
+    double const cdt_cv_bar = cdt / cv_bar;
+
+    double const kg = sigma_absorption_group[cell_index][g];
+    double const kgbg = kg*planck_integal_group[cell_index][g];
+
+    double const f = fleck_factor[cell_index];
+    double const Gamma = Gammas[cell_index];
+    double factor_1_Q = volume*cdt*kgbg*(1.0 - f)/Gamma;
+
+    double const factor_2_Q = volume*cdt*cdt_cv_bar*f*sum_dSdUm[g];
+    double const kp = sigma_absorption_planck[cell_index];
+
+    double const Um_old = get_radiation_energy_density(T);
+
+    return Um_old*(factor_1_Q*Upsilon - factor_2_Q*kp);
+}
