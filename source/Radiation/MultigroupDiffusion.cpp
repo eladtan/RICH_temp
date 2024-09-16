@@ -1627,9 +1627,14 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
         }
 
         for(size_t group = 0; group < ENERGY_GROUPS_NUM; ++group){
+            
             double const CG_res = std::max(CG_result[i * ENERGY_GROUPS_NUM + group], std::numeric_limits<double>::min()*1e100);
-            double const full_CG_res_i = std::max(full_CG_result[i * ENERGY_GROUPS_NUM + group], std::numeric_limits<double>::min()*1e100);
+            
+            double const full_CG_res_i = std::max(full_CG_result[i * ENERGY_GROUPS_NUM + group], 
+            std::numeric_limits<double>::min()*1e100);
+            
             extensives[i].Eg[group] = CG_res * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+            
             cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
             Erad_tot += extensives[i].Eg[group];
             // absorption + emission
