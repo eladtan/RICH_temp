@@ -7,6 +7,7 @@
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
 #include "planck_integral/planck_integral.hpp"
+#include "tau_matrix_calculator/src/tau_matrix_monte_carlo.hpp"
 
 using namespace CG;
 
@@ -142,8 +143,31 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
     mutable std::vector<std::vector<double>> R2;
     mutable std::vector<std::vector<double>> D;
 
+    mutable tau_matrix_monte_carlo_engine tau_engine;
+
+    mutable std::vector<std::vector<double>> tau;
+    mutable std::vector<std::vector<double>> dtau_dUm;
+    mutable std::vector<std::vector<double>> S;
+    mutable std::vector<std::vector<double>> dSdUm;
+
+    mutable std::vector<double> n; // occupancy number
+    mutable std::size_t cell_id_of_compton_matrices;
+
+    mutable std::vector<double> Gammas;
+
+    mutable bool small_rel_diff = 0.0;
+
+    mutable std::vector<double> Q_vector;
+    mutable double Q;
+    mutable std::vector<double> Upsilon_vector;
+    mutable double Upsilon;
+    mutable std::vector<double> sum_dSdUm;
+
+    
+
 private:
-    bool mutable displayed_warning_;
+    mutable bool  displayed_warning_;
+    mutable bool compton_initialized_;
     void BuildMatrixGroup(std::size_t group,
                           Tessellation3D const& tess, 
                           mat& A, 
@@ -212,6 +236,16 @@ private:
                             std::vector<ComputationalCell3D> const& cells,
                             std::vector<double>& lambda_g,
                             std::vector<double>& R2_g) const; 
+
+    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index) const;
+
+    double calculate_Upsilon(ComputationalCell3D const& cell) const;
+
+    void calculate_compton_quantities(ComputationalCell3D const& cell, std::size_t const cell_index) const;
+
+    double get_implicit_compton_contribution(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, std::size_t const gt, double const dt_cgs) const;
+
+    double get_implicit_compton_contribution_to_b(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, double const dt_cgs) const;
 };
 
 
