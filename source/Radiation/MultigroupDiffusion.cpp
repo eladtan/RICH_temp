@@ -332,8 +332,11 @@ bool MultigroupDiffusion::step(double const tolerance,
     tot_iters += total_iters;
     if(rank == 0)
         std::cout<<"Total iterations: "<<tot_iters<<std::endl;
+    
     PostCGFull(tess, extensives, dt, cells, new_Eg, new_Eg_full);
+    
     cells_cgs = cells;
+    
     for(std::size_t i=0; i<N; ++i){
         cells_cgs[i].density *= mass_scale_ / pow<3>(length_scale_);
         cells_cgs[i].internal_energy *= pow<2>(length_scale_) / pow<2>(time_scale_);
