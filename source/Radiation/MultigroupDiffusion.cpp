@@ -1596,7 +1596,36 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
         double const T  = old_Tm[i];
         double const kp = sigma_absorption_planck[i];
         double const Um = get_radiation_energy_density(T);
+        
         double dE_absorption_emission = -volume * f * cdt * kp*Um;
+        
+        double dE_compton = 0.0;
+        
+        if(compton_on_){
+            generate_S_and_dSdUm_matrices(cells[i], i);
+            calculate_compton_quantities(cells[i], i);
+
+            for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+                
+                dE_compton -= get_implicit_compton_contribution_to_b(tess, cells[i], i, g, dt_cgs);
+                
+                auto const bg = planck_integal_group[i][g];
+                double const Gamma_1 = 1.0 / Gammas[i];
+
+
+                for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
+                    double const full_CG_res_i = std::max(full_CG_result[i * ENERGY_GROUPS_NUM + gt], std::numeric_limits<double>::min()*1e100);
+                    
+                    double const implicit_conribution_group_j = -volume*bg * (1 - f) * sigma_absorption_group[i][gt] * sigma_absorption_group[i][g] * cdt * Gamma_1;
+                    
+                    dE_compton += volume*implicit_conribution_group_j * std::max(full_CG_result[i * ENERGY_GROUPS_NUM + gt], std::numeric_limits<double>::min()*1e100);
+
+                    dE_compton += get_implicit_compton_contribution(tess, cells[i], i, g, gt, dt_cgs) * full_CG_res_i;
+                    
+                }
+            }
+        }
+
         for(size_t group = 0; group < ENERGY_GROUPS_NUM; ++group){
             double const CG_res = std::max(CG_result[i * ENERGY_GROUPS_NUM + group], std::numeric_limits<double>::min()*1e100);
             double const full_CG_res_i = std::max(full_CG_result[i * ENERGY_GROUPS_NUM + group], std::numeric_limits<double>::min()*1e100);
@@ -1604,11 +1633,16 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
             cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
             Erad_tot += extensives[i].Eg[group];
             // absorption + emission
-            dE_absorption_emission += f * volume * cdt * full_CG_res_i * sigma_absorption_group[i][group];
+            
+            // dE_absorption_emission += f * volume * cdt * full_CG_res_i * sigma_absorption_group[i][group];
+            dE_absorption_emission += volume * cdt * full_CG_res_i * sigma_absorption_group[i][group];
         }
+        
         dE_absorption_emission *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
-        extensives[i].energy += dE_absorption_emission;
-        extensives[i].internal_energy += dE_absorption_emission; 
+        dE_compton *= pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+        
+        extensives[i].energy += dE_absorption_emission + dE_compton;
+        extensives[i].internal_energy += dE_absorption_emission + dE_compton; 
         extensives[i].Erad = Erad_tot;
         cells[i].Erad =  extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy =  extensives[i].internal_energy / extensives[i].mass;
