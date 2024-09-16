@@ -2589,3 +2589,17 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
     small_rel_diff = rel_diff < 0.1;
 }
 
+double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) const {
+    assert(cell_id_of_compton_matrices == cell.ID);
+
+    double Upsilon = 0.0;
+
+    for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
+        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+            Upsilon += dSdUm[gt][gtt] * cell.Eg[gt] * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_);        
+        }
+    }
+
+    return Upsilon;
+}
+
