@@ -2603,3 +2603,28 @@ double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) c
     return Upsilon;
 }
 
+void MultigroupDiffusion::calculate_compton_quantities(ComputationalCell3D const& cell, std::size_t const cell_index) const {
+    assert(cell_id_of_compton_matrices == cell.ID);
+
+    Q = 0.0;
+
+    Upsilon = calculate_Upsilon(cell);
+    fill_zero(Q_vector);
+    fill_zero(Upsilon_vector);
+
+    fill_zero(sum_dSdUm);
+
+    for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
+        Q += sigma_absorption_group[cell_index][gt] * cell.Eg[gt] * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+            Q_vector[gt] -= S[gt][gtt];
+            Q -= S[gt][gtt]*cell.Eg[gt]*cell.density * pow<2>(length_scale_) / pow<2>(time_scale_);
+            
+            Upsilon_vector[gt] += dSdUm[gt][gtt];
+
+            sum_dSdUm[gt] += dSdUm[gtt][gt]*cell.Eg[gtt] * cell.density*pow<2>(length_scale_) / pow<2>(time_scale_);
+        }
+    }
+}
+
