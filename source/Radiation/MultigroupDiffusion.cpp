@@ -646,19 +646,19 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
         }
     }
 
-    double E0 = cells_cgs[0].Eg[0] * cells_cgs[0].density;
-    double A00 = A[0][0];
-    double A01 = A[0][1];
-    double b0 = b[0];
-    double A111 = A[0][ENERGY_GROUPS_NUM];
-    double A211 = A[0][ENERGY_GROUPS_NUM+1];
+    // double E0 = cells_cgs[0].Eg[0] * cells_cgs[0].density;
+    // double A00 = A[0][0];
+    // double A01 = A[0][1];
+    // double b0 = b[0];
+    // double A111 = A[0][ENERGY_GROUPS_NUM];
+    // double A211 = A[0][ENERGY_GROUPS_NUM+1];
 
-    double A10 = A[ENERGY_GROUPS_NUM][0];
-    double A11 = A[ENERGY_GROUPS_NUM][1];
-    double A21 = A[ENERGY_GROUPS_NUM][2];
-    A111 = A[ENERGY_GROUPS_NUM][ENERGY_GROUPS_NUM];
-    A211 = A[ENERGY_GROUPS_NUM][ENERGY_GROUPS_NUM+1];
-    double b1 = b[ENERGY_GROUPS_NUM];
+    // double A10 = A[ENERGY_GROUPS_NUM][0];
+    // double A11 = A[ENERGY_GROUPS_NUM][1];
+    // double A21 = A[ENERGY_GROUPS_NUM][2];
+    // A111 = A[ENERGY_GROUPS_NUM][ENERGY_GROUPS_NUM];
+    // A211 = A[ENERGY_GROUPS_NUM][ENERGY_GROUPS_NUM+1];
+    // double b1 = b[ENERGY_GROUPS_NUM];
 
     // Add velocity term
    for(std::size_t i=0; i<Nlocal; ++i){
