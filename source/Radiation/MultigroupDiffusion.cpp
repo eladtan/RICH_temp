@@ -3,6 +3,16 @@
 
 using boost::math::pow;
 
+void fill_zero(std::vector<double>& vec) {
+    std::fill(vec.begin(), vec.end(), 0.0);
+}
+
+void fill_zero(std::vector<std::vector<double>>& mat) {
+    for(std::vector<double>& row : mat) {
+        std::fill(row.begin(), row.end(), 0.0);
+    }
+}
+
 MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                                          std::vector<double> const& energy_groups_boundary_,
                                          MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
