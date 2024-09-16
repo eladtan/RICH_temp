@@ -2535,3 +2535,57 @@ void MultigroupDiffusion::calculate_lambda_g_and_R2_g(std::size_t const group,
         R2_g[i] = lam/3.0 + pow<2>(lam_R_g);
     }
 }
+
+void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index) const {
+    cell_id_of_compton_matrices = cell.ID;
+
+    double constexpr fac = pow<3>(units::c) / (8.0*M_PI*units::planck_constant);
+    
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        double const dnu = energy_groups_width[g]/units::planck_constant;
+        double const nu = energy_groups_center[g]/units::planck_constant;
+
+        double const Eg = cell.Eg[g] * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_);
+
+        n[g] = fac * Eg / (pow<3>(nu)*dnu);
+    }
+
+    double const A = 1.0;
+    double const Z = 1.0;
+    tau_engine.generate_tau_matrix(old_Tm[cell_index], cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
+
+    fill_zero(S);
+    fill_zero(dSdUm);
+
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
+            // in scattering
+            double const in_scattering_factor = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n[g]);
+            
+            S[gt][g] += tau[gt][g] * in_scattering_factor;
+            dSdUm[gt][g] += dtau_dUm[gt][g] * in_scattering_factor;
+
+            // out scattering
+            double const out_scattering_factor = 1.0 + n[gt];
+            S[g][g] -= tau[g][gt] * out_scattering_factor;
+            dSdUm[g][g] -= dtau_dUm[g][gt] * out_scattering_factor;
+        }
+    }
+    
+    // EXPLICIT
+    // fill_zero(dSdUm);
+
+    double rel_diff=0.0;
+    for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+        double const Bg = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], old_Tm[cell_index]);
+
+        rel_diff += std::abs(cell.Eg[g] * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_) - Bg);
+    }
+
+    rel_diff /= cell.Erad * cell.density * pow<2>(length_scale_) / pow<2>(time_scale_) + get_radiation_energy_density(old_Tm[cell_index]);
+
+    std::cout << "rel_diff = " << rel_diff << std::endl;
+
+    small_rel_diff = rel_diff < 0.1;
+}
+
