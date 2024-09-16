@@ -482,19 +482,44 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
 
     // Add the emission term to the matrix
     for(std::size_t i=0; i < Nlocal; ++i){
+        if(compton_on_) {
+            generate_S_and_dSdUm_matrices(cells[i], i);
+            calculate_compton_quantities(cells[i], i);
+        }
+        
         double const f = fleck_factor[i];
         double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
         for(size_t group=0; group<ENERGY_GROUPS_NUM; ++group){
             auto const bg = planck_integal_group[i][group];
-            double const sigma_planck_1 = 1.0 / sigma_absorption_planck[i];
+            // double const sigma_planck_1 = 1.0 / sigma_absorption_planck[i];
+            double const Gamma_1 = 1.0 / Gammas[i];
+
+            double const cdtkg = cdt * sigma_absorption_group[i][group];
+            double const implicit_self_contribution = -(1 - f) * cdtkg * Gamma_1 * bg * sigma_absorption_group[i][group];
+            
+            double implicit_self_compton_contribution = 0.0;
+
+            if(compton_on_){
+                double const implicit_compton_contribution_to_b = get_implicit_compton_contribution_to_b(tess, cells[i], i, group, dt_cgs);
+                b[i * ENERGY_GROUPS_NUM + group] += implicit_compton_contribution_to_b;
+
+                implicit_self_compton_contribution = get_implicit_compton_contribution(tess, cells[i], i, group, group, dt_cgs);
+            }
+
+            A[i * ENERGY_GROUPS_NUM + group].push_back(volume*(1.0 + cdtkg + implicit_self_contribution) + implicit_self_compton_contribution);
             A_indeces[i * ENERGY_GROUPS_NUM + group].push_back(i * ENERGY_GROUPS_NUM + group);
 
-            double cdtkg = cdt * sigma_absorption_group[i][group];
-            double implicit_self_contribution = -(1 - f) * cdtkg * sigma_planck_1 * bg * sigma_absorption_group[i][group];
-            A[i * ENERGY_GROUPS_NUM + group].push_back(volume*(1.0 + cdtkg + implicit_self_contribution));
             for(size_t group_j=0; group_j<ENERGY_GROUPS_NUM; ++group_j){
                 if(group_j!= group){
-                    A[i * ENERGY_GROUPS_NUM + group].push_back(-volume*bg * (1 - f) * sigma_absorption_group[i][group_j] * sigma_absorption_group[i][group] * cdt * sigma_planck_1);
+                    double const implicit_conribution_group_j = -volume*bg * (1 - f) * sigma_absorption_group[i][group_j] * sigma_absorption_group[i][group] * cdt * Gamma_1;
+                    
+                    double implicit_compton_contribution_group_j = 0.0;
+                    if(compton_on_){
+                        implicit_compton_contribution_group_j = get_implicit_compton_contribution(tess, cells[i], i, group, group_j, dt_cgs);
+                    }
+                    
+                    A[i * ENERGY_GROUPS_NUM + group].push_back(implicit_conribution_group_j + implicit_compton_contribution_group_j);
+                    
                     A_indeces[i * ENERGY_GROUPS_NUM + group].push_back(i * ENERGY_GROUPS_NUM + group_j);
                 }
             }
