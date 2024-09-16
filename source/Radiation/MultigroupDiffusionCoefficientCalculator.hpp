@@ -4,6 +4,9 @@
 #include "conj_grad_solve.hpp"
 #include <functional>
 
+#include <boost/math/special_functions/pow.hpp>
+// TODO: make a units namespace used by all the program 
+#include "tau_matrix_calculator/src/units.hpp"
 class MultigroupDiffusionCoefficientCalculator {
 public:
 
@@ -84,6 +87,35 @@ class GrayPowerLawOpacity : public MultigroupDiffusionCoefficientCalculator {
 
         double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override;
 
+};
+
+using boost::math::pow;
+class FreeFreeAbsorptionOpacityMultigroup : public MultigroupDiffusionCoefficientCalculator {
+    private:
+        std::size_t const Z;
+        
+        static double constexpr m_e = CG::electron_mass;
+        static double constexpr c = CG::speed_of_light;
+        static double constexpr c2 = pow<2>(c);
+        static double constexpr h = units::planck_constant;
+        static double constexpr h_bar = h / (2.0*M_PI);
+        static double constexpr electric_constant = 8.8541878188e-12 / 1e6 / 1e3;
+        static double constexpr q_e = 4.8032e-10;
+        static double constexpr pi = M_PI;
+        static double constexpr kB = CG::boltzmann_constant;
+
+        double const coefficient = 8.0 * pow<6>(q_e)/(3.0*std::sqrt(2.*pi) * std::pow(m_e, 1.5)*c*h);
+    
+    public:
+        FreeFreeAbsorptionOpacityMultigroup(std::size_t const Z_,
+                                            std::vector<double> const& energy_groups_center_,
+                                            std::vector<double> const& energy_groups_boundary_);
+
+        double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override;
+
+        double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override;
+
+        double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override;
 };
 
 #endif // MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
