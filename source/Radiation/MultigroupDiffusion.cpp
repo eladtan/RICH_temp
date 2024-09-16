@@ -469,8 +469,8 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
             b[i * ENERGY_GROUPS_NUM + group] = volume_cgs * old_Eg[i][group] * mass_scale_ / (length_scale_*pow<2>(time_scale_));
 
             // second term
-            auto const cdtkgbg = f*cdt*sigma_absorption_group[i][group]*bg;
-            b[i * ENERGY_GROUPS_NUM + group] += volume_cgs*cdtkgbg*Um;
+            auto const cdtkgbgf = f*cdt*sigma_absorption_group[i][group]*bg;
+            b[i * ENERGY_GROUPS_NUM + group] += volume_cgs*cdtkgbgf*Um;
         }
     }
     
