@@ -499,6 +499,7 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       // std::vector<std::vector<T>> incoming = MPI_Exchange_data_seperate(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
       size_t incomingSize = incoming.size();
       const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();
+      assert(this->GetDuplicatedProcs().size() == Nghost.size());
       assert(incomingSize == Nghost.size());
       for (size_t i = 0; i < incomingSize; ++i)
       {

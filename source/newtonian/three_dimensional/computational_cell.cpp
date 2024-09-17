@@ -117,99 +117,70 @@ vector<string> ComputationalCell3D::tracerNames;
 vector<string> ComputationalCell3D::stickerNames;
 
 #ifdef RICH_MPI
-size_t ComputationalCell3D::getChunkSize(void) const
+size_t ComputationalCell3D::dump(Serializer *serializer) const
 {
-	return 13 + tracers.size() + stickers.size();
+	size_t bytes = 0;
+	bytes += serializer->insert(this->density);
+	bytes += serializer->insert(this->pressure);
+	bytes += serializer->insert(this->velocity);
+	bytes += serializer->insert(this->internal_energy);
+	bytes += serializer->insert(this->temperature);
+	bytes += serializer->insert(this->ID);
+	bytes += serializer->insert(this->Erad);
+	bytes += serializer->insert(this->Erad_dt);
+	bytes += serializer->insert(this->Erad_dt_dt);
+	bytes += serializer->insert(this->cs);
+	for(size_t j = 0; j < MAX_TRACERS; ++j)
+	{
+		bytes += serializer->insert(this->tracers[j]);
+	}
+	for(size_t i = 0; i < MAX_STICKERS; ++i)
+	{
+		bytes += serializer->insert(this->stickers[i]);
+	}
+	return bytes;
 }
 
-vector<double> ComputationalCell3D::serialize(void) const
+size_t ComputationalCell3D::load(const Serializer *serializer, std::size_t byteOffset)
 {
-	vector<double> res(getChunkSize());
-	res.at(0) = density;
-	res.at(1) = pressure;
-	res.at(2) = velocity.x;
-	res.at(3) = velocity.y;
-	res.at(4) = velocity.z;
-	res.at(5) = dt;
-	res.at(6) = internal_energy;
-	res.at(7) = temperature;
-	res.at(8) = static_cast<double>(ID);
-	res.at(9) = Erad;
-	res.at(10) = Erad_dt;
-	res.at(11) = Erad_dt_dt;
-	res.at(12) = cs;
-	size_t counter = 13;
-	//size_t N = tracers.size();
-#ifdef __INTEL_COMPILER
-#pragma ivdep
-#endif
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		res[j + counter] = tracers[j];
-	//size_t N2 = stickers.size();
-#ifdef __INTEL_COMPILER
-#pragma ivdep
-#endif
-	for (size_t j = 0; j < MAX_STICKERS; ++j)
-		res[j + counter + MAX_TRACERS] = stickers[j] ? 1 : 0;
-	return res;
+	size_t bytesRead = 0;
+	bytesRead += serializer->extract(this->density, byteOffset);
+	bytesRead += serializer->extract(this->pressure, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->velocity, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->internal_energy, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->temperature, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->ID, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->Erad, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->Erad_dt, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->Erad_dt_dt, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->cs, byteOffset + bytesRead);
+	for(size_t j = 0; j < MAX_TRACERS; ++j)
+	{
+		bytesRead += serializer->extract(this->tracers[j], byteOffset + bytesRead);
+	}
+	for(size_t i = 0; i < MAX_STICKERS; ++i)
+	{
+		bytesRead += serializer->extract(this->stickers[i], byteOffset + bytesRead);
+	}
+	return bytesRead;
 }
 
-void ComputationalCell3D::unserialize
-(const vector<double>& data)
+size_t Slope3D::dump(Serializer *serializer) const
 {
-	assert(data.size() == getChunkSize());
-	density = data.at(0);
-	pressure = data.at(1);
-	velocity.x = data.at(2);
-	velocity.y = data.at(3);
-	velocity.z = data.at(4);
-	dt = data.at(5);
-	internal_energy = data.at(6);
-	temperature = data.at(7);
-	ID = static_cast<size_t>(std::llround(data.at(8)));
-	Erad = data.at(9);
-	Erad_dt = data.at(10);
-	Erad_dt_dt = data.at(11);
-	cs = data.at(12);
-	size_t counter = 13;
-	//size_t N = tracers.size();
-#ifdef __INTEL_COMPILER
-#pragma ivdep
-#endif
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		tracers[j] = data.at(counter + j);
-	//size_t N2 = stickers.size();
-#ifdef __INTEL_COMPILER
-#pragma ivdep
-#endif
-	for (size_t i = 0; i < MAX_STICKERS; ++i)
-		stickers[i] = data.at(counter + MAX_TRACERS + i)>0.5;
+	size_t bytes = 0;
+	bytes += serializer->insert(this->xderivative);
+	bytes += serializer->insert(this->yderivative);
+	bytes += serializer->insert(this->zderivative);
+	return bytes;
 }
 
-size_t Slope3D::getChunkSize(void) const
+size_t Slope3D::load(const Serializer *serializer, std::size_t byteOffset)
 {
-	return xderivative.getChunkSize() * 3;
-}
-
-vector<double> Slope3D::serialize(void) const
-{
-	vector<double> res(getChunkSize());
-	vector<double> temp(xderivative.serialize());
-	res.reserve(temp.size() * 3);
-	std::copy(temp.begin(), temp.end(), res.begin());
-	temp = yderivative.serialize();
-	std::copy(temp.begin(), temp.end(), res.begin() + xderivative.getChunkSize());
-	temp = zderivative.serialize();
-	std::copy(temp.begin(), temp.end(), res.begin() + xderivative.getChunkSize() + yderivative.getChunkSize());
-	return res;
-}
-
-void Slope3D::unserialize(const vector<double>& data)
-{
-	size_t size = xderivative.getChunkSize();
-	xderivative.unserialize(vector<double>(data.begin(), data.begin() + size));
-	yderivative.unserialize(vector<double>(data.begin() + size, data.begin() + 2*size));
-	zderivative.unserialize(vector<double>(data.begin() + 2*size, data.end()));
+	size_t bytesRead = 0;
+	bytesRead += serializer->extract(this->xderivative, byteOffset);
+	bytesRead += serializer->extract(this->yderivative, byteOffset + bytesRead);
+	bytesRead += serializer->extract(this->zderivative, byteOffset + bytesRead);
+	return bytesRead;
 }
 
 #endif // RICH_MPI

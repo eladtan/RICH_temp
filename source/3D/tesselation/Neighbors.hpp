@@ -9,7 +9,8 @@
 
 #ifdef RICH_MPI
     #include <mpi.h>
-    #include "mpi/mpi_commands.hpp"
+    #include "misc/serialize/Serializer.hpp"
+    #include "misc/serialize/mpi_commands.hpp"
 #endif // RICH_MPI
 
 struct RemotePoint
@@ -55,7 +56,7 @@ using PointsToNeighborsMap = boost::container::flat_map<size_t, boost::container
 
 struct ComputationalCell3DVector3D 
                     #ifdef RICH_MPI
-                        : public Serializable
+                        : public Serializable2
                     #endif // RICH_MPI
 {
     static size_t CELL_CHUNK_SIZE;
@@ -66,34 +67,22 @@ struct ComputationalCell3DVector3D
 
     ComputationalCell3DVector3D(const ComputationalCell3D &_cell = ComputationalCell3D(), const Vector3D &_point = Vector3D(), size_t _local_index = 0): cell(_cell), point(_point), local_index(_local_index){};
 
-    #ifdef RICH_MPI
-        inline size_t getChunkSize() const override
-        {
-            if(CELL_CHUNK_SIZE == std::numeric_limits<size_t>::max())
-            {
-                CELL_CHUNK_SIZE = this->cell.getChunkSize();
-            }
-            return CELL_CHUNK_SIZE + 4;
-        }
+	#ifdef RICH_MPI
+		force_inline size_t dump(Serializer *serializer) const override
+		{
+			size_t bytes = 0;
+			bytes += serializer->insert(this->cell);
+			bytes += serializer->insert(this->point);
+			return bytes;
+		}
 
-        inline std::vector<double> serialize() const override
-        {
-            std::vector<double> res = this->cell.serialize();
-            res.push_back(this->point.x);
-            res.push_back(this->point.y);
-            res.push_back(this->point.z);
-            res.push_back(static_cast<double>(this->local_index));
-            return res;
-        }
-
-        inline void unserialize(const std::vector<double> &data) override
-        {
-            this->cell.unserialize(std::vector<double>(data.cbegin(), data.cbegin() + CELL_CHUNK_SIZE));
-            this->point.x = data[CELL_CHUNK_SIZE];
-            this->point.y = data[CELL_CHUNK_SIZE + 1];
-            this->point.z = data[CELL_CHUNK_SIZE + 2];
-            this->local_index = static_cast<size_t>(data[CELL_CHUNK_SIZE + 3]);
-        }
+		force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+		{
+			size_t bytes = 0;
+			bytes += serializer->extract(this->cell, byteOffset);
+			bytes += serializer->extract(this->point, byteOffset + bytes);
+			return bytes;
+		}
     #endif // RICH_MPI
 };
 

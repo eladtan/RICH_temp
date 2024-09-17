@@ -10,13 +10,14 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #ifdef RICH_MPI
-#include "misc/serializable.hpp"
+	#include "misc/serialize/Serializer.hpp"
+	#include "misc/serialize/mpi_commands.hpp"
 #endif // RICH_MPI
 
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
 	#ifdef RICH_MPI
-							: public Serializable
+							: public Serializable2
 	#endif // RICH_MPI
 {
 public:
@@ -119,22 +120,11 @@ public:
 	*/
 	ComputationalCell3D& operator=(ComputationalCell3D const& other);
 
-#ifdef RICH_MPI
-  /*! \brief Get size of chunks
-    \return Chunk size in bytes
-   */
-	size_t getChunkSize(void) const override;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-  /*! \brief Decompose cell into list of numbers
-    \return List of numbers
-   */
-	vector<double> serialize(void) const override;
-
-  /*! \brief Reconstruct cell from series of numbers
-    \param data List of numbers
-   */
-	void unserialize(const vector<double>& data) override;
-#endif // RICH_MPI
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif//RICH_MPI
 
 };
 
@@ -189,7 +179,7 @@ void ReplaceComputationalCell(ComputationalCell3D &cell, ComputationalCell3D con
 //! \brief Class for 3D spatial interpolations
 class Slope3D
 #ifdef RICH_MPI
-	: public Serializable
+	: public Serializable2
 #endif // RICH_MPI
 {
 public:
@@ -210,13 +200,13 @@ public:
 	Slope3D(ComputationalCell3D const& x, ComputationalCell3D const& y, ComputationalCell3D const& z);
 	//! \brief Default constructor
 	Slope3D(void);
-#ifdef RICH_MPI
-	size_t getChunkSize(void) const override;
 
-	vector<double> serialize(void) const override;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-	void unserialize(const vector<double>& data) override;
-#endif//RICH_MPI
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif//RICH_MPI
+
 };
 
 

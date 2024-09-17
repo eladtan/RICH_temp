@@ -14,6 +14,7 @@
 #include "misc/utils.hpp"
 
 #ifdef RICH_MPI
+	#include "misc/serialize/Serializer.hpp"
 	#include "misc/serializable.hpp"
 #endif // RICH_MPI
 
@@ -34,7 +35,7 @@ namespace
 //! \brief 3D Mathematical vector
 class Vector3D
 			#ifdef RICH_MPI
-				: public Serializable
+				: public Serializable2, public Serializable
 			#endif // RICH_MPI
 {
 public:
@@ -225,31 +226,49 @@ public:
 	}
 
 	#ifdef RICH_MPI
+		force_inline size_t dump(Serializer *serializer) const override
+		{
+			size_t bytes = 0;
+			bytes += serializer->insert(this->x);
+			bytes += serializer->insert(this->y);
+			bytes += serializer->insert(this->z);
+			return bytes;
+		}
 
-	inline size_t getChunkSize(void) const override
-	{
-		return 3;
-	}
-
-	inline vector<double> serialize(void) const override
-	{
-		vector<double> res(3);
-		res[0] = x;
-		res[1] = y;
-		res[2] = z;
-		return res;
-	}
-
-	inline void unserialize(const vector<double>& data) override
-	{
-		assert(data.size() == 3);
-		x = data[0];
-		y = data[1];
-		z = data[2];
-	}
-
+		force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+		{
+			size_t bytes = 0;
+			bytes += serializer->extract(this->x, byteOffset);
+			bytes += serializer->extract(this->y, byteOffset + bytes);
+			bytes += serializer->extract(this->z, byteOffset + bytes);
+			return bytes;
+		}
 	#endif // RICH_MPI
 
+	#ifdef RICH_MPI
+		inline size_t getChunkSize(void) const override
+		{
+			return 3;
+		}
+
+		inline vector<double> serialize(void) const override
+		{
+			vector<double> res(3);
+			res[0] = x;
+			res[1] = y;
+			res[2] = z;
+			return res;
+		}
+
+		inline void unserialize(const vector<double>& data) override
+		{
+			assert(data.size() == 3);
+			x = data[0];
+			y = data[1];
+			z = data[2];
+		}
+
+	#endif // RICH_MPI
 	friend std::ostream &operator<<(std::ostream &stream, const Vector3D &vec)
 	{
 		stream << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";
