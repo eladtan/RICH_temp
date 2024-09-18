@@ -1,20 +1,17 @@
 #include "computational_cell.hpp"
 
 ComputationalCell3D::ComputationalCell3D(void):
-  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg({}), Erad_dt(0),
-  	Erad_dt_dt(0),  dt(0), tracers(),stickers()
-{}
+  density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0),
+  	Erad_dt_dt(0), tracers({}),stickers(),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i, double pressure_i, double internal_energy_i, size_t ID_i, const Vector3D& velocity_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Eg({}), dt(0), Erad_dt(0), Erad_dt_dt(0),  tracers(),stickers()
-{}
+  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), tracers({}),stickers(),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(double density_i, double pressure_i, double internal_energy_i,size_t ID_i, const Vector3D& velocity_i, 
 										const std::array<double,MAX_TRACERS>& tracers_i, const std::array<bool,MAX_STICKERS>& stickers_i):
   density(density_i), pressure(pressure_i),internal_energy(internal_energy_i),temperature(0),ID(ID_i),
-  velocity(velocity_i), Erad(0), Eg({}), dt(0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i),stickers(stickers_i)
-{}
+  velocity(velocity_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), tracers(tracers_i),stickers(stickers_i),dt(0) {}
 
 ComputationalCell3D::ComputationalCell3D(const ComputationalCell3D& other):
 density(other.density),
@@ -30,6 +27,20 @@ Erad_dt(other.Erad_dt),
 Erad_dt_dt(other.Erad_dt_dt),
 tracers(other.tracers),
 stickers(other.stickers) {}
+
+std::ostream& operator<<(std::ostream &stream, const ComputationalCell3D &cell)
+{
+	stream << "(density=" << cell.density<<" pressure="<<cell.pressure<<" temperature="<<cell.temperature<<" sie="<<cell.internal_energy<<" ID="<<cell.ID<<" velocity="<<cell.velocity
+		<<" Erad="<<cell.Erad;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		stream<<" Eg["<<i<<"]="<<cell.Eg[i];
+	for(size_t i = 0; i < ComputationalCell3D::tracerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::tracerNames[i]<<"="<<cell.tracers[i];
+	for(size_t i = 0; i < ComputationalCell3D::stickerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::stickerNames[i]<<"="<<cell.stickers[i];
+	stream<< ")";
+	return stream;
+}
 
 ComputationalCell3D& ComputationalCell3D::operator=(ComputationalCell3D const& other)
 {
@@ -222,6 +233,7 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	res.Erad += other.Erad*scalar;
 	res.Erad_dt += other.Erad_dt*scalar;
 	res.Erad_dt_dt += other.Erad_dt_dt*scalar;
+	res.dt += other.dt * scalar;
 	//assert(res.tracers.size() == other.tracers.size());
 	//size_t N = res.tracers.size();
 #ifdef __INTEL_COMPILER

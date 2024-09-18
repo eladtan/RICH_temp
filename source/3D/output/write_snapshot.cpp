@@ -182,6 +182,21 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
         vtu_cell_variable_names.push_back("Erad");
     }
 
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        for(std::size_t i=0; i < Ncells; ++i){
+            temp[i] = cells[i].Eg[g];
+        }
+        
+        write_std_vector_to_hdf5(writegroup, temp, "Eg_" + std::to_string(g));
+        
+        if(write_vtu)
+        {
+            vtu_cell_variables.push_back(temp);
+            vtu_cell_variable_names.push_back("Eg_" + std::to_string(g));
+        }
+    }
+
+
     for(size_t j = 0; j < ComputationalCell3D::tracerNames.size(); ++j)
     {
         for(size_t i = 0; i < Ncells; ++i)
@@ -224,7 +239,13 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     // Appendices
     for(size_t i = 0; i < appendices.size(); ++i)
     {
-        write_std_vector_to_hdf5(writegroup, (*(appendices.at(i)))(sim), appendices.at(i)->getName());
+        temp = (*(appendices.at(i)))(sim);
+        write_std_vector_to_hdf5(writegroup, temp, appendices.at(i)->getName());
+        if(write_vtu)
+        {
+            vtu_cell_variables.push_back(temp);
+            vtu_cell_variable_names.push_back(appendices.at(i)->getName());
+        }
     }
 
     return vtu;

@@ -30,6 +30,7 @@ namespace CG
     double constexpr radiation_constant = 4 * stefan_boltzman / speed_of_light;
     double constexpr boltzmann_constant = 1.380649e-16;
     double constexpr electron_mass = 9.1093837015e-28;
+    double constexpr max_coupling_strength = 1e2;
 
     //! \brief Class that build the data for the solution of the linear system A*x=b
     class MatrixBuilder
@@ -47,6 +48,19 @@ namespace CG
             \param x0 The initial solution guess
             \param current_time The time
         */
+
+        virtual ~MatrixBuilder() = default;
+
+        /**
+         * @brief Virtual function to get the length scale used in the CG method.
+         * 
+         * This function returns the length scale used in the CG method. The default implementation returns 1.0.
+         * Derived classes may override this function to provide their own length scale.
+         * 
+         * @return A double representing the length scale.
+         */
+        virtual double GetLengthScale() const {return 1.0;}
+
         virtual void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const = 0;
         /*!
@@ -69,18 +83,27 @@ namespace CG
     std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
-
+/**
+ * @brief Performs the BiCGSTAB (Biconjugate Gradient Stabilized) method to solve the linear system A*x=b.
+ * 
+ * @param tolerance The tolerance for the solution. The method stops when the relative residual norm is less than or equal to this value.
+ * @param total_iters Reference to an integer that will store the total number of iterations performed by the method.
+ * @param tess The 3D tessellation used to discretize the problem.
+ * @param cells The computational cells associated with the tessellation.
+ * @param dt The time step for the problem.
+ * @param matrix_builder A reference to an object that implements the MatrixBuilder interface, used to build the A matrix and b vector.
+ * @param time The current time of the simulation.
+ * @param sub_x_solution Reference to a vector that will store the solution x.
+ * 
+ * @return A vector containing the solution x.
+ */
     std::vector<double> BiCGSTAB(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
 
-    std::vector<double> QMRCGSTAB(const double tolerance, int &total_iters,
-        Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
-        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
+    double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
 
-    std::vector<double> QMRCORSTAB(const double tolerance, int &total_iters,
-        Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
-        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
+    double mpi_dot_product2(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
 }
 
 #endif

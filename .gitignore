@@ -26,3 +26,5 @@ validation*/*
 .gitignore
 .vscode*/*
 result_dir*
+./output
+*.log

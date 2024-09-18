@@ -440,7 +440,11 @@ QueryBatchInfo<QueryData, AnswerType> QueryAgent<QueryData, AnswerType>::runBatc
                     this->finishedReceived += this->checkForFinishMessages();
                     break;
                 default:
-                    throw UniversalError("Rank " + std::to_string(this->rank) + " received unrecognized tag: " + std::to_string(status.MPI_TAG) + ", from rank " + std::to_string(status.MPI_SOURCE));
+                    UniversalError eo("Received unrecognized tag in queryAgent");
+                    eo.addEntry("My rank", this->rank);
+                    eo.addEntry("From whom", status.MPI_SOURCE);
+                    eo.addEntry("Tag", status.MPI_TAG);
+                    throw eo;
             }
         }
         ++i;
