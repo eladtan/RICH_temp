@@ -69,47 +69,39 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 }
 
 #ifdef RICH_MPI
-size_t Conserved3D::getChunkSize(void) const
-{
-	return 9 + tracers.size();
-}
+	size_t Conserved3D::dump(Serializer *serializer) const
+	{
+		size_t bytes = 0;
+		bytes += serializer->insert(this->mass);
+		bytes += serializer->insert(this->energy);
+		bytes += serializer->insert(this->momentum);
+		bytes += serializer->insert(this->internal_energy);
+		bytes += serializer->insert(this->Erad);
+		bytes += serializer->insert(this->Erad_dt);
+		bytes += serializer->insert(this->Erad_dt_dt);
+		for (size_t j = 0; j < MAX_TRACERS; ++j)
+		{
+			bytes += serializer->insert(this->tracers[j]);
+		}
+		return bytes;
+	}
 
-vector<double> Conserved3D::serialize(void) const
-{
-	vector<double> res(getChunkSize());
-	res.at(0) = mass;
-	res.at(1) = energy;
-	res.at(2) = momentum.x;
-	res.at(3) = momentum.y;
-	res.at(4) = momentum.z;
-	res.at(5) = internal_energy;
-	res.at(6) = Erad;
-	res.at(7) = Erad_dt;
-	res.at(8) = Erad_dt_dt;
-	size_t counter = 9;
-	//size_t N = tracers.size();
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		res[j + counter] = tracers[j];
-	return res;
-}
-
-void Conserved3D::unserialize(const vector<double>& data)
-{
-	assert(data.size() == getChunkSize());
-	mass = data.at(0);
-	energy = data.at(1);
-	momentum.x = data.at(2);
-	momentum.y = data.at(3);
-	momentum.z = data.at(4);
-	internal_energy = data.at(5);
-	Erad = data.at(6);
-	Erad_dt = data.at(7);
-	Erad_dt_dt = data.at(8);
-	size_t counter = 9;
-	//size_t N = tracers.size();
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		tracers[j] = data.at(counter + j);
-}
+	size_t Conserved3D::load(const Serializer *serializer, std::size_t byteOffset)
+	{
+		size_t bytes = 0;
+		bytes += serializer->extract(this->mass, byteOffset);
+		bytes += serializer->extract(this->energy, byteOffset + bytes);
+		bytes += serializer->extract(this->momentum, byteOffset + bytes);
+		bytes += serializer->extract(this->internal_energy, byteOffset + bytes);
+		bytes += serializer->extract(this->Erad, byteOffset + bytes);
+		bytes += serializer->extract(this->Erad_dt, byteOffset + bytes);
+		bytes += serializer->extract(this->Erad_dt_dt, byteOffset + bytes);
+		for (size_t j = 0; j < MAX_TRACERS; ++j)
+		{
+			bytes += serializer->extract(this->tracers[j], byteOffset + bytes);
+		}
+		return bytes;
+	}
 #endif
 
 Conserved3D operator*(double s, const Conserved3D& c)

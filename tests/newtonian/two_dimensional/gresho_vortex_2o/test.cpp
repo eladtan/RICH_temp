@@ -23,6 +23,10 @@
 #include "source/newtonian/two_dimensional/ghost_point_generators/RigidWallGenerator.hpp"
 #include "source/newtonian/two_dimensional/interpolations/LinearGaussImproved.hpp"
 #include "source/newtonian/two_dimensional/stationary_box.hpp"
+#ifdef RICH_MPI
+  #include "misc/serialize/Serializer.hpp"
+  #include "misc/serialize/mpi_commands.hpp"
+#endif // RICH_MPI
 
 using namespace std;
 using namespace simulation2d;
@@ -122,17 +126,11 @@ int GetWS(void)
     const Vector2D lower_left = boundary.getBoundary().first;
     const Vector2D upper_right = boundary.getBoundary().second;
     vector<Vector2D> res(ws);
-	vector<double> temp(static_cast<size_t>(ws) * 2);
     if(rank==0)
-	{
-      res = RandSquare(ws,
-		       lower_left.x,upper_right.x,
-		       lower_left.y,upper_right.y);
-	  temp = list_serialize(res);
+	  {
+      res = RandSquare(ws, lower_left.x, upper_right.x, lower_left.y, upper_right.y);
     }
-	MPI_Bcast(&temp[0], ws * 2, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-	Vector2D vtemp;
-	res = list_unserialize(temp, vtemp);
+    res = MPI_Bcast_serializable(res, 0, MPI_COMM_WORLD);
     return res;
   }
 #endif

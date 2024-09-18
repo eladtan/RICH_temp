@@ -58,7 +58,7 @@ struct MassedValue
         bytes += this->value.dump(serializer);
         bytes += this->CM.dump(serializer);
         bytes += serializer->insert(this->mass);
-        bytes += serializer->insert_all(this->Q);
+        bytes += serializer->insert_array(this->Q);
         return bytes;
     }
 
@@ -68,7 +68,7 @@ struct MassedValue
         bytes += this->value.load(serializer, byteOffset);
         bytes += this->CM.load(serializer, byteOffset + bytes);
         bytes += serializer->extract(this->mass, byteOffset + bytes);
-        bytes += serializer->extract_all(this->Q, byteOffset + bytes);
+        bytes += serializer->extract_array(this->Q, byteOffset + bytes);
         return bytes;
     }
 };

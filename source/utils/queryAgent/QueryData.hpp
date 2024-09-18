@@ -1,10 +1,13 @@
 #ifndef QUERY_DATA_HPP
 #define QUERY_DATA_HPP
 
-#include "misc/serializable.hpp"
+#include "misc/serialize/Serializer.hpp"
 
 template<typename QueryData>
-struct SubQueryData : public Serializable
+struct SubQueryData
+                #ifdef RICH_MPI
+                    : public Serializable2
+                #endif // RICH_MPI
 {
     size_t parent_id;
     QueryData data;
@@ -14,27 +17,23 @@ struct SubQueryData : public Serializable
 
     SubQueryData(): data(QueryData()), parent_id(0){};
 
-    inline size_t getChunkSize(void) const override
-    {
-        return 1 + this->data.getChunkSize();
-    }
+    #ifdef RICH_MPI
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+        {
+            size_t bytes = 0;
+            bytes += serializer->extract(this->parent_id, byteOffset);
+            bytes += this->data.load(serializer, byteOffset + bytes);
+            return bytes;
+        }
 
-    std::vector<double> serialize(void) const override
-    {
-        std::vector<double> data;
-        data.push_back(static_cast<double>(this->parent_id));
-        std::vector<double> queryData = this->data.serialize();
-        data.insert(data.end(), queryData.begin(), queryData.end());
-        return data;
-    }
-
-    void unserialize(const std::vector<double> &data) override
-    {
-        size_t index = 0;
-        this->parent_id = static_cast<size_t>(data[index]);
-        index++;
-        this->data.unserialize(std::vector<double>(data.begin() + index, data.begin() + index + this->data.getChunkSize()));
-    }
+        force_inline size_t dump(Serializer *serializer) const override
+        {
+            size_t bytes = 0;
+            bytes += serializer->insert(this->parent_id);
+            bytes += this->data.dump(serializer);
+            return bytes;
+        }
+    #endif // RICH_MPI
 };
 
 template<typename QueryData, typename AnswerType>

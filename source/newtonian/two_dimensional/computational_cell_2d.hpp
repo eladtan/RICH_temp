@@ -23,13 +23,14 @@ typedef std::array<bool, MAX_STICKERS> svector;
 #include <string>
 #include "tessellation/geometry.hpp"
 #ifdef RICH_MPI
-#include "misc/serializable.hpp"
+  #include <mpi.h>
+  #include "misc/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 //! \brief Computational cell
 class ComputationalCell
 #ifdef RICH_MPI
-  : public Serializable
+  : public Serializable2
 #endif // RICH_MPI
 
 {
@@ -87,12 +88,9 @@ public:
   ComputationalCell& operator=(ComputationalCell const& other);
 
 #ifdef RICH_MPI
-  size_t getChunkSize(void) const override;
+  size_t load(const Serializer *serializer, size_t byteOffset) override;
 
-  vector<double> serialize(void) const override;
-
-  void unserialize
-  (const vector<double>& data) override;
+  size_t dump(Serializer *serializer) const override;
 #endif // RICH_MPI
 };
 
@@ -137,9 +135,9 @@ void ReplaceComputationalCell(ComputationalCell &cell, ComputationalCell const& 
 
 //! \brief Class for spatial interpolations
 class Slope
-#ifdef RICH_MPI
-  : public Serializable
-#endif // RICH_MPI
+    #ifdef RICH_MPI
+      : public Serializable2
+    #endif // RICH_MPI
 {
 public:
   //! \brief Slope in the x direction
@@ -157,11 +155,9 @@ public:
   //! \brief Default constructor
   Slope(void);
 #ifdef RICH_MPI
-  size_t getChunkSize(void) const override;
+  size_t load(const Serializer *serializer, size_t byteOffset) override;
 
-  vector<double> serialize(void) const override;
-
-  void unserialize(const vector<double>& data) override;
+  size_t dump(Serializer *serializer) const override;
 #endif//RICH_MPI
 };
 

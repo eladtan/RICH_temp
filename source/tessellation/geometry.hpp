@@ -9,14 +9,14 @@
 #include <vector>
 #include <boost/array.hpp>
 #ifdef RICH_MPI
-#include "../misc/serializable.hpp"
+#include "misc/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 //! \brief 2D Mathematical vector
 class Vector2D
-#ifdef RICH_MPI
-  : public Serializable
-#endif // RICH_MPI
+          #ifdef RICH_MPI
+            : public Serializable2
+          #endif // RICH_MPI
 {
 public:
 
@@ -101,12 +101,23 @@ public:
     ar & y;
   }
 
-  vector<double> serialize(void) const override;
+  #ifdef RICH_MPI
+    force_inline size_t dump(Serializer *serializer) const override
+    {
+    	size_t bytes = 0;
+    	bytes += serializer->insert(this->x);
+    	bytes += serializer->insert(this->y);
+    	return bytes;
+    }
 
-  size_t getChunkSize(void) const override;
-
-  void unserialize
-  (const vector<double>& data) override;
+    force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+    {
+      size_t bytes = 0;
+      bytes += serializer->extract(this->x, byteOffset);
+      bytes += serializer->extract(this->y, byteOffset + bytes);
+      return bytes;
+    }
+  #endif // RICH_MPI
 #endif // RICH_MPI
 };
 

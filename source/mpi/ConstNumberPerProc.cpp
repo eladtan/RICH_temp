@@ -1,8 +1,4 @@
 #include "ConstNumberPerProc.hpp"
-#ifdef RICH_MPI
-#include "../misc/serializable.hpp"
-#include <mpi.h>
-#endif
 
 ConstNumberPerProc::~ConstNumberPerProc(void) {}
 
@@ -134,11 +130,13 @@ void ConstNumberPerProc::Update(Tessellation& tproc, Tessellation const& tlocal)
 	}
 	Vector2D cor = tproc.GetMeshPoint(rank) + Vector2D(dx, dy);
 	// Have all processors have the same points
-	vector<double> tosend = list_serialize(vector<Vector2D>(1, cor));
-	vector<double> torecv(static_cast<size_t>(nproc) * 2);
-	MPI_Gather(&tosend[0], 2, MPI_DOUBLE, &torecv[0], 2, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-	MPI_Bcast(&torecv[0], nproc * 2, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-	vector<Vector2D> cortemp = list_unserialize(torecv, cor);
+	Serializer send;
+	send.insert_all(vector<Vector2D>(1, cor));
+	Serializer recv;
+	recv.resize(sizeof(double) * 2 * nproc);
+	MPI_Allgather(send.getData(), send.size(), MPI_BYTE, recv.getData(), recv.size(), MPI_BYTE, MPI_COMM_WORLD);
+	vector<Vector2D> cortemp;
+	recv.extract_all(cortemp);
 	tproc.Update(cortemp);
 }
 #endif

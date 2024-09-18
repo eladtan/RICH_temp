@@ -3,6 +3,7 @@
 
 #ifdef RICH_MPI
 
+#include <array>
 #include <vector>
 #include <memory>
 #include <limits>
@@ -34,12 +35,18 @@ public:
     template<typename T>
     size_t insert(const T &data);
 
-    template<typename T>
-    size_t insert(const std::vector<T> &data, size_t startIndex, size_t writeSize);
+    template<typename T, template<typename...> class VectorContainer, typename... Ts>
+    size_t insert(const VectorContainer<T, Ts...> &data, size_t startIndex, size_t writeSize);
+
+    template<typename T, template<typename...> class VectorContainer, typename... Ts>
+    inline size_t insert_all(const VectorContainer<T, Ts...> &data, size_t offset = 0){return this->insert(data, offset, std::numeric_limits<size_t>::max());};
 
     template<typename T>
-    inline size_t insert_all(const std::vector<T> &data){return this->insert(data, 0, std::numeric_limits<size_t>::max());};
+    size_t insert_array(const T *data, size_t arraySize);
 
+    template<typename T, size_t N>
+    inline size_t insert_array(const std::array<T, N> &data){return this->insert_array(data.data(), N);};
+    
     template<typename T, typename Index_T = size_t>
     size_t insert_all_indexed(const std::vector<T> &data, const std::vector<Index_T> &indices);
     
@@ -49,11 +56,17 @@ public:
     template<typename T>
     size_t extract(T &data, size_t idx) const;
 
-    template<typename T>
-    size_t extract(std::vector<T> &values, size_t startIndex, size_t endIndex) const;
+    template<typename T, template<typename...> class VectorContainer, typename... Ts>
+    size_t extract(VectorContainer<T, Ts...> &values, size_t startIndex, size_t endIndex) const;
+
+    template<typename T, template<typename...> class VectorContainer, typename... Ts>
+    inline size_t extract_all(VectorContainer<T, Ts...> &values, size_t offset = 0) const{return this->extract(values, offset, this->internal.size());};
 
     template<typename T>
-    inline size_t extract_all(std::vector<T> &values) const{return this->extract(values, 0, this->internal.size());};
+    size_t extract_array(T *values, size_t arraySize, size_t offset = 0) const;
+
+    template<typename T, size_t N>
+    inline size_t extract_array(std::array<T, N> &values, size_t offset = 0) const{return this->extract_array(values.data(), N, offset);};
 
     inline const char *getData() const{return this->internal.data();};
 
@@ -107,8 +120,8 @@ force_inline size_t Serializer::insert(const T &data)
     }
 }
 
-template<typename T>
-force_inline size_t Serializer::insert(const std::vector<T> &data, size_t startIndex, size_t writeSize)
+template<typename T, template<typename...> class VectorContainer, typename... Ts>
+force_inline size_t Serializer::insert(const VectorContainer<T, Ts...> &data, size_t startIndex, size_t writeSize)
 {
     size_t index = startIndex;
     size_t bytes = 0;
@@ -146,6 +159,16 @@ force_inline size_t Serializer::insert_all_indexed(const std::vector<T> &data, c
     return bytes;
 }
 
+template<typename T>
+force_inline size_t Serializer::insert_array(const T *data, size_t arraySize)
+{
+    size_t bytes = 0;
+    for(size_t i = 0; i < arraySize; ++i)
+    {
+        bytes += this->insert(data[i]);
+    }
+    return bytes;
+}
 
 template<typename T>
 force_inline size_t Serializer::extract(T &data, size_t idx) const
@@ -181,8 +204,8 @@ force_inline size_t Serializer::extract(T &data, size_t idx) const
     }
 }
 
-template<typename T>
-force_inline size_t Serializer::extract(std::vector<T> &values, size_t startOffset, size_t readSize) const
+template<typename T, template<typename...> class VectorContainer, typename... Ts>
+force_inline size_t Serializer::extract(VectorContainer<T, Ts...> &values, size_t startOffset, size_t readSize) const
 {
     size_t bytesRead = 0;
     while((bytesRead < readSize) and ((startOffset + bytesRead) < this->internal.size()))
@@ -192,6 +215,20 @@ force_inline size_t Serializer::extract(std::vector<T> &values, size_t startOffs
     }
     return bytesRead;
 }
+
+template<typename T>
+force_inline size_t Serializer::extract_array(T *values, size_t arraySize, size_t offset) const
+{
+    size_t bytesRead = 0;
+    size_t index = 0;
+    while(((offset + bytesRead) < this->internal.size()) and (index < arraySize))
+    {
+        bytesRead += this->extract(values[index], offset + bytesRead);
+        index++;
+    }
+    return bytesRead;
+}
+
 // template<>
 // template<typename T>
 // force_inline size_t Serializer::insert(const std::vector<T> &vector)
