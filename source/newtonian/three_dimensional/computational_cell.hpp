@@ -16,9 +16,9 @@
 
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
-	#ifdef RICH_MPI
-							: public Serializable2
-	#endif // RICH_MPI
+				#ifdef RICH_MPI
+						: public Serializable2
+				#endif // RICH_MPI
 {
 public:
 

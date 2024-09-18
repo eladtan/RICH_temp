@@ -12,6 +12,7 @@
     #include "utils/queryAgent/thread/ThreadsQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
+    #include "misc/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #include "RangeQueryData.h"
@@ -37,40 +38,25 @@ typedef struct SmallRangeQueryData : public RangeQueryData
     SmallRangeQueryData(): RangeQueryData(), maxPointsToGet(0){};
     
     #ifdef RICH_MPI
-        size_t getChunkSize(void) const override
+        force_inline size_t dump(Serializer *serializer) const override
         {
-            return 1 + 3 + 1 + 1;
+            size_t bytes = 0;
+            bytes += serializer->insert(this->pointIdx);
+            bytes += serializer->insert(this->center);
+            bytes += serializer->insert(this->radius);
+            bytes += serializer->insert(this->maxPointsToGet);
+            return bytes;
         }
 
-        std::vector<double> serialize(void) const override
+        force_inline size_t load(const Serializer *serializer, std::size_t byteOffset) override
         {
-            std::cout << "here" << std::endl;
-            std::vector<double> data;
-            data.push_back(static_cast<double>(this->pointIdx));
-            data.push_back(this->center.x);
-            data.push_back(this->center.y);
-            data.push_back(this->center.z);
-            data.push_back(static_cast<double>(this->radius));
-            data.push_back(static_cast<double>(this->maxPointsToGet));
-            return data;
+            size_t bytes = 0;
+            bytes += serializer->extract(this->pointIdx, byteOffset);
+            bytes += serializer->extract(this->center, byteOffset + bytes);
+            bytes += serializer->extract(this->radius, byteOffset + bytes);
+            bytes += serializer->extract(this->maxPointsToGet, byteOffset + bytes);
+            return bytes;
         }
-
-        void unserialize(const std::vector<double> &data) override
-        {
-            size_t index = 0;
-            this->pointIdx = static_cast<size_t>(data[index]);
-            index++;
-            this->center.x = data[index];
-            index++;
-            this->center.y = data[index];
-            index++;
-            this->center.z = data[index];
-            index++;
-            this->radius = static_cast<typename _3DPoint::coord_type>(data[index]);
-            index++;
-            this->maxPointsToGet = static_cast<size_t>(data[index]);
-        }
-
     #endif // RICH_MPI
 
 } SmallRangeQueryData;

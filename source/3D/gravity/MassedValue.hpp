@@ -3,10 +3,13 @@
 
 #include <array>
 #include "GravityTypes.h"
-#include "misc/serializable.hpp"
+#include "misc/serialize/Serializer.hpp"
 
 template<typename T>
-struct MassedValue : public Serializable
+struct MassedValue 
+                #ifdef RICH_MPI
+                    : public Serializable2
+                #endif // RICH_MPI
 {
     using coord_type = typename T::coord_type;
     using Raw_type = typename is_raw_type_defined<T>::type;
@@ -49,27 +52,24 @@ struct MassedValue : public Serializable
 
     explicit inline MassedValue(): MassedValue(T(), 0){};
 
-    inline size_t getChunkSize() const override
+    inline size_t dump(Serializer *serializer) const override
     {
-        return 3 + 3 + 1 + 6; // 3, 3 for value and CM, 1 for mass, 6 for Q
+        size_t bytes = 0;
+        bytes += this->value.dump(serializer);
+        bytes += this->CM.dump(serializer);
+        bytes += serializer->insert(this->mass);
+        bytes += serializer->insert_all(this->Q);
+        return bytes;
     }
 
-    inline std::vector<double> serialize() const override
+    inline size_t load(const Serializer *serializer, size_t byteOffset) override
     {
-        std::vector<double> valueSerialized = this->value.serialize();
-        std::vector<double> CMSerialized = this->CM.serialize();
-        valueSerialized.insert(valueSerialized.end(), CMSerialized.begin(), CMSerialized.end());
-        valueSerialized.push_back(this->mass);
-        valueSerialized.insert(valueSerialized.end(), this->Q.begin(), this->Q.end());
-        return valueSerialized;
-    }
-
-    inline void unserialize(const std::vector<double> &data) override
-    {
-        this->value.unserialize(std::vector<double>(data.cbegin(), data.cbegin() + 3));
-        this->CM.unserialize(std::vector<double>(data.cbegin() + 3, data.cbegin() + 6));
-        this->mass = data[6];
-        std::copy(data.cbegin() + 7, data.cbegin() + 13, this->Q.begin());
+        size_t bytes = 0;
+        bytes += this->value.load(serializer, byteOffset);
+        bytes += this->CM.load(serializer, byteOffset + bytes);
+        bytes += serializer->extract(this->mass, byteOffset + bytes);
+        bytes += serializer->extract_all(this->Q, byteOffset + bytes);
+        return bytes;
     }
 };
 

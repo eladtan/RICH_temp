@@ -35,7 +35,7 @@ namespace
 //! \brief 3D Mathematical vector
 class Vector3D
 			#ifdef RICH_MPI
-				: public Serializable2, public Serializable
+				: public Serializable2
 			#endif // RICH_MPI
 {
 public:
@@ -245,30 +245,6 @@ public:
 		}
 	#endif // RICH_MPI
 
-	#ifdef RICH_MPI
-		inline size_t getChunkSize(void) const override
-		{
-			return 3;
-		}
-
-		inline vector<double> serialize(void) const override
-		{
-			vector<double> res(3);
-			res[0] = x;
-			res[1] = y;
-			res[2] = z;
-			return res;
-		}
-
-		inline void unserialize(const vector<double>& data) override
-		{
-			assert(data.size() == 3);
-			x = data[0];
-			y = data[1];
-			z = data[2];
-		}
-
-	#endif // RICH_MPI
 	friend std::ostream &operator<<(std::ostream &stream, const Vector3D &vec)
 	{
 		stream << "(" << vec.x << ", " << vec.y << ", " << vec.z << ")";

@@ -5,7 +5,7 @@
 
 struct RangeQueryData 
                     #ifdef RICH_MPI
-                        : public Serializable
+                        : public Serializable2
                     #endif // RICH_MPI
 {
     size_t pointIdx;
@@ -19,37 +19,23 @@ struct RangeQueryData
     RangeQueryData(): pointIdx(0), center(_3DPoint()), radius(0){};
     
     #ifdef RICH_MPI
-
-        size_t getChunkSize(void) const override
+        inline size_t dump(Serializer *serializer) const override
         {
-            return 1 + 3 + 1;
+            size_t bytes = 0;
+            bytes += serializer->insert(this->pointIdx);
+            bytes += serializer->insert(this->center);
+            bytes += serializer->insert(this->radius);
+            return bytes;
         }
 
-        std::vector<double> serialize(void) const override
+        inline size_t load(const Serializer *serializer, size_t byteOffset) override
         {
-            std::vector<double> data;
-            data.push_back(static_cast<double>(this->pointIdx));
-            data.push_back(this->center.x);
-            data.push_back(this->center.y);
-            data.push_back(this->center.z);
-            data.push_back(static_cast<double>(this->radius));
-            return data;
+            size_t bytes = 0;
+            bytes += serializer->extract(this->pointIdx, byteOffset);
+            bytes += serializer->extract(this->center, byteOffset + bytes);
+            bytes += serializer->extract(this->radius, byteOffset + bytes);
+            return bytes;
         }
-
-        void unserialize(const std::vector<double> &data) override
-        {
-            size_t index = 0;
-            this->pointIdx = static_cast<size_t>(data[index]);
-            index++;
-            this->center.x = data[index];
-            index++;
-            this->center.y = data[index];
-            index++;
-            this->center.z = data[index];
-            index++;
-            this->radius = static_cast<typename _3DPoint::coord_type>(data[index]);
-        }
-
     #endif // RICH_MPI
 };
 

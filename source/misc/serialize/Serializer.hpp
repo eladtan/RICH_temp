@@ -44,6 +44,9 @@ public:
     size_t insert_all_indexed(const std::vector<T> &data, const std::vector<Index_T> &indices);
     
     template<typename T>
+    size_t insert_elements(const std::vector<T> &data, size_t startIndex, size_t numElements);
+
+    template<typename T>
     size_t extract(T &data, size_t idx) const;
 
     template<typename T>
@@ -110,6 +113,20 @@ force_inline size_t Serializer::insert(const std::vector<T> &data, size_t startI
     size_t index = startIndex;
     size_t bytes = 0;
     while((bytes < writeSize) and (index < data.size()))
+    {
+        bytes += this->insert(data[index]);
+        index++;
+    }
+    return bytes;
+}
+
+template<typename T>
+force_inline size_t Serializer::insert_elements(const std::vector<T> &data, size_t startIndex, size_t numElements)
+{
+    size_t index = startIndex;
+    size_t inserted = 0;
+    size_t bytes = 0;
+    while((inserted < numElements) and (index < data.size()))
     {
         bytes += this->insert(data[index]);
         index++;

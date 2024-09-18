@@ -15,7 +15,7 @@
 \param ghost_or_sent True for ghost cells false for sent cells.
 */
 template<class T>
-void MPI_exchange_data(const Tessellation3D& tess, vector<T>& cells, bool ghost_or_sent, const T *example_cell = nullptr)
+inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells, bool ghost_or_sent, const T *example_cell = nullptr)
 {
 	if(example_cell == nullptr and cells.empty())
 	{
@@ -60,6 +60,13 @@ void MPI_exchange_data(const Tessellation3D& tess, vector<T>& cells, bool ghost_
 			}
 		}
 	}
+}
+
+template<class T>
+inline std::vector<std::vector<T>> MPI_exchange_data(const Tessellation3D& tess, std::vector<std::vector<T>>& data)
+{
+    const std::vector<rank_t> &correspondents = tess.GetDuplicatedProcs();
+    return MPI_exchange_data(correspondents, data);
 }
 
 #endif // RICH_MPI
