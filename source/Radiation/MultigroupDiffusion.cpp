@@ -2646,25 +2646,62 @@ double MultigroupDiffusion::get_implicit_compton_contribution(Tessellation3D con
 
     double const f = fleck_factor[cell_index];
 
-    double implicit_contribution = -volume*cdt*S[gt][g];
+
+    double implicit_contribution = 0.0;
+
+    double const coeff_1 = volume*cdt*cdt_cv_bar*kgbg*f;
     
-    double const Gamma = Gammas[cell_index];
-    double const factor_1_Q = volume*cdt*kgbg*(1.0 - f)/Gamma;
-    implicit_contribution -= factor_1_Q*Q_vector[gt];
+    double const Um_old = get_radiation_energy_density(T);
     
     if(small_rel_diff){
-        double const factor_2_Q = volume*cdt*cdt_cv_bar*f*sum_dSdUm[g];
-        double const kgt = sigma_absorption_group[cell_index][gt];
+        implicit_contribution -= volume*cdt*S[gt][g];
+        double sum_dSdUm_Egtt = 0.0;
+        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+            sum_dSdUm_Egtt += dSdUm[gtt][g]*cell.Eg[gtt]*cell.density*pow<2>(length_scale_) / pow<2>(time_scale_);
+        }
 
-        implicit_contribution -= factor_2_Q*(kgt + Q_vector[gt]);
+        double const A = volume*cdt*cdt_cv_bar*f*(kgbg + sum_dSdUm_Egtt);
+
+        implicit_contribution -= volume*cdt*cdt_cv_bar*f*sum_dSdUm_Egtt*sigma_absorption_group[cell_index][gt];
+        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+            implicit_contribution += A*S[gt][gtt];
+        }
+
     } else {
-        double Um_old = get_radiation_energy_density(T);
-        implicit_contribution -= factor_1_Q*Um_old*Upsilon_vector[gt];       
-        
+        implicit_contribution -= volume*cdt*S[gt][g];
+        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+            implicit_contribution -= coeff_1*(Um_old*dSdUm[gt][gtt] - S[gt][gtt]);
+        }
         double const kp = sigma_absorption_planck[cell_index];
-        double const factor_dSdUm = volume*cdt*cdt_cv_bar*f*(Um_old*kp - Q);
-        implicit_contribution += factor_dSdUm * dSdUm[gt][g];
+        double coeff_2 = kp*Um_old;
+        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+            coeff_2 -= sigma_absorption_group[cell_index][gtt]*cell.Eg[gtt]*cell.density*pow<2>(length_scale_) / pow<2>(time_scale_);
+            for(std::size_t gttt=0; gttt < ENERGY_GROUPS_NUM; ++gttt){
+                coeff_2 += S[gtt][gttt]*cell.Eg[gtt]*cell.density*pow<2>(length_scale_) / pow<2>(time_scale_);
+            }
+        }
+        
+        implicit_contribution += volume*cdt*cdt_cv_bar*f*coeff_2*dSdUm[gt][g];
     }
+    
+    // double implicit_contribution_2 = -volume*cdt*S[gt][g];
+    // double const Gamma = Gammas[cell_index];
+    // double const factor_1_Q = volume*cdt*kgbg*(1.0 - f)/Gamma;
+    // implicit_contribution_2 -= factor_1_Q*Q_vector[gt];
+    
+    // if(small_rel_diff){
+    //     double const factor_2_Q = volume*cdt*cdt_cv_bar*f*sum_dSdUm[g];
+    //     double const kgt = sigma_absorption_group[cell_index][gt];
+
+    //     implicit_contribution_2 -= factor_2_Q*(kgt + Q_vector[gt]);
+    // } else {
+    //     double const Um_old = get_radiation_energy_density(T);
+    //     implicit_contribution_2 -= factor_1_Q*Um_old*Upsilon_vector[gt];       
+        
+    //     double const kp = sigma_absorption_planck[cell_index];
+    //     double const factor_dSdUm = volume*cdt*cdt_cv_bar*f*(Um_old*kp - Q);
+    //     implicit_contribution_2 += factor_dSdUm * dSdUm[gt][g];
+    // }
 
     return implicit_contribution;
 }
@@ -2686,15 +2723,27 @@ double MultigroupDiffusion::get_implicit_compton_contribution_to_b(Tessellation3
 
     double const kg = sigma_absorption_group[cell_index][g];
     double const kgbg = kg*planck_integal_group[cell_index][g];
-
-    double const f = fleck_factor[cell_index];
-    double const Gamma = Gammas[cell_index];
-    double factor_1_Q = volume*cdt*kgbg*(1.0 - f)/Gamma;
-
-    double const factor_2_Q = volume*cdt*cdt_cv_bar*f*sum_dSdUm[g];
     double const kp = sigma_absorption_planck[cell_index];
 
+    double const f = fleck_factor[cell_index];
     double const Um_old = get_radiation_energy_density(T);
+    
+    // double const Gamma = Gammas[cell_index];
+    // double factor_1_Q = volume*cdt*kgbg*(1.0 - f)/Gamma;
 
-    return Um_old*(factor_1_Q*Upsilon - factor_2_Q*kp);
+    // double const factor_2_Q = volume*cdt*cdt_cv_bar*f*sum_dSdUm[g];
+
+
+    // double const contribution_to_b_2 = Um_old*(factor_1_Q*Upsilon - factor_2_Q*kp);
+    // return Um_old*(factor_1_Q*Upsilon - factor_2_Q*kp);
+    
+    double sum_dSdUm_Egtt = 0.0;
+    for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+        sum_dSdUm_Egtt += dSdUm[gtt][g]*cell.Eg[gtt]*cell.density*pow<2>(length_scale_) / pow<2>(time_scale_);
+    }
+
+    // you can do a simplifcation with the volume*cdt*kgbg*f*Um_old already in the b 
+    double const contribution_to_b = volume*cdt*kp*Um_old*(kgbg/kp*(1.0 - (1.0+cdt_cv_bar*kp)*f) - cdt_cv_bar*f*sum_dSdUm_Egtt);
+    
+    return contribution_to_b;
 }
