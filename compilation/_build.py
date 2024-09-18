@@ -49,7 +49,10 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
         cmake_fortran_flags += " -mcmodel=medium -shared-intel "
 
         c_compiler = SysLibsDict["icc"]
-        cxx_compiler = SysLibsDict["icpc"]
+        cxx_compiler = SysLibsDict["icx"]
+        os.environ["I_MPI_CC"] = c_compiler
+        os.environ["I_MPI_CXX"] = cxx_compiler
+        os.environ["I_MPI_F90"] = SysLibsDict["ifort"]
 
         common_cxx_flags += " -cxx=icpx -diag-remark=13397,13401,15552,2196 -Wall "
         cmake_cxx_standard = "17"
@@ -102,6 +105,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
             f'-DVTK_DIRECTORY={vtk_dir}',
             f'-DBOOST_DIR={boost_dir}' if boost_dir else "",
+            f'-DPYTHON_INCLUDE={SysLibsDict["python_include"]}' if "python_include" in SysLibsDict else "",
+            f'-DPYTHON_LIB_DIRECTORY={SysLibsDict["python_lib_dir"]}' if "python_lib_dir" in SysLibsDict else "",
             f'-DJSONCPP_INCLUDE={SysLibsDict["jsoncpp_include"]}' if "jsoncpp_include" in SysLibsDict else "",
             f'-DJSONCPP_LIB_DIRECTORY={SysLibsDict["jsoncpp_lib_dir"]}' if "jsoncpp_lib_dir" in SysLibsDict else "",
             f'-DVTUNE_INCLUDE={SysLibsDict["vtune_include"]}' if "vtune_include" in SysLibsDict else "",

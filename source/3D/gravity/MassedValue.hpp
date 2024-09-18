@@ -52,6 +52,8 @@ struct MassedValue
 
     explicit inline MassedValue(): MassedValue(T(), 0){};
 
+    #ifdef RICH_MPI
+
     inline size_t dump(Serializer *serializer) const override
     {
         size_t bytes = 0;
@@ -71,6 +73,8 @@ struct MassedValue
         bytes += serializer->extract_array(this->Q, byteOffset + bytes);
         return bytes;
     }
+
+    #endif // RICH_MPI
 };
 
 #endif // MASSED_VALUE_HPP

@@ -17,7 +17,7 @@ public:
 
     size_t dump(Serializer *serializer) const override;
     
-    size_t load(Serializer *serializer, size_t byteOffset) override;
+    size_t load(const Serializer *serializer, size_t byteOffset) override;
 
     BoundingBox<T> boundingBox;
     size_t cellID;
@@ -35,7 +35,7 @@ size_t TimeRequestData<T>::dump(Serializer *serializer) const
 }
 
 template<typename T>
-inline size_t TimeRequestData<T>::load(Serializer *serializer, size_t byteOffset)
+inline size_t TimeRequestData<T>::load(const Serializer *serializer, size_t byteOffset)
 {
     size_t bytesRead = 0;
     bytesRead += this->boundingBox.load(serializer, byteOffset);

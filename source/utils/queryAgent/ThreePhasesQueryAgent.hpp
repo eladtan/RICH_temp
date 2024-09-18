@@ -1,12 +1,17 @@
 #ifndef THREE_PHASES_QUERY_AGENT_HPP
 #define THREE_PHASES_QUERY_AGENT_HPP
 
+#ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
 #include "misc/serialize/Serializer.hpp"
+#endif // RICH_MPI
 #include "QueryAgent.hpp"
 
 template<typename QueryData, typename AnswerType>
-struct SubQueryAnswer : public Serializable
+struct SubQueryAnswer 
+                    #ifdef RICH_MPI
+                        : public Serializable
+                    #endif // RICH_MPI
 {
 public:
     SubQueryData<QueryData> query;
@@ -28,7 +33,7 @@ public:
             return bytes;
         }
         
-        size_t load(Serializer *serializer, size_t byteOffset) override
+        size_t load(const Serializer *serializer, size_t byteOffset) override
         {
             size_t bytes = 0;
             bytes += serializer->extract(this->query, byteOffset);
