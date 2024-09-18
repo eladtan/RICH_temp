@@ -1279,7 +1279,7 @@ vector<int> VoronoiMesh::Update
 		}
 	}
 	// communicate the ghost CM
-	vector<vector<Vector2D> > incoming = MPI_exchange_data(GhostProcs, GhostPoints, CM);
+	vector<vector<Vector2D>> incoming = MPI_exchange_data_indexed(GhostProcs, CM, GhostPoints);
 	// Add the recieved CM
 	for (size_t i = 0; i < incoming.size(); ++i)
 		for (size_t j = 0; j < incoming.at(i).size(); ++j)
@@ -1356,7 +1356,7 @@ void VoronoiMesh::Initialise_loc
 		}
 	}
 	// communicate the ghost CM
-	vector<vector<Vector2D> > incoming = MPI_exchange_data(GhostProcs, GhostPoints, CM);
+	vector<vector<Vector2D>> incoming = MPI_exchange_data_indexed(GhostProcs, CM, GhostPoints);
 	// Add the recieved CM
 	for (size_t i = 0; i < incoming.size(); ++i)
 		for (size_t j = 0; j < incoming.at(i).size(); ++j)

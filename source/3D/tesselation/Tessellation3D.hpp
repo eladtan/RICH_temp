@@ -488,7 +488,7 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       // start = std::chrono::system_clock::now();
       // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
       // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
-      std::vector<std::vector<T>> incoming = MPI_exchange_data(this->GetDuplicatedProcs(), this->GetDuplicatedPoints(), allBuildData);
+      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(this->GetDuplicatedProcs(), allBuildData, this->GetDuplicatedPoints());
       // end = std::chrono::system_clock::now();
       // int rank;
       // MPI_Comm_rank(MPI_COMM_WORLD, &rank);

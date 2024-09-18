@@ -1,12 +1,11 @@
-#ifndef MPI_COMMANDS_2D_HPP
-#define MPI_COMMANDS_2D_HPP
+#ifndef MPI_COMMANDS_3D_HPP
+#define MPI_COMMANDS_3D_HPP
 
 #ifdef RICH_MPI
 
 #include <mpi.h>
 #include <vector>
-#include "newtonian/two_dimensional/extensive.hpp"
-#include "tessellation/tessellation.hpp"
+#include "3D/tesselation/Tessellation3D.hpp"
 #include "misc/serialize/Serializer.hpp"
 
 /*!
@@ -16,7 +15,7 @@
 \param ghost_or_sent True for ghost cells false for sent cells.
 */
 template<class T>
-void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or_sent, const T *example_cell = nullptr)
+void MPI_exchange_data(const Tessellation3D& tess, vector<T>& cells, bool ghost_or_sent, const T *example_cell = nullptr)
 {
 	if(example_cell == nullptr and cells.empty())
 	{
@@ -28,7 +27,7 @@ void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or
 	}
 
 	const std::vector<rank_t> &correspondents = (ghost_or_sent)? tess.GetDuplicatedProcs() : tess.GetSentProcs();
-	const std::vector<std::vector<int>> &indices = (ghost_or_sent)? tess.GetDuplicatedPoints() : tess.GetSentPoints();
+	const std::vector<std::vector<size_t>> &indices = (ghost_or_sent)? tess.GetDuplicatedPoints() : tess.GetSentPoints();
 	std::vector<MPI_Request> req(correspondents.size());
 	
 	if(ghost_or_sent)
@@ -37,11 +36,11 @@ void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or
 	}
 	else
 	{
-		cells = VectorValues(cells, tess.GetSelfPoint());
+		cells = VectorValues(cells, tess.GetSelfIndex());
 	}
 
 	std::vector<std::vector<T>> exchange = MPI_exchange_data_indexed(correspondents, cells, indices);
-	const std::vector<std::vector<int>> &ghost_indices = tess.GetGhostIndeces();
+	const std::vector<std::vector<size_t>> &ghost_indices = tess.GetGhostIndeces();
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		const std::vector<T> &data = exchange[i];
@@ -64,4 +63,5 @@ void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or
 }
 
 #endif // RICH_MPI
-#endif // MPI_COMMANDS_2D_HPP
+
+#endif // MPI_COMMANDS_3D_HPP

@@ -98,7 +98,7 @@ public:
             result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
             this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
         }
-        std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
+        // std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
         return result;
     }
 

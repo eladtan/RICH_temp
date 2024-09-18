@@ -8,7 +8,7 @@
 #include "mpi/mpi_commands.hpp"
 
 template<typename T>
-struct LocationSpecifier : public Serializable
+struct LocationSpecifier : public Serializable2
 {
     T value;
     double weightBefore;
@@ -20,34 +20,30 @@ struct LocationSpecifier : public Serializable
 
     LocationSpecifier() = default;
 
-    size_t getChunkSize() const override
+    force_inline size_t dump(Serializer *serializer) const
     {
-        return sizeof(T) + 6;
+        size_t bytes = 0;
+        bytes += serializer->insert(this->value);
+        bytes += serializer->insert(this->weightBefore);
+        bytes += serializer->insert(this->weightEqual);
+        bytes += serializer->insert(this->weightAfter);
+        bytes += serializer->insert(this->elementsBefore);
+        bytes += serializer->insert(this->elementsEqual);
+        bytes += serializer->insert(this->elementsAfter);
+        return bytes;
     }
 
-    std::vector<double> serialize() const override
+    force_inline size_t load(const Serializer *serializer, std::size_t byteOffset)
     {
-        std::vector<double> result(sizeof(T));
-        dump(this->value, result.begin());
-        result.push_back(this->weightBefore);
-        result.push_back(this->weightEqual);
-        result.push_back(this->weightAfter);
-        result.push_back(this->elementsBefore);
-        result.push_back(this->elementsEqual);
-        result.push_back(this->elementsAfter);
-        return result;
-    }
-
-    void unserialize(const std::vector<double> &data) override
-    {
-        load(this->value, data.cbegin());
-        size_t pos = 0;
-        this->weightBefore = data[pos++];
-        this->weightEqual = data[pos++];
-        this->weightAfter = data[pos++];
-        this->elementsBefore = data[pos++];
-        this->elementsEqual = data[pos++];
-        this->elementsAfter = data[pos++];
+        size_t bytes = 0;
+        bytes += serializer->extract(this->value, byteOffset + bytes);
+        bytes += serializer->extract(this->weightBefore, byteOffset + bytes);
+        bytes += serializer->extract(this->weightEqual, byteOffset + bytes);
+        bytes += serializer->extract(this->weightAfter, byteOffset + bytes);
+        bytes += serializer->extract(this->elementsBefore, byteOffset + bytes);
+        bytes += serializer->extract(this->elementsEqual, byteOffset + bytes);
+        bytes += serializer->extract(this->elementsAfter, byteOffset + bytes);
+        return bytes;
     }
 
     void syncronizeAll(const MPI_Comm &comm)

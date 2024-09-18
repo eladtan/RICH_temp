@@ -123,7 +123,7 @@ namespace CG
         std::vector<double> r_old, sub_a_times_p;
         std::vector<double> sub_r;
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, sub_x, true);
+        MPI_exchange_data(tess, sub_x, true);
 #endif
         mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
         // Find maximum value of A, this is used for normalization of the error
@@ -145,7 +145,7 @@ namespace CG
         std::vector<double> old_x = sub_x;
         size_t Ntotal = Nlocal;
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, p, true);
+        MPI_exchange_data(tess, p, true);
         MPI_Allreduce(&Nlocal, &Ntotal, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
 #endif
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
@@ -186,7 +186,7 @@ namespace CG
             if(i > 1 && i % 50 == 0)
             {
 #ifdef RICH_MPI
-                MPI_exchange_data2(tess, sub_x, true);
+                MPI_exchange_data(tess, sub_x, true);
 #endif
                 mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
                 sub_x.resize(Nlocal);
@@ -240,7 +240,7 @@ namespace CG
                 total_iters = i;
                 good_end = true;
 #ifdef RICH_MPI
-                MPI_exchange_data2(tess, sub_x, true);
+                MPI_exchange_data(tess, sub_x, true);
 #endif
                 sub_x_solution = sub_x;
                 mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
@@ -257,7 +257,7 @@ namespace CG
             sub_p = result3;
             p = sub_p;
     #ifdef RICH_MPI
-            MPI_exchange_data2(tess, p, true);
+            MPI_exchange_data(tess, p, true);
     #endif
         }
         if(not good_end)
@@ -276,7 +276,7 @@ namespace CG
 	    // throw UniversalError("CG did not converge");
         }
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, sub_x, true);
+        MPI_exchange_data(tess, sub_x, true);
 #endif
         return sub_x;
     }
