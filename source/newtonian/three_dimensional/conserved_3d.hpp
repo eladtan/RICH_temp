@@ -13,7 +13,7 @@
 //! \brief Conserved variables for a 3D computational cell
 class Conserved3D
 	#ifdef RICH_MPI
-		: public Serializable2
+		: public Serializable
 	#endif // RICH_MPI
 {
 public:

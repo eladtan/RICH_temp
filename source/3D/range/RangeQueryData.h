@@ -5,7 +5,7 @@
 
 struct RangeQueryData 
                     #ifdef RICH_MPI
-                        : public Serializable2
+                        : public Serializable
                     #endif // RICH_MPI
 {
     size_t pointIdx;

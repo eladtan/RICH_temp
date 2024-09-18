@@ -8,7 +8,7 @@
 template<typename T>
 struct MassedValue 
                 #ifdef RICH_MPI
-                    : public Serializable2
+                    : public Serializable
                 #endif // RICH_MPI
 {
     using coord_type = typename T::coord_type;

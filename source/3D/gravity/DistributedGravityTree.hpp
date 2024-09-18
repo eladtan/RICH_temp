@@ -14,7 +14,7 @@
 
 struct GravityNodeData
                     #ifdef RICH_MPI
-                        : public Serializable2
+                        : public Serializable
                     #endif // RICH_MPI
 {
     BoundingBox<Vector3D> boundingBox;

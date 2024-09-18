@@ -30,7 +30,7 @@ typedef std::array<bool, MAX_STICKERS> svector;
 //! \brief Computational cell
 class ComputationalCell
 #ifdef RICH_MPI
-  : public Serializable2
+  : public Serializable
 #endif // RICH_MPI
 
 {
@@ -136,7 +136,7 @@ void ReplaceComputationalCell(ComputationalCell &cell, ComputationalCell const& 
 //! \brief Class for spatial interpolations
 class Slope
     #ifdef RICH_MPI
-      : public Serializable2
+      : public Serializable
     #endif // RICH_MPI
 {
 public:

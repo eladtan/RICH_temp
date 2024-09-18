@@ -12,7 +12,7 @@
 
 typedef struct IndexedVector3D
                     #ifdef RICH_MPI
-                        : public Serializable2
+                        : public Serializable
                     #endif // RICH_MPI
 {
     using coord_type = coord_t;

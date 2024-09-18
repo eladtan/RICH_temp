@@ -15,7 +15,7 @@
 //! \brief 2D Mathematical vector
 class Vector2D
           #ifdef RICH_MPI
-            : public Serializable2
+            : public Serializable
           #endif // RICH_MPI
 {
 public:

@@ -17,7 +17,7 @@
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
 				#ifdef RICH_MPI
-						: public Serializable2
+						: public Serializable
 				#endif // RICH_MPI
 {
 public:
@@ -179,7 +179,7 @@ void ReplaceComputationalCell(ComputationalCell3D &cell, ComputationalCell3D con
 //! \brief Class for 3D spatial interpolations
 class Slope3D
 #ifdef RICH_MPI
-	: public Serializable2
+	: public Serializable
 #endif // RICH_MPI
 {
 public:

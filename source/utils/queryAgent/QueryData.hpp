@@ -6,7 +6,7 @@
 template<typename QueryData>
 struct SubQueryData
                 #ifdef RICH_MPI
-                    : public Serializable2
+                    : public Serializable
                 #endif // RICH_MPI
 {
     size_t parent_id;

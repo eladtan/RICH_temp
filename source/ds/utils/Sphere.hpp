@@ -18,7 +18,7 @@
 template<typename T>
 class Sphere
             #ifdef RICH_MPI
-                : public Serializable2
+                : public Serializable
             #endif // RICH_MPI
 {
 public:

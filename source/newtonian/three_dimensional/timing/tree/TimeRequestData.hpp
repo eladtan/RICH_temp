@@ -1,13 +1,12 @@
 #ifndef TIME_REQUEST_DATA_HPP
 #define TIME_REQUEST_DATA_HPP
 
-#include "misc/serializable.hpp"
 #include "TimingTree.hpp"
 
 #ifdef RICH_MPI
 
 template<typename T>
-class TimeRequestData : public Serializable2
+class TimeRequestData : public Serializable
 {
 public:
     using NodeData = TimingTree<Vector3D>::NodeData;

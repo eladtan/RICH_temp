@@ -15,7 +15,6 @@
 
 #ifdef RICH_MPI
 	#include "misc/serialize/Serializer.hpp"
-	#include "misc/serializable.hpp"
 #endif // RICH_MPI
 
 using std::vector;
@@ -35,7 +34,7 @@ namespace
 //! \brief 3D Mathematical vector
 class Vector3D
 			#ifdef RICH_MPI
-				: public Serializable2
+				: public Serializable
 			#endif // RICH_MPI
 {
 public:

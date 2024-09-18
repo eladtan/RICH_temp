@@ -14,7 +14,7 @@
 template<typename T>
 class BoundingBox
                 #ifdef RICH_MPI
-                    : public Serializable2
+                    : public Serializable
                 #endif // RICH_MPI
 {
 template<typename U>

@@ -1,12 +1,12 @@
-#ifndef SERIALIZABLE2_HPP
-#define SERIALIZABLE2_HPP
+#ifndef SERIALIZABLE_HPP
+#define SERIALIZABLE_HPP
 
 class Serializer;
 
-class Serializable2
+class Serializable
 {
 public:
-    virtual ~Serializable2(void) = default;
+    virtual ~Serializable(void) = default;
 
     virtual size_t dump(Serializer *serializer) const = 0;
 
@@ -14,6 +14,6 @@ public:
 };
 
 template<typename T>
-using is_serializable2 = std::is_convertible<T*, Serializable2*>;
+using is_serializable = std::is_convertible<T*, Serializable*>;
 
-#endif // SERIALIZABLE2_HPP
+#endif // SERIALIZABLE_HPP

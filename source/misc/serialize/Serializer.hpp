@@ -88,7 +88,7 @@ inline char *Serializer::resize(size_t size)
 template<typename T>
 force_inline size_t Serializer::insert(const T &data)
 {
-    if constexpr(is_serializable2<T>::value)
+    if constexpr(is_serializable<T>::value)
     {
         // serializable
         return data.dump(this);
@@ -174,7 +174,7 @@ template<typename T>
 force_inline size_t Serializer::extract(T &data, size_t idx) const
 {
     assert(idx < this->internal.size());
-    if constexpr(is_serializable2<T>::value)
+    if constexpr(is_serializable<T>::value)
     {
         // serializable
         return data.load(this, idx);

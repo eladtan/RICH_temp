@@ -56,7 +56,7 @@ using PointsToNeighborsMap = boost::container::flat_map<size_t, boost::container
 
 struct ComputationalCell3DVector3D 
                     #ifdef RICH_MPI
-                        : public Serializable2
+                        : public Serializable
                     #endif // RICH_MPI
 {
     static size_t CELL_CHUNK_SIZE;

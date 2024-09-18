@@ -3,7 +3,7 @@
 size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t>::max();
 
 #ifdef RICH_MPI
-    struct Request : public Serializable2
+    struct Request : public Serializable
     {
         size_t askingPointIdx;
         size_t remotePointIdxInGhost;
@@ -28,7 +28,7 @@ size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t
         };
     };
 
-    struct Response : public Serializable2
+    struct Response : public Serializable
     {
         size_t requestID;
         RemotePoint neighbor;

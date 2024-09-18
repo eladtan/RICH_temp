@@ -160,6 +160,53 @@ T MPI_Bcast_serializable(const T &data, rank_t owner, const MPI_Comm &comm = MPI
     return value;
 }
 
+template<typename T, template<typename...> class Container, typename... Ts>
+std::vector<T> MPI_Spread(const Container<T, Ts...> &data, rank_t root, const MPI_Comm &comm)
+{
+	rank_t rank, size;
+	MPI_Comm_rank(comm, &rank);
+	MPI_Comm_size(comm, &size);
+
+	if(size == 1)
+	{
+		return data;
+	}
+
+	Serializer send;
+	Serializer recv;
+	int mySize;
+	if(rank == root)
+	{
+		size_t totalSize = data.size();
+		size_t idealSize = totalSize / size;
+		std::vector<int> counts(size, 0);
+		std::vector<int> offsets(size, 0);
+		size_t current = 0;
+		for(rank_t _rank = 0; _rank < size; _rank++)
+		{
+			size_t _begin = _rank * idealSize;
+			size_t _end = (_rank == size - 1)? totalSize : ((_rank + 1) * idealSize);
+			size_t length = _end - _begin;
+			offsets[_rank] = current;
+			current += send.insert_elements(data, current, length);
+		}
+		MPI_Scatter(counts.data(), 1, MPI_INT, &counts[rank], 1, MPI_INT, root, comm);
+		mySize = counts[rank];
+		recv.resize(mySize);
+		MPI_Scatterv(send.getData(), counts.data(), offsets.data(), MPI_CHAR, recv.getData(), mySize, MPI_CHAR, root, comm);
+	}
+	else
+	{
+		MPI_Scatter(NULL, 1, MPI_INT, &mySize, 1, MPI_INT, root, comm);
+		recv.resize(mySize);
+		MPI_Scatterv(NULL, NULL, NULL, MPI_CHAR, recv.getData(), mySize, MPI_CHAR, root, comm);
+	}
+
+	std::vector<T> toReturn;
+	recv.extract_all(toReturn);
+	return toReturn;
+}
+
 #endif // RICH_MPI
 
 #endif // MPI_SERIALIZABLE_COMMANDS_HPP

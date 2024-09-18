@@ -15,7 +15,7 @@
 template <typename T>
 class Mat33 
 			#ifdef RICH_MPI
-				: public Serializable2
+				: public Serializable
 			#endif // RICH_MPI
 {
 private:

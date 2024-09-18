@@ -8,7 +8,7 @@
 #include "mpi/mpi_commands.hpp"
 
 template<typename T>
-struct LocationSpecifier : public Serializable2
+struct LocationSpecifier : public Serializable
 {
     T value;
     double weightBefore;

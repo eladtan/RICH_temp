@@ -12,7 +12,7 @@
 // todo: remove this struct
 struct _3DPoint 
     #ifdef RICH_MPI
-                : public Serializable2
+                : public Serializable
     #endif // RICH_MPI
 {
     using coord_type = double;

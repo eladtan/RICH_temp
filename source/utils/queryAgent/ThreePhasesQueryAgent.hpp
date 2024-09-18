@@ -6,7 +6,7 @@
 #include "QueryAgent.hpp"
 
 template<typename QueryData, typename AnswerType>
-struct SubQueryAnswer : public Serializable2
+struct SubQueryAnswer : public Serializable
 {
 public:
     SubQueryData<QueryData> query;
