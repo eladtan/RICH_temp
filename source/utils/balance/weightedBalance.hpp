@@ -368,12 +368,16 @@ std::vector<T> getWeightedBorders(const std::vector<T> &values, const std::vecto
 
     size_t totalSize = values.size();
     MPI_Allreduce(MPI_IN_PLACE, &totalSize, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-
+    
     size_t factor = totalSize / size; 
     std::vector<size_t> orderStatistics;
     for(int _rank = 0; _rank < size - 1; _rank++)
     {
         orderStatistics.push_back(factor * (_rank + 1));
+        if(_rank > 0)
+        {
+            assert(orderStatistics[_rank - 1] < orderStatistics[_rank]);
+        }
     }
     orderStatistics.push_back(totalSize);
     return getWeightedOrderStatistics(values, weights, orderStatistics, comp, comm);

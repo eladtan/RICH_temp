@@ -29,7 +29,8 @@ void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or
 
 	const std::vector<rank_t> &correspondents = (ghost_or_sent)? tess.GetDuplicatedProcs() : tess.GetSentProcs();
 	const std::vector<std::vector<int>> &indices = (ghost_or_sent)? tess.GetDuplicatedPoints() : tess.GetSentPoints();
-	std::vector<MPI_Request> req(correspondents.size());
+	std::vector<std::vector<T>> exchange = MPI_exchange_data_indexed(correspondents, cells, indices);
+	const std::vector<std::vector<int>> &ghost_indices = tess.GetGhostIndeces();
 	
 	if(ghost_or_sent)
 	{
@@ -40,8 +41,6 @@ void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or
 		cells = VectorValues(cells, tess.GetSelfPoint());
 	}
 
-	std::vector<std::vector<T>> exchange = MPI_exchange_data_indexed(correspondents, cells, indices);
-	const std::vector<std::vector<int>> &ghost_indices = tess.GetGhostIndeces();
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		const std::vector<T> &data = exchange[i];

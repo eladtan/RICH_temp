@@ -29,7 +29,9 @@ inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells,
 	const std::vector<rank_t> &correspondents = (ghost_or_sent)? tess.GetDuplicatedProcs() : tess.GetSentProcs();
 	const std::vector<std::vector<size_t>> &indices = (ghost_or_sent)? tess.GetDuplicatedPoints() : tess.GetSentPoints();
 	std::vector<MPI_Request> req(correspondents.size());
-	
+
+	std::vector<std::vector<T>> exchange = MPI_exchange_data_indexed(correspondents, cells, indices);
+	const std::vector<std::vector<size_t>> &ghost_indices = tess.GetGhostIndeces();
 	if(ghost_or_sent)
 	{
 		cells.resize(tess.GetTotalPointNumber(), *example_cell);
@@ -38,9 +40,6 @@ inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells,
 	{
 		cells = VectorValues(cells, tess.GetSelfIndex());
 	}
-
-	std::vector<std::vector<T>> exchange = MPI_exchange_data_indexed(correspondents, cells, indices);
-	const std::vector<std::vector<size_t>> &ghost_indices = tess.GetGhostIndeces();
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		const std::vector<T> &data = exchange[i];

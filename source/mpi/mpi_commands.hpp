@@ -27,7 +27,7 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>&
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		senders[i].insert_all_indexed(data, indices[i]);
-		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
+		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
 
 	std::vector<Serializer> receivers(correspondents.size());
@@ -36,7 +36,7 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>&
 		MPI_Status status;
 		MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &status);
 		int count;
-		MPI_Get_count(&status, MPI_CHAR, &count);
+		MPI_Get_count(&status, MPI_BYTE, &count);
 		size_t location = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE));
 		if(location >= correspondents.size())
 		{
@@ -46,7 +46,7 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>&
 			throw eo;
 		}
 		receivers[location].resize(count);
-		MPI_Recv(receivers[location].getData(), count, MPI_CHAR, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		MPI_Recv(receivers[location].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
 	std::vector<std::vector<T>> result(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
@@ -69,7 +69,7 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		senders[i].insert_all(data[i]);
-		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
+		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
 
 	std::vector<Serializer> receivers(correspondents.size());
@@ -78,7 +78,7 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 		MPI_Status status;
 		MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &status);
 		int count;
-		MPI_Get_count(&status, MPI_CHAR, &count);
+		MPI_Get_count(&status, MPI_BYTE, &count);
 		size_t location = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE));
 		if(location >= correspondents.size())
 		{
@@ -88,7 +88,7 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 			throw eo;
 		}
 		receivers[location].resize(count);
-		MPI_Recv(receivers[location].getData(), count, MPI_CHAR, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		MPI_Recv(receivers[location].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
 	std::vector<std::vector<T>> result(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)

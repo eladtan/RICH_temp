@@ -143,6 +143,7 @@ force_inline size_t Serializer::insert_elements(const std::vector<T> &data, size
     {
         bytes += this->insert(data[index]);
         index++;
+        inserted++;
     }
     return bytes;
 }
@@ -154,6 +155,7 @@ force_inline size_t Serializer::insert_all_indexed(const std::vector<T> &data, c
     size_t N = indices.size();
     for(size_t i = 0; i < N; ++i)
     {
+		assert(indices[i] < data.size());
         bytes += this->insert(data[indices[i]]);
     }
     return bytes;

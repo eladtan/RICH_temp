@@ -44,7 +44,7 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
     Serializer recv;
     recv.resize(totalSize);
 
-    MPI_Alltoallv(send.getData(), sendCounts.data(), sendDisplacements.data(), MPI_CHAR, recv.getData(), recvCounts.data(), recvDisplacements.data(), MPI_CHAR, comm);
+    MPI_Alltoallv(send.getData(), sendCounts.data(), sendDisplacements.data(), MPI_BYTE, recv.getData(), recvCounts.data(), recvDisplacements.data(), MPI_BYTE, comm);
 
     std::vector<std::vector<T>> result(size);
     for(rank_t _rank = 0; _rank < size; _rank++)
@@ -119,8 +119,8 @@ std::vector<std::vector<T>> MPI_All_cast_by_ranks(const Container<T, Ts...> &dat
     std::vector<int> sendCounts(size, count);
     Serializer recv;
     recv.resize(totalToReceive);
-    MPI_Alltoallv(send.getData(), sendCounts.data(), sendDisplacements.data(), MPI_CHAR,
-                    recv.getData(), recvCounts.data(), recvDisplacements.data(), MPI_CHAR, comm);
+    MPI_Alltoallv(send.getData(), sendCounts.data(), sendDisplacements.data(), MPI_BYTE,
+                    recv.getData(), recvCounts.data(), recvDisplacements.data(), MPI_BYTE, comm);
 
     std::vector<std::vector<T>> resultByRanks(size);
     for(rank_t _rank = 0; _rank < size; _rank++)
@@ -188,18 +188,18 @@ std::vector<T> MPI_Spread(const Container<T, Ts...> &data, rank_t root, const MP
 			size_t _end = (_rank == size - 1)? totalSize : ((_rank + 1) * idealSize);
 			size_t length = _end - _begin;
 			offsets[_rank] = current;
-			current += send.insert_elements(data, current, length);
+			counts[_rank] = send.insert_elements(data, _begin, length);
+            current += counts[_rank];
 		}
-		MPI_Scatter(counts.data(), 1, MPI_INT, &counts[rank], 1, MPI_INT, root, comm);
-		mySize = counts[rank];
+		MPI_Scatter(counts.data(), 1, MPI_INT, &mySize, 1, MPI_INT, root, comm);
 		recv.resize(mySize);
-		MPI_Scatterv(send.getData(), counts.data(), offsets.data(), MPI_CHAR, recv.getData(), mySize, MPI_CHAR, root, comm);
+		MPI_Scatterv(send.getData(), counts.data(), offsets.data(), MPI_BYTE, recv.getData(), mySize, MPI_BYTE, root, comm);
 	}
 	else
 	{
 		MPI_Scatter(NULL, 1, MPI_INT, &mySize, 1, MPI_INT, root, comm);
 		recv.resize(mySize);
-		MPI_Scatterv(NULL, NULL, NULL, MPI_CHAR, recv.getData(), mySize, MPI_CHAR, root, comm);
+		MPI_Scatterv(NULL, NULL, NULL, MPI_BYTE, recv.getData(), mySize, MPI_BYTE, root, comm);
 	}
 
 	std::vector<T> toReturn;
