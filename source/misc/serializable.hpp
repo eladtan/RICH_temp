@@ -103,3 +103,4 @@ template<class T> vector<T> list_unserialize
 }
 
 #endif // SERIALIZABLE_HPP
+

@@ -5,9 +5,16 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "../common/equation_of_state.hpp"
 #include "computational_cell.hpp"
+#ifdef RICH_MPI
+	#include <mpi.h>
+	#include "misc/serialize/Serializer.hpp"
+#endif // RICH_MPI
 
 //! \brief Conserved variables for a 3D computational cell
 class Conserved3D
+	#ifdef RICH_MPI
+		: public Serializable
+	#endif // RICH_MPI
 {
 public:
 
@@ -81,24 +88,11 @@ public:
 	*/
 	Conserved3D& operator*=(double s);
 
-#ifdef RICH_MPI
-  /*! \brief Estimate chunk sizes
-    \return Size of chunk (in bits)
-   */
-	size_t getChunkSize(void) const;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-  /*! \brief Convert to series of numbers
-    \return series of numbers
-   */
-	vector<double> serialize(void) const;
-
-  /*! \brief Reconstruct from serial form
-    \param data Serialised form
-   */
-	void unserialize
-	(const vector<double>& data);
-#endif // RICH_MPI
-
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif // RICH_MPI
 };
 
 /*! \brief Scalar product operator

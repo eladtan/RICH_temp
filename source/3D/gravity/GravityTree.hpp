@@ -14,7 +14,7 @@ template<typename T>
 class GravityTree;
 
 template<typename T, typename BB_T>
-bool ShouldOpenBox(const T &point, const _BoundingBox<BB_T> &boundingBox, const T &centerOfMass, double thetaSquared)
+bool ShouldOpenBox(const T &point, const BoundingBox<BB_T> &boundingBox, const T &centerOfMass, double thetaSquared)
 {
     typename T::coord_type width2 = boundingBox.getWidthSquared();
     #ifdef USE_VCL_VECTORIZATION
@@ -101,7 +101,7 @@ public:
     void addExternalValues(const std::vector<MassedValue<T>> &values);
 
     template<typename U>
-    MassedValue<T> findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const;
+    MassedValue<T> findMatchingMassedValue(const BoundingBox<U> &boundingBox) const;
 
     std::vector<std::pair<octnode_id_t, MassedValue<T>>> getOpenNodesData(const T &point) const;
 
@@ -158,7 +158,7 @@ void GravityTree<T>::addExternalValues(const std::vector<MassedValue<T>> &values
 
 template<typename T>
 template<typename U>
-MassedValue<T> GravityTree<T>::findMatchingMassedValue(const _BoundingBox<U> &boundingBox) const
+MassedValue<T> GravityTree<T>::findMatchingMassedValue(const BoundingBox<U> &boundingBox) const
 {
     const Node *node = this->octTree->findNodeContainingBoundingBox(boundingBox);
     if(node == nullptr)

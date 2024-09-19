@@ -7,18 +7,17 @@
                 "${workspaceFolder}/",
                 "${workspaceFolder}/source",
                 "${workspaceFolder}/source/opt/vcl", // for vcl
-                "/software/x86_64/4.18.0/openmpi/4.1.5/gcc/12.2.0/include", // for mpi
-                "/software/x86_64/4.18.0/boost/1.83.0/include", // for boost
-                "/software/x86_64/4.18.0/vtk/9.2.0/gcc/12.2.0/with_X/include/vtk-9.2/", // for vtk
-                "/software/x86_64/4.18.0/hdf5/1.14.2/gcc/12.3.0_unsupported/include", // for hdf5
-                "/software/x86_64/4.18.0/jsoncpp/1.9.5/include/", // for json_cpp
-                "/software/x86_64/4.18.0/cgal/5.6/include", // for cgal
-                "/home/maorm/opt/qhull/current/include", // for qhull
-                "/software/x86_64/4.18.0/intel/oneapi/2023.0.0/vtune/2023.0.0/include/" // for vtune
+                "/software/x86_64/5.14.0/openmpi/4.1.4/gcc/12.2.0/include", // for mpi
+                "/software/x86_64/5.14.0/boost/1.78.0/include", // for boost
+                "/software/x86_64/5.14.0/vtk/9.3.0/gcc/12.3.0/with_mesa/include/vtk-9.3/", // for vtk
+                "/software/x86_64/5.14.0/hdf5/1.14.2/gcc/12.3.0_cxx/include", // for hdf5
+                "/software/x86_64/5.14.0/jsoncpp/1.9.5/include", // for json_cpp
+                "/software/x86_64/5.14.0/intel/oneapi/2024.0.1/vtune/latest/include" // for vtune
             ],
 
             "defines": [
-                "RICH_MPI"
+                "RICH_MPI",
+                "USE_VCL_VECTORIZATION"
             ],
             
             "cStandard": "c11",

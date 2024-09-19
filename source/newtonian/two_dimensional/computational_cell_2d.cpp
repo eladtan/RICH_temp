@@ -135,65 +135,59 @@ Slope::Slope(ComputationalCell const & x, ComputationalCell const & y) : xderiva
 {}
 
 #ifdef RICH_MPI
-size_t ComputationalCell::getChunkSize(void) const
-{
-  return 4 + tracers.size() + stickers.size();
-}
+  size_t ComputationalCell::dump(Serializer *serializer) const
+  {
+    size_t bytes = 0;
+    bytes += serializer->insert(this->density);
+    bytes += serializer->insert(this->pressure);
+    bytes += serializer->insert(this->velocity);
+    bytes += serializer->insert(this->tracers.size());
+    for(size_t j = 0; j < tracers.size(); ++j)
+    {
+      bytes += serializer->insert(this->tracers[j]);
+    }
+    bytes += serializer->insert(this->stickers.size());
+    for(size_t i = 0; i < stickers.size(); ++i)
+    {
+      bytes += serializer->insert(this->stickers[i]);
+    }
+    return bytes;
+  }
 
-vector<double> ComputationalCell::serialize(void) const
-{
-  vector<double> res (getChunkSize());
-  res.at(0) = density;
-  res.at(1) = pressure;
-  res.at(2) = velocity.x;
-  res.at(3) = velocity.y;
-  size_t counter = 4;
-  size_t N = tracers.size();
-  for (size_t j = 0; j < N ; ++j)
-    res[j+counter] = tracers[j];
-  size_t N2 = stickers.size();
-  for (size_t j = 0; j < N2; ++j)
-    res[j + counter + N] = stickers[j] ? 1 : 0;
-  return res;
-}
+  size_t ComputationalCell::load(const Serializer *serializer, size_t byteOffset)
+  {
+    size_t bytes = 0;
+    bytes += serializer->extract(this->density, byteOffset);
+    bytes += serializer->extract(this->pressure, byteOffset + bytes);
+    bytes += serializer->extract(this->velocity, byteOffset + bytes);
+    size_t tracersSize;
+    bytes += serializer->extract(tracersSize, byteOffset + bytes);
+    for(size_t j = 0; j < tracersSize; ++j)
+    {
+      bytes += serializer->extract(this->tracers[j], byteOffset + bytes);
+    }
+    size_t stickersSize;
+    bytes += serializer->extract(stickersSize, byteOffset + bytes);
+    for(size_t i = 0; i < stickersSize; ++i)
+    {
+      bytes += serializer->extract(this->stickers[i], byteOffset + bytes);
+    }
+    return bytes;
+  }
 
-void ComputationalCell::unserialize
-(const vector<double>& data)
-{
-  assert(data.size()==getChunkSize());
-  density = data.at(0);
-  pressure = data.at(1);
-  velocity.x = data.at(2);
-  velocity.y = data.at(3);
-  size_t counter = 4;
-  size_t N = tracers.size();
-  for (size_t j = 0; j < N; ++j)
-    tracers[j] = data.at(counter + j);
-  size_t N2 = stickers.size();
-  for (size_t i = 0; i < N2; ++i)
-    stickers[i] = data.at(counter + N + i)>0.5;
-}
+  size_t Slope::dump(Serializer *serializer) const
+  {
+    size_t bytes = 0;
+    bytes += serializer->insert(this->xderivative);
+    bytes += serializer->insert(this->yderivative);
+    return bytes;
+  }
 
-size_t Slope::getChunkSize(void) const
-{
-  return xderivative.getChunkSize() * 2;
-}
-
-vector<double> Slope::serialize(void) const
-{
-  vector<double> res(getChunkSize());
-  vector<double> temp(xderivative.serialize());
-  std::copy(temp.begin(), temp.end(), res.begin());
-  temp = yderivative.serialize();
-  std::copy(temp.begin(), temp.end(), res.begin() + xderivative.getChunkSize());
-  return res;
-}
-
-void Slope::unserialize(const vector<double>& data)
-{
-  size_t size = xderivative.getChunkSize();
-  xderivative.unserialize(vector<double>(data.begin(), data.begin() + size));
-  yderivative.unserialize(vector<double>(data.begin() + size, data.end()));
-}
-
+  size_t Slope::load(const Serializer *serializer, size_t byteOffset)
+  {
+    size_t bytes = 0;
+    bytes += serializer->extract(this->xderivative, byteOffset);
+    bytes += serializer->extract(this->yderivative, byteOffset + bytes);
+    return bytes;
+  }
 #endif // RICH_MPI

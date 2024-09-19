@@ -135,10 +135,8 @@ void UpdateBox(Voronoi3D &tess, HDSim3D &sim, double const min_velocity, double 
 		
 #ifdef RICH_MPI
 		tess.BuildParallel(mypoints);
-		MPI_exchange_data(tess, cells, false, &reference_cell);
-		// Conserved3D e_dummy;
-		// MPI_exchange_data(tess, extensives, false, &e_dummy);
-		MPI_exchange_data(tess, cells, true, &reference_cell);
+		MPI_exchange_data(tess, cells, false);
+		MPI_exchange_data(tess, cells, true);
 #else // RICH_MPI
 		tess.Build(mypoints);
 #endif // RICH_MPI

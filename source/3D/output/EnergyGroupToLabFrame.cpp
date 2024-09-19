@@ -92,7 +92,7 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
 
     // third term
     Vector3D grad_Egp(0.0, 0.0, 0.0);
-    std::size_t const gp = group + 1 < ENERGY_GROUPS_NUM ? group+1 : group;
+    std::size_t const gp = (group + 1) < ENERGY_GROUPS_NUM ? (group+1) : group;
     double const dnu_p = multigroup_.energy_groups_width[gp];
     
     Vector3D grad_Egm(0.0, 0.0, 0.0);   

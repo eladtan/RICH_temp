@@ -1,14 +1,13 @@
-#include "HilbertConvertor3D.hpp"
+#include "HilbertRectangularConvertor3D.hpp"
 
-HilbertConvertor3D::HilbertConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order)
+HilbertRectangularConvertor3D::HilbertRectangularConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order):
+    HilbertConvertor3D(ll, ur, order)
 {
-    this->ll = ll;
-    this->ur = ur;
-    this->spaceBoundingBox = _BoundingBox<Vector3D>(ll, ur);
+    this->spaceBoundingBox = BoundingBox<Vector3D>(ll, ur);
     this->changeOrder(order);
 }
 
-void HilbertConvertor3D::changeOrder(size_t order)
+void HilbertRectangularConvertor3D::changeOrder(size_t order)
 {
     this->order = order = std::min<size_t>(MAX_HILBERT_ORDER, order);
     coord_t realWidth = this->ur.x - this->ll.x;
@@ -24,7 +23,7 @@ void HilbertConvertor3D::changeOrder(size_t order)
     this->step = Vector3D(realWidth / div.x, realHeight / div.y, realDepth / div.z);
 }
 
-std::vector<HilbertConvertor3D::RecursionArguments> HilbertConvertor3D::getRecursionArguments(const RecursionArguments &args) const
+std::vector<HilbertRectangularConvertor3D::RecursionArguments> HilbertRectangularConvertor3D::getRecursionArguments(const RecursionArguments &args) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -103,7 +102,7 @@ std::vector<HilbertConvertor3D::RecursionArguments> HilbertConvertor3D::getRecur
     return toReturn;
 }
 
-Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const
+Vector3D HilbertRectangularConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const
 {
     coord_t x, y, z;
     x = this->ll[0] + width * this->step[0];
@@ -112,7 +111,7 @@ Vector3D HilbertConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_
     return Vector3D(x, y, z);
 }
 
-bool HilbertConvertor3D::d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const
+bool HilbertRectangularConvertor3D::d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -138,7 +137,7 @@ bool HilbertConvertor3D::d2xyz_helper(const RecursionArguments &args, hilbert_in
 
     if(requested_d < current_d)
     {
-        throw UniversalError("in HilbertConvertor3D::d2xyz_helper, should not reach here (algorithm failed)");
+        throw UniversalError("in HilbertRectangularConvertor3D::d2xyz_helper, should not reach here (algorithm failed)");
     }
     hilbert_index_t diff = requested_d - current_d;
 
@@ -172,7 +171,7 @@ bool HilbertConvertor3D::d2xyz_helper(const RecursionArguments &args, hilbert_in
     return false;
 }
 
-bool HilbertConvertor3D::xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
+bool HilbertRectangularConvertor3D::xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
 {
     direction_t x = startPoint.x, y = startPoint.y, z = startPoint.z;
     for(size_t i = 0; i < steps; i++)
@@ -189,7 +188,7 @@ bool HilbertConvertor3D::xyz2d_helper_base(const DirectionVector3D &startPoint, 
     return false;
 }
 
-std::pair<typename HilbertConvertor3D::DirectionVector3D, typename HilbertConvertor3D::DirectionVector3D> HilbertConvertor3D::getBoundingBox(const RecursionArguments &args) const
+std::pair<typename HilbertRectangularConvertor3D::DirectionVector3D, typename HilbertRectangularConvertor3D::DirectionVector3D> HilbertRectangularConvertor3D::getBoundingBox(const RecursionArguments &args) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -205,7 +204,7 @@ std::pair<typename HilbertConvertor3D::DirectionVector3D, typename HilbertConver
             {std::max(startPoint.x, boundary.x) + 1, std::max(startPoint.y, boundary.y) + 1, std::max(startPoint.z, boundary.z) + 1}};    
 }
 
-bool HilbertConvertor3D::xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
+bool HilbertRectangularConvertor3D::xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -259,7 +258,7 @@ bool HilbertConvertor3D::xyz2d_helper(const RecursionArguments &args, const Dire
 }
 
 
-Vector3D HilbertConvertor3D::d2xyz(hilbert_index_t d) const
+Vector3D HilbertRectangularConvertor3D::d2xyz(hilbert_index_t d) const
 {
     Vector3D result;
     hilbert_index_t current_d = 0;
@@ -267,7 +266,7 @@ Vector3D HilbertConvertor3D::d2xyz(hilbert_index_t d) const
     return result;
 }
 
-hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
+hilbert_index_t HilbertRectangularConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
 {
     // convert (x,y, z) to the integer triple (width, height, width)
     direction_t width = std::floor((x - this->ll.x) / this->step.x);
@@ -276,7 +275,7 @@ hilbert_index_t HilbertConvertor3D::xyz2d(coord_t x, coord_t y, coord_t z) const
 
     // if(not this->spaceBoundingBox.contains(Vector3D(x, y, z)))
     // {
-    //     UniversalError eo("HilbertConvertor3D::xyz2d: Given point is out of the bounding box of the space");
+    //     UniversalError eo("HilbertRectangularConvertor3D::xyz2d: Given point is out of the bounding box of the space");
     //     eo.addEntry("Space bounding box", this->spaceBoundingBox);
     //     eo.addEntry("Point", Vector3D(x, y, z));
     //     throw eo;

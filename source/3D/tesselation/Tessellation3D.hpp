@@ -6,12 +6,15 @@
 #ifndef TESSELLATION3D_HPP
 #define TESSELLATION3D_HPP 1
 
+#include <chrono>
 #include <algorithm>
 #include <numeric>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "mpi/mpi_exchange_commands.hpp"
+#include "mpi/mpi_exchanger.hpp"
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;
@@ -28,31 +31,56 @@ using std::vector;
 class Tessellation3D
 {
 public:
+  using AllPointsMap = boost::container::flat_map<size_t, size_t>;
+
+  virtual void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) = 0;
+
   /*! \brief Builds the tessellation
     \param points Initial position of mesh generating points
   */
-  virtual void Build(vector<Vector3D> const& points) = 0;
+  virtual void Build(vector<Vector3D> const& points)
+  {
+    std::vector<size_t> indicesToBuild(points.size());
+    std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
+    this->BuildPartially(points, indicesToBuild);
+  }
 
   #ifdef RICH_MPI
   /*! \brief Returns true iff the given point lies inside my domain (under my responsibility).
   */
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
 
-  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
+  virtual int GetOwner(const Vector3D &point) const = 0;
+  
+  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
 
-  virtual void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false)
+  {
+    this->BuildPartiallyParallel(allPoints, std::vector<double>(allPoints.size(), 1.0), indicesToBuild, suppressRebalancing);
+  }
+
+  virtual void BuildParallel(const std::vector<Vector3D> &points, const std::vector<double> &weights, bool suppressRebalancing = false)
   {
       std::vector<size_t> indicesToBuild(points.size());
       std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
-      this->BuildPartiallyParallel(points, indicesToBuild, suppressRebalancing);
+      this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing);
   }
 
+  inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  {
+      this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing);
+  }
+
+  virtual const std::vector<double> &GetPointsBuildWeights() const = 0;
+  
   virtual const EnvironmentAgent *GetEnvironmentAgent() const = 0;
 
   virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
 
   #endif // RICH_MPI
 
+  virtual size_t GetContainingCell(const Vector3D &point) const = 0;
+  
   /*! \brief Get Total number of mesh generating points
     \return Number of mesh generating points
   */
@@ -138,14 +166,19 @@ public:
     \return List of all mesh points
    */
   virtual const vector<Vector3D>& getMeshPoints(void) const = 0;
-  
-  #ifdef RICH_MPI
-    /*! \brief Returns all the points, even those which are not participating in the build
-      \return List of all the points
-    */
-    virtual const std::vector<Vector3D> &getAllPoints(void) const = 0;
-  #endif // RICH_MPI
-  
+
+  virtual const Tessellation3D::AllPointsMap &GetIndicesInAllPoints(void) const = 0;
+
+  /*! \brief Returns all the points, even those which are not participating in the build
+    \return List of all the points
+  */
+  virtual const std::vector<Vector3D> &getAllPoints(void) const = 0;
+
+  /*! \brief Returns all the points, even those which are not participating in the build
+    \return List of all the points
+  */
+  virtual std::vector<Vector3D> &getAllPoints(void) = 0;
+
   /*!
     \brief Returns a reference to the points composing the faces vector
     \returns The reference
@@ -212,52 +245,54 @@ public:
   */
   virtual bool BoundaryFace(size_t index) const = 0;
 
-  /*!
-    \brief Returns the indeces of the points that were sent to other processors as ghost points 
-    \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
-  */
-  virtual vector<vector<size_t> >& GetDuplicatedPoints(void) = 0;
-  /*!
-    \brief Returns the indeces of the points that were sent to other processors as ghost points
-    \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
-  */
-  virtual vector<vector<size_t> >const& GetDuplicatedPoints(void)const = 0;
+  #ifdef RICH_MPI
+    /*!
+      \brief Returns the indeces of the points that were sent to other processors as ghost points 
+      \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
+    */
+    virtual vector<vector<size_t> >& GetDuplicatedPoints(void) = 0;
+    /*!
+      \brief Returns the indeces of the points that were sent to other processors as ghost points
+      \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
+    */
+    virtual vector<vector<size_t> >const& GetDuplicatedPoints(void)const = 0;
 
-  /*!
-    \brief Returns the indeces of the points that were sent to other processors as ghost points
-    \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
-  */
-  virtual vector<int> GetDuplicatedProcs(void)const = 0;
+    /*!
+      \brief Returns the indeces of the points that were sent to other processors as ghost points
+      \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
+    */
+    virtual vector<int> GetDuplicatedProcs(void)const = 0;
 
-  /*! \brief Gets the list of parallel process to which points have been sent
-    \return List of process indices
-   */
-  virtual vector<int> GetSentProcs(void)const = 0;
+    /*! \brief Gets the list of parallel process to which points have been sent
+      \return List of process indices
+    */
+    virtual vector<int> GetSentProcs(void)const = 0;
 
-  /*! \brief Get Indices of points sent to other parallel processes
-    \return List of indices of cells sent to other processes, partitioned by process
-   */
-  virtual vector<vector<size_t> > const& GetSentPoints(void)const = 0;
+    /*! \brief Get Indices of points sent to other parallel processes
+      \return List of indices of cells sent to other processes, partitioned by process
+    */
+    virtual vector<vector<size_t> > const& GetSentPoints(void)const = 0;
 
-  /*! \brief Get real index of points
-    \return List of real indices
-   */
-  virtual vector<size_t> const& GetSelfIndex(void) const = 0;
+    /*! \brief Get real index of points
+      \return List of real indices
+    */
+    virtual vector<size_t> const& GetSelfIndex(void) const = 0;
 
-  /*! \brief Gets the list of parallel process to which points have been sent
-    \return List of process indices
-   */
-  virtual vector<int>& GetSentProcs(void) = 0;
+    /*! \brief Gets the list of parallel process to which points have been sent
+      \return List of process indices
+    */
+    virtual vector<int>& GetSentProcs(void) = 0;
 
-  /*! \brief Get Indices of points sent to other parallel processes
-    \return List of indices of cells sent to other processes, partitioned by process
-   */
-  virtual vector<vector<size_t> > & GetSentPoints(void) = 0;
+    /*! \brief Get Indices of points sent to other parallel processes
+      \return List of indices of cells sent to other processes, partitioned by process
+    */
+    virtual vector<vector<size_t> > & GetSentPoints(void) = 0;
 
-  /*! \brief Get self inidices of points
-    \return List of all indices
-   */
-  virtual vector<size_t> & GetSelfIndex(void) = 0;
+    /*! \brief Get self inidices of points
+      \return List of all indices
+    */
+    virtual vector<size_t> & GetSelfIndex(void) = 0;
+  #endif // RICH_MPI
 
   /*!
     \brief Returns the total number of points (including ghost)
@@ -305,7 +340,12 @@ public:
   /*! \brief Retrieve all neighbouring points who share a face
     \return List of pairs of indices of all neighbouring points
    */
-  virtual std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) = 0;
+  virtual std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) = 0;
+
+  /*! \brief Retrieve all neighbouring points who share a face
+    \return List of pairs of indices of all neighbouring points
+   */
+  virtual const std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) const = 0;
 
   /*!
     \brief Returns a vector normal to the face whose magnitude is the seperation between the neighboring points
@@ -341,16 +381,18 @@ public:
    */
   virtual Vector3D FaceCM(size_t index)const=0;
 
-  /*! \brief Get indices of ghost points
-    \return List of list of ghost point indices
-   */
-  virtual vector<vector<size_t> > const& GetGhostIndeces(void) const = 0;
+  #ifdef RICH_MPI
+    /*! \brief Get indices of ghost points
+      \return List of list of ghost point indices
+    */
+    virtual vector<vector<size_t> > const& GetGhostIndeces(void) const = 0;
 
-  /*! \brief Get indices of ghost points
-    \return List of indices of ghost points
-   */
-  virtual vector<vector<size_t> > & GetGhostIndeces(void) = 0;
-
+    /*! \brief Get indices of ghost points
+      \return List of indices of ghost points
+    */
+    virtual vector<vector<size_t> > & GetGhostIndeces(void) = 0;
+  #endif // RICH_MPI
+  
   /*! \brief Get the coordinate of opposite corners of the boundary
     \return Pair of coordiantes of opposite corners
    */
@@ -389,6 +431,13 @@ public:
 \return The box faces
 */
   virtual std::vector<Face> GetBoxFaces(void) const = 0;
+
+  /**
+   * Suppose `partialBuildData` contains correct local data for partial build, and that `allBuildData` have correct values for all the points (non active local).
+   * This collective method updates `partialBuildData` to have the data of both active/non active local and global points.    
+  */
+  template<typename T>
+  void SyncPartialBuildData(std::vector<T> &partialBuildData, std::vector<T> &allBuildData) const;
 };
 
 /*! \brief Create a subset of a vector of points
@@ -397,4 +446,73 @@ public:
   \return Points selected according to list of indices
  */
 point_vec_v VectorValues(std::vector<Vector3D> const&v, point_vec const &index);
+
+template<typename T>
+inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildData, std::vector<T> &allBuildData) const
+{
+  size_t Norg = this->GetPointNo();
+  if(partialBuildData.size() < Norg)
+  {
+    UniversalError eo("Tessellation3D::SyncPartialBuildData: Partial build data has lower size than the number of points");
+    eo.addEntry("Partial build data size", partialBuildData.size());
+    eo.addEntry("Number of points", Norg);
+    throw eo;
+  }
+  const Tessellation3D::AllPointsMap &indicesInAllMyPoints = this->GetIndicesInAllPoints();
+  
+  allBuildData.resize(this->GetAllPointsNo());
+
+  // update CMs of active local points in all points CM vector
+  for(size_t i = 0; i < Norg; i++)
+  {
+      size_t pointIdx = indicesInAllMyPoints.at(i);
+      allBuildData[pointIdx] = partialBuildData[i];
+  }
+
+  // update the CM of local non active points
+  size_t sizeOfMeshPoints = this->getMeshPoints().size();
+  partialBuildData.resize(sizeOfMeshPoints);
+  for(size_t i = Norg; i < sizeOfMeshPoints; i++)
+  {
+      // check if the point is mine. i.e, appears in `indicesInAllMyPoints`. Just copy the CM from there.
+      bool pointIsMine = (indicesInAllMyPoints.find(i) != indicesInAllMyPoints.cend());
+      if(pointIsMine)
+      {
+          size_t pointIdx = indicesInAllMyPoints.at(i);
+          partialBuildData[i] = allBuildData[pointIdx];
+      }
+  }
+
+  #ifdef RICH_MPI
+      // std::chrono::_V2::system_clock::time_point start, end;
+      // update the CM of active and not active, but non local points
+
+      // start = std::chrono::system_clock::now();
+      // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
+      // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
+      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(this->GetDuplicatedProcs(), allBuildData, this->GetDuplicatedPoints());
+      // end = std::chrono::system_clock::now();
+      // int rank;
+      // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+      // if(rank == 0)
+      // {
+      //   std::cout << "Time to exchange data: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << std::endl;
+      // }
+      // std::vector<std::vector<T>> incoming = MPI_Exchange_data_seperate(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
+      size_t incomingSize = incoming.size();
+      const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();
+      assert(this->GetDuplicatedProcs().size() == Nghost.size());
+      assert(incomingSize == Nghost.size());
+      for (size_t i = 0; i < incomingSize; ++i)
+      {
+          size_t _size = incoming[i].size();
+          assert(_size == Nghost[i].size());
+          for (size_t j = 0; j < _size; ++j)
+          {
+              partialBuildData[Nghost.at(i).at(j)] = incoming[i][j];
+          }
+      }
+  #endif // RICH_MPI
+}
+
 #endif // TESSELLATION3D_HPP

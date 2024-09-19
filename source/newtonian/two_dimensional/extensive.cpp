@@ -113,44 +113,32 @@ Extensive operator-(const Extensive& e1,
 }
 		   
 #ifdef RICH_MPI
-size_t Extensive::getChunkSize(void) const
-{
-  return 4 + tracers.size();
-}
-
-vector<double> Extensive::serialize(void) const
-{
-  vector<double> res(getChunkSize());
-  res.at(0) = mass;
-  res.at(1) = energy;
-  res.at(2) = momentum.x;
-  res.at(3) = momentum.y;
-  size_t counter = 4;
-  size_t N = tracers.size();
-  for (size_t i = 0; i < N;++i) 
+  size_t Extensive::dump(Serializer *serializer) const
   {
-	  res.at(counter) = tracers[i];
-	  ++counter;
+    size_t bytes = 0;
+    bytes += serializer->insert(this->mass);
+    bytes += serializer->insert(this->energy);
+    bytes += serializer->insert(this->momentum);
+    bytes += serializer->insert(this->tracers.size());
+    for(size_t i = 0; i < this->tracers.size(); ++i)
+    {
+      bytes += serializer->insert(this->tracers[i]);
+    }
+    return bytes;
   }
-  assert(counter==res.size());
-  return res;
-}
 
-void Extensive::unserialize
-(const vector<double>& data)
-{
-  assert(data.size()==getChunkSize());
-  mass = data.at(0);
-  energy = data.at(1);
-  momentum.x = data.at(2);
-  momentum.y = data.at(3);
-  size_t counter = 4;
-  size_t N = tracers.size();
-  for (size_t i = 0; i < N;++i)
+  size_t Extensive::load(const Serializer *serializer, size_t byteOffset)
   {
-	  tracers.at(i) = data[counter];
-	  ++counter;
+    size_t bytesRead = 0;
+    bytesRead += serializer->extract(this->mass, byteOffset);
+    bytesRead += serializer->extract(this->energy, byteOffset + bytesRead);
+    bytesRead += serializer->extract(this->momentum, byteOffset + bytesRead);
+    size_t N;
+    bytesRead += serializer->extract(N, byteOffset + bytesRead);
+    for(size_t i = 0; i < N; ++i)
+    {
+      bytesRead += serializer->extract(this->tracers[i], byteOffset + bytesRead);
+    }
+    return bytesRead;
   }
-  assert(data.size()==counter);
-}
 #endif // RICH_MPI

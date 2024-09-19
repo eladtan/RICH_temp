@@ -41,7 +41,7 @@ namespace
 	}
 }
 
-bool FaceSphereIntersections(Face const& face, Sphere const& sphere, Vector3D const& normal)
+bool FaceSphereIntersections(Face const& face, Sphere<Vector3D> const& sphere, Vector3D const& normal)
 {	
 	// Find plane equation
 	double D = ScalarProd(normal, sphere.center - face.vertices[0]);
@@ -56,7 +56,7 @@ bool FaceSphereIntersections(Face const& face, Sphere const& sphere, Vector3D co
 	std::size_t Nloop = face.vertices.size();
 	if (PointInPolygon(face, circle_center))
 		return true;
-	double R = std::sqrt(sphere.radius*sphere.radius - D*D);
+	double R = std::sqrt(sphere.radius * sphere.radius - D*D);
 	for (std::size_t i = 0; i < Nloop; ++i)
 	{
 		if (CircleSegmentIntersect(face.vertices[(i + 1) % Nloop], face.vertices[i], circle_center, R))

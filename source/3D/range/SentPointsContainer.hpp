@@ -1,6 +1,8 @@
 #ifndef SENT_CONTAINER_HPP
 #define SENT_CONTAINER_HPP
 
+#ifdef RICH_MPI
+
 #include <vector>
 #include <boost/container/flat_set.hpp>
 #include <algorithm>
@@ -61,8 +63,8 @@ public:
         return this->sentDataSet[index];
     };
 
-    template<template<typename> typename Container>
-    inline Container<size_t> addPointsAsSent(int rank, const Container<size_t> &points)
+    template<template<typename...> class Container, typename... Ts>
+    inline Container<size_t> addPointsAsSent(int rank, const Container<size_t, Ts...> &points)
     {
         Container<size_t> result;
         if(points.empty())
@@ -92,7 +94,7 @@ public:
 
     inline std::vector<size_t> addPointAsSent(int rank, const size_t &point)
     {
-        return this->addPointsAsSent<std::vector>(rank, std::vector<size_t>({point}));
+        return this->addPointsAsSent(rank, std::vector<size_t>({point}));
     }
 
     std::vector<int> sentProc;
@@ -121,5 +123,7 @@ private:
         this->sentDataSet.emplace_back(PointsSet());
     }
 };
+
+#endif // RICH_MPI
 
 #endif // SENT_CONTAINER_HPP

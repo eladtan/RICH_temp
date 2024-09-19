@@ -2,18 +2,18 @@
 
 #ifdef RICH_MPI
 
-PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
+PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
 {
     PointsExchangeResult exchangeResult;
     if(this->envAgent != nullptr)
     {
-        exchangeResult = this->pointsExchange([this](const _3DPointRadius &_point)
+        exchangeResult = this->pointsExchange([this](const _3DPointData &_point)
         {
             hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
             size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
             return std::min<hilbert_index_t>(index, (this->size - 1));
         },
-        allPoints, indicesToWorkWith, radiuses, previous_CM); // exchange
+        allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM); // exchange
         this->envAgent->updatePoints(exchangeResult.newPoints);
     }
     else
@@ -25,12 +25,12 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
             eo.addEntry("indicesToWorkWith.size()", indicesToWorkWith.size());
             throw eo;
         }
-        exchangeResult = this->initialize(allPoints, radiuses, previous_CM);
+        exchangeResult = this->initialize(allPoints, allWeights, radiuses, previous_CM);
     }
     return exchangeResult;
 }
 
-void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points)
+void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights)
 {
     if(this->convertor == nullptr)
     {
@@ -42,7 +42,15 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points)
     {
         indices.push_back(this->convertor->xyz2d((*this->indexing)(point)));
     }
-    this->responsibilityRange = getBorders(indices);
+
+    if(weights.empty())
+    {
+        this->responsibilityRange = getBorders(indices);
+    }
+    else
+    {
+        this->responsibilityRange = getWeightedBorders(indices, weights);
+    }
     
     if(this->envAgent != nullptr)
     {
@@ -108,10 +116,11 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     kerneledUR.z += std::abs(SPACE_FACTOR * z_length);
     
     hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, hilbertOrder);
-    this->convertor = new HilbertConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
+    this->convertor = new HilbertRectangularConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
+    // this->convertor = new HilbertOrdinaryConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
 }
 
-PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
+PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
 {
     // if(this->rank == 0)
     // {
@@ -124,15 +133,16 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
 
     this->initializeHilbertParameters(points); // also initializes the convertor
 
-    this->rebalance(points); // determines initial borders
+    this->rebalance(points, weights); // determines initial borders
+
     // making exchange according to these borders
-    PointsExchangeResult exchangeResult = this->pointsExchange([this](const _3DPointRadius &_point)
+    PointsExchangeResult exchangeResult = this->pointsExchange([this](const _3DPointData &_point)
     {
         hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
         size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
         return std::min<hilbert_index_t>(index, (this->size - 1));
     },
-    points, allIndices, radiuses, previous_CM); // exchange
+    points, weights, allIndices, radiuses, previous_CM); // exchange
         
     // initialize environment agent
     if(this->customIndexingIsSet)

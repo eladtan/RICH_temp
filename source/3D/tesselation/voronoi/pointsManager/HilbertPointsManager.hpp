@@ -9,6 +9,8 @@
 #include "3D/environment/kernels/Identity.hpp" // for default kernelization
 #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
+#include "3D/hilbert/ordinary/HilbertOrdinaryConvertor3D.hpp"
 
 #define SPACE_FACTOR 1e-5
 
@@ -43,16 +45,16 @@ public:
 
     HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;
 
-    PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) override;
+    PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) override;
 
-    void rebalance(const std::vector<Vector3D> &points) override;
+    void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) override;
 
     const Kernelization3D::IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
     
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
-    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM);
+    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM);
 
     HilbertCurveEnvironmentAgent *envAgent;
     HilbertConvertor3D *convertor;

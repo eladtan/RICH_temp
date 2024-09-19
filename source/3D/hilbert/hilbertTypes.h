@@ -8,6 +8,4 @@
 typedef double coord_t;
 typedef unsigned long int hilbert_index_t;
 
-typedef _3DPoint SerielizaedPoint3D; 
-
 #endif // _HILBERT_TYPES_H

@@ -52,7 +52,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
         }
 
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, new_Eg, true);
+        MPI_exchange_data(tess, new_Eg, true);
 #endif
         // build R2_g 
         for(std::size_t i = 0; i < N; ++i){
@@ -103,7 +103,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
         }
 
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, R2_g, true);
+        MPI_exchange_data(tess, R2_g, true);
 #endif
         // calculate dEg and build dEr
         for(std::size_t i=0; i<N; ++i){
@@ -156,7 +156,7 @@ void MultigroupDiffusionForce::operator()(Tessellation3D const& tess,
     double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, new_Er, true);
+    MPI_exchange_data(tess, new_Er, true);
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
 

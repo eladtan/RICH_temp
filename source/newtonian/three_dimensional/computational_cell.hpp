@@ -11,7 +11,8 @@
 #include "../two_dimensional/computational_cell_2d.hpp"
 #include <boost/container/small_vector.hpp>
 #ifdef RICH_MPI
-	#include "misc/serializable.hpp"
+	#include "misc/serialize/Serializer.hpp"
+	#include "misc/serialize/mpi_commands.hpp"
 #endif // RICH_MPI
 
 #ifndef ENERGY_GROUPS_NUM
@@ -20,9 +21,9 @@
 
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
-						#ifdef RICH_MPI
-							: public Serializable
-						#endif // RICH_MPI
+				#ifdef RICH_MPI
+						: public Serializable
+				#endif // RICH_MPI
 {
 public:
 	//! \brief Density
@@ -55,6 +56,8 @@ public:
 
 	double Erad_dt_dt;
 
+	double cs;
+	
   static vector<string> tracerNames;
   static vector<string> stickerNames;
 
@@ -138,22 +141,12 @@ public:
  */
 	friend std::ostream &operator<<(std::ostream &stream, const ComputationalCell3D &cell);
 
-#ifdef RICH_MPI
-  /*! \brief Get size of chunks
-    \return Chunk size in bytes
-   */
-	size_t getChunkSize(void) const override;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-  /*! \brief Decompose cell into list of numbers
-    \return List of numbers
-   */
-	vector<double> serialize(void) const override;
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif//RICH_MPI
 
-  /*! \brief Reconstruct cell from series of numbers
-    \param data List of numbers
-   */
-	void unserialize(const vector<double>& data) override;
-#endif // RICH_MPI
 };
 
 /*! \brief Term by term addition
@@ -228,13 +221,13 @@ public:
 	Slope3D(ComputationalCell3D const& x, ComputationalCell3D const& y, ComputationalCell3D const& z);
 	//! \brief Default constructor
 	Slope3D(void);
-#ifdef RICH_MPI
-	size_t getChunkSize(void) const override;
 
-	vector<double> serialize(void) const override;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-	void unserialize(const vector<double>& data) override;
-#endif//RICH_MPI
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif//RICH_MPI
+
 };
 
 

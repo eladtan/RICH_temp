@@ -160,8 +160,7 @@ double Diffusion::calculate_dt(double const dt,
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 	max_diff = max_data.val;
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true, &cdummy);	
+	MPI_exchange_data(tess, cells, true);	
 #endif
 	if(rank == max_data.mpi_id)
 	{
@@ -255,8 +254,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         cells_cgs[i].velocity *= length_scale_ / time_scale_;
      }
 #ifdef RICH_MPI
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
+	MPI_exchange_data(tess, cells_cgs, true);	
 #endif
     b.resize(Nlocal, 0);
     x0.resize(Nlocal, 0);
@@ -310,7 +308,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt * time_scale_ * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
     }
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, D, true);
+    MPI_exchange_data(tess, D, true);
 #endif
     size_t max_neigh = 0;
     // Find maximum number of neighbors and allocate data
@@ -374,7 +372,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         max_R.push_back(max_R_local);
     }
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, max_R, true);
+    MPI_exchange_data(tess, max_R, true);
 #endif
     Vector3D dummy_v;
     std::vector<Vector3D> gradE(Nlocal);

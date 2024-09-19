@@ -36,16 +36,18 @@ namespace Kernelization3D
         double h;
         const IndexingKernel3D *beforeIndexing;
         const IndexingKernel3D *afterIndexing;
+        double ratio;
 
         Vector3D find_S(const std::vector<Face> &faces) const;
 
         inline Vector3D beforeTransformation(const Vector3D &vector) const
         {
             Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            double slope = (this->h - this->S.z) / (vec.z - this->S.z);
+            double slope = this->h / (vec.z - this->S.z);
             double new_x = this->S.x + slope * (vec.x - this->S.x);
             double new_y = this->S.y + slope * (vec.y - this->S.y);
-            double new_z = std::pow((vec.z - this->S.z), 8);
+            //double new_z = std::pow((vec.z - this->S.z), 8);
+            double new_z = vec.z * this->ratio; // 0.5 * 1e-3/* * 0.01 */; // TODO: should be the ratio of the bases
             return Vector3D(new_x, new_y, new_z);
         }
     };

@@ -1,6 +1,8 @@
 #ifndef _TALK_AGENT_HPP
 #define _TALK_AGENT_HPP
 
+#ifdef RICH_MPI
+
 template<typename QueryData>
 class TalkAgent
 {
@@ -11,5 +13,7 @@ public:
 
     virtual RanksSet getTalkList(const QueryData &query) const = 0;
 };
+
+#endif // RICH_MPI
 
 #endif // _TALK_AGENT_HPP

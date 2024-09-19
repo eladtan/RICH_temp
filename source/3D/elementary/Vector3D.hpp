@@ -12,7 +12,10 @@
 #include <cmath>
 #include <math.h>
 #include "misc/utils.hpp"
-#include "misc/serializable.hpp"
+
+#ifdef RICH_MPI
+	#include "misc/serialize/Serializer.hpp"
+#endif // RICH_MPI
 
 using std::vector;
 
@@ -29,7 +32,10 @@ namespace
 }
 
 //! \brief 3D Mathematical vector
-class Vector3D : public Serializable
+class Vector3D
+			#ifdef RICH_MPI
+				: public Serializable
+			#endif // RICH_MPI
 {
 public:
     using coord_type = double;
@@ -82,15 +88,8 @@ public:
    */
 	double& operator[](size_t index)
 	{
-		if (index == 0)
-			return x;
-		if (index == 1)
-			return y;
-		if (index == 2)
-			return z;
-		UniversalError eo("Trying to access illegal index of vector");
-		eo.addEntry("index", index);
-		throw eo;
+		double *values[3] = {&this->x, &this->y, &this->z};
+		return *values[index];
 	}
 
   /*! \brief Indexed access to member
@@ -99,13 +98,8 @@ public:
    */
 	double operator[](size_t index) const
 	{
-		if (index == 0)
-			return x;
-		if (index == 1)
-			return y;
-		if (index == 2)
-			return z;
-		throw UniversalError("Trying to access illegal index of vector (index " + std::to_string(index) + ")");
+		double values[3] = {this->x, this->y, this->z};
+		return values[index];
 	}
 
 	/*! \brief Addition
@@ -230,27 +224,25 @@ public:
 		z = my_round(z);
 	}
 
-	inline size_t getChunkSize(void) const
-	{
-		return 3;
-	}
+	#ifdef RICH_MPI
+		force_inline size_t dump(Serializer *serializer) const override
+		{
+			size_t bytes = 0;
+			bytes += serializer->insert(this->x);
+			bytes += serializer->insert(this->y);
+			bytes += serializer->insert(this->z);
+			return bytes;
+		}
 
-	inline vector<double> serialize(void) const override
-	{
-		vector<double> res(3);
-		res[0] = x;
-		res[1] = y;
-		res[2] = z;
-		return res;
-	}
-
-	inline void unserialize(const vector<double>& data)
-	{
-		assert(data.size() == 3);
-		x = data[0];
-		y = data[1];
-		z = data[2];
-	}
+		force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+		{
+			size_t bytes = 0;
+			bytes += serializer->extract(this->x, byteOffset);
+			bytes += serializer->extract(this->y, byteOffset + bytes);
+			bytes += serializer->extract(this->z, byteOffset + bytes);
+			return bytes;
+		}
+	#endif // RICH_MPI
 
 	friend std::ostream &operator<<(std::ostream &stream, const Vector3D &vec)
 	{
@@ -274,7 +266,8 @@ public:
 #ifdef __INTEL_COMPILER
 #pragma omp declare simd
 #endif
-	~Vector3D(void) override {}
+
+	~Vector3D(void) = default;
 
 	static const Vector3D max(void)
 	{
@@ -548,6 +541,9 @@ inline Vector3D& Vector3D::operator=<Vector3D>(const Vector3D& v)
 	z = v.z;
 	return *this;
 }
+
+template<>
+inline Vector3D::Vector3D(const double &x): Vector3D(x, x, x){}
 
 #endif // Vector3D_HPP
 

@@ -1,26 +1,23 @@
 #include "RevedFrustrum.hpp"
 
-namespace
+inline Vector3D GetNormal(const Face &face)
 {
-    inline Vector3D GetNormal(const Face &face)
-    {
-        return normalize(CrossProduct(face.vertices[1] - face.vertices[0], face.vertices[2] - face.vertices[1]));
-    }
+    return normalize(CrossProduct(face.vertices[1] - face.vertices[0], face.vertices[2] - face.vertices[1]));
+}
 
-    inline Vector3D GetFacesIntersection(const Face &face1, const Face &face2, const Face &face3)
+inline Vector3D GetFacesIntersection(const Face &face1, const Face &face2, const Face &face3)
+{
+    Vector3D normal1 = GetNormal(face1);
+    Vector3D normal2 = GetNormal(face2);
+    Vector3D normal3 = GetNormal(face3);
+    Vector3D D(ScalarProd(normal1, face1.vertices[0]), ScalarProd(normal2, face2.vertices[0]), ScalarProd(normal3, face3.vertices[0]));
+    Mat33<double> mat = Mat33<double>(normal1.x, normal1.y, normal1.z, normal2.x, normal2.y, normal2.z, normal3.x, normal3.y, normal3.z);
+    if(std::abs(mat.determinant()) < EPSILON)
     {
-        Vector3D normal1 = GetNormal(face1);
-        Vector3D normal2 = GetNormal(face2);
-        Vector3D normal3 = GetNormal(face3);
-        Vector3D D(ScalarProd(normal1, face1.vertices[0]), ScalarProd(normal2, face2.vertices[0]), ScalarProd(normal3, face3.vertices[0]));
-        Mat33<double> mat = Mat33<double>(normal1.x, normal1.y, normal1.z, normal2.x, normal2.y, normal2.z, normal3.x, normal3.y, normal3.z);
-        if(std::abs(mat.determinant()) < EPSILON)
-        {
-            throw UniversalError("One or more of the side faces of the body are parallel (all the side faces intersect in one point) (in 'Frustum')");
-        }
-        Mat33<double> inverse = mat.inverse();
-        return inverse * D;
+        throw UniversalError("One or more of the side faces of the body are parallel (all the side faces intersect in one point) (in 'Frustum')");
     }
+    Mat33<double> inverse = mat.inverse();
+    return inverse * D;
 }
 
 Vector3D Kernelization3D::RevedFrustrum::find_S(const std::vector<Face> &faces) const
@@ -118,7 +115,7 @@ Kernelization3D::RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, co
     
     Vector3D normalBase1 = GetNormal(kerneledFaces[0]);
     Vector3D normalBase2 = GetNormal(kerneledFaces[1]);
-
+    
     if((normalBase1 != Vector3D(0, 0, 1) and normalBase1 != Vector3D(0, 0, -1)) or (normalBase2 != Vector3D(0, 0, 1) and normalBase2 != Vector3D(0, 0, -1)))
     {
         // this message is thrown in order to calculate whether the summit is "above" or "below" the frustrum (the terms "above" and "below" are not clear otherwise)
@@ -126,7 +123,24 @@ Kernelization3D::RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, co
         throw UniversalError("Currently, frustrum kernel is supported only when the bases are parallel to the XY plane");
     }
 
+    double base1Area = faces[0].GetArea();
+    double base2Area = faces[1].GetArea();
+
+    if(base1Area < EPSILON)
+    {
+        UniversalError eo("Can not use 'RevedFrustrum' kernelization when the first base has an area of 0");
+        eo.addEntry("base 1 vertices", faces[0].vertices);
+        throw eo;
+    }
+    if(base2Area < EPSILON)
+    {
+        UniversalError eo("Can not use 'RevedFrustrum' kernelization when the second base has an area of 0");
+        eo.addEntry("base 2 vertices", faces[1].vertices);
+        throw eo;
+    }
+
     this->h = std::abs(this->S.z - kerneledFaces[0].vertices[0].z); // height of the pyramid
+    this->ratio = sqrt(std::min(base1Area, base2Area)) /* / this->h */;
 
     allVertices.clear();
     for(const Face &face : faces)

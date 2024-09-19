@@ -10,70 +10,9 @@
 #include "3D/tesselation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "ds/OctTree/OctTree.hpp"
-
-// template<typename T>
-// struct TimeResponseData : public Serializable
-// {
-//     T point;
-//     ComputationalCell3D cell;
-//     double cellWidth;
-//     T faceVelocity;
-
-//     explicit inline TimeResponseData(const T &point_, const ComputationalCell3D &cell_, const double &cellWidth_, const T &faceVelocity_):
-//         point(point_), cell(cell_), cellWidth(cellWidth_), faceVelocity(faceVelocity_), serializeList({&this->point, &this->cell, &this->cellWidth, &this->faceVelocity})
-//     {}
-
-//     explicit inline TimeResponseData(const std::vector<double> &data): serializeList({&this->point, &this->cell, &this->cellWidth, &this->faceVelocity})
-//     {
-//         this->unserialize(data);
-//     };
-// };
+#include "ds/utils/raw_type.h"
 
 #define MAX_ID_OF_CELL 1e15
-
-template<typename T>
-class TimeRequestData: public Serializable
-{
-public:
-    explicit inline TimeRequestData(const _BoundingBox<T> &boundingBox_ = _BoundingBox<T>(), dt_t min_time_in_subtree_ = 0, double c_max_plus_v_max_ = 0):
-        boundingBox(boundingBox_), min_time_in_subtree(min_time_in_subtree_), c_max_plus_v_max(c_max_plus_v_max_)
-    {}
-
-    size_t getChunkSize() const override;
-    std::vector<double> serialize() const override;
-    void unserialize(const std::vector<double> &data) override;
-
-    _BoundingBox<T> boundingBox;
-    dt_t min_time_in_subtree;
-    double c_max_plus_v_max;
-};
-
-template<typename T>
-size_t TimeRequestData<T>::getChunkSize() const
-{
-    return 8; // 6 for BB and 2 for two double variables
-}
-
-template<typename T>
-std::vector<double> TimeRequestData<T>::serialize() const
-{
-    std::vector<double> serialized;
-    std::vector<double> serialized_ = this->boundingBox.serialize();
-    serialized.insert(serialized.end(), serialized_.cbegin(), serialized_.cend());
-    serialized.push_back(this->min_time_in_subtree);
-    serialized.push_back(this->c_max_plus_v_max);
-    return serialized;
-}
-
-template<typename T>
-void TimeRequestData<T>::unserialize(const std::vector<double> &data)
-{
-    size_t BBChunkSize = data.size() - 2;
-    std::vector<double> serData(data.cbegin(), data.cbegin() + BBChunkSize);
-    this->boundingBox.unserialize(serData);
-    this->min_time_in_subtree = data[BBChunkSize];
-    this->c_max_plus_v_max = data[BBChunkSize + 1];
-}
 
 template<typename T>
 class TimingTree;
@@ -96,7 +35,7 @@ dt_t CalculateTau(const typename TimingTree<T>::NodeData &point1, const typename
 }
 
 template<typename T, typename BB_T = T>
-inline bool ShouldOpenNode(const typename TimingTree<T>::NodeData &currentCell, const dt_t &t_current, double other_c_max_plus_v_max, const _BoundingBox<BB_T> &otherCellBoundingBox)
+inline bool ShouldOpenNode(const typename TimingTree<T>::NodeData &currentCell, const BoundingBox<BB_T> &currentCellBoundingBox, const dt_t &t_current, double other_c_max_plus_v_max, const BoundingBox<BB_T> &otherCellBoundingBox)
 {
     // if(currentCell.c_plus_v < EPSILON)
     // {
@@ -107,7 +46,8 @@ inline bool ShouldOpenNode(const typename TimingTree<T>::NodeData &currentCell, 
     //     eo.addEntry("currentCell", currentCell);
     //     throw eo;
     // }
-    typename T::coord_type distanceToCellSquared = otherCellBoundingBox.distanceSquared(currentCell.value);
+    T closestPoint = otherCellBoundingBox.closestPointToOther(currentCellBoundingBox);
+    typename T::coord_type distanceToCellSquared = otherCellBoundingBox.distanceSquared(closestPoint);
     if(t_current == MAX_TIME)
     {
         return true;
@@ -120,7 +60,10 @@ template<typename T>
 class TimingTree
 {
 public:
-    class NodeData : public Serializable
+    class NodeData
+        #ifdef RICH_MPI
+            : public Serializable
+        #endif // RICH_MPI
     {
     public:
         using coord_type = typename T::coord_type;
@@ -175,50 +118,44 @@ public:
             this->c_plus_v = this->cs + this->v_abs;
             this->c_max_plus_v_max = this->c_max + this->v_max;
         };
+    
+    #ifdef RICH_MPI
+        force_inline size_t dump(Serializer *serializer) const override
+        {
+            size_t bytes = 0;
+            bytes += this->value.dump(serializer);
+            bytes += this->v.dump(serializer);
+            bytes += serializer->insert(this->id_of_cell);
+            bytes += serializer->insert(this->v_abs);
+            bytes += serializer->insert(this->cs);
+            bytes += serializer->insert(this->c_plus_v);
+            bytes += serializer->insert(this->cell_width);
+            bytes += serializer->insert(this->v_tag_abs);
+            bytes += serializer->insert(this->c_max);
+            bytes += serializer->insert(this->v_max);
+            bytes += serializer->insert(this->c_max_plus_v_max);
+            bytes += serializer->insert(this->min_time_in_subtree);
+            return bytes;
+        }
 
-    size_t getChunkSize() const
-    {
-        return 16; // 3 for two T's and 10 for 10 double variables
-    }
-
-    std::vector<double> serialize() const
-    {
-        std::vector<double> serialized;
-        std::vector<double> serialized_point = this->value.serialize();
-        serialized.insert(serialized.end(), serialized_point.cbegin(), serialized_point.cend());
-        serialized_point = this->v.serialize();
-        serialized.insert(serialized.end(), serialized_point.cbegin(), serialized_point.cend());
-        serialized.push_back((this->id_of_cell >= MAX_ID_OF_CELL)? MAX_ID_OF_CELL : this->id_of_cell);
-        serialized.push_back(this->v_abs);
-        serialized.push_back(this->cs);
-        serialized.push_back(this->c_plus_v);
-        serialized.push_back(this->cell_width);
-        serialized.push_back(this->v_tag_abs);
-        serialized.push_back(this->c_max);
-        serialized.push_back(this->v_max);
-        serialized.push_back(this->c_max_plus_v_max);
-        serialized.push_back(this->min_time_in_subtree);
-        return serialized;
-    }
-
-    void unserialize(const std::vector<double> &data)
-    {
-        size_t TChunkSize = this->value.getChunkSize();
-        std::vector<double> serData(data.cbegin(), data.cbegin() + TChunkSize);
-        this->value.unserialize(serData);
-        serData = std::vector<double>(data.cbegin() + TChunkSize, data.cbegin() + 2 * TChunkSize);
-        this->v.unserialize(serData);
-        this->id_of_cell = data[2 * TChunkSize];
-        this->v_abs = data[2 * TChunkSize + 1];
-        this->cs = data[2 * TChunkSize + 2];
-        this->c_plus_v = data[2 * TChunkSize + 3];
-        this->cell_width = data[2 * TChunkSize + 4];
-        this->v_tag_abs = data[2 * TChunkSize + 5];
-        this->c_max = data[2 * TChunkSize + 6];
-        this->v_max = data[2 * TChunkSize + 7];
-        this->c_max_plus_v_max = data[2 * TChunkSize + 8];
-        this->min_time_in_subtree = data[2 * TChunkSize + 9];
-    }
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+        {
+            size_t bytesRead = 0;
+            bytesRead += this->value.load(serializer, byteOffset);
+            bytesRead += this->v.load(serializer, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->id_of_cell, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->v_abs, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->cs, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->c_plus_v, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->cell_width, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->v_tag_abs, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->c_max, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->v_max, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->c_max_plus_v_max, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->min_time_in_subtree, byteOffset + bytesRead);
+            return bytesRead;
+        }
+    #endif // RICH_MPI
 
     };
 
@@ -245,6 +182,9 @@ public:
     bool build(const Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells, const std::vector<U> &faceVelocities);
 
     inline bool find(const T &point){return this->octTree->find(point);};
+
+    template<typename BB_T = T>
+    dt_t time(const NodeData &boxValue, const BoundingBox<BB_T> &boxBB) const;
 
     dt_t time(size_t cellID);
 
@@ -342,7 +282,7 @@ void TimingTree<T>::addExternalValues(const std::vector<NodeData> &data)
             throw eo;
         }
     }
-    this->calculateData();
+    // this->calculateData();
 }
 
 template<typename T>
@@ -393,7 +333,8 @@ dt_t TimingTree<T>::time(size_t cellID)
     }
 
     const T &point = this->cellsToPoints.at(cellID);
-    NodeData &pointValue = this->octTree->findValue(point);
+    Node *pointNode = this->octTree->findNode(point);
+    NodeData &pointValue = pointNode->value;
     #ifdef DEBUG_MODE
         if(pointValue.value != point)
         {
@@ -403,9 +344,17 @@ dt_t TimingTree<T>::time(size_t cellID)
             throw eo;
         }
     #endif // DEBUG_MODE
+    pointValue.min_time_in_subtree = this->time(pointValue, pointNode->boundingBox);
+    return pointValue.min_time_in_subtree;
+}
 
+template<typename T>
+template<typename BB_T>
+dt_t TimingTree<T>::time(const NodeData &boxValue, const BoundingBox<BB_T> &boxBB) const
+{
     stack.push_back({this->octTree->getRoot(), true});
-    dt_t time = pointValue.cell_width / (pointValue.cs + pointValue.v_tag_abs);
+    dt_t time = boxValue.cell_width / (boxValue.cs + boxValue.v_tag_abs);
+    const T &point = boxValue.value;
 
     while(!stack.empty())
     {
@@ -419,7 +368,7 @@ dt_t TimingTree<T>::time(size_t cellID)
         }
 
         // always push the child that contains the node
-        if(!node->isLeaf and (containsPoint or ShouldOpenNode<T>(pointValue, time, node->value.c_max_plus_v_max, node->boundingBox)))
+        if(!node->isLeaf and (containsPoint or ShouldOpenNode<T>(boxValue, boxBB, time, node->value.c_max_plus_v_max, node->boundingBox)))
         {
             int childContains = -1;
             // open the box
@@ -439,16 +388,15 @@ dt_t TimingTree<T>::time(size_t cellID)
         }
         else
         {
-            if(pointValue.value == node->value.value)
+            if(boxValue.value == node->value.value)
             {
                 continue;
             }
             // do not open the box
-            dt_t tau = CalculateTau<T>(pointValue, node->value);
+            dt_t tau = CalculateTau<T>(boxValue, node->value);
             time = std::min<dt_t>(time, tau);
         }
     }
-    pointValue.min_time_in_subtree = time;
     return time;
 }
 

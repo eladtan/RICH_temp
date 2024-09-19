@@ -2,7 +2,7 @@
 #define HILBERT_CURVE_ENVAGENT_HPP
 
 #include "../CurveEnvAgent.hpp"
-#include "3D/hilbert/rectangular/HilbertConvertor3D.hpp"
+#include "3D/hilbert/HilbertConvertor3D.hpp"
 
 class HilbertCurveEnvironmentAgent : public CurveEnvironmentAgent<hilbert_index_t>
 {
@@ -22,7 +22,7 @@ public:
         return this->getCellOwner(this->convertor->xyz2d(point));
     };
 
-    virtual void updatePoints(const std::vector<Vector3D> &newPoints)
+    virtual void updatePoints(const std::vector<Vector3D> &newPoints) override
     {}
 
     virtual inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)

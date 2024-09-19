@@ -174,7 +174,7 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     D  = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
     
     if(!compton_initialized_ and compton_on_){
-        Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100.};
+        Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100., 5000.};
         for(auto& temp : tmp_grid){
             temp *= units::kev_to_kelvin;
         }
@@ -269,8 +269,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 	max_diff = max_data.val;
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true, &cdummy);	
+	MPI_exchange_data(tess, cells, true);	
 #endif
 	if(rank == max_data.mpi_id)
 	{
@@ -318,8 +317,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
+	MPI_exchange_data(tess, cells_cgs, true);	
 #endif
 
     calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs, dt * time_scale_);
@@ -347,8 +345,8 @@ bool MultigroupDiffusion::step(double const tolerance,
         }
     }
 #ifdef RICH_MPI
-    MPI_exchange_data(tess, cells, true, &cdummy);
-    MPI_exchange_data(tess, cells_cgs, true, &cdummy);
+    MPI_exchange_data(tess, cells, true);
+    MPI_exchange_data(tess, cells_cgs, true);
 #endif
 
 //     std::size_t constexpr max_iter=1;
@@ -557,7 +555,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
             max_abs_grad_E[i] = abs_grad_E_temp;
         }
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, max_abs_grad_E, true);
+        MPI_exchange_data(tess, max_abs_grad_E, true);
 #endif 
     }
 
@@ -873,7 +871,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         }
 
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, max_abs_grad_E, true);
+        MPI_exchange_data(tess, max_abs_grad_E, true);
 #endif 
     }
 
@@ -2465,8 +2463,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
             }
         }
 #ifdef RICH_MPI
-    ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true, &cdummy);	
+ 	MPI_exchange_data(tess, cells, true);	
 #endif
 } 
 

@@ -38,7 +38,7 @@ private:
         int partitionAxis;
         int height;
         int depth;
-        _BoundingBox<T> boundingBox;
+        BoundingBox<T> boundingBox;
 
     private:
         enum _ChildSide
@@ -59,14 +59,14 @@ private:
     };
 
 public:
-    explicit inline KDTree(const T &ll, const T &ur): root(nullptr), size(0), boundingBox(_BoundingBox<T>(ll, ur)){};
+    explicit inline KDTree(const T &ll, const T &ur): root(nullptr), size(0), boundingBox(BoundingBox<T>(ll, ur)){};
     inline ~KDTree(){this->deleteTree();};
     
     template<typename U, typename FilterFunction = DefaultFilterFunction>
-    std::vector<T> range(const _Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
+    std::vector<T> range(const Sphere<U> &sphere, size_t N = std::numeric_limits<size_t>::max(), const FilterFunction &filter = [](const T&){return true;}) const;
 
     template<typename U, typename FilterFunction = DefaultFilterFunction>
-    std::pair<T, typename T::coord_type> getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
+    std::pair<T, typename T::coord_type> getClosestPointInSphere(const Sphere<U> &sphere, const T &point, const FilterFunction &filter = [](const T&){return true;}) const;
 
     inline bool find(const T &value) const{return this->tryFind(value) != nullptr;};
     inline bool insert(const T &value){return this->tryInsert(value) != nullptr;};
@@ -79,7 +79,7 @@ public:
 private:
     KDTreeNode *root;
     size_t size;
-    _BoundingBox<T> boundingBox;
+    BoundingBox<T> boundingBox;
 
     const KDTreeNode *tryFind(const T &point) const;
     inline KDTreeNode *tryFind(const T &point){return const_cast<KDTreeNode*>(std::as_const(*this).tryFind(point));};
@@ -112,7 +112,7 @@ void KDTree<T, D>::KDTreeNode::updateHeightRecursively()
 template<typename T, int D>
 KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, const T &ll, const T &ur): value(value), left(nullptr), right(nullptr), parent(nullptr), isValue(true)
 {
-    this->boundingBox = _BoundingBox<T>(ll, ur);
+    this->boundingBox = BoundingBox<T>(ll, ur);
     this->depth = 0;
     this->partitionAxis = 0;
 }
@@ -143,7 +143,7 @@ KDTree<T, D>::KDTreeNode::KDTreeNode(const T &value, KDTreeNode *parent): value(
             this->parent->right = this;
             my_ll[this->parent->partitionAxis] = this->parent->value[this->parent->partitionAxis];
         }
-        this->boundingBox = _BoundingBox<T>(my_ll, my_ur);
+        this->boundingBox = BoundingBox<T>(my_ll, my_ur);
     }
 
     this->updateHeightRecursively();
@@ -237,7 +237,7 @@ void KDTree<T, D>::deleteHelper(typename KDTree<T, D>::KDTreeNode *root)
 
 template<typename T, int D>
 template<typename U, typename FilterFunction>
-std::vector<T> KDTree<T, D>::range(const _Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
+std::vector<T> KDTree<T, D>::range(const Sphere<U> &sphere, size_t N, const FilterFunction &filter) const
 {
     std::vector<T> result;
     size_t resultSize = 0;
@@ -275,7 +275,7 @@ std::vector<T> KDTree<T, D>::range(const _Sphere<U> &sphere, size_t N, const Fil
 
 template<typename T, int D>
 template<typename U, typename FilterFunction>
-std::pair<T, typename T::coord_type> KDTree<T, D>::getClosestPointInSphere(const _Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
+std::pair<T, typename T::coord_type> KDTree<T, D>::getClosestPointInSphere(const Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
 {
     std::vector<const KDTreeNode*> nodes_stack;
     nodes_stack.push_back(this->getRoot());

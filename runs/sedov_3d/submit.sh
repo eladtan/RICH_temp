@@ -1,10 +1,9 @@
 #!/bin/sh
-#
 #SBATCH --job-name=sedov3d
 #SBATCH --output=output_%j.txt
 #SBATCH --error=error_%j.txt
-#SBATCH --partition=testSocket
-#SBATCH --ntasks=16
+#SBATCH --partition=socket
+#SBATCH --ntasks=32
 #SBATCH --exclusive
 ##SBATCH --time=820:00:00
 #SBATCH --constraint="ib"
@@ -30,7 +29,7 @@ lscpu
 #mpirun valgrind ./test.exe
 #mpirun -genv I_MPI_DEBUG=5 -genv I_MPI_SHM_LMT=shm ./test.exe
 #mpirun -genv I_MPI_FABRICS=shm:dapl ./test.exe
-mpiexec -x UCX_TLS=ib -mca btl ^openib ./rich
+mpirun -x UCX_TLS=ib -mca btl ^openib ./rich
 
 
 

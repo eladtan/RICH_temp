@@ -101,8 +101,8 @@ ExchangeAnswer<T> dataExchange(const std::vector<T> &data, const ExchangeDetermi
     ExchangeAnswer<T> answer{};
 
     std::vector<size_t> sizesToSend(size, 0), sizesToMe(size, 0);
-
-    for(size_t i = 0; i < data.size(); i++)
+    size_t N = data.size();
+    for(size_t i = 0; i < N; i++)
     {
         int _rank = getOwner(data[i]);
         if(_rank != rank)
@@ -136,9 +136,10 @@ ExchangeAnswer<T> dataExchange(const std::vector<T> &data, const ExchangeDetermi
     {
         MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
     }
-
+    
     // there's a requirement to have all the answers ordered by the order of the sentproc vector
-    for(size_t i = 0; i < answer.processesSend.size(); i++)
+    size_t answerSize = answer.processesSend.size();
+    for(size_t i = 0; i < answerSize; i++)
     {
         int _rank = answer.processesSend[i];
         if(_rank == rank)
