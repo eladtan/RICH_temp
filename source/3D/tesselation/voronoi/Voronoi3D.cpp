@@ -1273,15 +1273,20 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
         OctTree<IndexedVector3D> oldPointsTree(this->ll_, this->ur_, oldPoints);
         newRadiuses = std::vector<double>(newPointsNum);
         for(size_t i = 0; i < newPointsNum; i++)
-    {
+        {
             size_t matchingPointIdx = mask[i];
             double radius;
 
             if(matchingPointIdx >= originalPointsNum)
             {
                 // the point is a new, but we take its initial radius to be the same as the closest point's radius
-                size_t closestPointIdx = oldPointsTree.closestPoint(points[i]).getIndex();
-                radius = this->radiuses.at(closestPointIdx);
+                if(newPointsNum > 1)
+                {
+                    size_t closestPointIdx = oldPointsTree.closestPoint(points[i]).getIndex();
+                    radius = this->radiuses.at(closestPointIdx);
+                }
+                else
+                    radius = abs(this->ll_ - this->ur_);
             }
             else
             {
@@ -1445,6 +1450,7 @@ void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
 {
     // use an oct tree to fast calculate the distance to closest point
     OctTree<Vector3D> myOctTree(this->ll_, this->ur_, this->allMyPoints.begin(), this->allMyPoints.end());
+    size_t const N = this->indicesInAllMyPoints.size();
     for(const std::pair<size_t, size_t> &indices : this->indicesInAllMyPoints)
     {
         const size_t &pointIndexOnBuild = indices.first;
@@ -1453,7 +1459,10 @@ void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
         if(this->radiuses[pointIndexAmongAll] <= 0)
         {
             // point does not have a radius from a previous timestep. Initialize a radius
-            this->radiuses[pointIndexAmongAll] = fastsqrt(this->allMyPointsTree->closestPointDistance(point)); // todo second closest
+            if(N > 1)
+                this->radiuses[pointIndexAmongAll] = fastsqrt(this->allMyPointsTree->closestPointDistance(point)); // todo second closest
+            else
+                this->radiuses[pointIndexAmongAll] = abs(this->ll_ - this->ur_);
         }
     }
 }
@@ -3102,12 +3111,10 @@ size_t &Voronoi3D::GetPointNo(void)
     return Norg_;
 }
 
-#ifdef RICH_MPI
-    size_t Voronoi3D::GetAllPointsNo(void) const
-    {
-        return this->allMyPoints.size();
-    }
-#endif // RICH_MPI
+size_t Voronoi3D::GetAllPointsNo(void) const
+{
+    return this->allMyPoints.size();
+}
 
 std::vector<std::pair<size_t, size_t>> &Voronoi3D::GetAllFaceNeighbors(void)
 {

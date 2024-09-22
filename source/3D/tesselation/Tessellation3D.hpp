@@ -86,12 +86,11 @@ public:
   */
   virtual size_t GetPointNo(void) const = 0;
 
-  #ifdef RICH_MPI
-    /*! \brief Returns the number of all the points, even those which are not participating in the build
-      \return Number of all the points
-    */
-    virtual size_t GetAllPointsNo(void) const = 0;
-  #endif // RICH_MPI
+  /*! \brief Returns the number of all the points, even those which are not participating in the build
+    \return Number of all the points
+  */
+  virtual size_t GetAllPointsNo(void) const = 0;
+
 
   /*! \brief Get number of points
     \return Number of all points
