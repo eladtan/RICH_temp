@@ -1768,6 +1768,7 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
 #ifdef DEBUG
     if(rank == 0){
         std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
+        std::cout << std::setprecision(16) << "|Einit-Efinal|/Einit = " << std::abs(Einit - Efinal) / Einit << std::endl;
     }
 #endif
 }
