@@ -484,9 +484,9 @@ namespace CG
                 for(size_t j = 0; j < Nlocal; ++j)
                 {
                     double const local_scale = std::abs(b[j]);
-                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))))
+                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-6))))
                     {
-                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9)));
+                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-6)));
                         max_loc1 = j;
                     }
                     // if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
