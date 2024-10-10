@@ -3,6 +3,7 @@
 
 #include "conj_grad_solve.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
+#include "planck_integral/planck_integral.hpp"
 
 class MultigroupDiffusionBoundaryCalculator {
 public:
@@ -143,9 +144,12 @@ public:
                                      double const momentum_term_coefficient_j,
                                      double& A,
                                      double& b) const override;
+    
+    void SetTemperature(double const temperature_);
+
     private:
-        double const temperature;
-        double const Ur;
+        double temperature;
+        double Ur;
         mutable std::vector<double> Ug;
 };
 
