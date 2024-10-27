@@ -1,7 +1,8 @@
 #include "Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
 #include "MultigroupDiffusion.hpp"
 // TODO: make a units namespace used by all the program 
-#include "tau_matrix_calculator/src/units.hpp"
+#include "CMMC/src/units/units.hpp"
+#include "CMMC/src/planck_integral/planck_integral.hpp"
 
 using boost::math::pow;
 
@@ -64,10 +65,10 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 R2(3, std::vector<double>()),
                                                                 D(3, std::vector<double>()),
                                                                 displayed_warning_(false),
-                                                                tau_engine( energy_groups_center_,
-                                                                            energy_groups_boundary_, 
-                                                                            20000, // num of samples
-                                                                            true), // force detailed balance
+                                                                compton_matrix_gen( energy_groups_center_,
+                                                                                    energy_groups_boundary_, 
+                                                                                    20000, // num of samples
+                                                                                    true), // force detailed balance
                                                                 tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 S(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -176,9 +177,9 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     if(!compton_initialized_ and compton_on_){
         Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100.};
         for(auto& temp : tmp_grid){
-            temp *= units::kev_to_kelvin;
+            temp *= units::kev_kelvin;
         }
-        tau_engine.generate_tables(tmp_grid);
+        compton_matrix_gen.set_tables(tmp_grid);
         compton_initialized_=true;
     }
     
@@ -2540,7 +2541,7 @@ void MultigroupDiffusion::calculate_lambda_g_and_R2_g(std::size_t const group,
 void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index) const {
     cell_id_of_compton_matrices = cell.ID;
 
-    double constexpr fac = pow<3>(units::c) / (8.0*M_PI*units::planck_constant);
+    double constexpr fac = pow<3>(units::clight) / (8.0*M_PI*units::planck_constant);
     
     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
         double const dnu = energy_groups_width[g]/units::planck_constant;
@@ -2553,7 +2554,7 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
     double const A = 1.0;
     double const Z = 1.0;
-    tau_engine.generate_tau_matrix(old_Tm[cell_index], cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
+    compton_matrix_gen.get_tau_matrix(old_Tm[cell_index], cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
 
     fill_zero(S);
     fill_zero(dSdUm);

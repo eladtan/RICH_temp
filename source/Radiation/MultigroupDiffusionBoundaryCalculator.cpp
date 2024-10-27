@@ -1,7 +1,7 @@
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
 #include "boost/math/special_functions/pow.hpp"
 #include "RadiationDriver.hpp"
-#include "planck_integral/planck_integral.hpp"
+#include "CMMC/src/planck_integral/planck_integral.hpp"
 #include "Diffusion.hpp" // for CalcSingleFluxLimiter
 
 
