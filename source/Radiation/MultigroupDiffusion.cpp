@@ -67,7 +67,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 displayed_warning_(false),
                                                                 compton_matrix_gen( energy_groups_center_,
                                                                                     energy_groups_boundary_, 
-                                                                                    20000, // num of samples
+                                                                                    200000, // num of samples
                                                                                     true), // force detailed balance
                                                                 tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -175,7 +175,9 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     D  = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
     
     if(!compton_initialized_ and compton_on_){
-        Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100., 5000.};
+        // Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100.};
+        Vector tmp_grid = {0.95,        3.06666667,  5.18333333,  7.3,         9.41666667, 11.53333333,
+ 13.65,       15.76666667, 17.88333333, 20. };
         for(auto& temp : tmp_grid){
             temp *= units::kev_kelvin;
         }
