@@ -6,8 +6,7 @@
 #include "boost/math/special_functions/pow.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
-#include "planck_integral/planck_integral.hpp"
-#include "tau_matrix_calculator/src/tau_matrix_monte_carlo.hpp"
+#include "CMMC/src/compton_matrix_mc.hpp"
 
 using namespace CG;
 
@@ -143,7 +142,7 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
     mutable std::vector<std::vector<double>> R2;
     mutable std::vector<std::vector<double>> D;
 
-    mutable tau_matrix_monte_carlo_engine tau_engine;
+    mutable ComptonMatrixMC compton_matrix_gen;
 
     mutable std::vector<std::vector<double>> tau;
     mutable std::vector<std::vector<double>> dtau_dUm;

@@ -6,7 +6,7 @@
 
 #include <boost/math/special_functions/pow.hpp>
 // TODO: make a units namespace used by all the program 
-#include "tau_matrix_calculator/src/units.hpp"
+#include "CMMC/src/units/units.hpp"
 class MultigroupDiffusionCoefficientCalculator {
 public:
 

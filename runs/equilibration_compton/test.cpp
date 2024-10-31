@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include <source/Radiation/planck_integral/planck_integral.hpp>
+#include <source/Radiation/CMMC/src/planck_integral/planck_integral.hpp>
 #include <algorithm>
 #include "boost/math/special_functions/pow.hpp"
 
@@ -195,8 +195,8 @@ int main(void)
 	int counter = 0;
 	ComputationalCell3D init_cell;
 
-	double const T_mat = 1.0*kev_kelvin;
-	double const T_rad = 6.0*kev_kelvin;
+	double const T_mat = 10.0*kev_kelvin;
+	double const T_rad = 1.0*kev_kelvin;
 
 	try
 	{
@@ -272,7 +272,7 @@ int main(void)
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
 	double init_dt = 1e-15 / tscale;
-	double const tf = 5e-3 / tscale;
+	double const tf = 3e-8 / tscale;
 	double const dt_output = tf / 100.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
