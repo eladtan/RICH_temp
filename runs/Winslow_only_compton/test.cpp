@@ -175,8 +175,8 @@ int main(void)
 		std::cout << "start eos" << std::endl;
 
 	double constexpr m_p = 1.6726231e-24;
-	double constexpr cv = 1.0 * CG::boltzmann_constant / (1.4-1.0) / m_p;
-    IdealGas eos(/*gamma=*/1.4, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
+	double constexpr cv = 2.0 * CG::boltzmann_constant * 6.02214076e23/ (5.0/3.0-1.0);
+    IdealGas eos(/*gamma=*/5.0/3.0, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
 
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
