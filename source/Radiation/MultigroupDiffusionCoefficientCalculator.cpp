@@ -160,7 +160,7 @@ double GrayPowerLawOpacity::CalcScatteringCoefficientGroup(ComputationalCell3D c
 }
 
 
-FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup(std::size_t const Z_,
+FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup(double const Z_,
                                                                          std::vector<double> const& energy_groups_center_,
                                                                          std::vector<double> const& energy_groups_boundary_) 
                                                                             : Z(Z_),
@@ -172,13 +172,15 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficientGroup(Comput
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
     double const nu_g = energy_groups_center[group]/h;
+    double const e = energy_groups_center[group];
     double const kT = kB*cell.temperature;
 
     double const m_p = 1.6726231e-24;
     double const n_i = cell.density/m_p;
     double const n_e = n_i;
 
-    return coefficient*Z*Z*n_e*n_i*(1.0 - std::exp(-h*nu_g/kT))/(std::sqrt(kT)*pow<3>(nu_g));
+    // return coefficient*Z*Z*n_e*n_i*(1.0 - std::exp(-h*nu_g/kT))/(std::sqrt(kT)*pow<3>(nu_g));
+    return 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23,2)/std::sqrt(cell.temperature)*(1.-std::exp(-e/(CG::boltzmann_constant*cell.temperature)))*std::pow(e/h, -3);
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {

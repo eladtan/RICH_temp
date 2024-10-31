@@ -92,7 +92,7 @@ class GrayPowerLawOpacity : public MultigroupDiffusionCoefficientCalculator {
 using boost::math::pow;
 class FreeFreeAbsorptionOpacityMultigroup : public MultigroupDiffusionCoefficientCalculator {
     private:
-        std::size_t const Z;
+        double const Z;
         
         static double constexpr m_e = CG::electron_mass;
         static double constexpr c = CG::speed_of_light;
@@ -107,7 +107,7 @@ class FreeFreeAbsorptionOpacityMultigroup : public MultigroupDiffusionCoefficien
         double const coefficient = 8.0 * pow<6>(q_e)/(3.0*std::sqrt(2.*pi) * std::pow(m_e, 1.5)*c*h);
     
     public:
-        FreeFreeAbsorptionOpacityMultigroup(std::size_t const Z_,
+        FreeFreeAbsorptionOpacityMultigroup(double const Z_,
                                             std::vector<double> const& energy_groups_center_,
                                             std::vector<double> const& energy_groups_boundary_);
 
