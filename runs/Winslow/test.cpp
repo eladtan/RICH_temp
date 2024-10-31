@@ -64,7 +64,7 @@ int main(void)
 	std::vector<double> energy_groups_boundary(G+1);
 
 	double const Emin = kev*1e-3;
-	double const Emax = kev*2e2;
+	double const Emax = kev*3e2;
 	
 	energy_groups_boundary[0] = Emin;
 	for(std::size_t g=0; g < G; ++g){
@@ -175,8 +175,8 @@ int main(void)
 		std::cout << "start eos" << std::endl;
 
 	double constexpr m_p = 1.6726231e-24;
-	double constexpr cv = 1.0 * CG::boltzmann_constant / (1.4-1.0) / m_p;
-    IdealGas eos(/*gamma=*/1.4, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
+	double constexpr cv = 2.0 * CG::boltzmann_constant * 6.02214076e23/ (5.0/3.0-1.0);
+    IdealGas eos(/*gamma=*/5.0/3.0, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
 
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
@@ -301,7 +301,8 @@ int main(void)
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt, 5e-11);
+			new_dt=std::min(new_dt, sim.getTime()/50.0);
+			new_dt=std::max(new_dt, 1e-15);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
