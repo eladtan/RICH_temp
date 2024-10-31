@@ -14,16 +14,17 @@ logger = logging.getLogger("build_program.main")
 root_dir = str(pathlib.Path(__file__).parent.parent.absolute())
 sys.path.append(root_dir)
 
+RELEASE_OPTIMIZATION_LEVEL = "-O3" 
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None, definitionOfReal=8):
     warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
-    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)}"
+    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
-    common_cxx_flags_release = " -DNDEBUG -O3 -DOMPI_SKIP_MPICXX "
+    common_cxx_flags_release = f" -DNDEBUG -DOMPI_SKIP_MPICXX {RELEASE_OPTIMIZATION_LEVEL}"
     
-    hdf5_lib_dir = SysLibsDict["hdf5_lib_dir"]
-    hdf5_include_dir = SysLibsDict["hdf5_include"]
-    vtk_dir = SysLibsDict["vtk"]
+    hdf5_lib_dir = SysLibsDict["intel_hdf5_lib_dir"] if config.startswith("intel") and "intel_hdf5_lib_dir" in SysLibsDict else SysLibsDict["hdf5_lib_dir"]
+    hdf5_include_dir = SysLibsDict["intel_hdf5_include"] if config.startswith("intel") and "intel_hdf5_include" in SysLibsDict else SysLibsDict["hdf5_include"]
+    vtk_dir = SysLibsDict["vtk_intel"] if config.startswith("intel") and "vtk_intel" in SysLibsDict else SysLibsDict["vtk"]
 
     if config.startswith("gnu"):
         fortran_compiler = SysLibsDict["gfortran"]
@@ -37,7 +38,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cxx_compiler = SysLibsDict["g++"]
 
         cmake_cxx_standard = "17"
-        cmake_cxx_flags = " -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy -Wno-double-promotion -Wno-shadow "
+        cmake_cxx_flags = " -rdynamic -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy -Wno-double-promotion -Wno-shadow "
         cmake_cxx_flags_debug = " -D_GLIBCXX_DEBUG "
         cmake_cxx_flags_release = " "
     elif config.startswith("intel"):
@@ -48,9 +49,12 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_fortran_flags += " -mcmodel=medium -shared-intel "
 
         c_compiler = SysLibsDict["icc"]
-        cxx_compiler = SysLibsDict["icpc"]
+        cxx_compiler = SysLibsDict["icx"]
+        os.environ["I_MPI_CC"] = c_compiler
+        os.environ["I_MPI_CXX"] = cxx_compiler
+        os.environ["I_MPI_F90"] = SysLibsDict["ifort"]
 
-        common_cxx_flags += " -diag-remark=13397,13401,15552,2196 -pedantic-errors -Wall "
+        common_cxx_flags += " -cxx=icpx -diag-remark=13397,13401,15552,2196 -Wall "
         cmake_cxx_standard = "17"
         cmake_cxx_flags = " -ansi-alias -fimf-arch-consistency=true "
         cmake_cxx_flags_debug = " -fp-model consistent -diag-disable=openmp -Wno-unknown-pragmas "
@@ -101,6 +105,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
             f'-DVTK_DIRECTORY={vtk_dir}',
             f'-DBOOST_DIR={boost_dir}' if boost_dir else "",
+            f'-DPYTHON_INCLUDE={SysLibsDict["python_include"]}' if "python_include" in SysLibsDict else "",
+            f'-DPYTHON_LIB_DIRECTORY={SysLibsDict["python_lib_dir"]}' if "python_lib_dir" in SysLibsDict else "",
             f'-DJSONCPP_INCLUDE={SysLibsDict["jsoncpp_include"]}' if "jsoncpp_include" in SysLibsDict else "",
             f'-DJSONCPP_LIB_DIRECTORY={SysLibsDict["jsoncpp_lib_dir"]}' if "jsoncpp_lib_dir" in SysLibsDict else "",
             f'-DVTUNE_INCLUDE={SysLibsDict["vtune_include"]}' if "vtune_include" in SysLibsDict else "",

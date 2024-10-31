@@ -23,6 +23,15 @@ MultigroupDiffusionSideBoundary
     }
 }
 
+void MultigroupDiffusionSideBoundary::SetTemperature(double const temperature_) { 
+    temperature = temperature_;
+    for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
+        Ug[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], temperature);
+    }
+    Ur = get_radiation_energy_density(temperature_);
+}
+
+
 void MultigroupDiffusionSideBoundary::setBoundaryValuesGray(Tessellation3D const& tess,
                                                             std::size_t const index,
                                                             std::size_t const outside_point,

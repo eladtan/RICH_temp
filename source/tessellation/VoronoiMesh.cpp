@@ -1279,7 +1279,7 @@ vector<int> VoronoiMesh::Update
 		}
 	}
 	// communicate the ghost CM
-	vector<vector<Vector2D> > incoming = MPI_exchange_data(GhostProcs, GhostPoints, CM);
+	vector<vector<Vector2D>> incoming = MPI_exchange_data_indexed(GhostProcs, CM, GhostPoints);
 	// Add the recieved CM
 	for (size_t i = 0; i < incoming.size(); ++i)
 		for (size_t j = 0; j < incoming.at(i).size(); ++j)
@@ -1356,7 +1356,7 @@ void VoronoiMesh::Initialise_loc
 		}
 	}
 	// communicate the ghost CM
-	vector<vector<Vector2D> > incoming = MPI_exchange_data(GhostProcs, GhostPoints, CM);
+	vector<vector<Vector2D>> incoming = MPI_exchange_data_indexed(GhostProcs, CM, GhostPoints);
 	// Add the recieved CM
 	for (size_t i = 0; i < incoming.size(); ++i)
 		for (size_t j = 0; j < incoming.at(i).size(); ++j)
@@ -1496,56 +1496,20 @@ vector<Vector2D> VoronoiMesh::UpdateMPIPoints(Tessellation const& vproc, int ran
 			sentpoints.push_back(vector<int>());
 		}
 	}
+	
 	// Point exchange
-	vector<vector<Vector2D> > incoming(sentproc.size());
-	vector<vector<double> > tosend(sentproc.size());
-	vector<double> torecv;
-	double dtemp = 0;
-	Vector2D vtemp;
-	req.clear();
-	req.resize(sentproc.size());
+	vector<vector<Vector2D>> incoming = MPI_exchange_data_indexed(sentproc, points, sentpoints);
 	vector<int> indeces;
 	vector<Vector2D> cortemphilbert;
-	for (size_t i = 0; i < sentproc.size(); ++i)
+	for(size_t i = 0; i < incoming.size(); ++i)
 	{
-		const int dest = sentproc.at(i);
-		if (!sentpoints.at(i).empty())
+		if(!incoming.at(i).empty())
 		{
-			cortemphilbert = VectorValues(points, sentpoints.at(i));
-			indeces = HilbertOrder(cortemphilbert, static_cast<int>(cortemphilbert.size()));
-			tosend[i] = list_serialize(VectorValues(cortemphilbert, indeces));
+			indeces = HilbertOrder(incoming[i], static_cast<int>(cortemphilbert.size()));
+			incoming[i] = VectorValues(cortemphilbert, indeces);
 			sentpoints[i] = VectorValues(sentpoints[i], indeces);
 		}
-		if(tosend[i].empty())
-			MPI_Isend(&dtemp, 1, MPI_DOUBLE, dest,1, MPI_COMM_WORLD, &req[i]);
-		else
-			MPI_Isend(&tosend[i][0], static_cast<int>(tosend[i].size()), MPI_DOUBLE, dest, 0, MPI_COMM_WORLD, &req[i]);
 	}
-	for (size_t i = 0; i < sentproc.size(); ++i)
-	{
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		torecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&torecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 0)
-		{
-			size_t location = static_cast<size_t>(std::find(sentproc.begin(), sentproc.end(), status.MPI_SOURCE) -
-				sentproc.begin());
-			if (location >= sentproc.size())
-				throw UniversalError("Bad location in mpi exchange");
-			incoming[location] = list_unserialize(torecv,vtemp);
-		}
-		else
-		{
-			if (status.MPI_TAG != 1)
-				throw UniversalError("Recv bad mpi tag");
-		}
-	}
-	if(!req.empty())
-		MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
 
 	// Combine the vectors
 	for (size_t i = 0; i < incoming.size(); ++i)

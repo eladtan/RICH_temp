@@ -9,7 +9,6 @@
 #define _USE_MATH_DEFINES
 #endif // _MSC_VER
 
-
 #include <algorithm>
 #include <cfloat>
 #include <stack>
@@ -54,16 +53,16 @@
 #include "mpi/mpi_commands.hpp"
 #endif
 
-#ifdef RICH_MPI
-  // finders
-  #include "3D/range/finders/BruteForce.hpp"
-  #include "3D/range/finders/RangeTree.hpp"
-  #include "3D/range/finders/OctTree.hpp"
-  #include "3D/range/finders/KDTree.hpp"
-  #include "3D/range/finders/GroupRangeTree.hpp"
-  #include "3D/range/finders/HashBruteForce.hpp"
-  #include "3D/range/finders/SmartBruteForce.hpp"
+// finders
+#include "3D/range/finders/BruteForce.hpp"
+#include "3D/range/finders/RangeTree.hpp"
+#include "3D/range/finders/OctTree.hpp"
+#include "3D/range/finders/KDTree.hpp"
+#include "3D/range/finders/GroupRangeTree.hpp"
+#include "3D/range/finders/HashBruteForce.hpp"
+#include "3D/range/finders/SmartBruteForce.hpp"
 
+#ifdef RICH_MPI
   // env agents
   #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
   #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
@@ -73,11 +72,11 @@
 #ifdef RICH_MPI
   #include "pointsManager/HilbertPointsManager.hpp"
   #define INITIAL_SENDRECV_TAG 1105
-  #define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
-  #define RANGE_MAX_POINTS_TO_GET 15 // 15
-  #define RADIUSES_GROWING_FACTOR 1.1
 #endif 
 
+#define LARGE_POINTS_SHRINK_RADIUS_RATIO 0.95
+#define RANGE_MAX_POINTS_TO_GET 15 // 15
+#define RADIUSES_GROWING_FACTOR 1.1
 #define RADIUS_UNINITIALIZED -1
 
 typedef std::array<std::size_t, 4> b_array_4;
@@ -101,8 +100,8 @@ private:
     \param Rtemp TBA
     \param vtemp TBA
    */
-  void FindIntersectionsSingle(vector<Face> const& box, std::size_t point, Sphere &sphere,
-			       vector<size_t> &intersecting_faces,std::vector<double> &Rtemp,std::vector<Vector3D> &vtemp);
+  void FindIntersectionsSingle(vector<Face> const& box, std::size_t point, Sphere<Vector3D> &sphere,
+			       vector<size_t> &intersecting_faces, std::vector<double> &Rtemp, std::vector<Vector3D> &vtemp);
 
   std::size_t GetFirstPointToCheck(void)const;
 
@@ -112,47 +111,80 @@ private:
     \param res Result
    */
   void GetPointToCheck(std::size_t point, vector<unsigned char> const& checked, vector<std::size_t> &res);
+  
   void CalcRigidCM(std::size_t face_index);
-  void GetTetraCM(std::array<Vector3D, 4> const& points, Vector3D &CM)const;
-  double GetTetraVolume(std::array<Vector3D, 4> const& points)const;
-  //  void CalcCellCMVolume(std::size_t index);
-  double GetRadius(std::size_t index);
-  void CalcAllCM(void);
-  vector<std::pair<std::size_t, std::size_t> > SerialFindIntersections(bool first_run);
-  vector<std::pair<std::size_t, std::size_t> > SerialFirstIntersections(void);
-  double CalcTetraRadiusCenterHiPrecision(std::size_t index);
 
-  double CalcTetraRadiusCenter(std::size_t index);
+  void GetTetraCM(std::array<Vector3D, 4> const& points, Vector3D &CM)const;
+
+  double GetTetraVolume(std::array<Vector3D, 4> const& points)const;
+
+  //  void CalcCellCMVolume(std::size_t index);
+
+  double GetRadius(const size_t &index) const;
+
+  void CalcAllCM(void);
+
+  vector<std::pair<std::size_t, std::size_t> > SerialFindIntersections(bool first_run);
+
+  vector<std::pair<std::size_t, std::size_t> > SerialFirstIntersections(void);
+
+  double CalcTetraRadiusCenterHiPrecision(const size_t &index) const;
+
+  double CalcTetraRadiusCenter(const size_t &index) const;
+
   vector<Vector3D> CreateBoundaryPoints(vector<std::pair<std::size_t, std::size_t> > const& to_duplicate,
 					vector<vector<size_t> > &past_duplicate);
   void BuildVoronoi(std::vector<size_t> const& order);
 
-  double GetMaxRadius(std::size_t index);
-  double GetMinRadius(std::size_t index);
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
-  
+
+  void BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
+                              BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
+                              boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
+                              boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
+                              boost::container::flat_set<size_t> &selfIgnorePoints);
+    
   #ifdef RICH_MPI
-  std::pair<std::queue<SmallRangeQueryData>, std::queue<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
-  void UpdateRangeFinder();
-  void BringGhostPointsToBuild();
-  std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
-  void BuildInitialize(size_t num_points);
-  void FilterRealGhostPoints();
-  void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
-  void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
-  std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange() const;
-  void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints);
-  void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);
-  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>> DetermineNextIterationPoints(size_t iterations, const std::vector<QueryInfo<SmallRangeQueryData, _3DPoint>> &smallQueriesAnswers, const std::vector<QueryInfo<BigRangeQueryData, _3DPoint>> &bigQueriesAnswers,
-                                        boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses);
+    void BringGhostPointsToBuild(const MPI_Comm &comm);
+  #else
+    void BringGhostPointsToBuild();
+  #endif // RICH_MPI
+
+  std::pair<std::vector<SmallRangeQueryData>, std::vector<BigRangeQueryData>> CreateBatches(boost::container::flat_set<size_t> &smallPoints, boost::container::flat_set<size_t> &largePoints, const boost::container::flat_map<size_t, size_t> &firstLargeIteration, std::vector<double> &currentRadiuses, size_t iterations);
+
+  std::pair<boost::container::flat_set<size_t>, boost::container::flat_set<size_t>>
+    DetermineNextIterationPoints(size_t iterations,
+                                  boost::container::flat_map<size_t, size_t> &firstLargeIteration,
+                                  std::vector<double> &currentRadiuses,
+                                  const boost::container::flat_map<size_t, size_t> &resultOfSmallPoints,
+                                  const boost::container::flat_map<size_t, size_t> &resultOfBigPoints
+                                );
+
+  void UpdateRadiuses(const std::vector<Vector3D> &points);
+
+  void UpdateCMs(void);
   
+  void UpdateRangeFinder(void);
+
+  #ifdef RICH_MPI
+    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
+    void FilterRealGhostPoints();
+    void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
+    void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
+    std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const MPI_Comm &comm = MPI_COMM_WORLD) const;
+    void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints, const MPI_Comm &comm = MPI_COMM_WORLD);
+    void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);  
+    void BringRemoteGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
+                                      BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
+                                      boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
+                                      boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints);
   #endif // RICH_MPI
 
   Delaunay3D del_;
   //vector<vector<std::size_t> > PointTetras_; // The tetras containing each point
   vector<tetra_vec > PointTetras_; // The tetras containing each point
-  vector<double> R_; // The radius of the sphere of each tetra
-  vector<Vector3D> tetra_centers_;
+  mutable vector<double> R_; // The radius of the sphere of each tetra
+  mutable vector<Vector3D> tetra_centers_;
   // Voronoi Data
   //vector<vector<std::size_t> > FacesInCell_;
   vector<face_vec > FacesInCell_;
@@ -163,43 +195,60 @@ private:
   vector<Vector3D> CM_, Face_CM_; // center of masses
   vector<double> volume_; // volumes of each one of the tetrahedra
   vector<double> area_; // surface area of each one of the tetrahedra
+  
+  #ifdef RICH_MPI
   vector<int> sentprocs_;
   vector<vector<std::size_t>> sentpoints_; // if rank `i` is inside index `j` in `sentprocs_`, then the points in sentpoints_[j] are the points I sent to rank `i` in the initial points exchange in build
   vector<int> duplicatedprocs_; 
   vector<vector<std::size_t>> duplicated_points_;  // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in `i`'s delaunay, which are actually mine
-  vector<int> real_duplicated_proc; 
-  vector<vector<std::size_t>> real_duplicated_points;
+  vector<int> real_duplicated_proc;
+  vector<vector<std::size_t>> real_duplicated_points; // indices of points which are a real ghost points
   vector<vector<std::size_t>> Nghost_; // if rank `i` is inside index `j` in `duplicatedprocs_`, then Nghost_[j] includes all the points in my delaunay, which are belongs, originally, to i
   vector<std::size_t> self_index_; // indexes of the points which are truely mine (inside the points list)
+  #endif // RICH_MPI
 
   Voronoi3D();
   Voronoi3D(Voronoi3D const &other);
   std::array<Vector3D, 4> temp_points_;
   std::array<Vector3D, 5> temp_points2_;
   std::vector<Face> box_faces_;
-  std::vector<Vector3D> allMyPoints;
-  
+
+  std::shared_ptr<OctTree<IndexedVector3D>> myPointsTree;
+  std::shared_ptr<OctTree<IndexedVector3D>> allMyPointsTree;
   #ifdef RICH_MPI
     std::shared_ptr<PointsManager> pointsManager;
-    std::vector<double> radiuses;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
-    vector<std::size_t> indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
-    std::shared_ptr<RangeFinder> rangeFinder;
+
   #endif // RICH_MPI
+
+  std::shared_ptr<RangeFinder> rangeFinder;
+  std::vector<Vector3D> allMyPoints;
+  std::vector<double> allPointsWeights;
+  std::vector<double> radiuses;
+
+  Tessellation3D::AllPointsMap indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
 
 public:
 
   #ifdef RICH_MPI
+    const std::vector<double> &GetPointsBuildWeights() const override;
+    
     const EnvironmentAgent *GetEnvironmentAgent() const override;
+    
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
+    
     inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
+    
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);
   #endif // RICH_MPI
-  vector<int>& GetSentProcs(void) override;
 
-  vector<vector<size_t> >& GetSentPoints(void) override;
+  #ifdef RICH_MPI
+    vector<int>& GetSentProcs(void) override;
 
-  vector<size_t>& GetSelfIndex(void) override;
+    vector<vector<size_t> >& GetSentPoints(void) override;
+
+    vector<size_t>& GetSelfIndex(void) override;
+  #endif // RICH_MPI
 
   vector<Vector3D>& GetAllFaceCM(void) override;
 
@@ -219,7 +268,9 @@ public:
 
   void output(std::string const& filename)const override;
 
-  void Build(vector<Vector3D> const& points) override;
+  void BuildInitialize(size_t num_points);
+
+  void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) override;
 
 #ifdef RICH_MPI
 
@@ -230,9 +281,11 @@ public:
 
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
-  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
+  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
 
   bool PointInMyDomain(const Vector3D &point) const override;
+
+  int GetOwner(const Vector3D &point) const override;
 
 #endif // RICH_MPI
 
@@ -240,6 +293,12 @@ public:
     \param rank Rank of parallel process
    */
   void BuildDebug(int rank);
+
+  double GetMaxRadius(const size_t &index) const;
+
+  double GetMinRadius(const size_t &index) const;
+
+  size_t GetContainingCell(const Vector3D &point) const override;
 
   std::size_t GetPointNo(void) const override;
 
@@ -275,24 +334,24 @@ public:
    */
   double GetVolume(std::size_t index) const override;
 
-  int GetOwner(const Vector3D &point) const;
-
   /*! \brief Get cell faces
     \param index Point index
     \return List of bounding faces
    */ 
   face_vec const& GetCellFaces(std::size_t index) const override;
-
+  
   vector<Vector3D>& accessMeshPoints(void) override;
 
   const vector<Vector3D>& getMeshPoints(void) const override;
 
-  #ifdef RICH_MPI
-    const std::vector<Vector3D> &getAllPoints(void) const override;
-  
-    size_t GetAllPointsNo(void) const override;
-  #endif // RICH_MPI
-  
+  const Tessellation3D::AllPointsMap &GetIndicesInAllPoints(void) const override;
+
+  const std::vector<Vector3D> &getAllPoints(void) const override;
+
+  std::vector<Vector3D> &getAllPoints(void) override;
+
+  size_t GetAllPointsNo(void) const override;
+
   /*! \brief Get neighbours
     \param index Point index
     \return List of indices of neighbouring points
@@ -313,10 +372,32 @@ public:
    */
   bool BoundaryFace(std::size_t index) const override;
 
+  #ifdef RICH_MPI
   vector<vector<std::size_t> >& GetDuplicatedPoints(void) override;
 
   vector<vector<std::size_t> >const& GetDuplicatedPoints(void)const override;
 
+    /*! \brief Get Duplicated processe
+      \return List of duplicated points
+    */
+    vector<int> GetDuplicatedProcs(void)const override;
+
+  /*! \brief Get a list of parallel processes to which points have been sent
+    \return List of process numbers
+   */
+  vector<int> GetSentProcs(void)const override;
+
+  /*! \brief List of point sent to parallel processes, partitioned by processor number
+    \return List of list of indices
+   */
+  vector<vector<std::size_t> > const& GetSentPoints(void)const override;
+
+  /*! \brief Get indices of all real cells
+    \return List of indices of all real cells
+   */
+  vector<std::size_t> const& GetSelfIndex(void) const override;
+
+  #endif // RICH_MPI
   std::size_t GetTotalPointNumber(void)const override;
 
   vector<Vector3D> & GetAllCM(void) override;
@@ -371,35 +452,17 @@ public:
    */
   std::pair<std::size_t, std::size_t> GetFaceNeighbors(std::size_t face_index)const override;
 
-  /*! \brief Get Duplicated processe
-    \return List of duplicated points
-   */
-  vector<int> GetDuplicatedProcs(void)const override;
+  #ifdef RICH_MPI
+    /*! \brief Get the indices of ghost points
+      \return List of list of ghost points
+    */
+    vector<vector<std::size_t> > const& GetGhostIndeces(void) const override;
 
-  /*! \brief Get a list of parallel processes to which points have been sent
-    \return List of process numbers
-   */
-  vector<int> GetSentProcs(void)const override;
-
-  /*! \brief List of point sent to parallel processes, partitioned by processor number
-    \return List of list of indices
-   */
-  vector<vector<std::size_t> > const& GetSentPoints(void)const override;
-
-  /*! \brief Get indices of all real cells
-    \return List of indices of all real cells
-   */
-  vector<std::size_t> const& GetSelfIndex(void) const override;
-
-  /*! \brief Get the indices of ghost points
-    \return List of list of ghost points
-   */
-  vector<vector<std::size_t> > const& GetGhostIndeces(void) const override;
-
-  /*! \brief Get the indices of ghost points
-    \return List of list of ghost points
-   */
-  vector<vector<std::size_t> >& GetGhostIndeces(void) override;
+    /*! \brief Get the indices of ghost points
+      \return List of list of ghost points
+    */
+    vector<vector<std::size_t> >& GetGhostIndeces(void) override;
+  #endif // RICH_MPI
 
   void GetNeighbors(size_t index, vector<size_t> &res)const override;
 
@@ -422,8 +485,12 @@ public:
   /*! \brief Get all face neighbours
     \return List of pairs of indices to neighbours
    */
-  std::vector<std::pair<size_t, size_t> >& GetAllFaceNeighbors(void) override
-;
+  std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) override;
+
+  /*! \brief Get all face neighbours
+    \return List of pairs of indices to neighbours
+   */
+  const std::vector<std::pair<size_t, size_t>> &GetAllFaceNeighbors(void) const override;
 
   /*! \brief List all points in face
     \return List of all points in face

@@ -175,7 +175,7 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     D  = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
     
     if(!compton_initialized_ and compton_on_){
-        Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100.};
+        Vector tmp_grid = {1e-2, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100., 5000.};
         for(auto& temp : tmp_grid){
             temp *= units::kev_kelvin;
         }
@@ -270,8 +270,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 	max_diff = max_data.val;
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true, &cdummy);	
+	MPI_exchange_data(tess, cells, true);	
 #endif
 	if(rank == max_data.mpi_id)
 	{
@@ -279,7 +278,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
 		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(cells[max_loc].density * cells[max_loc].Erad * mass_scale_ / (length_scale_ * pow<2>(time_scale_) * CG::radiation_constant), 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
 		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_Tm[max_loc]<<" loc="<<tess.GetMeshPoint(max_loc)<<std::endl;
-        std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" kr="<<sigma_absorption_average[max_loc]<<std::endl;
+        std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" kr="<<sigma_absorption_average[max_loc]<<" fleck factor "<<fleck_factor[max_loc]<<std::endl;
         // for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
         //     std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density<<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]<<" bg="<<
         //     planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< 
@@ -319,8 +318,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells_cgs, true, &cdummy);	
+	MPI_exchange_data(tess, cells_cgs, true);	
 #endif
 
     calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs, dt * time_scale_);
@@ -348,8 +346,8 @@ bool MultigroupDiffusion::step(double const tolerance,
         }
     }
 #ifdef RICH_MPI
-    MPI_exchange_data(tess, cells, true, &cdummy);
-    MPI_exchange_data(tess, cells_cgs, true, &cdummy);
+    MPI_exchange_data(tess, cells, true);
+    MPI_exchange_data(tess, cells_cgs, true);
 #endif
 
 //     std::size_t constexpr max_iter=1;
@@ -558,7 +556,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
             max_abs_grad_E[i] = abs_grad_E_temp;
         }
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, max_abs_grad_E, true);
+        MPI_exchange_data(tess, max_abs_grad_E, true);
 #endif 
     }
 
@@ -598,7 +596,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
                         // calculate the diffusion coefficient on the boundary using the maximal temperature of the cells
                         double const T_i = cell_i.temperature;
                         double const T_j = cell_j->temperature;
-                        double const max_T = std::max(old_Tm[i], old_Tm[j]);
+                        double const max_T = std::pow(pow<4>(T_i) + pow<4>(T_j), 0.25) * 0.5;
 
                         cell_j->temperature = max_T;
                         cell_i.temperature = max_T;
@@ -619,7 +617,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
 
                             max_neighbor_abs_grad_E[i] = std::max(max_neighbor_abs_grad_E[i], max_abs_grad_E[neighbor_j]);
 
-                            double const grad_factor = std::max(0.15 * (max_abs_grad_E[i] + max_abs_grad_E[neighbor_j])/gradE_magnitude, 1.0);
+                            double const grad_factor = 1;//std::max(0.15 * (max_abs_grad_E[i] + max_abs_grad_E[neighbor_j])/gradE_magnitude, 1.0);
 
                             lambda = CG::CalcSingleFluxLimiter(gradient*dEg*grad_factor, D_ij, 0.5*(Eg_i + Eg_j));
                         }
@@ -874,7 +872,7 @@ void MultigroupDiffusion::BuildMatrixGroup(std::size_t group,
         }
 
 #ifdef RICH_MPI
-        MPI_exchange_data2(tess, max_abs_grad_E, true);
+        MPI_exchange_data(tess, max_abs_grad_E, true);
 #endif 
     }
 
@@ -1625,7 +1623,7 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
             double const full_CG_res_i = std::max(full_CG_result[i * ENERGY_GROUPS_NUM + group], 
             std::numeric_limits<double>::min()*1e100);
             
-            extensives[i].Eg[group] = CG_res * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
+            extensives[i].Eg[group] = full_CG_res_i * volume * pow<2>(time_scale_) / (pow<2>(length_scale_) * mass_scale_);
             
             cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
             Erad_tot += extensives[i].Eg[group];
@@ -1766,12 +1764,12 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
     MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
-#ifdef DEBUG
+// #ifdef DEBUG
     if(rank == 0){
         std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
         std::cout << std::setprecision(16) << "|Einit-Efinal|/Einit = " << std::abs(Einit - Efinal) / Einit << std::endl;
     }
-#endif
+// #endif
 }
 
 
@@ -2002,11 +2000,11 @@ void MultigroupDiffusion::PostCGGray(Tessellation3D const& tess,
 #endif
 
 
-#ifdef DEBUG
+// #ifdef DEBUG
     if(rank == 0){
         std::cout << std::setprecision(14) << "Einit = " << Einit << ", Efinal = " << Efinal << std::endl;
     }
-#endif
+// #endif
 }
 
 void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const
@@ -2046,10 +2044,10 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
     sigma_absorption_group.resize(N);
     sigma_scattering_group.resize(N);
     for(std::size_t i=0; i < N; ++i){
-        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-            auto const& cell = cells[i];
             sigma_absorption_group[i].resize(ENERGY_GROUPS_NUM);
             sigma_scattering_group[i].resize(ENERGY_GROUPS_NUM);
+        auto const& cell = cells[i];
+        for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
 
             sigma_absorption_group[i][g] = std::min(coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g),
                 CG::max_coupling_strength / (CG::speed_of_light * dt));
@@ -2467,8 +2465,7 @@ void MultigroupDiffusion::solve_doppler_shift(Tessellation3D const& tess,
             }
         }
 #ifdef RICH_MPI
-    ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true, &cdummy);	
+ 	MPI_exchange_data(tess, cells, true);	
 #endif
 } 
 

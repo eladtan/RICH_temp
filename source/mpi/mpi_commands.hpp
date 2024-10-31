@@ -6,713 +6,107 @@
 #include <vector>
 #include <chrono>
 #include <mpi.h>
-#include "newtonian/two_dimensional/computational_cell_2d.hpp"
-#include "newtonian/two_dimensional/extensive.hpp"
-#include "tessellation/tessellation.hpp"
-#include "misc/serializable.hpp"
+#include <functional>
 #include "misc/utils.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
+#include "misc/serialize/Serializer.hpp"
 #include "stdint.h"
 
 #define MPI_TIMED_BARRIER_TAG 110503
+#define MPI_EXCHANGE_TAG 5
+
+using rank_t = int;
 
 using std::vector;
 
-/*!
-\brief Sends and revs data
-\param tess The tessellation
-\param cells The data to send/recv
-\param ghost_or_sent True for ghost cells false for sent cells.
-*/
-template<class T>
-void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or_sent);
-
-template<class T>
-void MPI_exchange_data(const Tessellation& tess, vector<T>& cells,bool ghost_or_sent)
+template<typename T, typename Index_T = size_t>
+std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>& correspondents, const std::vector<T>& data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
 {
-	if (cells.empty())
-		throw UniversalError("Empty cell vector in MPI_exchange_data");
-	T example_cell = cells[0];
-	vector<int> correspondents;
-	vector<vector<int> > duplicated_points;
-	if (ghost_or_sent)
+	std::vector<MPI_Request> req(correspondents.size());
+	std::vector<Serializer> senders(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
-		correspondents = tess.GetDuplicatedProcs();
-		duplicated_points = tess.GetDuplicatedPoints();
+		senders[i].insert_all_indexed(data, indices[i], extent);
+		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
-	else
-	{
-		correspondents = tess.GetSentProcs();
-		duplicated_points = tess.GetSentPoints();
-	}
-	vector<MPI_Request> req(correspondents.size());
-	vector<vector<double> > tempsend(correspondents.size());
-	vector<double> temprecv;
-	double temp = 0;
-	for (size_t i = 0; i < correspondents.size(); ++i)
-	{
-		bool isempty = duplicated_points[i].empty();
-		if(!isempty)
-			tempsend[i] = list_serialize(VectorValues(cells, duplicated_points[i]));
-		int size = static_cast<int>(tempsend[i].size());
-		if (size == 0)
-			MPI_Isend(&temp, 1, MPI_DOUBLE, correspondents[i], 4, MPI_COMM_WORLD, &req[i]);
-		else
-			MPI_Isend(&tempsend[i][0], size, MPI_DOUBLE, correspondents[i], 5, MPI_COMM_WORLD, &req[i]);
-	}
-	const vector<vector<int> >& ghost_indices = tess.GetGhostIndeces();
-	if (ghost_or_sent)
-		cells.resize(tess.GetTotalPointNumber(),cells[0]);
-	else
-		cells = VectorValues(cells, tess.GetSelfPoint());
-	vector<vector<T> > torecv(correspondents.size());
-	for (size_t i = 0; i < correspondents.size(); ++i)
+
+	std::vector<Serializer> receivers(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+		MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &status);
 		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 5)
+		MPI_Get_count(&status, MPI_CHAR, &count);
+		size_t location = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE));
+		if(location >= correspondents.size())
 		{
-			size_t location = static_cast<size_t>(std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE) -
-				correspondents.begin());
-			if (location >= correspondents.size())
-				throw UniversalError("Bad location in mpi exchange");
-			torecv[location] = list_unserialize(temprecv, example_cell);
+			UniversalError eo("Bad location in mpi exchange");
+			eo.addEntry("Location (Index)", location);
+			eo.addEntry("Correspondents.size()", correspondents.size());
+			throw eo;
 		}
-		else
-		{
-			if (status.MPI_TAG != 4)
-				throw UniversalError("Recv bad mpi tag (" + std::to_string(status.MPI_TAG) + ")");
-		}
+		receivers[location].resize(count);
+		MPI_Recv(receivers[location].getData(), count, MPI_CHAR, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
-	for (size_t i = 0; i < correspondents.size(); ++i)
+	std::vector<std::vector<T>> result(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
-		if (ghost_or_sent)
-		{
-			for (size_t j = 0; j < torecv[i].size(); ++j)
-				cells.at(ghost_indices.at(i).at(j)) = torecv[i][j];
-		}
-		else
-		{
-			for (size_t j = 0; j < torecv[i].size(); ++j)
-				cells.push_back(torecv[i][j]);
-		}
+		receivers[i].extract_all(result[i]);
 	}
-	if (!req.empty())
+	if(not req.empty())
+	{
 		MPI_Waitall(static_cast<int>(correspondents.size()), &req[0], MPI_STATUSES_IGNORE);
+	}
 	MPI_Barrier(MPI_COMM_WORLD);
-}
-
-/*!
-\brief Sends and revs data
-\param tess The tessellation
-\param cells The data to send/recv
-\param ghost_or_sent True for ghost cells false for sent cells.
-*/
-template<class T>
-void MPI_exchange_data(const Tessellation3D& tess, vector<T>& cells, bool ghost_or_sent,T const * example_cell =0);
-
-template<class T>
-void MPI_exchange_data(const Tessellation3D& tess, vector<T>& cells, bool ghost_or_sent, T const * example_cell)
-{
-	if (example_cell == 0 && cells.empty())
-		throw UniversalError("Empty cell vector in MPI_exchange_data");
-	if (example_cell == 0)
-		example_cell = &cells[0];
-	vector<int> correspondents;
-	vector<vector<size_t> > duplicated_points;
-	if (ghost_or_sent)
-	{
-		correspondents = tess.GetDuplicatedProcs();
-		duplicated_points = tess.GetDuplicatedPoints();
-	}
-	else
-	{
-		correspondents = tess.GetSentProcs();
-		duplicated_points = tess.GetSentPoints();
-	}
-	vector<MPI_Request> req(correspondents.size());
-	vector<vector<double> > tempsend(correspondents.size());
-	vector<double> temprecv;
-	double temp = 0;
-	for (size_t i = 0; i < correspondents.size(); ++i)
-	{
-		bool isempty = duplicated_points[i].empty();
-		if (!isempty)
-			tempsend[i] = list_serialize(VectorValues(cells, duplicated_points[i]));
-		int size = static_cast<int>(tempsend[i].size());
-		if (size == 0)
-			MPI_Isend(&temp, 1, MPI_DOUBLE, correspondents[i], 4, MPI_COMM_WORLD, &req[i]);
-		else
-			MPI_Isend(&tempsend[i][0], size, MPI_DOUBLE, correspondents[i], 5, MPI_COMM_WORLD, &req[i]);
-	}
-	const vector<vector<size_t> >& ghost_indices = tess.GetGhostIndeces();
-	if (ghost_or_sent)
-		cells.resize(tess.GetTotalPointNumber(), *example_cell);
-	else
-		cells = VectorValues(cells, tess.GetSelfIndex());
-	vector<vector<T> > torecv(correspondents.size());
-	for (size_t i = 0; i < correspondents.size(); ++i)
-	{
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 5)
-		{
-			size_t location = static_cast<size_t>(std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE) -
-				correspondents.begin());
-			if (location >= correspondents.size())
-				throw UniversalError("Bad location in mpi exchange");
-			torecv[location] = list_unserialize(temprecv, *example_cell);
-		}
-		else
-		{
-			if (status.MPI_TAG != 4)
-				throw UniversalError("Recv bad mpi tag (" + std::to_string(status.MPI_TAG) + ")");
-		}
-	}
-	for (size_t i = 0; i < correspondents.size(); ++i)
-	{
-		if (ghost_or_sent)
-		{
-			for (size_t j = 0; j < torecv[i].size(); ++j)
-				cells.at(ghost_indices.at(i).at(j)) = torecv[i][j];
-		}
-		else
-		{
-			for (size_t j = 0; j < torecv[i].size(); ++j)
-				cells.push_back(torecv[i][j]);
-		}
-	}
-	if (!req.empty())
-		MPI_Waitall(static_cast<int>(correspondents.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
-}
-
-/*!
-\brief Sends and revs data
-\param totalkwith The cpus to talk with
-\param tosend The indeces in data to send ordered by cpu
-\param cells The data to send
-\return The recv data ordered by cpu
-*/
-template <class T>
-vector<vector<T> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<int> > const& tosend,
-	vector<T>const& cells);
-
-template <class T>
-vector<vector<T> > MPI_exchange_data(const vector<int>& totalkwith,vector<vector<int> > const& tosend,
-	vector<T>const& cells)
-{
-	assert(!cells.empty());
-	vector<MPI_Request> req(totalkwith.size());
-	vector<vector<double> > tempsend(totalkwith.size());
-	vector<double> temprecv;
-	double temp = 0;
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		bool isempty = tosend[i].empty();
-		if (!isempty)
-			tempsend[i] = list_serialize(VectorValues(cells, tosend[i]));
-		int size = static_cast<int>(tempsend[i].size());
-		if (size == 0)
-			MPI_Isend(&temp, 1, MPI_DOUBLE, totalkwith[i], 4, MPI_COMM_WORLD, &req[i]);
-		else
-			MPI_Isend(&tempsend[i][0], size, MPI_DOUBLE, totalkwith[i], 5, MPI_COMM_WORLD, &req[i]);
-	}
-	vector<vector<T> > torecv(totalkwith.size());
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 5)
-		{
-			size_t location = static_cast<size_t>(std::find(totalkwith.begin(), totalkwith.end(), status.MPI_SOURCE) -
-				totalkwith.begin());
-			if (location >= totalkwith.size())
-				throw UniversalError("Bad location in mpi exchange");
-			torecv[location] = list_unserialize(temprecv, cells[0]);
-		}
-		else
-		{
-			if (status.MPI_TAG != 4)
-				throw UniversalError("Recv bad mpi tag (" + std::to_string(status.MPI_TAG) + ")");
-		}
-	}
-	if (!req.empty())
-		MPI_Waitall(static_cast<int>(totalkwith.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
-	return torecv;
-}
-
-/*!
-\brief Sends and revs data
-\param totalkwith The cpus to talk with
-\param tosend The indeces in data to send ordered by cpu
-\param cells The data to send
-\return The recv data ordered by cpu
-*/
-template <class T>
-vector<vector<T> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<size_t> > const& tosend,
-	vector<T>const& cells);
-
-template <class T>
-vector<vector<T> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<size_t> > const& tosend,
-	vector<T>const& cells)
-{
-	assert(!cells.empty());
-	vector<MPI_Request> req(totalkwith.size());
-	vector<vector<double> > tempsend(totalkwith.size());
-	vector<double> temprecv;
-	double temp = 0;
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		bool isempty = tosend[i].empty();
-		if (!isempty)
-			tempsend[i] = list_serialize(VectorValues(cells, tosend[i]));
-		int size = static_cast<int>(tempsend[i].size());
-		if (size == 0)
-			MPI_Isend(&temp, 1, MPI_DOUBLE, totalkwith[i], 4, MPI_COMM_WORLD, &req[i]);
-		else
-			MPI_Isend(&tempsend[i][0], size, MPI_DOUBLE, totalkwith[i], 5, MPI_COMM_WORLD, &req[i]);
-	} 
-	vector<vector<T> > torecv(totalkwith.size());
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 5)
-		{
-			size_t location = static_cast<size_t>(std::find(totalkwith.begin(), totalkwith.end(), status.MPI_SOURCE) -
-				totalkwith.begin());
-			if (location >= totalkwith.size())
-				throw UniversalError("Bad location in mpi exchange");
-			torecv[location] = list_unserialize(temprecv, cells[0]);
-		}
-		else
-		{
-			if (status.MPI_TAG != 4)
-				throw UniversalError("Recv bad mpi tag (" + std::to_string(status.MPI_TAG) + ")");
-		}
-	}
-	if(!req.empty())
-		MPI_Waitall(static_cast<int>(totalkwith.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
-	return torecv;
-}
-
-template <class T>
-vector<vector<T> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<T> > const& tosend, T const& demo);
-
-template <class T>
-vector<vector<T> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<T> > const& tosend,T const& demo)
-{
-	vector<MPI_Request> req(totalkwith.size());
-	vector<vector<double> > tempsend(totalkwith.size());
-	vector<double> temprecv;
-	double temp = 0;
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		bool isempty = tosend[i].empty();
-		if (!isempty)
-			tempsend[i] = list_serialize(tosend[i]);
-		int size = static_cast<int>(tempsend[i].size());
-		if (size == 0)
-			MPI_Isend(&temp, 1, MPI_DOUBLE, totalkwith[i], 4, MPI_COMM_WORLD, &req[i]);
-		else
-			MPI_Isend(&tempsend[i][0], size, MPI_DOUBLE, totalkwith[i], 5, MPI_COMM_WORLD, &req[i]);
-	}
-	vector<vector<T> > torecv(totalkwith.size());
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 5)
-		{
-			size_t location = static_cast<size_t>(std::find(totalkwith.begin(), totalkwith.end(), status.MPI_SOURCE) -
-				totalkwith.begin());
-			if (location >= totalkwith.size())
-				throw UniversalError("Bad location in mpi exchange");
-			torecv[location] = list_unserialize(temprecv, demo);
-		}
-		else
-		{
-			if (status.MPI_TAG != 4)
-				throw UniversalError("Recv bad mpi tag (" + std::to_string(status.MPI_TAG) + ")");
-		}
-	}
-	if (!req.empty())
-		MPI_Waitall(static_cast<int>(totalkwith.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
-	return torecv;
-}
-
-template <class T>
-vector<vector<vector<T> > > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<vector<T > > > const& tosend,
-	T const& demo);
-
-template <class T>
-vector<vector<vector<T> > > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<vector<T > > > const& tosend,
-	T const& demo)
-{
-	vector<vector<vector<T > > > res(totalkwith.size());
-	vector<MPI_Request> req(2*totalkwith.size());
-	vector<vector<double> > tempsend(2*totalkwith.size());
-	vector<vector<int> > send_sizes(totalkwith.size());
-	//	vector<T> temprecv;
-	double temp = 0;
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		bool isempty = tosend[i].empty();
-		if (!isempty)
-		{
-			send_sizes[i].reserve(tosend[i].size());
-			for (size_t j = 0; j < tosend[i].size(); ++j)
-			{
-				send_sizes[i].push_back(static_cast<int>(tosend[i][j].size()));
-				vector<double> dtemp = list_serialize(tosend[i][j]);
-				tempsend[i].insert(tempsend[i].end(), dtemp.begin(), dtemp.end());
-			}		
-		}
-		else
-			send_sizes[i].push_back(-1);
-		int size = static_cast<int>(tempsend[i].size());
-		if (size == 0)
-		{
-			MPI_Isend(&temp, 1, MPI_DOUBLE, totalkwith[i], 4, MPI_COMM_WORLD, &req[2 * i]);
-			MPI_Isend(&send_sizes[i][0], 1, MPI_INT, totalkwith[i], 5, MPI_COMM_WORLD, &req[2 * i + 1]);
-		}
-		else
-		{
-			MPI_Isend(&tempsend[i][0], size, MPI_DOUBLE, totalkwith[i], 6, MPI_COMM_WORLD, &req[2 * i]);
-			MPI_Isend(&send_sizes[i][0], static_cast<int>(send_sizes[i].size()), MPI_INT, totalkwith[i], 7, MPI_COMM_WORLD, &req[2 * i + 1]);
-		}
-	}
-	vector<vector<double> > srecv(totalkwith.size());
-	vector<vector<int> > irecv(totalkwith.size());
-	for (size_t i = 0; i < 2 * totalkwith.size(); ++i)
-	{
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		if (status.MPI_TAG % 2 == 1)
-		{
-			MPI_Get_count(&status, MPI_INT, &count);
-			size_t location = static_cast<size_t>(std::find(totalkwith.begin(), totalkwith.end(), status.MPI_SOURCE) -
-				totalkwith.begin());
-			if (location >= totalkwith.size())
-				throw UniversalError("Bad location in mpi exchange");
-			irecv[location].resize(static_cast<size_t>(count));
-			MPI_Recv(&irecv[location][0], count, MPI_INT, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		}
-		else
-		{
-			MPI_Get_count(&status, MPI_DOUBLE, &count);
-			size_t location = static_cast<size_t>(std::find(totalkwith.begin(), totalkwith.end(), status.MPI_SOURCE) -
-				totalkwith.begin());
-			if (location >= totalkwith.size())
-				throw UniversalError("Bad location in mpi exchange");
-			srecv[location].resize(static_cast<size_t>(count));
-			MPI_Recv(&srecv[location][0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		}
-	}
-	for (size_t i = 0; i < totalkwith.size(); ++i)
-	{
-		if (irecv[i].at(0) < 1)
-			continue;
-		vector<T> T_temp = list_unserialize(srecv[i], demo);
-		if (T_temp.empty())
-			continue;
-		size_t counter = 0;
-		for (size_t j = 0; j < irecv[i].size(); ++j)
-		{
-			if (irecv[i][j] < 1)
-				continue;
-			size_t size_add = static_cast<size_t>(irecv[i][j]);
-			vector<T> T_add(T_temp.begin() + counter, T_temp.begin() + counter + size_add);
-			res[i].push_back(T_add);
-			counter += size_add;
-		}
-	}
-	if (!req.empty())
-		MPI_Waitall(static_cast<int>(2*totalkwith.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
-	return res;
-}
-
-void MPI_exchange_data2(const Tessellation3D& tess, vector<double>& cells, bool ghost_or_sent, size_t slice = 1);
-
-vector<vector<double> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<double> > &tosend);
-
-vector<vector<int> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<int> > &tosend);
-
-vector<vector<vector<int> > > MPI_exchange_data(const Tessellation3D& tess, vector<vector<vector<int> > > &tosend);
-
-vector<vector<vector<size_t> > > MPI_exchange_data(const Tessellation3D& tess, vector<vector<vector<size_t> > > &tosend);
-
-vector<vector<vector<double> > > MPI_exchange_data(const Tessellation3D& tess, vector<vector<vector<double> > > &tosend);
-
-vector<vector<size_t> > MPI_exchange_data(const vector<int>& totalkwith, vector<vector<size_t> > &tosend);
-
-void MPI_exchange_data(const Tessellation3D& tess, vector<char>& cells, bool ghost_or_sent);
-
-void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &place);
-
-void MPI_All_cast(const void *buffer_send, int count, MPI_Datatype datatype, void *buffer_recv, MPI_Comm communicator);
-
-template <typename T, template <typename...> class Container, typename... Ts>
-std::vector<std::vector<T>> MPI_All_cast_by_ranks(const Container<T, Ts...> &data, const MPI_Comm &comm)
-{
-	static_assert(is_serializable<T>::value, "MPI_Bcast_all_serializable: given type must be serializable");
-
-	int size;
-	MPI_Comm_size(comm, &size);
-
-	// agree the chunk size
-	size_t chunkSize = (data.empty())? 0 : data[0].getChunkSize();
-	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
-	if(chunkSize == 0)
-	{
-		return std::vector<std::vector<T>>(size); // no data is being sent
-	}
-
-	// first know how much data is being sent from each one
-	std::vector<double> dataToSend;
-	for(const T &value : data)
-	{
-		std::vector<double> serialized = value.serialize();
-		dataToSend.insert(dataToSend.end(), serialized.begin(), serialized.end());
-	}
-	int count = static_cast<int>(dataToSend.size());
-	std::vector<int> recvCounts(size, 0);
-	MPI_Allgather(&count, 1, MPI_INT, recvCounts.data(), 1, MPI_INT, comm);
-
-	std::vector<int> recvDisplacements(size, 0);
-	size_t totalToReceive = recvCounts[0];
-	for(int _rank = 1; _rank < size; _rank++)
-	{
-		recvDisplacements[_rank] = recvDisplacements[_rank - 1] + recvCounts[_rank - 1];
-		totalToReceive += recvCounts[_rank];
-	}
-	std::vector<int> sendDisplacements(size, 0);
-	std::vector<int> sendCounts(size, count);
-	std::vector<double> dataToRecv(totalToReceive);
-	MPI_Alltoallv(dataToSend.data(), sendCounts.data(), sendDisplacements.data(), MPI_DOUBLE,
-				  dataToRecv.data(), recvCounts.data(), recvDisplacements.data(), MPI_DOUBLE, comm);
-
-	std::vector<std::vector<T>> resultByRanks(size);
-	for(int _rank = 0; _rank < size; _rank++)
-	{
-		std::vector<T> &receiveFromRank = resultByRanks[_rank];
-		size_t indexBegin = recvDisplacements[_rank];
-		for(int i = 0; i < recvCounts[_rank]; i += chunkSize)
-		{
-			receiveFromRank.emplace_back(T());
-			T &value = receiveFromRank.back();
-			value.unserialize(std::vector(dataToRecv.cbegin() + indexBegin + i, dataToRecv.cbegin() + indexBegin + i + chunkSize));
-		}
-	}
-	return resultByRanks;
-}
-
-/**
- * More convenient all-to-all funciton, allowing to send serializable objects 
-*/
-template<typename T, template<typename...> class Container, typename... Ts>
-std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
-{
-	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");
-
-	int size;
-	MPI_Comm_size(comm, &size);
-
-	if(data.size() != static_cast<size_t>(size))
-	{
-		UniversalError eo("MPI_Exchange_all_to_all: data size must be equal to the number of ranks");
-		eo.addEntry("Size", data.size());
-		throw eo;
-	}
-
-	// agree the chunk size
-	size_t chunkSize = (data.empty() or data[0].empty())? 0 : data[0][0].getChunkSize();
-	MPI_Allreduce(MPI_IN_PLACE, &chunkSize, 1, MPI_UNSIGNED_LONG, MPI_MAX, comm);
-	if(chunkSize == 0)
-	{
-		return std::vector<std::vector<T>>(size); // no data is being sent
-	}
-	
-	std::vector<int> sendDisplacements(size, 0);
-	size_t totalSendSize = 0;
-	std::vector<int> sizesToAll(size), sizesFromAll(size);
-	for(int _rank = 0; _rank < size; _rank++)
-	{
-		sizesToAll[_rank] = static_cast<int>(data[_rank].size()) * chunkSize;
-		totalSendSize += sizesToAll[_rank];
-		if(_rank > 0)
-		{
-			sendDisplacements[_rank ] = sendDisplacements[_rank - 1] + sizesToAll[_rank - 1];
-		}
-	}
-
-	MPI_Alltoall(sizesToAll.data(), 1, MPI_INT, sizesFromAll.data(), 1, MPI_INT, comm);
-
-	std::vector<double> allDataSend;
-	allDataSend.reserve(totalSendSize);
-
-	for(int _rank = 0; _rank < size; _rank++)
-	{
-		for(const T &value : data[_rank])
-		{
-			std::vector<double> serialized = value.serialize();
-			allDataSend.insert(allDataSend.end(), serialized.begin(), serialized.end());
-		}
-	}
-
-	std::vector<int> recvDisplacements(size, 0);
-	size_t totalRecvSize = 0;
-	for(int _rank = 0; _rank < size; _rank++)
-	{
-		totalRecvSize += sizesFromAll[_rank];
-		if(_rank > 0)
-		{
-			recvDisplacements[_rank] = recvDisplacements[_rank - 1] + sizesFromAll[_rank - 1];
-		}
-	}
-
-	std::vector<double> allDataRecv(totalRecvSize);
-	
-	MPI_Alltoallv(allDataSend.data(), sizesToAll.data(), sendDisplacements.data(), MPI_DOUBLE,
-				  allDataRecv.data(), sizesFromAll.data(), recvDisplacements.data(), MPI_DOUBLE, comm);
-
-	size_t i = 0;
-	std::vector<std::vector<T>> resultByRanks(size);
-	for(int _rank = 0; _rank < size; _rank++)
-	{
-		// receive input
-		size_t NumReceived = sizesFromAll[_rank] / chunkSize;
-		resultByRanks[_rank].reserve(NumReceived);
-		for(size_t j = 0; j < NumReceived; j++)
-		{
-			T value;
-			value.unserialize(std::vector(allDataRecv.cbegin() + i, allDataRecv.cbegin() + i + chunkSize));
-			resultByRanks[_rank].push_back(value);
-			i += chunkSize;
-		}
-	}
-
-	return resultByRanks;
-}
-
-template<typename T>
-T MPI_Bcast_serializable(const T &data, int root, const MPI_Comm &comm)
-{
-	static_assert(is_serializable<T>::value, "MPI_Exchange_all_to_all: given type must be serializable");
-
-	int rank, size;
-	MPI_Comm_rank(comm, &rank);
-	MPI_Comm_size(comm, &size);
-
-	size_t chunkSize = data.getChunkSize();
-	std::vector<double> recv(chunkSize);
-	if(rank == root)
-	{
-		recv = data.serialize();
-	}
-	MPI_Bcast(recv.data(), chunkSize, MPI_DOUBLE, root, comm);
-	T result;
-	result.unserialize(recv);
 	return result;
 }
 
 template<typename T>
-std::vector<T> MPI_Spread(std::vector<T> const& data, int root, const MPI_Comm &comm)
+std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& correspondents, const std::vector<std::vector<T>>& data)
 {
-	int rank, size;
-	MPI_Comm_rank(comm, &rank);
-	MPI_Comm_size(comm, &size);
-
-	if(size == 1)
+	std::vector<MPI_Request> req(correspondents.size());
+	std::vector<Serializer> senders(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
-        return data;
-    }
-
-	size_t totalSize;
-	if(rank == root)
-	{
-		totalSize = data.size();
+		senders[i].insert_all(data[i]);
+		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
-	MPI_Bcast(&totalSize, 1, MPI_UNSIGNED_LONG, root, comm);
 
-	if(totalSize == 0)
+	std::vector<Serializer> receivers(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
-        return std::vector<T>();
-    }
-
-	size_t elementSize;
-	if(rank == root)
-	{
-		elementSize = data[0].getChunkSize();
-	}
-	MPI_Bcast(&elementSize, 1, MPI_UNSIGNED_LONG, root, comm);
-
-	std::vector<double> myDataSerialized;
-	if(rank == root)
-	{
-		for(const T &value : data)
+		MPI_Status status;
+		MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &status);
+		int count;
+		MPI_Get_count(&status, MPI_CHAR, &count);
+		size_t location = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE));
+		if(location >= correspondents.size())
 		{
-			std::vector<double> serialized = value.serialize();
-            myDataSerialized.insert(myDataSerialized.end(), serialized.begin(), serialized.end());
+			UniversalError eo("Bad location in mpi exchange");
+			eo.addEntry("Location (Index)", location);
+			eo.addEntry("Correspondents.size()", correspondents.size());
+			throw eo;
 		}
+		receivers[location].resize(count);
+		MPI_Recv(receivers[location].getData(), count, MPI_CHAR, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
-
-	size_t idealSize = totalSize / size;
-	size_t currentSize = 0;
-	std::vector<int> displs;
-	std::vector<int> counts;
-	for(int _rank = 0; _rank < size; _rank++)
+	std::vector<std::vector<T>> result(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
-		size_t _begin = _rank * idealSize;
-		size_t _end = (_rank == size - 1) ? totalSize : (_rank + 1) * idealSize;
-		size_t length = (_end - _begin);
-		counts.push_back(static_cast<int>(length * elementSize));
-		displs.push_back(static_cast<int>(currentSize));
-		currentSize += length * elementSize;
+		receivers[i].extract_all(result[i]);
 	}
-
-	int myRecvNum = counts[rank];
-	std::vector<double> recvDataSerialized(myRecvNum);
-	MPI_Scatterv(myDataSerialized.data(), counts.data(), displs.data(), MPI_DOUBLE, recvDataSerialized.data(), myRecvNum, MPI_DOUBLE, root, comm);
-
-	std::vector<T> toReturn;
-	for(int i = 0; i < myRecvNum / elementSize; i++)
+	if(not req.empty())
 	{
-		std::vector<double> elementData;
-		for(int j = 0; j < elementSize; j++)
-			elementData.push_back(recvDataSerialized.at(i * elementSize + j));
-		T value;
-		value.unserialize(elementData);
-		toReturn.push_back(value);
+		MPI_Waitall(static_cast<int>(correspondents.size()), &req[0], MPI_STATUSES_IGNORE);
 	}
-	return toReturn;
+	MPI_Barrier(MPI_COMM_WORLD);
+	return result;
 }
+
+#include "mpi_commands_2d.hpp"
+#include "mpi_commands_3d.hpp"
+
+void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &place);
 
 #endif //RICH_MPI
 

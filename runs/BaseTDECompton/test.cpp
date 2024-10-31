@@ -814,6 +814,7 @@ int main(void)
 	std::string restart_name = run_directory + "restart.h5";
 	std::string counter_name = run_directory + "counter.txt";
 	int counter = 0;
+	// check if this is a restart run
 	bool const restart = fs::exists(counter_name);
 	if(rank == 0)
 		std::cout<<"restart "<<restart<<std::endl;

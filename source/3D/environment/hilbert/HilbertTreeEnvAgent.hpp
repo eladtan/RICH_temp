@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include "HilbertCurveEnvAgent.hpp"
-#include "3D/hilbert/rectangular/HilbertTree3D.hpp"
+#include "3D/hilbert/rectangular/HilbertRectangularTree3D.hpp"
 
 class HilbertTreeEnvironmentAgent : public HilbertCurveEnvironmentAgent
 {
@@ -14,7 +14,13 @@ public:
     inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const MPI_Comm &comm = MPI_COMM_WORLD): 
             HilbertCurveEnvironmentAgent(ll, ur, ranges, convertor, comm)
     {
-        this->hilbertTree = new HilbertTree_Type(this->convertor, this->range, this->comm);
+        this->rectangularConvertor = dynamic_cast<HilbertRectangularConvertor3D*>(this->convertor);
+        if(this->rectangularConvertor == nullptr)
+        {
+            throw UniversalError("'HilbertTreeEnvironmentAgent' should be initialized with a rectangular hilbert convertor");
+        }
+
+        this->hilbertTree = new HilbertTree_Type(this->rectangularConvertor, this->range, this->comm);
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
@@ -36,7 +42,7 @@ public:
     {
         this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
         delete this->hilbertTree;
-        this->hilbertTree = new HilbertTree_Type(this->convertor, this->range, this->comm);
+        this->hilbertTree = new HilbertTree_Type(this->rectangularConvertor, this->range, this->comm);
     }
 
     inline int getOrder() const{return this->order;};
@@ -51,6 +57,7 @@ public:
 
 private:
     const HilbertTree_Type *hilbertTree;
+    HilbertRectangularConvertor3D *rectangularConvertor;
 };
 
 #endif // RICH_MPI

@@ -1,13 +1,13 @@
-#include "HilbertConvertor2D.hpp"
+#include "HilbertRectangularConvertor2D.hpp"
 
-HilbertConvertor2D::HilbertConvertor2D(const Vector2D &ll, const Vector2D &ur, size_t order)
+HilbertRectangularConvertor2D::HilbertRectangularConvertor2D(const Vector2D &ll, const Vector2D &ur, size_t order)
 {
     this->ll = ll;
     this->ur = ur;
     this->changeOrder(order);
 }
 
-void HilbertConvertor2D::changeOrder(size_t order)
+void HilbertRectangularConvertor2D::changeOrder(size_t order)
 {
     this->order = order = std::min<size_t>(MAX_HILBERT_ORDER, order);
     coord_t realWidth = this->ur.x - this->ll.x;
@@ -21,7 +21,7 @@ void HilbertConvertor2D::changeOrder(size_t order)
     this->step = Vector2D(realWidth / this->div.x, realHeight / this->div.y);
 }
 
-Vector2D HilbertConvertor2D::WidthHeightToXY(direction_t width, direction_t height) const
+Vector2D HilbertRectangularConvertor2D::WidthHeightToXY(direction_t width, direction_t height) const
 {
     coord_t x, y;
     x = this->ll[0] + width * this->step[0];
@@ -29,7 +29,7 @@ Vector2D HilbertConvertor2D::WidthHeightToXY(direction_t width, direction_t heig
     return Vector2D(x, y);
 }
 
-std::vector<HilbertConvertor2D::RecursionArguments> HilbertConvertor2D::getRecursionArguments(const RecursionArguments &args) const
+std::vector<HilbertRectangularConvertor2D::RecursionArguments> HilbertRectangularConvertor2D::getRecursionArguments(const RecursionArguments &args) const
 {
     const DirectionVector2D &startPoint = args.startPoint;
     const DirectionVector2D &a = args.a;
@@ -80,7 +80,7 @@ std::vector<HilbertConvertor2D::RecursionArguments> HilbertConvertor2D::getRecur
     return toReturn;
 }
 
-bool HilbertConvertor2D::d2xy_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector2D &result) const
+bool HilbertRectangularConvertor2D::d2xy_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector2D &result) const
 {
     const DirectionVector2D &startPoint = args.startPoint;
     const DirectionVector2D &a = args.a;
@@ -103,7 +103,7 @@ bool HilbertConvertor2D::d2xy_helper(const RecursionArguments &args, hilbert_ind
 
     if(requested_d < current_d)
     {
-        throw UniversalError("in HilbertConvertor2D::d2xy_helper, should not reach here (algorithm failed)");
+        throw UniversalError("in HilbertRectangularConvertor2D::d2xy_helper, should not reach here (algorithm failed)");
     }
     hilbert_index_t diff = requested_d - current_d;
 
@@ -132,7 +132,7 @@ bool HilbertConvertor2D::d2xy_helper(const RecursionArguments &args, hilbert_ind
     return false;
 }
 
-bool HilbertConvertor2D::xy2d_helper_base(const DirectionVector2D &startPoint, size_t steps, const DirectionVector2D &direction, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
+bool HilbertRectangularConvertor2D::xy2d_helper_base(const DirectionVector2D &startPoint, size_t steps, const DirectionVector2D &direction, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
 {
     direction_t x = startPoint.x, y = startPoint.y;
     for(size_t i = 0; i < steps; i++)
@@ -148,7 +148,7 @@ bool HilbertConvertor2D::xy2d_helper_base(const DirectionVector2D &startPoint, s
     return false;
 }
 
-std::pair<typename HilbertConvertor2D::DirectionVector2D, typename HilbertConvertor2D::DirectionVector2D> HilbertConvertor2D::getBoundingBox(const RecursionArguments &args) const
+std::pair<typename HilbertRectangularConvertor2D::DirectionVector2D, typename HilbertRectangularConvertor2D::DirectionVector2D> HilbertRectangularConvertor2D::getBoundingBox(const RecursionArguments &args) const
 {
     const DirectionVector2D &startPoint = args.startPoint;
     const DirectionVector2D &a = args.a;
@@ -162,7 +162,7 @@ std::pair<typename HilbertConvertor2D::DirectionVector2D, typename HilbertConver
             {std::max(startPoint.x, boundary.x), std::max(startPoint.y, boundary.y)}};    
 }
 
-bool HilbertConvertor2D::xy2d_helper(const RecursionArguments &args, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
+bool HilbertRectangularConvertor2D::xy2d_helper(const RecursionArguments &args, const DirectionVector2D &requested_point, hilbert_index_t &current_d) const
 {
     const DirectionVector2D &startPoint = args.startPoint;
     const DirectionVector2D &a = args.a;
@@ -209,7 +209,7 @@ bool HilbertConvertor2D::xy2d_helper(const RecursionArguments &args, const Direc
     return false;
 }
 
-Vector2D HilbertConvertor2D::d2xy(hilbert_index_t d) const
+Vector2D HilbertRectangularConvertor2D::d2xy(hilbert_index_t d) const
 {
     Vector2D result;
     hilbert_index_t current_d = 0;
@@ -217,7 +217,7 @@ Vector2D HilbertConvertor2D::d2xy(hilbert_index_t d) const
     return result;
 }
 
-hilbert_index_t HilbertConvertor2D::xy2d(coord_t x, coord_t y) const
+hilbert_index_t HilbertRectangularConvertor2D::xy2d(coord_t x, coord_t y) const
 {
     // convert (x,y) to the integer pair (width, height)
     direction_t width = std::floor((x - this->ll.x) / this->step.x);

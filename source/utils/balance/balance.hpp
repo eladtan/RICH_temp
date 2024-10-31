@@ -12,10 +12,7 @@
 #include <functional>
 #include <assert.h>
 #include <mpi.h>
-
 #include "misc/universal_error.hpp"
-
-class UniversalError;
 
 namespace
 {
@@ -161,7 +158,10 @@ std::vector<T> getBorders(std::vector<T> &input, const Comparator &comp = [](con
 
     if(static_cast<size_t>(size) > totalSize)
     {
-        throw UniversalError("Too many ranks were given compared to the number of points");
+        UniversalError eo("Too many ranks were given compared to the number of points");
+        eo.addEntry("Number of ranks", size);
+        eo.addEntry("Number of points", totalSize);
+        throw eo;
     }
     std::vector<size_t> stats(size);
     for(int i = 0; i < size - 1; i++)

@@ -328,7 +328,7 @@ namespace
 		// send/recv the data
 		nghost_index = MPI_exchange_data(tess.GetDuplicatedProcs(), nghost_index);
 		duplicated_index = MPI_exchange_data(tess, duplicated_index);
-		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes, tess.GetMeshPoint(0));
+		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes);
 		planes_d = MPI_exchange_data(tess, planes_d);
 		// convert the data
 		for (size_t i = 0; i < Nprocs; ++i)
@@ -788,7 +788,7 @@ namespace
 				}
 			}
 		}
-		extensive_tosend = MPI_exchange_data(oldtess.GetDuplicatedProcs(), extensive_tosend, extensives.at(0));
+		extensive_tosend = MPI_exchange_data(oldtess.GetDuplicatedProcs(), extensive_tosend);
 		size_t Nremove = oldtess.GetPointNo() + Nrefine - tess.GetPointNo();
 		for (size_t i = 0; i < Nprocs; ++i)
 		{
@@ -1124,8 +1124,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	size_t & MaxID = sim.GetMaxID();
 #ifdef RICH_MPI
 	// Update cells
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true,&cdummy);
+	MPI_exchange_data(tess, cells, true);
 	//#endif
 	// Update Max ID
 	for (size_t i = 0; i < static_cast<size_t>(ws); ++i)

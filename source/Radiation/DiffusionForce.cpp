@@ -22,7 +22,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
         std::cout<<"Zero nubmer of cells in DiffForce"<<std::endl;
 	double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, new_Er, true);
+    MPI_exchange_data(tess, new_Er, true);
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
     size_t const Nzero = diffusion_.zero_cells_.size();
@@ -78,7 +78,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
         }
     }
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, R2, true);
+    MPI_exchange_data(tess, R2, true);
 #endif
     for(size_t i = 0; i < N; ++i)
     {

@@ -1,5 +1,4 @@
 {
-    "python.pythonPath": "/software/x86_64/3.10.0/python/3.7.2/bin/python3",
     "files.associations": {
         "array": "cpp",
         "*.tcc": "cpp",
@@ -80,6 +79,7 @@
         "any": "cpp",
         "charconv": "cpp",
         "source_location": "cpp",
+        "regex": "cpp",
         "shared_mutex": "cpp"
     },
     "cmake.configureOnOpen": true,
@@ -92,7 +92,6 @@
     "editor.fontSize": 18,
     "files.autoSave": "afterDelay",
     "editor.cursorSmoothCaretAnimation": "on",
-    "terminal.integrated.enableMultiLinePasteWarning": false,
     "explorer.confirmDelete": false,
     "workbench.editor.closeOnFileDelete": true,
     "workbench.colorTheme": "Atom One Dark",
@@ -102,14 +101,21 @@
             {
                 "scope": "variable.other.property",
                 "settings": {
-                    "fontStyle": "italic",
-                    "foreground": "#E06C75"
+                    // "fontStyle": "italic",
+                    "foreground": "#ea7878" // "#E06C75"
+                }
+            },
+            {
+                "scope": "entity.name.function.cpp",
+                "settings": {
+                    "foreground": "#617def"
                 }
             },
             {
                 "scope": "entity.name.type",
                 "settings": {
-                    "foreground": "#6ab479"
+                    // "fontStyle": "bold",
+                    "foreground": "#db9f6a" // "#6ab479"
                 }
             },
             {
@@ -121,22 +127,22 @@
             {
                 "scope": "entity.name.function.member.cpp",
                 "settings": {
-                    "foreground": "#2596be",
+                    "foreground": "#8489d7",
                     "fontStyle": "italic"
                 }
             },
             {
                 "scope": "variable.language.this.cpp, variable.language.this.java",
                 "settings": {
-                    "foreground": "#EA99A2",
-                    "fontStyle": "bold"
+                    "fontStyle": "bold",
+                    "foreground": "#99a4ea" // "#EA99A2"
                 }
             },
             {
                 "scope": "entity.name.namespace",
                 "settings": {
                     "fontStyle": "bold",
-                    "foreground": "#59aaaf"
+                    "foreground": "#59af76"
                 }
             },
             {
@@ -146,9 +152,9 @@
                 }
             },
             {
-                "scope": "variable.other.readwrite, entity.name.variable, variable.other.constant, variable.other.local.cpp",
+                "scope": "variable.other.local.cpp",
                 "settings": {
-                    "foreground": "#a2acb9"
+                    "foreground": "#a2acb9" // "#a2acb9"
                 }
             },
             {
@@ -168,6 +174,18 @@
                 "settings": {
                     "foreground": "#1dbbcf"
                 }
+            },
+            {
+                "scope": "variable.other.constant",
+                "settings": {
+                    "fontStyle": "bold"
+                }
+            },
+            {
+                "scope": "variable.parameter.cpp",
+                "settings": {
+                    "foreground": "#aeb68a"
+                }
             }
         ]        
     },
@@ -179,5 +197,5 @@
         "**/.vscode": true,
         "**/.vs": true
     },
-    "cmake.sourceDirectory": "/home/elads/RICH/r3d"
+    "cmake.sourceDirectory": "RICH/source"
 }

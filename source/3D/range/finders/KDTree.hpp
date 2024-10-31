@@ -19,7 +19,7 @@ public:
     
     std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const override
     {
-        std::pair<IndexedVector3D, double> closestPointPair = this->kdTree->getClosestPointInSphere(_Sphere<Vector3D>(center, radius), point,
+        std::pair<IndexedVector3D, double> closestPointPair = this->kdTree->getClosestPointInSphere(Sphere<Vector3D>(center, radius), point,
                                                                                                     [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();});
         const IndexedVector3D &closestPoint = closestPointPair.first;
         const double &closestDistance = closestPointPair.second;
@@ -36,7 +36,7 @@ public:
     inline std::vector<size_t> range(const Vector3D &center, double radius, size_t N, const _set<size_t> &ignore) const override
     {
         std::vector<size_t> toReturn;
-        for(const IndexedVector3D &vec : this->kdTree->range(_Sphere<Vector3D>(center, radius), N,
+        for(const IndexedVector3D &vec : this->kdTree->range(Sphere<Vector3D>(center, radius), N,
                                                             [&ignore](const IndexedVector3D &vec){return ignore.find(vec.getIndex()) == ignore.cend();}))
         {
             toReturn.push_back(vec.index);

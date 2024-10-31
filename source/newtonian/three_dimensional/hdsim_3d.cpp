@@ -150,7 +150,7 @@ HDSim3D::HDSim3D(Tessellation3D& tess,
 
 #ifdef RICH_MPI
 	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess_, cells_, true, &cdummy);
+	MPI_exchange_data(tess_, cells_, true);
 #endif
 	extensive_.resize(N);
 	if (SR)
@@ -238,14 +238,14 @@ void HDSim3D::timeAdvance2(void)
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
 	Vector3D vdummy;
-	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+	MPI_exchange_data(tess_, point_vel, true);
 #endif
 
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	double dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
 	pm_.ApplyFix(tess_, cells_, pt_.getTime(), dt, point_vel);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
@@ -284,17 +284,17 @@ void HDSim3D::timeAdvance2(void)
 		DisplayTime(t1, t2, "Voronoi build time ");
 #ifdef RICH_MPI
 		// Keep relevant points
-		MPI_exchange_data(tess_, mid_extensives, false, &edummy);
-		MPI_exchange_data(tess_, extensive_, false, &edummy);
-		MPI_exchange_data(tess_, cells_, false, &cdummy);
-		MPI_exchange_data(tess_, point_vel, false, &vdummy);
-		MPI_exchange_data(tess_, point_vel, true, &vdummy);
+		MPI_exchange_data(tess_, mid_extensives, false);
+		MPI_exchange_data(tess_, extensive_, false);
+		MPI_exchange_data(tess_, cells_, false);
+		MPI_exchange_data(tess_, point_vel, false);
+		MPI_exchange_data(tess_, point_vel, true);
 #endif
 	}
 
 cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
-MPI_exchange_data(tess_, cells_, true, &cdummy);
+MPI_exchange_data(tess_, cells_, true);
 #endif
 
 pt_.updateTime(dt);
@@ -309,7 +309,7 @@ eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_val
 ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
-MPI_exchange_data(tess_, cells_, true, &cdummy);
+MPI_exchange_data(tess_, cells_, true);
 #endif
 }
 
@@ -319,14 +319,14 @@ void HDSim3D::timeAdvance(void)
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
 	Vector3D vdummy;
-	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	const double dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
 	dt_ = dt;
 	pm_.ApplyFix(tess_, cells_, pt_.getTime(), dt, point_vel);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess_, point_vel, true, &vdummy);
+	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	vector<Conserved3D> fluxes;
@@ -340,12 +340,12 @@ void HDSim3D::timeAdvance(void)
 	// Keep relevant points
 	ComputationalCell3D cdummy;
 	Conserved3D edummy;
-	MPI_exchange_data(tess_, extensive_, false, &edummy);
-	MPI_exchange_data(tess_, cells_, false, &cdummy);
+	MPI_exchange_data(tess_, extensive_, false);
+	MPI_exchange_data(tess_, cells_, false);
 #endif
 	cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess_, cells_, true, &cdummy);
+	MPI_exchange_data(tess_, cells_, true);
 #endif
 	pt_.updateTime(dt);
 	pt_.updateCycle();
