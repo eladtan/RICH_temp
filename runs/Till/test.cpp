@@ -195,8 +195,8 @@ int main(void)
 	int counter = 0;
 	ComputationalCell3D init_cell;
 
-	double const T_mat = 20.0*kev_kelvin;
-	double const T_rad = 1.0*kev_kelvin;
+	double const T_mat = 1.0*kev_kelvin;
+	double const T_rad = 10.0*kev_kelvin;
 
 	try
 	{
@@ -301,7 +301,8 @@ int main(void)
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt, 5e-11);
+			new_dt=std::min(new_dt, sim.getTime()/50.0);
+			new_dt=std::max(new_dt, 1e-15);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;

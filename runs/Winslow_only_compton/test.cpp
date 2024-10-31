@@ -191,7 +191,7 @@ int main(void)
 
     using boost::math::pow;
 
-	FreeFreeAbsorptionOpacityMultigroup opacity(1.0, energy_groups_center, energy_groups_boundary);
+	FreeFreeAbsorptionOpacityMultigroup opacity(1e-80, energy_groups_center, energy_groups_boundary);
 	int counter = 0;
 	ComputationalCell3D init_cell;
 
@@ -301,7 +301,8 @@ int main(void)
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt, 5e-11);
+			new_dt=std::min(new_dt, sim.getTime()/50.0);
+			new_dt=std::max(new_dt, 1e-15);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
