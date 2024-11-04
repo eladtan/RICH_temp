@@ -43,18 +43,18 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_cxx_flags_release = " "
     elif config.startswith("intel"):
         fortran_compiler = SysLibsDict["ifort"]
+        c_compiler = SysLibsDict["icx-cc"]
+        cxx_compiler = SysLibsDict["icx"]
+        os.environ["I_MPI_CC"] = c_compiler
+        os.environ["I_MPI_CXX"] = cxx_compiler
+        os.environ["I_MPI_F90"] = fortran_compiler
+
         cmake_fortran_flags = f" -init=arrays,zero,minus_huge,snan -fp-speculation=safe -r{definitionOfReal} -assume no2underscores -lstdc++ -lrt -traceback -fpe0 -gen-interfaces -warn all -warn errors "
         cmake_fortran_flags_debug = " -O0 -fp-model precise -fp-model source -fimf-arch-consistency=true -fp-stack-check -debug -check bounds -check format -check output_conversion -check pointers -check uninit -check stack -check shape "
         cmake_fortran_flags_release = " -O2 "
         cmake_fortran_flags += " -mcmodel=medium -shared-intel "
 
-        c_compiler = SysLibsDict["icc"]
-        cxx_compiler = SysLibsDict["icx"]
-        os.environ["I_MPI_CC"] = c_compiler
-        os.environ["I_MPI_CXX"] = cxx_compiler
-        os.environ["I_MPI_F90"] = SysLibsDict["ifort"]
-
-        common_cxx_flags += " -cxx=icpx -diag-remark=13397,13401,15552,2196 -Wall "
+        common_cxx_flags += "-diag-remark=13397,13401,15552,2196 -Wall "
         cmake_cxx_standard = "17"
         cmake_cxx_flags = " -ansi-alias -fimf-arch-consistency=true "
         cmake_cxx_flags_debug = " -fp-model consistent -diag-disable=openmp -Wno-unknown-pragmas "

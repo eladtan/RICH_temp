@@ -7,6 +7,7 @@
 #define MAT44_HPP 1
 
 #include <iostream>
+#include "misc/universal_error.hpp"
 
 #define EPSILON 1e-12
 

@@ -162,6 +162,49 @@ T MPI_Bcast_serializable(const T &data, rank_t owner, const MPI_Comm &comm = MPI
 }
 
 template<typename T, template<typename...> class Container, typename... Ts>
+std::vector<T> MPI_Gatherv_serializable(const Container<T, Ts...> &data, rank_t root, const MPI_Comm &comm)
+{
+    rank_t rank, size;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
+    if(size == 1)
+    {
+        return data;
+    }
+    Serializer send;
+    int bytes = static_cast<int>(send.insert_all(data));
+
+    if(rank == root)
+    {
+        std::vector<int> toRecvBytes(size);
+        MPI_Gather(&bytes, 1, MPI_INT, toRecvBytes.data(), 1, MPI_INT, root, comm);
+        std::vector<int> toRecvDisplacements(size, 0);
+        size_t totalSize = 0;
+        for(int _rank = 0; _rank < size; _rank++)
+        {
+            totalSize += toRecvBytes[_rank];
+            if(_rank > 0)
+            {
+                toRecvDisplacements[_rank] = toRecvDisplacements[_rank - 1] + toRecvBytes[_rank - 1];
+            }
+        }
+        Serializer recv;
+        recv.serialize(totalSize);
+        MPI_Gatherv(send.getData(), bytes, MPI_BYTE, recv.getData(), toRecvBytes.data(), toRecvDisplacements.data(), MPI_BYTE, root, comm);
+        std::vector<T> toReturn;
+        recv.extract_all(toReturn);
+        return toReturn;
+    }
+    else
+    {
+        MPI_Gather(&bytes, 1, MPI_INT, NULL, 0, MPI_INT, root, comm);
+        MPI_Gatherv(send.getData(), bytes, MPI_BYTE, NULL, NULL, NULL, MPI_BYTE, root, comm);
+    }
+    return std::vector<T>();
+}
+
+template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<T> MPI_Spread(const Container<T, Ts...> &data, rank_t root, const MPI_Comm &comm)
 {
 	rank_t rank, size;

@@ -8,6 +8,7 @@
 #ifndef HILBERTORDER3D_HPP
 #define HILBERTORDER3D_HPP 1
 #include <vector>
+#include <cmath>
 #include <boost/array.hpp>
 #include <algorithm>
 #include <ctime>

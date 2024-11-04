@@ -23,7 +23,7 @@ void HilbertRectangularConvertor3D::changeOrder(size_t order)
     this->step = Vector3D(realWidth / div.x, realHeight / div.y, realDepth / div.z);
 }
 
-std::vector<HilbertRectangularConvertor3D::RecursionArguments> HilbertRectangularConvertor3D::getRecursionArguments(const RecursionArguments &args) const
+void HilbertRectangularConvertor3D::setRecursionArguments(const RecursionArguments &args, size_t currentDepth) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -72,34 +72,38 @@ std::vector<HilbertRectangularConvertor3D::RecursionArguments> HilbertRectangula
     const direction_t &y = startPoint.y;
     const direction_t &z = startPoint.z;
 
-    std::vector<RecursionArguments> toReturn;
-
+    if((currentDepth + 1) >= MAX_HILBERT_DEPTH)
+    {
+        throw UniversalError("Max hilbert tree depth exceeded");
+    }
+    std::vector<RecursionArguments> &nextArgs = this->argumentsBuffer[currentDepth + 1];
+    nextArgs.clear();
+    
     if((2 * width > 3 * height) and (2 * width > 3 * depth))
     {
-        toReturn.push_back({startPoint, a2, b, c});
-        toReturn.push_back({{x + a2.x, y + a2.y, z + a2.z}, {a.x - a2.x, a.y - a2.y, a.z - a2.z}, b, c});
+        nextArgs.push_back({startPoint, a2, b, c});
+        nextArgs.push_back({{x + a2.x, y + a2.y, z + a2.z}, {a.x - a2.x, a.y - a2.y, a.z - a2.z}, b, c});
     }
     else if(3 * height > 4 * depth)
     {
-        toReturn.push_back({startPoint, b2, c, a2});
-        toReturn.push_back({{x + b2.x, y + b2.y, z + b2.z}, a, {b.x - b2.x, b.y - b2.y, b.z - b2.z}, c});
-        toReturn.push_back({{x + (a.x - dax) + (b2.x - dbx), y + (a.y - day) + (b2.y - dby), z + (a.z - daz) + (b2.z - dbz)}, {-b2.x, -b2.y, -b2.z}, c, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}});
+        nextArgs.push_back({startPoint, b2, c, a2});
+        nextArgs.push_back({{x + b2.x, y + b2.y, z + b2.z}, a, {b.x - b2.x, b.y - b2.y, b.z - b2.z}, c});
+        nextArgs.push_back({{x + (a.x - dax) + (b2.x - dbx), y + (a.y - day) + (b2.y - dby), z + (a.z - daz) + (b2.z - dbz)}, {-b2.x, -b2.y, -b2.z}, c, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}});
     }
     else if(3 * depth > 4 * height)
     {
-        toReturn.push_back({startPoint, c2, a2, b});
-        toReturn.push_back({{x + c2.x, y + c2.y, z + c2.z}, a, b, {c.x - c2.x, c.y - c2.y, c.z - c2.z}});
-        toReturn.push_back({{x + (a.x - dax) + (c2.x - dcx), y + (a.y - day) + (c2.y - dcy), z + (a.z - daz) + (c2.z - dcz)}, {-c2.x, -c2.y, -c2.z}, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}, b});
+        nextArgs.push_back({startPoint, c2, a2, b});
+        nextArgs.push_back({{x + c2.x, y + c2.y, z + c2.z}, a, b, {c.x - c2.x, c.y - c2.y, c.z - c2.z}});
+        nextArgs.push_back({{x + (a.x - dax) + (c2.x - dcx), y + (a.y - day) + (c2.y - dcy), z + (a.z - daz) + (c2.z - dcz)}, {-c2.x, -c2.y, -c2.z}, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}, b});
     }
     else
     {
-        toReturn.push_back({startPoint, b2, c2, a2});
-        toReturn.push_back({{x + b2.x, y + b2.y, z + b2.z}, c, a2, {b.x - b2.x, b.y - b2.y, b.z - b2.z}});
-        toReturn.push_back({{x + (b2.x - dbx) + (c.x - dcx), y + (b2.y - dby) + (c.y - dcy), z + (b2.z - dbz) + (c.z - dcz)}, a, {-b2.x, -b2.y, -b2.z}, {-(c.x - c2.x), -(c.y - c2.y), -(c.z - c2.z)}});
-        toReturn.push_back({{x + (a.x - dax) + b2.x + (c.x - dcx), y + (a.y - day) + b2.y + (c.y - dcy), z + (a.z - daz) + b2.z + (c.z - dcz)}, {-c.x, -c.y, -c.z}, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}, {b.x - b2.x, b.y - b2.y, b.z - b2.z}});
-        toReturn.push_back({{x + (a.x - dax) + (b2.x - dbx), y + (a.y - day) + (b2.y - dby), z + (a.z - daz) + (b2.z - dbz)}, {-b2.x, -b2.y, -b2.z}, c2, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}});
+        nextArgs.push_back({startPoint, b2, c2, a2});
+        nextArgs.push_back({{x + b2.x, y + b2.y, z + b2.z}, c, a2, {b.x - b2.x, b.y - b2.y, b.z - b2.z}});
+        nextArgs.push_back({{x + (b2.x - dbx) + (c.x - dcx), y + (b2.y - dby) + (c.y - dcy), z + (b2.z - dbz) + (c.z - dcz)}, a, {-b2.x, -b2.y, -b2.z}, {-(c.x - c2.x), -(c.y - c2.y), -(c.z - c2.z)}});
+        nextArgs.push_back({{x + (a.x - dax) + b2.x + (c.x - dcx), y + (a.y - day) + b2.y + (c.y - dcy), z + (a.z - daz) + b2.z + (c.z - dcz)}, {-c.x, -c.y, -c.z}, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}, {b.x - b2.x, b.y - b2.y, b.z - b2.z}});
+        nextArgs.push_back({{x + (a.x - dax) + (b2.x - dbx), y + (a.y - day) + (b2.y - dby), z + (a.z - daz) + (b2.z - dbz)}, {-b2.x, -b2.y, -b2.z}, c2, {-(a.x - a2.x), -(a.y - a2.y), -(a.z - a2.z)}});
     }
-    return toReturn;
 }
 
 Vector3D HilbertRectangularConvertor3D::WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const
@@ -111,7 +115,7 @@ Vector3D HilbertRectangularConvertor3D::WidthHeightDepthToXYZ(direction_t width,
     return Vector3D(x, y, z);
 }
 
-bool HilbertRectangularConvertor3D::d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const
+bool HilbertRectangularConvertor3D::d2xyz_helper(const RecursionArguments &args, size_t currentDepth, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -160,9 +164,10 @@ bool HilbertRectangularConvertor3D::d2xyz_helper(const RecursionArguments &args,
         return true;
     }
 
-    for(const RecursionArguments &nextArgs : this->getRecursionArguments(args))
+    this->setRecursionArguments(args, currentDepth);
+    for(const RecursionArguments &nextArgs : this->argumentsBuffer[currentDepth + 1])
     {
-        if(this->d2xyz_helper(nextArgs, requested_d, current_d, result))
+        if(this->d2xyz_helper(nextArgs, currentDepth + 1, requested_d, current_d, result))
         {
             return true;
         }
@@ -204,7 +209,7 @@ std::pair<typename HilbertRectangularConvertor3D::DirectionVector3D, typename Hi
             {std::max(startPoint.x, boundary.x) + 1, std::max(startPoint.y, boundary.y) + 1, std::max(startPoint.z, boundary.z) + 1}};    
 }
 
-bool HilbertRectangularConvertor3D::xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
+bool HilbertRectangularConvertor3D::xyz2d_helper(const RecursionArguments &args, size_t currentDepth, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const
 {
     const DirectionVector3D &startPoint = args.startPoint;
     const DirectionVector3D &a = args.a;
@@ -247,9 +252,10 @@ bool HilbertRectangularConvertor3D::xyz2d_helper(const RecursionArguments &args,
         return this->xyz2d_helper_base(startPoint, depth, {dcx, dcy, dcz}, requested_point, current_d);
     }
 
-    for(const RecursionArguments &nextArgs : this->getRecursionArguments(args))
+    this->setRecursionArguments(args, currentDepth);
+    for(const RecursionArguments &nextArgs : this->argumentsBuffer[currentDepth + 1])
     {
-        if(this->xyz2d_helper(nextArgs, requested_point, current_d))
+        if(this->xyz2d_helper(nextArgs, currentDepth + 1, requested_point, current_d))
         {
             return true;
         }
@@ -262,7 +268,7 @@ Vector3D HilbertRectangularConvertor3D::d2xyz(hilbert_index_t d) const
 {
     Vector3D result;
     hilbert_index_t current_d = 0;
-    this->d2xyz_helper({{0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}}, d, current_d, result);
+    this->d2xyz_helper({{0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}}, 0, d, current_d, result);
     return result;
 }
 
@@ -299,7 +305,7 @@ hilbert_index_t HilbertRectangularConvertor3D::xyz2d(coord_t x, coord_t y, coord
     }
 
     hilbert_index_t result = 0;
-    if(not this->xyz2d_helper({{0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}}, {width, height, depth}, result))
+    if(not this->xyz2d_helper({{0, 0, 0}, {this->div.x, 0, 0}, {0, this->div.y, 0}, {0, 0, this->div.z}}, 0, {width, height, depth}, result))
     {
         UniversalError eo("Should not reach here (in 3D xyz->d) (maybe the point is outside the box?)");
         eo.addEntry("x", x);

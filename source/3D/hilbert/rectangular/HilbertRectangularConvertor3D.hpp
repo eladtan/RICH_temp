@@ -1,7 +1,10 @@
 #ifndef HILBERT_RECTANGULAR_CONVERTOR_3D_HPP
 #define HILBERT_RECTANGULAR_CONVERTOR_3D_HPP
 
+#include <array>
 #include "../HilbertConvertor3D.hpp"
+
+#define MAX_HILBERT_DEPTH 50
 
 /**
  * see here the algorithm: https://github.com/jakubcerveny/gilbert
@@ -46,6 +49,8 @@ private:
     DirectionVector3D div;
     hilbert_index_t total_points_num;
 
+    mutable std::array<std::vector<RecursionArguments>, MAX_HILBERT_DEPTH> argumentsBuffer;
+
 public:
     explicit HilbertRectangularConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
@@ -58,10 +63,10 @@ public:
     Vector3D d2xyz(hilbert_index_t d) const override;
         
 private:
-    std::vector<RecursionArguments> getRecursionArguments(const RecursionArguments &args) const;
-    bool d2xyz_helper(const RecursionArguments &args, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
+    void setRecursionArguments(const RecursionArguments &args, size_t currentDepth) const;
+    bool d2xyz_helper(const RecursionArguments &args, size_t currentDepth, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
     bool xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
-    bool xyz2d_helper(const RecursionArguments &args, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    bool xyz2d_helper(const RecursionArguments &args, size_t currentDepth, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
     std::pair<DirectionVector3D, DirectionVector3D> getBoundingBox(const RecursionArguments &args) const;
     Vector3D WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const;
 };
