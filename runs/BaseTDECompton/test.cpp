@@ -273,7 +273,7 @@ namespace
 #ifdef RICH_MPI
 		sim.getTesselation().BuildParallel(points);
 		ComputationalCell3D cdummy;
-		MPI_exchange_data(sim.getTesselation(), cells, false, &cdummy);
+		MPI_exchange_data(sim.getTesselation(), cells, false);
 #else
 		sim.getTesselation().Build(points);
 #endif
@@ -342,6 +342,8 @@ namespace
 			for(double& Egb : energy_groups_boundary)
 			    Egb *= 11604.5 * CG::boltzmann_constant;
 			energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
+			for(size_t i = 0; i < energy_groups_boundary.size() - 1; ++i)
+				energy_groups_center[i] = std::sqrt(energy_groups_boundary[i] * energy_groups_boundary[i + 1]);
 			size_t const Ng = energy_groups_boundary.size() - 1;
 			T_ = read_vector(file_directory +"T.txt");
 			// Convert from ev to kelvin
@@ -484,7 +486,7 @@ namespace
 			std::vector<size_t> neigh;
 			std::vector<double> volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
-			MPI_exchange_data2(tess, volumes, true);
+			MPI_exchange_data(tess, volumes, true);
 #endif
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double const apocenter_time = 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
@@ -500,7 +502,7 @@ namespace
 				if (r_dist < (1.5 * Rt) || r_dist > 0.75*apocenter)
 					continue;
 
-				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 2.5)) ? MaxMass : MaxMass * 30;
+				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 4.5)) ? MaxMass : MaxMass * 30;
 				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
 
 				double V = tess.GetVolume(i);
@@ -564,7 +566,7 @@ namespace
 			size_t Norg = tess.GetPointNo();
 			std::vector<double> volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
-			MPI_exchange_data2(tess, volumes, true);
+			MPI_exchange_data(tess, volumes, true);
 #endif
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0) / beta_;
@@ -583,9 +585,11 @@ namespace
 				// Do we have little mass amount?
 				if (Norg < 500)
 					continue;
+				if(fastabs(tess.GetMeshPoint(i)) < 1.5 * Rt && tess.GetMeshPoint(i).x > 0.65 * Rt)
+					continue;
 				double Vol = tess.GetVolume(i);
 				double w = tess.GetWidth(i);
-				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 2.5) ? MaxMass : MaxMass * 30;
+				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 4.5) ? MaxMass : MaxMass * 30;
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double r_i = std::max(Rt * smooth_factor, r_org);
 				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
@@ -593,7 +597,7 @@ namespace
 				double const dt = w / (eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers) + 0.5 * fastabs(cells[i].velocity));
 				double const in_factor = r_i < 0.65 * Rt ? smooth_factor / 0.6 : 1;
 				MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
-				if (Vol * cells[i].density > MaxMass2 && w > (in_factor * 0.75 * min_cell_size) && dt > (0.025 * time_Rt * in_factor))
+				if (Vol * cells[i].density > MaxMass2 && w > (in_factor * 0.75 * min_cell_size) && dt > (0.02 * time_Rt * in_factor))
 					continue;
 				if (Vol > domain_size_ * 0.5e-5)
 					continue;
@@ -925,8 +929,7 @@ int main(void)
 		// tess.SetKernel(new Rectangle(ll, ur));
 #ifdef RICH_MPI
 		tess.BuildParallel(snap.mesh_points);
-		ComputationalCell3D cdummy;
-		MPI_exchange_data(tess, snap.cells, false, &cdummy);
+		MPI_exchange_data(tess, snap.cells, false);
 #else
 	tess.Build(snap.mesh_points);
 #endif
@@ -984,13 +987,18 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
 
 	MultigroupDiffusionOpenBoundary D_boundary;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), true, true, false, true, false);
+	bool const hydro_on = true;
+	bool const compton_on = true;
+	bool const flux_limit = true;
+	bool const doppler_on = true;
+	bool const mixed_frame_on = false;
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, mixed_frame_on);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
 
 	std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
-	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
+	DefaultCellUpdater cu(false, 0, true, 2000, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
 	RegularFlux3D *regular_flux = new RegularFlux3D(rs);
@@ -1076,13 +1084,13 @@ int main(void)
 	double step_time = 0;
 	double const restart_wtime = 25000;
 	double const min_dt_output = 0.02 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
-	if(not restart)
-	{
-		interp(tess, sim->getCells(), 0, dissipation.face_values);
-		WriteSnapshot3D(*sim, "init.h5", appendices, true);
-		dissipation.face_values.clear();
-		dissipation.face_values.shrink_to_fit();
-	}
+	// if(not restart)
+	// {
+	// 	interp(tess, sim->getCells(), 0, dissipation.face_values);
+	// 	WriteSnapshot3D(*sim, "init.h5", appendices, true);
+	// 	dissipation.face_values.clear();
+	// 	dissipation.face_values.shrink_to_fit();
+	// }
 	
 	while (sim->getTime() < tf)
 	{

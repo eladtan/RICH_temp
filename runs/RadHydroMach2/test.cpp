@@ -189,7 +189,7 @@ int main(void)
     Diffusion diffusion(opacity, diffusion_boundary, eos);
 
 	// Primitive updater
-	DefaultCellUpdater cu(false, 0, true, &diffusion);
+	DefaultCellUpdater cu(false, 0, true, 0, &diffusion);
 
 	// External force
 	DiffusionForce force(diffusion, eos);
