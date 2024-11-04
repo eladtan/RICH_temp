@@ -16,7 +16,7 @@
 #endif // RICH_MPI
 
 #ifndef ENERGY_GROUPS_NUM
-#define ENERGY_GROUPS_NUM 3
+#define ENERGY_GROUPS_NUM 1
 #endif
 
  //! \brief Container for the hydrodynamic variables
