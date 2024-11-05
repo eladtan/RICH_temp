@@ -190,7 +190,7 @@ std::vector<T> MPI_Gatherv_serializable(const Container<T, Ts...> &data, rank_t 
             }
         }
         Serializer recv;
-        recv.serialize(totalSize);
+        recv.resize(totalSize);
         MPI_Gatherv(send.getData(), bytes, MPI_BYTE, recv.getData(), toRecvBytes.data(), toRecvDisplacements.data(), MPI_BYTE, root, comm);
         std::vector<T> toReturn;
         recv.extract_all(toReturn);
