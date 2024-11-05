@@ -244,11 +244,6 @@ LocationSpecifier<T> getWeightedMedianOfMedians(const OrderStatisticsJob<T> &job
 template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
 void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
 {
-    size_t numElements = std::distance(job.subjob.valuesVecBegin, job.subjob.valuesVecEnd);
-    MPI_Allreduce(MPI_IN_PLACE, &numElements, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, job.comm);
-    elementsInDepth[recursion_depth - 1] = std::max(elementsInDepth[recursion_depth - 1], numElements);
-    depthsCounts[recursion_depth - 1]++;
-
     assert(std::distance(job.subjob.valuesVecBegin, job.subjob.valuesVecEnd) == std::distance(job.subjob.weightsVecBegin, job.subjob.weightsVecEnd));
     assert(job.subjob.elementsBefore <= job.values.size());
     assert(job.subjob.elementsAfter <= job.values.size());
@@ -258,7 +253,6 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     // step 1 - if the list of statistics is empty, return
     if(job.subjob.orderStatisticsBegin == job.subjob.orderStatisticsEnd)
     {
-        recursion_depth--;
         return; // no stats to find
     }
     
@@ -320,7 +314,6 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     recursivelyGetWeightedStatOrder(job);
     job.subjob = right;
     recursivelyGetWeightedStatOrder(job);
-    recursion_depth--;
 }
 
 template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
@@ -361,14 +354,6 @@ std::vector<T> getWeightedOrderStatistics(const std::vector<T> &values, const st
     job.subjob.weightAfter = 0;
     recursivelyGetWeightedStatOrder(job);
     std::sort(job.result.begin(), job.result.end());
-    if(job.rank == 0)
-    {
-        std::cout << "Recursion depth was " << max_recursion_depth << std::endl;
-        for(size_t it = 0; it < max_recursion_depth; it++)
-        {
-            std::cout << "Depth " << it << " had " << elementsInDepth[it] << " elements at most, called " << depthsCounts[it] << " times" << std::endl;
-        }
-    }
     MPI_Barrier(job.comm);
     return job.result;
 }
