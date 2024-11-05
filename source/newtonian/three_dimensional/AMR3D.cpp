@@ -667,7 +667,7 @@ namespace
 				extensives[Norg2 + i] = eu.ConvertPrimitveToExtensive3D(cells[ToRefine[i]], eos, tess.GetVolume(Norg + i), Slope3D(), 
 					Vector3D(), Vector3D());
 				extensives[ToRefine[i]] -= extensives[Norg2 + i];
-				std::cout << "Warning no good poly localrefine" << std::endl;
+				std::cout << "Warning no good poly localrefine good_poly " <<good_poly<<" loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<< std::endl;
 			}
 		}
 	}
@@ -990,6 +990,12 @@ AMR3D::AMR3D(EquationOfState const& eos,
 
 void AMR3D::operator() (HDSim3D &sim)
 {
+	int rank = 0;
+#ifdef RICH_MPI
+	int ws = 0;
+	MPI_Comm_size(MPI_COMM_WORLD, &ws);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 	Tessellation3D &tess = sim.getTesselation();
 	std::vector<ComputationalCell3D> &cells = sim.getCells();
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
@@ -1016,14 +1022,16 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveRefineNeighborRemove(tess, ToRemove.first, ToRefine.first, ToRefine.second);
 
 	// Do we need to rebuild tess ?
-	int ntotal = static_cast<int>(ToRemove.first.size() + ToRefine.first.size());
+	int nAMR[2];
+	nAMR[0] = static_cast<int>(ToRemove.first.size());
+	nAMR[1] = static_cast<int>(ToRefine.first.size());
 #ifdef RICH_MPI
-	int ntemp = 0;
-	MPI_Allreduce(&ntotal, &ntemp, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-	ntotal = ntemp;
+	MPI_Allreduce(MPI_IN_PLACE, nAMR, 2, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #endif
-	if (ntotal == 0)
+	if ((nAMR[0] + nAMR[1]) == 0)
 		return;
+	if(rank == 0)
+		std::cout<<"Removing "<<nAMR[0]<<" cells and refining "<<nAMR[1]<<" cells."<<std::endl;
 	interp_.BuildSlopes(tess, cells, time);
 	// Get new points from refine
 	std::vector<Vector3D> new_points = GetNewPoints(tess, ToRefine);
@@ -1081,9 +1089,6 @@ void AMR3D::operator() (HDSim3D &sim)
 	size_t Nrefine = ToRefine.first.size();
 	size_t Nstart = sim.GetMaxID() + 1;
 #ifdef RICH_MPI
-	int ws = 0, rank = 0;
-	MPI_Comm_size(MPI_COMM_WORLD, &ws);
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	std::vector<size_t> nrecv(static_cast<size_t>(ws), 0);
 	MPI_Allgather(&Nrefine, 1, MPI_UNSIGNED_LONG_LONG, &nrecv[0], 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
 	for (size_t i = 0; i < static_cast<size_t>(rank); ++i)
