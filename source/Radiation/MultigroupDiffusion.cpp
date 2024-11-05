@@ -676,6 +676,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
         }
  
         if(doppler_on_){
+            double const coeff = div_V * dt_cgs / 3;
             for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
                 std::size_t gp = g+1 == ENERGY_GROUPS_NUM ? g : g+1;
                 std::size_t gm = g == 0                   ? g : g-1;
@@ -703,7 +704,6 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
                     }
                 }
 
-                double const coeff = div_V * dt_cgs;
                 if(div_V < 0.0){
                     A[i * ENERGY_GROUPS_NUM + g][0] -= coeff * nu_gp / dnu_g;
 
@@ -1709,6 +1709,7 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
             eo.addEntry("old T", old_Tm[i]);
             eo.addEntry("volume", volume);
             eo.addEntry("cdt", cdt);
+            eo.addEntry("Erad", cells[i].Erad * cells[i].density);
             for(size_t group = 0; group < ENERGY_GROUPS_NUM; ++group){
                 eo.addEntry("Eg[" + std::to_string(group) + "]", full_CG_result[i * ENERGY_GROUPS_NUM + group]);
                 eo.addEntry("sigma_absorption_group[" + std::to_string(group) + "]", sigma_absorption_group[i][group]);
