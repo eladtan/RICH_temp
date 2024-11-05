@@ -8,7 +8,7 @@ parser.add_argument("--test_name", default="", help="The name of the test to com
 
 parser.add_argument("--make_dir", default=root_dir, help="The relative path to the build directory")
 
-parser.add_argument("--energy_groups_num", default="0", help="The number of energy groups for a multigroup run")
+parser.add_argument("--energy_groups_num", default="1", help="The number of energy groups for a multigroup run")
 
 # possible configurations
 config_params = [
