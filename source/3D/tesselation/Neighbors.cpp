@@ -1,7 +1,5 @@
 #include "Neighbors.hpp"
 
-size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t>::max();
-
 #ifdef RICH_MPI
     struct Request : public Serializable
     {

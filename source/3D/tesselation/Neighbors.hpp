@@ -59,8 +59,6 @@ struct ComputationalCell3DVector3D
                         : public Serializable
                     #endif // RICH_MPI
 {
-    static size_t CELL_CHUNK_SIZE;
-
     ComputationalCell3D cell;
     Vector3D point;
     size_t local_index;

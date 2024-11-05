@@ -17,7 +17,6 @@ class Conserved3D
 	#endif // RICH_MPI
 {
 public:
-
 	//! \brief Mass
 	double mass;
 

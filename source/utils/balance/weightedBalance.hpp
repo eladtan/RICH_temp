@@ -48,12 +48,8 @@ struct LocationSpecifier : public Serializable
 
     void syncronizeAll(const MPI_Comm &comm)
     {
-        MPI_Allreduce(MPI_IN_PLACE, &this->weightBefore, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->weightEqual, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->weightAfter, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->elementsBefore, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->elementsEqual, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->elementsAfter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &this->weightBefore, 3, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &this->elementsBefore, 3, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
     }
 };
 
@@ -79,8 +75,8 @@ struct OrderStatisticsJob
         double weightAfter; // weight after the scope of `weightsVecEnd`
     };
 
-    OrderStatisticsJob(const std::vector<T> &values, const std::vector<double> &weights, const Comparator &comp = std::less<T>{}, const MPI_Comm &comm = MPI_COMM_WORLD):
-        values(values), weights(weights), comp(comp), comm(comm)
+    OrderStatisticsJob(const std::vector<T> &values, const std::vector<double> &weights, const std::vector<size_t> &orderStatistics, const Comparator &comp = std::less<T>{}, const MPI_Comm &comm = MPI_COMM_WORLD):
+        values(values), weights(weights), orderStatistics(orderStatistics), comp(comp), comm(comm)
     {
         MPI_Comm_rank(this->comm, &this->rank);
         MPI_Comm_size(this->comm, &this->size);
@@ -167,6 +163,7 @@ struct OrderStatisticsJob
     const std::vector<double> &weights;
     const Comparator &comp;
     std::vector<double> accumulatingWeights;
+    std::vector<size_t> orderStatistics;
     double allLocalWeight;
     double allWeight;
     size_t allElementsNum;
@@ -247,6 +244,11 @@ LocationSpecifier<T> getWeightedMedianOfMedians(const OrderStatisticsJob<T> &job
 template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
 void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
 {
+    size_t numElements = std::distance(job.subjob.valuesVecBegin, job.subjob.valuesVecEnd);
+    MPI_Allreduce(MPI_IN_PLACE, &numElements, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, job.comm);
+    elementsInDepth[recursion_depth - 1] = std::max(elementsInDepth[recursion_depth - 1], numElements);
+    depthsCounts[recursion_depth - 1]++;
+
     assert(std::distance(job.subjob.valuesVecBegin, job.subjob.valuesVecEnd) == std::distance(job.subjob.weightsVecBegin, job.subjob.weightsVecEnd));
     assert(job.subjob.elementsBefore <= job.values.size());
     assert(job.subjob.elementsAfter <= job.values.size());
@@ -256,6 +258,7 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     // step 1 - if the list of statistics is empty, return
     if(job.subjob.orderStatisticsBegin == job.subjob.orderStatisticsEnd)
     {
+        recursion_depth--;
         return; // no stats to find
     }
     
@@ -266,8 +269,8 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     LocationSpecifier<T> medianOfMedians = getWeightedMedianOfMedians(job, localWeightedMedian);
     
     // step 4 - get the stat order of the element
-    // the element might occupity multiple statisticle orders, if there are any duplications
-    // so, we calculate the minimal stat order it occupity, and the maximal one
+    // the element might occupy multiple statisticle orders, if there are any duplications
+    // so, we calculate the minimal stat order it occupy, and the maximal one
     size_t medianOfMediansMinStatOrder = static_cast<size_t>(std::floor(job.allElementsNum * medianOfMedians.weightBefore / job.allWeight));
     size_t medianOfMediansMaxStatOrder = static_cast<size_t>(std::ceil(job.allElementsNum * (medianOfMedians.weightBefore + medianOfMedians.weightEqual) / job.allWeight));
 
@@ -317,6 +320,7 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     recursivelyGetWeightedStatOrder(job);
     job.subjob = right;
     recursivelyGetWeightedStatOrder(job);
+    recursion_depth--;
 }
 
 template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
@@ -343,19 +347,28 @@ std::vector<T> getWeightedOrderStatistics(const std::vector<T> &values, const st
     std::for_each(valuesWeightsSorted.cbegin(), valuesWeightsSorted.cend(), [&weightsSorted](const std::pair<T, double> &value){weightsSorted.emplace_back(value.second);});
     std::vector<size_t> orderStatisticsSorted = orderStatistics;
     std::sort(orderStatisticsSorted.begin(), orderStatisticsSorted.end());
-    OrderStatisticsJob<T, Comparator> job(valuesSorted, weightsSorted, comp, comm);
-    job.subjob.valuesVecBegin = valuesSorted.cbegin();
-    job.subjob.valuesVecEnd = valuesSorted.cend();
-    job.subjob.weightsVecBegin = weightsSorted.cbegin();
-    job.subjob.weightsVecEnd = weightsSorted.cend();
-    job.subjob.orderStatisticsBegin = orderStatisticsSorted.cbegin();
-    job.subjob.orderStatisticsEnd = orderStatisticsSorted.cend();
+    
+    OrderStatisticsJob<T, Comparator> job(valuesSorted, weightsSorted, orderStatisticsSorted, comp, comm);
+    job.subjob.valuesVecBegin = job.values.cbegin();
+    job.subjob.valuesVecEnd = job.values.cend();
+    job.subjob.weightsVecBegin = job.weights.cbegin();
+    job.subjob.weightsVecEnd = job.weights.cend();
+    job.subjob.orderStatisticsBegin = job.orderStatistics.cbegin();
+    job.subjob.orderStatisticsEnd = job.orderStatistics.cend();
     job.subjob.elementsBefore = 0;
     job.subjob.elementsAfter = 0;
     job.subjob.weightBefore = 0;
     job.subjob.weightAfter = 0;
     recursivelyGetWeightedStatOrder(job);
     std::sort(job.result.begin(), job.result.end());
+    if(job.rank == 0)
+    {
+        std::cout << "Recursion depth was " << max_recursion_depth << std::endl;
+        for(size_t it = 0; it < max_recursion_depth; it++)
+        {
+            std::cout << "Depth " << it << " had " << elementsInDepth[it] << " elements at most, called " << depthsCounts[it] << " times" << std::endl;
+        }
+    }
     MPI_Barrier(job.comm);
     return job.result;
 }
@@ -370,12 +383,19 @@ std::vector<T> getWeightedBorders(const std::vector<T> &values, const std::vecto
     MPI_Allreduce(MPI_IN_PLACE, &totalSize, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
 
     size_t factor = totalSize / size; 
+    size_t remainder = totalSize % size;
     std::vector<size_t> orderStatistics;
-    for(int _rank = 0; _rank < size - 1; _rank++)
+    for(int _rank = 0; _rank < size; _rank++)
     {
-        orderStatistics.push_back(factor * (_rank + 1));
+        size_t numPoints = factor + ((_rank < remainder)? 1 : 0);
+        if(_rank > 0)
+        {
+            orderStatistics.push_back(orderStatistics.back() + numPoints);
+        }
+        else{
+            orderStatistics.push_back(numPoints);
+        }
     }
-    orderStatistics.push_back(totalSize);
     return getWeightedOrderStatistics(values, weights, orderStatistics, comp, comm);
 }
 

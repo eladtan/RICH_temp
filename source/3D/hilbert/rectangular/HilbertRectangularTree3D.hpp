@@ -50,7 +50,7 @@ private:
         const HilbertConvertor3D *convertor;
     #endif // DEBUG_MODE
 
-    void buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, hilbert_index_t &current_d, const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
+    void buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, size_t currentDepth, hilbert_index_t &current_d, const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
     
     void buildTree(const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
 
@@ -173,7 +173,7 @@ void HilbertTree3D<max_ranks_per_leaf>::printHelper(const Node *node, int tabs) 
 #endif // DEUBG_MODE
 
 template<int max_ranks_per_leaf>
-void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, hilbert_index_t &current_d, const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange)
+void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, size_t currentDepth, hilbert_index_t &current_d, const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange)
 {
     using DirectionVector3D = HilbertRectangularConvertor3D::DirectionVector3D;
     using RecursionArguments = HilbertRectangularConvertor3D::RecursionArguments;
@@ -291,18 +291,19 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
             for(int i = 0; i < baseCaseLength; i++)
             {
                 currentNode->children.push_back(new Node(currentNode));
-                this->buildTreeHelper(currentNode->children.back(), {{x, y, z}, {dax, day, daz}, {dbx, dby, dbz}, {dcx, dcy, dcz}}, current_d, convertor, responsibilityRange);
+                this->buildTreeHelper(currentNode->children.back(), {{x, y, z}, {dax, day, daz}, {dbx, dby, dbz}, {dcx, dcy, dcz}}, currentDepth + 1, current_d, convertor, responsibilityRange);
                 x += baseCaseUnitDirection.x;
                 y += baseCaseUnitDirection.y;
                 z += baseCaseUnitDirection.z;
             }
         }
         else
-        {
-            for(const RecursionArguments &nextArgs : convertor->getRecursionArguments(current_args))
+        {   
+            convertor->setRecursionArguments(current_args, currentDepth);
+            for(const RecursionArguments &nextArgs : convertor->argumentsBuffer[currentDepth + 1])
             {
                 currentNode->children.push_back(new Node(currentNode));
-                this->buildTreeHelper(currentNode->children.back(), nextArgs, current_d, convertor, responsibilityRange);
+                this->buildTreeHelper(currentNode->children.back(), nextArgs, currentDepth + 1, current_d, convertor, responsibilityRange);
             }      
 
             for(const Node *child : currentNode->children)
@@ -332,7 +333,7 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTree(const HilbertRectangularConver
     hilbert_index_t d = 0;
 
     this->root = new Node(nullptr);
-    this->buildTreeHelper(this->root, {{0, 0, 0}, {convertor->div.x, 0, 0}, {0, convertor->div.y, 0}, {0, 0, convertor->div.z}}, d, convertor, responsibilityRange);
+    this->buildTreeHelper(this->root, {{0, 0, 0}, {convertor->div.x, 0, 0}, {0, convertor->div.y, 0}, {0, 0, convertor->div.z}}, 0, d, convertor, responsibilityRange);
 
     if(d != convertor->total_points_num)
     {
