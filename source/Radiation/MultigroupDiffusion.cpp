@@ -2579,9 +2579,9 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
         for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
             // in scattering
             double const in_scattering_factor = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n[g]);
-            
+            double const in_scattering_factor_dsdum = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n_bg[g]);
             S[gt][g] += tau[gt][g] * in_scattering_factor;
-            dSdUm[gt][g] += dtau_dUm[gt][g] * in_scattering_factor;
+            dSdUm[gt][g] += dtau_dUm[gt][g] * in_scattering_factor_dsdum;
 
             // out scattering
             double const out_scattering_factor = 1.0 + n[gt];
