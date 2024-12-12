@@ -189,8 +189,8 @@ std::pair<double, double> Hllc3D::GetUstarPstar(ComputationalCell3D const& left,
 	local_left.velocity.x = ScalarProd(local_left.velocity, normaldir);
 	local_right.velocity.x = ScalarProd(local_right.velocity, normaldir);
 	WaveSpeeds ws = estimate_wave_speeds(local_left, local_right, eos, -1);
-	double denom = 1.0 / (left.density * (ws.left - local_left.velocity.x) - right.density * (ws.right - local_right.velocity.x));
-	double ps = std::max(0.0, left.density * (ws.left - local_left.velocity.x)*(right.pressure - right.density * (ws.right - local_left.velocity.x)*(ws.right - local_right.velocity.x)) *denom - left.pressure * right.density * (ws.right - local_right.velocity.x) *denom);
+	double ps = std::max(0.0, 0.5 * (left.pressure + right.pressure + left.density * (ws.left - local_left.velocity.x) * (ws.center - local_left.velocity.x)
+		+ right.density * (ws.right - local_right.velocity.x) * (ws.center - local_right.velocity.x)));
 	return std::make_pair(ws.center, ps);
 }
 
