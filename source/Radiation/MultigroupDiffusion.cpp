@@ -74,6 +74,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 S(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 dSdUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 n(ENERGY_GROUPS_NUM, 0.0),
+                                                                n_bg(ENERGY_GROUPS_NUM, 0.0),
                                                                 cell_id_of_compton_matrices(std::numeric_limits<std::size_t>::max()),
                                                                 Gammas(),
                                                                 Q_vector(ENERGY_GROUPS_NUM, 0.0),
