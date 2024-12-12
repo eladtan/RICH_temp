@@ -503,7 +503,7 @@ namespace CG
 #ifdef RICH_MPI
                 MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif       
-                if((max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 250 || max_data[2].val < 0.5)) || error < 1e-100) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                if((max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && ((i > 25 && max_data[1].val < 1e-15) || max_data[2].val < 0.5)) || error < 1e-100) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                     max_loc0 /= slice;
                     max_loc1 /= slice;
                     if(rank == 0)
