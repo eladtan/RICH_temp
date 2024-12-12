@@ -2014,15 +2014,33 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
         double const cv_bar = cv / get_radiation_cv(T);
 
         double Gamma = sigma_planck;
+        bool negative_upsilon = false;
+        double upsilon = 0;
         if(compton_on_ && (sigma_planck * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off)){
-            generate_S_and_dSdUm_matrices(cells[i], i);
-            Gamma += calculate_Upsilon(cells[i]);
+            generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs);
+            upsilon = calculate_Upsilon(cells[i]);
+            if(upsilon < -0)
+                negative_upsilon = true;
+            Gamma += upsilon;
         }
 
         double const f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, Gamma);
 
-        if(f < 0){
-            throw UniversalError("Negative fleck factor :(");
+        if(f < 0 || negative_upsilon){
+            UniversalError eo("Negative fleck factor :(");
+            eo.addEntry("ID", cells[i].ID);
+            eo.addEntry("Density", cells[i].density*mass_scale_/pow<3>(length_scale_));
+            eo.addEntry("T", T);
+            eo.addEntry("sigma_planck", sigma_planck);
+            eo.addEntry("cv_bar", cv_bar);
+            eo.addEntry("Gamma", Gamma);
+            eo.addEntry("cv", cv);
+            eo.addEntry("upsilon", upsilon);
+            for(size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+                eo.addEntry("Eg["+std::to_string(g)+"]", old_Eg[i][g] * mass_scale_ / (pow<2>(time_scale_)*length_scale_));
+            }
+            eo.addEntry("dt", dt_cgs);
+            throw eo;
         }
         
         fleck_factor[i] = f;
