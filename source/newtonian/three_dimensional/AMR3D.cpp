@@ -625,7 +625,7 @@ namespace
 						}
 					}
 					// Check intersectrion
-					std::pair<bool, std::array<double, 4> > dv = PolyhedraIntersection(oldtess, cur_check, poly2);
+					std::pair<bool, std::array<double, 4> > dv = PolyhedraIntersection(oldtess, cur_check, poly2, nullptr, false);
 					if (dv.first)
 					{
 						total_dv += dv.second[0];
@@ -667,7 +667,7 @@ namespace
 				extensives[Norg2 + i] = eu.ConvertPrimitveToExtensive3D(cells[ToRefine[i]], eos, tess.GetVolume(Norg + i), Slope3D(), 
 					Vector3D(), Vector3D());
 				extensives[ToRefine[i]] -= extensives[Norg2 + i];
-				std::cout << "Warning no good poly localrefine good_poly " <<good_poly<<" loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<< std::endl;
+				std::cout << "Warning no good poly localrefine good_poly " <<good_poly<<" loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<<" old ID "<<cells[ToRefine[i]].ID<<std::endl;
 			}
 		}
 	}
@@ -828,7 +828,6 @@ Conserved3D SimpleAMRExtensiveUpdater3D::ConvertPrimitveToExtensive3D(const Comp
 	ComputationalCellAddMult(cell_temp, slope.xderivative, diff.x);
 	ComputationalCellAddMult(cell_temp, slope.yderivative, diff.y);
 	ComputationalCellAddMult(cell_temp, slope.zderivative, diff.z);
-	cell_temp.internal_energy = eos.dp2e(cell_temp.density, cell_temp.pressure, cell_temp.tracers, ComputationalCell3D::tracerNames);
 	const double mass = volume * cell_temp.density;
 	res.mass = mass;
 	res.momentum = mass * cell.velocity + volume * cell.density * (cell_temp.velocity - cell.velocity);
