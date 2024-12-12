@@ -167,7 +167,7 @@ FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup(double 
                                                                              MultigroupDiffusionCoefficientCalculator(energy_groups_center_, energy_groups_boundary_) {}
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
-    return 0.0;
+    return 1.0;
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
