@@ -494,7 +494,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
     for(std::size_t i=0; i < Nlocal; ++i){
         bool const do_compton = compton_on_ && (Gammas[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
         if(do_compton) {
-            generate_S_and_dSdUm_matrices(cells[i], i);
+            generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs);
             calculate_compton_quantities(cells[i], i);
         }
         
@@ -1599,7 +1599,7 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
         double dE_compton = 0.0;
         bool const do_compton = compton_on_ && (Gammas[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
         if(do_compton){
-            generate_S_and_dSdUm_matrices(cells[i], i);
+            generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs);
             calculate_compton_quantities(cells[i], i);
 
             for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
@@ -2528,7 +2528,7 @@ void MultigroupDiffusion::calculate_lambda_g_and_R2_g(std::size_t const group,
     }
 }
 
-void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index) const {
+void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs) const {
     cell_id_of_compton_matrices = cell.ID;
 
     double constexpr fac = pow<3>(units::clight) / (8.0*M_PI*units::planck_constant);
@@ -2540,6 +2540,8 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
         double const Eg = cell.Eg[g] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
 
         n[g] = fac * Eg / (pow<3>(nu)*dnu);
+        double const Bg = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], cell.temperature);
+        n_bg[g] = fac*Bg/(pow<3>(nu)*dnu);
     }
 
     double const A = 1.0;
@@ -2560,7 +2562,35 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
             // out scattering
             double const out_scattering_factor = 1.0 + n[gt];
             S[g][g] -= tau[g][gt] * out_scattering_factor;
-            dSdUm[g][g] -= dtau_dUm[g][gt] * out_scattering_factor;
+            dSdUm[g][g] -= dtau_dUm[g][gt] * (1 + n_bg[gt]);
+        }
+    }
+
+   
+    double dE = 0;
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
+            dE -= S[gt][g] * cell.Eg[gt] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
+        }
+    }
+    dE *= dt_cgs * units::clight;
+    if(dE > (cell.internal_energy * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_))))
+    {
+        double const Trad = std::pow(cell.Erad * cell.density * mass_scale_ / (units::arad * length_scale_ * pow<2>(time_scale_)), 0.25);
+        if((cell.internal_energy * Trad < 0.1 * cell.Erad * cell.temperature) && Trad > cell.temperature)
+        {
+            double max_dE = cell.density * cell.internal_energy * (Trad - cell.temperature) / cell.temperature;
+            max_dE *= mass_scale_ / (length_scale_ * pow<2>(time_scale_));
+            double const reduce_factor = max_dE / dE;
+            if(reduce_factor < 1)
+            {
+                for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+                    for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
+                        S[gt][g] *= reduce_factor;
+                        dSdUm[gt][g] *= reduce_factor;
+                    }
+                }
+            }
         }
     }
     
