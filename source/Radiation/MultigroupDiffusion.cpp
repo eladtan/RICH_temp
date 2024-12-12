@@ -67,7 +67,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 displayed_warning_(false),
                                                                 compton_matrix_gen( energy_groups_center_,
                                                                                     energy_groups_boundary_, 
-                                                                                    200000, // num of samples
+                                                                                    2000000, // num of samples
                                                                                     true, 1), // force detailed balance
                                                                 tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
