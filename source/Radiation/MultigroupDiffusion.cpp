@@ -2055,6 +2055,9 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
     sigma_absorption_group.resize(N);
     sigma_scattering_group.resize(N);
     for(std::size_t i=0; i < N; ++i){
+        double const Trad = std::pow(cells[i].Erad * cells[i].density / CG::radiation_constant, 0.25);
+        double cv = eos_.dT2cv(cells[i].density * pow<3>(length_scale_) / mass_scale_, cells[i].temperature) * mass_scale_ / (pow<2>(time_scale_)*length_scale_);
+        double const cv_bar = cv / get_radiation_cv(cells[i].temperature);
             sigma_absorption_group[i].resize(ENERGY_GROUPS_NUM);
             sigma_scattering_group[i].resize(ENERGY_GROUPS_NUM);
         auto const& cell = cells[i];
@@ -2062,6 +2065,9 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
 
             sigma_absorption_group[i][g] = std::min(coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g),
                 CG::max_coupling_strength / (CG::speed_of_light * dt));
+            if(Trad > 1.1 * cells[i].temperature && cv < 0.1 * get_radiation_cv(Trad))
+                sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g],
+                    cv * Trad / (CG::speed_of_light * dt * cells[i].Erad * cells[i].density));
 
             if(sigma_absorption_group[i][g] < 0.){
                 throw UniversalError("negative absorption coefficient");
