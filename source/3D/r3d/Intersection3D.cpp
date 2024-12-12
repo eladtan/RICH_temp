@@ -283,7 +283,7 @@ namespace
 	}
 }
 
-void GetPlanes(vector<r3d_plane> &res, Tessellation3D const& tess, size_t index)
+void GetPlanes(vector<r3d_plane> &res, Tessellation3D const& tess, size_t index, bool const print)
 {
 	res.clear();
 	r3d_plane plane;
@@ -301,6 +301,8 @@ void GetPlanes(vector<r3d_plane> &res, Tessellation3D const& tess, size_t index)
 		plane.n.xyz[2] = norm.z;
 		Vector3D const& face_cm = tess.FaceCM(newfaces[i]);
 		plane.d = -1 * (norm.x*face_cm.x + norm.y*face_cm.y + norm.z*face_cm.z);
+		if(print)
+			std::cout<<"Plane "<<i<<" norm "<<norm<<" d "<<plane.d<<std::endl;
 		res[i] = plane;
 	}
 }
@@ -423,15 +425,17 @@ bool GetPoly(Tessellation3D const & oldtess, size_t oldcell, r3d_poly &poly, poi
 }
 
 std::pair<bool, std::array<double,4> > PolyhedraIntersection(Tessellation3D const & newtess, size_t newcell, r3d_poly &poly,
-	vector<r3d_plane> *planes)
+	vector<r3d_plane> *planes, bool const print)
 {
 	bool allocated = false;
 	if (planes == nullptr)
 	{
 		allocated = true;
 		planes = new vector<r3d_plane>;
-		GetPlanes(*planes, newtess, newcell);
+		GetPlanes(*planes, newtess, newcell, print);
 	}
+	if(print)
+		r3d_print(&poly);
 	int good_clip = r3d_clip(&poly, &(planes->at(0)), static_cast<int>(planes->size()));
 	std::pair<bool, std::array<double, 4> > res;
 	if (good_clip == 0 || poly.nverts == 0)
