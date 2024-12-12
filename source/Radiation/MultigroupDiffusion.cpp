@@ -224,6 +224,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 	double max_diff = std::numeric_limits<double>::min() * 100;
     int max_which = 0;
 	int max_loc = 0;
+    double equlibrium_factor_final = 0, final_Erad_eq = 0;
 	for(size_t i = 0; i < N; ++i)
 	{
         int which_one = 0;
@@ -233,18 +234,23 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 				to_calc = false;
 		if(not to_calc)
 			continue;
-		double const equlibrium_factor = 1.0; //std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
-		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density+0.01*max_Er);
-
-        double const temp = cells[i].density * equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].density * cells[i].temperature+1e-5*max_rhoT);
-        
-        if(temp > diff){
+		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.05 * cells[i].temperature ? 0.25 : 1;
+		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density+0.02*max_Er);
+        bool const Erad_equib = std::abs(cells[i].Erad * cells[i].density - old_Er[i]) < 0.075 * old_Er[i];
+        double temp_diff = cells[i].density * equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].density * cells[i].temperature+1e-4*max_rhoT);
+        if(Erad_equib)
+            temp_diff *= 0.25;
+        if(fleck_factor[i] < 0.5)
+            temp_diff *= 0.5;
+        if(temp_diff > diff){
             which_one = 1;
-            diff = temp;
+            diff = temp_diff;
         }
 
         for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
-            double const temp = equlibrium_factor* std::abs(cells[i].Eg[g]*cells[i].density - old_Eg[i][g]) / (cells[i].Eg[g]*cells[i].density + 0.01/ENERGY_GROUPS_NUM*max_Er);
+            double temp = 0.2 * (7 * equlibrium_factor / 6 - (1.0 / 6.0))* std::abs(cells[i].Eg[g]*cells[i].density - old_Eg[i][g]) / (cells[i].Eg[g]*cells[i].density + 0.01/ENERGY_GROUPS_NUM*max_Er + cells[i].Erad * cells[i].density / ENERGY_GROUPS_NUM);
+            if(Erad_equib)
+                temp *= 0.25;
             if(temp > diff){
                 which_one = 2 + g;
                 diff = temp;
@@ -257,6 +263,8 @@ double MultigroupDiffusion::calculate_dt(double const dt,
             max_which = which_one;
 			max_diff = diff;
 			max_loc = i;
+            equlibrium_factor_final = equlibrium_factor;
+            final_Erad_eq = Erad_equib;
 		}
 	}
 
@@ -279,7 +287,9 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
 		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(cells[max_loc].density * cells[max_loc].Erad * mass_scale_ / (length_scale_ * pow<2>(time_scale_) * CG::radiation_constant), 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
 		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_Tm[max_loc]<<" loc="<<tess.GetMeshPoint(max_loc)<<std::endl;
-        std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" kr="<<sigma_absorption_average[max_loc]<<" fleck factor "<<fleck_factor[max_loc]<<std::endl;
+        std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" kr="<<sigma_absorption_average[max_loc]<<" fleck factor "<<fleck_factor[max_loc]<<" which one "<<max_which<<" equlibrium_factor "<<equlibrium_factor_final<<" final_Erad_eq "<<final_Erad_eq<<std::endl;
+        if(max_which >= 2)
+            std::cout << "Group number "<<max_which - 2<<" New_Eg="<<cells[max_loc].Eg[max_which - 2]*cells[max_loc].density<<" old_Eg="<<old_Eg[max_loc][max_which - 2]<<std::endl;
         // for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
         //     std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density<<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]<<" bg="<<
         //     planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< 
