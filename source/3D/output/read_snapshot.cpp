@@ -122,7 +122,8 @@ Snapshot3D ReadSnapshot3DHelper(H5File &file, H5File &globalfile, Group &read_lo
                         res.cells.at(i).Eg[g] = Eg_temp[i];
                 }
                 else
-                    throw UniversalError("Missing energy group Eg_" + std::to_string(g) + " in snapshot");
+                    if(ENERGY_GROUPS_NUM > 1)
+                        throw UniversalError("Missing energy group Eg_" + std::to_string(g) + " in snapshot");
             }
         }
 
