@@ -990,7 +990,7 @@ int main(void)
 	matrix_builder.mass_scale_ = mscale;
 
 	std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
-	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
+	DefaultCellUpdater cu(false, 0.0, true, 0.0, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
 	RegularFlux3D *regular_flux = new RegularFlux3D(rs);

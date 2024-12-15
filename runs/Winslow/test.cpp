@@ -50,7 +50,7 @@ static constexpr double kev_kelvin = 1e3*ev_kelvin;
 
 int main(void)
 {
-	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
+	// feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI

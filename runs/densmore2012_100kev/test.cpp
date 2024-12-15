@@ -92,7 +92,7 @@ int main(void)
 		std::cout << "end eos" << std::endl;
 	
     //Radiation
-    double const sigma_0_nom = 1000.0*std::pow(kev, 3.5);
+    double const sigma_0_nom = 100.0*std::pow(kev, 3.5);
 
     using boost::math::pow;
 	AnalyticOpacity opacity(

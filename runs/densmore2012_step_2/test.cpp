@@ -1,3 +1,4 @@
+
 #include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
@@ -92,14 +93,25 @@ int main(void)
 		std::cout << "end eos" << std::endl;
 	
     //Radiation
-    double const sigma_0_nom = 100.0*std::pow(kev, 3.5);
+    double const sigma_0_nom_left =  1000.0*std::pow(kev, 3.5);
+	double const sigma_0_nom_right = 10.0*std::pow(kev, 3.5);
+
+    if (rank == 0)
+		std::cout << "end sta" << std::endl;
+
+	const double width = 1.5 / lscale;
+	size_t const Nx = 100;
+	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
+	Voronoi3D tess(ll, ur);
 
     using boost::math::pow;
 	AnalyticOpacity opacity(
-        [energy_groups_center, sigma_0_nom](ComputationalCell3D const& cell, std::size_t const group){ 
-            return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group])/(sigma_0_nom * 3.0);
+        [&tess, energy_groups_center, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, std::size_t const group){ 
+			double sigma_0_nom = cell.tracers[0] > 0.5 ? sigma_0_nom_left : sigma_0_nom_right;
+			return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group])/(sigma_0_nom * 3.0);
             },
-        [energy_groups_center, sigma_0_nom](ComputationalCell3D const& cell, std::size_t const group){ 
+        [&tess, energy_groups_center, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, std::size_t const group){
+			double sigma_0_nom = cell.tracers[0] > 0.5 ? sigma_0_nom_left : sigma_0_nom_right;
             return sigma_0_nom/(std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group]));
             },
         [](ComputationalCell3D const& cell, std::size_t group) { return 0.0; },
@@ -107,14 +119,6 @@ int main(void)
         energy_groups_center,
         energy_groups_boundary
         );
-	
-    if (rank == 0)
-		std::cout << "end sta" << std::endl;
-
-	const double width = 10 / lscale;
-	size_t const Nx = 128*4;
-	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
-	Voronoi3D tess(ll, ur);
 
 	int counter = 0;
 	ComputationalCell3D init_cell;
@@ -150,6 +154,13 @@ int main(void)
 	tess.Build(points);
 #endif
 	vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
+	for(size_t i=0; i<cells.size(); ++i)
+	{
+		if(tess.GetCellCM(i).x < 0.5)
+			cells[i].tracers[0] = 1.0;
+		else
+			cells[i].tracers[1] = 1.0;
+	}
 
 	Hllc3D rs;
 	RigidWallGenerator3D ghost;
@@ -160,13 +171,13 @@ int main(void)
 	
     double const Tb = kev_kelvin;
 	MultigroupDiffusionSideBoundary D_boundary(Tb, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), false, false, false, false, true, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
 	ZeroForce3D force = ZeroForce3D();
 
-	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
+	DefaultCellUpdater cu(false, 0.0, true, 0.0, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
 	RegularFlux3D *regular_flux = new RegularFlux3D(rs);
@@ -186,8 +197,8 @@ int main(void)
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
-	double init_dt = 1e-13 / tscale;
-	double const tf = 1e-9 / tscale;
+	double const init_dt = 1e-15 / tscale;
+	double const tf = 5e-9 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
@@ -215,7 +226,8 @@ int main(void)
 			double new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt,1e-12);
+			new_dt=std::min(new_dt, 1e-12);
+			new_dt=std::max(new_dt, init_dt);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
@@ -227,7 +239,7 @@ int main(void)
 		}
 	}
 
-	WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
+	WriteSnapshot3D(sim, "final_state.h5", appendices, true);
 	++counter;
 	std::cout<<"Done"<<std::endl;
 #ifdef RICH_MPI

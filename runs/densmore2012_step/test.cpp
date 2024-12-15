@@ -97,8 +97,8 @@ int main(void)
     if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
-	const double width = 3 / lscale;
-	size_t const Nx = 128*4;
+	const double width = 5 / lscale;
+	size_t const Nx = 200;
 	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
 	Voronoi3D tess(ll, ur);
 
@@ -169,7 +169,7 @@ int main(void)
 	
     double const Tb = kev_kelvin;
 	MultigroupDiffusionSideBoundary D_boundary(Tb, energy_groups_center, energy_groups_boundary);
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), true, false, false, true, false);
+	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), true, false, false, true, false, false);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -195,7 +195,7 @@ int main(void)
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
-	double init_dt = 1e-25 / tscale;
+	double const init_dt = 1e-15 / tscale;
 	double const tf = 1e-9 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
@@ -224,8 +224,8 @@ int main(void)
 		{
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
-			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt,5e-12);
+			new_dt=std::min(new_dt, sim.getTime()/50.0);
+			new_dt=std::max(new_dt, init_dt);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
@@ -237,7 +237,7 @@ int main(void)
 		}
 	}
 
-	WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
+	WriteSnapshot3D(sim, "final_state.h5", appendices, true);
 	++counter;
 	std::cout<<"Done"<<std::endl;
 #ifdef RICH_MPI

@@ -19,7 +19,7 @@
 #include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
 #include "source/Radiation/MultigroupDiffusionForce.hpp"
-#include "source/Radiation/planck_integral/planck_integral.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 namespace
 {
@@ -219,10 +219,10 @@ int main(void)
     // The diffusion class
     GrayPowerLawOpacity opacity(CG::speed_of_light / (3 * 577.), 0, 0, 577., 0, 0);
     MultigroupDiffusionXInflowBoundary diffusion_boundary(left_cell, right_cell, opacity);
-    MultigroupDiffusion diffusion(energy_groups_center, energy_groups_boundary, opacity, diffusion_boundary, eos, std::vector<std::string>(), true, true, false, false, false);
+    MultigroupDiffusion diffusion(energy_groups_center, energy_groups_boundary, opacity, diffusion_boundary, eos, std::vector<std::string>(), true, true, false, false, false, false);
 
 	// Primitive updater
-	DefaultCellUpdater cu(false, 0, true, &diffusion);
+	DefaultCellUpdater cu(false, 0.0, true, 0.0, &diffusion);
 
 	// External force
 	MultigroupDiffusionForce force(diffusion, eos);
