@@ -10,7 +10,11 @@ MultigroupDiffusionForce::MultigroupDiffusionForce(MultigroupDiffusion const& mu
                                                                 multigroup_diffusion_(multigroup_diffusion),
                                                                 next_dt_(1e-6 * std::numeric_limits<double>::max()),
                                                                 eos_(eos),
-                                                                momentum_limit_(momentum_limit){}
+                                                                momentum_limit_(momentum_limit){
+
+    std::cout << "MultigroupDiffusionForce is depracated, use ZeroForce3D instead!" << std::endl;
+    exit(1);
+}
 
 void MultigroupDiffusionForce::operator()(Tessellation3D const& tess, 
                                           std::vector<ComputationalCell3D> const& cells,
