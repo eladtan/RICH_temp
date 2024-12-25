@@ -459,5 +459,6 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
         file.close();
     #endif
 
-    writeVTU(filename, sim, vtu);
+    if(write_vtu)
+        writeVTU(filename, sim, vtu);
 }

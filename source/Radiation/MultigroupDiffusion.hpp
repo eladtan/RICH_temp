@@ -149,7 +149,7 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
     mutable std::vector<std::vector<double>> S;
     mutable std::vector<std::vector<double>> dSdUm;
 
-    mutable std::vector<double> n; // occupancy number
+    mutable std::vector<double> n, n_bg; // occupancy number
     mutable std::size_t cell_id_of_compton_matrices;
 
     mutable std::vector<double> Gammas;
@@ -236,7 +236,7 @@ private:
                             std::vector<double>& lambda_g,
                             std::vector<double>& R2_g) const; 
 
-    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index) const;
+    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs) const;
 
     double calculate_Upsilon(ComputationalCell3D const& cell) const;
 

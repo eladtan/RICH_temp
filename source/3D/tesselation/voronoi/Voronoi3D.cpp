@@ -2188,7 +2188,11 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
             bounding_box.first.z = std::min(bounding_box.first.z, point.z);
             bounding_box.second.z = std::max(bounding_box.second.z, point.z);
         }
-
+        if(activePoints.size() == 1)
+        {
+            bounding_box.second = this->ur_;
+            bounding_box.first = this->ll_;
+        }
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;
         // reportDuplications(new_points);

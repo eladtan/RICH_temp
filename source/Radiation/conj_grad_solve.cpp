@@ -484,9 +484,9 @@ namespace CG
                 for(size_t j = 0; j < Nlocal; ++j)
                 {
                     double const local_scale = std::abs(b[j]);
-                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-6))))
+                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-7))))
                     {
-                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-6)));
+                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-7)));
                         max_loc1 = j;
                     }
                     // if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
@@ -503,7 +503,7 @@ namespace CG
 #ifdef RICH_MPI
                 MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif       
-                if(max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                if((max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && ((i > 25 && max_data[1].val < 1e-15) || max_data[2].val < 0.5)) || error < 1e-100) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                     max_loc0 /= slice;
                     max_loc1 /= slice;
                     if(rank == 0)
