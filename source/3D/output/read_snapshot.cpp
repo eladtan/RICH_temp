@@ -198,4 +198,39 @@ Snapshot3D ReadSnapshot3DParallel(const string &fname, int fake_rank)
 
     return res;
 }
+
+int suppress_stderr()
+{
+    int fd = dup(STDERR_FILENO);
+    freopen("/dev/null", "w", stderr);
+    return fd;
+}
+
+void restore_stderr(int fd)
+{
+    fflush(stderr);
+    dup2(fd, fileno(stderr));
+    close(fd);
+
+}
+rank_t GetNumberOfRanksInHDF(std::string const& fname)
+{
+    H5File file(fname, H5F_ACC_RDONLY);
+    int counter = 0;
+    int fd = suppress_stderr();
+    while(true)
+    {
+        try
+        {
+            auto read_location = file.openGroup("/rank" + std::to_string(counter));
+            ++counter;
+        }
+        catch (Exception& notFoundError)
+        {
+            restore_stderr(fd);
+            return counter;
+        }
+    }
+}
+
 #endif // RICH_MPI
