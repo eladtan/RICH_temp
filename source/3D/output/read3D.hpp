@@ -34,6 +34,9 @@ std::vector<Vector3D> ReadVoronoiPoints(const std::string &filename);
 
 #ifdef RICH_MPI
     std::vector<Vector3D> ReadVoronoiPointsParallel(const std::string &filename);
+
+    rank_t GetNumberOfRanksInHDF(std::string const& fname);
 #endif // RICH_MPI
+
 
 #endif // OUTPUT_READ_3D_HPP
