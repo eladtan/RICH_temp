@@ -86,7 +86,9 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &
     int receivedAnswer = 0;
 
     std::vector<_queryInfo> &queries = batch.queriesAnswers;
-    MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
+    
+    MPI_Message msg;
+    MPI_Improbe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &msg, &status);
 
     std::vector<char> buffer;
 
@@ -104,7 +106,7 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &
         }
 
         // receive
-        MPI_Recv(&buffer[0], count, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, MPI_STATUS_IGNORE);
+        MPI_Mrecv(&buffer[0], count, MPI_BYTE, &msg, MPI_STATUS_IGNORE);
 
         // decode the message - id first, then length, then the data itself
         long int id;
@@ -143,7 +145,7 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &
                 throw eo;
             }
         }
-        MPI_Iprobe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &status);
+        MPI_Improbe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &msg, &status);
     }
 
     if(this->finishedMyQueries and this->shouldReceiveInTotal == this->receivedUntilNow)
@@ -160,7 +162,8 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::answerQueries()
     MPI_Status status;
     int arrivedNew = 0;
 
-    MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &status);
+    MPI_Message msg;
+    MPI_Improbe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &msg, &status);
     
     std::vector<char> arriveBuffer;
 
@@ -173,7 +176,8 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::answerQueries()
         {
             arriveBuffer.resize(count);
         }
-        MPI_Recv(&arriveBuffer[0], count, MPI_BYTE, status.MPI_SOURCE, TAG_REQUEST, this->comm, MPI_STATUS_IGNORE);
+
+        MPI_Mrecv(&arriveBuffer[0], count, MPI_BYTE, &msg, MPI_STATUS_IGNORE);
         int subQueries = count / sizeof(_subQueryData);
         totalArrived += subQueries;
         for(int i = 0; i < subQueries; i++)
@@ -201,7 +205,7 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::answerQueries()
             this->requests.push_back(MPI_REQUEST_NULL);
             MPI_Isend(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, &this->requests.back());
         }
-        MPI_Iprobe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &status);
+        MPI_Improbe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &msg, &status);
     }
 }
 
