@@ -24,7 +24,7 @@ typedef std::array<bool, MAX_STICKERS> svector;
 #include "tessellation/geometry.hpp"
 #ifdef RICH_MPI
   #include <mpi.h>
-  #include "misc/serialize/Serializer.hpp"
+  #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 //! \brief Computational cell

@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <optional>
 #include <mpi.h>
-#include "misc/serialize/mpi_commands.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 #include "mpi/mpi_commands.hpp"
 
 template<typename T>

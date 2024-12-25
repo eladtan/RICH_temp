@@ -4,7 +4,7 @@
 */
 
 #include "3D/elementary/Vector3D.hpp"
-#include "misc/serialize/Serializer.hpp"
+#include "mpi/serialize/Serializer.hpp"
 
 #define EPSILON 1e-12
 

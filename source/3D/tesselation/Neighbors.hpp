@@ -9,8 +9,8 @@
 
 #ifdef RICH_MPI
     #include <mpi.h>
-    #include "misc/serialize/Serializer.hpp"
-    #include "misc/serialize/mpi_commands.hpp"
+    #include "mpi/serialize/Serializer.hpp"
+    #include "mpi/serialize/mpi_commands.hpp"
 #endif // RICH_MPI
 
 struct RemotePoint

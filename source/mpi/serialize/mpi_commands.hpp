@@ -8,8 +8,6 @@
 #include "Serializer.hpp"
 #include "misc/universal_error.hpp"
 
-using rank_t = int;
-
 template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
 {
@@ -190,7 +188,7 @@ std::vector<T> MPI_Gatherv_serializable(const Container<T, Ts...> &data, rank_t 
             }
         }
         Serializer recv;
-        recv.serialize(totalSize);
+        recv.resize(totalSize);
         MPI_Gatherv(send.getData(), bytes, MPI_BYTE, recv.getData(), toRecvBytes.data(), toRecvDisplacements.data(), MPI_BYTE, root, comm);
         std::vector<T> toReturn;
         recv.extract_all(toReturn);

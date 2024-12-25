@@ -5,7 +5,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/hilbert/hilbertTypes.h"
 #ifdef RICH_MPI
-    #include "misc/serialize/Serializer.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #define ILLEGAL_IDX -1

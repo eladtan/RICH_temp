@@ -7,8 +7,8 @@
 #include "3D/gravity/GravityTree.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
-#include "misc/serialize/Serializer.hpp"
-#include "misc/serialize/mpi_commands.hpp"
+#include "mpi/serialize/Serializer.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 
 #define DEFAULT_OWNER_SPLIT 2
 
