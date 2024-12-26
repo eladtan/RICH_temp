@@ -1,7 +1,7 @@
 #ifndef QUERY_DATA_HPP
 #define QUERY_DATA_HPP
 
-#include "misc/serialize/Serializer.hpp"
+#include "mpi/serialize/Serializer.hpp"
 
 template<typename QueryData>
 struct SubQueryData

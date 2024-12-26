@@ -9,7 +9,7 @@
 #include <functional>
 #include "misc/utils.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
-#include "misc/serialize/Serializer.hpp"
+#include "mpi/serialize/Serializer.hpp"
 #include "stdint.h"
 
 #define MPI_TIMED_BARRIER_TAG 110503

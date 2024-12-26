@@ -3,7 +3,7 @@
 
 #ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
-#include "misc/serialize/Serializer.hpp"
+#include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 #include "QueryAgent.hpp"
 

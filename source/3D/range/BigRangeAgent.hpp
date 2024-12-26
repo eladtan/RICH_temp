@@ -10,7 +10,7 @@
     #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
-    #include "misc/serialize/Serializer.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #include "RangeQueryData.h"

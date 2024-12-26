@@ -8,7 +8,7 @@
 #include "ProcessorUpdate.hpp"
 #ifdef RICH_MPI
 	#include <mpi.h>
-	#include "misc/serialize/Serializer.hpp"
+	#include "mpi/serialize/Serializer.hpp"
 #endif
 
 //! \brief A load balancing scheme aiming for the same number of points in each process
