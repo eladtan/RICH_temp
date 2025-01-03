@@ -19,6 +19,7 @@ message("Build Type: " ${CMAKE_BUILD_TYPE})
 message("CMAKE_CXX_FLAGS = " ${CMAKE_CXX_FLAGS})
 message("CMAKE_CXX_FLAGS_RELEASE = " ${CMAKE_CXX_FLAGS_RELEASE})
 message("CMAKE_CXX_FLAGS_DEBUG = " ${CMAKE_CXX_FLAGS_DEBUG})
+message("CMAKE_EXE_LINKER_FLAGS = " ${CMAKE_EXE_LINKER_FLAGS})
 message("CMAKE_Fortran_FLAGS = " ${CMAKE_Fortran_FLAGS})
 message("CMAKE_Fortran_FLAGS_RELEASE = " ${CMAKE_Fortran_FLAGS_RELEASE})
 message("CMAKE_Fortran_FLAGS_DEBUG = " ${CMAKE_Fortran_FLAGS_DEBUG})
@@ -176,19 +177,20 @@ if(DEFINED BOOST_DIR)
     target_link_directories(${EXE_NAME} PRIVATE ${BOOST_DIR}/lib)
 endif()
 
-# link pybind11
-if(pybind11_FOUND)
-    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
-endif()
-
 # link json cpp
 if(DEFINED JSONCPP_LIB_DIRECTORY)
     target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
 endif()
 
-# link json cpp
-if(DEFINED PYTHON_LIB_LIBRARY)
+# link python3
+if(DEFINED PYTHON_LIB_DIRECTORY)
+    message("LINKING PYTHON3: ${PYTHON_LIB}")
     target_link_libraries(${EXE_NAME} PRIVATE ${PYTHON_LIB})
+endif()
+
+# link pybind11
+if(pybind11_FOUND)
+    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
 endif()
 
 # link vtune

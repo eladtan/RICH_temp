@@ -18,10 +18,11 @@ RELEASE_OPTIMIZATION_LEVEL = "-O3"
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None, definitionOfReal=8):
     warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
-    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
+    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = f" -DNDEBUG -DOMPI_SKIP_MPICXX {RELEASE_OPTIMIZATION_LEVEL}"
-    
+    common_linker_flags = f"-rdynamic"
+
     hdf5_lib_dir = SysLibsDict["intel_hdf5_lib_dir"] if config.startswith("intel") and "intel_hdf5_lib_dir" in SysLibsDict else SysLibsDict["hdf5_lib_dir"]
     hdf5_include_dir = SysLibsDict["intel_hdf5_include"] if config.startswith("intel") and "intel_hdf5_include" in SysLibsDict else SysLibsDict["hdf5_include"]
     vtk_dir = SysLibsDict["vtk_intel"] if config.startswith("intel") and "vtk_intel" in SysLibsDict else SysLibsDict["vtk"]
@@ -38,13 +39,15 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cxx_compiler = SysLibsDict["g++"]
 
         cmake_cxx_standard = "17"
-        cmake_cxx_flags = " -rdynamic -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy -Wno-double-promotion -Wno-shadow "
+        cmake_cxx_flags = " -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy -Wno-double-promotion -Wno-shadow "
         cmake_cxx_flags_debug = " -D_GLIBCXX_DEBUG "
         cmake_cxx_flags_release = " "
+        cmake_cxx_linker_flags = f"{common_linker_flags}"
+
     elif config.startswith("intel"):
         fortran_compiler = SysLibsDict["ifort"]
-        c_compiler = SysLibsDict["icx-cc"]
-        cxx_compiler = SysLibsDict["icx"]
+        c_compiler = SysLibsDict["icx"]
+        cxx_compiler = SysLibsDict["icpx"]
         os.environ["I_MPI_CC"] = c_compiler
         os.environ["I_MPI_CXX"] = cxx_compiler
         os.environ["I_MPI_F90"] = fortran_compiler
@@ -59,6 +62,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_cxx_flags = " -ansi-alias -fimf-arch-consistency=true "
         cmake_cxx_flags_debug = " -fp-model consistent -diag-disable=openmp -Wno-unknown-pragmas "
         cmake_cxx_flags_release = " -fp-model precise -march=core-avx2 -qopenmp "
+        cmake_cxx_linker_flags = f"{common_linker_flags} -v"
+
     else:
         logger.error(f"no known compiler was given at head of {config}")
     
@@ -100,6 +105,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
             f'-DCMAKE_CXX_FLAGS={common_cxx_flags + cmake_cxx_flags}',
             f'-DCMAKE_CXX_FLAGS_DEBUG={common_cxx_flags_debug + cmake_cxx_flags_debug}',
             f'-DCMAKE_CXX_FLAGS_RELEASE={common_cxx_flags_release + cmake_cxx_flags_release}',
+            f'-DCMAKE_EXE_LINKER_FLAGS={cmake_cxx_linker_flags}',
             f'-DEXE_NAME={exe_name}',
             f'-DHDF5_LIB_DIRECTORY={hdf5_lib_dir}',
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
