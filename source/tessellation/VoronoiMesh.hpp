@@ -52,7 +52,7 @@ public:
 
 #ifdef RICH_MPI
 	void Initialise(const vector<Vector2D>& points,Tessellation const& vproc,
-		const OuterBoundary& outer,bool reorder=true);
+		const OuterBoundary& outer,bool reorder=true) override;
 #endif
 
 	void Initialise(const vector<Vector2D>& points,const OuterBoundary& bc, bool reorder=true) override;
