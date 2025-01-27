@@ -74,21 +74,31 @@ void MonteCarloParticle<T, Grid>::step()
 template<typename T, typename Grid>
 std::pair<size_t, distance_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const Grid &grid, size_t cellIndex) const
 {
+    distance_t min_alpha = std::numeric_limits<distance_t>::max();
+    size_t min_face = std::numeric_limits<size_t>::max();
+
     for(const size_t &faceIdx : grid.GetCellFaces(cellIndex))
     {
         const T &normal = grid.Normal(faceIdx); // normal to face
         const T &pointOnFace = grid.GetFacePoints(faceIdx)[0];
         double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
-        if(abs(normalVelocityScalarProd) < EPSILON) // negative
+        if(normalVelocityScalarProd < EPSILON) // negative
         {
             continue;
         }
-        double alpha = -1 * ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
-        if(alpha >= EPSILON) // positive
+        distance_t alpha = -1 * ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
+        if(alpha < min_alpha)
         {
-            return {faceIdx, alpha};
+            min_alpha = alpha;
+            min_face = faceIdx;
         }
     }
+
+    if(min_alpha != std::numeric_limits<distance_t>::max())
+    {
+        return {min_face, min_alpha};
+    }
+
     UniversalError eo("MonteCarloParticle::distanceToNearestFace: no face intersection found");
     eo.addEntry("Particle", *this);
     eo.addEntry("Cell Index", cellIndex);
