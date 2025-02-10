@@ -35,6 +35,8 @@ private:
 public:
     explicit HilbertRectangularConvertor2D(const Vector2D &ll, const Vector2D &ur, size_t order);
     
+    ~HilbertRectangularConvertor2D() = default;
+    
     inline hilbert_index_t getHilbertSize() const{return this->total_points_num;};
     
     void changeOrder(size_t order);

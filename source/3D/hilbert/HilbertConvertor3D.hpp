@@ -21,6 +21,8 @@ protected:
 public:
     explicit HilbertConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
+    virtual ~HilbertConvertor3D() = default;
+    
     virtual void changeOrder(size_t order) = 0;
     
     virtual hilbert_index_t xyz2d(coord_t x, coord_t y, coord_t z) const = 0;

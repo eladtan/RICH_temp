@@ -49,6 +49,8 @@ private:
 public:
     explicit HilbertRectangularConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
+    ~HilbertRectangularConvertor3D() override = default;
+    
     inline hilbert_index_t getHilbertSize() const{return this->total_points_num;};
     
     void changeOrder(size_t order) override;
