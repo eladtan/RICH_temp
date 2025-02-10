@@ -3,6 +3,9 @@
 #include "../../misc/simple_io.hpp"
 #include "../../misc/int2str.hpp"
 #include <fstream>
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
 
 vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points, Vector3D const& ll, Vector3D const& ur,
 	size_t NumberIt, Tessellation3D *tess)
@@ -10,7 +13,9 @@ vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points, Vector3D const& ll,
 	Voronoi3D default_tess(ll, ur);
 	if (tess == nullptr)
 		tess = &default_tess;
+	int rank = 0;
 #ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	tess->BuildParallel(points);
 #else
 	tess->Build(points);
@@ -20,6 +25,8 @@ vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points, Vector3D const& ll,
 	vector<Vector3D> res(points);
 	for (size_t j = 0; j < NumberIt; ++j)
 	{
+		if(rank == 0)
+			std::cout<<"Round Grid Iteration: "<<j<<std::endl;
 	  size_t N = tess->GetPointNo();
 #ifdef RICH_MPI
 		res = tess->getMeshPoints();

@@ -3,20 +3,20 @@
 using std::size_t;
 
 Conserved3D::Conserved3D(void) :
-	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Erad_dt(0), Erad_dt_dt(0), tracers() {}
+	mass(0), momentum(), energy(0), internal_energy(0), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0), tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i) :
 	mass(mass_i), momentum(momentum_i), energy(energy_i), internal_energy(internal_energy_i), 
-	Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
+	Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0),  tracers() {}
 
 Conserved3D::Conserved3D(double mass_i,
 	const Vector3D& momentum_i,
 	double energy_i, double internal_energy_i,
 	const std::array<double, MAX_TRACERS >& tracers_i) :
 	mass(mass_i), momentum(momentum_i),
-	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
+	energy(energy_i), internal_energy(internal_energy_i), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0), Erad_dt_dt(0),  tracers(tracers_i) {}
 
 namespace
 {
@@ -51,6 +51,8 @@ Conserved3D& Conserved3D::operator-=(const Conserved3D& diff)
 	Erad_dt_dt -= diff.Erad_dt_dt;
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		tracers[i] -= diff.tracers[i];
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		Eg[i] -= diff.Eg[i];
 	return *this;
 }
 
@@ -65,51 +67,51 @@ Conserved3D& Conserved3D::operator+=(const Conserved3D& diff)
 	Erad_dt_dt += diff.Erad_dt_dt;
 	for (size_t i = 0; i < tracers.size(); ++i)
 		tracers[i] += diff.tracers[i];
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		Eg[i] += diff.Eg[i];
 	return *this;
 }
 
 #ifdef RICH_MPI
-size_t Conserved3D::getChunkSize(void) const
-{
-	return 9 + tracers.size();
-}
+	size_t Conserved3D::dump(Serializer *serializer) const
+	{
+		size_t bytes = 0;
+		bytes += serializer->insert(this->mass);
+		bytes += serializer->insert(this->energy);
+		bytes += serializer->insert(this->momentum);
+		bytes += serializer->insert(this->internal_energy);
+		bytes += serializer->insert(this->Erad);
+		bytes += serializer->insert(this->Erad_dt);
+		bytes += serializer->insert(this->Erad_dt_dt);
+		bytes += serializer->insert(this->Eg.size());
+		bytes += serializer->insert_array(this->Eg.data(), this->Eg.size());
+		for (size_t j = 0; j < MAX_TRACERS; ++j)
+		{
+			bytes += serializer->insert(this->tracers[j]);
+		}
+		return bytes;
+	}
 
-vector<double> Conserved3D::serialize(void) const
-{
-	vector<double> res(getChunkSize());
-	res.at(0) = mass;
-	res.at(1) = energy;
-	res.at(2) = momentum.x;
-	res.at(3) = momentum.y;
-	res.at(4) = momentum.z;
-	res.at(5) = internal_energy;
-	res.at(6) = Erad;
-	res.at(7) = Erad_dt;
-	res.at(8) = Erad_dt_dt;
-	size_t counter = 9;
-	//size_t N = tracers.size();
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		res[j + counter] = tracers[j];
-	return res;
-}
-
-void Conserved3D::unserialize(const vector<double>& data)
-{
-	assert(data.size() == getChunkSize());
-	mass = data.at(0);
-	energy = data.at(1);
-	momentum.x = data.at(2);
-	momentum.y = data.at(3);
-	momentum.z = data.at(4);
-	internal_energy = data.at(5);
-	Erad = data.at(6);
-	Erad_dt = data.at(7);
-	Erad_dt_dt = data.at(8);
-	size_t counter = 9;
-	//size_t N = tracers.size();
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		tracers[j] = data.at(counter + j);
-}
+	size_t Conserved3D::load(const Serializer *serializer, std::size_t byteOffset)
+	{
+		size_t bytes = 0;
+		bytes += serializer->extract(this->mass, byteOffset);
+		bytes += serializer->extract(this->energy, byteOffset + bytes);
+		bytes += serializer->extract(this->momentum, byteOffset + bytes);
+		bytes += serializer->extract(this->internal_energy, byteOffset + bytes);
+		bytes += serializer->extract(this->Erad, byteOffset + bytes);
+		bytes += serializer->extract(this->Erad_dt, byteOffset + bytes);
+		bytes += serializer->extract(this->Erad_dt_dt, byteOffset + bytes);
+		size_t EgSize;
+		bytes += serializer->extract(EgSize, byteOffset + bytes);
+		this->Eg.resize(EgSize);
+		bytes += serializer->extract_array(this->Eg.data(), EgSize, byteOffset + bytes);
+		for (size_t j = 0; j < MAX_TRACERS; ++j)
+		{
+			bytes += serializer->extract(this->tracers[j], byteOffset + bytes);
+		}
+		return bytes;
+	}
 #endif
 
 Conserved3D operator*(double s, const Conserved3D& c)
@@ -119,6 +121,8 @@ Conserved3D operator*(double s, const Conserved3D& c)
 		s*c.energy, s*c.internal_energy,
 		s*c.tracers);
 	res.Erad = s * c.Erad;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] = s * c.Eg[j];
 	res.Erad_dt = s * c.Erad_dt;
 	res.Erad_dt_dt = s * c.Erad_dt_dt;
 	return res;
@@ -138,6 +142,8 @@ Conserved3D operator/(const Conserved3D& c, double s)
 		c.energy * s_1, c.internal_energy * s_1,
 		s_1 * c.tracers);
 	res.Erad = c.Erad * s_1;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		res.Eg[j] = s_1 * c.Eg[j];
 	res.Erad_dt = c.Erad_dt * s_1;
 	res.Erad_dt_dt = c.Erad_dt_dt * s_1;
 	return res;
@@ -157,6 +163,8 @@ void PrimitiveToConserved(ComputationalCell3D const& cell, double vol, Conserved
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < MAX_TRACERS; ++i)
 		res.tracers[i] = cell.tracers[i] * res.mass;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		res.Eg[i] = cell.Eg[i] * res.mass;
 }
 
 void PrimitiveToConservedSR(ComputationalCell3D const& cell, double vol, Conserved3D &res, EquationOfState const& eos)
@@ -175,6 +183,8 @@ void PrimitiveToConservedSR(ComputationalCell3D const& cell, double vol, Conserv
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < N; ++i)
 		res.tracers[i] = cell.tracers[i] * res.mass;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		res.Eg[i] = cell.Eg[i] * res.mass;
 }
 
 Conserved3D operator+(Conserved3D const& p1, Conserved3D const& p2)
@@ -203,5 +213,7 @@ Conserved3D& Conserved3D::operator*=(double s)
 	size_t N = this->tracers.size();
 	for (size_t j = 0; j < N; ++j)
 		this->tracers[j] *= s;
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		this->Eg[j] *= s;
 	return *this;
 }

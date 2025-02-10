@@ -328,7 +328,7 @@ namespace
 		// send/recv the data
 		nghost_index = MPI_exchange_data(tess.GetDuplicatedProcs(), nghost_index);
 		duplicated_index = MPI_exchange_data(tess, duplicated_index);
-		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes, tess.GetMeshPoint(0));
+		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes);
 		planes_d = MPI_exchange_data(tess, planes_d);
 		// convert the data
 		for (size_t i = 0; i < Nprocs; ++i)
@@ -625,7 +625,7 @@ namespace
 						}
 					}
 					// Check intersectrion
-					std::pair<bool, std::array<double, 4> > dv = PolyhedraIntersection(oldtess, cur_check, poly2);
+					std::pair<bool, std::array<double, 4> > dv = PolyhedraIntersection(oldtess, cur_check, poly2, nullptr, false);
 					if (dv.first)
 					{
 						total_dv += dv.second[0];
@@ -667,7 +667,7 @@ namespace
 				extensives[Norg2 + i] = eu.ConvertPrimitveToExtensive3D(cells[ToRefine[i]], eos, tess.GetVolume(Norg + i), Slope3D(), 
 					Vector3D(), Vector3D());
 				extensives[ToRefine[i]] -= extensives[Norg2 + i];
-				std::cout << "Warning no good poly localrefine" << std::endl;
+				std::cout << "Warning no good poly localrefine good_poly " <<good_poly<<" loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<<" old ID "<<cells[ToRefine[i]].ID<<std::endl;
 			}
 		}
 	}
@@ -788,7 +788,7 @@ namespace
 				}
 			}
 		}
-		extensive_tosend = MPI_exchange_data(oldtess.GetDuplicatedProcs(), extensive_tosend, extensives.at(0));
+		extensive_tosend = MPI_exchange_data(oldtess.GetDuplicatedProcs(), extensive_tosend);
 		size_t Nremove = oldtess.GetPointNo() + Nrefine - tess.GetPointNo();
 		for (size_t i = 0; i < Nprocs; ++i)
 		{
@@ -828,17 +828,18 @@ Conserved3D SimpleAMRExtensiveUpdater3D::ConvertPrimitveToExtensive3D(const Comp
 	ComputationalCellAddMult(cell_temp, slope.xderivative, diff.x);
 	ComputationalCellAddMult(cell_temp, slope.yderivative, diff.y);
 	ComputationalCellAddMult(cell_temp, slope.zderivative, diff.z);
-	cell_temp.internal_energy = eos.dp2e(cell_temp.density, cell_temp.pressure, cell_temp.tracers, ComputationalCell3D::tracerNames);
 	const double mass = volume * cell_temp.density;
 	res.mass = mass;
+	res.momentum = mass * cell.velocity + volume * cell.density * (cell_temp.velocity - cell.velocity);
 	res.internal_energy = cell_temp.internal_energy * mass;
-	res.energy = res.internal_energy + 0.5 * mass * ScalarProd(cell_temp.velocity, cell_temp.velocity);
-	res.momentum = mass * cell_temp.velocity;
+	res.energy = res.internal_energy + 0.5 * mass * ScalarProd(cell.velocity, cell.velocity) + volume * cell.density * ScalarProd(cell.velocity, cell_temp.velocity - cell.velocity);
 	res.Erad = mass * cell_temp.Erad;
 	size_t N = cell_temp.tracers.size();
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < N; ++i)
 		res.tracers[i] = cell_temp.tracers[i] * mass;
+	for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+		res.Eg[g] = cell_temp.Eg[g] * mass;
 	return res;
 }
 
@@ -885,11 +886,27 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 	res.density = extensive.mass*vol_inv;
 	res.velocity = extensive.momentum / extensive.mass;
 	res.ID  = old_cell.ID;
+	size_t N = extensive.tracers.size();
+	for (size_t i = 0; i < N; ++i)
+		res.tracers[i] = extensive.tracers[i] / extensive.mass;
+	res.stickers = old_cell.stickers;
+	auto entropy_it = binary_find(ComputationalCell3D::tracerNames.begin(), ComputationalCell3D::tracerNames.end(), "Entropy");
 	try
 	{
-		if(!(extensive.internal_energy > 0))
-			throw UniversalError("Negative internal energy in ConvertExtensiveToPrimitve3D");
-		res.pressure = eos.de2p(res.density, extensive.internal_energy / extensive.mass);
+		if(entropy_it != ComputationalCell3D::tracerNames.end())
+		{
+			size_t const entropy_index = static_cast<size_t>(entropy_it - ComputationalCell3D::tracerNames.begin());
+			res.internal_energy = extensive.internal_energy / extensive.mass;
+			res.pressure = eos.de2p(res.density, res.internal_energy);
+			res.tracers[entropy_index] = eos.dp2s(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
+			extensive.tracers[entropy_index] = res.tracers[entropy_index] * extensive.mass;
+		}
+		else
+		{
+			extensive.internal_energy = extensive.energy - 0.5 * ScalarProd(extensive.momentum, extensive.momentum) / extensive.mass;
+			res.internal_energy = extensive.internal_energy / extensive.mass;
+			res.pressure = eos.de2p(res.density, res.internal_energy);
+		}
 	}
 	catch (UniversalError &eo)
 	{
@@ -902,21 +919,10 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 		eo.addEntry("Volume", 1.0 / vol_inv);
 		throw;
 	}
-	res.internal_energy = extensive.internal_energy / extensive.mass;
 	res.Erad = extensive.Erad / extensive.mass;
 	res.temperature = eos.de2T(res.density, res.internal_energy);
-	size_t N = extensive.tracers.size();
-//	res.tracers.resize(N);
-	for (size_t i = 0; i < N; ++i)
-		res.tracers[i] = extensive.tracers[i] / extensive.mass;
-	res.stickers = old_cell.stickers;
-	auto entropy_it = binary_find(ComputationalCell3D::tracerNames.begin(), ComputationalCell3D::tracerNames.end(), "Entropy");
-	if(entropy_it != ComputationalCell3D::tracerNames.end())
-	{
-		size_t const entropy_index = static_cast<size_t>(entropy_it - ComputationalCell3D::tracerNames.begin());
-		res.tracers[entropy_index] = eos.dp2s(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
-		extensive.tracers[entropy_index] = res.tracers[entropy_index] * extensive.mass;
-	}
+	for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+		res.Eg[g] = extensive.Eg[g] / extensive.mass;
 	return res;
 }
 
@@ -983,6 +989,12 @@ AMR3D::AMR3D(EquationOfState const& eos,
 
 void AMR3D::operator() (HDSim3D &sim)
 {
+	int rank = 0;
+#ifdef RICH_MPI
+	int ws = 0;
+	MPI_Comm_size(MPI_COMM_WORLD, &ws);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 	Tessellation3D &tess = sim.getTesselation();
 	std::vector<ComputationalCell3D> &cells = sim.getCells();
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
@@ -1009,14 +1021,16 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveRefineNeighborRemove(tess, ToRemove.first, ToRefine.first, ToRefine.second);
 
 	// Do we need to rebuild tess ?
-	int ntotal = static_cast<int>(ToRemove.first.size() + ToRefine.first.size());
+	int nAMR[2];
+	nAMR[0] = static_cast<int>(ToRemove.first.size());
+	nAMR[1] = static_cast<int>(ToRefine.first.size());
 #ifdef RICH_MPI
-	int ntemp = 0;
-	MPI_Allreduce(&ntotal, &ntemp, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-	ntotal = ntemp;
+	MPI_Allreduce(MPI_IN_PLACE, nAMR, 2, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #endif
-	if (ntotal == 0)
+	if ((nAMR[0] + nAMR[1]) == 0)
 		return;
+	if(rank == 0)
+		std::cout<<"Removing "<<nAMR[0]<<" cells and refining "<<nAMR[1]<<" cells."<<std::endl;
 	interp_.BuildSlopes(tess, cells, time);
 	// Get new points from refine
 	std::vector<Vector3D> new_points = GetNewPoints(tess, ToRefine);
@@ -1029,6 +1043,11 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveVector(new_mesh, ToRemove.first);
 	new_mesh.insert(new_mesh.end(), new_points.begin(), new_points.end());
 #ifdef RICH_MPI
+	std::vector<size_t> mask(Norg);
+	std::iota(mask.begin(), mask.end(), 0);
+	RemoveVector(mask, ToRemove.first);
+	mask.resize(new_mesh.size(), std::numeric_limits<size_t>::max());
+	tess.PreparePoints(new_mesh, mask);
 	tess.BuildParallel(new_mesh, true);
 #else // RICH_MPI
 	tess.Build(new_mesh);
@@ -1069,9 +1088,6 @@ void AMR3D::operator() (HDSim3D &sim)
 	size_t Nrefine = ToRefine.first.size();
 	size_t Nstart = sim.GetMaxID() + 1;
 #ifdef RICH_MPI
-	int ws = 0, rank = 0;
-	MPI_Comm_size(MPI_COMM_WORLD, &ws);
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	std::vector<size_t> nrecv(static_cast<size_t>(ws), 0);
 	MPI_Allgather(&Nrefine, 1, MPI_UNSIGNED_LONG_LONG, &nrecv[0], 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
 	for (size_t i = 0; i < static_cast<size_t>(rank); ++i)
@@ -1112,8 +1128,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	size_t & MaxID = sim.GetMaxID();
 #ifdef RICH_MPI
 	// Update cells
-	ComputationalCell3D cdummy;
-	MPI_exchange_data(tess, cells, true,&cdummy);
+	MPI_exchange_data(tess, cells, true);
 	//#endif
 	// Update Max ID
 	for (size_t i = 0; i < static_cast<size_t>(ws); ++i)

@@ -9,7 +9,7 @@
 #include "../../tessellation/geometry.hpp"
 #include "computational_cell_2d.hpp"
 #ifdef RICH_MPI
-#include "../../misc/serializable.hpp"
+#include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 using std::string;
@@ -72,13 +72,9 @@ public:
   explicit Extensive(tvector const& Tracers);
 
 #ifdef RICH_MPI
-  size_t getChunkSize(void) const override;
+  size_t load(const Serializer *serializer, size_t byteOffset) override;
 
-  vector<double> serialize(void) const override;
-
-  void unserialize
-  (const vector<double>& data) override;
-
+  size_t dump(Serializer *serializer) const override;
 #endif
 
 };

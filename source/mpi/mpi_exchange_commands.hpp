@@ -125,47 +125,47 @@ inline std::vector<T> MPI_Exchange_data_with_data_function(const std::vector<int
     return dataToReturn;
 }
 
-template<typename T, typename RankToDataFunction = std::function<const std::vector<T>&(int)>>
-inline std::vector<std::vector<T>> MPI_Exchange_data_seperate_with_data_function(const std::vector<int> &sentProc, const RankToDataFunction &rankToData, const MPI_Comm &comm = MPI_COMM_WORLD)
-{
-    std::vector<int> _sendCounts;
-    for(int _rank : sentProc)
-    {
-        const std::vector<T> &data = rankToData(_rank);
-        _sendCounts.push_back(static_cast<int>(data.empty()? 0 : data[0].getChunkSize() * data.size()));
-    }
-    MPI_Comm graphComm = MPI_Create_graph_comm(sentProc, _sendCounts, comm);
+// template<typename T, typename RankToDataFunction = std::function<const std::vector<T>&(int)>>
+// inline std::vector<std::vector<T>> MPI_Exchange_data_seperate_with_data_function(const std::vector<int> &sentProc, const RankToDataFunction &rankToData, const MPI_Comm &comm = MPI_COMM_WORLD)
+// {
+//     std::vector<int> _sendCounts;
+//     for(int _rank : sentProc)
+//     {
+//         const std::vector<T> &data = rankToData(_rank);
+//         _sendCounts.push_back(static_cast<int>(data.empty() ? 0 : data[0].getChunkSize() * data.size()));
+//     }
+//     MPI_Comm graphComm = MPI_Create_graph_comm(sentProc, _sendCounts, comm);
 
-    // reorder ranks
-    std::vector<int> sources(sentProc.size()), destinations(sentProc.size());
-    std::vector<int> srcWeights(sources.size()), destWeights(destinations.size());
-    MPI_Dist_graph_neighbors(graphComm, sources.size(), sources.data(), srcWeights.data(), destinations.size(), destinations.data(), destWeights.data());
+//     // reorder ranks
+//     std::vector<int> sources(sentProc.size()), destinations(sentProc.size());
+//     std::vector<int> srcWeights(sources.size()), destWeights(destinations.size());
+//     MPI_Dist_graph_neighbors(graphComm, sources.size(), sources.data(), srcWeights.data(), destinations.size(), destinations.data(), destWeights.data());
     
-    int commRank;
-    MPI_Comm_rank(comm, &commRank);
-    std::cout << "rank " << commRank << ", sentproc is " << sentProc << ", sources is " << sources << ", destinations is " << destinations << std::endl;
+//     int commRank;
+//     MPI_Comm_rank(comm, &commRank);
+//     std::cout << "rank " << commRank << ", sentproc is " << sentProc << ", sources is " << sources << ", destinations is " << destinations << std::endl;
 
-    const auto &[sendData, sendCounts, sendDisplacements] = CalculateSerializableSendData<T>(destinations, rankToData);
+//     const auto &[sendData, sendCounts, sendDisplacements] = CalculateSerializableSendData<T>(destinations, rankToData);
     
-    std::cout << "rank " << commRank << ", sentproc is " << sentProc << ", sendCounts is " << sendCounts << ", sendDisplacements is " << sendDisplacements << std::endl;
+//     std::cout << "rank " << commRank << ", sentproc is " << sentProc << ", sendCounts is " << sendCounts << ", sendDisplacements is " << sendDisplacements << std::endl;
 
-    const auto &[recvCounts, recvDisplacements, totalRecvSize] = SyncReceiveData<T>(sendCounts, graphComm);
+//     const auto &[recvCounts, recvDisplacements, totalRecvSize] = SyncReceiveData<T>(sendCounts, graphComm);
 
-    std::cout << "rank " << commRank << ", sentproc is " << sentProc << ", recvCounts is " << recvCounts << ", recvDisplacements is " << recvDisplacements << std::endl;
+//     std::cout << "rank " << commRank << ", sentproc is " << sentProc << ", recvCounts is " << recvCounts << ", recvDisplacements is " << recvDisplacements << std::endl;
 
-    std::vector<double> recvData(totalRecvSize);
-    MPI_Neighbor_alltoallv(sendData.data(), sendCounts.data(), sendDisplacements.data(), MPI_DOUBLE, recvData.data(), recvCounts.data(), recvDisplacements.data(), MPI_DOUBLE, graphComm);
+//     std::vector<double> recvData(totalRecvSize);
+//     MPI_Neighbor_alltoallv(sendData.data(), sendCounts.data(), sendDisplacements.data(), MPI_DOUBLE, recvData.data(), recvCounts.data(), recvDisplacements.data(), MPI_DOUBLE, graphComm);
     
-    std::vector<std::vector<T>> dataToReturn;
-    dataToReturn.reserve(sentProc.size());
-    for(int _rank : sentProc)
-    {
-        size_t index = std::distance(destinations.cbegin(), std::find(destinations.cbegin(), destinations.cend(), _rank));
-        dataToReturn.emplace_back();
-        TranslateSerializableVector<T>(dataToReturn.back(), recvData.cbegin() + recvDisplacements[index], recvData.cbegin() + recvDisplacements[index] + recvCounts[index]);
-    }
-    return dataToReturn;
-}
+//     std::vector<std::vector<T>> dataToReturn;
+//     dataToReturn.reserve(sentProc.size());
+//     for(int _rank : sentProc)
+//     {
+//         size_t index = std::distance(destinations.cbegin(), std::find(destinations.cbegin(), destinations.cend(), _rank));
+//         dataToReturn.emplace_back();
+//         TranslateSerializableVector<T>(dataToReturn.back(), recvData.cbegin() + recvDisplacements[index], recvData.cbegin() + recvDisplacements[index] + recvCounts[index]);
+//     }
+//     return dataToReturn;
+// }
 
 template<typename T, typename IndexingType = size_t>
 inline std::vector<T> MPI_Exchange_data_indices(const std::vector<T> &data, const std::vector<int> &sentProc, const std::vector<std::vector<IndexingType>> &sentIndices, const std::function<size_t(IndexingType)> &indicesTranslation, const MPI_Comm &comm = MPI_COMM_WORLD)
@@ -189,27 +189,27 @@ inline std::vector<T> MPI_Exchange_data_indices(const std::vector<T> &data, cons
     return MPI_Exchange_data_with_data_function<T>(sentProc, function, comm);
 }
 
-template<typename T, typename IndexingType = size_t>
-inline std::vector<std::vector<T>> MPI_Exchange_data_seperate_indices(const std::vector<T> &data, const std::vector<int> &sentProc, const std::vector<std::vector<IndexingType>> &sentIndices, const std::function<size_t(IndexingType)> &indicesTranslation, const MPI_Comm &comm = MPI_COMM_WORLD)
-{
-    auto function = [&data, &sentProc, &sentIndices, &indicesTranslation](int _rank)
-    {   
-        size_t index = std::distance(sentProc.cbegin(), std::find(sentProc.cbegin(), sentProc.cend(), _rank));
-        if(index == sentProc.size())
-        {
-            return std::vector<T>();
-        }
-        const std::vector<IndexingType> &indices = sentIndices[index];
-        std::vector<T> result;
-        result.reserve(indices.size());
-        for(IndexingType ind : indices)
-        {
-            result.push_back(data[indicesTranslation(ind)]);
-        }
-        return result;
-    };
-    return MPI_Exchange_data_seperate_with_data_function<T>(sentProc, function, comm);
-}
+// template<typename T, typename IndexingType = size_t>
+// inline std::vector<std::vector<T>> MPI_Exchange_data_seperate_indices(const std::vector<T> &data, const std::vector<int> &sentProc, const std::vector<std::vector<IndexingType>> &sentIndices, const std::function<size_t(IndexingType)> &indicesTranslation, const MPI_Comm &comm = MPI_COMM_WORLD)
+// {
+//     auto function = [&data, &sentProc, &sentIndices, &indicesTranslation](int _rank)
+//     {   
+//         size_t index = std::distance(sentProc.cbegin(), std::find(sentProc.cbegin(), sentProc.cend(), _rank));
+//         if(index == sentProc.size())
+//         {
+//             return std::vector<T>();
+//         }
+//         const std::vector<IndexingType> &indices = sentIndices[index];
+//         std::vector<T> result;
+//         result.reserve(indices.size());
+//         for(IndexingType ind : indices)
+//         {
+//             result.push_back(data[indicesTranslation(ind)]);
+//         }
+//         return result;
+//     };
+//     return MPI_Exchange_data_seperate_with_data_function<T>(sentProc, function, comm);
+// }
 
 template<typename T, typename OwnershipFunction = std::function<std::vector<int>(const T&)>>
 inline std::pair<std::vector<int>, std::vector<std::vector<size_t>>> PrepareSendValuesOwnership(const std::vector<T> &data, const OwnershipFunction &ownership)
@@ -243,12 +243,12 @@ inline std::vector<T> MPI_Exchange_data_ownership(const std::vector<T> &data, co
     return MPI_Exchange_data_indices<T>(data, sentProc, sentIndices, [](const size_t &ind){return ind;}, comm);
 }
 
-template<typename T, typename OwnershipFunction = std::function<std::vector<int>(const T&)>>
-inline std::vector<std::vector<T>> MPI_Exchange_data_seperate_ownership(const std::vector<T> &data, const OwnershipFunction &ownership, const MPI_Comm &comm = MPI_COMM_WORLD)
-{
-    const auto &[sentProc, sentIndices] = PrepareSendValuesOwnership<T, OwnershipFunction>(data, ownership);
-    return MPI_Exchange_data_seperate_indices<T>(data, sentProc, sentIndices, [](const size_t &ind){return ind;}, comm);
-}
+// template<typename T, typename OwnershipFunction = std::function<std::vector<int>(const T&)>>
+// inline std::vector<std::vector<T>> MPI_Exchange_data_seperate_ownership(const std::vector<T> &data, const OwnershipFunction &ownership, const MPI_Comm &comm = MPI_COMM_WORLD)
+// {
+//     const auto &[sentProc, sentIndices] = PrepareSendValuesOwnership<T, OwnershipFunction>(data, ownership);
+//     return MPI_Exchange_data_seperate_indices<T>(data, sentProc, sentIndices, [](const size_t &ind){return ind;}, comm);
+// }
 
 template<typename T, typename IndexingType = size_t>
 inline std::vector<T> MPI_Exchange_data(const std::vector<T> &data, const std::vector<int> &sentProc, const std::vector<std::vector<IndexingType>> &sentIndices, const MPI_Comm &comm = MPI_COMM_WORLD)
@@ -256,11 +256,11 @@ inline std::vector<T> MPI_Exchange_data(const std::vector<T> &data, const std::v
     return MPI_Exchange_data_indices<T, IndexingType>(data, sentProc, sentIndices, [](const IndexingType &ind){return static_cast<size_t>(ind);}, comm);
 }
 
-template<typename T, typename IndexingType = size_t>
-inline std::vector<std::vector<T>> MPI_Exchange_data_seperate(const std::vector<T> &data, const std::vector<int> &sentProc, const std::vector<std::vector<IndexingType>> &sentIndices, const MPI_Comm &comm = MPI_COMM_WORLD)
-{
-    return MPI_Exchange_data_seperate_indices<T, IndexingType>(data, sentProc, sentIndices, [](const IndexingType &ind){return static_cast<size_t>(ind);}, comm);
-}
+// template<typename T, typename IndexingType = size_t>
+// inline std::vector<std::vector<T>> MPI_Exchange_data_seperate(const std::vector<T> &data, const std::vector<int> &sentProc, const std::vector<std::vector<IndexingType>> &sentIndices, const MPI_Comm &comm = MPI_COMM_WORLD)
+// {
+//     return MPI_Exchange_data_seperate_indices<T, IndexingType>(data, sentProc, sentIndices, [](const IndexingType &ind){return static_cast<size_t>(ind);}, comm);
+// }
 
 #endif // RICH_MPI
 

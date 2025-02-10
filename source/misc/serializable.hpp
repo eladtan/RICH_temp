@@ -19,6 +19,8 @@ using std::size_t;
 class Serializable
 {
 public:
+  //! \brief Class destructor
+  inline virtual ~Serializable(void) = default;
 
   /*! \brief Returns the size of array needed to store all data
     \returns Size of array
@@ -34,9 +36,6 @@ public:
     \param data List of numbers
    */
   virtual void unserialize(const vector<double>& data) = 0;
-
-  //! \brief Class destructor
-  inline virtual ~Serializable(void) = default;
 };
 
 namespace {
@@ -103,24 +102,5 @@ template<class T> vector<T> list_unserialize
   return res;
 }
 
-template<typename T>
-void dump(const T &value, std::vector<double>::iterator it)
-{
-  char *ptr = reinterpret_cast<char*>(const_cast<T*>(&value));
-  for(size_t i = 0; i < sizeof(T); i++, it++)
-  {
-    (*it) = static_cast<double>(ptr[i]);
-  }
-}
-
-template<typename T>
-void load(T &value, std::vector<double>::const_iterator it)
-{
-  char *ptr = reinterpret_cast<char*>(&value);
-  for(size_t i = 0; i < sizeof(T); i++, it++)
-  {
-    ptr[i] = static_cast<char>(*it);
-  }
-}
-
 #endif // SERIALIZABLE_HPP
+

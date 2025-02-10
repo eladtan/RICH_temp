@@ -229,13 +229,13 @@ void HilbertCurve3D::RotateShape(int iShapeIndex, vector<int> vAxes)
 			switch (abs(vAxes[iAx]))
 			{
 			case 1:
-			  m_vRotatedShapes[static_cast<size_t>(iShapeIndex)].m_vShapePoints[ii].RotateX( iSign * PI / 2 );
+			  m_vRotatedShapes[static_cast<size_t>(iShapeIndex)].m_vShapePoints[ii].RotateX( iSign * M_PI / 2 );
 				break;
 			case 2:
-			  m_vRotatedShapes[static_cast<size_t>(iShapeIndex)].m_vShapePoints[ii].RotateY( iSign * PI / 2 );
+			  m_vRotatedShapes[static_cast<size_t>(iShapeIndex)].m_vShapePoints[ii].RotateY( iSign * M_PI / 2 );
 				break;
 			case 3:
-			  m_vRotatedShapes[static_cast<size_t>(iShapeIndex)].m_vShapePoints[ii].RotateZ( iSign * PI / 2 );
+			  m_vRotatedShapes[static_cast<size_t>(iShapeIndex)].m_vShapePoints[ii].RotateZ( iSign * M_PI / 2 );
 				break;
 			default:
 				break;
@@ -263,13 +263,13 @@ void HilbertCurve3D::RotateShape(HilbertCurve3D_shape const & roShape, HilbertCu
 			switch (abs(vAxes[iAx]))
 			{
 			case 1:
-			  roShapeOut.m_vShapePoints[static_cast<size_t>(ii)].RotateX(iSign * PI / 2);
+			  roShapeOut.m_vShapePoints[static_cast<size_t>(ii)].RotateX(iSign * M_PI / 2);
 				break;
 			case 2:
-			  roShapeOut.m_vShapePoints[static_cast<size_t>(ii)].RotateY(iSign * PI / 2);
+			  roShapeOut.m_vShapePoints[static_cast<size_t>(ii)].RotateY(iSign * M_PI / 2);
 				break;
 			case 3:
-			  roShapeOut.m_vShapePoints[static_cast<size_t>(ii)].RotateZ(iSign * PI / 2);
+			  roShapeOut.m_vShapePoints[static_cast<size_t>(ii)].RotateZ(iSign * M_PI / 2);
 				break;
 			default:
 				break;

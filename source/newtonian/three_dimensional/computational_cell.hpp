@@ -9,18 +9,23 @@
 #include <array>
 #include "3D/elementary/Vector3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
+#include <boost/container/small_vector.hpp>
 #ifdef RICH_MPI
-#include "misc/serializable.hpp"
+	#include "mpi/serialize/Serializer.hpp"
+	#include "mpi/serialize/mpi_commands.hpp"
 #endif // RICH_MPI
+
+#ifndef ENERGY_GROUPS_NUM
+#define ENERGY_GROUPS_NUM 1
+#endif
 
  //! \brief Container for the hydrodynamic variables
 class ComputationalCell3D
-	#ifdef RICH_MPI
-							: public Serializable
-	#endif // RICH_MPI
+				#ifdef RICH_MPI
+						: public Serializable
+				#endif // RICH_MPI
 {
 public:
-
 	//! \brief Density
 	double density;
 
@@ -44,13 +49,15 @@ public:
 	//! \brief Radiation enregy per unit mass
 	double Erad;
 
+	//! \brief The radiation energy per unit mass in a given energy group
+	boost::container::small_vector<double, ENERGY_GROUPS_NUM> Eg;
+
 	double Erad_dt;
 
 	double Erad_dt_dt;
 
-	//! \brief The sound speed
 	double cs;
-
+	
   static vector<string> tracerNames;
   static vector<string> stickerNames;
 
@@ -95,7 +102,7 @@ public:
     \param other Source
    */
   ComputationalCell3D(const ComputationalCell3D& other);
-
+	
 	/*! \brief Self increment operator
 	\param other Addition
 	\return Reference to self
@@ -119,22 +126,26 @@ public:
 	*/
 	ComputationalCell3D& operator=(ComputationalCell3D const& other);
 
-#ifdef RICH_MPI
-  /*! \brief Get size of chunks
-    \return Chunk size in bytes
-   */
-	size_t getChunkSize(void) const override;
+/**
+ * \brief Overloaded output stream operator for ComputationalCell3D class.
+ *
+ * This operator allows for convenient printing of ComputationalCell3D objects to an output stream.
+ * The output format is a space-separated list of the cell's properties: density, pressure, internal energy,
+ * temperature, ID, velocity components (x, y, z), Erad, Eg (energy groups), 
+ * tracer values, and sticker values.
+ *
+ * \param stream The output stream to which the cell's data will be written.
+ * \param cell The ComputationalCell3D object to be printed.
+ *
+ * \return The output stream with the cell's data appended.
+ */
+	friend std::ostream &operator<<(std::ostream &stream, const ComputationalCell3D &cell);
 
-  /*! \brief Decompose cell into list of numbers
-    \return List of numbers
-   */
-	vector<double> serialize(void) const override;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-  /*! \brief Reconstruct cell from series of numbers
-    \param data List of numbers
-   */
-	void unserialize(const vector<double>& data) override;
-#endif // RICH_MPI
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif//RICH_MPI
 
 };
 
@@ -210,13 +221,13 @@ public:
 	Slope3D(ComputationalCell3D const& x, ComputationalCell3D const& y, ComputationalCell3D const& z);
 	//! \brief Default constructor
 	Slope3D(void);
-#ifdef RICH_MPI
-	size_t getChunkSize(void) const override;
 
-	vector<double> serialize(void) const override;
+	#ifdef RICH_MPI
+		size_t dump(Serializer *serializer) const override;
 
-	void unserialize(const vector<double>& data) override;
-#endif//RICH_MPI
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
+	#endif//RICH_MPI
+
 };
 
 

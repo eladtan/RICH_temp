@@ -4,11 +4,12 @@
 #include <iostream>
 #include "3D/elementary/Vector3D.hpp"
 #ifdef RICH_MPI
-    #include "misc/serializable.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #define EPSILON 1e-12
 
+// todo: remove this struct
 struct _3DPoint 
     #ifdef RICH_MPI
                 : public Serializable
@@ -117,21 +118,22 @@ struct _3DPoint
     }
 
     #ifdef RICH_MPI
-        inline size_t getChunkSize(void) const override
+        force_inline size_t dump(Serializer *serializer) const override
         {
-            return 3;
-        }
-        
-        inline std::vector<double> serialize(void) const override
-        {
-            return std::vector<double>({this->x, this->y, this->z});
+            size_t bytes = 0;
+            bytes += serializer->insert(this->x);
+            bytes += serializer->insert(this->y);
+            bytes += serializer->insert(this->z);
+            return bytes;
         }
 
-        inline void unserialize(const std::vector<double>& data) override
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
         {
-            this->x = data[0];
-            this->y = data[1];
-            this->z = data[2];
+            size_t bytes = 0;
+            bytes += serializer->extract(this->x, byteOffset);
+            bytes += serializer->extract(this->y, byteOffset + bytes);
+            bytes += serializer->extract(this->z, byteOffset + bytes);
+            return bytes;
         }
     #endif // RICH_MPI
 };

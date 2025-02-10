@@ -14,7 +14,6 @@
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 #include "mpi/mpi_exchange_commands.hpp"
-#include "mpi/mpi_exchanger.hpp"
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;
@@ -90,6 +89,7 @@ public:
     \return Number of all the points
   */
   virtual size_t GetAllPointsNo(void) const = 0;
+
 
   /*! \brief Get number of points
     \return Number of all points
@@ -488,7 +488,7 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       // start = std::chrono::system_clock::now();
       // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
       // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
-      std::vector<std::vector<T>> incoming = MPI_exchange_data(this->GetDuplicatedProcs(), this->GetDuplicatedPoints(), allBuildData);
+      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(this->GetDuplicatedProcs(), allBuildData, this->GetDuplicatedPoints());
       // end = std::chrono::system_clock::now();
       // int rank;
       // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -499,6 +499,7 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       // std::vector<std::vector<T>> incoming = MPI_Exchange_data_seperate(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
       size_t incomingSize = incoming.size();
       const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();
+      assert(this->GetDuplicatedProcs().size() == Nghost.size());
       assert(incomingSize == Nghost.size());
       for (size_t i = 0; i < incomingSize; ++i)
       {

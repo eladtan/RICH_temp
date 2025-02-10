@@ -12,8 +12,7 @@ class RangeFinder
 {
 public:
     template<typename T>
-    using _set = boost::container::flat_set<T>; // boost::unordered_set<T>; // std::unordered_set<T>;
-
+    using _set = boost::container::flat_set<T>; // boost::unordered_set<T>; // std::unordered_set<T>; // boost::container::flat_set<T>;
     virtual ~RangeFinder() = default;
     
     virtual std::vector<size_t> range(const Vector3D &center, double radius, size_t N = std::numeric_limits<size_t>::max(), const _set<size_t> &ignore = _set<size_t>()) const

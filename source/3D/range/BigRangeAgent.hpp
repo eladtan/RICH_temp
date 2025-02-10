@@ -10,6 +10,7 @@
     #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #include "RangeQueryData.h"
@@ -31,46 +32,26 @@ struct BigRangeQueryData : public RangeQueryData
     {}
 
     #ifdef RICH_MPI
-        size_t getChunkSize(void) const override
+        force_inline size_t dump(Serializer *serializer) const override
         {
-            return 1 + 3 + 1 + 3 + 1 + 1;
+            size_t bytes = 0;
+            bytes += serializer->insert(this->pointIdx);
+            bytes += serializer->insert(this->originalPoint);
+            bytes += serializer->insert(this->center);
+            bytes += serializer->insert(this->radius);
+            bytes += serializer->insert(this->askOnlyClose);
+            return bytes;
         }
 
-        std::vector<double> serialize(void) const override
+        force_inline size_t load(const Serializer *serializer, std::size_t byteOffset) override
         {
-            std::vector<double> data;
-            data.push_back(static_cast<double>(this->pointIdx));
-            data.push_back(this->originalPoint.x);
-            data.push_back(this->originalPoint.y);
-            data.push_back(this->originalPoint.z);
-            data.push_back(this->center.x);
-            data.push_back(this->center.y);
-            data.push_back(this->center.z);
-            data.push_back(static_cast<double>(this->radius));
-            data.push_back(this->askOnlyClose? 1 : 0);
-            return data;
-        }
-
-        void unserialize(const std::vector<double> &data) override
-        {
-            size_t index = 0;
-            this->pointIdx = static_cast<size_t>(data[index]);
-            index++;
-            this->originalPoint.x = data[index];
-            index++;
-            this->originalPoint.y = data[index];
-            index++;
-            this->originalPoint.z = data[index];
-            index++;
-            this->center.x = data[index];
-            index++;
-            this->center.y = data[index];
-            index++;
-            this->center.z = data[index];
-            index++;
-            this->radius = static_cast<typename _3DPoint::coord_type>(data[index]);
-            index++;
-            this->askOnlyClose = (data[index] != 0);
+            size_t bytes = 0;
+            bytes += serializer->extract(this->pointIdx, byteOffset);
+            bytes += serializer->extract(this->originalPoint, byteOffset + bytes);
+            bytes += serializer->extract(this->center, byteOffset + bytes);
+            bytes += serializer->extract(this->radius, byteOffset + bytes);
+            bytes += serializer->extract(this->askOnlyClose, byteOffset + bytes);
+            return bytes;
         }
     #endif // RICH_MPI
 };

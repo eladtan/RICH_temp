@@ -14,7 +14,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 
-#define BALANCE_FACTOR 1.2
+#define BALANCE_FACTOR 1.15
 
 /**
  * \author Maor Mizrachi
@@ -98,7 +98,7 @@ public:
             result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
             this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
         }
-        std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
+        // std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
         return result;
     }
 

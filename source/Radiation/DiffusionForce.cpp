@@ -22,7 +22,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
         std::cout<<"Zero nubmer of cells in DiffForce"<<std::endl;
 	double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, new_Er, true);
+    MPI_exchange_data(tess, new_Er, true);
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
     size_t const Nzero = diffusion_.zero_cells_.size();
@@ -78,7 +78,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
         }
     }
 #ifdef RICH_MPI
-    MPI_exchange_data2(tess, R2, true);
+    MPI_exchange_data(tess, R2, true);
 #endif
     for(size_t i = 0; i < N; ++i)
     {
@@ -116,9 +116,9 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
             }
             double const v_mid = ScalarProd(0.5 * (velocity_outside + cells[i].velocity), r_ij);
             if(v_mid > 0)
-                dE += Er_outside * tess.GetArea(faces[j]) * dt * v_mid * (0.5 - 0.5 * R2_outside);
+                dE += Er_outside * tess.GetArea(faces[j]) * dt * ScalarProd(r_ij, velocity_outside) * (0.5 - 0.5 * R2_outside);
             else
-                dE += (0.5 - 0.5 * R2[i]) * new_Er[i] * tess.GetArea(faces[j]) * dt * v_mid;
+                dE += (0.5 - 0.5 * R2[i]) * new_Er[i] * tess.GetArea(faces[j]) * dt * ScalarProd(r_ij, cells[i].velocity);
             
         }
         extensives[i].Erad += dE ;
@@ -166,7 +166,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
 #endif
     if(rank == max_data.mpi_id)
         std::cout<<"DiffusionForce dt ID "<<cells[max_loc].ID<<" new Er "<<extensives[max_loc].Erad / tess.GetVolume(max_loc) <<" old Er "<<new_Er[max_loc]<<" max diff "<<max_diff<<" next dt "<<dt * std::min(0.2 / max_diff, 1.1)<<" density "<<cells[max_loc].density<<" T "<<cells[max_loc].temperature<<std::endl;
-	next_dt_ = dt * std::min(0.2 / max_diff, 1.25);
+	next_dt_ = dt * std::min(0.3 / max_diff, 1.25);
 }   
 
 

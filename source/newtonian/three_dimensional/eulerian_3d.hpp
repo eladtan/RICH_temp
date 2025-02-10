@@ -18,6 +18,8 @@ public:
 
   void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 	  double time, vector<Vector3D> &res) const override;
+
+  bool MovedPoints() const override {return false;}
 };
 
 #endif // EULERIAN_3D_HPP

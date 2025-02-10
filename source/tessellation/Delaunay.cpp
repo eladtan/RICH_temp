@@ -7,7 +7,8 @@
 #include <numeric>
 #include <boost/range/combine.hpp>
 #ifdef RICH_MPI
-#include <mpi.h>
+	#include <mpi.h>
+	#include "mpi/mpi_commands.hpp"
 #endif // RICH_MPI
 
 namespace {
@@ -1244,54 +1245,8 @@ Delaunay::findOuterPoints
 	}
 
 	// Communication
-	vector<vector<Vector2D> > incoming(neighbors_own_edges.size());
-	vector<MPI_Request> req(neighbors_own_edges.size());
-	vector<vector<double> > tosend(neighbors_own_edges.size());
-	double dtemp = 0;
-	for (size_t i = 0; i < neighbors_own_edges.size(); ++i)
-	{
-		const int dest = neighbors_own_edges.at(i);
-		tosend[i] = list_serialize(VectorValues(cor, to_duplicate[i]));
-		int size = static_cast<int>(tosend[i].size());
-		if (size == 0)
-			MPI_Isend(&dtemp, 1, MPI_DOUBLE,dest, 1, MPI_COMM_WORLD, &req[i]);
-		else
-		{
-			if (size < 2)
-				throw UniversalError("Wrong send size");
-			MPI_Isend(&tosend[i][0], size, MPI_DOUBLE, dest, 0, MPI_COMM_WORLD, &req[i]);
-		}
-	}
-	for (size_t i = 0; i < neighbors_own_edges.size(); ++i)
-	{
-		vector<double> temprecv;
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(max(count, 1)));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 0)
-		{
-			size_t location = std::find(neighbors_own_edges.begin(), neighbors_own_edges.end(),
-				status.MPI_SOURCE) - neighbors_own_edges.begin();
-			if (location >= neighbors_own_edges.size())
-				throw UniversalError("Bad location in mpi exchange");
-			try
-			{
-				incoming[location] = list_unserialize(temprecv, cor[0]);
-			}
-			catch (UniversalError &eo)
-			{
-				eo.addEntry("Error in first send in triangulation", 0.0);
-				throw;
-			}
-		}
-		else
-			if (status.MPI_TAG != 1)
-				throw UniversalError("Wrong mpi tag");
-	}
-	MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
+	std::vector<std::vector<Vector2D>> incoming = MPI_exchange_data_indexed(neighbors_own_edges, cor, to_duplicate);
+
 	// Incorporate points recieved into triangulation
 	BOOST_FOREACH(vector<size_t> &line, self_points)
 	{
@@ -1468,58 +1423,9 @@ pair<vector<vector<int> >, vector<int> > Delaunay::FindOuterPoints2
 	MPI_Waitall(static_cast<int>(neighbors_own_edges.size()), &req[0], MPI_STATUSES_IGNORE);
 	MPI_Barrier(MPI_COMM_WORLD);
 	// Point exchange
-	req.clear();
-	req.resize(neighbors_own_edges.size());
-	double dtemp = 0;
-	vector<vector<Vector2D> > incoming(neighbors_own_edges.size());
-	vector<vector<double> > tosend(neighbors_own_edges.size());
-	for (size_t i = 0; i < neighbors_own_edges.size(); ++i)
-	{
-		const int dest = neighbors_own_edges.at(i);
-		tosend[i] = list_serialize(VectorValues(cor, messages.at(i)));
-		auto size = static_cast<int>(tosend[i].size());
-		if (size > 0)
-		{
-			if (size < 2)
-				throw UniversalError("Wrong send size");
-			MPI_Isend(&tosend[i][0], size, MPI_DOUBLE, dest, 0, MPI_COMM_WORLD, &req[i]);
-		}
-		else
-			MPI_Isend(&dtemp, 1, MPI_DOUBLE, dest,1, MPI_COMM_WORLD, &req[i]);
-	}
-	for (size_t i = 0; i < neighbors_own_edges.size(); ++i)
-	{
-		vector<double> temprecv;
-		MPI_Status status;
-		MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-		int count;
-		MPI_Get_count(&status, MPI_DOUBLE, &count);
-		temprecv.resize(static_cast<size_t>(count));
-		MPI_Recv(&temprecv[0], count, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		if (status.MPI_TAG == 0)
-		{
-			size_t location = std::find(neighbors_own_edges.begin(), neighbors_own_edges.end(), status.MPI_SOURCE) - neighbors_own_edges.begin();
-			if (location >= neighbors_own_edges.size())
-				throw UniversalError("Bad location in mpi exchange");
-			try
-			{
-				incoming[location] = list_unserialize(temprecv, cor[0]);
-			}
-			catch (UniversalError &eo)
-			{
-				eo.addEntry("Error in second send in triangulation", 0.0);
-				eo.addEntry("Mpi status", static_cast<double>(status.MPI_SOURCE));
-				eo.addEntry("Mpi tag", static_cast<double>(status.MPI_TAG));
-				eo.addEntry("Mpi count", static_cast<double>(count));
-				throw;
-			}
-		}
-		else
-			if (status.MPI_TAG != 1)
-				throw UniversalError("Wrong mpi tag");
-	}
-	MPI_Waitall(static_cast<int>(req.size()), &req[0], MPI_STATUSES_IGNORE);
-	MPI_Barrier(MPI_COMM_WORLD);
+
+	vector<vector<Vector2D>> incoming = MPI_exchange_data_indexed(neighbors_own_edges, cor, messages);
+
 	// Incorporate points recieved into triangulation
 	NghostIndex.resize(incoming.size());
 	for (size_t i = 0; i < incoming.size(); ++i)

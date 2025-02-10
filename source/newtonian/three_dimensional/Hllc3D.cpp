@@ -180,6 +180,20 @@ namespace
 Hllc3D::Hllc3D(double gamma) :gamma_((gamma + 1) / (2 * gamma))
 {}
 
+std::pair<double, double> Hllc3D::GetUstarPstar(ComputationalCell3D const& left,	ComputationalCell3D const& right,
+		EquationOfState const& eos, Vector3D const& normaldir) const
+{
+	ComputationalCell3D local_left = left;
+	ComputationalCell3D local_right = right;
+
+	local_left.velocity.x = ScalarProd(local_left.velocity, normaldir);
+	local_right.velocity.x = ScalarProd(local_right.velocity, normaldir);
+	WaveSpeeds ws = estimate_wave_speeds(local_left, local_right, eos, -1);
+	double ps = std::max(0.0, 0.5 * (left.pressure + right.pressure + left.density * (ws.left - local_left.velocity.x) * (ws.center - local_left.velocity.x)
+		+ right.density * (ws.right - local_right.velocity.x) * (ws.center - local_right.velocity.x)));
+	return std::make_pair(ws.center, ps);
+}
+
 Conserved3D Hllc3D::operator()(ComputationalCell3D const& left, ComputationalCell3D const& right, double velocity,
 	EquationOfState const& eos, Vector3D const& normaldir) const
 {

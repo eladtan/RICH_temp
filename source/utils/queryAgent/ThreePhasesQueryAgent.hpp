@@ -1,12 +1,17 @@
 #ifndef THREE_PHASES_QUERY_AGENT_HPP
 #define THREE_PHASES_QUERY_AGENT_HPP
 
+#ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
-#include "misc/serializable.hpp"
+#include "mpi/serialize/Serializer.hpp"
+#endif // RICH_MPI
 #include "QueryAgent.hpp"
 
 template<typename QueryData, typename AnswerType>
-struct SubQueryAnswer : public Serializable
+struct SubQueryAnswer 
+                    #ifdef RICH_MPI
+                        : public Serializable
+                    #endif // RICH_MPI
 {
 public:
     SubQueryData<QueryData> query;
@@ -19,46 +24,23 @@ public:
 
     SubQueryAnswer(): SubQueryAnswer(SubQueryData<QueryData>(), 0, std::vector<AnswerType>()){};
 
-    inline size_t getChunkSize(void) const override
-    {
-        size_t res = this->query.getChunkSize() + 1;
-        if(!this->result.empty())
+    #ifdef RICH_MPI
+        size_t dump(Serializer *serializer) const override
         {
-            res += this->resultSize * this->result[0].getChunkSize();
+            size_t bytes = 0;
+            bytes += this->query.dump(serializer);
+            bytes += serializer->insert(this->result);
+            return bytes;
         }
-        return res;
-    }
-
-    std::vector<double> serialize(void) const override
-    {
-        std::vector<double> data = this->query.serialize();
-        data.push_back(static_cast<double>(this->resultSize));
-        for(const AnswerType &answer : this->result)
+        
+        size_t load(const Serializer *serializer, size_t byteOffset) override
         {
-            std::vector<double> answerData = answer.serialize();
-            data.insert(data.end(), answerData.begin(), answerData.end());
+            size_t bytes = 0;
+            bytes += serializer->extract(this->query, byteOffset);
+            bytes += serializer->extract(this->result, byteOffset + bytes);
+            return bytes;
         }
-        return data;
-    } 
-
-    void unserialize(const std::vector<double> &data) override
-    {
-        size_t index = 0;
-        size_t subqueryChunkSize = this->query.getChunkSize();
-        this->query.unserialize(std::vector<double>(data.begin(), data.begin() + subqueryChunkSize));
-        index += subqueryChunkSize;
-        this->resultSize = static_cast<size_t>(data[index]);
-        index++;
-        this->result.clear();
-        for(size_t i = 0; i < this->resultSize; i++)
-        {
-            AnswerType answer;
-            size_t answerChunkSize = answer.getChunkSize();
-            answer.unserialize(std::vector<double>(data.begin() + index, data.begin() + index + answerChunkSize));
-            this->result.push_back(answer);
-            index += answerChunkSize;
-        }
-    }
+    #endif // RICH_MPI
 };
 
 template<typename QueryData, typename AnswerType>

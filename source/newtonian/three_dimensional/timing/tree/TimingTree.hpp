@@ -118,50 +118,44 @@ public:
             this->c_plus_v = this->cs + this->v_abs;
             this->c_max_plus_v_max = this->c_max + this->v_max;
         };
+    
+    #ifdef RICH_MPI
+        force_inline size_t dump(Serializer *serializer) const override
+        {
+            size_t bytes = 0;
+            bytes += this->value.dump(serializer);
+            bytes += this->v.dump(serializer);
+            bytes += serializer->insert(this->id_of_cell);
+            bytes += serializer->insert(this->v_abs);
+            bytes += serializer->insert(this->cs);
+            bytes += serializer->insert(this->c_plus_v);
+            bytes += serializer->insert(this->cell_width);
+            bytes += serializer->insert(this->v_tag_abs);
+            bytes += serializer->insert(this->c_max);
+            bytes += serializer->insert(this->v_max);
+            bytes += serializer->insert(this->c_max_plus_v_max);
+            bytes += serializer->insert(this->min_time_in_subtree);
+            return bytes;
+        }
 
-    size_t getChunkSize() const
-    {
-        return 16; // 3 for two T's and 10 for 10 double variables
-    }
-
-    std::vector<double> serialize() const
-    {
-        std::vector<double> serialized;
-        std::vector<double> serialized_point = this->value.serialize();
-        serialized.insert(serialized.end(), serialized_point.cbegin(), serialized_point.cend());
-        serialized_point = this->v.serialize();
-        serialized.insert(serialized.end(), serialized_point.cbegin(), serialized_point.cend());
-        serialized.push_back((this->id_of_cell >= MAX_ID_OF_CELL)? MAX_ID_OF_CELL : this->id_of_cell);
-        serialized.push_back(this->v_abs);
-        serialized.push_back(this->cs);
-        serialized.push_back(this->c_plus_v);
-        serialized.push_back(this->cell_width);
-        serialized.push_back(this->v_tag_abs);
-        serialized.push_back(this->c_max);
-        serialized.push_back(this->v_max);
-        serialized.push_back(this->c_max_plus_v_max);
-        serialized.push_back(this->min_time_in_subtree);
-        return serialized;
-    }
-
-    void unserialize(const std::vector<double> &data)
-    {
-        size_t TChunkSize = this->value.getChunkSize();
-        std::vector<double> serData(data.cbegin(), data.cbegin() + TChunkSize);
-        this->value.unserialize(serData);
-        serData = std::vector<double>(data.cbegin() + TChunkSize, data.cbegin() + 2 * TChunkSize);
-        this->v.unserialize(serData);
-        this->id_of_cell = data[2 * TChunkSize];
-        this->v_abs = data[2 * TChunkSize + 1];
-        this->cs = data[2 * TChunkSize + 2];
-        this->c_plus_v = data[2 * TChunkSize + 3];
-        this->cell_width = data[2 * TChunkSize + 4];
-        this->v_tag_abs = data[2 * TChunkSize + 5];
-        this->c_max = data[2 * TChunkSize + 6];
-        this->v_max = data[2 * TChunkSize + 7];
-        this->c_max_plus_v_max = data[2 * TChunkSize + 8];
-        this->min_time_in_subtree = data[2 * TChunkSize + 9];
-    }
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+        {
+            size_t bytesRead = 0;
+            bytesRead += this->value.load(serializer, byteOffset);
+            bytesRead += this->v.load(serializer, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->id_of_cell, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->v_abs, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->cs, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->c_plus_v, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->cell_width, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->v_tag_abs, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->c_max, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->v_max, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->c_max_plus_v_max, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->min_time_in_subtree, byteOffset + bytesRead);
+            return bytesRead;
+        }
+    #endif // RICH_MPI
 
     };
 

@@ -7,47 +7,42 @@
 #include "3D/gravity/GravityTree.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
-#include "misc/serializable.hpp"
-#include "mpi/mpi_commands.hpp"
+#include "mpi/serialize/Serializer.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 
 #define DEFAULT_OWNER_SPLIT 2
 
-struct GravityNodeData : Serializable
+struct GravityNodeData
+                    #ifdef RICH_MPI
+                        : public Serializable
+                    #endif // RICH_MPI
 {
     BoundingBox<Vector3D> boundingBox;
     gravity_result_t mass;
     Vector3D CM;
     std::array<double, 6> Q;
 
-    std::vector<double> serialize(void) const override
-    {
-        std::vector<double> result;
-        std::vector<double> boundingBoxData = this->boundingBox.serialize();
-        result.insert(result.end(), boundingBoxData.begin(), boundingBoxData.end());
-        result.push_back(this->mass);
-        result.push_back(this->CM.x);
-        result.push_back(this->CM.y);
-        result.push_back(this->CM.z);
-        result.insert(result.end(), this->Q.begin(), this->Q.end());
-        return result;
-    }
+    #ifdef RICH_MPI
+        force_inline size_t dump(Serializer *serializer) const override
+        {
+            size_t bytes = 0;
+            bytes += serializer->insert(this->boundingBox);
+            bytes += serializer->insert(this->mass);
+            bytes += serializer->insert(this->CM);
+            bytes += serializer->insert_array(this->Q);
+            return bytes;
+        }
 
-    void unserialize(const std::vector<double> &data) override
-    {
-        size_t i = 0;
-        std::vector<double> boundingBoxData = std::vector<double>(data.begin(), data.begin() + this->boundingBox.getChunkSize());
-        this->boundingBox.unserialize(boundingBoxData);
-        i += this->boundingBox.getChunkSize();
-        this->mass = data[i];
-        this->CM = Vector3D(data[i+1], data[i+2], data[i+3]);
-        i += 1 + this->CM.getChunkSize();
-        std::copy(data.begin() + i, data.begin() + i + 6, this->Q.begin());
-    }
-
-    inline size_t getChunkSize() const override
-    {
-        return this->boundingBox.getChunkSize() + 1 + this->CM.getChunkSize() + 6;
-    }
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+        {
+            size_t bytes = 0;
+            bytes += serializer->extract(this->boundingBox, byteOffset);
+            bytes += serializer->extract(this->mass, bytes + byteOffset);
+            bytes += serializer->extract(this->CM, bytes + byteOffset);
+            bytes += serializer->extract_array(this->Q, bytes + byteOffset);
+            return bytes;
+        }
+    #endif // RICH_MPI
 };
 
 class DistributedGravityTree

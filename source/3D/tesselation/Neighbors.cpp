@@ -1,7 +1,5 @@
 #include "Neighbors.hpp"
 
-size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t>::max();
-
 #ifdef RICH_MPI
     struct Request : public Serializable
     {
@@ -11,17 +9,20 @@ size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t
         Request(size_t _askingPointIdx = std::numeric_limits<size_t>::max(), size_t _remotePointIdxInGhost = std::numeric_limits<size_t>::max())
             : askingPointIdx(_askingPointIdx), remotePointIdxInGhost(_remotePointIdxInGhost){};
 
-        inline size_t getChunkSize() const override {return 2;};
-
-        inline std::vector<double> serialize() const override
+        force_inline size_t dump(Serializer *serializer) const override
         {
-            return {static_cast<double>(this->askingPointIdx), static_cast<double>(this->remotePointIdxInGhost)};
+            size_t bytes = 0;
+            bytes += serializer->insert(this->askingPointIdx);
+            bytes += serializer->insert(this->remotePointIdxInGhost);
+            return bytes;
         };
 
-        inline void unserialize(const std::vector<double> &data) override
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
         {
-            this->askingPointIdx = static_cast<size_t>(data[0]);
-            this->remotePointIdxInGhost = static_cast<size_t>(data[1]);
+            size_t bytesRead = 0;
+            bytesRead += serializer->extract(this->askingPointIdx, byteOffset);
+            bytesRead += serializer->extract(this->remotePointIdxInGhost, byteOffset + bytesRead);
+            return bytesRead;
         };
     };
 
@@ -34,24 +35,24 @@ size_t ComputationalCell3DVector3D::CELL_CHUNK_SIZE = std::numeric_limits<size_t
 
         Response(): Response(std::numeric_limits<size_t>::max(), RemotePoint()) {};
         
-        inline size_t getChunkSize() const override {return 4;};
-
-        inline std::vector<double> serialize() const override
+        force_inline size_t dump(Serializer *serializer) const override
         {
-            std::vector<double> res(4);
-            res[0] = static_cast<double>(this->requestID);
-            res[1] = static_cast<double>(this->neighbor.rank);
-            res[2] = static_cast<double>(this->neighbor.indexOnRank);
-            res[3] = static_cast<double>(this->neighbor.distance);
-            return res;
+            size_t bytes = 0;
+            bytes += serializer->insert(this->requestID);
+            bytes += serializer->insert(this->neighbor.rank);
+            bytes += serializer->insert(this->neighbor.indexOnRank);
+            bytes += serializer->insert(this->neighbor.distance);
+            return bytes;
         };
 
-        void unserialize(const std::vector<double> &data) override
+        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
         {
-            this->requestID = static_cast<size_t>(data[0]);
-            this->neighbor.rank = static_cast<int>(data[1]);
-            this->neighbor.indexOnRank = static_cast<size_t>(data[2]);
-            this->neighbor.distance = static_cast<size_t>(data[3]);
+            size_t bytesRead = 0;
+            bytesRead += serializer->extract(this->requestID, byteOffset);
+            bytesRead += serializer->extract(this->neighbor.rank, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->neighbor.indexOnRank, byteOffset + bytesRead);
+            bytesRead += serializer->extract(this->neighbor.distance, byteOffset + bytesRead);
+            return bytesRead;
         };
     };
 

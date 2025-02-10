@@ -75,13 +75,12 @@
         "semaphore": "cpp",
         "stop_token": "cpp",
         "*.txx": "cpp",
-        "csetjmp": "cpp",
         "csignal": "cpp",
         "any": "cpp",
-        "shared_mutex": "cpp",
         "charconv": "cpp",
         "source_location": "cpp",
-        "regex": "cpp"
+        "regex": "cpp",
+        "shared_mutex": "cpp"
     },
     "cmake.configureOnOpen": true,
 
@@ -198,5 +197,5 @@
         "**/.vscode": true,
         "**/.vs": true
     },
-    "cmake.sourceDirectory": "/home/maorm/RICH/source"
+    "cmake.sourceDirectory": "RICH/source"
 }

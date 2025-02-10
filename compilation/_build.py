@@ -14,11 +14,11 @@ logger = logging.getLogger("build_program.main")
 root_dir = str(pathlib.Path(__file__).parent.parent.absolute())
 sys.path.append(root_dir)
 
-RELEASE_OPTIMIZATION_LEVEL = "-O3" # "-O3"
+RELEASE_OPTIMIZATION_LEVEL = "-O3" 
 
-def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definitionOfReal=8):
+def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None, definitionOfReal=8):
     warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
-    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -g"
+    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = f" -DNDEBUG -DOMPI_SKIP_MPICXX {RELEASE_OPTIMIZATION_LEVEL}"
     
@@ -43,15 +43,18 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
         cmake_cxx_flags_release = " "
     elif config.startswith("intel"):
         fortran_compiler = SysLibsDict["ifort"]
+        c_compiler = SysLibsDict["icx-cc"]
+        cxx_compiler = SysLibsDict["icx"]
+        os.environ["I_MPI_CC"] = c_compiler
+        os.environ["I_MPI_CXX"] = cxx_compiler
+        os.environ["I_MPI_F90"] = fortran_compiler
+
         cmake_fortran_flags = f" -init=arrays,zero,minus_huge,snan -fp-speculation=safe -r{definitionOfReal} -assume no2underscores -lstdc++ -lrt -traceback -fpe0 -gen-interfaces -warn all -warn errors "
         cmake_fortran_flags_debug = " -O0 -fp-model precise -fp-model source -fimf-arch-consistency=true -fp-stack-check -debug -check bounds -check format -check output_conversion -check pointers -check uninit -check stack -check shape "
         cmake_fortran_flags_release = " -O2 "
         cmake_fortran_flags += " -mcmodel=medium -shared-intel "
 
-        c_compiler = SysLibsDict["icc"]
-        cxx_compiler = SysLibsDict["icpc"]
-
-        common_cxx_flags += " -cxx=icpx -diag-remark=13397,13401,15552,2196 -Wall "
+        common_cxx_flags += "-diag-remark=13397,13401,15552,2196 -Wall "
         cmake_cxx_standard = "17"
         cmake_cxx_flags = " -ansi-alias -fimf-arch-consistency=true "
         cmake_cxx_flags_debug = " -fp-model consistent -diag-disable=openmp -Wno-unknown-pragmas "
@@ -102,6 +105,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DHDF5_INCLUDE={hdf5_include_dir}',
             f'-DVTK_DIRECTORY={vtk_dir}',
             f'-DBOOST_DIR={boost_dir}' if boost_dir else "",
+            f'-DPYTHON_INCLUDE={SysLibsDict["python_include"]}' if "python_include" in SysLibsDict else "",
+            f'-DPYTHON_LIB_DIRECTORY={SysLibsDict["python_lib_dir"]}' if "python_lib_dir" in SysLibsDict else "",
             f'-DJSONCPP_INCLUDE={SysLibsDict["jsoncpp_include"]}' if "jsoncpp_include" in SysLibsDict else "",
             f'-DJSONCPP_LIB_DIRECTORY={SysLibsDict["jsoncpp_lib_dir"]}' if "jsoncpp_lib_dir" in SysLibsDict else "",
             f'-DVTUNE_INCLUDE={SysLibsDict["vtune_include"]}' if "vtune_include" in SysLibsDict else "",
@@ -117,7 +122,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, definition
             f'-DPROJECT_ROOT_DIR={root_dir}',
             f'{build_dir}',
             f'{root_dir}/source']
-    print(cmd)
+    # print(cmd)
     cmake_result = subprocess.run(cmd,
                                   stdout=open(os.path.join(build_dir, config+'_cmake.out'), 'w'),
                                   stderr=open(os.path.join(build_dir, config+'_cmake.err'), 'w'),
@@ -145,7 +150,7 @@ def fix_r3d(root_dir):
             for line in fin:
                 fout.write(line.replace('@R3D_MAX_VERTS@', '256'))
 
-def build_program(*, configs, make_dir, src_dir, test_dir):
+def build_program(*, configs, make_dir, src_dir, test_dir, args=None):
     """Build the program with the desired configurations."""
     exe_name = "rich"
     logger.debug(f"args:\nconfigs = {configs}\nroot_dir = {root_dir}\nmake_dir = {make_dir}\nsrc_dir = {src_dir}\ntest_dir = {test_dir}")
@@ -172,12 +177,15 @@ def build_program(*, configs, make_dir, src_dir, test_dir):
                             exe_name=exe_name,
                             config=config,
                             SysLibsDict=SysLibsDict,
-                            test_dir=test_dir)
+                            test_dir=test_dir,
+                            args=args)
         assert cmake.returncode == 0, f"Running cmake for {config} failed"
 
         short_exe_path = os.path.join(config_dir, exe_name)
         if os.path.islink(short_exe_path):
             os.remove(short_exe_path)   
+
+        print(f"ENERGY_GROUPS_NUM = {args.energy_groups_num}")
 
         #run make   
         logger.info("Running make")

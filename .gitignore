@@ -25,6 +25,6 @@ toy_input*/*
 validation*/*
 .gitignore
 .vscode*/*
-runs
-.gitignore
-*.bash
+result_dir*
+./output
+*.log

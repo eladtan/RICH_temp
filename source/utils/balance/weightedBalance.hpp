@@ -1,9 +1,13 @@
 #ifndef WEIGHTED_BALANCE_HPP
 #define WEIGHTED_BALANCE_HPP
 
+#ifdef RICH_MPI
+
 #include <vector>
 #include <algorithm>
+#include <optional>
 #include <mpi.h>
+#include "mpi/serialize/mpi_commands.hpp"
 #include "mpi/mpi_commands.hpp"
 
 template<typename T>
@@ -19,44 +23,36 @@ struct LocationSpecifier : public Serializable
 
     LocationSpecifier() = default;
 
-    size_t getChunkSize() const override
+    force_inline size_t dump(Serializer *serializer) const
     {
-        return sizeof(T) + 6;
+        size_t bytes = 0;
+        bytes += serializer->insert(this->value);
+        bytes += serializer->insert(this->weightBefore);
+        bytes += serializer->insert(this->weightEqual);
+        bytes += serializer->insert(this->weightAfter);
+        bytes += serializer->insert(this->elementsBefore);
+        bytes += serializer->insert(this->elementsEqual);
+        bytes += serializer->insert(this->elementsAfter);
+        return bytes;
     }
 
-    std::vector<double> serialize() const override
+    force_inline size_t load(const Serializer *serializer, std::size_t byteOffset)
     {
-        std::vector<double> result(sizeof(T));
-        dump(this->value, result.begin());
-        result.push_back(this->weightBefore);
-        result.push_back(this->weightEqual);
-        result.push_back(this->weightAfter);
-        result.push_back(this->elementsBefore);
-        result.push_back(this->elementsEqual);
-        result.push_back(this->elementsAfter);
-        return result;
-    }
-
-    void unserialize(const std::vector<double> &data) override
-    {
-        load(this->value, data.cbegin());
-        size_t pos = 0;
-        this->weightBefore = data[pos++];
-        this->weightEqual = data[pos++];
-        this->weightAfter = data[pos++];
-        this->elementsBefore = data[pos++];
-        this->elementsEqual = data[pos++];
-        this->elementsAfter = data[pos++];
+        size_t bytes = 0;
+        bytes += serializer->extract(this->value, byteOffset + bytes);
+        bytes += serializer->extract(this->weightBefore, byteOffset + bytes);
+        bytes += serializer->extract(this->weightEqual, byteOffset + bytes);
+        bytes += serializer->extract(this->weightAfter, byteOffset + bytes);
+        bytes += serializer->extract(this->elementsBefore, byteOffset + bytes);
+        bytes += serializer->extract(this->elementsEqual, byteOffset + bytes);
+        bytes += serializer->extract(this->elementsAfter, byteOffset + bytes);
+        return bytes;
     }
 
     void syncronizeAll(const MPI_Comm &comm)
     {
-        MPI_Allreduce(MPI_IN_PLACE, &this->weightBefore, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->weightEqual, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->weightAfter, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->elementsBefore, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->elementsEqual, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        MPI_Allreduce(MPI_IN_PLACE, &this->elementsAfter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &this->weightBefore, 3, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &this->elementsBefore, 3, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
     }
 };
 
@@ -82,8 +78,8 @@ struct OrderStatisticsJob
         double weightAfter; // weight after the scope of `weightsVecEnd`
     };
 
-    OrderStatisticsJob(const std::vector<T> &values, const std::vector<double> &weights, const Comparator &comp = std::less<T>{}, const MPI_Comm &comm = MPI_COMM_WORLD):
-        values(values), weights(weights), comp(comp), comm(comm)
+    OrderStatisticsJob(const std::vector<T> &values, const std::vector<double> &weights, const std::vector<size_t> &orderStatistics, const Comparator &comp = std::less<T>{}, const MPI_Comm &comm = MPI_COMM_WORLD):
+        values(values), weights(weights), orderStatistics(orderStatistics), comp(comp), comm(comm)
     {
         MPI_Comm_rank(this->comm, &this->rank);
         MPI_Comm_size(this->comm, &this->size);
@@ -170,6 +166,7 @@ struct OrderStatisticsJob
     const std::vector<double> &weights;
     const Comparator &comp;
     std::vector<double> accumulatingWeights;
+    std::vector<size_t> orderStatistics;
     double allLocalWeight;
     double allWeight;
     size_t allElementsNum;
@@ -269,8 +266,8 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     LocationSpecifier<T> medianOfMedians = getWeightedMedianOfMedians(job, localWeightedMedian);
     
     // step 4 - get the stat order of the element
-    // the element might occupity multiple statisticle orders, if there are any duplications
-    // so, we calculate the minimal stat order it occupity, and the maximal one
+    // the element might occupy multiple statisticle orders, if there are any duplications
+    // so, we calculate the minimal stat order it occupy, and the maximal one
     size_t medianOfMediansMinStatOrder = static_cast<size_t>(std::floor(job.allElementsNum * medianOfMedians.weightBefore / job.allWeight));
     size_t medianOfMediansMaxStatOrder = static_cast<size_t>(std::ceil(job.allElementsNum * (medianOfMedians.weightBefore + medianOfMedians.weightEqual) / job.allWeight));
 
@@ -346,19 +343,21 @@ std::vector<T> getWeightedOrderStatistics(const std::vector<T> &values, const st
     std::for_each(valuesWeightsSorted.cbegin(), valuesWeightsSorted.cend(), [&weightsSorted](const std::pair<T, double> &value){weightsSorted.emplace_back(value.second);});
     std::vector<size_t> orderStatisticsSorted = orderStatistics;
     std::sort(orderStatisticsSorted.begin(), orderStatisticsSorted.end());
-    OrderStatisticsJob<T, Comparator> job(valuesSorted, weightsSorted, comp, comm);
-    job.subjob.valuesVecBegin = valuesSorted.cbegin();
-    job.subjob.valuesVecEnd = valuesSorted.cend();
-    job.subjob.weightsVecBegin = weightsSorted.cbegin();
-    job.subjob.weightsVecEnd = weightsSorted.cend();
-    job.subjob.orderStatisticsBegin = orderStatisticsSorted.cbegin();
-    job.subjob.orderStatisticsEnd = orderStatisticsSorted.cend();
+    
+    OrderStatisticsJob<T, Comparator> job(valuesSorted, weightsSorted, orderStatisticsSorted, comp, comm);
+    job.subjob.valuesVecBegin = job.values.cbegin();
+    job.subjob.valuesVecEnd = job.values.cend();
+    job.subjob.weightsVecBegin = job.weights.cbegin();
+    job.subjob.weightsVecEnd = job.weights.cend();
+    job.subjob.orderStatisticsBegin = job.orderStatistics.cbegin();
+    job.subjob.orderStatisticsEnd = job.orderStatistics.cend();
     job.subjob.elementsBefore = 0;
     job.subjob.elementsAfter = 0;
     job.subjob.weightBefore = 0;
     job.subjob.weightAfter = 0;
     recursivelyGetWeightedStatOrder(job);
     std::sort(job.result.begin(), job.result.end());
+
     MPI_Barrier(job.comm);
     return job.result;
 }
@@ -373,12 +372,19 @@ std::vector<T> getWeightedBorders(const std::vector<T> &values, const std::vecto
     MPI_Allreduce(MPI_IN_PLACE, &totalSize, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
 
     size_t factor = totalSize / size; 
+    size_t remainder = totalSize % size;
     std::vector<size_t> orderStatistics;
-    for(int _rank = 0; _rank < size - 1; _rank++)
+    for(int _rank = 0; _rank < size; _rank++)
     {
-        orderStatistics.push_back(factor * (_rank + 1));
+        size_t numPoints = factor + ((_rank < remainder)? 1 : 0);
+        if(_rank > 0)
+        {
+            orderStatistics.push_back(orderStatistics.back() + numPoints);
+        }
+        else{
+            orderStatistics.push_back(numPoints);
+        }
     }
-    orderStatistics.push_back(totalSize);
     return getWeightedOrderStatistics(values, weights, orderStatistics, comp, comm);
 }
 
@@ -394,5 +400,6 @@ std::vector<T> getBorders(const std::vector<T> &values, const Comparator &comp =
     return getWeightedBorders(values, std::vector<double>(values.size(), 1.0), comp, comm);
 }
 
+#endif // RICH_MPI
 
 #endif // WEIGHTED_BALANCE_HPP

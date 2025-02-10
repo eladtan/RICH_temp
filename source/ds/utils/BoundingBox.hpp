@@ -6,7 +6,7 @@
 #endif // USE_VCL_VECTORIZATION
 
 #ifdef RICH_MPI
-    #include "misc/serializable.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #define DIM 3
@@ -210,45 +210,21 @@ public:
 
     #ifdef RICH_MPI
 
-    inline size_t getChunkSize(void) const override
+    force_inline size_t dump(Serializer *serializer) const override
     {
-        if constexpr(is_serializable<T>::value)
-        {
-            return this->ll.getChunkSize() + this->ur.getChunkSize();
-        }
-        throw UniversalError("BoundingBox: type is not serializable");
+        size_t bytes = 0;
+        bytes += this->ll.dump(serializer);
+        bytes += this->ur.dump(serializer);
+        return bytes;
     }
-
-    inline std::vector<double> serialize(void) const override
+    
+    force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
     {
-        std::vector<double> data;
-        if constexpr(is_serializable<T>::value)
-        {
-            std::vector<double> llData = this->ll.serialize();
-            std::vector<double> urData = this->ur.serialize();
-            data.insert(data.end(), llData.begin(), llData.end());
-            data.insert(data.end(), urData.begin(), urData.end());
-            return data;
-        }
-        throw UniversalError("BoundingBox: type is not serializable");
-    }
-
-    inline void unserialize(const std::vector<double>& data) override
-    {
-        if constexpr(is_serializable<T>::value)
-        {
-            std::vector<double> llData(data.begin(), data.begin() + this->ll.getChunkSize());
-            std::vector<double> urData(data.begin() + this->ll.getChunkSize(), data.end());
-            T ll_;
-            ll_.unserialize(llData);
-            T ur_;
-            ur_.unserialize(urData);
-            this->setBounds(ll_, ur_);
-        }
-        else
-        {
-            throw UniversalError("BoundingBox: type is not serializable");
-        }
+        size_t bytesRead = 0;
+        bytesRead += this->ll.load(serializer, byteOffset);
+        bytesRead += this->ur.load(serializer, byteOffset + bytesRead);
+        this->recalculateFields();
+        return bytesRead;
     }
 
     #endif // RICH_MPI

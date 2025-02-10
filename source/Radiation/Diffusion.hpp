@@ -2,6 +2,7 @@
 #define DIFFUSION_HPP 1
 
 #include "conj_grad_solve.hpp"
+#include "RadiationDriver.hpp"
 #include "source/newtonian/common/equation_of_state.hpp"
 
 
@@ -9,7 +10,10 @@ using namespace CG;
 
 namespace CG
 {
-     double CalcSingleFluxLimiter(Vector3D const& grad, double const D, double const cell_value);
+    double CalcSingleFluxLimiter(Vector3D const& grad, double const D, double const cell_value);
+
+    double FleckFactor(double const dt, double const beta, double const sigma_a);
+
 }
 
 //! \brief Abstract class for calculating the needed data for diffusion
@@ -29,7 +33,7 @@ virtual double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const =
 */
 virtual double CalcPlanckOpacity(ComputationalCell3D const& cell) const = 0;
 
-virtual double CalcScatteringOpacity(ComputationalCell3D const& cell) const = 0;
+virtual double CalcScatteringOpacity(ComputationalCell3D const& cell) const { return 0.0; }
 };
 
 //! \brief Class for assigning boundary conditions for diffusion
@@ -123,7 +127,7 @@ class DiffusionClosedBox : public DiffusionBoundaryCalculator
 };
 
 //! \brief Class for calculating diffusion matrix data for the CG solver
-class Diffusion : public CG::MatrixBuilder
+class Diffusion : public RadiationDriver
 {
 public:
 /*!
@@ -132,39 +136,77 @@ public:
 \param eos The equation of state
 \param boundary_calc Class to calcualte the values for the boundary conditions
 */
-    Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, DiffusionBoundaryCalculator const& boundary_calc,
-        EquationOfState const& eos, std::vector<std::string> const zero_cells = std::vector<std::string> (), bool const flux_limiter = true, bool const hydro_on = true, bool const compton_on = false) : D_coefficient_calcualtor(D_coefficient_calc),
-        boundary_calc_(boundary_calc), eos_(eos), flux_limiter_(flux_limiter), hydro_on_(hydro_on), compton_on_(compton_on), sigma_planck(), sigma_s(), fleck_factor(), mass_scale_(1), length_scale_(1), time_scale_(1), CG::MatrixBuilder(zero_cells) {}
+    Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
+              DiffusionBoundaryCalculator const& boundary_calc,
+              EquationOfState const& eos, 
+              std::vector<std::string> const zero_cells = std::vector<std::string> (), 
+              bool const flux_limiter = true, 
+              bool const hydro_on = true, 
+              bool const compton_on = false);
+    
+    ~Diffusion() = default;
+
+    double GetLengthScale() const override {return length_scale_;}
+
+    bool prestep(Tessellation3D const& tess,
+                 std::vector<ComputationalCell3D> const& cells) const override;
+
+    bool step(double const tolerance, 
+              int& total_iters, 
+              Tessellation3D const& tess, 
+              std::vector<ComputationalCell3D>& cells,
+              std::vector<Conserved3D>& extensives,
+              double const dt,
+              double const time) const override;
+
+    bool poststep() const override;
+
+    double calculate_dt(double const dt,
+                        Tessellation3D& tess, 
+                        std::vector<ComputationalCell3D>& cells) const override;
 
     void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells, 
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;
 
     void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-        std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result)const override;
+        std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result) const override;
 
-    double GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const;
+    double GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt) const;
+
+    virtual void PrintDebugData(size_t const index) const
+    {
+        std::cout<<"Diffusion debug data:"<<std::endl;
+        std::cout<<"sigma_planck "<<sigma_planck[index]<<" sigma_s "<<sigma_s[index]<<
+        " fleck_factor "<<fleck_factor[index]<<" D "<<D[index]<<" cell_flux_limiter "<<
+        cell_flux_limiter[index]<<std::endl;
+    }
 
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
-    mutable std::vector<double> sigma_planck, sigma_s, fleck_factor, D, R2, cell_flux_limiter;
     DiffusionBoundaryCalculator const& boundary_calc_;
-    bool const flux_limiter_;
-    bool const hydro_on_;
-    bool const compton_on_;
-
-    double mass_scale_;
-    double length_scale_;
-    double time_scale_;
-private:  
-    EquationOfState const& eos_;   
+    
+    mutable std::vector<double> sigma_planck;
+    mutable std::vector<double> sigma_s;
+    mutable std::vector<double> fleck_factor; 
+    mutable std::vector<double> D; 
+    mutable std::vector<double> R2; 
+    mutable std::vector<double> cell_flux_limiter;
+    mutable std::vector<double> new_Er;
+    mutable std::vector<double> new_Er_full;
+    mutable std::vector<double> old_Er;
+    mutable std::vector<ComputationalCell3D> cells_temp;
+    mutable std::vector<Conserved3D> extensives_temp;
 };
 
-//! D=D0*rho^alpha*T^beta
+//! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck
 class PowerLawOpacity: public DiffusionCoefficientCalculator
 {
 private:
-    double const D0_, alpha_, beta_;
+    double const D0_, alpha_, beta_, planck0_, alpha_planck_, beta_planck_;
 public:
-    PowerLawOpacity(double const D0, double const alpha, double const beta): D0_(D0), alpha_(alpha), beta_(beta){}
+    PowerLawOpacity(double const D0, double const alpha, double const beta,
+        double const planck0, double const alpha_planck, double const beta_planck)
+        : D0_(D0), alpha_(alpha), beta_(beta), planck0_(planck0), alpha_planck_(alpha_planck),
+        beta_planck_(beta_planck){}
 
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const override;
 

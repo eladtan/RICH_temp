@@ -7,3 +7,9 @@
 [submodule "source/opt/vcl"]
 	path = source/opt/vcl
 	url = https://github.com/maormizrachi/vcl_rich
+[submodule "analysis_files /radiative_shock"]
+	path = analysis_files/radiative_shock
+	url = git@gitlab.com:menikrief/radiative_shock.git
+[submodule "source/Radiation/CMMC"]
+	path = source/Radiation/CMMC
+	url = git@github.com:menahemkrief/CMMC.git

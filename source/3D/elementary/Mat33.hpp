@@ -4,7 +4,7 @@
 */
 
 #include "3D/elementary/Vector3D.hpp"
-#include "../../misc/serializable.hpp"
+#include "mpi/serialize/Serializer.hpp"
 
 #define EPSILON 1e-12
 
@@ -13,7 +13,10 @@
 
 //! \brief A 3x3 matrix
 template <typename T>
-class Mat33 : public Serializable
+class Mat33 
+			#ifdef RICH_MPI
+				: public Serializable
+			#endif // RICH_MPI
 {
 private:
 	T _data[3][3];
@@ -157,39 +160,38 @@ public:
 #endif
 	~Mat33(void) {}
 
-	inline size_t getChunkSize(void) const override
-	{
-		return 9;
-	};
-	
-	inline vector<double> serialize(void) const override
-	{
-		vector<double> res(9);
-		res[0] = _data[0][0];
-		res[1] = _data[0][1];
-		res[2] = _data[0][2];
-		res[3] = _data[1][0];
-		res[4] = _data[1][1];
-		res[5] = _data[1][2];
-		res[6] = _data[2][0];
-		res[7] = _data[2][1];
-		res[8] = _data[2][2];
-		return res;
-	};
 
-	inline void unserialize(const vector<double>& data) override
+#ifdef RICH_MPI
+    force_inline size_t dump(Serializer *serializer) const override
 	{
-		_data[0][0] = data[0];
-		_data[0][1] = data[1];
-		_data[0][2] = data[2];
-		_data[1][0] = data[3];
-		_data[1][1] = data[4];
-		_data[1][2] = data[5];
-		_data[2][0] = data[6];
-		_data[2][1] = data[7];
-		_data[2][2] = data[8];
-	};
+		size_t bytes = 0;
+		bytes += serializer->insert(this->_data[0][0]);
+		bytes += serializer->insert(this->_data[0][1]);
+		bytes += serializer->insert(this->_data[0][2]);
+		bytes += serializer->insert(this->_data[1][0]);
+		bytes += serializer->insert(this->_data[1][1]);
+		bytes += serializer->insert(this->_data[1][2]);
+		bytes += serializer->insert(this->_data[2][0]);
+		bytes += serializer->insert(this->_data[2][1]);
+		bytes += serializer->insert(this->_data[2][2]);
+		return bytes;
+	}
 
+    force_inline size_t load(const Serializer *serializer, std::size_t byteOffset) override
+	{
+		size_t bytes = 0;
+		bytes += serializer->extract(this->_data[0][0], byteOffset);
+		bytes += serializer->extract(this->_data[0][1], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[0][2], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[1][0], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[1][1], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[1][2], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[2][0], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[2][1], byteOffset + bytes);
+		bytes += serializer->extract(this->_data[2][2], byteOffset + bytes);
+		return bytes;
+	}
+#endif // RICH_MPI
 };
 
 /*! \brief Term by term addition

@@ -1,4 +1,29 @@
 #include "Voronoi3D.hpp"
+#include "../../elementary/Mat33.hpp"
+#include "../utils/Predicates3D.hpp"
+#include "misc/utils.hpp"
+#include "misc/io3D.hpp"
+#include "3D/GeometryCommon/Intersections.hpp"
+#include "misc/int2str.hpp"
+
+#ifdef RICH_MPI
+
+#include "3D/range/finders/BruteForce.hpp"
+#include "3D/range/finders/RangeTree.hpp"
+#include "3D/range/finders/OctTree.hpp"
+#include "3D/range/finders/KDTree.hpp"
+#include "3D/range/finders/GroupRangeTree.hpp"
+#include "3D/range/finders/HashBruteForce.hpp"
+#include "3D/range/finders/SmartBruteForce.hpp"
+#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
+
+#include "3D/environment/kernels/Rectangle.hpp"
+#include "3D/environment/kernels/SameRectangle.hpp"
+
+#endif // RICH_MPI
+
+// #define VORONOI_DEBUG
 
 bool PointInPoly(Tessellation3D const &tess, Vector3D const &point, std::size_t index)
 {
@@ -1248,15 +1273,20 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
         OctTree<IndexedVector3D> oldPointsTree(this->ll_, this->ur_, oldPoints);
         newRadiuses = std::vector<double>(newPointsNum);
         for(size_t i = 0; i < newPointsNum; i++)
-    {
+        {
             size_t matchingPointIdx = mask[i];
             double radius;
 
             if(matchingPointIdx >= originalPointsNum)
             {
                 // the point is a new, but we take its initial radius to be the same as the closest point's radius
-                size_t closestPointIdx = oldPointsTree.closestPoint(points[i]).getIndex();
-                radius = this->radiuses[closestPointIdx];
+                if(newPointsNum > 1)
+                {
+                    size_t closestPointIdx = oldPointsTree.closestPoint(points[i]).getIndex();
+                    radius = this->radiuses.at(closestPointIdx);
+                }
+                else
+                    radius = abs(this->ll_ - this->ur_);
             }
             else
             {
@@ -1420,6 +1450,7 @@ void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
 {
     // use an oct tree to fast calculate the distance to closest point
     OctTree<Vector3D> myOctTree(this->ll_, this->ur_, this->allMyPoints.begin(), this->allMyPoints.end());
+    size_t const N = this->indicesInAllMyPoints.size();
     for(const std::pair<size_t, size_t> &indices : this->indicesInAllMyPoints)
     {
         const size_t &pointIndexOnBuild = indices.first;
@@ -1428,7 +1459,10 @@ void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
         if(this->radiuses[pointIndexAmongAll] <= 0)
         {
             // point does not have a radius from a previous timestep. Initialize a radius
-            this->radiuses[pointIndexAmongAll] = fastsqrt(this->allMyPointsTree->closestPointDistance(point)); // todo second closest
+            if(N > 1)
+                this->radiuses[pointIndexAmongAll] = fastsqrt(this->allMyPointsTree->closestPointDistance(point)); // todo second closest
+            else
+                this->radiuses[pointIndexAmongAll] = abs(this->ll_ - this->ur_);
         }
     }
 }
@@ -1819,6 +1853,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         selfIgnorePoints.insert(indices.second);
     }
 
+    size_t total_new_points = 0;
     while(true) // loop is not really infinite (has 'break')
     {
         boost::container::flat_map<size_t, size_t> numOfResultsForSmallPoints;
@@ -1872,6 +1907,14 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
         
+        
+        size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
+        size_t new_points = new_points_until_now - total_new_points;
+        total_new_points = new_points_until_now;
+        MPI_Allreduce(MPI_IN_PLACE, &new_points, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+
+        if(rank == 0) std::cout << "added new points: " << new_points << std::endl;
+
         std::tie(smallPoints, largePoints) = this->DetermineNextIterationPoints(iterations, firstLargeIteration, currentRadiuses, numOfResultsForSmallPoints, numOfResultsForBigPoints);
 
         // #ifdef RICH_MPI
@@ -2145,7 +2188,11 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
             bounding_box.first.z = std::min(bounding_box.first.z, point.z);
             bounding_box.second.z = std::max(bounding_box.second.z, point.z);
         }
-
+        if(activePoints.size() == 1)
+        {
+            bounding_box.second = this->ur_;
+            bounding_box.first = this->ll_;
+        }
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;
         // reportDuplications(new_points);

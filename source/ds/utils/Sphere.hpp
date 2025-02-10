@@ -6,7 +6,7 @@
 #endif // USE_VCL_VECTORIZATION
 
 #ifdef RICH_MPI
-    #include "misc/serializable.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #include <iostream>
@@ -44,27 +44,20 @@ public:
     }
 
     #ifdef RICH_MPI
-        inline size_t getChunkSize() const override
+        force_inline size_t load(const Serializer *serializer, std::size_t byteOffset) override
         {
-            return 4;
+            size_t bytes = 0;
+            bytes += serializer->extract(this->center, byteOffset);
+            bytes += serializer->extract(this->radius, byteOffset + bytes);
+            return bytes;
         }
 
-        inline std::vector<double> serialize() const override
+        force_inline size_t dump(Serializer *serializer) const override
         {
-            std::vector<double> data(4);
-            data[0] = this->center[0];
-            data[1] = this->center[1];
-            data[2] = this->center[2];
-            data[3] = this->radius;
-            return data;
-        }
-
-        inline void unserialize(const std::vector<double> &data) override
-        {
-            this->center[0] = data[0];
-            this->center[1] = data[1];
-            this->center[2] = data[2];
-            this->radius = data[3];
+            size_t bytes = 0;
+            bytes += serializer->insert(this->center);
+            bytes += serializer->insert(this->radius);
+            return bytes;
         }
     #endif // RICH_MPI
 };

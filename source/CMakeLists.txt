@@ -112,6 +112,22 @@ if(CLIPPER_INCLUDE)
     add_compile_definitions("USE_CLIPPER")
 endif()
 
+# python
+if(PYTHON_INCLUDE)
+    if(PYTHON_LIB_DIRECTORY)
+        # target json_cpp
+        message("JSON_CPP ${PYTHON_INCLUDE}, LIB ${PYTHON_LIB_DIRECTORY}")
+        include_directories(${PYTHON_INCLUDE})
+        
+        find_library(PYTHON_LIB NAMES python3.9 libpython3.9 PATHS ${PYTHON_LIB_DIRECTORY} NO_DEFAULT_PATH)
+        message("PYTHON_LIB ${PYTHON_LIB} (DIR ${PYTHON_LIB_DIRECTORY})")
+    else()
+        message("NOT INCLUDING PYTHON, LIB IS EMPTY (EVEN THOUGH INCLUDE IS NOT)")
+    endif()
+else()
+    message("NO PYTHON")
+endif()
+
 # json
 if(JSONCPP_INCLUDE)
     if(JSONCPP_LIB_DIRECTORY)
@@ -168,6 +184,11 @@ endif()
 # link json cpp
 if(DEFINED JSONCPP_LIB_DIRECTORY)
     target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
+endif()
+
+# link json cpp
+if(DEFINED PYTHON_LIB_LIBRARY)
+    target_link_libraries(${EXE_NAME} PRIVATE ${PYTHON_LIB})
 endif()
 
 # link vtune

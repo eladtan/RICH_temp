@@ -67,7 +67,7 @@ namespace
 		std::vector<Vector3D> c_ij)
 	{
 		size_t n = neighbor_centers.size();
-		if (n > 60)
+		if (n > 100)
 			std::cout << "Cell has too many neighbors in calc naive slope, Cell x cor " << center.x <<
 			" Cell y cor " << center.y << " Cell z cor " << center.z << std::endl;
 		// Create the matrix to invert and the vector to compare
@@ -273,7 +273,7 @@ namespace
 		ReplaceComputationalCell(cmin, cell);
 		// Find maximum.minimum neighbor values
 		size_t nloop = neighbors.size();
-		size_t ntracer = cell.tracers.size();
+		size_t ntracer = ComputationalCell3D::tracerNames.size();
 		for (size_t i = 0; i < nloop; ++i)
 		{
 			ComputationalCell3D const& cell_temp = neighbors[i];
@@ -434,7 +434,7 @@ namespace
 		const double small_factor = 1e-9;
 		ComputationalCell3D cmax(cell), cmin(cell);
 		size_t N = faces.size();
-		size_t ntracer = cell.tracers.size();
+		size_t ntracer = ComputationalCell3D::tracerNames.size();
 		// Find maximum values
 		for (size_t i = 0; i < N; ++i)
 		{
@@ -463,7 +463,10 @@ namespace
 				cmin.tracers[j] = std::min(cmin.tracers[j], cell_temp.tracers[j]);
 			}
 		}
-		ComputationalCell3D maxdiff = cmax - cell, mindiff = cmin - cell;
+		ComputationalCell3D maxdiff(cmax);
+		cmax -= cell; 
+		ComputationalCell3D mindiff(cmin);
+		cmin -= cell;
 		// limit the slope
 		vector<double> psi(6 + cell.tracers.size(), 1);
 		for (size_t i = 0; i < N; ++i)
@@ -630,6 +633,12 @@ namespace
 		res.xderivative.Erad_dt_dt = 0;
 		res.yderivative.Erad_dt_dt = 0;
 		res.zderivative.Erad_dt_dt = 0;
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			res.xderivative.Eg[j] = 0;
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			res.yderivative.Eg[j] = 0;
+		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+			res.zderivative.Eg[j] = 0;
 		res.xderivative.temperature = 0;
 		res.yderivative.temperature = 0;
 		res.zderivative.temperature = 0;
@@ -673,7 +682,7 @@ namespace
 	void exchange_ghost_slopes(Tessellation3D const& tess, vector<Slope3D> & slopes)
 	{
 		Slope3D sdummy;
-		MPI_exchange_data(tess, slopes, true,&sdummy);
+		MPI_exchange_data(tess, slopes, true);
 	}
 #endif//RICH_MPI
 }

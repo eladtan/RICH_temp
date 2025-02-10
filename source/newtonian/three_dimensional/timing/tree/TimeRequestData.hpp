@@ -1,7 +1,6 @@
 #ifndef TIME_REQUEST_DATA_HPP
 #define TIME_REQUEST_DATA_HPP
 
-#include "misc/serializable.hpp"
 #include "TimingTree.hpp"
 
 #ifdef RICH_MPI
@@ -16,9 +15,9 @@ public:
         boundingBox(boundingBox_), cellID(cellID_), value(value_)
     {}
 
-    size_t getChunkSize() const override;
-    std::vector<double> serialize() const override;
-    void unserialize(const std::vector<double> &data) override;
+    size_t dump(Serializer *serializer) const override;
+    
+    size_t load(const Serializer *serializer, size_t byteOffset) override;
 
     BoundingBox<T> boundingBox;
     size_t cellID;
@@ -26,34 +25,25 @@ public:
 };
 
 template<typename T>
-size_t TimeRequestData<T>::getChunkSize() const
+size_t TimeRequestData<T>::dump(Serializer *serializer) const
 {
-    return this->boundingBox.getChunkSize() + 1 + this->value.getChunkSize();
+    size_t bytes = 0;
+    bytes += this->boundingBox.dump(serializer);
+    bytes += serializer->insert(this->cellID);
+    bytes += this->value.dump(serializer);
+    return bytes;
 }
 
 template<typename T>
-std::vector<double> TimeRequestData<T>::serialize() const
+inline size_t TimeRequestData<T>::load(const Serializer *serializer, size_t byteOffset)
 {
-    std::vector<double> serialized;
-    std::vector<double> serData = this->boundingBox.serialize();
-    serialized.insert(serialized.end(), serData.cbegin(), serData.cend());
-    serialized.push_back(static_cast<double>(this->cellID));
-    serData = this->value.serialize();
-    serialized.insert(serialized.end(), serData.cbegin(), serData.cend());
-    return serialized;
+    size_t bytesRead = 0;
+    bytesRead += this->boundingBox.load(serializer, byteOffset);
+    bytesRead += serializer->extract(this->cellID, byteOffset + bytesRead);
+    bytesRead += this->value.load(serializer, byteOffset + bytesRead);
+    return bytesRead;
 }
-
-template<typename T>
-void TimeRequestData<T>::unserialize(const std::vector<double> &data)
-{
-    size_t BBChunkSize = this->boundingBox.getChunkSize();
-    std::vector<double> serData(data.cbegin(), data.cbegin() + BBChunkSize);
-    this->boundingBox.unserialize(serData);
-    this->cellID = static_cast<size_t>(data[BBChunkSize]);
-    serData = std::vector<double>(data.cbegin() + BBChunkSize + 1, data.cend());
-    this->value.unserialize(serData);
-}
-
+    
 #endif // RICH_MPI
 
 #endif // TIME_REQUEST_DATA_HPP

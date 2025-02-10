@@ -48,6 +48,8 @@ namespace
     if (sp*sp < ScalarProd(mu,mu)*Nsize*1e-8)
       return false;
     double m = ScalarProd(N, plane[0] - A) / sp;
+    if(m < 0 || m > 1)
+      return false;
     res = A + m*mu;
     return true;
   }

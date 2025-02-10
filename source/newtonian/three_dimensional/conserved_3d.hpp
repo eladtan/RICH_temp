@@ -5,6 +5,10 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "../common/equation_of_state.hpp"
 #include "computational_cell.hpp"
+#ifdef RICH_MPI
+	#include <mpi.h>
+	#include "mpi/serialize/Serializer.hpp"
+#endif // RICH_MPI
 
 //! \brief Conserved variables for a 3D computational cell
 class Conserved3D
@@ -13,7 +17,6 @@ class Conserved3D
 	#endif // RICH_MPI
 {
 public:
-
 	//! \brief Mass
 	double mass;
 
@@ -28,6 +31,9 @@ public:
 
 	//! \brief Radiation energy
 	double Erad;
+
+	//! \brief The radiation energy in a given energy group
+	boost::container::small_vector<double, ENERGY_GROUPS_NUM> Eg;
 
 	double Erad_dt;
 
@@ -82,20 +88,9 @@ public:
 	Conserved3D& operator*=(double s);
 
 	#ifdef RICH_MPI
-	/*! \brief Estimate chunk sizes
-		\return Size of chunk (in bits)
-	*/
-		size_t getChunkSize(void) const;
+		size_t dump(Serializer *serializer) const override;
 
-	/*! \brief Convert to series of numbers
-		\return series of numbers
-	*/
-		vector<double> serialize(void) const;
-
-	/*! \brief Reconstruct from serial form
-		\param data Serialised form
-	*/
-		void unserialize(const vector<double>& data);
+		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
 	#endif // RICH_MPI
 };
 
