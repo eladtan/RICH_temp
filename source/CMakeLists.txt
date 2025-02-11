@@ -169,6 +169,7 @@ target_link_libraries(
     ${HDF5_LIBS} 
     ${VTK_LIBRARIES}
     ${JSONCPP_LIB}
+    "-lstdc++"
 )
 
 # link boost
