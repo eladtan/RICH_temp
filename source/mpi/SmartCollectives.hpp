@@ -1,11 +1,11 @@
 #ifndef SMART_COLLECTIVES_HPP
 #define SMART_COLLECTIVES_HPP
 
-#ifdef RICH_MPI
 
 #include <vector>
 #include <string>
 #include <execinfo.h>
+#ifdef RICH_MPI
 #include <mpi.h>
 #include "mpi/serialize/mpi_commands.hpp"
 
