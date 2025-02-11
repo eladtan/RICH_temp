@@ -1,10 +1,13 @@
 #ifndef WEIGHTED_BALANCE_HPP
 #define WEIGHTED_BALANCE_HPP
 
+#ifdef RICH_MPI
+
 #include <vector>
 #include <algorithm>
+#include <optional>
 #include <mpi.h>
-#include "misc/serialize/mpi_commands.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 #include "mpi/mpi_commands.hpp"
 
 template<typename T>
@@ -354,6 +357,7 @@ std::vector<T> getWeightedOrderStatistics(const std::vector<T> &values, const st
     job.subjob.weightAfter = 0;
     recursivelyGetWeightedStatOrder(job);
     std::sort(job.result.begin(), job.result.end());
+
     MPI_Barrier(job.comm);
     return job.result;
 }
@@ -396,5 +400,6 @@ std::vector<T> getBorders(const std::vector<T> &values, const Comparator &comp =
     return getWeightedBorders(values, std::vector<double>(values.size(), 1.0), comp, comm);
 }
 
+#endif // RICH_MPI
 
 #endif // WEIGHTED_BALANCE_HPP

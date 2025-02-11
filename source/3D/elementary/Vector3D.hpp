@@ -14,7 +14,7 @@
 #include "misc/utils.hpp"
 
 #ifdef RICH_MPI
-	#include "misc/serialize/Serializer.hpp"
+	#include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 using std::vector;

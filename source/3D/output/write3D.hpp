@@ -80,24 +80,6 @@ void WritePoints(const std::vector<Vector3D> &points, const std::string &filenam
 
 #ifdef RICH_MPI  
   void WritePointsParallel(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
-  
-  inline int GetNumberOfRanksInHDF(std::string const& fname)
-  {
-      H5File file(fname, H5F_ACC_RDONLY);
-      int counter = 0;
-      while(true)
-      {
-        try
-        {
-          auto read_location = file.openGroup("/rank" + std::to_string(counter));
-          ++counter;
-        }
-        catch (Exception& notFoundError)
-        {
-          return counter;
-        }
-      }
-  }
 #endif // RICH_MPI
 
 #endif // OUTPUT_WRITE_3D_HPP

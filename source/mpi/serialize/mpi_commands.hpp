@@ -8,8 +8,6 @@
 #include "Serializer.hpp"
 #include "misc/universal_error.hpp"
 
-using rank_t = int;
-
 template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
 {
@@ -51,7 +49,7 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
     for(rank_t _rank = 0; _rank < size; _rank++)
     {
         size_t bytesRead = recv.extract(result[_rank], recvDisplacements[_rank], recvCounts[_rank]);
-        assert(bytesRead != static_cast<size_t>(recvCounts[_rank]));
+        assert(bytesRead == static_cast<size_t>(recvCounts[_rank]));
     }
 
     return result;

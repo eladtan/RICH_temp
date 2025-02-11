@@ -4,7 +4,7 @@
 #include <iostream>
 #include "3D/elementary/Vector3D.hpp"
 #ifdef RICH_MPI
-    #include "misc/serialize/Serializer.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #define EPSILON 1e-12

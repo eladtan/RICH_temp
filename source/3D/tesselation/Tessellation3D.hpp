@@ -14,7 +14,6 @@
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 #include "mpi/mpi_exchange_commands.hpp"
-#include "mpi/mpi_exchanger.hpp"
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;

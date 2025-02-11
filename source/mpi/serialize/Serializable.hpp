@@ -1,6 +1,9 @@
 #ifndef SERIALIZABLE_HPP
 #define SERIALIZABLE_HPP
 
+#include <cstddef> // for size_t
+#include "../types.h"
+
 class Serializer;
 
 class Serializable

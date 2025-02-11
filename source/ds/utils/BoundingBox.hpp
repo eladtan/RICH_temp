@@ -6,7 +6,7 @@
 #endif // USE_VCL_VECTORIZATION
 
 #ifdef RICH_MPI
-    #include "misc/serialize/Serializer.hpp"
+    #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
 #define DIM 3
