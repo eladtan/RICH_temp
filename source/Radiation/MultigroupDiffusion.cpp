@@ -176,7 +176,14 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     D  = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
     
     if(!compton_initialized_ and compton_on_){
-        Vector tmp_grid = {1e-4, 1e-3, 1e-2, 0.1, 0.5, 1., 3., 4., 6., 10., 20., 30., 40., 60., 80., 100., 200., 1000., 5000.};
+        // Vector tmp_grid = {1e-4, 1e-3, 1e-2, 0.1, 0.5, 1., 3., 4., 6., 10., 15., 20., 25., 30., 40., 60., 80., 100., 200., 1000., 5000.};
+        std::vector<double> tmp_grid = linspace(-2, 4, 128);
+        for(size_t i = 0; i < tmp_grid.size(); ++i)
+            tmp_grid[i] = std::pow(10.0, tmp_grid[i]);
+        tmp_grid.insert(tmp_grid.begin(), 0.005);
+        tmp_grid.insert(tmp_grid.begin(), 0.001);
+        tmp_grid.insert(tmp_grid.begin(), 0.0001);
+        // Vector tmp_grid = {1e-2, 0.1, 0.2, 0.3, 0.8, 1.5, 3.0, 4.0, 5.0, 7.5};
         for(auto& temp : tmp_grid){
             temp *= units::kev_kelvin;
         }
