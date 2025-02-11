@@ -444,6 +444,26 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
     BuildMatrixGroupFull(tess, A, A_indeces, cells, dt, b, x0, current_time);
 }
 
+double  MultigroupDiffusion::GetDopplerSlope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
+{
+    if(g == 0 or (g + 1) == ENERGY_GROUPS_NUM)
+    {
+        return 0.0;
+    }
+    double const dw_left = expansion ? energy_groups_width[g] : energy_groups_width[g - 1];
+    double const dw_right = expansion ? energy_groups_width[g + 1] : energy_groups_width[g];
+
+    double const slope_left = (cell.Eg[g] * cell.density / energy_groups_width[g] - cell.Eg[g - 1] * cell.density / energy_groups_width[g - 1]) / dw_left;
+    double const slope_right = (cell.Eg[g + 1] * cell.density / energy_groups_width[g + 1] - cell.Eg[g] * cell.density / energy_groups_width[g]) / dw_right;
+
+    double const r = slope_left / (slope_right + std::numeric_limits<double>::min() * 1e10);
+
+    double slope = std::max(std::max(0.0, std::min(2 * r, 1.0)), std::min(r, 2.0));
+    // slope = std::max(0.0, std::min(r, 1.0));
+    // slope = 0;
+    return slope;
+}
+
 void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess, 
                                            mat& A, 
                                            size_t_mat& A_indeces, 
