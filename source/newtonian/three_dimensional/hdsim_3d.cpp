@@ -820,15 +820,16 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 		pt_.updateTime(dt);
 		pt_.updateCycle();
 	}
-	double grow_factor = 1.25;
-	if(max_iter_done > 200)
-		grow_factor = 1.02;
-	else
-		if(max_iter_done > 125)
-			grow_factor = 1.05;
+	// double grow_factor = 1.25;
+	// if(max_iter_done > 200)
+	// 	grow_factor = 1.02;
+	// else
+	// 	if(max_iter_done > 125)
+	// 		grow_factor = 1.05;
 
 	// new_dt = std::min(new_dt, dt*grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter), 0.0));
 	// if(max_iter_done > 300)
 	// 	new_dt = dt * 0.9;
+	// return this->radiation_dt_;
 	return new_dt;
 }
