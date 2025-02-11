@@ -896,7 +896,10 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 		if(entropy_it != ComputationalCell3D::tracerNames.end())
 		{
 			size_t const entropy_index = static_cast<size_t>(entropy_it - ComputationalCell3D::tracerNames.begin());
-			res.internal_energy = extensive.internal_energy / extensive.mass;
+			double new_energy = std::max(extensive.internal_energy / extensive.mass, eos.dp2e(res.density, eos.sd2p(res.tracers[entropy_index], res.density)));
+			res.internal_energy = new_energy;
+			extensive.internal_energy = new_energy * extensive.mass;
+			extensive.energy = extensive.internal_energy + 0.5 * ScalarProd(res.velocity, res.velocity) * extensive.mass;
 			res.pressure = eos.de2p(res.density, res.internal_energy);
 			res.tracers[entropy_index] = eos.dp2s(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
 			extensive.tracers[entropy_index] = res.tracers[entropy_index] * extensive.mass;

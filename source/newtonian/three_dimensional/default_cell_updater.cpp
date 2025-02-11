@@ -84,6 +84,7 @@ namespace
 						extensive.tracers[j] *= d_factor;
 					extensive.Erad *= d_factor;
 				}
+				double const old_etherm = res[i].internal_energy;
 				res[i].velocity = extensive.momentum / extensive.mass;
 				double energy = extensive.internal_energy / extensive.mass;
 				extensive.energy = extensive.mass*(energy + 0.5*ScalarProd(res[i].velocity, res[i].velocity));
@@ -94,6 +95,22 @@ namespace
 				{
 					try
 					{
+						if(min_temperature > 0)
+						{
+							double const Et_min = eos.dT2e(res[i].density, min_temperature, res[i].tracers, ComputationalCell3D::tracerNames);
+							if(energy < Et_min)
+							{
+								energy = Et_min;
+								res[i].temperature = min_temperature;
+								res[i].internal_energy = Et_min;
+								extensive.energy += (res[i].internal_energy - energy) * extensive.mass;
+								extensive.internal_energy += (res[i].internal_energy - energy) * extensive.mass;
+								res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
+								double new_entropy = eos.dp2s(res[i].density, res[i].pressure, res[i].tracers, ComputationalCell3D::tracerNames);
+								res[i].tracers[entropy_index] = new_entropy;
+								extensive.tracers[entropy_index] = new_entropy * extensive.mass;
+							}
+						}
 						// Do we have a negative thermal energy?
 						if (energy < 0)
 						{
@@ -129,9 +146,11 @@ namespace
 						eo.addEntry("Cell x location", tess.GetMeshPoint(i).x);
 						eo.addEntry("Cell y location", tess.GetMeshPoint(i).y);
 						eo.addEntry("Cell z location", tess.GetMeshPoint(i).z);
+						eo.addEntry("cell Temperature", res[i].temperature);
 						eo.addEntry("Cell volume", vol);
 						eo.addEntry("Cell energy", extensives[i].energy);
 						eo.addEntry("Cell thermal energy per unit mass", energy);
+						eo.addEntry("old_etherm", old_etherm);
 						eo.addEntry("Cell id", static_cast<double>(res[i].ID));
 						for(size_t j = 0; j <ComputationalCell3D::tracerNames.size(); ++j)
 							eo.addEntry(ComputationalCell3D::tracerNames[j], extensives[i].tracers[j]);
