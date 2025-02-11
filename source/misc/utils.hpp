@@ -185,7 +185,7 @@ T BiLinearInterpolation(std::vector<T> const& x, std::vector<T> const& y, std::v
 	size_t const idx = static_cast<size_t>(itx - x.begin());
 	size_t const idy = static_cast<size_t>(ity - y.begin());
 	return (data[idx - 1][idy - 1] * (*itx - xi) * (*ity - yi) + data[idx][idy - 1] * (xi - *(itx - 1)) * (*ity - yi)
-		 + data[idx - 1][idy] * (*itx - xi) * (yi - *(ity -1)) + data[idx - 1][idy - 1] * (xi - *(itx - 1)) * (yi - *(ity -1))) * delta;
+		 + data[idx - 1][idy] * (*itx - xi) * (yi - *(ity -1)) + data[idx][idy] * (xi - *(itx - 1)) * (yi - *(ity -1))) * delta;
 }
 
 /*!
