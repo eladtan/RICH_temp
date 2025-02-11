@@ -101,6 +101,81 @@ namespace CG
         return sub_prod;
     }
     
+    void finalize_conjugate_gradient(size_t slice, size_t max_loc0, size_t max_loc1, int rank, size_t i,
+        double error, double max_data_0_val, double max_data_1_val, double max_data_2_val,
+        int max_data_0_id, int max_data_1_id, std::vector<double>& sub_x, std::vector<double>& sub_x_solution,
+        std::vector<ComputationalCell3D> const& cells, Tessellation3D const& tess, int &total_iters,
+        CG::mat const& A, size_t_mat const& A_indeces, std::vector<double> const& b, size_t Nlocal,
+        double lengthscale, std::vector<double>& sub_a_times_p, std::vector<double>& sub_r)
+    {
+        max_loc0 /= slice;
+        max_loc1 /= slice;
+        if(rank == 0)
+            std:: cout << "Converged at iter = " << i <<" error "<<error<<" negative value "<<max_data_2_val<<std::endl;
+        if(rank == max_data_0_id)
+            std::cout<<"Max0 "<<max_data_0_val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
+            <<" X "<<tess.GetMeshPoint(max_loc0)<<std::endl; 
+        if(rank == max_data_1_id)
+            std::cout<<"Max1 "<<max_data_1_val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
+            <<" X "<<tess.GetMeshPoint(max_loc1)<<std::endl; 
+        total_iters = i;
+#ifdef RICH_MPI
+        MPI_exchange_data(tess, sub_x, true, slice);
+#endif
+        mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+        sub_x.resize(Nlocal);
+        vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
+        sub_x_solution.resize(Nlocal);
+        double sum_dx = 0, sum_dx_sign = 0, negative_x = 0;
+        std::vector<double> dx_vec(slice, 0);
+        for(size_t k = 0; k < Nlocal; ++k)
+        {
+            // std::cout<<"subx["<<k<<"] "<<sub_x[k]<<std::endl;
+            // sub_x_solution[k] = sub_x[k];
+            double const cell_volume = tess.GetVolume(k / slice) * pow<3>(lengthscale);
+            sub_x_solution[k] = sub_x[k] + sub_r[k] / cell_volume;
+            if(sub_x_solution[k] < 0)
+            {
+                negative_x -= cell_volume * sub_x_solution[k];
+                sum_dx += cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k]);
+                sum_dx_sign += cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k]);
+                dx_vec[k%slice] += cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k]);
+                // if(cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k])>1e37)
+                //     std::cout<<"Large Erad change sub_x[k] "<<sub_x[k]<<" "<<cells[k/slice]<<std::endl;
+                sub_x_solution[k] = std::abs(sub_x[k]) * 0.1;
+            }
+            else
+            {
+                if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] >= 0)
+                {
+                    sum_dx += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
+                    sum_dx_sign += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
+                    dx_vec[k%slice] += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
+                    sub_x_solution[k] = std::abs(sub_x[k]) * 0.5;
+                }
+                if(sub_x_solution[k] > std::abs(sub_x[k]) * 2)
+                {
+                    sum_dx += cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
+                    sum_dx_sign -= cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
+                    dx_vec[k%slice] -= cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
+                    sub_x_solution[k] = sub_x[k] * 2;
+                }
+            }
+        }
+        dx_vec.push_back(sum_dx);
+        dx_vec.push_back(sum_dx_sign);
+        dx_vec.push_back(negative_x);
+#ifdef RICH_MPI
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : dx_vec.data(), dx_vec.data(), dx_vec.size(), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+#endif
+        if(rank == 0)
+        {
+            std::cout << "Energy change due to sub_x_solution " << dx_vec[slice] <<" with sign "<<dx_vec[slice + 1]<<" negative_x "<<dx_vec.back()<<std::endl;
+            for(size_t i = 0; i < slice; ++i)
+                std::cout << "energy change group " << i << " = " << dx_vec[i] << std::endl;
+        }
+    }
+    
     void build_M(const mat &sub_A_values, const size_t_mat &sub_A_indices, std::vector<double> &M)
     {
         size_t const sub_num_rows = sub_A_values.size();
@@ -399,9 +474,6 @@ namespace CG
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
         double const scale_b = mpi_dot_product(vector_rescale(b, M), b);
-        // double sub_r_sqrd_convergence = mpi_dot_product(sub_r, sub_r);
-        // if(rank == 0)
-        //     std::cout<<"CG init delta "<<delta_init<<std::endl;
         double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
         bool good_end = false;
         struct
@@ -419,23 +491,50 @@ namespace CG
 
         sub_p = sub_r;
         double max_sub_x = 0;
-
+        double error = std::numeric_limits<double>::max();
+        bool print = false;//rank == 0 && time >  136.97915 && time <  136.98;
         for (int i = 0; i < max_iter; i++) {
+            total_iters = i;
             // note: make sure matrix is big enough for the number of processors you are using!
+            if(i > 1 && i % 50 == 0)
+            {
+#ifdef RICH_MPI
+                MPI_exchange_data(tess, sub_x, true, slice);
+#endif
+                mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+                sub_x.resize(Nlocal);
+                vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
+                sub_r.resize(Nlocal);
+                sub_r0 = sub_r;
+                sub_p = sub_r;
+                rho0 = mpi_dot_product(sub_r0, sub_r);
+                sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
+            }
             if(std::abs(rho0) < std::numeric_limits<double>::min()*1e100){
+                if(rank == 0)
+                    std::cout<<"Exited BiCGSTAB: rho0 is very small: "<<rho0<<std::endl;
+                finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
+                    max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
+                    cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                    sub_a_times_p, sub_r);
                 good_end = true;
+                break;
+            }
+            if(print)
+                std::cout<<"iter "<<i<<" rho0 "<<rho0<<" sub_r_sqrd "<<sub_r_sqrd<<std::endl;
+            // r_old = sub_r;                 // Store previous residual
+            sub_r_sqrd_old = sub_r_sqrd;  // save a recalculation of r_old^2 later
+            if(std::min(sub_r_sqrd_old, std::abs(rho0)) < std::numeric_limits<double>::min()*1e100){
+                if(rank == 0)
+                    std::cout<<"Exited BiCGSTAB: sub_r_sqrd_old is very small: "<<sub_r_sqrd_old<<std::endl;
+                finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
+                    max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
+                    cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                    sub_a_times_p, sub_r);
                 break;
             }
             max_data[2].mpi_id = rank;
             max_data[0].mpi_id = rank;
-            // r_old = sub_r;                 // Store previous residual
-            sub_r_sqrd_old = sub_r_sqrd;  // save a recalculation of r_old^2 later
-            if(std::min(sub_r_sqrd_old, std::abs(rho0)) < std::numeric_limits<double>::min()*1e100){
-                good_end = true;
-                sub_x_solution = sub_x;
-                sub_x_solution.resize(Nlocal);
-                break;
-            }
             y = vector_rescale(sub_p, M);
 #ifdef RICH_MPI
             MPI_exchange_data(tess, y, true, slice);
@@ -444,6 +543,8 @@ namespace CG
             y.resize(Nlocal);
             double const sub_r0_v = mpi_dot_product(sub_r0, v);
             double const alpha = std::abs(sub_r0_v) < std::numeric_limits<double>::min()*1e100 ? 0.0 : rho0 / sub_r0_v;
+            if(print)
+                std::cout<<"alpha "<<alpha<<" sub_r0_v "<<sub_r0_v<<std::endl;
             vec_lin_combo(1.0, sub_x, alpha, y, h);
             vec_lin_combo(1.0, sub_r, -alpha, v, s);
             z = vector_rescale(s, M);
@@ -454,14 +555,29 @@ namespace CG
             z.resize(Nlocal);
             double const up = mpi_dot_product(vector_rescale(t, M), vector_rescale(s, M));
             double const down = mpi_dot_product(vector_rescale(t, M), vector_rescale(t, M));
-            double const w = std::abs(up) < std::numeric_limits<double>::min()*1e100 ? 0.0 : up / down;
+            double w = std::abs(down) < std::numeric_limits<double>::min()*1e100 ? 0.0 : up / down;
+            if(print)
+                std::cout<<"w "<<w<<" up "<<up<<" down "<<down<<std::endl;
+            if(std::abs(alpha) < std::numeric_limits<double>::min()*1e100 && std::abs(w) < std::numeric_limits<double>::min()*1e100)
+            {
+                if(rank == 0)
+                    std::cout<<"Exited BiCGSTAB: alpha and w very small: alpha "<<alpha<<" w "<<w<<" rho0 "<<rho0<<std::endl;
+                finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
+                    max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
+                    cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                    sub_a_times_p, sub_r);
+                good_end = true;
+                break;
+            }
             max_sub_x = 0;
             old_x = sub_x;
             vec_lin_combo(1.0, h, w, z, sub_x);
             vec_lin_combo(1.0, s, -w, t, sub_r);
             sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
             
-            double const error = sub_r_sqrd / scale_b;
+            error = sub_r_sqrd / scale_b;
+            if(print)
+                std::cout<<"iter "<<i<<" error "<<error<<std::endl;
             // Convergence test
             if (error < tolerance)
             {
@@ -503,42 +619,20 @@ namespace CG
 #ifdef RICH_MPI
                 MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif       
-                if((max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && ((i > 25 && max_data[1].val < 1e-15) || max_data[2].val < 0.5)) || error < 1e-100) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
-                    max_loc0 /= slice;
-                    max_loc1 /= slice;
-                    if(rank == 0)
-                        std:: cout << "Converged at iter = " << i <<" error "<<error<<" negative value "<<max_data[2].val<<std::endl;
-                    if(rank == max_data[0].mpi_id)
-                        std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                        <<" X "<<tess.GetMeshPoint(max_loc0)<<std::endl; 
-                    if(rank == max_data[1].mpi_id)
-                        std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                        <<" X "<<tess.GetMeshPoint(max_loc1)<<std::endl; 
-                    total_iters = i;
+                if((max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && ((i > 25 && max_data[1].val < 1e-10) || max_data[2].val < 0.5)) || error < 1e-100) 
+                { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                    finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
+                        max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
+                        cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                        sub_a_times_p, sub_r);
                     good_end = true;
-#ifdef RICH_MPI
-                    MPI_exchange_data(tess, sub_x, true, slice);
-#endif
-                    mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
-                    sub_x.resize(Nlocal);
-                    vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
-                    sub_x_solution.resize(Nlocal);
-                    for(size_t k = 0; k < Nlocal; ++k)
-                    {
-                        sub_x_solution[k] = sub_x[k] + sub_r[k] / (tess.GetVolume(k / slice) * pow<3>(matrix_builder.GetLengthScale()));
-                        if(sub_x_solution[k] < 0)
-                            sub_x_solution[k] = sub_x[k];
-                        if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] > 0)
-                            sub_x_solution[k] = sub_x[k] * 0.5;
-                        if(sub_x_solution[k] > sub_x[k] * 2)
-                            sub_x_solution[k] = sub_x[k] * 2;
-                    }
-
                     break;
                 }
             }
             double const rho0_new = mpi_dot_product(sub_r0, sub_r);
             double const beta = rho0_new * alpha / (w * rho0);
+            if(print)
+                std::cout<<"beta "<<beta<<" rho0_new "<<rho0_new<<" rho0 "<<rho0<<" w "<<w<<" alpha "<<alpha<<std::endl;
             vec_lin_combo(1.0, sub_p, -w, v, t);
             vec_lin_combo(1.0, sub_r, beta, t, sub_p); 
             rho0 = rho0_new;
@@ -548,7 +642,7 @@ namespace CG
             max_loc0 /= slice;
             max_loc1 /= slice;
             if(rank == 0)
-	            std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<std::endl;
+	            std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<" iterations "<<total_iters<<" scale_b "<<scale_b<<std::endl;
             if(rank == max_data[0].mpi_id)
                 std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
                 <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
