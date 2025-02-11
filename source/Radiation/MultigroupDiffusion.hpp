@@ -29,6 +29,7 @@ public:
  * @param doppler_on Boolean indicating whether Doppler shift correction is on.
  * @param mix_frame_on Boolean indicating whether to use mixed frame in the diffusion calculation.
  * @param minimum_temperature Minimum temperature for the diffusion calculation. Default value is -1.
+ * @param protections_on Enables protections in the diffusion calculation (modifies coupling strength). Default value is true.
  */
 MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                     std::vector<double> const& energy_groups_boundary_,
@@ -41,7 +42,8 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
                     bool const compton_on,
                     bool const doppler_on,
                     bool const mix_frame_on,
-                    double const minimum_temperature = -1);
+                    double const minimum_temperature = -1,
+                    bool const protections_on = true);
 
 /**
  * @brief Destructor for the MultigroupDiffusion class.
@@ -165,6 +167,7 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
     
 
 private:
+    bool const protections_on_;
     mutable bool  displayed_warning_;
     mutable bool compton_initialized_;
     void BuildMatrixGroup(std::size_t group,
@@ -245,6 +248,8 @@ private:
     double get_implicit_compton_contribution(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, std::size_t const gt, double const dt_cgs) const;
 
     double get_implicit_compton_contribution_to_b(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, double const dt_cgs) const;
+
+    double GetDopplerSlope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
 };
 
 
