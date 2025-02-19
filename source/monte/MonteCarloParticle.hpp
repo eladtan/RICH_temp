@@ -62,53 +62,6 @@ struct MonteCarloParticle
 template<typename T, typename Grid>
 std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const Grid &grid) const
 {
-    // bool verbose = (this->id == 0);
-    // // if(verbose)
-    // {
-    //     size_t idx = 0;
-    //     double distance = abs(grid.GetMeshPoint(idx) - Vector3D(this->location));
-    //     size_t pointsNo = grid.getMeshPoints().size();
-    //     for(size_t i = 1; i < pointsNo; i++)
-    //     {
-    //         double new_distance = abs(grid.GetMeshPoint(i) - Vector3D(this->location));
-    //         if(new_distance < distance)
-    //         {
-    //             distance = new_distance;
-    //             idx = i;
-    //         }
-    //     }
-    //     if(idx != this->cellIndex)
-    //     {
-    //         std::cerr << "Error with particle " << (*this) << ", closest is reported as " << this->cellIndex << ", but actually is " << idx << std::endl;
-    //         exit(1);
-    //     }
-    //     assert(idx == this->cellIndex);
-    //     if(this->id == 1048)
-    //     {
-    //         std::cout << "for ID " << this->id << " the closest is " << grid.GetMeshPoint(idx) << " (distance: " << distance << ", index: " << idx << ")" << std::endl;
-    //         std::cout << "This point neighbors are: " << std::endl;
-    //         for(const size_t &faceIdx : grid.GetCellFaces(idx))
-    //         {
-    //             const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
-    //             size_t neighbor = (sides.first == idx)? sides.second : sides.first;
-    //             double dist = abs(grid.GetMeshPoint(neighbor) - Vector3D(this->location));
-    //             std::cout << "Face " << faceIdx << " with the neighbor " << neighbor << "(point: " << grid.GetMeshPoint(neighbor) << ", distance: " << dist << ", Norg is " << grid.GetPointNo() << ")" << std::endl;
-    //         }
-    //     }
-    // }
-    // size_t cellContaining = grid.GetContainingCell(this->location);
-    // if(cellContaining != this->cellIndex)
-    // {
-    //     const Vector3D &allegedCell = grid.GetMeshPoint(this->cellIndex);
-    //     const Vector3D &actualCell = grid.GetMeshPoint(cellContaining);
-    //     double distance1 = abs(allegedCell - Vector3D(this->location));
-    //     double distance2 = abs(actualCell - Vector3D(this->location));
-    //     std::cerr << "Error: for the particle " << (*this) << ", cellIndex given in distance is " << this->cellIndex << " (" << allegedCell << ", distance: " << distance1 << ")";
-    //     std::cerr << ", while actual cell containing is " << cellContaining << "(" << actualCell << ", distance: " << distance2 << ")";
-    //     std::cerr << " Norg is " << grid.GetPointNo() << " and sender is " << this->sender << std::endl;
-    //     exit(1);
-    // }
-
     dt_t min_alpha = std::numeric_limits<distance_t>::max();
     size_t min_face = std::numeric_limits<size_t>::max();
 

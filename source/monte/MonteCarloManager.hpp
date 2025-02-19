@@ -148,7 +148,7 @@ void MonteCarloManager<T, Grid>::RemoveFromToHandleList(size_t indexInToHandle)
     static int minus_one = -1;
     this->AcquireAvailableListMutex(this->rank);
     // remove from self to handle list by swapping with last element and popping
-    int retval = MPI_Win_lock(MPI_LOCK_EXCLUSIVE, this->rank, 0, this->to_handle_list_length_win);
+    int retval = MPI_Win_lock(MPI_LOCK_SHARED, this->rank, 0, this->to_handle_list_length_win);
     assert(retval == 0);
     int handle_list_length = *this->to_handle_list_length;
     int tmpIdx = handle_list_length - 1;
@@ -255,14 +255,14 @@ void MonteCarloManager<T, Grid>::MoveParticle(size_t indexInToHandle, rank_t ran
     MPI_Put(&this->particles[index], sizeof(Particle), MPI_BYTE, rank, availableIndex, sizeof(Particle), MPI_BYTE, this->particles_win);
     MPI_Win_unlock(rank, this->particles_win);
 
-    retval = MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, this->to_handle_list_length_win);
+    retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->to_handle_list_length_win);
     assert(retval == 0);
     // add the index to the list of 'to_handle' particles
     int toHandleListIdx;
     MPI_Get(&toHandleListIdx, 1, MPI_INT, rank, 0, 1, MPI_INT, this->to_handle_list_length_win);
     MPI_Win_flush_local(rank, this->to_handle_list_length_win);
 
-    retval = MPI_Win_lock(MPI_LOCK_EXCLUSIVE, rank, 0, this->to_handle_list_win);
+    retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->to_handle_list_win);
     MPI_Put(&availableIndex, 1, MPI_UNSIGNED_LONG_LONG, rank, toHandleListIdx, 1, MPI_UNSIGNED_LONG_LONG, this->to_handle_list_win);
     // std::cout << "Rank " << this->rank << " writes to rank " << rank << " in handleListIdx " << toHandleListIdx << " particle index " << availableIndex << ", which is particle " << this->GetParticle(indexInToHandle) << std::endl; 
     MPI_Win_unlock(rank, this->to_handle_list_win);

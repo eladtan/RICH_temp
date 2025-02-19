@@ -2,6 +2,8 @@
 #define MONTE_CARLO_TIMESTEP
 
 #include <limits> // temporary
+#include <chrono> // temporary
+#include "utils/debug/vtune.h"
 #include "MonteCarloParticle.hpp"
 #include "MonteCarloManager.hpp"
 
@@ -31,7 +33,7 @@ private:
 };
 
 template<typename T, typename Grid>
-MonteCarloTimestep<T, Grid>::MonteCarloTimestep(const Grid &grid, const std::vector<Particle> &particles): grid(grid), pointsManager(grid, particles, 1000000)
+MonteCarloTimestep<T, Grid>::MonteCarloTimestep(const Grid &grid, const std::vector<Particle> &particles): grid(grid), pointsManager(grid, particles, particles.size() * 10)
 {
     MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
     MPI_Comm_size(MPI_COMM_WORLD, &this->size);
@@ -49,7 +51,6 @@ MonteCarloTimestep<T, Grid>::~MonteCarloTimestep()
 template<typename T, typename Grid>
 void MonteCarloTimestep<T, Grid>::MarkFinish()
 {
-    assert(this->rank == 0);
     std::cout << "Broadcasting FINISH to everyone" << std::endl;
     int done = 1;
     MPI_Win_lock_all(0, this->finish_win);
@@ -85,6 +86,7 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
     {
         Particle &p = this->pointsManager.GetParticle(i);
         p.cellIndex = this->grid.GetContainingCell(p.location);
+
         // if(not this->grid.PointInMyDomain(this->grid.GetMeshPoint(p.cellIndex)))
         // {
         //     std::cout << "Particle " << p << " is not in my domain, rank " << this->rank << std::endl;
@@ -93,18 +95,28 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
         // // assert(this->grid.PointInMyDomain(p.location));
         // std::cout << "Setting particle " << p << "'s cell index to " << p.cellIndex << std::endl;
     }
-
+    
+    std::cout << "Rank " << this->rank << ", average particles per cell: " << ((double) length) / this->grid.GetPointNo() << std::endl;
     size_t Ncells = grid.GetPointNo();
     std::vector<Particle> newParticles;
 
     MPI_Barrier(MPI_COMM_WORLD);
 
+    vtune_start();
+
+    auto start = std::chrono::high_resolution_clock::now();
     std::cout << "Rank " << this->rank << ", starting step() with " << *this->pointsManager.to_handle_list_length << "!" << std::endl;
+    volatile int &tohandle = *this->pointsManager.to_handle_list_length;
     while(not this->finish)
     {
-        length = *this->pointsManager.to_handle_list_length;
-        int original_length = length;
+        length = tohandle;
         assert(length >= 0);
+        int particleChange = 0;
+        if(length == 0)
+        {
+            usleep(20);
+            continue;
+        }
         for(int i = 0; i < length; i++)
         {
             assert(i >= 0); // i changes inside the loop as well
@@ -142,13 +154,8 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
                         // std::cout << "Rank " << this->rank << " is done with particle " << particle << ", since it leaves the domain." << std::endl;
                         this->pointsManager.RemoveFromToHandleList(i); // remove it
                         i -= 1; length -= 1;
-                        int left = this->pointsManager.DecrementParticlesNum();
+                        particleChange += 1; // decrement particles num later
                         // std::cout << "Num particles left: " << left << std::endl;
-                        if(left == 0)
-                        {
-                            std::cout << "DONE!!!!!!!!!!!!!!1" << std::endl;
-                            this->MarkFinish();
-                        }
                         continue;
                     }
                     auto [otherRank, neighborIndexInRank] = it->second;
@@ -170,20 +177,31 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
                 // remove particle from current list
                 this->pointsManager.RemoveFromToHandleList(i); // remove it
                 i -= 1; length -= 1;
-                int left = this->pointsManager.DecrementParticlesNum();
-                if(left == 0)
-                {
-                    sleep(1);
-                    std::cout << "DONE!!!!!!!!!!!!!!1" << std::endl;
-                    exit(0);
-                }
+                particleChange += 1; // decrement particles num later
                 continue;
+            }
+        }
+        if(particleChange > 0)
+        {
+            int left = this->pointsManager.DecrementParticlesNum(particleChange);
+            if(left == 0)
+            {
+                this->MarkFinish();
             }
         }
     }
     
     assert(*this->pointsManager.to_handle_list_length == 0);
     std::cout << "Rank " << this->rank << ", ended step() with " << *this->pointsManager.to_handle_list_length << "!" << std::endl;
+    auto end = std::chrono::high_resolution_clock::now();
+    MPI_Barrier(MPI_COMM_WORLD);
+    if(this->rank == 0)
+    {
+        // print time in double (seconds)
+        std::cout << "Time taken: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << " seconds" << std::endl;    
+    }
+
+    vtune_stop();
     return newParticles;
 }
 
