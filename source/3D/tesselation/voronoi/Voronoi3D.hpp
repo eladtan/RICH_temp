@@ -510,6 +510,8 @@ public:
    */
   bool IsPointOutsideBox(size_t index)const override;
 
+  bool IsPointOutsideBox(const Vector3D &point) const override;
+
   /*! \brief Adjust position of the boundary
     \param ll Lower left corner
     \param ur Upper right corner

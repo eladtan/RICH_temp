@@ -29,7 +29,7 @@ private:
 
     void MarkFinish();
 
-    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap();
+boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap();
 };
 
 template<typename T, typename Grid>
@@ -105,8 +105,8 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
     vtune_start();
 
     auto start = std::chrono::high_resolution_clock::now();
-    std::cout << "Rank " << this->rank << ", starting step() with " << *this->pointsManager.to_handle_list_length << "!" << std::endl;
-    volatile int &tohandle = *this->pointsManager.to_handle_list_length;
+    std::cout << "Rank " << this->rank << ", starting step() with " << *this->pointsManager.th_list_length << "!" << std::endl;
+    volatile int &tohandle = *this->pointsManager.th_list_length;
     while(not this->finish)
     {
         length = tohandle;
@@ -119,6 +119,11 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
         }
         for(int i = 0; i < length; i++)
         {
+            size_t particleIndex = this->pointsManager.th_list[i];
+            if(particleIndex == EMPTY)
+            {
+                continue;
+            }
             assert(i >= 0); // i changes inside the loop as well
             // std::cout << i << " / " << *this->pointsManager.to_handle_list_length << std::endl;
             Particle &particle = this->pointsManager.GetParticle(i);
@@ -152,7 +157,7 @@ std::vector<MonteCarloParticle<T, Grid>> MonteCarloTimestep<T, Grid>::step(dt_t 
                     if(it == ranks_ghost_map.end())
                     {
                         // std::cout << "Rank " << this->rank << " is done with particle " << particle << ", since it leaves the domain." << std::endl;
-                        this->pointsManager.RemoveFromToHandleList(i); // remove it
+                        this->pointsManager.ClearParticle(i); // remove it
                         i -= 1; length -= 1;
                         particleChange += 1; // decrement particles num later
                         // std::cout << "Num particles left: " << left << std::endl;

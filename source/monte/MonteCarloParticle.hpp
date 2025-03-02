@@ -55,7 +55,7 @@ struct MonteCarloParticle
 
     friend inline std::ostream &operator<<(std::ostream &stream, const MonteCarloParticle &particle)
     {
-        return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ")";
+        return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
     }
 };
 
@@ -65,20 +65,35 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
     dt_t min_alpha = std::numeric_limits<distance_t>::max();
     size_t min_face = std::numeric_limits<size_t>::max();
 
+    // T loc = this->location;
+    // double distanceToCenter = abs(grid.GetMeshPoint(this->cellIndex) - loc);
+    // for(size_t i = 0; i < grid.GetPointNo(); i++)
+    // {
+    //     double distance = abs(grid.GetMeshPoint(i) - this->location);
+    //     assert(distanceToCenter <= distance + EPSILON);
+    // }
+
+    // // TOOD: remove!
+    // size_t realContaining = grid.GetContainingCell(this->location);
+    // if(realContaining != this->cellIndex)
+    // {
+    //     std::cout << "Written in " << this->cellIndex << "( distance: " << distanceToCenter << " ) but real containing cell is " << realContaining << "( distance: " << abs(grid.GetMeshPoint(realContaining) - this->location) << "  )" << std::endl;
+    // }
+    // assert(realContaining == this->cellIndex); // the particle is inside the cell
+
     for(const size_t &faceIdx : grid.GetCellFaces(this->cellIndex))
     {
         const T &normal = grid.Normal(faceIdx); // normal to face
         const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
         const T &pointOnFace = (grid.GetMeshPoint(sides.first) + grid.GetMeshPoint(sides.second)) / 2;
-        size_t otherNeighbor = (sides.first == this->cellIndex)? sides.second : sides.first; // todo remove
         double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
         if(abs(normalVelocityScalarProd) < EPSILON) // zero
         {
             continue;
         }
         dt_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
-        if(alpha < min_alpha and alpha > 0)
-        {
+        if(alpha < min_alpha and alpha > EPSILON)
+        { 
             min_alpha = alpha;
             min_face = faceIdx;
         }
@@ -90,6 +105,15 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
         return {min_face, min_alpha};
     }
 
+    // should not reach here
+    
+    // check if point is inside domain
+    if(grid.IsPointOutsideBox(this->location))
+    {
+        UniversalError eo("Particle is outside the domain, but still considered");
+        eo.addEntry("Particle", *this);
+        throw eo;
+    }
     // assert the point is inside this cell
     size_t realContainingCell = grid.GetContainingCell(this->location);
     if(realContainingCell != this->cellIndex)

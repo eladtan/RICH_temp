@@ -1359,8 +1359,9 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         throw eo;
     }
 
-    this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
-                                                                    IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
+    Vector3D width = this->ur_ - this->ll_;
+    this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_ - width * 0.00001, std::numeric_limits<size_t>::max()),
+                                                                    IndexedVector3D(this->ur_ + width * 0.00001, std::numeric_limits<size_t>::max()));
     size_t allPointsNum = this->allMyPoints.size();
     for(size_t pointIdx = 0; pointIdx < allPointsNum; pointIdx++)
     {
@@ -1375,8 +1376,8 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     }
     else
     {
-        this->myPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
-                                                                        IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
+        this->myPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_ - width * 0.00001, std::numeric_limits<size_t>::max()),
+                                                                        IndexedVector3D(this->ur_ + width * 0.00001, std::numeric_limits<size_t>::max()));
         for(size_t pointIdx = 0; pointIdx < this->Norg_; pointIdx++)
         {
             const Vector3D &point = activePoints[pointIdx];
@@ -1460,7 +1461,7 @@ void Voronoi3D::UpdateRadiuses(const std::vector<Vector3D> &points)
         {
             // point does not have a radius from a previous timestep. Initialize a radius
             if(N > 1)
-                this->radiuses[pointIndexAmongAll] = fastsqrt(this->allMyPointsTree->closestPointDistance(point)); // todo second closest
+                this->radiuses[pointIndexAmongAll] = this->allMyPointsTree->closestPointDistance(point, false); // todo second closest
             else
                 this->radiuses[pointIndexAmongAll] = abs(this->ll_ - this->ur_);
         }
@@ -3034,6 +3035,14 @@ bool Voronoi3D::IsPointOutsideBox(size_t index) const
         return !PointInDomain(ll_, ur_, del_.points_[index]);
     else
         return !PointInPoly(box_faces_, del_.points_[index]);
+}
+
+bool Voronoi3D::IsPointOutsideBox(const Vector3D &point) const
+{
+    if(box_faces_.empty())
+        return !PointInDomain(ll_, ur_, point);
+    else
+        return !PointInPoly(box_faces_, point);
 }
 
 bool Voronoi3D::BoundaryFace(std::size_t index) const

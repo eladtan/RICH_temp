@@ -50,7 +50,7 @@ public:
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
 
   virtual int GetOwner(const Vector3D &point) const = 0;
-  
+
   virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
 
   inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false)
@@ -408,6 +408,8 @@ public:
     \return True if point is inside the box
    */
   virtual bool IsPointOutsideBox(size_t index)const = 0;
+
+  virtual bool IsPointOutsideBox(const Vector3D &point) const = 0;
 
   /*! \brief Write tessellation to file
     \param filename Name of output file

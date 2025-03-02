@@ -288,13 +288,13 @@ public:
     const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const;
 
     template<typename U>
-    std::pair<T, typename T::coord_type> getClosestPointInfo(const U &point) const;
+    std::pair<T, typename T::coord_type> getClosestPointInfo(const U &point, bool includeSelf = true) const;
 
     template<typename U>
-    inline T closestPoint(const U &point) const{return this->getClosestPointInfo(point).first;};
+    inline T closestPoint(const U &point, bool includeSelf = true) const{return this->getClosestPointInfo(point, includeSelf).first;};
 
     template<typename U>
-    inline typename T::coord_type closestPointDistance(const U &point) const{return this->getClosestPointInfo(point).second;};
+    inline typename T::coord_type closestPointDistance(const U &point, bool includeSelf = true) const{return this->getClosestPointInfo(point, includeSelf).second;};
 };
 
 template<typename T>
@@ -814,7 +814,7 @@ void OctTree<T>::getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> 
 
 template<typename T>
 template<typename U>
-std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point) const
+std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point, bool includeSelf) const
 {
     this->nodes_stack.push_back(this->getRoot());
 
@@ -831,6 +831,7 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
             continue;
         }
         const T &closestPointInBox = node->boundingBox.closestPoint(point);
+        
         // calculate distance squared
         typename T::coord_type dist = 0;
         for(int i = 0; i < DIM; i++)
@@ -844,7 +845,7 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
         // there might be a closer point in the subtrees
         if(node->isLeaf)
         {
-            if(node->value == point)
+            if(not includeSelf and node->value == point)
             {
                 // don't check that point (otherwise the distance is 0...)
                 continue;
@@ -860,7 +861,8 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
             }
         }
     }
-    return {closestPoint, closestDistance};
+
+    return {closestPoint, sqrt(closestDistance)};
 }
 #endif // _OCTTREE_HPP
 
