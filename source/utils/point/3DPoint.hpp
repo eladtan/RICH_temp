@@ -148,7 +148,7 @@ inline _3DPoint &_3DPoint::operator=(const _3DPoint &other)
 {
     this->x = other.x;
     this->y = other.y;
-    this->z = other.y;
+    this->z = other.z;
     return (*this);
 };
 
@@ -160,7 +160,7 @@ inline _3DPoint &_3DPoint::operator=(const Vector3D &other)
 {
     this->x = other.x;
     this->y = other.y;
-    this->z = other.y;
+    this->z = other.z;
     return (*this);
 };
 

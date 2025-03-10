@@ -100,7 +100,7 @@ public:
     \param index Mesh generating point index
     \return Position of mesh generating point
   */
-  virtual Vector3D GetMeshPoint(size_t index) const = 0;
+  virtual const Vector3D &GetMeshPoint(size_t index) const = 0;
 
   /*! \brief Returns Area of face
     \param index The index of the face
@@ -327,13 +327,13 @@ public:
     \param point The index of the cell to calculate for
     \param result The neighbors and their neighbors indeces
   */
-  virtual void GetNeighborNeighbors(vector<size_t> &result,size_t point)const = 0;
+  virtual void GetNeighborNeighbors(vector<size_t> &result,size_t point) const = 0;
 
   /*! \brief Get the indices of neighbours of a face
     \param face_index Index of the face
     \return Pair of indices of cells on the two sides of the face
    */
-  virtual std::pair<size_t,size_t> GetFaceNeighbors(size_t face_index)const = 0;
+  virtual const std::pair<size_t,size_t> &GetFaceNeighbors(size_t face_index) const = 0;
 
   /*! \brief Retrieve all neighbouring points who share a face
     \return List of pairs of indices of all neighbouring points
@@ -377,7 +377,7 @@ public:
     \param index Face index
     \return Position of the face centre of mass
    */
-  virtual Vector3D FaceCM(size_t index)const=0;
+  virtual const Vector3D &FaceCM(size_t index)const=0;
 
   #ifdef RICH_MPI
     /*! \brief Get indices of ghost points
@@ -407,7 +407,7 @@ public:
     \param index Point index
     \return True if point is inside the box
    */
-  virtual bool IsPointOutsideBox(size_t index)const = 0;
+  virtual bool IsPointOutsideBox(size_t index) const = 0;
 
   virtual bool IsPointOutsideBox(const Vector3D &point) const = 0;
 

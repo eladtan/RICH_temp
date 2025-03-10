@@ -10,8 +10,8 @@
     'vtk_intel':    "/software/x86_64/5.14.0/vtk/9.3.0/Intel/OneApi/2024.2.1/with_mesa",
 
     'ifort'    : "/software/x86_64/5.14.0/intel/OneApi/2024.2.1/compiler/2024.2/bin/ifx",
-    'icx-cc'      : "/software/x86_64/5.14.0/intel/OneApi/2024.2.1/compiler/2024.2/bin/icx-cc",
-    'icx'     : "/software/x86_64/5.14.0/intel/OneApi/2024.2.1/compiler/2024.2/bin/icx",
+    'icx'      : "/software/x86_64/5.14.0/intel/OneApi/2024.2.1/compiler/2024.2/bin/icx",
+    'icpx'     : "/software/x86_64/5.14.0/intel/OneApi/2024.2.1/compiler/2024.2/bin/icpx",
 
     'gfortran' : "/software/x86_64/5.14.0/gcc/12.3.0/bin/gfortran",
     'gcc'      : "/software/x86_64/5.14.0/gcc/12.3.0/bin/gcc",

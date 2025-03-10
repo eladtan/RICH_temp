@@ -18,7 +18,10 @@ RELEASE_OPTIMIZATION_LEVEL = "-O3"
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None, definitionOfReal=8):
     warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
-    common_cxx_flags = f" -std=c++17 {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
+    common_cxx_flags = f"-fopenmp -std=c++17 {warning_flags} -fno-omit-frame-pointer -fno-common -fstack-protector-all -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
+    if args.with_sanitizer:
+        print("With Sanitizer")
+        common_cxx_flags += " -fsanitize=address "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = f" -DNDEBUG -DOMPI_SKIP_MPICXX {RELEASE_OPTIMIZATION_LEVEL}"
     
@@ -34,6 +37,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_fortran_flags_release = " -O2 "
         cmake_fortran_flags += "  -mcmodel=medium -shared-libgcc "
 
+        common_cxx_flags += "-rdynamic"
         c_compiler = SysLibsDict["gcc"]
         cxx_compiler = SysLibsDict["g++"]
 
@@ -43,8 +47,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_cxx_flags_release = " "
     elif config.startswith("intel"):
         fortran_compiler = SysLibsDict["ifort"]
-        c_compiler = SysLibsDict["icx-cc"]
-        cxx_compiler = SysLibsDict["icx"]
+        c_compiler = SysLibsDict["icx"]
+        cxx_compiler = SysLibsDict["icpx"]
         os.environ["I_MPI_CC"] = c_compiler
         os.environ["I_MPI_CXX"] = cxx_compiler
         os.environ["I_MPI_F90"] = fortran_compiler

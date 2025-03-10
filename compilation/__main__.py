@@ -5,10 +5,9 @@ from . import build_program, root_dir
 parser = argparse.ArgumentParser(prog="build")
 
 parser.add_argument("--test_name", default="", help="The name of the test to compile")
-
 parser.add_argument("--make_dir", default=root_dir, help="The relative path to the build directory")
-
 parser.add_argument("--energy_groups_num", default="1", help="The number of energy groups for a multigroup run")
+parser.add_argument("--with_sanitizer",action="store_true", help="Compile with AddressSanitizer")
 
 # possible configurations
 config_params = [

@@ -2908,7 +2908,7 @@ std::size_t Voronoi3D::GetPointNo(void) const
     return Norg_;
 }
 
-Vector3D Voronoi3D::GetMeshPoint(std::size_t index) const
+const Vector3D &Voronoi3D::GetMeshPoint(std::size_t index) const
 {
     return del_.points_[index];
 }
@@ -3168,7 +3168,7 @@ bool Voronoi3D::IsGhostPoint(std::size_t index) const
     return index >= Norg_;
 }
 
-Vector3D Voronoi3D::FaceCM(std::size_t index) const
+const Vector3D &Voronoi3D::FaceCM(std::size_t index) const
 {
     return Face_CM_[index];
 }
@@ -3269,9 +3269,9 @@ point_vec const &Voronoi3D::GetPointsInFace(std::size_t index) const
     return PointsInFace_[index];
 }
 
-std::pair<std::size_t, std::size_t> Voronoi3D::GetFaceNeighbors(std::size_t face_index) const
+const std::pair<std::size_t, std::size_t> &Voronoi3D::GetFaceNeighbors(std::size_t face_index) const
 {
-    return std::pair<std::size_t, std::size_t>(FaceNeighbors_[face_index]);
+    return FaceNeighbors_[face_index];
 }
 
 #ifdef RICH_MPI

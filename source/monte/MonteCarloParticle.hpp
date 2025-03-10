@@ -18,91 +18,98 @@ struct MonteCarloParticle
                     //     : public Serializable
                     // #endif // RICH_MPI
 {
-    size_t id;
+    // size_t id;
     T location;
     T velocity;
     size_t cellIndex;
     dt_t timeLeft;
-    rank_t sender;
 
     explicit MonteCarloParticle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(), const T &velocity_ = T(), dt_t timeLeft_ = dt_t()):
-         id(id_), location(location_), velocity(velocity_), timeLeft(timeLeft_), cellIndex(std::numeric_limits<size_t>::max()), sender(-1)
+         location(location_), velocity(velocity_), timeLeft(timeLeft_), cellIndex(std::numeric_limits<size_t>::max())
     {};
 
-    std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid) const;
-
-    // #ifdef RICH_MPI
-    //     inline size_t getChunkSize() const override{return this->location.getChunkSize() + this->velocity.getChunkSize() + 1;};
-
-    //     inline std::vector<double> serialize() const override
-    //     {
-    //         std::vector<double> location_ser = this->location.serialize();
-    //         std::vector<double> velocity_ser = this->velocity.serialize();
-    //         location_ser.insert(location_ser.end(), velocity_ser.cbegin(), velocity_ser.cend());
-    //         location_ser.push_back(static_cast<double>(this->distanceLeft));
-    //         return location_ser;
-    //     }
-
-    //     inline void unserialize(const std::vector<double> &data) override
-    //     {
-    //         std::vector<double> location_data = std::vector<double>(data.cbegin(), data.cbegin() + this->location.getChunkSize());
-    //         std::vector<double> velocity_data = std::vector<double>(data.cbegin() + this->location.getChunkSize(), data.cbegin() + this->location.getChunkSize() + this->velocity.getChunkSize());
-    //         this->location.unserialize(location_data);
-    //         this->velocity.unserialize(velocity_data);
-    //         this->distanceLeft = data[this->location.getChunkSize() + this->velocity.getChunkSize()];
-    //     }
-    // #endif // RICH_MPI
+    std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
 
     friend inline std::ostream &operator<<(std::ostream &stream, const MonteCarloParticle &particle)
     {
-        return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        // return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        return stream << "Particle(location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
     }
 };
 
 template<typename T, typename Grid>
-std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const Grid &grid) const
+std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const
 {
-    dt_t min_alpha = std::numeric_limits<distance_t>::max();
-    size_t min_face = std::numeric_limits<size_t>::max();
+    std::pair<size_t, dt_t> best = {std::numeric_limits<size_t>::max(), std::numeric_limits<dt_t>::max()};
+    size_t &min_face = best.first;
+    dt_t &min_alpha = best.second;
 
-    // T loc = this->location;
-    // double distanceToCenter = abs(grid.GetMeshPoint(this->cellIndex) - loc);
-    // for(size_t i = 0; i < grid.GetPointNo(); i++)
+    // if(this->id == 6804436)
     // {
-    //     double distance = abs(grid.GetMeshPoint(i) - this->location);
-    //     assert(distanceToCenter <= distance + EPSILON);
+    //     T loc = this->location;
+    //     double distanceToCenter = abs(grid.GetMeshPoint(this->cellIndex) - loc);
+    //     // for(size_t i = 0; i < grid.GetPointNo(); i++)
+    //     // {
+    //     //     double distance = abs(grid.GetMeshPoint(i) - this->location);
+    //     //     assert(distanceToCenter <= distance + EPSILON);
+    //     // }
+        
+    //     // // TOOD: remove!
+    //     size_t realContaining = grid.GetContainingCell(this->location);
+    //     double distanceToReal = abs(grid.GetMeshPoint(realContaining) - loc);
+    //     if(realContaining != this->cellIndex and fabs(distanceToCenter - distanceToReal) < EPSILON)
+    //     {
+    //         std::cout << (*this) << " written in " << this->cellIndex << " (distance: " << distanceToCenter << ") but real containing cell is " << realContaining << " (distance: " << abs(grid.GetMeshPoint(realContaining) - this->location) << ")" << std::endl;
+    //         exit(1);
+    //     }
+    //     assert(realContaining == this->cellIndex); // the particle is inside the cell
     // }
 
-    // // TOOD: remove!
-    // size_t realContaining = grid.GetContainingCell(this->location);
-    // if(realContaining != this->cellIndex)
-    // {
-    //     std::cout << "Written in " << this->cellIndex << "( distance: " << distanceToCenter << " ) but real containing cell is " << realContaining << "( distance: " << abs(grid.GetMeshPoint(realContaining) - this->location) << "  )" << std::endl;
-    // }
-    // assert(realContaining == this->cellIndex); // the particle is inside the cell
+    const double velocityAbs = EPSILON * fastabs(this->velocity);
+    const auto &faces = grid.GetCellFaces(this->cellIndex);
+    size_t Nfaces = faces.size();
 
-    for(const size_t &faceIdx : grid.GetCellFaces(this->cellIndex))
+    for(size_t i = 0; i < Nfaces; ++i)
     {
-        const T &normal = grid.Normal(faceIdx); // normal to face
-        const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
-        const T &pointOnFace = (grid.GetMeshPoint(sides.first) + grid.GetMeshPoint(sides.second)) / 2;
+        // std::cout << "Thread " << omp_get_thread_num() << std::endl;
+
+        const size_t &faceIdx  = faces[i];
+        // const T &normal = grid.Normal(faceIdx); // normal to face
+        const T &normal = normalsOfCell[i]; // normal to face
+        // std::cout << "Normal of face " << faceIdx << " is " << normal << std::endl;
+        // const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
+        
         double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
-        if(abs(normalVelocityScalarProd) < EPSILON) // zero
+        if(BOOST_UNLIKELY(abs(normalVelocityScalarProd) < velocityAbs)) // zero
         {
             continue;
         }
+        const T &pointOnFace = pointsOnFaces[i]; // (grid.GetMeshPoint(sides.first) + grid.GetMeshPoint(sides.second)) / 2;
         dt_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
-        if(alpha < min_alpha and alpha > EPSILON)
-        { 
-            min_alpha = alpha;
-            min_face = faceIdx;
+
+        __builtin_prefetch(&Nfaces, 0, 0);
+
+        if(i < Nfaces - 1)
+        {
+            const Vector3D *nextNormal = &normalsOfCell[i + 1];
+            __builtin_prefetch(nextNormal, 0, 2);
         }
-        // if(verbose) std::cout << "For ID " << this->id << " of cell " << cellIndex << ", face " << faceIdx << " with neighbor " << otherNeighbor << ", distance is " << alpha << " (current min: " << min_alpha << ") and point will be " << this->location + alpha * this->velocity << std::endl;
+
+        __builtin_prefetch(&min_alpha, 1, 3);
+        __builtin_prefetch(&min_face, 1, 3);
+        if(BOOST_UNLIKELY(alpha < min_alpha))
+        { 
+            if(alpha > 0 /* EPSILON */)
+            {
+                min_alpha = alpha;
+                min_face = faceIdx;
+            }
+        }
     }
 
     if(min_alpha != std::numeric_limits<distance_t>::max())
     {
-        return {min_face, min_alpha};
+        return best;
     }
 
     // should not reach here

@@ -256,7 +256,7 @@ public:
     \param index Face index
     \return Face centre of mass
    */
-  Vector3D FaceCM(std::size_t index)const override;
+  const Vector3D &FaceCM(std::size_t index)const override;
 
   /*! \brief class constructor
     \param ll Lower left
@@ -306,7 +306,7 @@ public:
     \param index Index
     \return Position of point
    */
-  Vector3D GetMeshPoint(std::size_t index) const override;
+  const Vector3D &GetMeshPoint(std::size_t index) const override;
 
   /*! \brief Calculate face area
     \param index Face index
@@ -450,7 +450,7 @@ public:
     \param face_index Index of face
     \return Indices of neighbour across face
    */
-  std::pair<std::size_t, std::size_t> GetFaceNeighbors(std::size_t face_index)const override;
+  const std::pair<std::size_t, std::size_t> &GetFaceNeighbors(std::size_t face_index) const override;
 
   #ifdef RICH_MPI
     /*! \brief Get the indices of ghost points
