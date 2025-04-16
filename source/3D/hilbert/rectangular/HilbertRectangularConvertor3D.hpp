@@ -66,10 +66,15 @@ public:
         
 private:
     void setRecursionArguments(const RecursionArguments &args, size_t currentDepth) const;
+    
     bool d2xyz_helper(const RecursionArguments &args, size_t currentDepth, hilbert_index_t requested_d, hilbert_index_t &current_d, Vector3D &result) const;
+    
     bool xyz2d_helper_base(const DirectionVector3D &startPoint, size_t steps, const DirectionVector3D &direction, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    
     bool xyz2d_helper(const RecursionArguments &args, size_t currentDepth, const DirectionVector3D &requested_point, hilbert_index_t &current_d) const;
+    
     std::pair<DirectionVector3D, DirectionVector3D> getBoundingBox(const RecursionArguments &args) const;
+    
     Vector3D WidthHeightDepthToXYZ(direction_t width, direction_t height, direction_t depth) const;
 };
 
