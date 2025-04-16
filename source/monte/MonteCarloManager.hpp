@@ -1,374 +1,1168 @@
-#ifndef MONTE_CARLO_MANAGER
-#define MONTE_CARLO_MANAGER
+#ifndef MONTE_CARLO_MANAGER_HPP
+#define MONTE_CARLO_MANAGER_HPP
 
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
-#include "MonteCarloParticle.hpp"
 #include "mpi/mpi_commands.hpp"
+#include "MonteCarloParticle.hpp"
+#include "utils/debug/vtune.h" // TODO: remove
+#include <memory>
+#include <mpi.h>
 
-#define EMPTY (std::numeric_limits<size_t>::max())
-
-template<typename T, typename Grid>
-class MonteCarloTimestep;
+#define MONTECARLO_EPSILON 1e-8
+#define MPI_INDEX_T MPI_UINT32_T
 
 template<typename T, typename Grid>
 class MonteCarloManager
 {
+    using MCParticle = MonteCarloParticle<T, Grid>;
+
 public:
-    using Particle = MonteCarloParticle<T, Grid>;
-
-    MonteCarloManager(const Grid &tess, const std::vector<Particle> &particles, size_t list_length);
-    
-    ~MonteCarloManager();
-
-    void MoveParticle(size_t index, rank_t rank);
-
-    void ClearParticle(size_t indexInToHandle);
-    
-    int IncrementParticlesNum(int n = 1);
-    
-    int DecrementParticlesNum(int n = 1){return this->IncrementParticlesNum(-n);};
-
-    Particle &GetParticle(size_t indexInToHandle)
+    struct MonteCarloStepFinalData
     {
-        if(indexInToHandle >= *this->to_handle_list_length)
-        {
-            UniversalError eo("Trying to reach an illegal particle");
-            int rank;
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            eo.addEntry("Rank", rank);
-            eo.addEntry("indexInToHandle", indexInToHandle);
-            eo.addEntry("toHandleList length", *this->to_handle_list_length);
-            throw eo;
-        }
-        assert(indexInToHandle < *this->to_handle_list_length);
-        return this->particles[this->to_handle_list[indexInToHandle]];
+        std::vector<MCParticle> remaining;
+        std::vector<MCParticle> leaving;
     };
 
-    template<typename T2, typename Grid2>
-    friend class MonteCarloTimestep;
+    struct MonteCarloStepInternalData
+    {
+        const Grid &grid;
+        std::vector<std::vector<T>> normalsOfCells;
+        std::vector<std::vector<T>> pointsOnFaces;
+        MonteCarloStepFinalData finalData;
+
+        // MonteCarloStepInternalData(const Grid &grid): grid(grid){};
+    };
+
+    MonteCarloManager(const MPI_Comm &comm = MPI_COMM_WORLD);
+
+    ~MonteCarloManager();
+
+    void ClearCommunicator(void);
+
+    void SetCommunicator(const MPI_Comm &comm);
+
+    void UpdateHandlers(const Grid &grid, size_t bufferSizes);
+
+    void TransferParticles(rank_t rankBuffer, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num);
+
+    MonteCarloStepFinalData step(const Grid &grid, const std::vector<MCParticle> &particleList, dt_t fullDt, size_t bufferSizes);
 
 private:
-    const Grid &tess;
-    rank_t rank, size;
-    size_t buffer_size;
-    volatile int *global_num_particles;
-    MPI_Win global_num_particles_win;
+    class RankHandler
+    {
+    public:
+        using index_t = uint32_t;
+        
+        RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm);
+        
+        ~RankHandler();
+        
+        void TransferParticles(const std::vector<const MCParticle*> &particles);
 
-    volatile int *av_list_avail_loc;
-    MPI_Win av_list_avail_loc_win;
-    volatile int *av_list_length;
-    MPI_Win av_list_length_win;
-    size_t *av_list;
-    MPI_Win av_list_win;
+        void RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num);
 
-    volatile int *th_list_avail_loc;
-    MPI_Win th_list_avail_loc_win;
-    volatile int *th_list_length;
-    MPI_Win th_list_length_win;
-    size_t *th_list;
-    MPI_Win th_list_win;
+        void Sync(void);
 
-    Particle *particles;
-    MPI_Win particles_win;
-    // volatile int *editing_available_list_mutex;
-    // MPI_Win editing_available_list_mutex_win;
+        void Destroy();
 
-    size_t GetAvailableLocation(rank_t rank);
+        MPI_Comm comm_world, comm;
+        rank_t rank_world, rank_internal;
+        rank_t size_world, size_internal;
+        rank_t other_rank, peer_rank_world;
 
-    void WriteParticleToRemote(size_t particleIndexInMy, rank_t rank, size_t availableIndex);
+        size_t buffsize, peer_buffsize;
+        MCParticle *particles;
+        index_t *av;
+        volatile int *av_length;
+        index_t *th;
+        volatile int *th_length; 
+        
+        bool destroyed;
 
-    void RemoveFromToHandleList(size_t indexInToHandle);
+    private:
+        class DistributedMutex
+        {
+        public:
+            DistributedMutex(const MPI_Comm &comm, rank_t rank);
+            
+            ~DistributedMutex();
 
-    void AddToToHandleList(rank_t rank, size_t availableIndex);
+            void Lock(void);
 
-    void AddToAvailableList(size_t particleIndexInMy);
+            void Unlock(void);
 
-    // void AcquireAvailableListMutex(int rank);
+            void Destroy(void);
 
-    // void ReleaseAvailableListMutex(int rank);
+            void Sync(void);
+
+        private:
+            const MPI_Comm &comm;
+            rank_t rank;
+            int *value;
+            MPI_Win win;
+            bool destroyed;
+        };
+
+        MPI_Win particles_win;
+        MPI_Win av_win;
+        MPI_Win th_win;
+        MPI_Win av_length_win;
+        MPI_Win th_length_win;
+        std::shared_ptr<DistributedMutex> localTHMutex;
+        std::shared_ptr<DistributedMutex> remoteTHMutex;
+    };
+
+    class ProgressCounter
+    {
+    public:
+        ProgressCounter(const MPI_Comm &comm, int myNumParticles);
+
+        ~ProgressCounter();
+
+        int Increment(int n);
+
+        inline int Decrement(int n = 1){return this->Increment(-n);};
+        
+        void MarkDone(void);
+
+        inline void Sync(void)
+        {
+            MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->is_done_win);
+            MPI_Win_sync(this->is_done_win);
+            MPI_Win_unlock(this->rank, this->is_done_win);
+        };
+
+        volatile int *is_done;
+        int localDecrementAmount;
+
+    private:
+        rank_t rank, size, master_rank;
+        volatile int *counter;
+        MPI_Win counter_win;
+        MPI_Win is_done_win;
+    };
+
+    MPI_Comm comm_world;
+    rank_t rank_world, size_world;
+    size_t Ncells;
+    std::shared_ptr<ProgressCounter> progress;
+    std::vector<MPI_Comm> communicators;
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
+    std::vector<RankHandler*> rankHandlers;
+    boost::container::flat_map<rank_t, size_t> rank_to_index;
+    std::vector<std::tuple<rank_t, size_t, RankHandler*>> rank_to_index_vector;
+    T ll, ur;
+    size_t numScatters;
+
+    bool HandleAll(MonteCarloStepInternalData &cache);
+
+    void PutSelfParticles(const std::vector<MCParticle> &particles);
+
+    MonteCarloStepInternalData PrepareForStep(const Grid &grid, size_t bufferSizes);
+
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const Grid &grid);
+
 };
 
+Vector3D RandomVectorWithDirection(double norm)
+{
+    static std::uniform_real_distribution<double> dist(-1+EPSILON, 1 - EPSILON);
+    static std::mt19937 re(0); // use a seed for reproducibility
+
+    double x = dist(re);
+    double y = dist(re);
+    double z = dist(re);
+
+    Vector3D direction = normalize(Vector3D(x, y, z));
+    return direction * norm;
+}
+
 template<typename T, typename Grid>
-MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &tess, const std::vector<Particle> &particles, size_t list_length): tess(tess)
-{    
-    MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &this->size);
-    MPI_Win_allocate(sizeof(int) * 1, sizeof(int), MPI_INFO_NULL, MPI_COMM_WORLD, &this->av_list_length, &this->av_list_length_win);
-    MPI_Win_set_errhandler(this->av_list_length_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate(sizeof(int) * 1, sizeof(int), MPI_INFO_NULL, MPI_COMM_WORLD, &this->th_list_length, &this->th_list_length_win);
-    MPI_Win_set_errhandler(this->th_list_length_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate(sizeof(int) * 1, sizeof(int), MPI_INFO_NULL, MPI_COMM_WORLD, &this->av_list_avail_loc, &this->av_list_avail_loc_win);
-    MPI_Win_set_errhandler(this->av_list_avail_loc_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate(sizeof(int) * 1, sizeof(int), MPI_INFO_NULL, MPI_COMM_WORLD, &this->th_list_avail_loc, &this->th_list_avail_loc_win);
-    MPI_Win_set_errhandler(this->th_list_avail_loc_win, MPI_ERRORS_RETURN);
-    // MPI_Win_allocate(sizeof(int) * 1, sizeof(int), MPI_INFO_NULL, MPI_COMM_WORLD, &this->editing_available_list_mutex, &this->editing_available_list_mutex_win);
-    // MPI_Win_set_errhandler(this->editing_available_list_mutex_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate(sizeof(size_t) * list_length, sizeof(size_t), MPI_INFO_NULL, MPI_COMM_WORLD, &this->av_list, &this->av_list_win);
-    MPI_Win_set_errhandler(this->av_list_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate(sizeof(size_t) * list_length, sizeof(size_t), MPI_INFO_NULL, MPI_COMM_WORLD, &this->th_list, &this->th_list_win);
-    MPI_Win_set_errhandler(this->th_list_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate(sizeof(Particle) * list_length, sizeof(Particle), MPI_INFO_NULL, MPI_COMM_WORLD, &this->particles, &this->particles_win);
-    MPI_Win_set_errhandler(this->particles_win, MPI_ERRORS_RETURN);
-    MPI_Win_allocate((this->rank == 0)? sizeof(int) : 0, sizeof(int), MPI_INFO_NULL, MPI_COMM_WORLD, &this->global_num_particles, &this->global_num_particles_win);
-    MPI_Win_set_errhandler(this->global_num_particles_win, MPI_ERRORS_RETURN);
+MonteCarloManager<T, Grid>::RankHandler::DistributedMutex::DistributedMutex(const MPI_Comm &comm, rank_t rank):
+    comm(comm), rank(rank), value(nullptr), destroyed(false)
+{
+    assert(this->comm != MPI_COMM_NULL);
+    rank_t my_rank, size;
+    MPI_Comm_rank(this->comm, &my_rank);
+    MPI_Comm_size(this->comm, &size);
+    assert(size > 1);
 
-    this->buffer_size = list_length;
+    MPI_Info info;
+    MPI_Info_create(&info);
+    MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
+    MPI_Info_set(info, "accumulate_ops", "same_op");
+    MPI_Info_set(info, "same_disp_unit", "true");
+    MPI_Win_allocate((my_rank == rank)? sizeof(int) : 0, sizeof(int), info, this->comm, &this->value, &this->win);
+    MPI_Win_set_errhandler(this->win, MPI_ERRORS_RETURN);
+    MPI_Info_free(&info);
 
-    int my_length = particles.size();
-    *this->th_list_length = my_length;
-    *this->th_list_avail_loc = *this->th_list_length;
-    MPI_Reduce(&my_length, (void*)this->global_num_particles, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
-
-    *this->av_list_length = list_length - my_length;
-    *this->av_list_avail_loc = *this->av_list_length;
-
-    // copy particles by bytes
-    std::memcpy(this->particles, particles.data(), my_length * sizeof(Particle));
-    std::memset(this->th_list, EMPTY, list_length);
-    std::memset(this->av_list, EMPTY, list_length);
-
-    size_t len = *this->th_list_length;
-    size_t avail_len = *this->av_list_length;
-    for(size_t i = 0; i < len; i++)
+    int *model, flag;
+    MPI_Win_get_attr(this->win, MPI_WIN_MODEL, &model, &flag);
+    if(*model == MPI_WIN_SEPARATE)
     {
-        this->th_list[i] = i;
-        assert(this->th_list[i] < particles.size());
+        std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
+        exit(1);
     }
 
-    for(size_t i = 0; i < avail_len; i++)
+    if(my_rank == rank)
     {
-        this->av_list[i] = len + i;
-        assert(this->av_list[i] < list_length);
+        *this->value = 0;
     }
-    MPI_Barrier(MPI_COMM_WORLD);
+
+    MPI_Barrier(this->comm);
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::RankHandler::DistributedMutex::Destroy()
+{
+    MPI_Win_free(&this->win);
+    this->destroyed = true;
+}
+
+template<typename T, typename Grid>
+MonteCarloManager<T, Grid>::RankHandler::DistributedMutex::~DistributedMutex()
+{
+    if(not this->destroyed)
+    {
+        this->Destroy();
+    }
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::RankHandler::DistributedMutex::Sync(void)
+{
+    MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->win);
+    MPI_Win_sync(this->win);
+    MPI_Win_unlock(this->rank, this->win);
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::RankHandler::DistributedMutex::Lock(void)
+{
+    static int plus_one = 1;
+    static int minus_one = -1;
+
+    int val = -1;
+    // MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->win);
+    do
+    {
+        MPI_Win_lock_all(MPI_MODE_NOCHECK, this->win);
+        val = -1;
+        int retval = MPI_Fetch_and_op(&plus_one, &val, MPI_INT, this->rank, 0, MPI_SUM, this->win);
+        assert(retval == MPI_SUCCESS);
+        MPI_Win_flush(this->rank, this->win);
+        assert(val >= 0);
+        if(val > 0)
+        {
+            // std::cout << "Failed to lock mutex, trying again" << std::endl;
+            // failure, decrement
+            MPI_Accumulate(&minus_one, 1, MPI_INT, this->rank, 0, 1, MPI_INT, MPI_SUM, this->win);
+            MPI_Win_flush(this->rank, this->win);
+            usleep(10); // sleep a while and try again
+        }
+        MPI_Win_unlock_all(this->win);
+    } while(val > 0);
+    // MPI_Win_unlock(this->rank, this->win);
+    assert(val <= 0);
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::RankHandler::DistributedMutex::Unlock(void)
+{
+    static int minus_one = -1;
+    static int zero = 0;
+    MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->win);
+    // MPI_Put(&zero, 1, MPI_INT, this->rank, 0, 1, MPI_INT, this->win);
+    MPI_Accumulate(&minus_one, 1, MPI_INT, this->rank, 0, 1, MPI_INT, MPI_SUM, this->win);
+    // MPI_Win_sync(this->win);
+    MPI_Win_flush(this->rank, this->win);
+    MPI_Win_unlock(this->rank, this->win);
+}
+
+template<typename T, typename Grid>
+MonteCarloManager<T, Grid>::ProgressCounter::ProgressCounter(const MPI_Comm &comm, int myNumParticles)
+{
+    MPI_Comm_rank(comm, &this->rank);
+    MPI_Comm_size(comm, &this->size);
+
+    this->master_rank = 0;
+    bool master = (this->rank == this->master_rank);
+    MPI_Info info;
+    MPI_Info_create(&info);
+    MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
+    MPI_Info_set(info, "accumulate_ops", "same_op");
+    MPI_Info_set(info, "same_disp_unit", "true");
+    MPI_Win_allocate((master)? sizeof(size_t) : 0, sizeof(size_t), info, comm, &this->counter, &this->counter_win);
+    MPI_Win_set_errhandler(this->counter_win, MPI_ERRORS_RETURN);
+    MPI_Win_allocate(sizeof(int), sizeof(int), info, comm, &this->is_done, &this->is_done_win);
+    MPI_Win_set_errhandler(this->is_done_win, MPI_ERRORS_RETURN);
+    MPI_Info_free(&info);
+
+    MPI_Win windows[2] = {this->counter_win, this->is_done_win};
+    for(int i = 0; i < 2; i++)
+    {
+        int *model, flag;
+        MPI_Win_get_attr(windows[i], MPI_WIN_MODEL, &model, &flag);
+        if(*model == MPI_WIN_SEPARATE)
+        {
+            std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
+            exit(1);
+        }
+    }
+
+    MPI_Reduce(&myNumParticles, (void*)this->counter, 1, MPI_INT, MPI_SUM, this->master_rank, comm);
+    if(master)
+    {
+        // std::cout << "Initial value is " << *this->counter << std::endl;
+    }   
+    *this->is_done = 0;
+
+    MPI_Barrier(comm);
+}
+
+template<typename T, typename Grid>
+MonteCarloManager<T, Grid>::ProgressCounter::~ProgressCounter()
+{
+    MPI_Win_free(&this->is_done_win);
+    MPI_Win_free(&this->counter_win);
+}
+
+template<typename T, typename Grid>
+int MonteCarloManager<T, Grid>::ProgressCounter::Increment(int n)
+{
+    int result;
+    MPI_Win_lock(MPI_LOCK_SHARED, this->master_rank, MPI_MODE_NOCHECK, this->counter_win);
+    int retval = MPI_Fetch_and_op(&n, &result, MPI_INT, this->master_rank, 0, MPI_SUM, this->counter_win);
+    assert(retval == MPI_SUCCESS);
+    MPI_Win_unlock(this->master_rank, this->counter_win);
+    int currValue = result + n;
+    // std::cout << "Incremented by " << n << ", value is now " << currValue << std::endl;
+    if(currValue == 0)
+    {
+        this->MarkDone();
+    }
+    return currValue;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::ProgressCounter::MarkDone(void)
+{
+    static int plus_one = 1;
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->is_done_win);
+    for(rank_t _rank = 0; _rank < this->size; _rank++)
+    {
+        MPI_Put(&plus_one, 1, MPI_INT, _rank, 0, 1, MPI_INT, this->is_done_win);
+    }
+    MPI_Win_unlock_all(this->is_done_win);
+}
+
+template<typename T, typename Grid>
+boost::container::flat_map<size_t, std::pair<rank_t, size_t>> MonteCarloManager<T, Grid>::GetGhostMap(const Grid &grid)
+{
+    std::vector<std::vector<size_t>> incoming = MPI_exchange_data(grid.GetDuplicatedProcs(), grid.GetDuplicatedPoints());
+    const std::vector<std::vector<size_t>> &ghosts = grid.GetGhostIndeces();
+    for(size_t i = 0; i < incoming.size(); i++)
+    {
+        int _rank = grid.GetDuplicatedProcs()[i];
+        for(size_t j = 0; j < incoming[i].size(); j++)
+        {
+            assert(incoming[i].size() == ghosts[i].size());
+            ranks_ghost_map[ghosts[i][j]] = {_rank, incoming[i][j]};
+        }
+    }
+    return ranks_ghost_map;
+}
+
+template<typename T, typename Grid>
+MonteCarloManager<T, Grid>::MonteCarloManager(const MPI_Comm &comm):
+    comm_world(MPI_COMM_NULL)
+{
+    this->rank_to_index = boost::container::flat_map<rank_t, size_t>();
+    this->rank_to_index_vector = std::vector<std::tuple<rank_t, size_t, RankHandler*>>();
+    
+    this->SetCommunicator(comm);
+}
+
+template<typename T, typename Grid>
+typename MonteCarloManager<T, Grid>::MonteCarloStepInternalData MonteCarloManager<T, Grid>::PrepareForStep(const Grid &grid, size_t bufferSizes)
+{
+    MonteCarloStepInternalData cache = {grid, std::vector<std::vector<T>>(), std::vector<std::vector<T>>(), {}};
+    this->UpdateHandlers(grid, bufferSizes);
+
+    this->ranks_ghost_map = this->GetGhostMap(grid);
+    this->Ncells = grid.GetPointNo();
+
+    cache.normalsOfCells.resize(this->Ncells);
+    cache.pointsOnFaces.resize(this->Ncells);
+    for(size_t i = 0; i < this->Ncells; i++)
+    {
+        std::vector<T> &normals = cache.normalsOfCells[i];
+        std::vector<T> &onFaces = cache.pointsOnFaces[i];
+        const face_vec &faces = grid.GetCellFaces(i);
+        for(const size_t &faceIdx : faces)
+        {
+            normals.push_back(grid.Normal(faceIdx));
+            onFaces.push_back(grid.FaceCM(faceIdx));
+        }
+    }
+
+    this->numScatters = 0;
+    std::tie(this->ll, this->ur) = grid.GetBoxCoordinates();
+    return cache;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::ClearCommunicator()
+{
+    if(this->comm_world == MPI_COMM_NULL)
+    {
+        return;
+    }
+
+    for(MPI_Comm &comm : this->communicators)
+    {
+        MPI_Comm_free(&comm);
+    }
+
+    this->comm_world = MPI_COMM_NULL;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::SetCommunicator(const MPI_Comm &comm)
+{
+    this->ClearCommunicator();
+
+    this->comm_world = comm;
+    MPI_Comm_rank(this->comm_world, &this->rank_world);
+    MPI_Comm_size(this->comm_world, &this->size_world);
+
+    this->communicators.clear();
+
+    for(int rank1 = 0; rank1 < this->size_world; rank1++)
+    {
+        for(int rank2 = 0; rank2 <= rank1; rank2++)
+        {
+            int color = (this->rank_world == rank1 || this->rank_world == rank2) ? 1 : MPI_UNDEFINED;
+
+            MPI_Comm new_comm = MPI_COMM_NULL;
+            MPI_Comm_split(this->comm_world, color, this->rank_world, &new_comm);
+            this->communicators.push_back(new_comm);
+        }
+    }
+
+    std::cout << "Finished communicators creation" << std::endl;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::UpdateHandlers(const Grid &grid, size_t bufferSizes)
+{
+    const std::vector<rank_t> &dupProcs = grid.GetDuplicatedProcs();
+    this->rankHandlers.clear();
+    this->rankHandlers.resize(dupProcs.size() + 1);
+    this->rank_to_index.clear();
+    this->rank_to_index_vector.clear();
+
+    size_t i = 0;
+    for(int rank1 = 0; rank1 < this->size_world; rank1++)
+    {
+        for(int rank2 = 0; rank2 <= rank1; rank2++)
+        {
+            MPI_Comm &communicator = this->communicators[i];
+            i++;
+
+            if(rank1 == this->rank_world or rank2 == this->rank_world)
+            {
+                assert(communicator != MPI_COMM_NULL);
+                rank_t other_rank = (rank1 == this->rank_world)? rank2 : rank1;
+                size_t index = std::distance(dupProcs.cbegin(), std::find(dupProcs.cbegin(), dupProcs.cend(), other_rank));
+                if((rank1 != rank2) and (index == dupProcs.size()))
+                {
+                    // rank is not a neighbor, allow self
+                    continue;
+                }
+
+                // self is the last index
+                assert(index < this->rankHandlers.size());
+                std::cout << "bufferSizes is " << bufferSizes << std::endl;
+                this->rankHandlers[index] = new RankHandler(bufferSizes, this->comm_world, communicator);
+                this->rank_to_index.insert({other_rank, index});
+                this->rank_to_index_vector.push_back(std::make_tuple(other_rank, index, this->rankHandlers[index]));
+            }
+            else
+            {
+                assert(communicator == MPI_COMM_NULL);
+            }
+        }
+    }
 }
 
 template<typename T, typename Grid>
 MonteCarloManager<T, Grid>::~MonteCarloManager()
 {
-    MPI_Win_free(&this->editing_available_list_mutex_win);
-    MPI_Win_free(&this->global_num_particles_win);
-    MPI_Win_free(&this->available_list_length_win);
-    MPI_Win_free(&this->available_list_win);
-    MPI_Win_free(&this->available_list_length_win);
-    MPI_Win_free(&this->available_list_win);
-    MPI_Win_free(&this->particles_win);
+    for(rank_t rank1 = 0; rank1 < this->size_world; rank1++)
+    {
+        for(rank_t rank2 = 0; rank2 <= rank1; rank2++)
+        {
+            if(this->rank_world == rank1 or this->rank_world == rank2)
+            {
+                // free handler
+                rank_t otherRank = (rank1 == this->rank_world)? rank2 : rank1;
+                if(this->rank_to_index.find(otherRank) == this->rank_to_index.end())
+                {
+                    continue;
+                }
+                size_t handlerIndex = this->rank_to_index[otherRank];
+                this->rankHandlers[handlerIndex]->Destroy();
+                delete this->rankHandlers[handlerIndex];
+            }
+        }
+    }
+
+    this->ClearCommunicator();
 }
 
+
 template<typename T, typename Grid>
-int MonteCarloManager<T, Grid>::IncrementParticlesNum(int n)
+MonteCarloManager<T, Grid>::RankHandler::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm):
+    comm_world(comm_world), comm(private_comm), buffsize(buffsize), particles_win(MPI_WIN_NULL), av_win(MPI_WIN_NULL), th_win(MPI_WIN_NULL), av_length_win(MPI_WIN_NULL), th_length_win(MPI_WIN_NULL), destroyed(false)
 {
-    int num_particles;
-    int retval = MPI_Win_lock(MPI_LOCK_SHARED, 0, 0, this->global_num_particles_win);
-    assert(retval == 0);
-    MPI_Fetch_and_op(&n, &num_particles, MPI_INT, 0, 0, MPI_SUM, this->global_num_particles_win);
-    MPI_Win_unlock(0, this->global_num_particles_win);
-    return num_particles + n;
+    assert(private_comm != MPI_COMM_NULL);
+
+    MPI_Comm_rank(this->comm_world, &this->rank_world);
+    MPI_Comm_size(this->comm_world, &this->size_world);
+    MPI_Comm_rank(this->comm, &this->rank_internal);
+    MPI_Comm_size(this->comm, &this->size_internal);
+    
+    assert(this->size_internal == 2 or this->size_internal == 1);
+    assert(this->rank_internal == 0 or this->rank_internal == 1);
+
+    this->other_rank = (this->rank_internal == 0)? 1 : 0;
+    
+    if(this->size_internal > 1)
+    {
+        MPI_Info info;
+        MPI_Info_create(&info);
+        MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
+        MPI_Info_set(info, "accumulate_ops", "same_op");
+        MPI_Info_set(info, "same_size", "true");
+        MPI_Info_set(info, "same_disp_unit", "true");    
+        // initialize windows
+
+        MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &this->particles, &this->particles_win);
+        assert(this->particles != nullptr);
+        MPI_Win_set_errhandler(this->particles_win, MPI_ERRORS_RETURN);
+        MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->av, &this->av_win);
+        assert(this->av != nullptr);
+        MPI_Win_set_errhandler(this->av_win, MPI_ERRORS_RETURN);
+        MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->th, &this->th_win);
+        assert(this->th != nullptr);
+        MPI_Win_set_errhandler(this->th_win, MPI_ERRORS_RETURN);
+        MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->av_length), &this->av_length_win);
+        assert(this->av_length != nullptr);
+        MPI_Win_set_errhandler(this->av_length_win, MPI_ERRORS_RETURN);
+        MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->th_length), &this->th_length_win);
+        assert(this->th_length != nullptr);
+        MPI_Win_set_errhandler(this->th_length_win, MPI_ERRORS_RETURN);
+        MPI_Info_free(&info);
+
+        MPI_Win windows[5] = {this->particles_win, this->av_win, this->th_win, this->av_length_win, this->th_length_win};
+        for(int i = 0; i < 2; i++)
+        {
+            int *model, flag;
+            MPI_Win_get_attr(windows[i], MPI_WIN_MODEL, &model, &flag);
+            if(*model == MPI_WIN_SEPARATE)
+            {
+                std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
+                exit(1);
+            }
+        }
+    
+        // initialize mutexes
+        std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0);
+        std::shared_ptr<DistributedMutex> rank1Mutex = std::make_shared<DistributedMutex>(comm, 1);
+        this->localTHMutex = (this->rank_internal == 0)? rank0Mutex : rank1Mutex;
+        this->remoteTHMutex = (this->rank_internal == 0)? rank1Mutex : rank0Mutex;
+
+        *this->av_length = this->buffsize;
+        *this->th_length = 0;
+    
+        std::iota(this->av, this->av + this->buffsize, 0);
+    }
+    else
+    {
+        this->particles = nullptr;
+        this->av = nullptr;
+        this->th = nullptr;
+        this->av_length = nullptr;
+        this->th_length = nullptr;
+    }
+
+    if(this->size_internal > 1)
+    {
+        MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
+        MPI_Sendrecv(&this->rank_world, 1, MPI_INT, this->other_rank, 0, &this->peer_rank_world, 1, MPI_INT, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
+    }
+    else
+    {
+        this->peer_buffsize = this->buffsize;
+        this->peer_rank_world = this->rank_world;
+    }
+    MPI_Barrier(this->comm);
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::ClearParticle(size_t indexInToHandle)
+void MonteCarloManager<T, Grid>::RankHandler::Sync(void)
 {
-    size_t particleIndex = this->to_handle_list[indexInToHandle];
-    this->RemoveFromToHandleList(indexInToHandle);
-    this->AddToAvailableList(particleIndex);
+    if(this->size_internal == 1)
+    {
+        return;
+    }
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->particles_win);
+    MPI_Win_sync(this->particles_win);
+    MPI_Win_unlock_all(this->particles_win);
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->av_win);
+    MPI_Win_sync(this->av_win);
+    MPI_Win_unlock_all(this->av_win);
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->th_win);
+    MPI_Win_sync(this->th_win);
+    MPI_Win_unlock_all(this->th_win);
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->av_length_win);
+    MPI_Win_sync(this->av_length_win);
+    MPI_Win_unlock_all(this->av_length_win);
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->th_length_win);
+    MPI_Win_sync(this->th_length_win);
+    MPI_Win_unlock_all(this->th_length_win);
+    // sync distributed mutex
+    this->localTHMutex->Sync();
+    this->remoteTHMutex->Sync();
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::RemoveFromToHandleList(size_t indexInToHandle)
+void MonteCarloManager<T, Grid>::RankHandler::Destroy()
+{
+    if(this->size_internal > 1)
+    {
+        MPI_Win_free(&this->particles_win);
+        MPI_Win_free(&this->av_win);
+        MPI_Win_free(&this->th_win);
+        MPI_Win_free(&this->av_length_win);
+        MPI_Win_free(&this->th_length_win);
+        DistributedMutex *mutex1 = (this->rank_internal == 0)? this->localTHMutex.get() : this->remoteTHMutex.get();
+        DistributedMutex *mutex2 = (this->rank_internal == 1)? this->localTHMutex.get() : this->remoteTHMutex.get();
+        mutex1->Destroy();
+        mutex2->Destroy();
+    }
+    else
+    {
+        delete[] this->particles;
+        delete[] this->av;
+        delete[] this->th;
+        delete this->av_length;
+        delete this->th_length;
+    }
+    this->destroyed = true;
+}
+
+template<typename T, typename Grid>
+MonteCarloManager<T, Grid>::RankHandler::~RankHandler()
+{
+    if(not this->destroyed)
+    {
+        this->Destroy();
+    }
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::RankHandler::RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num)
+{
+    if(indicesInToHandle.empty())
+    {
+        return;
+    }
+    if(this->size_internal > 1)
+    {
+        // lock self mutex
+        this->localTHMutex->Lock();
+    }
+    
+    // std::cout << "Rank " << this->rank_world << " removes particles " << indicesInToHandle << " from rank " << this->peer_rank_world << "'s buffer" << std::endl;
+    volatile int &th_length = *this->th_length;
+    volatile int &av_length = *this->av_length;
+
+    this->Sync();
+    for(int i = static_cast<int>(num) - 1; i >= 0; i--)
+    {
+        const size_t &toHandleIndex = indicesInToHandle[i];
+        assert(i == 0 or indicesInToHandle[i] > indicesInToHandle[i-1]); // should be in a descending order
+        // std::cout << "Rank " << this->rank_world << " removes particle " << toHandleIndex << " from handler of rank " << this->peer_rank_world << std::endl;
+        assert(toHandleIndex < th_length);
+        index_t particleIdx = this->th[toHandleIndex];
+        assert(av_length < this->buffsize);
+        this->av[av_length++] = particleIdx;
+        this->th[toHandleIndex] = this->th[--th_length];
+        assert(th_length >= 0);
+    }    
+    this->Sync();
+
+    if(this->size_internal > 1)
+    {
+        // release self mutex
+        this->localTHMutex->Unlock();
+    }
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::RankHandler::TransferParticles(const std::vector<const MCParticle*> &particles)
 {
     static int minus_one = -1;
-    // this->AcquireAvailableListMutex(this->rank);
-    // remove from self to handle list by swapping with last element and popping
-    int retval = MPI_Win_lock(MPI_LOCK_SHARED, this->rank, 0, this->th_list_length_win);
-    assert(retval == 0);
-    int handle_list_length;
-    MPI_Fetch_and_op(&minus_one, &handle_list_length, MPI_INT, this->rank, 0, MPI_SUM, this->th_list_length_win);
-    int tmpIdx = handle_list_length - 1;
-    // std::cout << "Rank " << this->rank << " removes indexToHandle " << indexInToHandle << ", which is particle " << this->to_handle_list[indexInToHandle];
-    // std::cout << " (" << this->GetParticle(indexInToHandle) << "), replacing it with idxToHandle " << tmpIdx << ", which is particle " << this->to_handle_list[tmpIdx];
-    // std::cout << " (" << this->GetParticle(tmpIdx) << ") by moving it to the end (list length is updated to " << (*this->to_handle_list_length)-1 << ")" << std::endl;
-    // if(indexInToHandle != tmpIdx and this->GetParticle(indexInToHandle).id == this->GetParticle(tmpIdx).id)
-    // {
-    //     UniversalError eo("Can not, somehow, remove particle: duplication");
-    //     eo.addEntry("indexInToHandle", indexInToHandle);
-    //     eo.addEntry("toHandle[" + std::to_string(indexInToHandle) + "]", this->to_handle_list[indexInToHandle]);
-    //     eo.addEntry("tmpIdx", tmpIdx);
-    //     eo.addEntry("toHandle[" + std::to_string(tmpIdx) + "]", this->to_handle_list[tmpIdx]);
-    //     eo.addEntry("List length", handle_list_length);
-    //     eo.addEntry("shard ID", this->GetParticle(indexInToHandle).id);
-    //     eo.addEntry("Particle", this->GetParticle(indexInToHandle));
-    //     throw eo;
-    // }
-    size_t value = this->to_handle_list[tmpIdx];
-    this->to_handle_list[tmpIdx] = std::numeric_limits<size_t>::max();
-    this->to_handle_list[indexInToHandle] = value;
-    
-    MPI_Win_unlock(this->rank, this->th_list_length_win);
-
-    retval = MPI_Win_lock(MPI_LOCK_SHARED, this->rank, 0, this->th_list_avail_loc_win);
-    assert(retval == 0);
-    MPI_Accumulate(&minus_one, 1, MPI_INT, this->rank, 0, 1, MPI_INT, MPI_SUM, this->th_list_avail_loc_win);
-    MPI_Win_unlock(this->rank, this->th_list_avail_loc_win);
-    // this->ReleaseAvailableListMutex(this->rank);
-}
-
-// template<typename T, typename Grid>
-// void MonteCarloManager<T, Grid>::AcquireAvailableListMutex(int rank)
-// {
-//     static int plus_one = 1;
-//     static int minus_one = -1;
-
-//     int retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->editing_available_list_mutex_win);
-//     assert(retval == 0);
-//     int mutex_value = -1;
-//     do
-//     {
-//         MPI_Fetch_and_op(&plus_one, &mutex_value, MPI_INT, rank, 0, MPI_SUM, this->editing_available_list_mutex_win);
-//         MPI_Win_flush(rank, this->editing_available_list_mutex_win);
-//         assert(mutex_value >= 0);
-//         if(mutex_value != 0)
-//         {
-//             // mutex is occupied, cancel
-//             MPI_Accumulate(&minus_one, 1, MPI_INT, rank, 0, 1, MPI_INT, MPI_SUM, this->editing_available_list_mutex_win);
-//             usleep(10); // wait a little bit before trying again
-//         }
-//     } while(mutex_value != 0);
-//     MPI_Win_unlock(rank, this->editing_available_list_mutex_win);
-// }
-
-// template<typename T, typename Grid>
-// void MonteCarloManager<T, Grid>::ReleaseAvailableListMutex(int rank)
-// {
-//     static int minus_one = -1;
-//     int retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->editing_available_list_mutex_win);
-//     assert(retval == 0);
-//     // MPI_Fetch_and_op(&minus_one, &mutex_value, MPI_INT, rank, 0, MPI_SUM, this->editing_available_list_mutex_win);
-//     MPI_Accumulate(&minus_one, 1, MPI_INT, rank, 0, 1, MPI_INT, MPI_SUM, this->editing_available_list_mutex_win);
-//     MPI_Win_unlock(rank, this->editing_available_list_mutex_win);
-// }
-
-template<typename T, typename Grid>
-size_t MonteCarloManager<T, Grid>::GetAvailableLocation(rank_t rank)
-{
-    static int minus_one = -1;
-    int retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->av_list_avail_loc_win);
-    assert(retval == 0);
-    // pop an element from remote's available_list
-    int availableListIdx = -1;
-    MPI_Fetch_and_op(&minus_one, &availableListIdx, MPI_INT, rank, 0, MPI_SUM, this->av_list_avail_loc_win);
-    // MPI_Win_flush(rank, this->available_list_length_win);
-    MPI_Win_unlock(rank, this->av_list_avail_loc_win);
-    if(availableListIdx > this->buffer_size)
-    {
-        std::cerr << "Error! available list index is " << availableListIdx << ", while buffer size is " << this->buffer_size << std::endl;
-    }
-    assert(availableListIdx <= this->buffer_size);
-    
-    // Get last element of available list
-    availableListIdx -= 1;      
-    retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->available_list_win);
-    assert(retval == 0);
-    size_t availableIndex = -1;
-    MPI_Get(&availableIndex, 1, MPI_UNSIGNED_LONG_LONG, rank, availableListIdx, 1, MPI_UNSIGNED_LONG_LONG, this->av_list_win);    
-    MPI_Win_unlock(rank, this->av_list_win);
-    if(availableIndex >= this->buffer_size)
-    {
-        std::cerr << "ERROR!!!! available list length is " << availableListIdx << ", availableIndex is " << availableIndex << ", while buffer size is " << this->buffer_size << std::endl;
-        exit(1);
-    }
-    assert(availableIndex < this->buffer_size);
-
-    retval = MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->av_list_length_win);
-    assert(retval == 0);
-    MPI_Accumulate(&minus_one, 1, MPI_INT, rank, 0, 1, MPI_INT, MPI_SUM, this->av_list_length_win);
-    MPI_Win_unlock(rank, this->av_list_length_win);
-
-    return availableIndex;
-}
-
-template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::WriteParticleToRemote(size_t particleIndexInMy, rank_t rank, size_t availableIndex)
-{
-    // set the particle in remote's `availableIndex`
-    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->particles_win);
-    MPI_Put(&this->particles[particleIndexInMy], sizeof(Particle), MPI_BYTE, rank, availableIndex, sizeof(Particle), MPI_BYTE, this->particles_win);
-    MPI_Win_unlock(rank, this->particles_win);
-}
-
-template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::AddToToHandleList(rank_t rank, size_t availableIndex)
-{
     static int plus_one = 1;
+    size_t Np = particles.size();
+    int decrement = -static_cast<int>(Np);
+    int increment = static_cast<int>(Np);
+    if(particles.empty())
+    {
+        return;
+    }
 
-    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->th_list_avail_loc_win);
-    // add the index to the list of 'to_handle' particles
-    int toHandleListIdx;
-    MPI_Fetch_and_op(&plus_one, &toHandleListIdx, MPI_INT, rank, 0, MPI_SUM, this->th_list_avail_loc_win);
-    MPI_Win_unlock(rank, this->th_list_avail_loc_win);
+    if(this->size_internal > 1)
+    {
+        // acquire remote mutex
+        this->remoteTHMutex->Lock();
+        
+        int availLength;
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_length_win);
+        // todo: get to fetch_and_op
+        int retval = MPI_Fetch_and_op(&decrement, &availLength, MPI_INT, this->other_rank, 0, MPI_SUM, this->av_length_win);
+        assert(retval == MPI_SUCCESS);
+        MPI_Win_flush(this->other_rank, this->av_length_win);
+        if(availLength == 0)
+        {
+            int increment = particles.size();
+            MPI_Accumulate(&increment, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, MPI_SUM, this->av_length_win);
+            assert(false); // TODO: handle when transfer is infeasible
+        }
+        MPI_Win_unlock(this->other_rank, this->av_length_win);
+        assert(availLength > 0);
+        assert(availLength <= this->peer_buffsize);
 
-    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->th_list_win);
-    MPI_Put(&availableIndex, 1, MPI_UNSIGNED_LONG_LONG, rank, toHandleListIdx, 1, MPI_UNSIGNED_LONG_LONG, this->th_list_win);
-    // std::cout << "Rank " << this->rank << " writes to rank " << rank << " in handleListIdx " << toHandleListIdx << " particle index " << availableIndex << ", which is particle " << this->GetParticle(indexInToHandle) << std::endl; 
-    MPI_Win_unlock(rank, this->th_list_win);
+        if(availLength < Np)
+        {
+            std::cout << "Impossible move from rank " << this->rank_world << " to rank " << this->peer_rank_world << " due to lack of space in available list (" << availLength << ")" << std::endl;
+            assert(false);
+        }
+        // get particle empty index from avail list
+        std::vector<index_t> availIndices(Np);
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_win);
+        MPI_Get(availIndices.data(), Np, MPI_INDEX_T, this->other_rank, availLength - Np, Np, MPI_INDEX_T, this->av_win);
+        MPI_Win_unlock(this->other_rank, this->av_win);
 
-    // update length
-    MPI_Win_lock(MPI_LOCK_SHARED, rank, 0, this->th_list_length_win);
-    MPI_Accumulate(&plus_one, 1, MPI_INT, rank, 0, 1, MPI_INT, MPI_SUM, this->th_list_length_win);
-    MPI_Win_unlock(rank, this->th_list_length_win);
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->particles_win);
+        for(size_t i = 0; i < Np; i++)
+        {
+            size_t availIndex = availIndices[i];
+            const MCParticle *particle = particles[i];
+            /* put particle itself */
+            MPI_Put(particle, sizeof(MCParticle), MPI_BYTE, this->other_rank, availIndex, sizeof(MCParticle), MPI_BYTE, this->particles_win);
+        }
+        MPI_Win_unlock(this->other_rank, this->particles_win);
+
+        // MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, 0, this->av_length_win);
+        // MPI_Accumulate(&minus_one, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, MPI_SUM, this->av_length_win);
+        // MPI_Win_unlock(this->other_rank, this->av_length_win);
+
+        /* put in to handle list */
+
+        // get length of to handle list
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
+        int toHandleLength;
+        MPI_Get(&toHandleLength, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, this->th_length_win);
+        MPI_Win_unlock(this->other_rank, this->th_length_win);
+        assert(toHandleLength >= 0);
+        assert(toHandleLength < this->peer_buffsize);
+
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_win);
+        MPI_Put(availIndices.data(), Np, MPI_INDEX_T, this->other_rank, toHandleLength, Np, MPI_INDEX_T, this->th_win);
+        MPI_Win_unlock(this->other_rank, this->th_win);
+
+        // add 1 to to handle index
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
+        MPI_Accumulate(&increment, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, MPI_SUM, this->th_length_win);
+        MPI_Win_unlock(this->other_rank, this->th_length_win);
+
+        // release remote mutex
+        this->remoteTHMutex->Unlock();
+
+        // std::cout << "In sending of from rank " << this->rank_world << " to rank " << this->peer_rank_world << ", avail length of peer is " << availLength << ", and to handle " << toHandleLength << std::endl;
+
+    }
+    else
+    {
+        for(size_t i = 0; i < Np; i++)
+        {
+            assert(*this->av_length > 0);
+            size_t availIndex = this->av[--(*this->av_length)];
+            this->particles[availIndex] = *particles[i];
+            this->th[(*this->th_length)++] = availIndex;
+            assert(*this->th_length < this->buffsize);
+        }
+    }
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::AddToAvailableList(size_t particleIndexInMy)
+void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(const std::vector<MCParticle> &particles)
 {
-    static int plus_one = 1;
-    assert(particleIndexInMy < this->buffer_size);
+    size_t selfIndex = this->rank_to_index.at(this->rank_world);
+    assert(selfIndex == this->rankHandlers.size() - 1);
 
-    // pop an element from remote's available_list
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank, 0, this->av_list_avail_loc_win);
-    int localAvailableListIdx;
-    MPI_Fetch_and_op(&plus_one, &localAvailableListIdx, MPI_INT, this->rank, 0, MPI_SUM, this->av_list_avail_loc_win);
-    MPI_Win_unlock(this->rank, this->av_list_avail_loc_win);
-    assert(localAvailableListIdx < this->buffer_size);
+    RankHandler *handler = this->rankHandlers[selfIndex];
 
-    // MPI_Win_flush(rank, this->available_list_length_win);
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank, 0, this->av_list_win);
-    // std::cout << "Rank " << this->rank << " Puts to self availalble list " << index << ", on index " << localAvailableListIdx << std::endl;
-    MPI_Put(&particleIndexInMy, 1, MPI_UNSIGNED_LONG_LONG, this->rank, localAvailableListIdx, 1, MPI_UNSIGNED_LONG_LONG, this->av_list_win);
-    MPI_Win_unlock(this->rank, this->av_list_win);
+    size_t particlesNum = particles.size();
+    handler->buffsize = particlesNum;
+    handler->particles = new MCParticle[handler->buffsize];
+    handler->av = new typename RankHandler::index_t[handler->buffsize];
+    handler->th = new typename RankHandler::index_t[handler->buffsize];
+    handler->av_length = new int(0);
+    handler->th_length = new int(0);
 
-    // update length of available list
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank, 0, this->av_list_length_win);
-    MPI_Accumulate(&plus_one, 1, MPI_INT, this->rank, 0, 1, MPI_INT, MPI_SUM, this->av_list_length_win);
-    MPI_Win_unlock(this->rank, this->av_list_length_win);
+    std::memcpy(handler->particles, particles.data(), particles.size() * sizeof(MCParticle));
+
+    // update 'to handle' and 'available' lists accordingly
+    *handler->th_length = particlesNum;
+    for(size_t i = 0; i < particlesNum; i++)
+    {
+        assert(i < handler->buffsize);
+        handler->th[i] = i;
+    }
+
+    size_t availLength = handler->buffsize - particlesNum;
+    *handler->av_length = availLength;
+    
+    for(size_t i = 0; i < availLength; i++)
+    {
+        size_t idx = i + particlesNum;
+        assert(idx < handler->buffsize);
+        handler->av[i] = idx;
+    }
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MoveParticle(size_t indexInToHandle, rank_t rank)
+void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t rankBuffer, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
 {
-    static const int minus_one = -1;
-    static const int plus_one = 1;
+    if(indicesInToHandle.empty())
+    {
+        // nothing to transfer
+        return;
+    }
 
-    assert(indexInToHandle < *this->th_list_length);
-    size_t index = this->to_handle_list[indexInToHandle];
-    assert(index < this->buffer_size);
+    boost::container::flat_map<rank_t, std::vector<const MCParticle*>> rankToParticles;
 
-    // this->AcquireAvailableListMutex(rank);
+    size_t currentRankIndex = this->rank_to_index.at(rankBuffer);
+    RankHandler *currRankHandler = this->rankHandlers[currentRankIndex];
 
-    size_t availableLocation = this->GetAvailableLocation(rank);
+    std::vector<const MCParticle*> particles;
+    for(size_t i = 0; i < num; i++)
+    {
+        const size_t &indexInToHandle = indicesInToHandle[i];
+        const size_t &toRank = transferRanks[i];
+        assert(toRank != this->rank_world); // can't send to self
+        size_t bufferIdx = currRankHandler->th[indexInToHandle];
+        auto it = rankToParticles.find(toRank);
+        if(it == rankToParticles.end())
+        {
+            rankToParticles[toRank] = std::vector<const MCParticle*>();
+        }
+        const MCParticle *particle = &currRankHandler->particles[bufferIdx];
+        rankToParticles[toRank].push_back(particle);
+    }
 
-    this->WriteParticleToRemote(index, rank, availableLocation);
+    for(const auto &[toRank, particles] : rankToParticles)
+    {
+        assert(toRank != this->rank_world); // can't send to self
+        size_t remoteRankIndex = this->rank_to_index.at(toRank);
+        RankHandler *remoteHandler = this->rankHandlers[remoteRankIndex];
+    
+        // std::cout << "Migrating particle " << *particle << ", from rankbuff " << rankBuffer << " to rank " << toRank << std::endl;
+        remoteHandler->TransferParticles(particles);
 
-    this->AddToToHandleList(rank, availableLocation);
+    }
 
-    // // release mutex
-    // this->ReleaseAvailableListMutex(rank);
-
-    this->ClearParticle(indexInToHandle);
-
-    // this->AcquireAvailableListMutex(this->rank);
-    // add place to self available_list by adding index to the available list
-    // this->ReleaseAvailableListMutex(this->rank);
+    // currRankHandler->RemoveParticles(indicesInToHandle);
 }
 
-#endif // MONTE_CARLO_MANAGER
+template<typename T, typename Grid>
+bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepInternalData &data)
+{
+    static std::vector<std::tuple<rank_t, size_t, RankHandler*>> active_ranks;
+    static std::vector<std::tuple<rank_t, size_t, RankHandler*>> next_active_ranks;
+    static std::vector<size_t> removeParticlesVec;
+    static std::vector<size_t> transferParticlesVec;
+    static std::vector<rank_t> transferRanks;
+    static std::uniform_real_distribution<double> dist(0, 1);
+    static std::mt19937 re(this->rank_world);
+    
+    MonteCarloStepFinalData &stepData = data.finalData;
+    
+    next_active_ranks.clear();
+    if(active_ranks.empty())
+    {
+        // std::cout << "active_ranks is empty" << std::endl;
+        for(const std::tuple<rank_t, size_t, RankHandler*> &buffer : this->rank_to_index_vector)
+        {
+            RankHandler *handler = std::get<2>(buffer);
+            // std::cout << "Running sync on window of rank " << std::get<0>(buffer) << std::endl;
+            handler->Sync();
+            // std::cout << "Done!" << std::endl;
+            if(*handler->th_length > 0)
+            {
+                active_ranks.push_back(buffer);
+            }
+        }
+    }
+
+    bool isEmpty = true;
+    size_t activeRanksNum = active_ranks.size();
+
+    // for(const std::tuple<rank_t, size_t, RankHandler*> &buffer : this->rank_to_index_vector) // size_t index = 0; index < activeRanksNum; index++)
+    for(size_t index = 0; index < activeRanksNum; index++)
+    {
+        const std::tuple<rank_t, size_t, RankHandler*> &buffer = active_ranks[index];
+        rank_t buffRank = std::get<0>(buffer);
+        size_t handlerIndex = std::get<1>(buffer);
+        RankHandler *handler = std::get<2>(buffer);
+        int length = *handler->th_length;
+        int removeCounter = 0;
+        int transferCounter = 0;
+        distance_t scatteringLength = abs(this->ur - this->ll) / 10;
+
+        for(int i = 0; i < length; i++)
+        {
+            isEmpty = false;
+            size_t particleIndex = handler->th[i];
+            MCParticle &particle = handler->particles[particleIndex];
+            // std::cout << "Rank " << this->rank_world << ", iterates particle " << particle << " (to handle: " << i << ", particle index: " << particleIndex << ")" << std::endl;
+
+            const std::vector<T> &normalsOfFaces = data.normalsOfCells[particle.cellIndex];
+            const std::vector<T> &pointsOnFaces = data.pointsOnFaces[particle.cellIndex];
+            auto [faceIntersect, timeIntersect] = particle.distanceToNearestFace(data.grid, normalsOfFaces, pointsOnFaces);
+            assert(timeIntersect >= 0);
+
+            distance_t scatteringDistance = (-1 * scatteringLength) * std::log1p((dist(re) - 1)); 
+            // timeIntersect *= (1 + 1e-8); // TODO: good?
+            dt_t timeScattering = scatteringDistance / abs(particle.velocity);
+
+            dt_t timeLeft = particle.timeLeft;
+            
+            // time until next event
+            dt_t dt = std::min(timeLeft, std::min(timeScattering, timeIntersect));
+            particle.timeLeft -= dt;
+
+            assert(dt >= 0);
+            if(fabs(dt - timeIntersect) < 1e-16)
+            {
+                // std::cout << "Rank " << this->rank_world << ", Intersection, " << particle << "(face is " << faceIntersect << ", time " << timeIntersect << ", containing cell is " << particle.cellIndex << ")" << std::endl;
+                const std::pair<size_t, size_t> &cellNeighbors = data.grid.GetFaceNeighbors(faceIntersect);
+                assert(particle.cellIndex == cellNeighbors.first or particle.cellIndex == cellNeighbors.second);
+                size_t nextCellIndex = (cellNeighbors.first == particle.cellIndex)? cellNeighbors.second : cellNeighbors.first;
+                // std::cout << "Rank " << this->rank_world << ", intersection time of paricle ID " << particle.id << " is " << timeIntersect << ", will be moved to " << nextCellIndex << " (generating point: " << grid.GetMeshPoint(nextCellIndex) << ")" << std::endl;
+                assert(nextCellIndex != particle.cellIndex);
+                
+                // if(particle.id == 6804436)
+                // {
+                //     // std::cout << "{" << this->rank_world << ", " << particle.cellIndex << "}" << "," << std::endl;
+                //     std::cout << "Rank " << this->rank_world << ", handling particle ID " << particle.id << " from cell index " << particle.cellIndex << ", dt " << dt << ", time left " << particle.timeLeft << ", time intersect " << timeIntersect << ". Moved to " << nextCellIndex << std::endl;
+                // }
+                assert(particle.timeLeft >= 0);
+
+                /*
+                particle.location = (particle.location + particle.velocity * dt) + EPSILON * (meshpoint - (particle.location + particle.velocity * dt))
+                ======>
+                particle.location = (particle.location + particle.velocity * dt) * (1 - EPSILON) + EPSILON * meshpoint
+                */ 
+                particle.location = (particle.location + particle.velocity * dt) * (1 - MONTECARLO_EPSILON) + MONTECARLO_EPSILON * data.grid.GetMeshPoint(nextCellIndex);
+                // particle.location += 1e-8 * (grid.GetMeshPoint(nextCellIndex) - particle.location);
+                if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+                {
+                    particle.cellIndex = nextCellIndex;
+                    // assert(realContainingCell == nextCellIndex);
+                }
+                else
+                {
+                    // a ghost point, check rank and index in rank
+                    auto it = ranks_ghost_map.find(nextCellIndex);
+                    if(it == ranks_ghost_map.end())
+                    {
+                        stepData.leaving.push_back(particle); // leaving domain
+                        // remove particle from current list
+                        // std::cout << "Rank " << this->rank_world << " removes particle " << particle << " since it leaves the domain" << std::endl;
+                        this->progress->localDecrementAmount++;
+                        if(removeCounter >= removeParticlesVec.size())
+                        {
+                            removeParticlesVec.push_back(i);
+                            removeCounter++;
+                        }
+                        else
+                        {
+                            removeParticlesVec[removeCounter++] = i;
+                        }
+                        // i -= 1; length -= 1;
+                        continue;
+                    }
+                    auto [otherRank, neighborIndexInRank] = it->second;
+                    size_t rankIndex = this->rank_to_index.at(otherRank);
+                    assert(rankIndex < this->rankHandlers.size());
+                    // std::cout << "Rank " << this->rank_world << " sends " << particle << " (from cell " << particle.cellIndex << ") to rank " << otherRank << " at index " << neighborIndexInRank << " there, " << nextCellIndex << " here" << std::endl;
+                    particle.cellIndex = neighborIndexInRank;
+
+                    if(transferCounter >= transferParticlesVec.size())
+                    {
+                        transferParticlesVec.push_back(i);
+                        transferRanks.push_back(otherRank);
+                        transferCounter++;
+                    }
+                    else
+                    {
+                        transferRanks[transferCounter] = otherRank;
+                        transferParticlesVec[transferCounter++] = i;
+                    }
+                    if(removeCounter >= removeParticlesVec.size())
+                    {
+                        removeParticlesVec.push_back(i);
+                        removeCounter++;
+                    }
+                    else
+                    {
+                        removeParticlesVec[removeCounter++] = i;
+                    }
+                // i -= 1; length -= 1; // repeat the particle in this location, as it is a new one replacing the leaving particle
+                    continue;
+                }
+            }
+            else if(fabs(dt - timeScattering) < 1e-16)
+            {
+                if((timeIntersect - timeScattering) < ((1e-8) * (timeScattering + timeIntersect)))
+                {
+                    timeScattering = timeIntersect * (1 - 1e-8);
+                }
+                // advance
+                particle.location += particle.velocity * dt;
+                this->numScatters++;
+
+                // scatter: get a new velocity
+                particle.velocity = RandomVectorWithDirection(abs(particle.velocity));
+            }
+            else if(dt == timeLeft)
+            {
+                stepData.remaining.push_back(particle);
+                // remove particle from current list
+                if(removeCounter >= removeParticlesVec.size())
+                {
+                    removeParticlesVec.push_back(i);
+                    removeCounter++;
+                }
+                else
+                {
+                    removeParticlesVec[removeCounter++] = i;
+                }
+                this->progress->localDecrementAmount += 1;
+                // particleChange += 1; // decrement particles num later
+                continue;
+            }
+        }
+
+        if(transferCounter > 0)
+        {
+            this->TransferParticles(buffRank, transferParticlesVec, transferRanks, transferCounter);
+        }
+        if(removeCounter > 0)
+        {
+            // std::cout << "Rank " << this->rank_world << " is removing " << removeParticlesVec[0] << " - " << removeParticlesVec[removeCounter - 1] << " (" << removeCounter << " indices) from rank " << buffRank << "'s buffer" << std::endl;
+            handler->RemoveParticles(removeParticlesVec, removeCounter);
+        }
+        if(length > 0)
+        {
+            next_active_ranks.push_back(buffer);
+        }
+    }
+    active_ranks.swap(next_active_ranks);
+
+    if(isEmpty and this->progress->localDecrementAmount > 0)
+    {
+        // a chance to update the progress counter 
+        // std::cout << "Decrementing by " << this->progress->localDecrementAmount << " particles in the progress counter" << std::endl;
+        this->progress->Decrement(this->progress->localDecrementAmount);
+        this->progress->localDecrementAmount = 0;
+    }
+    return isEmpty;
+}
+
+
+template<typename T, typename Grid>
+typename MonteCarloManager<T, Grid>::MonteCarloStepFinalData MonteCarloManager<T, Grid>::MonteCarloManager::step(const Grid &grid, const std::vector<MCParticle> &particleList, dt_t fullDt, size_t bufferSizes)
+{
+    MonteCarloStepInternalData data = this->PrepareForStep(grid, bufferSizes);
+    this->PutSelfParticles(particleList);
+
+    size_t myNparticles = particleList.size();
+    size_t particleCounter = 0;
+    MPI_Exscan(&myNparticles, &particleCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
+    size_t totalParticles = 0;
+    for(RankHandler *handler : this->rankHandlers)
+    {
+        int length = *handler->th_length;
+        totalParticles += length;
+        for(int i = 0; i < length; i++)
+        {
+            size_t particleIndex = handler->th[i];
+            MCParticle &p = handler->particles[particleIndex];
+            p.timeLeft = fullDt;
+            p.id = particleCounter;
+            particleCounter++;
+        }
+    }
+    this->progress = std::make_shared<ProgressCounter>(this->comm_world, totalParticles);
+
+    size_t Nfaces = grid.GetAllFaceNeighbors().size();
+    std::vector<T> normals(Nfaces);
+    for(size_t i = 0; i < Nfaces; i++)
+    {
+        normals[i] = grid.Normal(i);
+    }
+
+    size_t numParticles = *this->rankHandlers.back()->th_length;
+    
+    this->progress->localDecrementAmount = 0;
+    
+    volatile int &done = *this->progress->is_done;
+
+    MPI_Barrier(this->comm_world);
+    std::cout << "Rank " << this->rank_world << " starts the main loop" << std::endl;
+
+    vtune_start();
+    // measure time
+    auto start = std::chrono::high_resolution_clock::now();
+    while(not done)
+    {
+        this->HandleAll(data);
+        this->progress->Sync();
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+
+    MPI_Barrier(this->comm_world);
+    double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+    std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
+
+    size_t leavingNumber = data.finalData.leaving.size();
+    size_t leavingTotal;
+    size_t scattersTotal;
+    MPI_Reduce(&leavingNumber, &leavingTotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce(&this->numScatters, &scattersTotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "Number of leaving particles is " << leavingTotal << ", num scatters " << scattersTotal << std::endl;
+    }
+    MPI_Barrier(this->comm_world);
+    vtune_stop();
+    return data.finalData;
+}
+
+#endif // MONTE_CARLO_MANAGER_HPP

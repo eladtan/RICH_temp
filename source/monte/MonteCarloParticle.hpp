@@ -18,11 +18,13 @@ struct MonteCarloParticle
                     //     : public Serializable
                     // #endif // RICH_MPI
 {
-    // size_t id;
+    size_t id;
     T location;
     T velocity;
     size_t cellIndex;
     dt_t timeLeft;
+    double energy;
+    double weight;
 
     explicit MonteCarloParticle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(), const T &velocity_ = T(), dt_t timeLeft_ = dt_t()):
          location(location_), velocity(velocity_), timeLeft(timeLeft_), cellIndex(std::numeric_limits<size_t>::max())
@@ -32,8 +34,8 @@ struct MonteCarloParticle
 
     friend inline std::ostream &operator<<(std::ostream &stream, const MonteCarloParticle &particle)
     {
-        // return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
-        return stream << "Particle(location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        // return stream << "Particle(location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
     }
 };
 

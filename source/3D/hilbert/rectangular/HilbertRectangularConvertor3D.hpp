@@ -61,7 +61,7 @@ public:
     void changeOrder(size_t order) override;
     
     hilbert_index_t xyz2d(coord_t x, coord_t y, coord_t z) const override;
-        
+    
     Vector3D d2xyz(hilbert_index_t d) const override;
         
 private:
