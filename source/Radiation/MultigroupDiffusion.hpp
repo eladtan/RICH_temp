@@ -9,6 +9,7 @@
 #include "CMMC/src/compton_matrix_mc.hpp"
 
 using namespace CG;
+using namespace compton_matrix_mc;
 
 class MultigroupDiffusion : public RadiationDriver {
 public:
@@ -169,7 +170,6 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
 private:
     bool const protections_on_;
     mutable bool  displayed_warning_;
-    mutable bool compton_initialized_;
     void BuildMatrixGroup(std::size_t group,
                           Tessellation3D const& tess, 
                           mat& A, 

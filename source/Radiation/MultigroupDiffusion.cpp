@@ -16,6 +16,24 @@ void fill_zero(std::vector<std::vector<double>>& mat) {
     }
 }
 
+std::vector<double> compton_temperatures(){
+    std::vector<double> tmp_grid = linspace(-2, 4, 128);
+    
+    for(size_t i = 0; i < tmp_grid.size(); ++i){
+        tmp_grid[i] = std::pow(10.0, tmp_grid[i]);
+    }
+
+    tmp_grid.insert(tmp_grid.begin(), 0.005);
+    tmp_grid.insert(tmp_grid.begin(), 0.001);
+    tmp_grid.insert(tmp_grid.begin(), 0.0001);
+    // tmp_grid = {1e-2, 0.1, 0.2, 0.3, 0.8, 1.5, 3.0, 4.0, 5.0, 7.5, 10.0, 13.0, 18.0, 20.0, 21.};
+    for(auto& temp : tmp_grid){
+        temp *= units::kev_kelvin;
+    }
+
+    return tmp_grid;
+}
+
 MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                                          std::vector<double> const& energy_groups_boundary_,
                                          MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
@@ -29,6 +47,11 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          bool const mix_frame_on,
                                          double const minimum_temperature,
                                          bool const protections_on):
+                                                                RadiationDriver(eos,
+                                                                    zero_cells,
+                                                                    flux_limiter,
+                                                                    hydro_on,
+                                                                    compton_on),
                                                                 energy_groups_center(energy_groups_center_),
                                                                 energy_groups_boundary(energy_groups_boundary_),
                                                                 energy_groups_width(ENERGY_GROUPS_NUM, 0.0),
@@ -66,10 +89,12 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 R2(3, std::vector<double>()),
                                                                 D(3, std::vector<double>()),
                                                                 displayed_warning_(false),
-                                                                compton_matrix_gen( energy_groups_center_,
-                                                                                    energy_groups_boundary_, 
-                                                                                    2000000, // num of samples
-                                                                                    true, 1), // force detailed balance
+                                                                compton_matrix_gen(
+                                                                    compton_on ? compton_temperatures() : std::vector<double>{1.0*units::kev_kelvin, 2.0*units::kev_kelvin},
+                                                                    energy_groups_center_,
+                                                                    energy_groups_boundary_, 
+                                                                    compton_on ? 20000 : 10, // num of samples
+                                                                    1),
                                                                 tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 S(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -83,13 +108,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 Upsilon_vector(ENERGY_GROUPS_NUM, 0.0),
                                                                 Upsilon(0.0),
                                                                 sum_dSdUm(ENERGY_GROUPS_NUM, 0.0),
-                                                                compton_initialized_(false),
-                                                                protections_on_(protections_on),
-                                                                RadiationDriver(eos,
-                                                                                zero_cells,
-                                                                                flux_limiter,
-                                                                                hydro_on,
-                                                                                compton_on) {
+                                                                protections_on_(protections_on) {
 
     if(energy_groups_center.size() != ENERGY_GROUPS_NUM){
         std::cout << "bad energy_groups_center.size()" << std::endl;
@@ -176,22 +195,6 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
 
     R2 = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
     D  = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
-    
-    if(!compton_initialized_ and compton_on_){
-        // Vector tmp_grid = {1e-4, 1e-3, 1e-2, 0.1, 0.5, 1., 3., 4., 6., 10., 15., 20., 25., 30., 40., 60., 80., 100., 200., 1000., 5000.};
-        std::vector<double> tmp_grid = linspace(-2, 4, 128);
-        for(size_t i = 0; i < tmp_grid.size(); ++i)
-            tmp_grid[i] = std::pow(10.0, tmp_grid[i]);
-        tmp_grid.insert(tmp_grid.begin(), 0.005);
-        tmp_grid.insert(tmp_grid.begin(), 0.001);
-        tmp_grid.insert(tmp_grid.begin(), 0.0001);
-        // Vector tmp_grid = {1e-2, 0.1, 0.2, 0.3, 0.8, 1.5, 3.0, 4.0, 5.0, 7.5};
-        for(auto& temp : tmp_grid){
-            temp *= units::kev_kelvin;
-        }
-        compton_matrix_gen.set_tables(tmp_grid);
-        compton_initialized_=true;
-    }
     
     Gammas.resize(N, 0.0);
 
@@ -2697,9 +2700,19 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
     double const A = 1.0;
     double const Z = 1.0;
-    compton_matrix_gen.get_tau_matrix(std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]), cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
+    double const T = std::min(compton_matrix_gen.get_maximum_compton_temperature() * 0.9999, old_Tm[cell_index]);
+    compton_matrix_gen.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau);
 
-    auto const [up_scattering_last, down_scattering_last] = compton_matrix_gen.get_last_group_upscattering_and_downscattering(std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]), cell.density*mass_scale_/pow<3>(length_scale_), A, Z);
+    // returns dtau_dT
+    compton_matrix_gen.get_dtau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, dtau_dUm);
+
+    // transform dtau_dT to dtau_dUm
+    double const beta = 1.0 / (4.0*CG::radiation_constant*pow<3>(T));
+    for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
+        for(auto& val : dtau_dUm[g]) val *= beta;
+    }
+
+    auto const [up_scattering_last, down_scattering_last] = compton_matrix_gen.get_last_group_upscattering_and_downscattering(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z);
 
     fill_zero(S);
     fill_zero(dSdUm);

@@ -3,7 +3,7 @@
 
 #include "conj_grad_solve.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
-#include "planck_integral/planck_integral.hpp"
+#include "CMMC/src/planck_integral/planck_integral.hpp"
 
 class MultigroupDiffusionBoundaryCalculator {
 public:
