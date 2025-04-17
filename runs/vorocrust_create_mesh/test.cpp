@@ -46,13 +46,30 @@ int main(void)
 
         std::cout << "path_to_vorocrust_output: " << path_to_vorocrust_output;
 
-        std::vector<double> in_seeds_x = read_vector(path_to_vorocrust_output + "/dump/zone_in_volume_seeds/x.txt");
-        std::vector<double> in_seeds_y = read_vector(path_to_vorocrust_output + "/dump/zone_in_volume_seeds/y.txt");
-        std::vector<double> in_seeds_z = read_vector(path_to_vorocrust_output + "/dump/zone_in_volume_seeds/z.txt");
+        std::vector<double> in_seeds_x = read_vector(path_to_vorocrust_output + "/inside_seeds/x.txt");
+        std::vector<double> in_seeds_y = read_vector(path_to_vorocrust_output + "/inside_seeds/y.txt");
+        std::vector<double> in_seeds_z = read_vector(path_to_vorocrust_output + "/inside_seeds/z.txt");
 
-        std::vector<double> out_seeds_x = read_vector(path_to_vorocrust_output + "/dump/zone_out_seeds/x.txt");
-        std::vector<double> out_seeds_y = read_vector(path_to_vorocrust_output + "/dump/zone_out_seeds/y.txt");
-        std::vector<double> out_seeds_z = read_vector(path_to_vorocrust_output + "/dump/zone_out_seeds/z.txt");
+        std::vector<double> volume_in_seeds_x = read_vector(path_to_vorocrust_output + "/volume_in_seeds/x.txt");
+        std::vector<double> volume_in_seeds_y = read_vector(path_to_vorocrust_output + "/volume_in_seeds/y.txt");
+        std::vector<double> volume_in_seeds_z = read_vector(path_to_vorocrust_output + "/volume_in_seeds/z.txt");
+
+        std::vector<double> out_seeds_x = read_vector(path_to_vorocrust_output + "/outside_seeds/x.txt");
+        std::vector<double> out_seeds_y = read_vector(path_to_vorocrust_output + "/outside_seeds/y.txt");
+        std::vector<double> out_seeds_z = read_vector(path_to_vorocrust_output + "/outside_seeds/z.txt");
+        
+        std::vector<double> volume_out_seeds_x = read_vector(path_to_vorocrust_output + "/volume_out_seeds/x.txt");
+        std::vector<double> volume_out_seeds_y = read_vector(path_to_vorocrust_output + "/volume_out_seeds/y.txt");
+        std::vector<double> volume_out_seeds_z = read_vector(path_to_vorocrust_output + "/volume_out_seeds/z.txt");
+
+
+        in_seeds_x.insert(in_seeds_x.end(), volume_in_seeds_x.begin(), volume_in_seeds_x.end());
+        in_seeds_y.insert(in_seeds_y.end(), volume_in_seeds_y.begin(), volume_in_seeds_y.end());
+        in_seeds_z.insert(in_seeds_z.end(), volume_in_seeds_z.begin(), volume_in_seeds_z.end());
+        
+        out_seeds_x.insert(out_seeds_x.end(), volume_out_seeds_x.begin(), volume_out_seeds_x.end());
+        out_seeds_y.insert(out_seeds_y.end(), volume_out_seeds_y.begin(), volume_out_seeds_y.end());
+        out_seeds_z.insert(out_seeds_z.end(), volume_out_seeds_z.begin(), volume_out_seeds_z.end());
 
         size_t const out_size = out_seeds_x.size();
         in_size = in_seeds_x.size();
@@ -73,7 +90,7 @@ int main(void)
             points[i].Set(out_seeds_x[i-in_size], out_seeds_y[i-in_size], out_seeds_z[i-in_size]);
         }
 
-        ll_x = ll_y = ll_z = std::numeric_limits<double>::max();
+        ll_x = ll_y = ll_z =  std::numeric_limits<double>::max();
         ur_x = ur_y = ur_z = -std::numeric_limits<double>::max();
         
         for(size_t i=0; i<tot_size; ++i){
@@ -148,9 +165,9 @@ int main(void)
 		, true);
 	vector<DiagnosticAppendix3D *> appendices;
 #ifdef RICH_MPI
-	WriteSnapshot3DParallel(sim, "fox_init.h5", appendices, true);
+	WriteSnapshot3DParallel(sim, "init.h5", appendices, true);
 #else
-	WriteSnapshot3D(sim, "fox_init.h5", appendices, true);
+	WriteSnapshot3D(sim, "init.h5", appendices, true);
 #endif
 #ifdef RICH_MPI
 	MPI_Finalize();
