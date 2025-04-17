@@ -93,7 +93,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                     compton_on ? compton_temperatures() : std::vector<double>{1.0*units::kev_kelvin, 2.0*units::kev_kelvin},
                                                                     energy_groups_center_,
                                                                     energy_groups_boundary_, 
-                                                                    compton_on ? 20000 : 10, // num of samples
+                                                                    compton_on ? 200000 : 10, // num of samples
                                                                     1),
                                                                 tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
                                                                 dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
