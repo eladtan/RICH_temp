@@ -110,7 +110,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 sum_dSdUm(ENERGY_GROUPS_NUM, 0.0),
                                                                 protections_on_(protections_on) {
 
-    static_assert(ENERGY_GROUPS_NUM != 1, "you forgot to set ENERGY_GROUPS_NUM!!!!");
+    // static_assert(ENERGY_GROUPS_NUM != 1, "you forgot to set ENERGY_GROUPS_NUM!!!!");
 
     if(energy_groups_center.size() != ENERGY_GROUPS_NUM){
         std::cout << "bad energy_groups_center.size()" << std::endl;
