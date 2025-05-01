@@ -1,0 +1,13 @@
+#ifndef MONTE_CARLO_PARTICLE_STATUS_HPP
+#define MONTE_CARLO_PARTICLE_STATUS_HPP
+
+enum MonteCarloParticleStatus
+{
+    NO_CELL_MOVE,
+    CELL_MOVE,
+    DONE,
+    REMOVE,
+    REFLECT
+};
+
+#endif // MONTE_CARLO_PARTICLE_STATUS_HPP

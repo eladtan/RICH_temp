@@ -3,11 +3,13 @@
 
 #include <vector>
 #ifdef RICH_MPI
-    // #include <mpi.h>
-    // #include <functional>
-    // #include "mpi/mpi_commands.hpp"
-    // #include "misc/serializable.hpp"
+    #include <mpi.h>
+    #include <functional>
+    #include "mpi/mpi_commands.hpp"
+    #include "misc/serializable.hpp"
 #endif // RICH_MPI
+
+#define EPSILON 1e-12
 
 using dt_t = double;
 using distance_t = double;
@@ -25,9 +27,12 @@ struct MonteCarloParticle
     dt_t timeLeft;
     double energy;
     double weight;
+    double initialWeight;
+    size_t steps;
+    bool on_track;
 
     explicit MonteCarloParticle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(), const T &velocity_ = T(), dt_t timeLeft_ = dt_t()):
-         location(location_), velocity(velocity_), timeLeft(timeLeft_), cellIndex(std::numeric_limits<size_t>::max())
+        id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), energy(0), weight(0), initialWeight(0), steps(0), on_track(false)
     {};
 
     std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
@@ -87,20 +92,21 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
             continue;
         }
         const T &pointOnFace = pointsOnFaces[i]; // (grid.GetMeshPoint(sides.first) + grid.GetMeshPoint(sides.second)) / 2;
+        
         dt_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
 
         __builtin_prefetch(&Nfaces, 0, 0);
 
         if(i < Nfaces - 1)
         {
-            const Vector3D *nextNormal = &normalsOfCell[i + 1];
+            const T *nextNormal = &normalsOfCell[i + 1];
             __builtin_prefetch(nextNormal, 0, 2);
         }
 
         __builtin_prefetch(&min_alpha, 1, 3);
         __builtin_prefetch(&min_face, 1, 3);
         if(BOOST_UNLIKELY(alpha < min_alpha))
-        { 
+        {
             if(alpha > 0 /* EPSILON */)
             {
                 min_alpha = alpha;
@@ -120,6 +126,11 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
     if(grid.IsPointOutsideBox(this->location))
     {
         UniversalError eo("Particle is outside the domain, but still considered");
+        #ifdef RICH_MPI
+            rank_t rank;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            eo.addEntry("Rank", rank);
+        #endif // RICH_MPI
         eo.addEntry("Particle", *this);
         throw eo;
     }

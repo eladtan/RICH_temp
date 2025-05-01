@@ -2419,8 +2419,10 @@ void Voronoi3D::BuildVoronoi(std::vector<size_t> const &order)
     FaceNeighbors_.shrink_to_fit();
     PointsInFace_.resize(FaceCounter);
     PointsInFace_.shrink_to_fit();
-    for (size_t i = 0; i < Norg_; ++i)
+    for(size_t i = 0; i < Norg_; ++i)
+    {
         FacesInCell_[i].shrink_to_fit();
+    }
 }
 
 inline double Voronoi3D::GetRadius(const size_t &index) const
@@ -3067,6 +3069,34 @@ bool Voronoi3D::BoundaryFace(std::size_t index) const
     else
         return false;
 }
+
+#ifdef RICH_MPI
+bool Voronoi3D::CheckContinuityOfZone(void) const
+{
+    std::vector<bool> reached(this->Norg_, false);
+    reached[0] = true;
+    std::stack<std::size_t> stack;
+    stack.push(0);
+    while(not stack.empty())
+    {
+        size_t cell = stack.top();
+        stack.pop();
+        for(const auto &neighbor : this->GetNeighbors(cell))
+        {
+            if(neighbor >= this->Norg_)
+            {
+                continue; // ghost
+            }
+            if(not reached[neighbor])
+            {
+                reached[neighbor] = true;
+                stack.push(neighbor);
+            }
+        }
+    }
+    return std::all_of(reached.cbegin(), reached.cend(), [](const bool &b){return b;});
+}
+#endif // RICH_MPI
 
 #ifdef RICH_MPI
     vector<vector<std::size_t>> &Voronoi3D::GetDuplicatedPoints(void)

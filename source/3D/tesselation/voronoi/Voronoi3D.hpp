@@ -178,7 +178,7 @@ private:
                                       BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints);
-  #endif // RICH_MPI
+    #endif // RICH_MPI
 
   Delaunay3D del_;
   //vector<vector<std::size_t> > PointTetras_; // The tetras containing each point
@@ -283,6 +283,8 @@ public:
 
   void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
 
+  bool CheckContinuityOfZone(void) const;
+  
   bool PointInMyDomain(const Vector3D &point) const override;
 
   int GetOwner(const Vector3D &point) const override;
