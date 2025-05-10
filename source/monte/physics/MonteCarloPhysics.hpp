@@ -17,7 +17,7 @@ public:
 
     void updateGridData(void);
 
-    virtual void preStep(double fullDt) = 0;
+    virtual std::vector<MCParticle> preStep(double fullDt) = 0;
 
     virtual MonteCarloFunctionality<T, Grid> step(MCParticle &particle) = 0;
 
@@ -52,10 +52,17 @@ void MonteCarloPhysics<T, Grid>::updateGridData(void)
     {
         std::vector<T> &normals = this->gridData.normalsOfCells[i];
         std::vector<T> &onFaces = this->gridData.pointsOnFaces[i];
-        const face_vec &faces = this->grid.GetCellFaces(i);
+        const auto &faces = this->grid.GetCellFaces(i);
         for(const size_t &faceIdx : faces)
         {
-            normals.push_back(this->grid.Normal(faceIdx));
+            T normalTowardsCenterOfCell = this->grid.Normal(faceIdx);
+            if(ScalarProd(normalTowardsCenterOfCell, this->grid.GetMeshPoint(i) - this->grid.FaceCM(faceIdx)) < 0)
+            {
+                // the normal is pointing out of the cell
+                // we need to reverse it
+                normalTowardsCenterOfCell *= -1;
+            }
+            normals.push_back(normalTowardsCenterOfCell);
             onFaces.push_back(this->grid.FaceCM(faceIdx));
         }
     }
@@ -65,17 +72,25 @@ template<typename T, typename Grid>
 inline std::tuple<size_t, dt_t, size_t> MonteCarloPhysics<T, Grid>::getIntersectionDetails(MCParticle &particle)
 {
     size_t cellIndex = particle.cellIndex;
-    const std::vector<Vector3D> &normalsOfFaces = this->gridData.normalsOfCells[cellIndex];
-    const std::vector<Vector3D> &pointsOnFaces = this->gridData.pointsOnFaces[cellIndex];
-    auto [faceIntersect, timeIntersect] = particle.distanceToNearestFace(this->grid, normalsOfFaces, pointsOnFaces);
-    // std::cout << "faceIntersect is " << faceIntersect << " and timeIntersect is " << timeIntersect << std::endl;
-    assert(faceIntersect < this->grid.GetTotalFacesNumber());
-    assert(timeIntersect >= 0);
-    const std::pair<size_t, size_t> &cellNeighbors = this->grid.GetFaceNeighbors(faceIntersect);
-    assert(particle.cellIndex == cellNeighbors.first or particle.cellIndex == cellNeighbors.second);
-    size_t nextCellIndex = (cellNeighbors.first == particle.cellIndex)? cellNeighbors.second : cellNeighbors.first;
-    // std::cout << "nextCellIndex is " << nextCellIndex << std::endl;
-    return std::make_tuple(faceIntersect, timeIntersect, nextCellIndex);
+    const std::vector<T> &normalsOfFaces = this->gridData.normalsOfCells[cellIndex];
+    const std::vector<T> &pointsOnFaces = this->gridData.pointsOnFaces[cellIndex];
+    try
+    {
+        auto [faceIntersect, timeIntersect] = particle.distanceToNearestFace(this->grid, normalsOfFaces, pointsOnFaces);
+        // std::cout << "faceIntersect is " << faceIntersect << " and timeIntersect is " << timeIntersect << std::endl;
+        assert(faceIntersect < this->grid.GetTotalFacesNumber());
+        assert(timeIntersect >= 0);
+        const std::pair<size_t, size_t> &cellNeighbors = this->grid.GetFaceNeighbors(faceIntersect);
+        assert(particle.cellIndex == cellNeighbors.first or particle.cellIndex == cellNeighbors.second);
+        size_t nextCellIndex = (cellNeighbors.first == particle.cellIndex)? cellNeighbors.second : cellNeighbors.first;
+        // std::cout << "nextCellIndex is " << nextCellIndex << std::endl;
+        return std::make_tuple(faceIntersect, timeIntersect, nextCellIndex);
+    }
+    catch(const UniversalError &eo)
+    {
+        reportError(eo);
+        exit(1);
+    }
 }
 
 #endif // MONTE_CARLO_PHYSICS_HPP

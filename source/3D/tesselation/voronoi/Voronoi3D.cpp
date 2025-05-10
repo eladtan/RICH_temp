@@ -610,13 +610,15 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                                 sentprocs_(vector<int>()), sentpoints_(vector<vector<std::size_t>>()),  duplicatedprocs_(vector<int>()), 
                                                                 duplicated_points_(vector<vector<std::size_t>>()), Nghost_(vector<vector<std::size_t>>()), self_index_(vector<std::size_t>()), 
                                                               #endif // RICH_MPI
-                                                              temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face> ()),
+                                                              temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face>()),
                                                               #ifdef RICH_MPI
                                                                 pointsManager(std::shared_ptr<PointsManager>()),
                                                                 allMyPoints(), 
                                                               #endif // RICH_MPI
                                                               indicesInAllMyPoints()
-{}
+{
+    this->box_faces_ = BuildBox(this->ll_, this->ur_);
+}
 
 Voronoi3D::Voronoi3D() : Voronoi3D(Vector3D(), Vector3D())
 {}
@@ -1908,11 +1910,14 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
         
-        
+        #ifdef RICH_MPI        
         size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
         size_t new_points = new_points_until_now - total_new_points;
         total_new_points = new_points_until_now;
         MPI_Allreduce(MPI_IN_PLACE, &new_points, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+        #else // RICH_MPI
+        size_t new_points = newPoints.size();
+        #endif // RICH_MPI
 
         if(rank == 0) std::cout << "added new points: " << new_points << std::endl;
 
@@ -3361,6 +3366,7 @@ void Voronoi3D::SetBox(const Vector3D &ll, const Vector3D &ur)
 {
     this->ll_ = ll;
     this->ur_ = ur;
+    this->box_faces_ = BuildBox(this->ll_, this->ur_);
     #ifdef RICH_MPI
         this->pointsManager = std::shared_ptr<PointsManager>();
         // this->radiuses.clear();

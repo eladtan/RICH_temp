@@ -8,6 +8,7 @@
     #include "mpi/mpi_commands.hpp"
     #include "misc/serializable.hpp"
 #endif // RICH_MPI
+#include "misc/universal_error.hpp"
 
 #define EPSILON 1e-12
 
@@ -87,7 +88,7 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
         // const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
         
         double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
-        if(BOOST_UNLIKELY(abs(normalVelocityScalarProd) < velocityAbs)) // zero
+        if(BOOST_UNLIKELY(normalVelocityScalarProd >= -velocityAbs)) // positive
         {
             continue;
         }
@@ -151,9 +152,11 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
     }
 
     UniversalError eo("MonteCarloParticle::distanceToNearestFace: no face intersection found");
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    eo.addEntry("Rank", rank);
+    #ifdef RICH_MPI
+        rank_t rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        eo.addEntry("Rank", rank);
+    #endif // RICH_MPI
     eo.addEntry("Particle", *this);
     eo.addEntry("Cell Index", this->cellIndex);
     eo.addEntry("Cell Point", grid.GetMeshPoint(this->cellIndex));

@@ -31,7 +31,9 @@ class Tessellation3D
 {
 public:
   using AllPointsMap = boost::container::flat_map<size_t, size_t>;
-
+  using Face_T = Face;
+  using Point_T = Vector3D;
+  
   virtual void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) = 0;
 
   /*! \brief Builds the tessellation
@@ -152,7 +154,7 @@ public:
   /*! \brief Get all cell faces
     \return List of all cell faces
    */
-  virtual vector<face_vec >const& GetAllCellFaces(void)const = 0;
+  virtual vector<face_vec> const &GetAllCellFaces(void) const = 0;
 
   /*!
     \brief Returns a reference to the point vector
@@ -426,11 +428,18 @@ public:
 \return The box faces
 */
   virtual std::vector<Face>& ModifyBoxFaces(void) = 0;
-/*!
-\brief Access method to box faces
-\return The box faces
-*/
-  virtual std::vector<Face> GetBoxFaces(void) const = 0;
+
+  /*!
+  \brief Access method to box faces
+  \return The box faces
+  */
+  virtual const std::vector<Face> &GetBoxFaces(void) const = 0;
+
+  /*!
+  \brief Access method to box faces
+  \return The box faces
+  */
+  virtual std::vector<Face> GetBoxFaces(void) = 0;
 
   /**
    * Suppose `partialBuildData` contains correct local data for partial build, and that `allBuildData` have correct values for all the points (non active local).

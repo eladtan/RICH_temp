@@ -1008,7 +1008,7 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
     b4_temp_[i] = points_[tetras_[tetras_.size() - 1].points[i]];
   assert(orient3d(b4_temp_) <= 0);
   for (std::size_t i = 0; i < 4; ++i)
-    b4_temp_[i] = points_[tetras_[tetras_.size()-2].points[i]];
+    b4_temp_[i] = points_[tetras_[tetras_.size() - 2].points[i]];
   assert(orient3d(b4_temp_) <= 0);
   for (std::size_t i = 0; i < 4; ++i)
     b4_temp_[i] = points_[tetras_[tetras_.size() - 3].points[i]];

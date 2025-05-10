@@ -1,0 +1,53 @@
+#include "GlobalCounter.hpp"
+
+#ifdef RICH_MPI
+
+GlobalCounter::GlobalCounter(const MPI_Comm &comm, int globalInitialValue)
+{
+    this->comm = comm;
+    MPI_Comm_rank(comm, &this->rank);
+    MPI_Comm_size(comm, &this->size);
+
+    this->master_rank = 0;
+    bool master = (this->rank == this->master_rank);
+    MPI_Info info;
+    MPI_Info_create(&info);
+    MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
+    MPI_Info_set(info, "accumulate_ops", "same_op");
+    MPI_Info_set(info, "same_disp_unit", "true");
+    MPI_Win_allocate((master)? sizeof(size_t) : 0, sizeof(size_t), info, comm, &this->counter, &this->counter_win);
+    MPI_Win_set_errhandler(this->counter_win, MPI_ERRORS_RETURN);
+    MPI_Info_free(&info);
+
+    int *model, flag;
+    MPI_Win_get_attr(this->counter_win, MPI_WIN_MODEL, &model, &flag);
+    if(*model == MPI_WIN_SEPARATE)
+    {
+        std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
+        exit(1);
+    }
+
+    if(this->rank == this->master_rank)
+    {
+        *this->counter = globalInitialValue;
+    }
+    MPI_Barrier(comm);
+}
+
+GlobalCounter::~GlobalCounter()
+{
+    MPI_Win_free(&this->counter_win);
+    MPI_Barrier(this->comm);
+}
+
+int GlobalCounter::Increment(int n)
+{
+    int result;
+    MPI_Win_lock(MPI_LOCK_SHARED, this->master_rank, MPI_MODE_NOCHECK, this->counter_win);
+    int retval = MPI_Fetch_and_op(&n, &result, MPI_INT, this->master_rank, 0, MPI_SUM, this->counter_win);
+    assert(retval == MPI_SUCCESS);
+    MPI_Win_unlock(this->master_rank, this->counter_win);
+    return result;
+}
+
+#endif // RICH_MPI

@@ -1,5 +1,7 @@
 #include "SmartCollectives.hpp"
 
+#ifdef RICH_MPI
+
 #define MAX_STACKTRACE 64
 
 std::vector<std::string> getStack(void)
@@ -62,3 +64,5 @@ int RMPI_Allreduce(const void *sendbuf, void *recvbuf, int count, MPI_Datatype d
     EnsureSameStack(comm);
     return MPI_Allreduce(sendbuf, recvbuf, count, datatype, op, comm);
 }
+
+#endif // RICH_MPI

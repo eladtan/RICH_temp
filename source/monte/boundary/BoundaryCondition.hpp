@@ -1,9 +1,10 @@
 #ifndef BOUNDARY_CONDITION_HPP
 #define BOUNDARY_CONDITION_HPP
 
+#include "monte/MonteCarloParticle.hpp"
 #include "monte/MonteCarloParticleStatus.hpp"
 
-template<typename Grid>
+template<typename T, typename Grid>
 class BoundaryCondition
 {
 public:
@@ -11,11 +12,14 @@ public:
 
     virtual ~BoundaryCondition() = default;
 
-    virtual MonteCarloParticleStatus reachedBoundary(MonteCarloParticle<Grid> &particle) = 0;
+    virtual MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) = 0;
+
+protected:
+    const Grid &grid;
 };
 
-template<typename Grid>
-BoundaryCondition<Grid>::BoundaryCondition(const Grid &grid)
+template<typename T, typename Grid>
+BoundaryCondition<T, Grid>::BoundaryCondition(const Grid &grid)
     : grid(grid)
 {}
 

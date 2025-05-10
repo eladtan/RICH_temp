@@ -85,6 +85,10 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
+public:
+  using Face_T = Face;
+  using Point_T = Vector3D;
+
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -243,28 +247,28 @@ public:
   #endif // RICH_MPI
 
   #ifdef RICH_MPI
-    vector<int>& GetSentProcs(void) override;
+    vector<int> &GetSentProcs(void) override;
 
-    vector<vector<size_t> >& GetSentPoints(void) override;
+    vector<vector<size_t>> &GetSentPoints(void) override;
 
-    vector<size_t>& GetSelfIndex(void) override;
+    vector<size_t> &GetSelfIndex(void) override;
   #endif // RICH_MPI
 
-  vector<Vector3D>& GetAllFaceCM(void) override;
+  vector<Vector3D> &GetAllFaceCM(void) override;
 
   /*! \brief Calculates the centre of mass of a face
     \param index Face index
     \return Face centre of mass
    */
-  const Vector3D &FaceCM(std::size_t index)const override;
+  const Vector3D &FaceCM(std::size_t index) const override;
 
   /*! \brief class constructor
     \param ll Lower left
     \param ur Upper right
    */
-  Voronoi3D(Vector3D const& ll, Vector3D const& ur);
+  Voronoi3D(const Vector3D &ll, const Vector3D &ur);
 
-  Voronoi3D(std::vector<Face> const& box_faces);
+  Voronoi3D(const std::vector<Face> &box_faces);
 
   void output(std::string const& filename)const override;
 
@@ -520,9 +524,11 @@ public:
   */
   void SetBox(Vector3D const& ll, Vector3D const& ur) override;
 
-  std::vector<Face> GetBoxFaces(void) const {return box_faces_;}
+  const std::vector<Face> &GetBoxFaces(void) const override {return this->box_faces_;}
 
-  std::vector<Face>& ModifyBoxFaces(void) {return box_faces_;}
+  std::vector<Face> GetBoxFaces(void) override {return this->box_faces_;}
+
+  std::vector<Face>& ModifyBoxFaces(void) override {return this->box_faces_;}
 };
 
 /**

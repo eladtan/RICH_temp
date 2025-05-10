@@ -163,6 +163,11 @@ public:
 		return *this;
 	}
 
+	inline Vector3D& operator/=(double s)
+	{
+		return this->operator*=(1.0/s);
+	}
+
 	/*! \brief Compare 3D-Vectors (up to an arbitrary precision)
 	\param v Vector to be compared to
 	\return True/False - according to the comparison results.
