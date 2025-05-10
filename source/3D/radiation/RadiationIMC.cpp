@@ -4,20 +4,18 @@
 #define SCATTERING 1
 #define TIMELEFT 2
 
-template<typename Opacity>
-RadiationIMC<Opacity>::RadiationIMC(Tessellation3D &grid, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const Opacity &opacity, size_t newPhotonsPerCell):
+RadiationIMC::RadiationIMC(Tessellation3D &grid, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell):
     MonteCarloPhysics(grid), cells(cells), conserved(conserved), eos(eos), opacity(opacity), newPhotonsPerCell(newPhotonsPerCell)
 {
-    this->dist = std::uniform_real_distribution<double>(0, 1);
-    int rank;
-    #ifndef RICH_MPI
+    this->dist = std::uniform_real_distribution<double>(std::numeric_limits<double>::epsilon(), 1 - std::numeric_limits<double>::epsilon());
+    int rank = 0;
+    #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif // RICH_MPI
     this->re = std::mt19937_64(rank);
 }
 
-template<typename Opacity>
-typename RadiationIMC<Opacity>::Functionality RadiationIMC<Opacity>::step(Particle &particle)
+typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
 {
     Functionality functionality;
 
@@ -28,19 +26,22 @@ typename RadiationIMC<Opacity>::Functionality RadiationIMC<Opacity>::step(Partic
     assert(timeIntersect >= 0);
 
     double scatteringLength = 1.0 / (opacity.getScatteringOpacity(cell) + (1 - this->factorFleck[cellIndex]) * this->planckOpacities[cellIndex]);
-    distance_t scatteringDistance = (-1 * scatteringLength) * std::log1p((this->dist(this->re) - 1)); 
+    distance_t scatteringDistance = (-1 * scatteringLength) * std::log1p(this->dist(this->re)); 
     dt_t timeScattering = scatteringDistance / abs(particle.velocity);
 
     dt_t timeLeft = particle.timeLeft;
-    
-    std::array<std::pair<size_t, double>, 3> times = {{INTERSECTION, timeIntersect}, {SCATTERING, timeScattering}, {TIMELEFT, timeLeft}};
-    std::pair<size_t, double> min = *std::min_element(times.begin(), times.end(), [](const std::pair<size_t, double> &a, const std::pair<size_t, double> &b) { return a.second < b.second; });
+    std::array<std::pair<size_t, dt_t>, 3> times;
+    times[0] = {INTERSECTION, timeIntersect};
+    times[1] = {SCATTERING, timeScattering};
+    times[2] = {TIMELEFT, timeLeft};
+
+    std::pair<size_t, double> min = *std::min_element(times.begin(), times.end(), [](const std::pair<size_t, dt_t> &a, const std::pair<size_t, dt_t> &b) { return a.second < b.second; });
     dt_t dt = min.second;
     particle.timeLeft -= dt;
-    double expFactor = std::exp(-dt * this->planckOpacities[cellIndex] * this->factorFleck[cellIndex] * units::clight);
+    double expFactor = std::expm1(-dt * this->planckOpacities[cellIndex] * this->factorFleck[cellIndex] * units::clight);
     particle.location += particle.velocity * dt;
-    this->conserved[cellIndex].internal_energy += (1 - expFactor) * particle.weight;
-    particle.weight *= std::exp(expFactor);
+    this->conserved[cellIndex].internal_energy += -expFactor * particle.weight;
+    particle.weight *= 1 - expFactor;
 
     if(particle.weight < particle.initialWeight * 1e-2)
     {
@@ -56,17 +57,22 @@ typename RadiationIMC<Opacity>::Functionality RadiationIMC<Opacity>::step(Partic
     }
     else if(min.first == SCATTERING)
     {
-        particle.velocity = opacity.getNewVelocity(cell, particle);
+        particle.velocity = opacity.getNewScatterVelocity(cell, particle);
     }
     else if(min.first == TIMELEFT)
     {
         functionality.change = MonteCarloParticleStatus::DONE;
     }
+    else
+    {
+        UniversalError eo("Unknown case in RadiationIMC::step");
+        eo.addEntry("Particle", particle);
+        throw eo;
+    }
     return functionality;
 }
 
-template<typename Opacity>
-void RadiationIMC<Opacity>::postStep(const std::vector<MCParticle> &particles)
+void RadiationIMC::postStep(const std::vector<MCParticle> &particles)
 {
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
@@ -77,8 +83,7 @@ void RadiationIMC<Opacity>::postStep(const std::vector<MCParticle> &particles)
     }
 }
 
-template<typename Opacity>
-std::vector<typename RadiationIMC<Opacity>::MCParticle> RadiationIMC<Opacity>::generateParticles(double fullDt)
+std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(double fullDt)
 {
     std::vector<MCParticle> newParticles;
     size_t Ncells = this->grid.GetPointNo();
@@ -103,8 +108,7 @@ std::vector<typename RadiationIMC<Opacity>::MCParticle> RadiationIMC<Opacity>::g
     return newParticles;
 }
 
-template<typename Opacity>
-void RadiationIMC<Opacity>::preStep(double fullDt)
+std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt)
 {
     size_t Ncells = this->grid.GetPointNo();
     this->factorFleck = std::vector<double>(Ncells);
@@ -115,8 +119,9 @@ void RadiationIMC<Opacity>::preStep(double fullDt)
         this->planckOpacities[i] = this->opacity.getPlanckOpacity(this->cells[i]);
         
         double cv = this->eos.dT2cv(this->cells[i].density, this->cells[i].temperature, this->cells[i].tracers, this->cells[i].tracerNames);
-        this->factorFleck[i] = 1 / (1 + (4 * units::arad * boost::math::pow<3>(this->cell[i].temperature) * this->planckOpacities[i] * units::clight * fullDt) / cv);
+        this->factorFleck[i] = 1 / (1 + (4 * units::arad * boost::math::pow<3>(this->cells[i].temperature) * this->planckOpacities[i] * units::clight * fullDt) / cv);
     }    
 
-    std::vector<MCParticle> newParticles = this->generateParticles();
+    std::vector<MCParticle> newParticles = this->generateParticles(fullDt);
+    return newParticles;
 }

@@ -12,9 +12,9 @@ public:
 
     NoMonteCarloPhysics(Grid &grid);
 
-    void preStep(double fullDt) override;
+    std::vector<MCParticle> preStep(double fullDt) override;
 
-    MonteCarloFunctionality<T, Grid> step(MCParticle &particle) override;
+    Functionality step(MCParticle &particle) override;
 
     void postStep(const std::vector<MCParticle> &particles) override;
 };
@@ -28,8 +28,6 @@ template<typename T, typename Grid>
 typename NoMonteCarloPhysics<T, Grid>::Functionality NoMonteCarloPhysics<T, Grid>::step(MCParticle &particle)
 {
     Functionality functionality;
-
-    size_t cellIndex = particle.cellIndex;
 
     auto [faceIntersect, timeIntersect, nextCellIndex] = this->getIntersectionDetails(particle);
     assert(timeIntersect > 0);
@@ -56,8 +54,10 @@ typename NoMonteCarloPhysics<T, Grid>::Functionality NoMonteCarloPhysics<T, Grid
 }
 
 template<typename T, typename Grid>
-void NoMonteCarloPhysics<T, Grid>::preStep(double fullDt)
-{}
+std::vector<MonteCarloParticle<T, Grid>> NoMonteCarloPhysics<T, Grid>::preStep(double fullDt)
+{
+    return std::vector<MonteCarloParticle<T, Grid>>();
+}
 
 template<typename T, typename Grid>
 void NoMonteCarloPhysics<T, Grid>::postStep(const std::vector<MCParticle> &particles)
