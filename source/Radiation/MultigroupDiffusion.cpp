@@ -754,7 +754,8 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
         }
  
         if(doppler_on_){
-            double const coeff = -div_V * dt_cgs / 3;
+            // double const coeff = -div_V * dt_cgs / 3;
+            double const coeff = -div_V * dt_cgs;
             for(std::size_t g=1; g<ENERGY_GROUPS_NUM; ++g){
                 if(div_V < 0){
                     double const slope_left = GetDopplerSlope(cells_cgs[i], g - 1, false);
@@ -776,8 +777,11 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
                     std::size_t const g_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + gm].begin());
 
                     double coeff_left = 1 / energy_groups_width[gm] - 0.5 * slope_left  / energy_groups_width[gm];
+                    coeff_left *= cell_flux_limiter[i][gm];
                     coeff_left *= coeff * energy_groups_boundary[g];
+                    
                     double coeff_right = 0.5 * slope_left  / energy_groups_width[g];
+                    coeff_right *= cell_flux_limiter[i][g];
                     coeff_right *= coeff * energy_groups_boundary[g];
 
                     A[i * ENERGY_GROUPS_NUM + gm][0] += coeff_left;
@@ -788,7 +792,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
                 }
                 else
                 {
-                    double const slope_right = GetDopplerSlope(cells_cgs[i], g, true);;
+                    double const slope_right = GetDopplerSlope(cells_cgs[i], g, true);
                     size_t const gm = g - 1;
                     auto it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + gm].begin(), A_indeces[i * ENERGY_GROUPS_NUM + gm].end(), i * ENERGY_GROUPS_NUM + g);
                     if(it == A_indeces[i * ENERGY_GROUPS_NUM + gm].end()){
@@ -803,8 +807,10 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
                         coeff_right += 0.5 * slope_right  / energy_groups_width[g + 1];
                         coeff_right_right = -0.5 * slope_right * energy_groups_width[g] / (energy_groups_width[g + 1] * energy_groups_width[g + 1]);
                     }
-                    coeff_right *= coeff * energy_groups_boundary[g];
+                    coeff_right *= coeff * cell_flux_limiter[i][g] * energy_groups_boundary[g];
                     coeff_right_right *= coeff * energy_groups_boundary[g];
+
+                    coeff_right_right *= (g + 1) < ENERGY_GROUPS_NUM ? cell_flux_limiter[i][g+1] : cell_flux_limiter[i][g]; 
 
                     A[i * ENERGY_GROUPS_NUM + g][0] -= coeff_right;
                     A[i * ENERGY_GROUPS_NUM + gm][g_index] += coeff_right;
