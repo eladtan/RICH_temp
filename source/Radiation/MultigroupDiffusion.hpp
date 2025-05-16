@@ -88,11 +88,6 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
                 std::vector<double>const& CG_result, 
                 std::vector<double> const&  full_CG_result) const override;
 
-    void solve_doppler_shift(Tessellation3D const& tess,
-                             std::vector<ComputationalCell3D>& cells,
-                             double const dt, std::vector<Conserved3D>& extensives) const;
-                             
-
     MultigroupDiffusionCoefficientCalculator const& coefficient_calculator;
     MultigroupDiffusionBoundaryCalculator const& boundary_calculator;
     
@@ -170,15 +165,6 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
 private:
     bool const protections_on_;
     mutable bool  displayed_warning_;
-    void BuildMatrixGroup(std::size_t group,
-                          Tessellation3D const& tess, 
-                          mat& A, 
-                          size_t_mat& A_indeces, 
-                          std::vector<ComputationalCell3D> const& cells, 
-                          double const dt, 
-                          std::vector<double>& b, 
-                          std::vector<double>& x0, 
-                          double const current_time) const;
 
     void BuildMatrixGroupFull(Tessellation3D const& tess, 
                           mat& A, 
@@ -188,30 +174,6 @@ private:
                           std::vector<double>& b, 
                           std::vector<double>& x0, 
                           double const current_time) const;
-
-    void BuildMatrixGray(Tessellation3D const& tess, 
-                         mat& A, 
-                         size_t_mat& A_indeces, 
-                         std::vector<ComputationalCell3D> const& cells, 
-                         double const dt, 
-                         std::vector<double>& b, 
-                         std::vector<double>& x0, 
-                         double const current_time) const; 
-
-    void PostCGGroup(std::size_t const group,
-                     Tessellation3D const& tess, 
-                     std::vector<Conserved3D>& extensives, 
-                     double const dt, 
-                     std::vector<ComputationalCell3D>& cells,
-                     std::vector<double>const& CG_result, 
-                     std::vector<double> const&  full_CG_result) const;
-    
-    void PostCGGray(Tessellation3D const& tess, 
-                     std::vector<Conserved3D>& extensives, 
-                     double const dt, 
-                     std::vector<ComputationalCell3D>& cells,
-                     std::vector<double>const& CG_result, 
-                     std::vector<double> const&  full_CG_result) const;
 
     void PostCGFull(Tessellation3D const& tess, 
                      std::vector<Conserved3D>& extensives, 
@@ -232,12 +194,6 @@ private:
 
     // helper functions
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
-
-    void calculate_lambda_g_and_R2_g(std::size_t const group,
-                            Tessellation3D const& tess,
-                            std::vector<ComputationalCell3D> const& cells,
-                            std::vector<double>& lambda_g,
-                            std::vector<double>& R2_g) const; 
 
     void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs) const;
 
