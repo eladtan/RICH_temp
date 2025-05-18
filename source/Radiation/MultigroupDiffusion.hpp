@@ -156,22 +156,6 @@ private:
     bool const protections_on_;
     mutable bool  displayed_warning_;
 
-    void BuildMatrixGroupFull(Tessellation3D const& tess, 
-                          mat& A, 
-                          size_t_mat& A_indeces, 
-                          std::vector<ComputationalCell3D> const& cells, 
-                          double const dt, 
-                          std::vector<double>& b, 
-                          std::vector<double>& x0, 
-                          double const current_time) const;
-
-    void PostCGFull(Tessellation3D const& tess, 
-                     std::vector<Conserved3D>& extensives, 
-                     double const dt, 
-                     std::vector<ComputationalCell3D>& cells,
-                     std::vector<double>const& CG_result, 
-                     std::vector<double> const&  full_CG_result) const;
-
     void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                 std::vector<ComputationalCell3D> const& cells,
                                                                 double const dt) const;

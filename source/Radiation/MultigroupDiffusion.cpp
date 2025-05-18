@@ -356,19 +356,6 @@ bool MultigroupDiffusion::step(double const tolerance,
     return true;
 }
 
-
-
-void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess, 
-                                      mat& A, 
-                                      size_t_mat& A_indeces, 
-                                      std::vector<ComputationalCell3D> const& cells, 
-                                      double const dt, 
-                                      std::vector<double>& b, 
-                                      std::vector<double>& x0, 
-                                      double const current_time) const {
-    BuildMatrixGroupFull(tess, A, A_indeces, cells, dt, b, x0, current_time);
-}
-
 double  MultigroupDiffusion::GetDopplerSlope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
 {
     if(g == 0 or (g + 1) == ENERGY_GROUPS_NUM)
@@ -389,7 +376,7 @@ double  MultigroupDiffusion::GetDopplerSlope(ComputationalCell3D const& cell, si
     return slope;
 }
 
-void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess, 
+void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess, 
                                            mat& A, 
                                            size_t_mat& A_indeces, 
                                            std::vector<ComputationalCell3D> const& cells, 
@@ -776,7 +763,7 @@ void MultigroupDiffusion::BuildMatrixGroupFull(Tessellation3D const& tess,
         }
     }
 }
-void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess, 
+void MultigroupDiffusion::PostCG(Tessellation3D const& tess, 
                                      std::vector<Conserved3D>& extensives, 
                                      double const dt, 
                                      std::vector<ComputationalCell3D>& cells,
@@ -1054,23 +1041,6 @@ void MultigroupDiffusion::PostCGFull(Tessellation3D const& tess,
         std::cout << std::setprecision(16) << "|Einit-Efinal|/Einit = " << std::abs(Einit - Efinal) / Einit << std::endl;
     }
 // #endif
-}
-
-
-void MultigroupDiffusion::PostCG(Tessellation3D const& tess, 
-                                 std::vector<Conserved3D>& extensives, 
-                                 double const dt, 
-                                 std::vector<ComputationalCell3D>& cells,
-                                 std::vector<double> const& CG_result, 
-                                 std::vector<double> const&  full_CG_result) const {
-    PostCGFull(
-        tess,
-        extensives,
-        dt,
-        cells,
-        CG_result,
-        full_CG_result
-    );
 }
 
 void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const
