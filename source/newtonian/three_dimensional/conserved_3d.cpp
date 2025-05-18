@@ -217,3 +217,15 @@ Conserved3D& Conserved3D::operator*=(double s)
 		this->Eg[j] *= s;
 	return *this;
 }
+
+std::ostream& operator<<(std::ostream &stream, const Conserved3D &cell)
+{
+	stream << "(mass=" << cell.mass<<" energy="<<cell.energy<<" internal energy="<<cell.internal_energy<<" momentum="<<cell.momentum
+		<<" Erad="<<cell.Erad;
+	for(size_t i = 0; i < ENERGY_GROUPS_NUM; ++i)
+		stream<<" Eg["<<i<<"]="<<cell.Eg[i];
+	for(size_t i = 0; i < ComputationalCell3D::tracerNames.size(); ++i)
+		stream<<" "<<ComputationalCell3D::tracerNames[i]<<"="<<cell.tracers[i];
+	stream<< ")";
+	return stream;
+}

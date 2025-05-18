@@ -92,6 +92,8 @@ public:
 
 		size_t load(const Serializer *serializer, std::size_t byteOffset) override;
 	#endif // RICH_MPI
+
+	friend std::ostream &operator<<(std::ostream &stream, const Conserved3D &cell);
 };
 
 /*! \brief Scalar product operator
