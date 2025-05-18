@@ -916,6 +916,6 @@ double fastsqrt(double x);
  * @throws UniversalError If the size of x_vec or y_vec is less than or equal to slope_length.
  */
 double Interpolate2DTable(double const x, double const y, std::vector<double> const& x_vec, std::vector<double> const& y_vec, std::vector<std::vector<double>> const& data,
-        double const x_vec_high_slope = 0, size_t const slope_length = 5);
+        double const x_vec_high_slope = 0, size_t const slope_length = 7);
 
 #endif // UTILS_HPP
