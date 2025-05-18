@@ -81,32 +81,42 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 		if (close2zero(last_time_ - time))
 			dt_first_ = -1;
 	}
+	int rank = 0;
 #ifdef RICH_MPI
 	double new_res = 0;
 	MPI_Allreduce(&res, &new_res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 	res = new_res;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 	last_time_ = time;
-	if (debug_)
+	if (debug_ || res<1e-7)
 	{
 		if (1.0000001 * res > old_res && (dt_first_ < 0 || old_res < 0.99999 * dt_first_))
 		{
-			Vector3D const& v = cells[loc].velocity;
-			double c = eos.dp2c(cells[loc].density, cells[loc].pressure, cells[loc].tracers, ComputationalCell3D::tracerNames);
-			std::cout << "Min dt="<<res<<", cell ID " << cells[loc].ID << " width " << tess.GetWidth(loc) << " c "
-				<< c << " cell v " << cells[loc].velocity.x << "," << cells[loc].velocity.y << "," << cells[loc].velocity.z <<" dt_org "<<old_res<<" dt_force "<<1.0 / source_.SuggestInverseTimeStep()<<" dt_rad "<<dt_first_<<" density "<<cells[loc].density<<std::endl;
-			face_vec const& faces = tess.GetCellFaces(loc);
-			size_t Nloop = faces.size();
-			for (size_t j = 0; j < Nloop; ++j)
+			if(((1.0 / source_.SuggestInverseTimeStep()) != res) || (rank == 0))
 			{
-				std::cout << " face_vel " << fastabs(v - face_velocities[faces[j]]) << " ";
-				Vector3D p1 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).first);
-				Vector3D p2 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).second);
-				std::cout<<"p1="<<p1.x<<","<<p1.y<<","<<p1.z<<" p2="<<p2.x<<","<<p2.y<<","<<p2.z<<std::endl;
-				p1 = cells[tess.GetFaceNeighbors(faces[j]).first].velocity;
-				p2 = cells[tess.GetFaceNeighbors(faces[j]).second].velocity;
-				std::cout<<"v1="<<p1.x<<","<<p1.y<<","<<p1.z<<" v2="<<p2.x<<","<<p2.y<<","<<p2.z<<
-				" A "<<tess.GetArea(faces[j])<<std::endl;
+				Vector3D const& v = cells[loc].velocity;
+				double c = eos.dp2c(cells[loc].density, cells[loc].pressure, cells[loc].tracers, ComputationalCell3D::tracerNames);
+				std::cout << "Min dt="<<res<<", cell ID " << cells[loc].ID << " width " << tess.GetWidth(loc) << " c "
+					<< c << " cell v " << cells[loc].velocity.x << "," << cells[loc].velocity.y << "," << cells[loc].velocity.z <<" dt_org "<<old_res<<" dt_force "<<1.0 / source_.SuggestInverseTimeStep()<<" dt_rad "<<dt_first_<<" density "<<cells[loc].density<<std::endl;
+				std::cout<<"Location "<<tess.GetMeshPoint(loc)<<" CM "<<tess.GetCellCM(loc)<<std::endl;
+				face_vec const& faces = tess.GetCellFaces(loc);
+				size_t Nloop = faces.size();
+				double max_face_area = 0;
+				for (size_t j = 0; j < Nloop; ++j)
+				{
+					max_face_area = std::max(max_face_area, tess.GetArea(faces[j]));
+					std::cout << " face_vel " << fastabs(v - face_velocities[faces[j]]) << " ";
+					Vector3D p1 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).first);
+					Vector3D p2 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).second);
+					std::cout<<"p1="<<p1.x<<","<<p1.y<<","<<p1.z<<" p2="<<p2.x<<","<<p2.y<<","<<p2.z<<std::endl;
+					p1 = cells[tess.GetFaceNeighbors(faces[j]).first].velocity;
+					p2 = cells[tess.GetFaceNeighbors(faces[j]).second].velocity;
+					std::cout<<"v1="<<p1.x<<","<<p1.y<<","<<p1.z<<" v2="<<p2.x<<","<<p2.y<<","<<p2.z<<
+					" A "<<tess.GetArea(faces[j])<<std::endl;
+				}
+				double cell_effective_radius = std::min(tess.GetWidth(loc), tess.GetVolume(loc) / max_face_area);
+				std::cout<<"cell_effective_radius "<<cell_effective_radius<<std::endl;
 			}
 		}
 	}
