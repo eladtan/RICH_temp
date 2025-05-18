@@ -813,6 +813,10 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 	double new_dt = matrix_builder.calculate_dt(dt, tess_, cells_);
 
 	matrix_builder.poststep();
+
+#ifdef RICH_MPI
+	MPI_exchange_data(tess_, cells_, true);
+#endif
 	
 	
 	if(no_hydro)
