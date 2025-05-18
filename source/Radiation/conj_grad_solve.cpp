@@ -419,7 +419,7 @@ namespace CG
     
     std::vector<double> BiCGSTAB(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
-        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution)  //total_iters is to store # of iters in it
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution, bool &good_end)  //total_iters is to store # of iters in it
     {
         size_t slice = 1;
 #ifdef ENERGY_GROUPS_NUM
@@ -475,7 +475,6 @@ namespace CG
         double const delta_init = sub_r_sqrd;
         double const scale_b = mpi_dot_product(vector_rescale(b, M), b);
         double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
-        bool good_end = false;
         struct
         {
             double val;
@@ -650,7 +649,7 @@ namespace CG
                 std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
                 <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
             if(rank == max_data[2].mpi_id)
-                std::cout<<"rank "<<rank<<" i "<<max_loc2 * slice<<" sub_x "<<sub_x[max_loc2 * slice]<<std::endl;
+                std::cout<<"rank "<<rank<<" i "<<max_loc2 <<" sub_x "<<sub_x[max_loc2]<<std::endl;
             std::fill_n(sub_x.begin(), sub_x.size(), -1.0);
             // throw UniversalError("CG did not converge");
         }

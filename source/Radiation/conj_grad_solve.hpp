@@ -95,12 +95,14 @@ namespace CG
  * @param matrix_builder A reference to an object that implements the MatrixBuilder interface, used to build the A matrix and b vector.
  * @param time The current time of the simulation.
  * @param sub_x_solution Reference to a vector that will store the solution x.
+ * @param good_end Reference to a boolean that will be set to true if the method successfully converged to the desired tolerance.
  * 
  * @return A vector containing the solution x.
  */
     std::vector<double> BiCGSTAB(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
-        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution);
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution,
+        bool &good_end);
 
     double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
 
