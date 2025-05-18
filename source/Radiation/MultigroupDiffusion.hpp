@@ -116,9 +116,6 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
 
     mutable std::vector<std::vector<double>> old_Eg;
 
-    mutable std::vector<double> new_Er;
-    mutable std::vector<double> new_Er_full; 
-
     mutable std::vector<double> old_Er;
     mutable std::vector<double> old_Tm; 
 
@@ -127,14 +124,7 @@ MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
 
     mutable std::vector<Vector3D> grad; // gradient ij for i < j
     
-    mutable std::vector<std::pair<double, double>> lambda_face_gray;
-    mutable std::vector<std::pair<double, double>> sigma_ratio_lambda_face_gray;
-    mutable std::vector<double> lambda_cell_gray;
-    mutable std::vector<double> sigma_ratio_lambda_cell_gray;
-
-
     bool const doppler_on_;
-    bool const mix_frame_on_;
     double const minimum_temperature_;
     // for doppler step
     mutable std::vector<std::vector<double>> R2;

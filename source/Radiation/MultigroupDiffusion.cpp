@@ -72,22 +72,13 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 new_Eg(),
                                                                 new_Eg_full(),
                                                                 old_Eg(ENERGY_GROUPS_NUM, std::vector<double>()),
-                                                                new_Er(),
-                                                                new_Er_full(),
                                                                 old_Er(),
                                                                 old_Tm(),
                                                                 max_abs_grad_E(),
                                                                 max_neighbor_abs_grad_E(),
                                                                 grad(),
-                                                                lambda_face_gray(),
-                                                                sigma_ratio_lambda_face_gray(),
-                                                                lambda_cell_gray(),
-                                                                sigma_ratio_lambda_cell_gray(),
                                                                 doppler_on_(doppler_on),
-                                                                mix_frame_on_(mix_frame_on),
                                                                 minimum_temperature_(minimum_temperature),
-                                                                R2(3, std::vector<double>()),
-                                                                D(3, std::vector<double>()),
                                                                 displayed_warning_(false),
                                                                 compton_matrix_gen(
                                                                     compton_on ? compton_temperatures() : std::vector<double>{1.0*units::kev_kelvin, 2.0*units::kev_kelvin},
@@ -143,9 +134,6 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     sigma_scattering_gray.resize(N, 0.0);
     fleck_factor.resize(N, 0.0);
 
-    new_Er.resize(N, 0.0);
-    new_Er_full.resize(N, 0.0);
-
     old_Er.resize(N, 0.0);
     old_Tm.resize(N, 0.0);
 
@@ -168,12 +156,6 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     auto const Nfaces = tess.GetTotalFacesNumber();
     grad.resize(Nfaces);
     
-    lambda_face_gray.resize(Nfaces, std::pair<double, double>(0.0, 0.0));
-    sigma_ratio_lambda_face_gray.resize(Nfaces, std::pair<double, double>(0.0, 0.0));
-
-    lambda_cell_gray.resize(N, 0.0);
-    sigma_ratio_lambda_cell_gray.resize(N, 0.0);
-
     std::vector<std::size_t> neighbors;
     face_vec faces; 
     for(std::size_t i=0; i < N; ++i){
@@ -195,9 +177,6 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
         }
     }
 
-    R2 = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
-    D  = std::vector<std::vector<double>>(3, std::vector<double>(N, 0.0));
-    
     Gammas.resize(N, 0.0);
 
     return true;
@@ -219,7 +198,6 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 #endif
 
 	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
-    double max_Tm = *std::max_element(old_Tm.begin(), old_Tm.end());
     double max_rhoT = 0;
     auto const N = tess.GetPointNo();            
     for(size_t i=0; i < N; ++i)
@@ -227,7 +205,6 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, &max_Tm, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &max_rhoT, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif	
 
@@ -248,9 +225,11 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 				to_calc = false;
 		if(not to_calc)
 			continue;
-		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.05 * cells[i].temperature ? 0.5 : 1;
-		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density+0.02*max_Er);
-        bool const Erad_equib = std::abs(cells[i].Erad * cells[i].density - old_Er[i]) < 0.075 * old_Er[i];
+
+        double const new_Er_cell = cells[i].Erad * cells[i].density;
+		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er_cell / CG::radiation_constant, 0.25)) < 0.05 * cells[i].temperature ? 0.5 : 1;
+		double diff = equlibrium_factor * std::abs(new_Er_cell - old_Er[i]) / (new_Er_cell+0.02*max_Er);
+        bool const Erad_equib = std::abs(new_Er_cell - old_Er[i]) < 0.075 * old_Er[i];
         double temp_diff = cells[i].density * equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].density * cells[i].temperature+1e-3*max_rhoT);
         if(Erad_equib)
             temp_diff *= 0.25;
@@ -355,7 +334,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     if(rank == 0)
         std::cout<<"Total iterations: "<<tot_iters<<std::endl;
     
-    PostCGFull(tess, extensives, dt, cells, new_Eg, new_Eg_full);
+    PostCG(tess, extensives, dt, cells, new_Eg, new_Eg_full);
     
     cells_cgs = cells;
     
@@ -1151,9 +1130,10 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
     for(std::size_t i=0; i < N; ++i){
         double const Trad = std::pow(cells[i].Erad * cells[i].density / CG::radiation_constant, 0.25);
         double cv = eos_.dT2cv(cells[i].density * pow<3>(length_scale_) / mass_scale_, cells[i].temperature) * mass_scale_ / (pow<2>(time_scale_)*length_scale_);
-        double const cv_bar = cv / get_radiation_cv(cells[i].temperature);
-            sigma_absorption_group[i].resize(ENERGY_GROUPS_NUM);
-            sigma_scattering_group[i].resize(ENERGY_GROUPS_NUM);
+
+        sigma_absorption_group[i].resize(ENERGY_GROUPS_NUM);
+        sigma_scattering_group[i].resize(ENERGY_GROUPS_NUM);
+
         auto const& cell = cells[i];
         for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
 
@@ -1200,7 +1180,6 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
             planck_sum += bg;
         }
 
-        auto const& cell = cells_cgs[i];
         if(planck_sum < (1. - 1e-4) && not displayed_warning_){
             displayed_warning_ = true;
             std::cout << "bad groups! planckian not covered well! cell " << i << " T " << old_Tm[i] <<" ID "<<cells[i].ID<<std::endl;
