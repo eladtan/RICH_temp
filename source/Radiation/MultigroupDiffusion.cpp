@@ -1308,17 +1308,6 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
             }
         }
     }
-
-    double rel_diff=0.0;
-    for(std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g){
-        double const Bg = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], old_Tm[cell_index]);
-
-        rel_diff += std::abs(cell.Eg[g] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_)) - Bg);
-    }
-
-    rel_diff /= cell.Erad * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_)) + get_radiation_energy_density(old_Tm[cell_index]);
-
-    small_rel_diff = true;
 }
 
 double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) const {
@@ -1391,35 +1380,17 @@ double MultigroupDiffusion::get_implicit_compton_contribution(Tessellation3D con
     
     double const Um_old = get_radiation_energy_density(T);
     
-    if(small_rel_diff){
-        implicit_contribution -= volume*cdt*S[gt][g];
-        double sum_dSdUm_Egtt = 0.0;
-        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
-            sum_dSdUm_Egtt += dSdUm[gtt][g]*cell.Eg[gtt]*cell.density*mass_scale_ / (length_scale_ * pow<2>(time_scale_));
-        }
+    implicit_contribution -= volume*cdt*S[gt][g];
+    double sum_dSdUm_Egtt = 0.0;
+    for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+        sum_dSdUm_Egtt += dSdUm[gtt][g]*cell.Eg[gtt]*cell.density*mass_scale_ / (length_scale_ * pow<2>(time_scale_));
+    }
 
-        double const A = volume*cdt*cdt_cv_bar*f*(kgbg + sum_dSdUm_Egtt);
+    double const A = volume*cdt*cdt_cv_bar*f*(kgbg + sum_dSdUm_Egtt);
 
-        implicit_contribution -= volume*cdt*cdt_cv_bar*f*sum_dSdUm_Egtt*sigma_absorption_group[cell_index][gt];
-        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
-            implicit_contribution += A*S[gt][gtt];
-        }
-
-    } else {
-        implicit_contribution -= volume*cdt*S[gt][g];
-        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
-            implicit_contribution -= coeff_1*(Um_old*dSdUm[gt][gtt] - S[gt][gtt]);
-        }
-        double const kp = sigma_absorption_planck[cell_index];
-        double coeff_2 = kp*Um_old;
-        for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
-            coeff_2 -= sigma_absorption_group[cell_index][gtt]*cell.Eg[gtt]*cell.density*mass_scale_ / (length_scale_ * pow<2>(time_scale_));
-            for(std::size_t gttt=0; gttt < ENERGY_GROUPS_NUM; ++gttt){
-                coeff_2 += S[gtt][gttt]*cell.Eg[gtt]*cell.density*mass_scale_ / (length_scale_ * pow<2>(time_scale_));
-            }
-        }
-        
-        implicit_contribution += volume*cdt*cdt_cv_bar*f*coeff_2*dSdUm[gt][g];
+    implicit_contribution -= volume*cdt*cdt_cv_bar*f*sum_dSdUm_Egtt*sigma_absorption_group[cell_index][gt];
+    for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
+        implicit_contribution += A*S[gt][gtt];
     }
     
     return implicit_contribution;
@@ -1427,8 +1398,6 @@ double MultigroupDiffusion::get_implicit_compton_contribution(Tessellation3D con
 
 double MultigroupDiffusion::get_implicit_compton_contribution_to_b(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, double const dt_cgs) const {
     assert(cell_id_of_compton_matrices == cell.ID);
-
-    if(!small_rel_diff) return 0.0;
 
     double const volume = tess.GetVolume(cell_index) * pow<3>(length_scale_);
 

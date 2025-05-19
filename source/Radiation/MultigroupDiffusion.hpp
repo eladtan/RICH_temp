@@ -142,8 +142,6 @@ public:
 
     mutable std::vector<double> Gammas;
 
-    mutable bool small_rel_diff = 0.0;
-
     mutable std::vector<double> Q_vector;
     mutable std::vector<double> Upsilon_vector;
     mutable std::vector<double> sum_dSdUm;
