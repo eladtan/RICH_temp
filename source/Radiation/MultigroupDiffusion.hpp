@@ -56,7 +56,7 @@ public:
     double GetLengthScale() const override { return length_scale_; }
 
     bool prestep(Tessellation3D const& tess,
-        std::vector<ComputationalCell3D> const& cells) const override;
+                 std::vector<ComputationalCell3D> const& cells) const override;
 
     bool step(double const tolerance,
               int& total_iters,
@@ -89,26 +89,19 @@ public:
                 std::vector<double> const& full_CG_result) const override;
 
     MultigroupDiffusionCoefficientCalculator const& coefficient_calculator;
-    MultigroupDiffusionBoundaryCalculator const& boundary_calculator;
+    MultigroupDiffusionBoundaryCalculator    const& boundary_calculator;
 
     std::vector<double> const energy_groups_center;
     std::vector<double> const energy_groups_boundary;
     std::vector<double> energy_groups_width;
 
-    mutable std::size_t current_group;
-    mutable bool gray;
-
-    mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<ComputationalCell3D> cells_cgs;
-    mutable std::vector<Conserved3D> extensives_temp;
 
     mutable std::vector<std::vector<double>> sigma_absorption_group; // [group][cell]
     mutable std::vector<std::vector<double>> sigma_scattering_group; // [group][cell]
     mutable std::vector<std::vector<double>> planck_integal_group;   // [group][cell]
 
     mutable std::vector<double> sigma_absorption_planck;
-    mutable std::vector<double> sigma_absorption_average;
-    mutable std::vector<double> sigma_scattering_gray;
     mutable std::vector<double> fleck_factor;
 
     mutable std::vector<double> new_Eg;
@@ -126,9 +119,6 @@ public:
 
     bool const doppler_on_;
     double const minimum_temperature_;
-    // for doppler step
-    mutable std::vector<std::vector<double>> R2;
-    mutable std::vector<std::vector<double>> D;
 
     mutable ComptonMatrixMC compton_matrix_gen;
 
@@ -137,14 +127,10 @@ public:
     mutable std::vector<std::vector<double>> S;
     mutable std::vector<std::vector<double>> dSdUm;
 
-    mutable std::vector<double> n, n_bg; // occupancy number
+    mutable std::vector<double> n; // occupancy number
     mutable std::size_t cell_id_of_compton_matrices;
 
     mutable std::vector<double> Gammas;
-
-    mutable std::vector<double> Q_vector;
-    mutable std::vector<double> Upsilon_vector;
-    mutable std::vector<double> sum_dSdUm;
 
 private:
     bool const protections_on_;
@@ -157,7 +143,7 @@ private:
     void calculate_planck_integrals(Tessellation3D const& tess,
                                     std::vector<ComputationalCell3D> const& cells) const;
 
-    void calculate_gray_absorption_and_scattering_coefficients(Tessellation3D const& tess,
+    void calculate_planck_absorption_coefficient(Tessellation3D const& tess,
                                                                std::vector<ComputationalCell3D> const& cells) const;
 
     // helper functions
@@ -167,13 +153,11 @@ private:
 
     double calculate_Upsilon(ComputationalCell3D const& cell) const;
 
-    void calculate_compton_quantities(ComputationalCell3D const& cell, std::size_t const cell_index) const;
-
     double get_implicit_compton_contribution(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, std::size_t const gt, double const dt_cgs) const;
 
     double get_implicit_compton_contribution_to_b(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, double const dt_cgs) const;
 
-    double GetDopplerSlope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
+    double get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
 };
 
 #endif
