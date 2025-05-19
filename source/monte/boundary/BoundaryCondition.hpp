@@ -14,6 +14,8 @@ public:
 
     virtual MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) = 0;
 
+    virtual std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) = 0;
+
 protected:
     const Grid &grid;
 };

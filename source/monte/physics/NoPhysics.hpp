@@ -10,7 +10,7 @@ public:
     using MCParticle = MonteCarloParticle<T, Grid>;
     using Functionality = MonteCarloFunctionality<T, Grid>;
 
-    NoMonteCarloPhysics(Grid &grid);
+    NoMonteCarloPhysics(Grid &grid, const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary);
 
     std::vector<MCParticle> preStep(double fullDt) override;
 
@@ -20,8 +20,8 @@ public:
 };
 
 template<typename T, typename Grid>
-NoMonteCarloPhysics<T, Grid>::NoMonteCarloPhysics(Grid &grid):
-    MonteCarloPhysics<T, Grid>(grid)
+NoMonteCarloPhysics<T, Grid>::NoMonteCarloPhysics(Grid &grid, const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary):
+    MonteCarloPhysics<T, Grid>(grid, boundary)
 {}
 
 template<typename T, typename Grid>

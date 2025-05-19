@@ -12,6 +12,7 @@
 #include "utils/debug/vtune.h" // TODO: remove
 
 #define MONTECARLO_EPSILON 1e-8
+#define REALLOCATION_FACTOR 2
 
 template<typename T, typename Grid>
 class MonteCarloManagerSerial
@@ -63,6 +64,7 @@ private:
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
     Tracker tracker;
+    size_t particleCounter;
 
     struct
     {
@@ -95,6 +97,7 @@ template<typename T, typename Grid>
 void MonteCarloManagerSerial<T, Grid>::PrepareForStep(size_t bufferSizes)
 {
     this->numScatters = 0;
+    this->particleCounter = 0;
     this->Ncells = this->grid.GetPointNo();
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
 }
@@ -102,7 +105,51 @@ void MonteCarloManagerSerial<T, Grid>::PrepareForStep(size_t bufferSizes)
 template<typename T, typename Grid>
 void MonteCarloManagerSerial<T, Grid>::AddParticles(const std::vector<MCParticle> &particles)
 {
-    // TODO
+    if(this->particlesData.av_length < particles.size())
+    {
+        // allocation is needed
+        size_t newBuffSize = std::max(this->particlesData.buffsize * REALLOCATION_FACTOR, this->particlesData.buffsize + particles.size());
+        size_t oldBuffSize = this->particlesData.buffsize;
+        this->particlesData.buffsize = newBuffSize;
+        MCParticle *new_particles = new MCParticle[this->particlesData.buffsize];
+        index_t *new_av = new index_t[this->particlesData.buffsize];
+        index_t *new_th = new index_t[this->particlesData.buffsize];
+        std::memcpy(new_particles, this->particlesData.particles, oldBuffSize * sizeof(MCParticle));
+        std::memcpy(new_av, this->particlesData.av, oldBuffSize * sizeof(index_t));
+        std::memcpy(new_th, this->particlesData.th, oldBuffSize * sizeof(index_t));
+        delete[] this->particlesData.particles;
+        delete[] this->particlesData.av;
+        delete[] this->particlesData.th;
+        this->particlesData.particles = new_particles;
+        this->particlesData.av = new_av;
+        this->particlesData.th = new_th;
+        // set `av`
+        assert(oldBuffSize < newBuffSize);
+        index_t difference = newBuffSize - oldBuffSize;
+        std::iota(new_av, new_av + difference, oldBuffSize);
+        this->particlesData.av_length += static_cast<int>(difference);
+    }
+
+    // set particles
+    // update 'to handle' and 'available' lists accordingly
+    index_t particlesNum = particles.size();
+    this->particlesData.av_length -= particlesNum;
+    index_t *avIndices = this->particlesData.av + this->particlesData.av_length;
+    index_t *thIndices = this->particlesData.th + this->particlesData.th_length;
+    this->particlesData.th_length += particlesNum;
+    size_t firstID = this->particleCounter;
+    this->particleCounter += particles.size();
+
+    for(size_t i = 0; i < particlesNum; i++)
+    {
+        index_t idx = avIndices[i];
+        // copy particle
+        MCParticle *particle = this->particlesData.particles + idx;
+        std::memcpy(particle, &particles[i], sizeof(MCParticle));
+        // set to handle
+        thIndices[i] = idx;
+        particle->id = firstID + i;
+    }
 }
 
 template<typename T, typename Grid>
@@ -149,6 +196,7 @@ template<typename T, typename Grid>
 void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles(const std::vector<MCParticle> &particles)
 {
     size_t particlesNum = particles.size();
+    
     this->particlesData.buffsize = particlesNum;
     this->particlesData.particles = new MCParticle[this->particlesData.buffsize];
     this->particlesData.av = new index_t[this->particlesData.buffsize];
@@ -175,6 +223,19 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles
         assert(idx < this->particlesData.buffsize);
         this->particlesData.av[i] = idx;
     }
+
+    size_t firstID = this->particleCounter;
+    size_t assignedCounter = 0;
+    for(size_t i = 0; i < particlesNum; i++)
+    {
+        if(this->particlesData.particles[i].id >= this->particleCounter)
+        {
+            this->particlesData.particles[i].id = firstID + assignedCounter;
+            assignedCounter++;
+        }
+        // std::cout << "Assigned ID " << firstID + i << std::endl;
+    }
+    this->particleCounter += assignedCounter;
 }
 
 template<typename T, typename Grid>
@@ -252,12 +313,13 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
                 {}
                 else if(status == MonteCarloParticleStatus::REMOVE)
                 {
+                    // std::cout << "Particle " << particle << "(" << &particle << ")" << " is leaving the domain" << std::endl;
                     stepData.leaving.push_back(particle);
                     removeParticle(i);
                 }
                 else
                 {
-                    std::cout << "Unknown boundary condition for particle " << particle << std::endl;
+                    std::cerr << "Unknown boundary condition for particle " << particle << std::endl;
                     exit(1);
                 }
                 continue;
@@ -291,31 +353,21 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     this->PutSelfParticles(particleList);
     this->resetTracker();
 
-    size_t particleCounter = 0;
     int length = this->particlesData.th_length;
     for(int i = 0; i < length; i++)
     {
         size_t particleIndex = this->particlesData.th[i];
         MCParticle &p = this->particlesData.particles[particleIndex];
-        assert(p.timeLeft > 0);
-        // p.timeLeft = fullDt;
-        p.id = particleCounter;
-        particleCounter++;
-    }
-
-    for(int i = 0; i < length; i++)
-    {
-        size_t particleIndex = this->particlesData.th[i];
-        MCParticle &p = this->particlesData.particles[particleIndex];
+        p.timeLeft = fullDt;
         p.initialWeight = p.weight;
         p.steps = 0;
     }
 
-    size_t numParticles = this->particlesData.th_length;
-            
     this->physics->updateGridData();
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
+    
+    size_t numParticles = this->particlesData.th_length;
     
     MonteCarloStepFinalData data;
     // measure time
@@ -327,14 +379,14 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     }
     auto end = std::chrono::high_resolution_clock::now();
 
-    std::vector<MCParticle> newParticles2 = this->populationControl->activate(particleList);
-    this->physics->postStep(newParticles2);
+    std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
+    this->physics->postStep(populationControlParticles);
 
     double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-    std::cout << "I'm outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
+    // std::cout << "I'm outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles after prestep, originally came with " << particleList.size() << " particles)" << std::endl;
 
-    std::cout << "Number of leaving particles is " << data.leaving.size() << ", num scatters " << this->numScatters << std::endl;
-    return newParticles2;
+    // std::cout << "Number of leaving particles is " << data.leaving.size() << " and remaining (after population control) " << populationControlParticles.size() << std::endl;
+    return populationControlParticles;
 }
 
 #endif // MONTE_CARLO_MANAGER_SERIAL_HPP

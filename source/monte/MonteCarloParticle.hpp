@@ -21,16 +21,19 @@ struct MonteCarloParticle
                     //     : public Serializable
                     // #endif // RICH_MPI
 {
-    size_t id;
-    T location;
-    T velocity;
-    size_t cellIndex;
-    dt_t timeLeft;
-    double energy;
-    double weight;
-    double initialWeight;
-    size_t steps;
-    bool on_track;
+    #ifdef RICH_MPI
+        rank_t rank = -1;
+    #endif // RICH_MPI
+    size_t id = std::numeric_limits<size_t>::max();
+    T location = T(std::numeric_limits<size_t>::max());
+    T velocity = T(std::numeric_limits<size_t>::max());
+    size_t cellIndex = std::numeric_limits<size_t>::max();
+    dt_t timeLeft = std::numeric_limits<double>::max();
+    double energy = std::numeric_limits<double>::max();
+    double weight = std::numeric_limits<double>::max();
+    double initialWeight = std::numeric_limits<double>::max();
+    size_t steps = 0;
+    bool on_track = false;
 
     explicit MonteCarloParticle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(), const T &velocity_ = T(), dt_t timeLeft_ = dt_t()):
         id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), energy(0), weight(0), initialWeight(0), steps(0), on_track(false)
@@ -40,8 +43,11 @@ struct MonteCarloParticle
 
     friend inline std::ostream &operator<<(std::ostream &stream, const MonteCarloParticle &particle)
     {
-        return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
-        // return stream << "Particle(location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        #ifdef RICH_MPI
+                return stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        #else // RICH_MPI
+                return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ")";
+        #endif // RICH_MPI
     }
 };
 

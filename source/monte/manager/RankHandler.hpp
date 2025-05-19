@@ -13,6 +13,7 @@
 #include "ReallocationAgent.hpp"
 
 #define BUFFER_REALLOCATION_FACTOR 2 // 1.618033 // golden ratio
+#define BUFFER_SHRINK_FACTOR 0.5
 #define MPI_INDEX_T MPI_UINT32_T
 
 template<typename T, typename Grid>
@@ -32,7 +33,9 @@ public:
 
     void Sync(void);
 
-    void Destroy();
+    void Reset(void);
+
+    void Destroy(void);
 
     MPI_Comm comm_world, comm;
     rank_t rank_world, rank_internal;
@@ -48,7 +51,7 @@ public:
 
     std::shared_ptr<ReallocationAgent> &reallocationAgent;
     
-    void Reallocate(void);
+    void Reallocate(double factor);
 
 private:
     MPI_Win particles_win;
@@ -88,15 +91,34 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
         MPI_Info_set(info, "same_disp_unit", "true");    
         // initialize windows
 
-        MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &this->particles, &this->particles_win);
+        auto reportErrorAndExit = [](const std::string &str, int err)
+        {
+            if(err == MPI_SUCCESS)
+            {
+                return;
+            }
+            char error_string[MPI_MAX_ERROR_STRING];
+            int length_of_error_string;
+            MPI_Error_string(err, error_string, &length_of_error_string);
+            std::cerr << "Error: " << str << ": " << error_string << std::endl;
+            exit(1);
+        };
+
+        int retval;
+        retval = MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &this->particles, &this->particles_win);
+        reportErrorAndExit("MPI_Win_allocate for particles", retval);
         assert(this->particles != nullptr);
-        MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->av, &this->av_win);
+        retval = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->av, &this->av_win);
+        reportErrorAndExit("MPI_Win_allocate for av", retval);
         assert(this->av != nullptr);
-        MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->th, &this->th_win);
+        retval = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->th, &this->th_win);
+        reportErrorAndExit("MPI_Win_allocate for th", retval);
         assert(this->th != nullptr);
-        MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->av_length), &this->av_length_win);
+        retval = MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->av_length), &this->av_length_win);
+        reportErrorAndExit("MPI_Win_allocate for av length", retval);
         assert(this->av_length != nullptr);
-        MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->th_length), &this->th_length_win);
+        retval = MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->th_length), &this->th_length_win);
+        reportErrorAndExit("MPI_Win_allocate for th length", retval);
         assert(this->th_length != nullptr);
         MPI_Info_free(&info);
 
@@ -119,19 +141,18 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
         this->localTHMutex = (this->rank_internal == 0)? rank0Mutex : rank1Mutex;
         this->remoteTHMutex = (this->rank_internal == 0)? rank1Mutex : rank0Mutex;
 
-        *this->av_length = this->buffsize;
-        *this->th_length = 0;
-    
-        std::iota(this->av, this->av + this->buffsize, 0);
+        this->Reset();
         MPI_Barrier(this->comm);
     }
     else
     {
-        this->particles = nullptr;
-        this->av = nullptr;
-        this->th = nullptr;
-        this->av_length = nullptr;
-        this->th_length = nullptr;
+        // initialized from outside
+        this->particles = new MCParticle[this->buffsize];
+        this->av = new index_t[this->buffsize];
+        this->th = new index_t[this->buffsize];
+        this->av_length = new int(this->buffsize);
+        this->th_length = new int(0);
+        std::iota(this->av, this->av + this->buffsize, 0);
     }
 
     if(this->size_internal > 1)
@@ -176,7 +197,15 @@ void RankHandler<T, Grid>::Sync(void)
 }
 
 template<typename T, typename Grid>
-void RankHandler<T, Grid>::Destroy()
+void RankHandler<T, Grid>::Reset(void)
+{
+    *this->av_length = static_cast<int>(this->buffsize);
+    *this->th_length = 0;
+    std::iota(this->av, this->av + this->buffsize, 0);
+}
+
+template<typename T, typename Grid>
+void RankHandler<T, Grid>::Destroy(void)
 {
     if(this->destroyed)
     {
@@ -259,16 +288,24 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
 }
 
 template<typename T, typename Grid>
-void RankHandler<T, Grid>::Reallocate(void)
+void RankHandler<T, Grid>::Reallocate(double factor)
 {
+    size_t newBuffSize = std::ceil(this->buffsize * factor); // ceil is necessary to avoid 0
+    size_t oldBuffSize = this->buffsize;
+    if(oldBuffSize > newBuffSize)
+    {
+        if(*this->av_length != this->buffsize)
+        {
+            std::cerr << "Can not shrink memory when there are particles" << std::endl;
+            exit(1);
+        }
+    }
+    this->buffsize = newBuffSize;
+
     if(this->size_internal > 1)
     {
-        size_t newBuffSize = this->buffsize * BUFFER_REALLOCATION_FACTOR;
-        assert(this->buffsize <= newBuffSize);
-
-        size_t oldBuffSize = this->buffsize;
-        this->buffsize = newBuffSize;
-
+        assert(this->size_internal == 2);
+        
         MPI_Info info;
         MPI_Info_create(&info);
         MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
@@ -289,6 +326,8 @@ void RankHandler<T, Grid>::Reallocate(void)
             exit(1);
         };
 
+        // std::cout << "Allocating size " << this->buffsize << std::endl;
+        
         MPI_Win new_particles_win;
         MCParticle *new_particles;
         int err = MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &new_particles, &new_particles_win);
@@ -307,11 +346,21 @@ void RankHandler<T, Grid>::Reallocate(void)
         reportErrorAndExit("MPI_Win_allocate new_th with buffsize = " + std::to_string(this->buffsize), err);
         assert(new_th != nullptr);
 
-        std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
-        std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
-        size_t difference = this->buffsize - oldBuffSize;
-        std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
-        std::iota(new_av, new_av + difference, oldBuffSize);
+        if(this->buffsize >= oldBuffSize)
+        {
+            std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
+            std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
+            size_t difference = this->buffsize - oldBuffSize;
+            std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
+            std::iota(new_av, new_av + difference, oldBuffSize);
+        }
+        else
+        {
+            std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
+            std::memcpy(new_av, this->av, this->buffsize * sizeof(index_t));
+            std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
+            std::iota(new_av, new_av + this->buffsize, 0);
+        }
 
         err = MPI_Win_free(&this->particles_win);
         reportErrorAndExit("MPI_Win_free particles_win", err);
@@ -321,7 +370,6 @@ void RankHandler<T, Grid>::Reallocate(void)
         reportErrorAndExit("MPI_Win_free th_win", err);
 
         this->particles_win = new_particles_win;
-        MPI_Win oldwin = this->av_win; // todo remove
         this->av_win = new_av_win;
         this->th_win = new_th_win;
 
@@ -344,12 +392,13 @@ void RankHandler<T, Grid>::Reallocate(void)
         this->av = new_av;
         this->th = new_th;
 
-        int difference_int = difference;
-        // std::cout << "Rank " << this->rank_world << " increases av_length to " << *this->av_length << " to " << *this->av_length + difference_int << std::endl;
-        
-        MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->av_length_win);
-        MPI_Accumulate(&difference_int, 1, MPI_INT, this->rank_internal, 0, 1, MPI_INT, MPI_SUM, this->av_length_win);
-        MPI_Win_unlock(this->rank_internal, this->av_length_win);
+        if(this->buffsize >= oldBuffSize)
+        {
+            int difference_int = static_cast<int>(this->buffsize - oldBuffSize);            
+            MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->av_length_win);
+            MPI_Accumulate(&difference_int, 1, MPI_INT, this->rank_internal, 0, 1, MPI_INT, MPI_SUM, this->av_length_win);
+            MPI_Win_unlock(this->rank_internal, this->av_length_win);
+        }
         
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
 
@@ -357,21 +406,30 @@ void RankHandler<T, Grid>::Reallocate(void)
         MPI_Barrier(this->comm); // unnecessary because of the sendrecv above
     }
     else
-    {
-        size_t oldBuffSize = this->buffsize;
-        size_t newBuffSize = this->buffsize * BUFFER_REALLOCATION_FACTOR;
+    {        
         this->buffsize = newBuffSize;
 
         MCParticle *new_particles = new MCParticle[this->buffsize];
         index_t *new_av = new typename RankHandler::index_t[this->buffsize];
         index_t *new_th = new typename RankHandler::index_t[this->buffsize];
 
-        std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
-        std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
-        size_t difference = this->buffsize - oldBuffSize;
-        std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
-        std::iota(new_av, new_av + difference, oldBuffSize);
-        int difference_int = difference;
+        if(this->buffsize >= oldBuffSize)
+        {
+            std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
+            std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
+            size_t difference = this->buffsize - oldBuffSize;
+            std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
+            std::iota(new_av, new_av + difference, oldBuffSize);
+            int difference_int = difference;
+            *this->av_length += difference_int;
+        }
+        else
+        {
+            std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
+            std::memcpy(new_av, this->av, this->buffsize * sizeof(index_t));
+            std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
+            std::iota(new_av, new_av + this->buffsize, 0);
+        }
 
         delete[] this->particles;
         delete[] this->av;
@@ -380,8 +438,6 @@ void RankHandler<T, Grid>::Reallocate(void)
         this->av = new_av;
         this->th = new_th;
 
-        *this->av_length += difference_int;
-        
         this->peer_buffsize = this->buffsize;
     }
 }

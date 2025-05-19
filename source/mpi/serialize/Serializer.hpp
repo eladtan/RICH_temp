@@ -3,6 +3,7 @@
 
 #ifdef RICH_MPI
 
+#include <iostream>
 #include <array>
 #include <vector>
 #include <memory>

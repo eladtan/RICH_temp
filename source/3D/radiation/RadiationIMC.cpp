@@ -4,8 +4,8 @@
 #define SCATTERING 1
 #define TIMELEFT 2
 
-RadiationIMC::RadiationIMC(Tessellation3D &grid, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell):
-    MonteCarloPhysics(grid), cells(cells), conserved(conserved), eos(eos), opacity(opacity), newPhotonsPerCell(newPhotonsPerCell)
+RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell):
+    MonteCarloPhysics(grid, boundary), cells(cells), conserved(conserved), eos(eos), opacity(opacity), newPhotonsPerCell(newPhotonsPerCell)
 {
     this->dist = std::uniform_real_distribution<double>(std::numeric_limits<double>::epsilon(), 1 - std::numeric_limits<double>::epsilon());
     int rank = 0;
@@ -26,7 +26,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     assert(timeIntersect >= 0);
 
     double scatteringLength = 1.0 / (opacity.getScatteringOpacity(cell) + (1 - this->factorFleck[cellIndex]) * this->planckOpacities[cellIndex]);
-    distance_t scatteringDistance = (-1 * scatteringLength) * std::log1p(this->dist(this->re)); 
+    distance_t scatteringDistance = scatteringLength * std::log1p(this->dist(this->re)); 
     dt_t timeScattering = scatteringDistance / abs(particle.velocity);
 
     dt_t timeLeft = particle.timeLeft;
@@ -41,7 +41,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     double expFactor = std::expm1(-dt * this->planckOpacities[cellIndex] * this->factorFleck[cellIndex] * units::clight);
     particle.location += particle.velocity * dt;
     this->conserved[cellIndex].internal_energy += -expFactor * particle.weight;
-    particle.weight *= 1 - expFactor;
+    particle.weight *= 1 + expFactor;
 
     if(particle.weight < particle.initialWeight * 1e-2)
     {
@@ -89,8 +89,10 @@ std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(d
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
     {
-        double energyToCreate = this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(this->cells[i].temperature) * this->planckOpacities[i] * fullDt * units::clight;
+        ComputationalCell3D &cell = this->cells[i];
+        double energyToCreate = this->factorFleck[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities[i] * fullDt * units::clight;
         double energyPerPhoton = energyToCreate / this->newPhotonsPerCell;
+        this->conserved[i].internal_energy -= energyToCreate;
         for(size_t j = 0; j < this->newPhotonsPerCell; j++)
         {
             MCParticle particle;
@@ -100,7 +102,7 @@ std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(d
             particle.initialWeight = particle.weight;
             particle.location = RandomPointInCell(this->grid, i);
             particle.timeLeft = fullDt * this->dist(this->re);
-            particle.velocity = this->opacity.getRandomVelocity(this->cells[i]);
+            particle.velocity = this->opacity.getRandomVelocity(cell);
             particle.cellIndex = i;
             newParticles.push_back(particle);
         }
@@ -123,5 +125,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     }    
 
     std::vector<MCParticle> newParticles = this->generateParticles(fullDt);
+    std::vector<MCParticle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt); // todo: not here
+    newParticles.insert(newParticles.end(), newParticles2.begin(), newParticles2.end());
     return newParticles;
 }

@@ -25,12 +25,14 @@ public:
         MPI_Win_unlock(this->rank, this->is_done_win);
     };
 
+    int GetValue(void) const{return this->counter->GetValue();};
+    
     volatile int *is_done;
     int localDecrementAmount;
-
+    
 private:    
+    std::shared_ptr<GlobalCounter> counter; // TODO: should be private
     rank_t rank, size, master_rank;
-    std::shared_ptr<GlobalCounter> counter;
     MPI_Win is_done_win;
 };
 

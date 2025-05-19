@@ -194,11 +194,9 @@ std::vector<T> MPI_Gatherv_serializable(const Container<T, Ts...> &data, rank_t 
         recv.extract_all(toReturn);
         return toReturn;
     }
-    else
-    {
-        MPI_Gather(&bytes, 1, MPI_INT, NULL, 0, MPI_INT, root, comm);
-        MPI_Gatherv(send.getData(), bytes, MPI_BYTE, NULL, NULL, NULL, MPI_BYTE, root, comm);
-    }
+    // else
+    MPI_Gather(&bytes, 1, MPI_INT, NULL, 0, MPI_INT, root, comm);
+    MPI_Gatherv(send.getData(), bytes, MPI_BYTE, NULL, NULL, NULL, MPI_BYTE, root, comm);
     return std::vector<T>();
 }
 

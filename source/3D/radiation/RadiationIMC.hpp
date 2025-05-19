@@ -10,6 +10,7 @@
 #include "newtonian/common/equation_of_state.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "3D/tesselation/utils/RandomInCell.hpp"
+#include "monte/boundary/BoundaryCondition.hpp"
 #include "RadiationOpacity.hpp"
 
 class RadiationIMC : public MonteCarloPhysics<Vector3D, Tessellation3D>
@@ -17,8 +18,9 @@ class RadiationIMC : public MonteCarloPhysics<Vector3D, Tessellation3D>
 public:
     using Particle = MonteCarloParticle<Vector3D, Tessellation3D>;
     using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
+    using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    RadiationIMC(Tessellation3D &grid, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell);
+    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell);
 
     std::vector<Particle> preStep(double fullDt) override;
 

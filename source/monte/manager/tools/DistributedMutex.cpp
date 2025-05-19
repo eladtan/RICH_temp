@@ -10,13 +10,21 @@ DistributedMutex::DistributedMutex(const MPI_Comm &comm, rank_t rank):
     MPI_Comm_rank(this->comm, &my_rank);
     MPI_Comm_size(this->comm, &size);
     assert(size > 1);
-
+    
     MPI_Info info;
     MPI_Info_create(&info);
     MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
     MPI_Info_set(info, "accumulate_ops", "same_op");
     MPI_Info_set(info, "same_disp_unit", "true");
-    MPI_Win_allocate((my_rank == rank)? sizeof(int) : 0, sizeof(int), info, this->comm, &this->value, &this->win);
+    int err = MPI_Win_allocate((my_rank == rank)? sizeof(int) : 0, sizeof(int), info, this->comm, &this->value, &this->win);
+    if(err != MPI_SUCCESS)
+    {
+        char msg[MPI_MAX_ERROR_STRING];
+        int msg_len;
+        MPI_Error_string(err, msg, &msg_len);
+        std::cerr << "Error: DistributedMutex MPI_Win_allocate failed with error code " << err << ": " << msg << std::endl;
+        exit(1);
+    }
     MPI_Win_set_errhandler(this->win, MPI_ERRORS_RETURN);
     MPI_Info_free(&info);
 

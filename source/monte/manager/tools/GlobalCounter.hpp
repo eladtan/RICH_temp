@@ -16,6 +16,8 @@ public:
 
     inline int Decrement(int n = 1){return this->Increment(-n);};
 
+    int GetValue(void) const{return *this->counter;};
+
 private:
     MPI_Comm comm;
     rank_t rank, size, master_rank;

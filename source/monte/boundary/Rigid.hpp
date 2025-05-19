@@ -13,6 +13,8 @@ public:
     ~RigidBoundaryCondition() override;
 
     MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
+
+    std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
 };
 
 template<typename T, typename Grid>
@@ -28,7 +30,7 @@ RigidBoundaryCondition<T, Grid>::~RigidBoundaryCondition()
 template<typename T, typename Grid>
 MonteCarloParticleStatus RigidBoundaryCondition<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
-    bool verbose = (particle.id == 2307);
+    bool verbose = false; // change when necessary
     MonteCarloParticleStatus status;
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     if(verbose) std::cout << "Particle " << particle << " is on the boundary" << std::endl;
@@ -74,6 +76,12 @@ MonteCarloParticleStatus RigidBoundaryCondition<T, Grid>::apply(MonteCarloPartic
     //     eo.addEntry("Face " + std::to_string(i) + " Scalar Product with Particle Location (abs)", std::fabs(ScalarProd(normal, particle.location - onFace)));
     // }
     // throw eo;
+}
+
+template<typename T, typename Grid>
+std::vector<MonteCarloParticle<T, Grid>> RigidBoundaryCondition<T, Grid>::generateNewBoundaryParticles(double fullDt)
+{
+    return {};
 }
 
 #endif // RIGID_BOUNDARY_CONDITION_HPP

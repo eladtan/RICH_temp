@@ -1,9 +1,11 @@
 #ifndef MONTE_CARLO_PHYSICS_HPP
 #define MONTE_CARLO_PHYSICS_HPP
 
+#include <memory>
 #include <tuple>
 #include "monte/MonteCarloParticle.hpp"
 #include "monte/MonteCarloFunctionality.hpp"
+#include "monte/boundary/BoundaryCondition.hpp"
 
 template<typename T, typename Grid>
 class MonteCarloPhysics
@@ -11,7 +13,7 @@ class MonteCarloPhysics
 public:
     using MCParticle = MonteCarloParticle<T, Grid>;
 
-    MonteCarloPhysics(const Grid &grid);
+    MonteCarloPhysics(const Grid &grid, const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary);
 
     virtual ~MonteCarloPhysics() = default;
 
@@ -25,7 +27,8 @@ public:
 
 protected:
     const Grid &grid;
-    
+    const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary;
+
     std::tuple<size_t, dt_t, size_t> getIntersectionDetails(MCParticle &particle);
 
     struct
@@ -36,8 +39,8 @@ protected:
 };
 
 template<typename T, typename Grid>
-MonteCarloPhysics<T, Grid>::MonteCarloPhysics(const Grid &grid)
-    : grid(grid)
+MonteCarloPhysics<T, Grid>::MonteCarloPhysics(const Grid &grid, const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary)
+    : grid(grid), boundary(boundary)
 {}
 
 template<typename T, typename Grid>
