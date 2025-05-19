@@ -95,9 +95,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                 cell_id_of_compton_matrices(std::numeric_limits<std::size_t>::max()),
                                                                 Gammas(),
                                                                 Q_vector(ENERGY_GROUPS_NUM, 0.0),
-                                                                Q(0.0),
                                                                 Upsilon_vector(ENERGY_GROUPS_NUM, 0.0),
-                                                                Upsilon(0.0),
                                                                 sum_dSdUm(ENERGY_GROUPS_NUM, 0.0),
                                                                 protections_on_(protections_on) {
 
@@ -628,8 +626,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
 
     // Add velocity term
    for(std::size_t i=0; i<Nlocal; ++i){
-        double const volume = tess.GetVolume(i) * pow<3>(length_scale_);
-        
+
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
         std::size_t const Nneighbors = neighbors.size();
@@ -648,7 +645,8 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
             } else {
                 double dummyEg_i, dummy_Eg_j;
                 boundary_calculator.getOutsideValuesGroup(0, tess, i, neighbor_j, cells_cgs, dummyEg_i, dummy_Eg_j, velocity_j);
-            }// TODO add R2 part
+            }
+
             div_V -= 0.5*ScalarProd(cells_cgs[i].velocity+velocity_j, r_ij) * A_ij;
             if(hydro_on_)
             {
@@ -1353,20 +1351,13 @@ double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) c
 void MultigroupDiffusion::calculate_compton_quantities(ComputationalCell3D const& cell, std::size_t const cell_index) const {
     assert(cell_id_of_compton_matrices == cell.ID);
 
-    Q = 0.0;
-
-    Upsilon = calculate_Upsilon(cell);
     fill_zero(Q_vector);
     fill_zero(Upsilon_vector);
-
     fill_zero(sum_dSdUm);
 
     for(std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt){
-        Q += sigma_absorption_group[cell_index][gt] * cell.Eg[gt] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
-
         for(std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt){
             Q_vector[gt] -= S[gt][gtt];
-            Q -= S[gt][gtt]*cell.Eg[gt]*cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
             
             Upsilon_vector[gt] += dSdUm[gt][gtt];
 
