@@ -679,11 +679,11 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                     std::size_t const g_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + gm].begin());
 
                     double coeff_left = 1 / energy_groups_width[gm] - 0.5 * slope_left  / energy_groups_width[gm];
-                    coeff_left *= cell_flux_limiter[i][gm];
+                    coeff_left *= 0.5 - 0.5*cell_flux_limiter[i][gm];
                     coeff_left *= coeff * energy_groups_boundary[g];
                     
                     double coeff_right = 0.5 * slope_left  / energy_groups_width[g];
-                    coeff_right *= cell_flux_limiter[i][g];
+                    coeff_right *= 0.5 - 0.5*cell_flux_limiter[i][g];
                     coeff_right *= coeff * energy_groups_boundary[g];
 
                     A[i * ENERGY_GROUPS_NUM + gm][0] += coeff_left;
@@ -709,10 +709,10 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         coeff_right += 0.5 * slope_right  / energy_groups_width[g + 1];
                         coeff_right_right = -0.5 * slope_right * energy_groups_width[g] / (energy_groups_width[g + 1] * energy_groups_width[g + 1]);
                     }
-                    coeff_right *= coeff * cell_flux_limiter[i][g] * energy_groups_boundary[g];
+                    coeff_right *= coeff * (0.5 - 0.5*cell_flux_limiter[i][g]) * energy_groups_boundary[g];
                     coeff_right_right *= coeff * energy_groups_boundary[g];
 
-                    coeff_right_right *= (g + 1) < ENERGY_GROUPS_NUM ? cell_flux_limiter[i][g+1] : cell_flux_limiter[i][g]; 
+                    coeff_right_right *= (g + 1) < ENERGY_GROUPS_NUM ? 0.5 - 0.5*cell_flux_limiter[i][g+1] : 0.5 - 0.5*cell_flux_limiter[i][g]; 
 
                     A[i * ENERGY_GROUPS_NUM + g][0] -= coeff_right;
                     A[i * ENERGY_GROUPS_NUM + gm][g_index] += coeff_right;
