@@ -112,7 +112,15 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     }
 
     for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
-        energy_groups_width[g] = energy_groups_boundary[g+1] - energy_groups_boundary[g];
+        if(energy_groups_boundary[g] >= energy_groups_boundary[g+1]){
+            std::cout << "bad energy_groups_boundary" << std::endl;
+            exit(1);
+        }
+
+        if(energy_groups_boundary[g] >= energy_groups_center[g] or energy_groups_boundary[g+1] <= energy_groups_center[g]){ 
+            std::cout << "bad energy_groups_boundary and energy_groups_center" << std::endl;
+            exit(1);
+        }
     }
 }
 
