@@ -34,6 +34,16 @@ std::vector<double> compton_temperatures(){
     return tmp_grid;
 }
 
+std::vector<double> get_energy_groups_width(std::vector<double> const& energy_groups_boundary){
+    std::vector<double> energy_groups_width(energy_groups_boundary.size()-1, std::numeric_limits<double>::signaling_NaN());
+
+    for(std::size_t g=0; g<energy_groups_boundary.size()-1; ++g){
+        energy_groups_width[g] = energy_groups_boundary[g+1] - energy_groups_boundary[g];
+    }
+
+    return energy_groups_width;
+}
+
 MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_groups_center_, 
                                          std::vector<double> const& energy_groups_boundary_,
                                          MultigroupDiffusionCoefficientCalculator const& coefficient_calc,
@@ -54,7 +64,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                                                     compton_on),
                                                                 energy_groups_center(energy_groups_center_),
                                                                 energy_groups_boundary(energy_groups_boundary_),
-                                                                energy_groups_width(ENERGY_GROUPS_NUM, 0.0),
+                                                                energy_groups_width(get_energy_groups_width(energy_groups_center)),
                                                                 coefficient_calculator(coefficient_calc),
                                                                 boundary_calculator(boundary_calc),
                                                                 cells_cgs(),

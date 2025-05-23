@@ -93,7 +93,7 @@ public:
 
     std::vector<double> const energy_groups_center;
     std::vector<double> const energy_groups_boundary;
-    std::vector<double> energy_groups_width;
+    std::vector<double> const energy_groups_width;
 
     mutable std::vector<ComputationalCell3D> cells_cgs;
 
