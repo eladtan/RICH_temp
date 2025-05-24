@@ -16,7 +16,7 @@ public:
 
     virtual void setBoundaryValuesGroup(std::size_t const group,
                                         Tessellation3D const& tess,
-                                        std::size_t const index, 
+                                        std::size_t const index,
                                         std::size_t const outside_point,
                                         double const dt,
                                         std::vector<ComputationalCell3D> const& cells,
@@ -24,7 +24,7 @@ public:
                                         double& A,
                                         double& b,
                                         std::size_t const face_index) const = 0;
-    
+
     virtual void getOutsideValuesGroup(std::size_t const group,
                                        Tessellation3D const& tess,
                                        std::size_t const index,
@@ -33,8 +33,8 @@ public:
                                        double const Eg_i,
                                        double& Eg_outside,
                                        Vector3D& v_outside) const = 0;
-    
-    
+
+
     virtual void setMomentumTermBoundaryGroup(std::size_t const group,
                                               Tessellation3D const& tess,
                                               std::size_t const index,
@@ -50,7 +50,7 @@ public:
                                        std::size_t const outside_point,
                                        double const dt,
                                        std::vector<ComputationalCell3D> const& cells,
-                                       double const Area, 
+                                       double const Area,
                                        double& A,
                                        double& b,
                                        std::size_t const face_index) const = 0;
@@ -62,14 +62,14 @@ public:
                                       double const Er_i,
                                       double& Er_outside,
                                       Vector3D& v_outside) const = 0;
-    
+
     virtual void setMomentumTermBoundaryGray(Tessellation3D const& tess,
                                              std::size_t const index,
                                              std::size_t const outside_point,
                                              double dt,
                                              std::vector<ComputationalCell3D> const& cells,
                                              double const momentum_term_coefficient_i,
-                                             double const momentum_term_coefficient_j, 
+                                             double const momentum_term_coefficient_j,
                                              double& A,
                                              double& b) const = 0;
 
@@ -89,7 +89,7 @@ public:
 
     void setBoundaryValuesGroup(std::size_t const group,
                                 Tessellation3D const& tess,
-                                std::size_t const index, 
+                                std::size_t const index,
                                 std::size_t const outside_point,
                                 double const dt,
                                 std::vector<ComputationalCell3D> const& cells,
@@ -97,7 +97,7 @@ public:
                                 double& A,
                                 double& b,
                                 std::size_t const face_index) const override;
-    
+
     void getOutsideValuesGroup(std::size_t const group,
                                Tessellation3D const& tess,
                                std::size_t const index,
@@ -106,7 +106,7 @@ public:
                                double const Eg_i,
                                double& Eg_outside,
                                Vector3D& v_outside) const override;
-    
+
     void setMomentumTermBoundaryGroup(std::size_t const group,
                                       Tessellation3D const& tess,
                                       std::size_t const index,
@@ -116,13 +116,13 @@ public:
                                       double const momentum_term_coefficient,
                                       double& A,
                                       double& b) const override;
-    
+
     void setBoundaryValuesGray(Tessellation3D const& tess,
                                std::size_t const index,
                                std::size_t const outside_point,
                                double const dt,
                                std::vector<ComputationalCell3D> const& cells,
-                               double const Area, 
+                               double const Area,
                                double& A,
                                double& b,
                                std::size_t const face_index) const override;
@@ -134,7 +134,7 @@ public:
                               double const Er_i,
                               double& Er_outside,
                               Vector3D& v_outside) const override;
-    
+
     void setMomentumTermBoundaryGray(Tessellation3D const& tess,
                                      std::size_t const index,
                                      std::size_t const outside_point,
@@ -144,82 +144,82 @@ public:
                                      double const momentum_term_coefficient_j,
                                      double& A,
                                      double& b) const override;
-    
+
     void SetTemperature(double const temperature_);
 
-    private:
-        double temperature;
-        double Ur;
-        mutable std::vector<double> Ug;
+private:
+    double temperature;
+    double Ur;
+    mutable std::vector<double> Ug;
 };
 
 
 class MultigroupDiffusionXInflowBoundary : public MultigroupDiffusionBoundaryCalculator {
-    public:
-        MultigroupDiffusionXInflowBoundary(ComputationalCell3D const& left_state,
-                                           ComputationalCell3D const& right_state,
-                                           MultigroupDiffusionCoefficientCalculator const& coefficient_calculator);
+public:
+    MultigroupDiffusionXInflowBoundary(ComputationalCell3D const& left_state,
+                                       ComputationalCell3D const& right_state,
+                                       MultigroupDiffusionCoefficientCalculator const& coefficient_calculator);
 
-        void setBoundaryValuesGroup(std::size_t const group,
-                                    Tessellation3D const& tess,
-                                    std::size_t const index, 
-                                    std::size_t const outside_point,
-                                    double const dt,
-                                    std::vector<ComputationalCell3D> const& cells,
-                                    double const Area,
-                                    double& A,
-                                    double& b,
-                                    std::size_t const face_index) const override;
-        
-        void getOutsideValuesGroup(std::size_t const group,
+    void setBoundaryValuesGroup(std::size_t const group,
                                 Tessellation3D const& tess,
-                                std::size_t const index,
-                                std::size_t const outside_point,
-                                std::vector<ComputationalCell3D> const& cells,
-                                double const Eg_i,
-                                double& Eg_outside,
-                                Vector3D& v_outside) const override;
-        
-        void setMomentumTermBoundaryGroup(std::size_t const group,
-                                        Tessellation3D const& tess,
-                                        std::size_t const index,
-                                        std::size_t const outside_point,
-                                        double dt,
-                                        std::vector<ComputationalCell3D> const& cells,
-                                        double const momentum_term_coefficient,
-                                        double& A,
-                                        double& b) const override;
-        
-        void setBoundaryValuesGray(Tessellation3D const& tess,
                                 std::size_t const index,
                                 std::size_t const outside_point,
                                 double const dt,
                                 std::vector<ComputationalCell3D> const& cells,
-                                double const Area, 
+                                double const Area,
                                 double& A,
                                 double& b,
                                 std::size_t const face_index) const override;
 
-        void getOutsideValuesGray(Tessellation3D const& tess,
-                                std::size_t const index,
-                                std::size_t const outside_point,
-                                std::vector<ComputationalCell3D> const& cells,
-                                double const Er_i,
-                                double& Er_outside,
-                                Vector3D& v_outside) const override;
-        
-        void setMomentumTermBoundaryGray(Tessellation3D const& tess,
-                                        std::size_t const index,
-                                        std::size_t const outside_point,
-                                        double dt,
-                                        std::vector<ComputationalCell3D> const& cells,
-                                        double const momentum_term_coefficient_i,
-                                        double const momentum_term_coefficient_j,
-                                        double& A,
-                                        double& b) const override;
-    private:
-        ComputationalCell3D const& left_state_, right_state_;
-        MultigroupDiffusionCoefficientCalculator const& coefficient_calculator_;
+    void getOutsideValuesGroup(std::size_t const group,
+                            Tessellation3D const& tess,
+                            std::size_t const index,
+                            std::size_t const outside_point,
+                            std::vector<ComputationalCell3D> const& cells,
+                            double const Eg_i,
+                            double& Eg_outside,
+                            Vector3D& v_outside) const override;
+
+    void setMomentumTermBoundaryGroup(std::size_t const group,
+                                    Tessellation3D const& tess,
+                                    std::size_t const index,
+                                    std::size_t const outside_point,
+                                    double dt,
+                                    std::vector<ComputationalCell3D> const& cells,
+                                    double const momentum_term_coefficient,
+                                    double& A,
+                                    double& b) const override;
+
+    void setBoundaryValuesGray(Tessellation3D const& tess,
+                            std::size_t const index,
+                            std::size_t const outside_point,
+                            double const dt,
+                            std::vector<ComputationalCell3D> const& cells,
+                            double const Area,
+                            double& A,
+                            double& b,
+                            std::size_t const face_index) const override;
+
+    void getOutsideValuesGray(Tessellation3D const& tess,
+                            std::size_t const index,
+                            std::size_t const outside_point,
+                            std::vector<ComputationalCell3D> const& cells,
+                            double const Er_i,
+                            double& Er_outside,
+                            Vector3D& v_outside) const override;
+
+    void setMomentumTermBoundaryGray(Tessellation3D const& tess,
+                                    std::size_t const index,
+                                    std::size_t const outside_point,
+                                    double dt,
+                                    std::vector<ComputationalCell3D> const& cells,
+                                    double const momentum_term_coefficient_i,
+                                    double const momentum_term_coefficient_j,
+                                    double& A,
+                                    double& b) const override;
+private:
+    ComputationalCell3D const& left_state_, right_state_;
+    MultigroupDiffusionCoefficientCalculator const& coefficient_calculator_;
 };
 
 class MultigroupDiffusionOpenBoundary : public MultigroupDiffusionBoundaryCalculator {
@@ -231,7 +231,7 @@ public:
 
     void setBoundaryValuesGroup(std::size_t const group,
                                 Tessellation3D const& tess,
-                                std::size_t const index, 
+                                std::size_t const index,
                                 std::size_t const outside_point,
                                 double const dt,
                                 std::vector<ComputationalCell3D> const& cells,
@@ -239,7 +239,7 @@ public:
                                 double& A,
                                 double& b,
                                 std::size_t const face_index) const override;
-    
+
     void getOutsideValuesGroup(std::size_t const group,
                                Tessellation3D const& tess,
                                std::size_t const index,
@@ -248,7 +248,7 @@ public:
                                double const Eg_i,
                                double& Eg_outside,
                                Vector3D& v_outside) const override;
-    
+
     void setMomentumTermBoundaryGroup(std::size_t const group,
                                       Tessellation3D const& tess,
                                       std::size_t const index,
@@ -258,13 +258,13 @@ public:
                                       double const momentum_term_coefficient,
                                       double& A,
                                       double& b) const override;
-    
+
     void setBoundaryValuesGray(Tessellation3D const& tess,
                                std::size_t const index,
                                std::size_t const outside_point,
                                double const dt,
                                std::vector<ComputationalCell3D> const& cells,
-                               double const Area, 
+                               double const Area,
                                double& A,
                                double& b,
                                std::size_t const face_index) const override;
@@ -276,7 +276,7 @@ public:
                               double const Er_i,
                               double& Er_outside,
                               Vector3D& v_outside) const override;
-    
+
     void setMomentumTermBoundaryGray(Tessellation3D const& tess,
                                      std::size_t const index,
                                      std::size_t const outside_point,
@@ -297,7 +297,7 @@ public:
 
     void setBoundaryValuesGroup(std::size_t const group,
                                 Tessellation3D const& tess,
-                                std::size_t const index, 
+                                std::size_t const index,
                                 std::size_t const outside_point,
                                 double const dt,
                                 std::vector<ComputationalCell3D> const& cells,
@@ -305,7 +305,7 @@ public:
                                 double& A,
                                 double& b,
                                 std::size_t const face_index) const override;
-    
+
     void getOutsideValuesGroup(std::size_t const group,
                                Tessellation3D const& tess,
                                std::size_t const index,
@@ -314,7 +314,7 @@ public:
                                double const Eg_i,
                                double& Eg_outside,
                                Vector3D& v_outside) const override;
-    
+
     void setMomentumTermBoundaryGroup(std::size_t const group,
                                       Tessellation3D const& tess,
                                       std::size_t const index,
@@ -324,13 +324,13 @@ public:
                                       double const momentum_term_coefficient,
                                       double& A,
                                       double& b) const override;
-    
+
     void setBoundaryValuesGray(Tessellation3D const& tess,
                                std::size_t const index,
                                std::size_t const outside_point,
                                double const dt,
                                std::vector<ComputationalCell3D> const& cells,
-                               double const Area, 
+                               double const Area,
                                double& A,
                                double& b,
                                std::size_t const face_index) const override;
@@ -342,7 +342,7 @@ public:
                               double const Er_i,
                               double& Er_outside,
                               Vector3D& v_outside) const override;
-    
+
     void setMomentumTermBoundaryGray(Tessellation3D const& tess,
                                      std::size_t const index,
                                      std::size_t const outside_point,
