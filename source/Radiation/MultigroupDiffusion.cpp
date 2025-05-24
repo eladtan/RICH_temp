@@ -64,7 +64,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
         compton_on),
     energy_groups_center(energy_groups_center_),
     energy_groups_boundary(energy_groups_boundary_),
-    energy_groups_width(get_energy_groups_width(energy_groups_center)),
+    energy_groups_width(get_energy_groups_width(energy_groups_boundary)),
     coefficient_calculator(coefficient_calc),
     boundary_calculator(boundary_calc),
     cells_cgs(),
