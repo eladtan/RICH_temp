@@ -9,8 +9,7 @@ MultigroupDiffusionBoundaryCalculator
 ::MultigroupDiffusionBoundaryCalculator(std::vector<double> const& energy_groups_center_,
                                         std::vector<double> const& energy_groups_boundary_) :
     energy_groups_center(energy_groups_center_),
-    energy_groups_boundary(energy_groups_boundary_) {
-}
+    energy_groups_boundary(energy_groups_boundary_) {}
 
 MultigroupDiffusionSideBoundary
 ::MultigroupDiffusionSideBoundary(double const temperature_,
