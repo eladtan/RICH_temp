@@ -340,7 +340,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full);
     tot_iters += total_iters;
 
-    if (rank == 0) std::cout<<"Total iterations: "<<tot_iters<<std::endl;
+    if (rank == 0) std::cout << "Total iterations: " << tot_iters << std::endl;
 
     PostCG(tess, extensives, dt, cells, new_Eg, new_Eg_full);
 
@@ -353,8 +353,7 @@ bool MultigroupDiffusion::step(double const tolerance,
 
 double  MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
 {
-    if (g == 0 or (g + 1) == ENERGY_GROUPS_NUM)
-    {
+    if (g == 0 or (g + 1) == ENERGY_GROUPS_NUM) {
         return 0.0;
     }
 
@@ -757,7 +756,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
                                  std::vector<Conserved3D>& extensives,
                                  double const dt,
                                  std::vector<ComputationalCell3D>& cells,
-                                 std::vector<double>const& CG_result,
+                                 std::vector<double> const& CG_result,
                                  std::vector<double> const& full_CG_result) const {
 
     auto const N = tess.GetPointNo();
@@ -1146,7 +1145,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
             displayed_warning_ = true;
             std::cout << "bad groups! planckian not covered well! cell " << i << " T " << old_Tm[i] <<" ID "<<cells[i].ID<<std::endl;
             std::cout << "bad planck_sum " << planck_sum << std::endl;
-            // throw UniversalError("bad groups! planckian not covered well!");
+            throw UniversalError("bad groups! planckian not covered well!");
         }
     }
 }
