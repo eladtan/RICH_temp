@@ -64,7 +64,7 @@ int main(void)
 	std::vector<double> energy_groups_boundary(G+1);
 
 	double const Emin = kev*1e-3;
-	double const Emax = kev*3e2;
+	double const Emax = kev*6e2;
 	
 	energy_groups_boundary[0] = Emin;
 	for(std::size_t g=0; g < G; ++g){
