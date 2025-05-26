@@ -202,11 +202,11 @@ double MultigroupDiffusion::calculate_dt(double const dt,
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 
-    double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
+    double max_Er = old_Er.size() > 0 ? *std::max_element(old_Er.begin(), old_Er.end()) : std::numeric_limits<double>::min();
     double max_rhoT = 0;
     auto const N = tess.GetPointNo();
-    for (size_t i=0; i < N; ++i)
-        max_rhoT = std::max(max_rhoT, cells[i].density * cells[i].temperature);
+    
+    for (size_t i=0; i < N; ++i) max_rhoT = std::max(max_rhoT, cells[i].density * cells[i].temperature);
 
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);

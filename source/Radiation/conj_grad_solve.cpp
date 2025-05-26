@@ -16,9 +16,9 @@ namespace CG
         // since we are 1D decomposing the matrix by rows
 
         size_t const sub_num_rows = sub_A_values.size();
+        if(sub_num_rows == 0) return;
+
         size_t const sub_num_cols = sub_A_values[0].size();
-        if(sub_num_rows == 0)
-            return;
         result.resize(sub_num_rows, 0);
         double dot_prod;
         for (size_t i = 0; i < sub_num_rows; i++) {
@@ -110,14 +110,16 @@ namespace CG
     {
         max_loc0 /= slice;
         max_loc1 /= slice;
-        if(rank == 0)
-            std:: cout << "Converged at iter = " << i <<" error "<<error<<" negative value "<<max_data_2_val<<std::endl;
-        if(rank == max_data_0_id)
-            std::cout<<"Max0 "<<max_data_0_val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-            <<" X "<<tess.GetMeshPoint(max_loc0)<<std::endl; 
-        if(rank == max_data_1_id)
-            std::cout<<"Max1 "<<max_data_1_val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-            <<" X "<<tess.GetMeshPoint(max_loc1)<<std::endl; 
+        if (cells.size() > max_loc0 and cells.size() > max_loc1){
+            if(rank == 0)
+                std:: cout << "Converged at iter = " << i <<" error "<<error<<" negative value "<<max_data_2_val<<std::endl;
+            if(rank == max_data_0_id)
+                std::cout<<"Max0 "<<max_data_0_val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
+                <<" X "<<tess.GetMeshPoint(max_loc0)<<std::endl; 
+            if(rank == max_data_1_id)
+                std::cout<<"Max1 "<<max_data_1_val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
+                <<" X "<<tess.GetMeshPoint(max_loc1)<<std::endl; 
+        }
         total_iters = i;
 #ifdef RICH_MPI
         MPI_exchange_data(tess, sub_x, true, slice);
@@ -179,9 +181,10 @@ namespace CG
     void build_M(const mat &sub_A_values, const size_t_mat &sub_A_indices, std::vector<double> &M)
     {
         size_t const sub_num_rows = sub_A_values.size();
+        if(sub_num_rows == 0) return;
+        int rank = 0;
+
         size_t const sub_num_cols = sub_A_values[0].size();
-        if(sub_num_rows == 0)
-            return;
         M.resize(sub_num_rows);
         for (size_t i = 0; i < sub_num_rows; i++) {
             for (size_t j = 0; j < sub_num_cols; j++) {
@@ -480,7 +483,7 @@ namespace CG
         {
             double val;
             int mpi_id;
-        }max_data[3];
+        } max_data[3];
         max_data[0].mpi_id = rank;
         max_data[1].mpi_id = rank;
         max_data[2].mpi_id = rank;
