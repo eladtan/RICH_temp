@@ -85,7 +85,7 @@ public:
                 std::vector<Conserved3D>& extensives,
                 double const dt,
                 std::vector<ComputationalCell3D>& cells,
-                std::vector<double>const& CG_result,
+                std::vector<double> const& CG_result,
                 std::vector<double> const& full_CG_result) const override;
 
     MultigroupDiffusionCoefficientCalculator const& coefficient_calculator;
@@ -95,46 +95,47 @@ public:
     std::vector<double> const energy_groups_boundary;
     std::vector<double> const energy_groups_width;
 
-    mutable std::vector<ComputationalCell3D> cells_cgs;
+    mutable std::vector<ComputationalCell3D> cells_cgs; // cells vector s.t. the fields used in the radiation module (i.e. density, velocity, internal_energy, Erad, Eg) are in cgs.
 
-    mutable std::vector<std::vector<double>> sigma_absorption_group; // [group][cell]
-    mutable std::vector<std::vector<double>> sigma_scattering_group; // [group][cell]
-    mutable std::vector<std::vector<double>> planck_integal_group;   // [group][cell]
+    mutable std::vector<std::vector<double>> sigma_absorption_group; // absorption opacity per group per cell (1/cm) [group][cell]
+    mutable std::vector<std::vector<double>> sigma_scattering_group; // scattering opacity per group per cell (1/cm) [group][cell]
+    mutable std::vector<std::vector<double>> planck_integal_group;   // the integral of the Planck distribution on each group per cell [group][cell]
 
-    mutable std::vector<double> sigma_absorption_planck;
+    mutable std::vector<double> sigma_absorption_planck; // the Planck weighted absorption opacity per cell (1/cm)
     mutable std::vector<double> fleck_factor;
 
-    mutable std::vector<double> new_Eg;
-    mutable std::vector<double> new_Eg_full;
+    mutable std::vector<double> new_Eg; // energy groups per cell at the end of the time step [cell*ENERGY_GROUPS_NUM + group]
+    mutable std::vector<double> new_Eg_full; // energy groups per cell at the end of the time step (plus the residue/volume for algebraic energy conservation) [cell*ENERGY_GROUPS_NUM + group]
 
-    mutable std::vector<std::vector<double>> old_Eg;
+    mutable std::vector<std::vector<double>> old_Eg; // energy groups per cell at the beggining of the time step [cell][group] 
 
-    mutable std::vector<double> old_Er;
-    mutable std::vector<double> old_Tm;
+    mutable std::vector<double> old_Er; // total radiation energy per cell at the beggining of the time step [cell]
+    mutable std::vector<double> old_Tm; // temperature per cell at the beggining of the time step [cell]
 
-    mutable std::vector<double> max_abs_grad_E;
+    mutable std::vector<double> max_abs_grad_E; // maximal gradient of the total energy between a cell and its neighbors [cell]
     mutable std::vector<double> max_neighbor_abs_grad_E;
 
-    mutable std::vector<Vector3D> grad; // gradient ij for i < j
+    mutable std::vector<Vector3D> grad; // numerical gradient operator bewteen cells ij for i < j [face]
 
-    bool const doppler_on_;
-    double const minimum_temperature_;
+    bool const doppler_on_; // flag to indicate whether to add the doppler terms to the matrix
+    double const minimum_temperature_; // enforce a minimal temperature 
 
-    mutable ComptonMatrixMC compton_matrix_gen;
+    mutable ComptonMatrixMC compton_matrix_gen; // generator for Compton cross sections matrices
 
+    // used for Compton 
     mutable std::vector<std::vector<double>> tau;
     mutable std::vector<std::vector<double>> dtau_dUm;
     mutable std::vector<std::vector<double>> S;
     mutable std::vector<std::vector<double>> dSdUm;
 
     mutable std::vector<double> n; // occupancy number
-    mutable std::size_t cell_id_of_compton_matrices;
+    mutable std::size_t cell_id_of_compton_matrices; // for debugging make sure that the compton values are generated for the correct cell 
 
-    mutable std::vector<double> Gammas;
+    mutable std::vector<double> Gammas; // fleck_factor = 1.0 / (1.0 + c*dt*beta*Gamma)
 
 private:
-    bool const protections_on_;
-    mutable bool displayed_warning_;
+    bool const protections_on_; // flag whether to use Elad's protections on the amount of change allowed per time step (should not be on when running tests...)
+    mutable bool displayed_warning_; // flag whether to display the planck sum warning
 
     void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                 std::vector<ComputationalCell3D> const& cells,
@@ -144,7 +145,7 @@ private:
                                     std::vector<ComputationalCell3D> const& cells) const;
 
     void calculate_planck_absorption_coefficient(Tessellation3D const& tess,
-                                                               std::vector<ComputationalCell3D> const& cells) const;
+                                                 std::vector<ComputationalCell3D> const& cells) const;
 
     // helper functions
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
@@ -153,9 +154,35 @@ private:
 
     double calculate_Upsilon(ComputationalCell3D const& cell) const;
 
-    double get_implicit_compton_contribution(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, std::size_t const gt, double const dt_cgs) const;
 
-    double get_implicit_compton_contribution_to_b(Tessellation3D const& tess, ComputationalCell3D const& cell, std::size_t const cell_index, std::size_t const g, double const dt_cgs) const;
+    /**
+     * @brief Calculates the implicit compton scheme's contribution terms to the linear system left side.
+     *
+     * @param tess
+     * @param cell
+     * @param cell_index, g, gt indicates the equations and the group to which the term is for, the term for group `gt` of cell `cell_index` in the equation for energy group `g` of cell `cell_index`
+     * @param dt_cgs the time step in cgs units
+     */
+    double get_implicit_compton_contribution(Tessellation3D const& tess,
+                                             ComputationalCell3D const& cell,
+                                             std::size_t const cell_index,
+                                             std::size_t const g,
+                                             std::size_t const gt,
+                                             double const dt_cgs) const;
+
+    /**
+     * @brief Calculates the implicit compton scheme's contribution to the right side of the linear system.
+     *
+     * @param tess
+     * @param cell
+     * @param cell_index, g indicates the equations to which the term is for, equation for energy group `g` of cell `cell_index`
+     * @param dt_cgs the time step in cgs units
+     */
+    double get_implicit_compton_contribution_to_b(Tessellation3D const& tess,
+                                                  ComputationalCell3D const& cell,
+                                                  std::size_t const cell_index,
+                                                  std::size_t const g,
+                                                  double const dt_cgs) const;
 
     double get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
 };
