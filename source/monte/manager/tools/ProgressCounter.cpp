@@ -2,10 +2,11 @@
 
 #ifdef RICH_MPI
 
-ProgressCounter::ProgressCounter(const MPI_Comm &comm, int myNumParticles)
+ProgressCounter::ProgressCounter(const MPI_Comm &comm)
+    : comm(comm), destroyed(false)
 {
-    MPI_Comm_rank(comm, &this->rank);
-    MPI_Comm_size(comm, &this->size);
+    MPI_Comm_rank(this->comm, &this->rank);
+    MPI_Comm_size(this->comm, &this->size);
 
     this->master_rank = 0;
 
@@ -26,21 +27,45 @@ ProgressCounter::ProgressCounter(const MPI_Comm &comm, int myNumParticles)
         exit(1);
     }
     
+    this->counter = std::make_shared<GlobalCounter>(comm, 0);
+    
+    MPI_Barrier(comm);
+}
+
+void ProgressCounter::Reset(int myNumParticles)
+{
+    int totalNumParticles = 0;
+    MPI_Reduce(&myNumParticles, (void*)&totalNumParticles, 1, MPI_INT, MPI_SUM, this->master_rank, this->comm);
+
+    if(this->rank == this->master_rank)
+    {
+        this->counter->Set(totalNumParticles);
+    }
+
+    // reset `is_done`
     MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->is_done_win);
     int zero = 0;
     MPI_Put(&zero, 1, MPI_INT, this->rank, 0, 1, MPI_INT, this->is_done_win);
     MPI_Win_unlock(this->rank, this->is_done_win);
 
-    int totalNumParticles = 0;
-    MPI_Reduce(&myNumParticles, (void*)&totalNumParticles, 1, MPI_INT, MPI_SUM, this->master_rank, comm);
-    this->counter = std::make_shared<GlobalCounter>(comm, totalNumParticles);
+    MPI_Barrier(this->comm);
+}
 
-    MPI_Barrier(comm);
+void ProgressCounter::Destroy(void)
+{
+    if(this->destroyed)
+    {
+        return;
+    }
+    
+    this->counter->Destroy();
+    MPI_Win_free(&this->is_done_win);
+    this->destroyed = true;
 }
 
 ProgressCounter::~ProgressCounter()
 {
-    MPI_Win_free(&this->is_done_win);
+    this->Destroy();
 }
 
 int ProgressCounter::Increment(int n)
@@ -60,8 +85,11 @@ void ProgressCounter::MarkDone(void)
     MPI_Win_lock_all(MPI_MODE_NOCHECK, this->is_done_win);
     for(rank_t _rank = 0; _rank < this->size; _rank++)
     {
+        // MPI_Win_lock(MPI_LOCK_SHARED, _rank, MPI_MODE_NOCHECK, this->is_done_win);
         MPI_Put(&plus_one, 1, MPI_INT, _rank, 0, 1, MPI_INT, this->is_done_win);
+        // MPI_Win_unlock(_rank, this->is_done_win);
     }
+    MPI_Win_flush_all(this->is_done_win);
     MPI_Win_unlock_all(this->is_done_win);
 }
 

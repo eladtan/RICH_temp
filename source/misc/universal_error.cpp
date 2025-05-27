@@ -34,7 +34,7 @@ void reportError(UniversalError const& eo, std::ostream& os)
   #ifdef RICH_MPI
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    prefix = "==================" + to_string(rank) + "================== ";
+    prefix = "============" + to_string(rank) + "============ ";
   #endif // RICH_MPI
   os.precision(14);
   os << prefix << eo.getErrorMessage() << std::endl;

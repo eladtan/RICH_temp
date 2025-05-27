@@ -14,14 +14,13 @@ void MPI_Sync(const MPI_Comm &comm, const Function &func)
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &size);
 
-    if(rank > 0)
+    for(int i = 0; i < size; i++)
     {
-        MPI_Recv(NULL, 0, MPI_BYTE, rank - 1, SYNC_TAG, comm, MPI_STATUS_IGNORE);
-    }
-    func();
-    if(rank < size - 1)
-    {
-        MPI_Send(NULL, 0, MPI_BYTE, rank + 1, SYNC_TAG, comm);
+        if(rank == i)
+        {
+            func();
+        }
+        MPI_Barrier(comm);
     }
 }
 

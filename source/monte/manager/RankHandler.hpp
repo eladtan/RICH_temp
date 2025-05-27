@@ -300,6 +300,13 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             exit(1);
         }
     }
+    size_t peerNewBuffSize = std::ceil(this->peer_buffsize * factor);
+    if(newBuffSize < 10 or peerNewBuffSize < 10)
+    {
+        return;
+    }
+
+    // start reallocation
     this->buffsize = newBuffSize;
 
     if(this->size_internal > 1)

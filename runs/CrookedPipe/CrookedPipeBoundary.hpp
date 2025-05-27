@@ -1,17 +1,19 @@
-#ifndef SIDE_TEMPERATURE_HPP
-#define SIDE_TEMPERATURE_HPP
+#ifndef CROOKED_PIPE_BOUNDARY_HPP
+#define CROOKED_PIPE_BOUNDARY_HPP
 
 #include <boost/math/special_functions/pow.hpp>
-#include "BoundaryCondition.hpp"
+#include "monte/boundary/BoundaryCondition.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "3D/tesselation/utils/RandomOnFace.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
+#define MONTECARLO_EPS 1e-8
+
 template<typename T, typename Grid>
-class SideTemperature : public BoundaryCondition<T, Grid>
+class CrookedPipeBoundaryCondition : public BoundaryCondition<T, Grid>
 {
 public:
-    SideTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperature, size_t Npercell, bool withHydro = false);
+    CrookedPipeBoundaryCondition(const Grid &grid, const std::vector<ComputationalCell3D> &cells);
     
     MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
 
@@ -19,18 +21,15 @@ public:
 
 private:
     const std::vector<ComputationalCell3D> &cells;
-    double temperature;
-    size_t Npercell;
-    bool withHydro;
-};
+ };
 
 template<typename T, typename Grid>
-SideTemperature<T, Grid>::SideTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperature, size_t Npercell, bool withHydro):
-    BoundaryCondition<T, Grid>(grid), cells(cells), temperature(temperature), Npercell(Npercell), withHydro(withHydro)
+CrookedPipeBoundaryCondition<T, Grid>::CrookedPipeBoundaryCondition(const Grid &grid, const std::vector<ComputationalCell3D> &cells):
+    BoundaryCondition<T, Grid>(grid), cells(cells)
 {}
 
 template<typename T, typename Grid>
-MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
+MonteCarloParticleStatus CrookedPipeBoundaryCondition<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     MonteCarloParticleStatus status;
@@ -46,12 +45,9 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
         {
             // intersects this face
             normal /= abs(normal);
-            if(std::abs(normal.x) > 0.99)
+            if(std::abs(normal.x) > 0.99 && this->cells[particle.cellIndex].tracers[1] > 0.5)
             {
-                if(std::abs(particle.location.x - ll.x) < std::abs(ur.x - particle.location.x))
-                {
-                    return MonteCarloParticleStatus::REMOVE;
-                }
+                return MonteCarloParticleStatus::REMOVE;
             }
             // Reflect the particle
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
@@ -66,19 +62,17 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
 }
 
 template<typename T, typename Grid>
-std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
+std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
-    static const double T4 = boost::math::pow<4>(this->temperature);
+    static const double T4 = boost::math::pow<4>(0.5 * units::kev_kelvin);
     std::uniform_real_distribution<double> unif(0, 1);
     static std::mt19937_64 re(0);
-    double gamma;
 
     std::vector<MonteCarloParticle<T, Grid>> newParticles;
     size_t N = this->grid.GetPointNo();
     for(size_t i = 0; i < N; i++)
     {
         const ComputationalCell3D &cell = this->cells[i];
-        bool calculatedGamma = false;
         const T &point = this->grid.GetMeshPoint(i);
         for(const size_t &faceIdx : this->grid.GetCellFaces(i))
         {
@@ -87,22 +81,20 @@ std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBo
             if(neighborIdx >= N and this->grid.IsPointOutsideBox(neighborIdx))
             {
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
-                if(normal.x < -0.99)
+                if(normal.x < -0.99 && cell.tracers[1] > 0.5)
                 { // outside the box
-                    if(not calculatedGamma)
-                    {
-                        gamma = (this->withHydro)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
-                        calculatedGamma = true;
-                    }
-                    double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt * gamma / this->Npercell;
-                    for(size_t j = 0; j < this->Npercell; j++)
+                    // std::cout << "Generating 100 new particles on cell " << i << " (" << this->grid.GetMeshPoint(i) << "), face " << faceIdx << ", with normal " << normal << ", cell tracers[1] " << cell.tracers[1] << std::endl;
+                    double energyToProduce;
+                    energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / 100;
+                    for(size_t j = 0; j < 100; j++)
                     {
                         newParticles.emplace_back();
                         MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
                         newParticle.location = RandomPointOnFace(this->grid, faceIdx);
+                        newParticle.location = newParticle.location * (1 - MONTECARLO_EPS) + MONTECARLO_EPS * this->grid.GetMeshPoint(i);
                         double mu = std::sqrt(unif(re));
                         // Lambert Emission Law
-                        newParticle.velocity.x = mu;
+                        newParticle.velocity.x = (normal.x > 0)? -mu : mu;
                         double _1mmu = std::sqrt(1 - mu * mu);
                         double theta = 2 * M_PI * unif(re);
                         newParticle.velocity.y = _1mmu * std::cos(theta);
@@ -121,4 +113,4 @@ std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBo
     return newParticles;
 }
 
-#endif // SIDE_TEMPERATURE_HPP
+#endif // CROOKED_PIPE_BOUNDARY_HPP

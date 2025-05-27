@@ -4,13 +4,14 @@
 #include <random>
 #include "RadiationOpacity.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
+#include "LorentzTransformation.hpp"
 
-class PowerLawOpacity : public RadiationOpacity
+class MCPowerLawOpacity : public RadiationOpacity
 {
 public:
-    PowerLawOpacity(double sigmaA0, double sigmaS0, double sigmaA_rho, double sigmaA_T, double sigmaS_rho, double sigmaS_T);
+    MCPowerLawOpacity(double sigmaA0, double sigmaS0, double sigmaA_rho, double sigmaA_T, double sigmaS_rho, double sigmaS_T);
 
-    ~PowerLawOpacity() override = default;
+    inline ~MCPowerLawOpacity() override = default;
 
     double getPlanckOpacity(const ComputationalCell3D &cell) const override;
 

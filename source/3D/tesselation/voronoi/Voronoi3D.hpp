@@ -169,7 +169,7 @@ private:
   void UpdateCMs(void);
   
   void UpdateRangeFinder(void);
-
+  
   #ifdef RICH_MPI
     std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
     void FilterRealGhostPoints();
@@ -275,6 +275,8 @@ public:
   void BuildInitialize(size_t num_points);
 
   void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) override;
+
+  bool IsPointInCell(const Vector3D &point, size_t cellIndex) const override;
 
 #ifdef RICH_MPI
 

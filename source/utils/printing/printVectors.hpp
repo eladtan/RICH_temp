@@ -56,4 +56,10 @@ std::ostream &operator<<(std::ostream &stream, const boost::container::small_vec
     return printVec(stream, vector);
 }
 
+template<typename T, size_t N>
+std::ostream &operator<<(std::ostream &stream, const std::array<T, N> &array)
+{
+    return printVec(stream, array);
+}
+
 #endif // PRINT_VECTORS_HPP

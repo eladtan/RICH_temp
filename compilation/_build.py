@@ -22,6 +22,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
     if args.with_sanitizer:
         print("With Sanitizer")
         common_cxx_flags += " -fsanitize=address "
+    if args.montecarlo_debug:
+        common_cxx_flags += " -DMONTECARLO_DEBUG "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = f" -DNDEBUG -DOMPI_SKIP_MPICXX {RELEASE_OPTIMIZATION_LEVEL}"
     

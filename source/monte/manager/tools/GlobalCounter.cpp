@@ -8,6 +8,19 @@ GlobalCounter::GlobalCounter(const MPI_Comm &comm, int globalInitialValue)
     MPI_Comm_rank(comm, &this->rank);
     MPI_Comm_size(comm, &this->size);
 
+    auto reportErrorAndExit = [](const std::string &str, int err)
+    {
+        if(err == MPI_SUCCESS)
+        {
+            return;
+        }
+        char error_string[MPI_MAX_ERROR_STRING];
+        int length_of_error_string;
+        MPI_Error_string(err, error_string, &length_of_error_string);
+        std::cerr << "Error: " << str << ": " << error_string << std::endl;
+        exit(1);
+    };
+
     this->master_rank = 0;
     bool master = (this->rank == this->master_rank);
     MPI_Info info;
@@ -15,7 +28,9 @@ GlobalCounter::GlobalCounter(const MPI_Comm &comm, int globalInitialValue)
     MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
     MPI_Info_set(info, "accumulate_ops", "same_op");
     MPI_Info_set(info, "same_disp_unit", "true");
-    MPI_Win_allocate((master)? sizeof(size_t) : 0, sizeof(size_t), info, comm, &this->counter, &this->counter_win);
+    int err = MPI_Win_allocate((master)? sizeof(size_t) : 0, sizeof(size_t), info, comm, &this->counter, &this->counter_win);
+    reportErrorAndExit("MPI_Win_allocate for GlobalCounter", err);
+    
     MPI_Win_set_errhandler(this->counter_win, MPI_ERRORS_RETURN);
     MPI_Info_free(&info);
 
@@ -29,15 +44,33 @@ GlobalCounter::GlobalCounter(const MPI_Comm &comm, int globalInitialValue)
 
     if(this->rank == this->master_rank)
     {
-        *this->counter = globalInitialValue;
+        this->Set(globalInitialValue);
     }
     MPI_Barrier(comm);
 }
 
-GlobalCounter::~GlobalCounter()
+void GlobalCounter::Destroy(void)
 {
+    if(this->destroyed)
+    {
+        return;
+    }
+    
     MPI_Win_free(&this->counter_win);
     MPI_Barrier(this->comm);
+    this->destroyed = true;
+}
+
+GlobalCounter::~GlobalCounter()
+{
+    this->Destroy();
+}
+
+void GlobalCounter::Set(int n)
+{
+    MPI_Win_lock(MPI_LOCK_SHARED, this->master_rank, MPI_MODE_NOCHECK, this->counter_win);
+    MPI_Put(&n, 1, MPI_INT, this->master_rank, 0, 1, MPI_INT, this->counter_win);
+    MPI_Win_unlock(this->master_rank, this->counter_win);
 }
 
 int GlobalCounter::Increment(int n)

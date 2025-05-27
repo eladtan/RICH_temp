@@ -3036,6 +3036,22 @@ bool Voronoi3D::NearBoundary(std::size_t index) const
     return false;
 }
 
+bool Voronoi3D::IsPointInCell(const Vector3D &point, size_t cellIndex) const
+{
+    for(size_t faceIdx : this->FacesInCell_[cellIndex])
+    {
+        const Vector3D &p1 = this->del_.points_[this->GetFaceNeighbors(faceIdx).first];
+        const Vector3D &p2 = this->del_.points_[this->GetFaceNeighbors(faceIdx).second];
+        Vector3D normal = (this->GetFaceNeighbors(faceIdx).second == cellIndex)? p2 - p1 : p1 - p2;
+        Vector3D p = (p1 + p2) * 0.5;
+        if(ScalarProd(normal, point - p) < 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool Voronoi3D::IsPointOutsideBox(size_t index) const
 {
     if(box_faces_.empty())

@@ -13,6 +13,7 @@
 
 #define MONTECARLO_EPSILON 1e-8
 #define REALLOCATION_FACTOR 2
+#define DEFAULT_BUFFER_SIZE 1000
 
 template<typename T, typename Grid>
 class MonteCarloManagerSerial
@@ -33,7 +34,7 @@ public:
 
     ~MonteCarloManagerSerial();
 
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, dt_t fullDt, size_t bufferSizes);
+    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, dt_t fullDt);
     
     class Tracker
     {
@@ -59,12 +60,11 @@ private:
     size_t Ncells;
     int progress;
     T ll, ur;
-    size_t numScatters; // todo: remove?
     std::shared_ptr<MonteCarloPhysics<T, Grid>> physics;
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
     Tracker tracker;
-    size_t particleCounter;
+    size_t myIDCounter;
 
     struct
     {
@@ -82,7 +82,7 @@ private:
 
     void PutSelfParticles(const std::vector<MCParticle> &particles);
 
-    void PrepareForStep(size_t bufferSizes);
+    void PrepareForStep(void);
 
     void AddParticles(const std::vector<MCParticle> &particles);
 };
@@ -90,14 +90,13 @@ private:
 template<typename T, typename Grid>
 MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl, 
                                             const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition):
-    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition)
+    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), myIDCounter(0)
+
 {}
 
 template<typename T, typename Grid>
-void MonteCarloManagerSerial<T, Grid>::PrepareForStep(size_t bufferSizes)
+void MonteCarloManagerSerial<T, Grid>::PrepareForStep(void)
 {
-    this->numScatters = 0;
-    this->particleCounter = 0;
     this->Ncells = this->grid.GetPointNo();
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
 }
@@ -137,8 +136,8 @@ void MonteCarloManagerSerial<T, Grid>::AddParticles(const std::vector<MCParticle
     index_t *avIndices = this->particlesData.av + this->particlesData.av_length;
     index_t *thIndices = this->particlesData.th + this->particlesData.th_length;
     this->particlesData.th_length += particlesNum;
-    size_t firstID = this->particleCounter;
-    this->particleCounter += particles.size();
+    size_t firstID = this->myIDCounter;
+    this->myIDCounter += particles.size();
 
     for(size_t i = 0; i < particlesNum; i++)
     {
@@ -224,18 +223,18 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles
         this->particlesData.av[i] = idx;
     }
 
-    size_t firstID = this->particleCounter;
+    size_t firstID = this->myIDCounter;
     size_t assignedCounter = 0;
     for(size_t i = 0; i < particlesNum; i++)
     {
-        if(this->particlesData.particles[i].id >= this->particleCounter)
+        if(this->particlesData.particles[i].id == std::numeric_limits<size_t>::max())
         {
             this->particlesData.particles[i].id = firstID + assignedCounter;
             assignedCounter++;
         }
         // std::cout << "Assigned ID " << firstID + i << std::endl;
     }
-    this->particleCounter += assignedCounter;
+    this->myIDCounter += assignedCounter;
 }
 
 template<typename T, typename Grid>
@@ -346,10 +345,10 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::step(const std::vector<MCParticle> &particleList, dt_t fullDt, size_t bufferSizes)
+std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::step(const std::vector<MCParticle> &particleList, dt_t fullDt)
 
 {
-    this->PrepareForStep(bufferSizes);
+    this->PrepareForStep();
     this->PutSelfParticles(particleList);
     this->resetTracker();
 

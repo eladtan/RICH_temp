@@ -18,6 +18,98 @@
 #define MONTECARLO_EPSILON 1e-8
 #define DEFAULT_BUFFER_SIZE 10
 
+std::vector<rank_t> GetRanksOrder(const MPI_Comm &comm)
+{
+    rank_t rank, size;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    rank_t even_comm_size = (size / 2) * 2;
+
+    bool sizeIsEven = (even_comm_size == size);
+    std::vector<rank_t> ranks(even_comm_size);
+    std::iota(ranks.begin(), ranks.end(), 0);
+        
+    rank_t lastRank = size - 1;
+
+    std::vector<rank_t> myOrder;
+    if(not sizeIsEven)
+    {
+        if(rank != lastRank)
+        {
+            myOrder = {rank};
+        }
+    }
+    else
+    {
+        myOrder = {rank};
+    }
+    
+    rank_t P = even_comm_size / 2;
+
+    for(rank_t i = 0; i < (even_comm_size - 1); i++)
+    {
+        for(rank_t j = 0; j < P; j++)
+        {
+            rank_t a = ranks[j];
+            rank_t b = ranks[even_comm_size - 1 - j];
+            if(rank == a)
+            {
+                myOrder.push_back(b);
+            }
+            if(rank == b)
+            {
+                myOrder.push_back(a);
+            }
+        }
+
+        std::vector<rank_t> new_ranks = {ranks[0], ranks.back()};
+        new_ranks.insert(new_ranks.end(), ranks.begin() + 1, ranks.end() - 1);
+        ranks = std::move(new_ranks);
+    }
+
+    assert(myOrder.size() == even_comm_size);
+    return myOrder;
+}
+
+void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, const std::function<void(rank_t)> &func)
+{
+    rank_t rank, size;
+    MPI_Comm_size(comm, &size);
+    MPI_Comm_rank(comm, &rank);
+
+    for(const rank_t &_rank : order)
+    {
+        MPI_Barrier(comm);
+        func(_rank);
+    }
+
+    rank_t lastRank = size - 1;
+    rank_t even_comm_size = (size / 2) * 2;
+    bool sizeIsEven = (even_comm_size == size);
+
+    if(not sizeIsEven)
+    {
+        if(rank == lastRank)
+        {
+            for(rank_t i = 0; i < even_comm_size; i++)
+            {
+                MPI_Barrier(comm); // match with their barrier
+            }
+        }
+        // now everybody need to synchronize with rank `N-1`
+        for(rank_t _rank = 0; _rank < size; _rank++)
+        {
+            MPI_Barrier(comm);
+            if(rank == lastRank or rank == _rank)
+            {
+                rank_t otherRank = (rank == _rank)? lastRank : _rank;
+                func(otherRank);
+            }
+        }
+    }
+    MPI_Barrier(comm);
+}
+
 template<typename T, typename Grid>
 class MonteCarloManager
 {
@@ -51,7 +143,7 @@ public:
     class Tracker
     {
     public:
-        Tracker(void);
+        Tracker(const MPI_Comm &comm);
 
         void Reset(void);
 
@@ -64,6 +156,7 @@ public:
         void ReportParticle(MCParticle &particle);
     
     private:
+        const MPI_Comm &comm;
         boost::container::flat_map<size_t, std::vector<MCParticle>> track;
     };
 
@@ -78,6 +171,7 @@ private:
     size_t Ncells;
     std::shared_ptr<ProgressCounter> progress;
     std::vector<MPI_Comm> communicators;
+    std::vector<rank_t> ranksOrder;
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
     std::vector<RankHandler*> rankHandlers;
     T ll, ur;
@@ -88,8 +182,8 @@ private:
     std::shared_ptr<ReallocationAgent> reallocationAgent;
     size_t myIDCounter;
     size_t currentStep;
-
-    bool HandleAll(MonteCarloStepFinalData &cache);
+    
+    bool HandleAll(MonteCarloStepFinalData &stepData);
 
     void PutSelfParticles(const std::vector<MCParticle> &particles);
 
@@ -109,6 +203,7 @@ private:
 template<typename T, typename Grid>
 boost::container::flat_map<size_t, std::pair<rank_t, size_t>> MonteCarloManager<T, Grid>::GetGhostMap(void)
 {
+    ranks_ghost_map.clear();
     std::vector<std::vector<size_t>> incoming = MPI_exchange_data(this->grid.GetDuplicatedProcs(), this->grid.GetDuplicatedPoints());
     const std::vector<std::vector<size_t>> &ghosts = this->grid.GetGhostIndeces();
     for(size_t i = 0; i < incoming.size(); i++)
@@ -126,12 +221,17 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> MonteCarloManager<
 template<typename T, typename Grid>
 MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl, 
                                             const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, size_t bufferSizes, const MPI_Comm &comm):
-    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL)
+    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm)
 {
     this->myIDCounter = 0;
     this->currentStep = 0;
+    this->progress = std::make_shared<ProgressCounter>(comm);
     this->SetCommunicator(comm);
     this->InitializeHandlers(bufferSizes);
+    if(this->rank_world == 0)
+    {
+        std::cout << "Done initializing MonteCarloManager" << std::endl;
+    }
 }
 
 template<typename T, typename Grid>
@@ -139,28 +239,14 @@ void MonteCarloManager<T, Grid>::InitializeHandlers(size_t bufferSizes)
 {
     this->rankHandlers = std::vector<RankHandler*>(this->size_world, nullptr);
 
-    size_t i = 0;
-    for(int rank1 = 0; rank1 < this->size_world; rank1++)
+    auto createHandler = [&](rank_t _rank)
     {
-        for(int rank2 = 0; rank2 <= rank1; rank2++) // self SHOULD be included
-        {
-            MPI_Barrier(this->comm_world);
-            MPI_Comm &communicator = this->communicators[i];
-            i++;
-            
-            if(rank1 == this->rank_world or rank2 == this->rank_world)
-            {
-                assert(communicator != MPI_COMM_NULL);
-                rank_t other_rank = (rank1 == this->rank_world)? rank2 : rank1;
-                this->rankHandlers[other_rank] = new RankHandler(bufferSizes, this->comm_world, communicator, this->reallocationAgent);
-            }
-            else
-            {
-                assert(communicator == MPI_COMM_NULL);
-            }
-        }
-    }
+        this->rankHandlers[_rank] = new RankHandler(bufferSizes, this->comm_world, this->communicators[_rank], this->reallocationAgent);
+    };
+    
+    ForEachRankSync(this->comm_world, this->ranksOrder, createHandler);
 
+    MPI_Barrier(this->comm_world);
 }
 
 template<typename T, typename Grid>
@@ -171,15 +257,22 @@ void MonteCarloManager<T, Grid>::ClearCommunicator()
         return;
     }
 
-    for(size_t i = 0; i < this->communicators.size(); i++)
+    if(this->communicators.size() < this->size_world)
     {
-        MPI_Comm &comm = this->communicators[i];
-        if(comm != MPI_COMM_NULL)
-        {
-            MPI_Comm_free(&comm);
-        }
-        MPI_Barrier(this->comm_world);
+        return;
     }
+
+    auto clearRankComm = [this](rank_t _rank)
+    {
+        MPI_Comm &comm = this->communicators[_rank];
+        if(comm == MPI_COMM_NULL)
+        {
+            return;
+        }
+        MPI_Comm_free(&comm);
+    };
+
+    ForEachRankSync(this->comm_world, this->ranksOrder, clearRankComm);
 
     this->comm_world = MPI_COMM_NULL;
 }
@@ -193,19 +286,44 @@ void MonteCarloManager<T, Grid>::SetCommunicator(const MPI_Comm &comm)
     MPI_Comm_rank(this->comm_world, &this->rank_world);
     MPI_Comm_size(this->comm_world, &this->size_world);
 
-    this->communicators.clear();
+    this->ranksOrder = GetRanksOrder(this->comm_world);
 
-    for(int rank1 = 0; rank1 < this->size_world; rank1++)
+    this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
+
+    MPI_Group worldGroup;
+    MPI_Comm_group(MPI_COMM_WORLD, &worldGroup);
+    auto setComm = [&](rank_t _rank)
     {
-        for(int rank2 = 0; rank2 <= rank1; rank2++)
-        {
-            int color = (this->rank_world == rank1 || this->rank_world == rank2) ? 1 : MPI_UNDEFINED;
+        MPI_Group group;
+        int ranks[2] = {std::min(this->rank_world, _rank), std::max(this->rank_world, _rank)};
+        int tag = ranks[0] * this->size_world + ranks[1];
+        MPI_Group_incl(worldGroup, (_rank == this->rank_world)? 1 : 2, ranks, &group);
+        MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[_rank]);
+        MPI_Group_free(&group);
+    };
 
-            MPI_Comm new_comm = MPI_COMM_NULL;
-            MPI_Comm_split(this->comm_world, color, this->rank_world, &new_comm);
-            this->communicators.push_back(new_comm);
-        }
-    }
+    ForEachRankSync(this->comm_world, this->ranksOrder, setComm);
+
+    MPI_Group_free(&worldGroup);
+
+    // for(int rank1 = 0; rank1 < this->size_world; rank1++)
+    // {
+    //     for(int rank2 = 0; rank2 <= rank1; rank2++)
+    //     {
+    //         int color = (this->rank_world == rank1 || this->rank_world == rank2) ? 1 : MPI_UNDEFINED;
+
+    //         MPI_Comm new_comm = MPI_COMM_NULL;
+    //         MPI_Comm_split(this->comm_world, color, this->rank_world, &new_comm);
+    //         this->communicators.push_back(new_comm);
+
+    //         if(this->rank_world == rank1 or this->rank_world == rank2)
+    //         {
+    //             rank_t otherRank = (rank1 == this->rank_world)? rank2 : rank1;
+    //             this->myCommunicators[otherRank] = new_comm;
+    //         }
+    //     }
+    // }
+
 
     auto reallocationFunction = [this](rank_t rank)
     {
@@ -213,10 +331,6 @@ void MonteCarloManager<T, Grid>::SetCommunicator(const MPI_Comm &comm)
     };
 
     this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction);
-    if(this->rank_world == 0)
-    {
-        std::cout << "Finished communicators creation" << std::endl;
-    }
 }
 
 template<typename T, typename Grid>
@@ -277,6 +391,25 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
         // set ID
         particle->rank = this->rank_world;
         particle->id = firstID + i;
+
+        #ifdef MONTECARLO_DEBUG
+        if(not this->grid.IsPointInCell(particle->location, particle->cellIndex))
+        {
+            const T &declaredCell = this->grid.GetMeshPoint(particle->cellIndex);
+            size_t containingIdx = this->grid.GetContainingCell(particle->location);
+            const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+            UniversalError eo("MonteCarloManager<T, Grid>::AddParticles");
+            eo.addEntry("rank", this->rank_world);
+            eo.addEntry("Particle", *particle);
+            eo.addEntry("Declared Cell Index", particle->cellIndex);
+            eo.addEntry("Declared Cell", declaredCell);
+            eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle->location));
+            eo.addEntry("Real Containing Cell Index", containingIdx);
+            eo.addEntry("Real Containing Cell", containingCell);
+            eo.addEntry("Real Cell - Distance", abs(containingCell - particle->location));
+            throw eo;
+        }
+        #endif // MONTECARLO_DEBUG
     }
 
     this->progress->Increment(particlesNum);
@@ -288,10 +421,11 @@ MonteCarloManager<T, Grid>::~MonteCarloManager()
 {
     this->FreeHandlers();
     this->ClearCommunicator();
+    this->progress->Destroy();
 }
 
 template<typename T, typename Grid>
-MonteCarloManager<T, Grid>::Tracker::Tracker(void)
+MonteCarloManager<T, Grid>::Tracker::Tracker(const MPI_Comm &comm): comm(comm)
 {}
 
 template<typename T, typename Grid>
@@ -325,7 +459,7 @@ template<typename T, typename Grid>
 std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::Tracker::GetTrackParticleRoute(size_t id)
 {
     std::vector<MCParticle> local = this->GetLocalTrackParticleRoute(id);
-    std::vector<MCParticle> global = MPI_All_cast(local, this->comm_world);
+    std::vector<MCParticle> global = MPI_All_cast(local, this->comm);
     // sort by `particle.steps`
     std::sort(global.begin(), global.end(), [](const MCParticle &a, const MCParticle &b) { return a.steps < b.steps; });
     return global;
@@ -362,8 +496,12 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(const std::
     {
         assert(i < handler->buffsize);
         handler->th[i] = i;
-        handler->particles[i].rank = this->rank_world;
-        handler->particles[i].id = this->myIDCounter++;
+        if(handler->particles[i].id == std::numeric_limits<size_t>::max())
+        {
+            // no ID has been assigned
+            handler->particles[i].rank = this->rank_world;
+            handler->particles[i].id = this->myIDCounter++;
+        }
     }
 
     size_t availLength = handler->buffsize - particlesNum;
@@ -487,6 +625,12 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             size_t particleIndex = handler->th[i];
             assert(particleIndex < handler->buffsize);
             MCParticle &particle = handler->particles[particleIndex];
+            bool debug = false;
+            // debug = debug or (particle.id == 6480574 and particle.rank == 21);
+            // debug = debug or (particle.id == 6531002 and particle.rank == 9);
+            // debug = debug or (particle.id == 6531241 and particle.rank == 27);
+            // debug = debug or (particle.id == 6582636 and particle.rank == 10);
+
             if(particle.on_track)
             {
                 this->tracker.ReportParticle(particle);
@@ -496,7 +640,10 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             T prevLoc = particle.location;
             MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
             // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
-
+            if(debug)
+            {
+                std::cout << "Particle " << particle << ", functionality is " << functionality.change << std::endl;
+            }
             if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
             {
                 size_t nextCellIndex = functionality.nextCellIndex;
@@ -510,8 +657,36 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                 if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                 {
                     // local neighbor
+                    size_t previousCell = particle.cellIndex;
                     particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                     particle.cellIndex = nextCellIndex;
+                    #ifdef MONTECARLO_DEBUG
+                    if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
+                    {
+                        const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                        size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                        const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                        UniversalError eo("Particle is in Wrong Location");
+                        eo.addEntry("rank", this->rank_world);
+                        eo.addEntry("Particle", particle);
+                        eo.addEntry("Previous Cell Index", previousCell);
+                        eo.addEntry("Previous Location", prevLoc);
+                        eo.addEntry("Declared Cell Index", particle.cellIndex);
+                        eo.addEntry("Declared Cell", declaredCell);
+                        eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
+                        eo.addEntry("Real Containing Cell Index", containingIdx);
+                        eo.addEntry("Real Containing Cell", containingCell);
+                        eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
+                        for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
+                        {
+                            eo.addEntry("Face Index", faceIdx);
+                            eo.addEntry("Face normal", this->grid.Normal(faceIdx));
+                            eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
+                            eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
+                        }
+                        throw eo;
+                    }
+                    #endif // MONTECARLO_DEBUG
                 }
                 else
                 {
@@ -521,6 +696,10 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     {
                         // leaving domain
                         MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                        if(debug)
+                        {
+                            std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;
+                        }
                         if(status == MonteCarloParticleStatus::REFLECT)
                         {}
                         else if(status == MonteCarloParticleStatus::REMOVE)
@@ -653,7 +832,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         }
     }
 
-    this->progress = std::make_shared<ProgressCounter>(this->comm_world, totalParticles);
+    this->progress->Reset(totalParticles);
+    size_t initialParticlesNum = particleList.size();
 
     RankHandler *handler = this->rankHandlers[this->rank_world];
     size_t numParticles = *handler->th_length;
@@ -664,9 +844,17 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     this->physics->updateGridData();
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+    size_t preStepParticlesNum = newParticles1.size();
     this->AddParticles(newParticles1);
     MPI_Barrier(this->comm_world);
     
+    size_t startingParticleNum = particleList.size() + preStepParticlesNum;
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &startingParticleNum, &startingParticleNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "All ranks are starting step() with " << startingParticleNum << " particles in total" << std::endl;
+    }
+
     MonteCarloStepFinalData data;
     // measure time
     // vtune_start();
@@ -677,23 +865,26 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         this->progress->Sync();
     }
     auto end = std::chrono::high_resolution_clock::now();
+    
+    MPI_Barrier(this->comm_world);
 
     std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
     this->physics->postStep(populationControlParticles);
 
-    MPI_Barrier(this->comm_world);
     double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
 
     size_t newParticlesNum = populationControlParticles.size();
     size_t leavingNumber = data.leaving.size();
     // std::cout << "leavingNumber = " << leavingNumber << " and newParticlesNum = " << newParticlesNum << std::endl; 
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &initialParticlesNum, &initialParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepParticlesNum, &preStepParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &leavingNumber, &leavingNumber, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &newParticlesNum, &newParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    if(this->rank_world == 0)
-    {
-        // std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << std::endl;
-    }
+    // if(this->rank_world == 0)
+    // {
+    //     std::cout << "Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << std::endl;
+    // }
     MPI_Barrier(this->comm_world);
     // vtune_stop();
     // return data.finalData;

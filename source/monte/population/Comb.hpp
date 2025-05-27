@@ -61,6 +61,9 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
             }
             continue;
         }
+
+        std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return p1->rank < p2->rank or (p1->rank == p2->rank and p1->id < p2->id);});
+
         std::shuffle(particlesInCells[i].begin(), particlesInCells[i].end(), gen);
     
         double new_energy = weights[i] / this->n;

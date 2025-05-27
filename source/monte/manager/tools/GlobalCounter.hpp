@@ -12,17 +12,22 @@ public:
 
     ~GlobalCounter();
 
+    void Set(int n);
+
+    void Destroy(void);
+
     int Increment(int n);
 
     inline int Decrement(int n = 1){return this->Increment(-n);};
 
-    int GetValue(void) const{return *this->counter;};
+    inline int GetValue(void) const{return *this->counter;};
 
 private:
     MPI_Comm comm;
     rank_t rank, size, master_rank;
     volatile int *counter;
     MPI_Win counter_win;
+    bool destroyed;
 };
 
 #endif // RICH_MPI

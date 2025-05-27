@@ -401,9 +401,9 @@ QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>:
                     break;
                 default:
                     UniversalError eo("Received unrecognized tag in BusyWaitQueryAgent");
+                    eo.addEntry("Tag", status.MPI_TAG);
                     eo.addEntry("My rank", this->rank);
                     eo.addEntry("From whom", status.MPI_SOURCE);
-                    eo.addEntry("Tag", status.MPI_TAG);
                     throw eo;
             }
         }

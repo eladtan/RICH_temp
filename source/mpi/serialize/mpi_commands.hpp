@@ -6,6 +6,7 @@
 #include <functional>
 #include <mpi.h>
 #include "Serializer.hpp"
+#include "mpi/mpi_commands.hpp"
 #include "misc/universal_error.hpp"
 
 template<typename T, template<typename...> class Container, typename... Ts>
@@ -14,7 +15,8 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
     rank_t size;
     Serializer send;
     MPI_Comm_size(comm, &size);
-
+    assert(data.size() == size);
+    
     std::vector<int> sendDisplacements(size, 0), recvDisplacements(size, 0);
     std::vector<int> sendCounts(size, 0), recvCounts(size, 0);
 
@@ -245,6 +247,78 @@ std::vector<T> MPI_Spread(const Container<T, Ts...> &data, rank_t root, const MP
 	std::vector<T> toReturn;
 	recv.extract_all(toReturn);
 	return toReturn;
+}
+
+template<typename T, typename Index_T = size_t>
+std::vector<std::vector<T>> MPI_Ask_data(const std::vector<rank_t> &correspondents, const std::vector<T> &myData, const std::vector<std::vector<Index_T>> &myRequestedIndices = std::vector<std::vector<Index_T>>())
+{
+    rank_t rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    std::vector<rank_t> allRanks(size);
+    std::iota(allRanks.begin(), allRanks.end(), 0);
+
+    std::vector<std::vector<Index_T>> indicesToSend(size);
+    for(size_t i = 0; i < correspondents.size(); i++)
+    {
+        const rank_t &_rank = correspondents[i];
+        indicesToSend[_rank] = myRequestedIndices[i];
+    }
+
+    std::vector<std::vector<Index_T>> requestedIndices = MPI_Exchange_all_to_all(indicesToSend, MPI_COMM_WORLD);
+    // std::vector<Index_T> allOutcomingIndices;
+    // std::vector<int> outcomingIndicesLengths(size, 0), incomingIndicesLengths(size);
+    // for(size_t i = 0; i < correspondents.size(); i++)
+    // {
+    //     const rank_t &_rank = correspondents[i];
+    //     outcomingIndicesLengths[_rank] = static_cast<int>(myRequestedIndices[i].size()) * sizeof(Index_T);
+    //     allOutcomingIndices.insert(allOutcomingIndices.end(), myRequestedIndices[i].cbegin(), myRequestedIndices[i].cend());
+    // }
+
+    // std::vector<int> outcomingIndicesDisplacements(size, 0);
+    // for(int _rank = 1; _rank < size; _rank++)
+    // {
+    //     outcomingIndicesDisplacements[_rank] = outcomingIndicesDisplacements[_rank - 1] + outcomingIndicesLengths[_rank - 1];
+    // }
+    // MPI_Alltoall(outcomingIndicesLengths.data(), 1, MPI_INT, incomingIndicesLengths.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    // std::vector<int> incomingIndicesDisplacements(size, 0);
+    // size_t totalIndicesLengths = incomingIndicesLengths[0];
+    // for(rank_t _rank = 1; _rank < size; _rank++)
+    // {
+    //     incomingIndicesDisplacements[_rank] = incomingIndicesDisplacements[_rank - 1] + incomingIndicesLengths[_rank - 1];
+    //     totalIndicesLengths += incomingIndicesLengths[_rank];
+    // }
+
+    // std::vector<Index_T> allIncomingIndices(totalIndicesLengths);
+    // MPI_Alltoallv(allOutcomingIndices.data(), outcomingIndicesLengths.data(), outcomingIndicesDisplacements.data(), MPI_BYTE,
+    //               allIncomingIndices.data(), incomingIndicesLengths.data(), incomingIndicesDisplacements.data(), MPI_BYTE, MPI_COMM_WORLD);
+
+    // std::vector<std::vector<Index_T>> requestedIndices;
+    // for(rank_t _rank = 0; _rank < size; _rank++)
+    // {
+    //     auto begin = allIncomingIndices.cbegin() + incomingIndicesDisplacements[_rank];
+    //     size_t length = incomingIndicesLengths[_rank] / sizeof(Index_T);
+    //     auto end = begin + length;
+    //     requestedIndices.emplace_back(std::vector<Index_T>(begin, end));
+    // }
+
+    
+    // size_t selfIndex = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), rank));
+    // assert(std::equal(myRequestedIndices[selfIndex].cbegin(), myRequestedIndices[selfIndex].cend(), requestedIndices[rank].cbegin()));
+    
+    std::vector<std::vector<T>> resultOfAllRanks = MPI_exchange_data_indexed(allRanks, myData, requestedIndices);
+    assert(resultOfAllRanks.size() == size);
+    std::vector<std::vector<T>> resultByRanks;
+
+    // return only requested ranks
+    for(rank_t _rank : correspondents)
+    {
+        resultByRanks.emplace_back(resultOfAllRanks[_rank]);
+    }
+
+    return resultByRanks;
 }
 
 #endif // RICH_MPI

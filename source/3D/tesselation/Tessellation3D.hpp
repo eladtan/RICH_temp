@@ -245,6 +245,8 @@ public:
   */
   virtual bool BoundaryFace(size_t index) const = 0;
 
+  virtual bool IsPointInCell(const Vector3D &point, size_t cellIndex) const = 0;
+
   #ifdef RICH_MPI
     /*!
       \brief Returns the indeces of the points that were sent to other processors as ghost points 

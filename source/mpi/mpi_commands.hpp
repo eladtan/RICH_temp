@@ -20,7 +20,7 @@ using rank_t = int;
 using std::vector;
 
 template<typename T, typename Index_T = size_t>
-std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>& correspondents, const std::vector<T>& data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
+std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> &correspondents, const std::vector<T> &data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
 {
 	std::vector<MPI_Request> req(correspondents.size());
 	std::vector<Serializer> senders(correspondents.size());

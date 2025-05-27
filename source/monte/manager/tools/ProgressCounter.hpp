@@ -8,9 +8,13 @@
 class ProgressCounter
 {
 public:
-    ProgressCounter(const MPI_Comm &comm, int myNumParticles);
+    ProgressCounter(const MPI_Comm &comm);
 
     ~ProgressCounter();
+
+    void Destroy(void);
+
+    void Reset(int myNumParticles);
 
     int Increment(int n);
 
@@ -34,6 +38,8 @@ private:
     std::shared_ptr<GlobalCounter> counter; // TODO: should be private
     rank_t rank, size, master_rank;
     MPI_Win is_done_win;
+    MPI_Comm comm;
+    bool destroyed;
 };
 
 #endif // RICH_MPI

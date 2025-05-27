@@ -12,8 +12,23 @@ ConditionVariable::ConditionVariable(const MPI_Comm &comm)
     {
         throw UniversalError("ConditionVariable only works with 2 ranks");
     }
+
+    auto reportErrorAndExit = [](const std::string &str, int err)
+    {
+        if(err == MPI_SUCCESS)
+        {
+            return;
+        }
+        char error_string[MPI_MAX_ERROR_STRING];
+        int length_of_error_string;
+        MPI_Error_string(err, error_string, &length_of_error_string);
+        std::cerr << "Error: " << str << ": " << error_string << std::endl;
+        exit(1);
+    };
+
     this->other_rank = 1 - this->internal_rank;
-    MPI_Win_allocate(sizeof(int), sizeof(int), MPI_INFO_NULL, this->comm, &this->value, &this->win);
+    int err = MPI_Win_allocate(sizeof(int), sizeof(int), MPI_INFO_NULL, this->comm, &this->value, &this->win);
+    reportErrorAndExit("MPI_Win_allocate", err);
     *this->value = 0;
     MPI_Barrier(this->comm);
 }

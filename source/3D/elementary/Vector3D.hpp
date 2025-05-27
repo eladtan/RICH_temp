@@ -64,6 +64,8 @@ public:
 	*/
 	explicit inline Vector3D(void): Vector3D(0, 0, 0){};
 
+	explicit inline Vector3D(double value): Vector3D(value, value, value){};
+
 	/*! \brief Class copy constructor
 	\param other Other vector
 	*/

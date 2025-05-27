@@ -52,7 +52,8 @@ struct RemotePoint
     #endif // RICH_MPI
 };
 
-using PointsToNeighborsMap = boost::container::flat_map<size_t, boost::container::flat_set<RemotePoint>>;
+using NeighborsList = boost::container::flat_set<RemotePoint>;
+using PointsToNeighborsMap = boost::container::flat_map<size_t, NeighborsList>;
 
 struct ComputationalCell3DVector3D 
                     #ifdef RICH_MPI
@@ -88,6 +89,14 @@ struct ComputationalCell3DVector3D
     PointsToNeighborsMap GetKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = true, const MPI_Comm &comm = MPI_COMM_WORLD);
 #else // RICH_MPI
     PointsToNeighborsMap GetKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = true);
+#endif // RICH_MPI
+
+#ifdef RICH_MPI
+    NeighborsList GetAllKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order, bool atMost = true, const MPI_Comm &comm = MPI_COMM_WORLD);
+    NeighborsList GetAllKOrderNeighbors(const Tessellation3D &tess, size_t order, bool atMost = true, const MPI_Comm &comm = MPI_COMM_WORLD);
+#else // RICH_MPI
+    NeighborsList GetAllKOrderNeighbors(const Tessellation3D &tess, const std::vector<size_t> &points, size_t order);
+    NeighborsList GetAllKOrderNeighbors(const Tessellation3D &tess, size_t order);
 #endif // RICH_MPI
 
 #ifdef RICH_MPI

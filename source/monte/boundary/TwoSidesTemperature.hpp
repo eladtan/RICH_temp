@@ -1,5 +1,5 @@
-#ifndef SIDE_TEMPERATURE_HPP
-#define SIDE_TEMPERATURE_HPP
+#ifndef TWO_SIDES_TEMPERATURE_HPP
+#define TWO_SIDES_TEMPERATURE_HPP
 
 #include <boost/math/special_functions/pow.hpp>
 #include "BoundaryCondition.hpp"
@@ -8,10 +8,10 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 template<typename T, typename Grid>
-class SideTemperature : public BoundaryCondition<T, Grid>
+class TwoSidesTemperature : public BoundaryCondition<T, Grid>
 {
 public:
-    SideTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperature, size_t Npercell, bool withHydro = false);
+    TwoSidesTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperatureLeft, double temperatureRight, size_t Npercell, bool withHydro = false);
     
     MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
 
@@ -19,18 +19,19 @@ public:
 
 private:
     const std::vector<ComputationalCell3D> &cells;
-    double temperature;
+    double temperatureLeft;
+    double temperatureRight;
     size_t Npercell;
     bool withHydro;
 };
 
 template<typename T, typename Grid>
-SideTemperature<T, Grid>::SideTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperature, size_t Npercell, bool withHydro):
-    BoundaryCondition<T, Grid>(grid), cells(cells), temperature(temperature), Npercell(Npercell), withHydro(withHydro)
+TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperatureLeft, double temperatureRight, size_t Npercell, bool withHydro):
+    BoundaryCondition<T, Grid>(grid), cells(cells), temperatureLeft(temperatureLeft), temperatureRight(temperatureRight), Npercell(Npercell), withHydro(withHydro)
 {}
 
 template<typename T, typename Grid>
-MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
+MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     MonteCarloParticleStatus status;
@@ -48,10 +49,7 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
             normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
-                if(std::abs(particle.location.x - ll.x) < std::abs(ur.x - particle.location.x))
-                {
-                    return MonteCarloParticleStatus::REMOVE;
-                }
+                return MonteCarloParticleStatus::REMOVE;
             }
             // Reflect the particle
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
@@ -66,9 +64,10 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
 }
 
 template<typename T, typename Grid>
-std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
+std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
-    static const double T4 = boost::math::pow<4>(this->temperature);
+    static const double T4_L = boost::math::pow<4>(this->temperatureLeft);
+    static const double T4_R = boost::math::pow<4>(this->temperatureRight);
     std::uniform_real_distribution<double> unif(0, 1);
     static std::mt19937_64 re(0);
     double gamma;
@@ -87,14 +86,22 @@ std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBo
             if(neighborIdx >= N and this->grid.IsPointOutsideBox(neighborIdx))
             {
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
-                if(normal.x < -0.99)
+                if(std::abs(normal.x) > 0.99)
                 { // outside the box
                     if(not calculatedGamma)
                     {
                         gamma = (this->withHydro)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
                         calculatedGamma = true;
                     }
-                    double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt * gamma / this->Npercell;
+                    double energyToProduce;
+                    if(normal.x > 0)
+                    {
+                        energyToProduce = units::sigma_sb * T4_R * this->grid.GetArea(faceIdx) * fullDt * gamma / this->Npercell;
+                    }
+                    else
+                    {
+                        energyToProduce = units::sigma_sb * T4_L * this->grid.GetArea(faceIdx) * fullDt * gamma / this->Npercell;
+                    }
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
                         newParticles.emplace_back();
@@ -102,7 +109,7 @@ std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBo
                         newParticle.location = RandomPointOnFace(this->grid, faceIdx);
                         double mu = std::sqrt(unif(re));
                         // Lambert Emission Law
-                        newParticle.velocity.x = mu;
+                        newParticle.velocity.x = (normal.x > 0)? -mu : mu;
                         double _1mmu = std::sqrt(1 - mu * mu);
                         double theta = 2 * M_PI * unif(re);
                         newParticle.velocity.y = _1mmu * std::cos(theta);
@@ -121,4 +128,4 @@ std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBo
     return newParticles;
 }
 
-#endif // SIDE_TEMPERATURE_HPP
+#endif // TWO_SIDES_TEMPERATURE_HPP
