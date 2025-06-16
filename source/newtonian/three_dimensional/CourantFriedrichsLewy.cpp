@@ -69,8 +69,8 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 		}
 	}
 	res *= cfl_;
-	res = 1.0 / std::max(source_.SuggestInverseTimeStep() / sourcecfl_, 1.0 / res);
 	double old_res = res;
+	res = 1.0 / std::max(source_.SuggestInverseTimeStep() / sourcecfl_, 1.0 / res);
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 #endif
@@ -93,7 +93,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	{
 		if (1.0000001 * res > old_res && (dt_first_ < 0 || old_res < 0.99999 * dt_first_))
 		{
-			if(((1.0 / source_.SuggestInverseTimeStep()) != res) || (rank == 0))
+			if(((1.0 / source_.SuggestInverseTimeStep()) != res) || (rank == 0 && ((1.0 / source_.SuggestInverseTimeStep()) == res)))
 			{
 				Vector3D const& v = cells[loc].velocity;
 				double c = eos.dp2c(cells[loc].density, cells[loc].pressure, cells[loc].tracers, ComputationalCell3D::tracerNames);
