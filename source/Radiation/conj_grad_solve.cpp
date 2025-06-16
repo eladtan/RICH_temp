@@ -114,10 +114,10 @@ namespace CG
             std:: cout << "Converged at iter = " << i <<" error "<<error<<" negative value "<<max_data_2_val<<std::endl;
         if(rank == max_data_0_id)
             std::cout<<"Max0 "<<max_data_0_val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-            <<" X "<<tess.GetMeshPoint(max_loc0)<<std::endl; 
+            <<" X "<<tess.GetMeshPoint(max_loc0)<<" sub_x "<<sub_x[max_loc0]<<std::endl; 
         if(rank == max_data_1_id)
             std::cout<<"Max1 "<<max_data_1_val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-            <<" X "<<tess.GetMeshPoint(max_loc1)<<std::endl; 
+            <<" X "<<tess.GetMeshPoint(max_loc1)<<" sub_x "<<sub_x[max_loc1]<<std::endl; 
         total_iters = i;
 #ifdef RICH_MPI
         MPI_exchange_data(tess, sub_x, true, slice);
@@ -599,9 +599,9 @@ namespace CG
                 for(size_t j = 0; j < Nlocal; ++j)
                 {
                     double const local_scale = std::abs(b[j]);
-                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-7))))
+                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5))))
                     {
-                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-7)));
+                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5)));
                         max_loc1 = j;
                     }
                     // if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
@@ -644,10 +644,10 @@ namespace CG
 	            std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<" iterations "<<total_iters<<" scale_b "<<scale_b<<std::endl;
             if(rank == max_data[0].mpi_id)
                 std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
+                <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<" sub_x "<<sub_x[max_loc0]<<std::endl; 
             if(rank == max_data[1].mpi_id)
                 std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
+                <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<" sub_x "<<sub_x[max_loc1]<<std::endl; 
             if(rank == max_data[2].mpi_id)
                 std::cout<<"rank "<<rank<<" i "<<max_loc2 <<" sub_x "<<sub_x[max_loc2]<<std::endl;
             std::fill_n(sub_x.begin(), sub_x.size(), -1.0);
