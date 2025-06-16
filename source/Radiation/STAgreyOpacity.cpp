@@ -38,12 +38,13 @@ double STAgreyOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell)
     double d_ratio = 1;
     if(d < rho_[0])
     {
-        d_ratio = cell.density / std::exp(rho_[0]);
-        d = rho_[0];
+        double const scattering = CalcScatteringOpacity(cell);
+        double sigma_rossland = Interpolate2DTable(T, d, T_, rho_, rossland_);
+        return CG::speed_of_light / (3 * std::max(sigma_rossland, scattering));
     }
     if(d > rho_.back())
     {
-        d_ratio = std::exp(rho_.back()) / cell.density;
+        d_ratio = cell.density / std::exp(rho_.back());
         d = rho_.back();
     }
     return CG::speed_of_light / (3 * Interpolate2DTable(T, d, T_, rho_, rossland_) * d_ratio);
@@ -74,7 +75,7 @@ double STAgreyOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const
     }
     if(d > rho_.back())
     {
-        d_ratio = std::exp(rho_.back()) / cell.density;
+        d_ratio = cell.density / std::exp(rho_.back());
         d = rho_.back();
     }
     return Interpolate2DTable(T, d, T_, rho_, planck_, -3.5) * std::pow(d_ratio, d_slope);
@@ -92,7 +93,7 @@ double STAgreyOpacity::CalcScatteringOpacity(ComputationalCell3D const& cell) co
     }
     if(d > rho_.back())
     {
-        d_ratio = std::exp(rho_.back()) / cell.density;
+        d_ratio = cell.density / std::exp(rho_.back());
         d = rho_.back();
     }
     return Interpolate2DTable(T, d, T_, rho_, scatter_) * d_ratio;
