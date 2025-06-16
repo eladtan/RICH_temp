@@ -3,6 +3,7 @@
 #include "../../misc/universal_error.hpp"
 #include "../../misc/simple_io.hpp"
 #include <cmath>
+#include <algorithm>
 
 namespace
 {
