@@ -228,18 +228,22 @@ namespace
 			}
 		}
 		// Make sure point is inside domian
-#ifndef RICH_MPI
 		std::pair<Vector3D, Vector3D> bb = tess.GetBoxCoordinates();
-#endif
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
-#ifdef RICH_MPI
-			if (!tess.PointInMyDomain(res[i]))
-				bad_indeces.push_back(i);
-#else
 			if (res[i].x > bb.second.x || res[i].x<bb.first.x || res[i].y>bb.second.y || res[i].y<bb.first.y
 				|| res[i].z>bb.second.z || res[i].z < bb.first.z)
+			{
 				bad_indeces.push_back(i);
+				continue;
+			}
+#ifdef RICH_MPI
+			if (!tess.PointInMyDomain(res[i]))
+			{
+				// std::cout<<"Adding bad point "<<res[i]<<" index "<<i<<std::endl;
+				bad_indeces.push_back(i);
+				continue;
+			}
 #endif
 		}
 		if (!bad_indeces.empty())
@@ -834,6 +838,8 @@ Conserved3D SimpleAMRExtensiveUpdater3D::ConvertPrimitveToExtensive3D(const Comp
 	res.internal_energy = cell_temp.internal_energy * mass;
 	res.energy = res.internal_energy + 0.5 * mass * ScalarProd(cell.velocity, cell.velocity) + volume * cell.density * ScalarProd(cell.velocity, cell_temp.velocity - cell.velocity);
 	res.Erad = mass * cell_temp.Erad;
+	res.Erad_dt = cell.Erad_dt * mass;
+	res.Erad_dt_dt = cell.Erad_dt_dt * mass;
 	size_t N = cell_temp.tracers.size();
 	//res.tracers.resize(N);
 	for (size_t i = 0; i < N; ++i)
@@ -926,6 +932,8 @@ ComputationalCell3D SimpleAMRCellUpdater3D::ConvertExtensiveToPrimitve3D(Conserv
 	res.temperature = eos.de2T(res.density, res.internal_energy);
 	for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
 		res.Eg[g] = extensive.Eg[g] / extensive.mass;
+	res.Erad_dt = extensive.Erad_dt / extensive.mass;
+	res.Erad_dt_dt = extensive.Erad_dt_dt / extensive.mass;
 	return res;
 }
 
