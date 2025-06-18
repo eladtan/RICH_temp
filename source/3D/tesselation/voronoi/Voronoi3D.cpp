@@ -282,10 +282,12 @@ namespace
         return R;
     }
 
-    size_t SetPointTetras(vector<tetra_vec> &PointTetras, size_t Norg, vector<Tetrahedron> &tetras,
+    size_t SetPointTetras(vector<tetra_vec> &PointTetras, size_t Norg, vector<Tetrahedron> &tetras, std::vector<std::pair<size_t, Tetrahedron>> &changed_tetras,
                                                 boost::container::flat_set<size_t> const &empty_tetras)
     {
-        PointTetras.clear();
+        // static vector<tetra_vec> tmpPointTetras;
+
+        // PointTetras.clear();
         PointTetras.resize(Norg);
 
         #ifdef USE_VCL_VECTORIZATION
@@ -298,22 +300,54 @@ namespace
         // change empty tetras to be not relevant
         for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
         {
-#ifdef __INTEL_COMPILER
-#pragma omp simd early_exit
-#endif
             for (size_t i = 0; i < 4; ++i)
             {
+                if(tetras[*it].points[i] < Norg)
+                {
+                    tetra_vec &points_tetras = PointTetras[tetras[*it].points[i]];
+                    auto it2 = std::find(points_tetras.begin(), points_tetras.end(), *it);
+                    if(it2 != points_tetras.end())
+                    {
+                        points_tetras.erase(it2);
+                    }
+                }
                 tetras[*it].points[i] = std::numeric_limits<std::size_t>::max();
                 tetras[*it].neighbors[i] = std::numeric_limits<std::size_t>::max();
             }
         }
 
+        for (const std::pair<size_t, Tetrahedron> &tetraInfo : changed_tetras)
+        {
+            const size_t &tetraIndex = tetraInfo.first;
+            const Tetrahedron &tetra = tetraInfo.second;
+
+            for (size_t i = 0; i < 4; ++i)
+            {
+                if(tetra.points[i] < Norg)
+                {
+                    tetra_vec &points_tetras = PointTetras[tetra.points[i]];
+                    auto it2 = std::find(points_tetras.begin(), points_tetras.end(), tetraIndex);
+                    if(it2 != points_tetras.end())
+                    {
+                        points_tetras.erase(it2);
+                    }
+                }
+            }
+        }
+
+        size_t counter = 0;
+
         for (size_t i = 0; i < Ntetra; ++i)
         {
             const Tetrahedron &tet = tetras[i];
 
+            if(not tet.newTetra)
+            {
+                continue;
+            }
             has_good = false;
             has_big = false;
+            counter++;
 
             #ifdef USE_VCL_VECTORIZATION
                 Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
@@ -341,6 +375,14 @@ namespace
                 bigtet = i;
             }
         }
+
+        changed_tetras.clear();
+        for(Tetrahedron &tet : tetras)
+        {
+            tet.newTetra = false;
+        }
+
+        // std::cout << "Tetra counter: " << counter << " / " << Ntetra << std::endl;
         return bigtet;
     }
 
@@ -1153,7 +1195,7 @@ void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector
     this->R_.resize(this->del_.tetras_.size());
     std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
-    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
+    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
 }
 
 
@@ -1319,8 +1361,18 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         }
     }
 
+    std::chrono::high_resolution_clock::time_point start, end;
+    start = std::chrono::high_resolution_clock::now();
+
     std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, allWeights, indicesToBuild, suppressRebalancing);
-    
+    end = std::chrono::high_resolution_clock::now();
+    if(rank == 0)
+    {
+        std::cout << "Time for load balancing: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+
+    start = std::chrono::high_resolution_clock::now();
+
     std::vector<size_t> order;
 
     // build delaunay
@@ -1350,7 +1402,15 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     this->R_.resize(this->del_.tetras_.size());
     std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
-    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
+    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+
+    // MPI_Barrier(MPI_COMM_WORLD);
+
+    end = std::chrono::high_resolution_clock::now();
+    if(rank == 0)
+    {
+        std::cout << "Time for initial build: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
 
     if(this->radiuses.size() < this->Norg_)
     {
@@ -1360,6 +1420,8 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         eo.addEntry("Norg_", this->Norg_);
         throw eo;
     }
+
+    start = std::chrono::high_resolution_clock::now();
 
     Vector3D width = this->ur_ - this->ll_;
     this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_ - width * 0.00001, std::numeric_limits<size_t>::max()),
@@ -1386,13 +1448,34 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
             this->myPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
         }
     }
-
+    end = std::chrono::high_resolution_clock::now();
+    if(rank == 0)
+    {
+        std::cout << "Time for tree: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+    
+    start = std::chrono::high_resolution_clock::now();
     this->UpdateRadiuses(activePoints);    
+    end = std::chrono::high_resolution_clock::now();
 
+    if(rank == 0)
+    {
+        std::cout << "Time for radiuses: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+
+    start = std::chrono::high_resolution_clock::now();
     this->UpdateRangeFinder();
+    end = std::chrono::high_resolution_clock::now();
+
+    if(rank == 0)
+    {
+        std::cout << "Time for range agent: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
 
     this->BringGhostPointsToBuild(MPI_COMM_WORLD);
 
+    start = std::chrono::high_resolution_clock::now();
+    
     CM_.resize(del_.points_.size());
     volume_.resize(Norg_);
 
@@ -1407,6 +1490,14 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     // std::vector<tetra_vec>().swap(this->PointTetras_);
 
     this->UpdateCMs();
+
+    end = std::chrono::high_resolution_clock::now();
+
+    if(rank == 0)
+    {
+        std::cout << "Time for build Voronoi from Delaunay: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+
 
     // save the list of the real ghost points
     // this->FilterRealGhostPoints();
@@ -1553,7 +1644,7 @@ std::pair<std::vector<SmallRangeQueryData>, std::vector<BigRangeQueryData>> Voro
 
             for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
             {
-                if(not this->del_.tetras_[tetraIdx].newTetra)
+                if(not this->del_.tetras_[tetraIdx].checkBig)
                 {
                     continue; // tetra does not need to be checked
                 }
@@ -1605,7 +1696,7 @@ std::pair<std::vector<SmallRangeQueryData>, std::vector<BigRangeQueryData>> Voro
 
     for(const size_t &tetraIdx : tetraToCancel)
     {
-        this->del_.tetras_[tetraIdx].newTetra = false;
+        this->del_.tetras_[tetraIdx].checkBig = false;
     }
     return {smallQueries, bigQueries};
 }
@@ -1642,8 +1733,11 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
                                         boost::container::flat_set<size_t> &selfIgnorePoints)
 {
+    std::chrono::high_resolution_clock::time_point start1, end1, start2, end2, start3, end3;
+
     std::vector<Vector3D> newPoints;
     {
+        start1 = std::chrono::high_resolution_clock::now();
         std::vector<std::vector<size_t>> selfSmallQueriesAnswers = smallRangeAgent.selfBatchAnswer(smallQueries, selfIgnorePoints);
         size_t i = 0;
         for(const std::vector<size_t> &newSmallQueriesPoints : selfSmallQueriesAnswers)
@@ -1657,8 +1751,10 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
             numOfResultsForSmallPoints[query.pointIdx] = newSmallQueriesPoints.size();
             i++;
         }
+        end1 = std::chrono::high_resolution_clock::now();
     }
     {
+        start2 = std::chrono::high_resolution_clock::now();
         std::vector<std::vector<size_t>> selfBigQueriesAnswers = bigRangeAgent.selfBatchAnswer(bigQueries, selfIgnorePoints);
         size_t i = 0;
         for(const std::vector<size_t> &newBigQueriesPoints : selfBigQueriesAnswers)
@@ -1672,8 +1768,24 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
             numOfResultsForBigPoints[query.pointIdx] = newBigQueriesPoints.size();
             i++;
         }
+        end2 = std::chrono::high_resolution_clock::now();
     }
+
+    start3 = std::chrono::high_resolution_clock::now();
     this->del_.BuildExtra(newPoints);
+    end3 = std::chrono::high_resolution_clock::now();
+    #ifdef TIMING
+        #ifdef RICH_MPI
+            rank_t rank;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            if(rank == 0)
+        #endif // RICH_MPI
+            {
+                std::cout << "Time for small: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" <<
+                    ", for large: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" <<
+                    ", and Delaunay construction time: " << std::chrono::duration<double>(end3 - start3).count() << " seconds" << std::endl;
+            }
+    #endif // TIMING
 }
 
 #ifdef RICH_MPI
@@ -1682,9 +1794,12 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints)
     {
+        std::chrono::high_resolution_clock::time_point start1, end1, start2, end2;
+
         std::vector<Vector3D> newPoints;
         // large points queries
         {
+            start1 = std::chrono::high_resolution_clock::now();
             QueryBatchInfo<BigRangeQueryData, _3DPoint> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
             newPoints.reserve(bigBatchInfo.result.size());
             for(const QueryInfo<BigRangeQueryData, _3DPoint> &ans : bigBatchInfo.queriesAnswers)
@@ -1697,9 +1812,11 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
             }
             this->SetGhostArray(bigRangeAgent.getRecvProc(), bigRangeAgent.getRecvPoints());
             this->del_.BuildExtra(newPoints);
+            end1 = std::chrono::high_resolution_clock::now();
         }
         // small points queries
         {        
+            start2 = std::chrono::high_resolution_clock::now();
             QueryBatchInfo<SmallRangeQueryData, _3DPoint> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
             for(const QueryInfo<SmallRangeQueryData, _3DPoint> &ans : smallBatchInfo.queriesAnswers)
             {
@@ -1713,7 +1830,18 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
             }
             this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
             this->del_.BuildExtra(newPoints);
+            end2 = std::chrono::high_resolution_clock::now();
         }    
+
+        #ifdef TIMING
+        rank_t rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        if(rank == 0)
+        {
+            std::cout << "Time for small: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" <<
+                ", for large: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" << std::endl;
+        }
+        #endif // TIMING
     }
 #endif // RICH_MPI
 
@@ -1803,6 +1931,9 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     boost::container::flat_set<size_t> largePoints; // indices of 'large' points
     boost::container::flat_map<size_t, size_t> firstLargeIteration;
 
+    size_t totalBigQueries = 0;
+    size_t totalSmallQueries = 0;
+
     std::vector<double> currentRadiuses(this->Norg_, RADIUS_UNINITIALIZED);
     for(const std::pair<size_t, size_t> &indices : this->indicesInAllMyPoints)
     {
@@ -1826,8 +1957,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
         std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
-        this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
-        
+        this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
         SentPointsContainer pointsContainer(alreadySentProc, alreadySentPoints);
     #endif // RICH_MPI
     
@@ -1856,12 +1986,16 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         selfIgnorePoints.insert(indices.second);
     }
 
+    auto start = std::chrono::high_resolution_clock::now();
+    
     size_t total_new_points = 0;
     while(true) // loop is not really infinite (has 'break')
     {
+        auto start_iter = std::chrono::high_resolution_clock::now();
+        
         boost::container::flat_map<size_t, size_t> numOfResultsForSmallPoints;
         boost::container::flat_map<size_t, size_t> numOfResultsForBigPoints;
-        
+                
         size_t smallPointsNum = smallPoints.size();
         size_t largePointsNum = largePoints.size();
         #ifdef RICH_MPI
@@ -1869,11 +2003,30 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &largePointsNum, &largePointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
         #endif // RICH_MPI
         iterations++;
-        if(rank == 0) std::cout << "iteration " << iterations << " (" << smallPointsNum << " small points, " << largePointsNum << " large points)" << std::endl;
+        size_t averageGP = this->del_.points_.size();
+        #ifdef RICH_MPI
+        MPI_Reduce((rank == 0)? MPI_IN_PLACE : &averageGP, &averageGP, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
+        #endif // RICH_MPI
+
+        averageGP /= size;
+        totalBigQueries += largePointsNum;
+        totalSmallQueries += smallPointsNum;
+
+        if(rank == 0) std::cout << "iteration " << iterations << " (" << smallPointsNum << " small points, " << largePointsNum << " large points, average ghost points: " << averageGP << ")" << std::endl;
+
+        auto start1 = std::chrono::high_resolution_clock::now();
         auto [smallQueries, bigQueries] = this->CreateBatches(smallPoints, largePoints, firstLargeIteration, currentRadiuses, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints = MirrorPoints(smallQueries, box, normals);
         std::vector<std::pair<size_t, size_t>> moreMirroredPoints = MirrorPoints(bigQueries, box, normals);
         mirroredPoints.insert(mirroredPoints.end(), moreMirroredPoints.begin(), moreMirroredPoints.end());
+        auto end1 = std::chrono::high_resolution_clock::now();
+        
+        #ifdef TIMING
+        if(rank == 0)
+        {
+            std::cout << "Time for creating batches and mirrors: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" << std::endl;
+        }
+        #endif // TIMING
 
         #ifdef RICH_MPI
             I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
@@ -1890,7 +2043,8 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         #ifdef RICH_MPI
             this->BringRemoteGhostPoints(bigQueries, smallQueries, bigRangeAgent, smallRangeAgent, numOfResultsForBigPoints, numOfResultsForSmallPoints);
         #endif // RICH_MPI
-        
+
+        auto start2 = std::chrono::high_resolution_clock::now();
         std::vector<Vector3D> newPoints;
         newPoints.reserve(mirroredPoints.size());
         allMirrored.reserve(allMirrored.size() + mirroredPoints.size());
@@ -1904,12 +2058,31 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             }
         }
         this->del_.BuildExtra(newPoints);
+        auto end2 = std::chrono::high_resolution_clock::now();
+
+        #ifdef TIMING
+        if(rank == 0)
+        {
+            std::cout << "Time for building mirrors: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" << std::endl;
+        }
+        #endif // TIMING
+
+        auto start3 = std::chrono::high_resolution_clock::now();
 
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
         std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
-        this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
+        this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+
+        auto end3 = std::chrono::high_resolution_clock::now();
         
+        #ifdef TIMING
+        if(rank == 0)
+        {
+            std::cout << "Time for calculating tetras: " << std::chrono::duration<double>(end3 - start3).count() << " seconds" << std::endl;
+        }
+        #endif // TIMING
+
         #ifdef RICH_MPI        
         size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
         size_t new_points = new_points_until_now - total_new_points;
@@ -1919,7 +2092,9 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         size_t new_points = newPoints.size();
         #endif // RICH_MPI
 
-        if(rank == 0) std::cout << "added new points: " << new_points << std::endl;
+        auto end_iter = std::chrono::high_resolution_clock::now();
+
+        if(rank == 0) std::cout << "added new points: " << new_points << ", total time: " << std::chrono::duration<double>(end_iter - start_iter).count() << std::endl;
 
         std::tie(smallPoints, largePoints) = this->DetermineNextIterationPoints(iterations, firstLargeIteration, currentRadiuses, numOfResultsForSmallPoints, numOfResultsForBigPoints);
 
@@ -1938,6 +2113,17 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         }
     }
 
+    auto end = std::chrono::high_resolution_clock::now();
+    if(rank == 0)
+    {
+        std::cout << "Time for bringing ghosts: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+
+    if(rank == 0)
+    {
+        std::cout << "Total small queries: " << totalSmallQueries << ", total big queries: " << totalBigQueries << std::endl;
+    }
+    
     #ifdef RICH_MPI        
         const std::vector<std::vector<size_t>> &sentPoints = pointsContainer.getSentData();
         const std::vector<int> &sentProc = pointsContainer.getSentProc();
@@ -2066,7 +2252,9 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     #endif // RICH_MPI
 
     std::vector<size_t> order = HilbertOrder3D(points);
+
     del_.Build(points, ur_, ll_, order);
+
     for (size_t i = 0; i < ghosts.size(); ++i)
     {
         del_.BuildExtra(ghosts[i]);
@@ -2087,7 +2275,7 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     R_.resize(del_.tetras_.size());
     std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
-    bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
+    bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, this->del_.changed_tetras_, del_.empty_tetras_);
 
     CM_.resize(Norg_);
     volume_.resize(Norg_, 0);
@@ -2117,7 +2305,7 @@ void Voronoi3D::BuildDebug(int rank)
     points = read_vec3d("points4_" + std::to_string(rank) + ".bin");
     del_.BuildExtra(points);
 
-    bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, del_.empty_tetras_);
+    bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, this->del_.changed_tetras_, del_.empty_tetras_);
 
     R_.resize(del_.tetras_.size());
     std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
@@ -2179,6 +2367,9 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     // area_.clear();
     // Nghost_.clear();
 
+    std::chrono::high_resolution_clock::time_point start, end;
+    start = std::chrono::high_resolution_clock::now();
+    
     std::vector<size_t> order = HilbertOrder3D(activePoints);
 
     // build delaunay
@@ -2199,21 +2390,25 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
             bounding_box.second = this->ur_;
             bounding_box.first = this->ll_;
         }
+        
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;
         // reportDuplications(new_points);
-        order = HilbertOrder3D(activePoints);
+        // order = HilbertOrder3D(activePoints);
         
         // initial build for the points
-        this->del_.Build(activePoints, bounding_box.second, bounding_box.first, order);
-    }
-
+        this->del_.Build(activePoints, bounding_box.second, bounding_box.first, order);    
+    }        
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
     this->R_.resize(this->del_.tetras_.size());
     std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
-    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.empty_tetras_);
+    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+    
+    end = std::chrono::high_resolution_clock::now();
+    std::cout << "Time for initial build: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
 
+    start = std::chrono::high_resolution_clock::now();
     this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_, std::numeric_limits<size_t>::max()),
                                                                     IndexedVector3D(this->ur_, std::numeric_limits<size_t>::max()));
     size_t allPointsNum = this->allMyPoints.size();
@@ -2242,6 +2437,10 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     this->UpdateRadiuses(activePoints);
 
     this->UpdateRangeFinder();
+    
+    end = std::chrono::high_resolution_clock::now();
+
+    std::cout << "Time for data structures initialization: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
 
     #ifdef RICH_MPI
         this->BringGhostPointsToBuild(MPI_COMM_SELF);
@@ -3038,6 +3237,14 @@ bool Voronoi3D::NearBoundary(std::size_t index) const
 
 bool Voronoi3D::IsPointInCell(const Vector3D &point, size_t cellIndex) const
 {
+    if(cellIndex >= this->Norg_)
+    {
+        UniversalError eo("Voronoi3D::IsPointInCell: cell index out of range");
+        eo.addEntry("point", point);
+        eo.addEntry("cellIndex", cellIndex);
+        eo.addEntry("Norg", this->Norg_);
+        throw eo;
+    }
     for(size_t faceIdx : this->FacesInCell_[cellIndex])
     {
         const Vector3D &p1 = this->del_.points_[this->GetFaceNeighbors(faceIdx).first];

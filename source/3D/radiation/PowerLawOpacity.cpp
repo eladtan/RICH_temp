@@ -28,7 +28,7 @@ Vector3D MCPowerLawOpacity::getRandomVelocity(const ComputationalCell3D &cell) c
 }
 
 Vector3D MCPowerLawOpacity::getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &particle) const
-{
+{    
     static std::uniform_real_distribution<double> dist(-1 + EPSILON, 1 - EPSILON);
     double x = dist(this->rng);
     double y = dist(this->rng);

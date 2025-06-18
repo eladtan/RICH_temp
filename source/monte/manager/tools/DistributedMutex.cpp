@@ -28,17 +28,18 @@ DistributedMutex::DistributedMutex(const MPI_Comm &comm, rank_t rank):
     MPI_Win_set_errhandler(this->win, MPI_ERRORS_RETURN);
     MPI_Info_free(&info);
 
-    int *model, flag;
+    int *model = nullptr;
+    int flag = 0;
     MPI_Win_get_attr(this->win, MPI_WIN_MODEL, &model, &flag);
-    if(*model == MPI_WIN_SEPARATE)
+    if(flag && model && *model == MPI_WIN_SEPARATE)
     {
         std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
         exit(1);
     }
 
-    if(my_rank == rank)
+    if(my_rank == rank && this->value != nullptr)
     {
-        *this->value = 0;
+        *static_cast<int*>(this->value) = 0;
     }
 
     MPI_Barrier(this->comm);
@@ -52,10 +53,12 @@ void DistributedMutex::Destroy()
 
 DistributedMutex::~DistributedMutex()
 {
+    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
     if(not this->destroyed)
     {
         this->Destroy();
     }
+    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
 }
 
 void DistributedMutex::Sync(void)
@@ -71,10 +74,9 @@ void DistributedMutex::Lock(void)
     static int minus_one = -1;
 
     int val = -1;
-    // MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->win);
+    MPI_Win_lock_all(MPI_MODE_NOCHECK, this->win);
     do
     {
-        MPI_Win_lock_all(MPI_MODE_NOCHECK, this->win);
         val = -1;
         int retval = MPI_Fetch_and_op(&plus_one, &val, MPI_INT, this->rank, 0, MPI_SUM, this->win);
         assert(retval == MPI_SUCCESS);
@@ -88,8 +90,9 @@ void DistributedMutex::Lock(void)
             MPI_Win_flush(this->rank, this->win);
             usleep(10); // sleep a while and try again
         }
-        MPI_Win_unlock_all(this->win);
-    } while(val > 0);
+    }
+    while(val > 0);
+    MPI_Win_unlock_all(this->win);
     // MPI_Win_unlock(this->rank, this->win);
     assert(val <= 0);
 }

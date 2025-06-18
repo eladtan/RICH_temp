@@ -1,6 +1,8 @@
 #ifndef MPI_COMMANDS_HPP
 #define MPI_COMMANDS_HPP 1
 
+using rank_t = int;
+
 #ifdef RICH_MPI
 
 #include <vector>
@@ -14,8 +16,6 @@
 
 #define MPI_TIMED_BARRIER_TAG 110503
 #define MPI_EXCHANGE_TAG 5
-
-using rank_t = int;
 
 using std::vector;
 

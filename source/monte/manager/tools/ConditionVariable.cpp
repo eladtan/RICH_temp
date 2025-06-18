@@ -35,10 +35,12 @@ ConditionVariable::ConditionVariable(const MPI_Comm &comm)
 
 ConditionVariable::~ConditionVariable(void)
 {
+    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
     if(not this->destroyed)
     {
         this->Destroy();
     }
+    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
 }
 
 void ConditionVariable::Destroy(void)
