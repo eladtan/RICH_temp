@@ -54,7 +54,6 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          bool const hydro_on,
                                          bool const compton_on,
                                          bool const doppler_on,
-                                         bool const mix_frame_on,
                                          double const minimum_temperature,
                                          bool const protections_on) :
     RadiationDriver(eos,
@@ -516,8 +515,8 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
             max_abs_grad_E[i] = abs_grad_E_temp;
             for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
                 double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g);
-                double const lambda =  CG::CalcSingleFluxLimiter(grad_temp_array[g] / (tess.GetVolume(i) * pow<3>(length_scale_)), Dg, cells_cgs[i].Eg[g] * cells_cgs[i].density) / 3;
-                double const sigma_t =  CG::speed_of_light /(3 * Dg) + 1e-100;
+                double const lambda  =  CG::CalcSingleFluxLimiter(grad_temp_array[g] / (tess.GetVolume(i) * pow<3>(length_scale_)), Dg, cells_cgs[i].Eg[g] * cells_cgs[i].density) / 3;
+                double const sigma_t =  CG::speed_of_light / (3 * Dg) + 1e-100;
                 double const R_g = abs(grad_temp_array[g]) / (tess.GetVolume(i) * pow<3>(length_scale_) * sigma_t * cells_cgs[i].Eg[g] * cells_cgs[i].density + 1e-200);
                 if (abs(grad_temp_array[g]) < 1e-100) {
                     R2[i][g] = 1.0 / 3.0;

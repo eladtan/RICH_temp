@@ -28,7 +28,6 @@ public:
      * @param hydro_on Boolean indicating whether hydrodynamic effects are on.
      * @param compton_on Boolean indicating whether Compton scattering is on.
      * @param doppler_on Boolean indicating whether Doppler shift correction is on.
-     * @param mix_frame_on Boolean indicating whether to use mixed frame in the diffusion calculation.
      * @param minimum_temperature Minimum temperature for the diffusion calculation. Default value is -1.
      * @param protections_on Enables protections in the diffusion calculation (modifies coupling strength). Default value is true.
      */
@@ -42,7 +41,6 @@ public:
                         bool const hydro_on,
                         bool const compton_on,
                         bool const doppler_on,
-                        bool const mix_frame_on,
                         double const minimum_temperature = -1,
                         bool const protections_on = true);
 

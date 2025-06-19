@@ -11,8 +11,10 @@ namespace CG
     double CalcSingleFluxLimiter(Vector3D const& grad, double const D, double const cell_value)
     {
         double const R = std::max(3 * abs(grad) * D / (cell_value * CG::speed_of_light + 1e-200), 1e-200);
-        if(R < 1e-2) //series expansion
-            return 1 - R * R / 15 + 2 * R * R * R * R /315;
+        
+        // series expansion
+        if(R < 1e-2) return 1 - R * R / 15 + 2 * R * R * R * R /315;
+        
         return 3 * (1.0 / std::tanh(R) - 1.0 / R) / R;
     }
 
