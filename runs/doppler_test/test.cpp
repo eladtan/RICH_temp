@@ -166,7 +166,7 @@ int main(void)
 	matrix_builder.mass_scale_ = mscale;
 	ZeroForce3D force = ZeroForce3D();
 
-	DefaultCellUpdater cu(false, 0, true, &matrix_builder);
+	DefaultCellUpdater cu(false, 0, true, 0.0, &matrix_builder);
 
 	RigidWallFlux3D rigidflux(rs);
 	RegularFlux3D *regular_flux = new RegularFlux3D(rs);
