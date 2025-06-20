@@ -108,7 +108,7 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
     if(verbose)
     {
         const std::pair<size_t, size_t> &neighbors = grid.GetFaceNeighbors(min_face);
-        size_t otherNeighbor = (neighbors.first == this->cellIndex)? neighbors.second : neighbors.first;
+        // size_t otherNeighbor = (neighbors.first == this->cellIndex)? neighbors.second : neighbors.first;
         if(not grid.IsPointInCell(this->location, this->cellIndex))
         {
             const T &declaredCell = grid.GetMeshPoint(this->cellIndex);
@@ -220,7 +220,7 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
             const size_t &faceIdx = faces[i];
             const T &normal = grid.Normal(faceIdx);
             const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
-            size_t otherNeighbor = (sides.first == this->cellIndex)? sides.second : sides.first; // todo remove
+            // size_t otherNeighbor = (sides.first == this->cellIndex)? sides.second : sides.first; // todo remove
             double distanceFromFace = std::abs(ScalarProd(normal, grid.FaceCM(faceIdx) - this->location)) / abs(normal);
             eo.addEntry("Face " + std::to_string(i) + " index", faceIdx);
             eo.addEntry("Distance from face " + std::to_string(i), distanceFromFace);

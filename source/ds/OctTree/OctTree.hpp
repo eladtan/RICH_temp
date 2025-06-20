@@ -15,7 +15,7 @@
 
 #include "ds/utils/raw_type.h"
 #include "ds/utils/geometry.hpp"
-#include "source/misc/universal_error.hpp"
+#include "misc/universal_error.hpp"
 
 #define DIM 3
 #define CHILDREN 8 // 2^DIM
