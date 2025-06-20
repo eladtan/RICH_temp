@@ -31,7 +31,7 @@ git submodule
 ## Setting up GNU compiler environment
 
 ### Modules
-The list of recommended modules to run RICH:
+The list of recommended modules (in HUJI ICPL's cluster) to run RICH:
 ```
 boost/1.78.0
 hdf5/1.14.2/gcc/12.3.0_cxx
@@ -60,9 +60,7 @@ ls ~/.lmod.d
 ```
 
 ## Setting up Intel compiler environment
-
-### Gates 1, 2 (Linux 4.18.0)
-Similarly, for `intel` compilation, use `ml purge` and then load these modules:
+Similarly, for `intel` compilation, use `ml purge` and then load these modules (in HUJI ICPL's cluster):
 ```
 Intel/OneApi/2024.2.1
 boost/1.78.0
