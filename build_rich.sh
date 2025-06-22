@@ -2,6 +2,8 @@
 
 # ==================== Colors ====================
 RED=$'\033[0;31m'
+FAIL=$'\e[7;31;47m'
+SUCCESS=$'\e[7;32;47m'
 GREEN=$'\033[0;32m'
 ORANGE=$'\033[0;33m'
 PURPLE=$'\033[0;35m'
@@ -13,28 +15,59 @@ NC=$'\033[0m'
 export CCACHE_CPP2=yes
 
 # ==================== Parse Arguments ====================
+CURRENT_CMD="$0 $*"
 CONFIG="$1"
 TEST_ARG="$2"
 TEST_NAME="${TEST_ARG#--test_name=}"
 
+CMAKE_FLAGS=""
+# Parse remaining optional args
+for arg in "${@:3}"; do
+    case "$arg" in
+        --with_asan)
+            CMAKE_FLAGS+=" -DASAN=1 "
+            ;;
+        --energy_groups_num=*)
+            val="${arg#--energy_groups_num=}"
+            CMAKE_FLAGS+=" -DENERGY_GROUPS_NUM=$val "
+            ;;
+        --mc_debug)
+            CMAKE_FLAGS+=" -DMC_DEBUG=1 "
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $arg${NC}"
+            exit 1
+            ;;
+    esac
+done
 
 # ==================== Paths ====================
 ORIG_DIR="$(pwd)"
 BUILD_DIR="$ORIG_DIR/build/$CONFIG"
-TEST_FILE="$BUILD_DIR/.test_name"
+CMD_FILE="$BUILD_DIR/.build_cmd"
 
 MAKE_OUT="$BUILD_DIR/${CONFIG}_build.out"
 MAKE_ERR="$BUILD_DIR/${CONFIG}_build.err"
 CMAKE_OUT="$BUILD_DIR/${CONFIG}_cmake.out"
 CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 
+# ==================== Validate arguments ====================
+
+if [[ $# -lt 2 || "$2" != --test_name=* ]]; then
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug]${NC}"
+    exit 1
+fi
+
+
 # ==================== Reset Build if Test Name Changed ====================
 
 # Reset build directory if test name changed
-if [[ -f "$BUILD_DIR/Makefile" && -f "$TEST_FILE" ]]; then
-    OLD_TEST_NAME=$(<"$TEST_FILE")
-    if [[ "$OLD_TEST_NAME" != "$TEST_NAME" ]]; then
-        echo -e "${PURPLE}Test name changed. Cleaning $BUILD_DIR...${NC}"
+if [[ -f "$CMD_FILE" ]]; then
+    OLD_CMD=$(<"$CMD_FILE")
+    CURRENT_CMD="$(echo "$CURRENT_CMD" | tr -s '[:space:]' ' ' | sed 's/ *$//')"
+    OLD_CMD="$(echo "$OLD_CMD" | tr -s '[:space:]' ' ' | sed 's/ *$//')"
+    if [[ "$OLD_CMD" != "$CURRENT_CMD" ]]; then
+        echo -e "${PURPLE}Build command changed. Cleaning $BUILD_DIR...${NC}"
         rm -rf "$BUILD_DIR"
     fi
 fi
@@ -45,13 +78,14 @@ mkdir -p "$BUILD_DIR" || { echo -e "${RED}Failed to create $BUILD_DIR${NC}"; exi
 # Change into build directory
 cd "$BUILD_DIR" || { echo -e "${RED}Failed to cd into $BUILD_DIR${NC}"; exit 1; }
 
-# Save test name now
-echo "$TEST_NAME" > .test_name
+# Save command for future comparison
+echo "$CURRENT_CMD" > "$CMD_FILE"
+
 
 # Run CMake if Makefile doesn't exist
 if [[ ! -f Makefile ]]; then
     echo -e "${ORANGE}Running CMake...${NC}"
-    cmake -S "$ORIG_DIR/source" -DCONFIG="$CONFIG" -DTEST_DIR="$TEST_NAME" > "$CMAKE_OUT" 2> "$CMAKE_ERR"
+    cmake -S "$ORIG_DIR/source" -DCONFIG="$CONFIG" -DTEST_DIR="$TEST_NAME" $CMAKE_FLAGS > "$CMAKE_OUT" 2> "$CMAKE_ERR"
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}CMake failed. See $CMAKE_ERR${NC}"
         exit 1
@@ -107,7 +141,7 @@ progress_bar_and_filtered_output() {
             printf "\rProgress: [${GREEN}%s${NC}] %3s%%\033[K" "$bar" "$percent"
         elif [[ $progress_done -eq 1 ]]; then
             printf "\rProgress: [${GREEN}%s${NC}] %3s%%\033[K\n" "$bar" "$percent"
-            printf "${PURPLE}Linking...${NC}\n"
+            printf "${PURPLE}Linking...${NC}"
             progress_done=2
         fi
     done
@@ -123,7 +157,10 @@ MAKE_EXIT_CODE=${PIPESTATUS[0]}
 # ==================== Final Status ====================
 
 if [[ $MAKE_EXIT_CODE -ne 0 ]]; then
-    echo -e "${RED}Make failed. See $MAKE_ERR${NC}"
+    if [[ $progress_done -eq 0 ]]; then
+        echo
+    fi
+    echo -e "${FAIL}Make failed. See $MAKE_ERR${NC}"
     exit 1
 else
     # delete old symlink if it exists
@@ -132,8 +169,8 @@ else
     fi
     ln -s rich_$CONFIG rich
     # if `progress_done` is 0 or not define, print an empty line
-    if [[ -z "$progress_done" || $progress_done -eq 0 ]]; then
+    if [[ $progress_done -eq 0 ]]; then
         echo
     fi
-    echo -e "${GREEN}Done!${NC}"
+    echo -e "${SUCCESS}Done!${NC}"
 fi
