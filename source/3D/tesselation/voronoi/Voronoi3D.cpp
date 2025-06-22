@@ -1241,10 +1241,22 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
         this->all_CM.resize(allPoints.size());
     }
     
+    std::chrono::high_resolution_clock::time_point start, end;
+    start = std::chrono::high_resolution_clock::now();
+
     if(this->pointsManager.get() == nullptr)
     {
         // initialize points manager
         this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
+    }
+    end = std::chrono::high_resolution_clock::now();
+
+    rank_t rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    
+    if(rank == 0)
+    {
+        std::cout << "Time for pointsManager initialization: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
 
     int canDoRebalance = ((not suppressRebalancing) and (indicesToBuild.size() == allPoints.size()))? 1 : 0;
@@ -1368,7 +1380,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     end = std::chrono::high_resolution_clock::now();
     if(rank == 0)
     {
-        std::cout << "Time for load balancing: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+        std::cout << "Time for preparing (hilbert tree + load balancing): " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
 
     start = std::chrono::high_resolution_clock::now();
@@ -1414,7 +1426,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
 
     if(this->radiuses.size() < this->Norg_)
     {
-        UniversalError eo("Voronoi3D:PrepareToBuildParallel: wrong size of radiuses array");
+        UniversalError eo("Voronoi3D:BuildPartiallyParallel: wrong size of radiuses array");
         eo.addEntry("Rank", rank);
         eo.addEntry("radiuses.size()", this->radiuses.size());
         eo.addEntry("Norg_", this->Norg_);

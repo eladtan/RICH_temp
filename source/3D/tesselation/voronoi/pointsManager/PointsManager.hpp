@@ -72,10 +72,10 @@ public:
         MPI_Allreduce(&myWeight, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         double idealWeight = totalWeight / this->size;
         int I_say = (myWeight >= (BALANCE_FACTOR * idealWeight))? 1 : 0; // if I say 'rebalance' or not
-        if(I_say)
-        {
-            std::cout << "my weight is " << myWeight << " and the ideal weight is " << idealWeight << std::endl;
-        }
+        // if(I_say)
+        // {
+        //     std::cout << "my weight is " << myWeight << " and the ideal weight is " << idealWeight << std::endl;
+        // }
         int rebalance = 0; // if someone says 'rebalance' or not
         MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
         if((rebalance > 0) and (this->rank == 0))
@@ -89,14 +89,31 @@ public:
     {
         // if envAgent is null, the `exchange` will perform an initialization as well.
         // `rebalance` is used only when the environment agent is initialized.
+        
+        std::chrono::high_resolution_clock::time_point start, end;
+
+        start = std::chrono::high_resolution_clock::now();
         PointsExchangeResult result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
         this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
+        end = std::chrono::high_resolution_clock::now();
+        if(this->rank == 0)
+        {
+            std::cout << "Time for exchange: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+        }
+
         if(doRebalance and this->checkForRebalance(this->totalWeight))
         {
+            start = std::chrono::high_resolution_clock::now();
             assert(this->getEnvironmentAgent() != nullptr);
             this->rebalance(allPoints, allWeights);
             result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
             this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
+            end = std::chrono::high_resolution_clock::now();
+            if(this->rank == 0)
+            {
+                std::cout << "Time for load balancing: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+            }
+
         }
         // std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
         return result;

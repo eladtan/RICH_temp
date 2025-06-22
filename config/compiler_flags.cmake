@@ -2,7 +2,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 if(DEFINED MPI)
     add_definitions("-DRICH_MPI")
-    message(STATUS "Defined RICH_MPI")
+    message(STATUS "Defined 'RICH_MPI'")
 endif()
 
 set(CMAKE_CXX_FLAGS "")
@@ -26,18 +26,18 @@ list(APPEND CMAKE_CXX_FLAGS
     "-fstack-protector-all")
 
 # energy groups
-if(NOT ENERGY_GROUPS_NUM)
+if(NOT DEFINED ENERGY_GROUPS_NUM)
     set(ENERGY_GROUPS_NUM 1)
 endif()
 
 add_definitions("-DENERGY_GROUPS_NUM=${ENERGY_GROUPS_NUM}")
 
-if(WITH_SANITIZER)
+if(DEFINED ASAN)
     message(STATUS "Address Sanitizer Enabled")
     list(APPEND CMAKE_CXX_FLAGS "-fsanitize=address")
 endif()
 
-if(MONTECARLO_DEBUG)
+if(DEFINED MC_DEBUG)
     # status message
     message(STATUS "Monte Carlo Debug Mode Enabled")
     add_definitions("-DMONTECARLO_DEBUG")

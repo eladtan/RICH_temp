@@ -3,6 +3,9 @@ set(path_env $ENV{PATH})
 # Split PATH into a CMake list
 string(REPLACE ":" ";" path_env_list "${path_env}")
 
+# TODO: change if necessary
+set(VTUNE_DIRECTORY "/software/x86_64/5.14.0/Intel/OneApi/2024.2.1/vtune/latest/")
+
 if(NOT VTUNE_DIRECTORY)
     # Extract likely VTUNE prefixes
     set(VTUNE_DIRECTORY "")

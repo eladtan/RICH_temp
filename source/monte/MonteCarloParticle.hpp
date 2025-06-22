@@ -35,6 +35,10 @@ struct MonteCarloParticle
             rank_t nextRank = std::numeric_limits<rank_t>::max();
             rank_t sentByRank = std::numeric_limits<rank_t>::max();
             bool removedFromRank = false;
+            size_t lastSeen = 0;
+            rank_t lastSeenRank = std::numeric_limits<rank_t>::max();
+            rank_t lastSeenRankBuf = std::numeric_limits<rank_t>::max();
+            size_t lastSeenIndex = std::numeric_limits<size_t>::max();
         #endif // MONTECARLO_DEBUG
     #endif // RICH_MPI
     size_t id = std::numeric_limits<size_t>::max();
@@ -71,6 +75,11 @@ struct MonteCarloParticle
         #else // RICH_MPI
                 return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
         #endif // RICH_MPI
+    }
+
+    inline bool operator==(const MonteCarloParticle &other) const
+    {
+        return this->id == other.id and this->rank == other.rank;
     }
 };
 
