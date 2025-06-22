@@ -4,7 +4,8 @@
 #SBATCH --output=CrookedPipe_%j.out
 #SBATCH --error=CrookedPipe_%j.err
 #SBATCH --ntasks=512
-#SBATCH --partition=socket
+#SBATCH --partition=bigrun
 #SBATCH --exclusive
+#SBATCH --constraint=d24g
 
-mpirun ./rich
+mpirun ./rich 20000 100

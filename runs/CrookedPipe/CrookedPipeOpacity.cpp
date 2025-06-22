@@ -27,6 +27,10 @@ double CrookedPipeOpacity::getScatteringOpacity(const ComputationalCell3D &cell)
 Vector3D CrookedPipeOpacity::getRandomVelocity(const ComputationalCell3D &cell) const
 {
     static std::uniform_real_distribution<double> dist(-1 + EPSILON, 1 - EPSILON);
+
+    // // set rng's seed to cell.ID
+    // this->rng.seed(cell.ID);
+
     double x = dist(this->rng);
     double y = dist(this->rng);
     double z = dist(this->rng);
@@ -37,6 +41,10 @@ Vector3D CrookedPipeOpacity::getRandomVelocity(const ComputationalCell3D &cell) 
 Vector3D CrookedPipeOpacity::getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &particle) const
 {
     static std::uniform_real_distribution<double> dist(-1 + EPSILON, 1 - EPSILON);
+
+    // // set rng's seed to cell.ID
+    // this->rng.seed(cell.ID);
+    
     double x = dist(this->rng);
     double y = dist(this->rng);
     double z = dist(this->rng);

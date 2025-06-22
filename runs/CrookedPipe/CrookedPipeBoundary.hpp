@@ -51,6 +51,7 @@ MonteCarloParticleStatus CrookedPipeBoundaryCondition<T, Grid>::apply(MonteCarlo
             }
             // Reflect the particle
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
+            particle.location = particle.location * (1 - MONTECARLO_EPS) + MONTECARLO_EPS * this->grid.GetMeshPoint(particle.cellIndex);
             status = MonteCarloParticleStatus::REFLECT;
             return status;
         }
@@ -67,6 +68,8 @@ std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::
     static const double T4 = boost::math::pow<4>(0.5 * units::kev_kelvin);
     std::uniform_real_distribution<double> unif(0, 1);
     static std::mt19937_64 re(0);
+
+    // re.seed(0); // todo: remove
 
     std::vector<MonteCarloParticle<T, Grid>> newParticles;
     size_t N = this->grid.GetPointNo();
@@ -92,6 +95,12 @@ std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::
                         MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
                         newParticle.location = RandomPointOnFace(this->grid, faceIdx);
                         newParticle.location = newParticle.location * (1 - MONTECARLO_EPS) + MONTECARLO_EPS * this->grid.GetMeshPoint(i);
+                        if(newParticle.location.x < 1e-12)
+                        {
+                            UniversalError eo("CrookedPipeBoundaryCondition::generateNewBoundaryParticles: new particle location is too close to zero");
+                            eo.addEntry("New particle location", newParticle.location);
+                            throw eo;
+                        }
                         double mu = std::sqrt(unif(re));
                         // Lambert Emission Law
                         newParticle.velocity.x = (normal.x > 0)? -mu : mu;
