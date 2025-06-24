@@ -357,7 +357,7 @@ double  MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, 
     double const slope_left = (cell.Eg[g] * cell.density / energy_groups_width[g] - cell.Eg[g - 1] * cell.density / energy_groups_width[g - 1]) / dw_left;
     double const slope_right = (cell.Eg[g + 1] * cell.density / energy_groups_width[g + 1] - cell.Eg[g] * cell.density / energy_groups_width[g]) / dw_right;
 
-    double const r = slope_left / (slope_right + std::numeric_limits<double>::min() * 1e10);
+    double const r = slope_left / (slope_right + std::max({slope_right, slope_left, std::numeric_limits<double>::min() * 1e50})*1e-16);
 
     double const slope = std::max(std::max(0.0, std::min(2 * r, 1.0)), std::min(r, 2.0));
 
@@ -640,7 +640,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
             }
 
             div_V -= 0.5*ScalarProd(cells_cgs[i].velocity+velocity_j, r_ij) * A_ij;
-            if (hydro_on_) {
+            if (hydro_on_ or doppler_on_) {
                 for (size_t group=0; group<ENERGY_GROUPS_NUM; ++group) {
                     A[i * ENERGY_GROUPS_NUM + group][0] += -0.5*ScalarProd(cells_cgs[i].velocity+velocity_j, r_ij) * A_ij * dt_cgs * (0.5 - 0.5 * R2[i][group]);
                 }
