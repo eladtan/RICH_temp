@@ -59,7 +59,7 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGroup(std::size_t const gr
                                                             std::vector<ComputationalCell3D> const& cells,
                                                             double const Eg_i,
                                                             double& Eg_outside,
-                                                            Vector3D& /*v_outside*/) const {
+                                                            Vector3D& v_outside) const {
 
     double const R = tess.GetWidth(index);
     if (tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R*1e-4)) {
@@ -67,6 +67,8 @@ void MultigroupDiffusionSideBoundary::getOutsideValuesGroup(std::size_t const gr
     } else {
         Eg_outside = Eg_i;
     }
+
+    v_outside = cells[index].velocity;
 }
 
 MultigroupDiffusionXInflowBoundary::MultigroupDiffusionXInflowBoundary(ComputationalCell3D const& left_state,
@@ -212,4 +214,8 @@ void MultigroupDiffusionClosedBoundary::getOutsideValuesGroup(std::size_t const 
                            double& Eg_outside,
                            Vector3D& v_outside) const {
     Eg_outside = Eg_i;
+
+    Vector3D normal = normalize(tess.GetMeshPoint(outside_point) - tess.GetMeshPoint(index));
+    v_outside = cells[index].velocity;
+    v_outside -= 2 * normal * ScalarProd(normal, v_outside);
 }
