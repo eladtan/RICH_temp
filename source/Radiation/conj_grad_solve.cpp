@@ -173,8 +173,7 @@ namespace CG
         if(rank == 0)
         {
             std::cout << "Energy change due to sub_x_solution " << dx_vec[slice] <<" with sign "<<dx_vec[slice + 1]<<" negative_x "<<dx_vec.back()<<std::endl;
-            for(size_t i = 0; i < slice; ++i)
-                std::cout << "energy change group " << i << " = " << dx_vec[i] << std::endl;
+            // for(size_t i = 0; i < slice; ++i) std::cout << "energy change group " << i << " = " << dx_vec[i] << std::endl;
         }
     }
     
