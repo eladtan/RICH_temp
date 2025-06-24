@@ -191,3 +191,8 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionCoefficientGroup(Compu
 double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
     return 0.0;
 }
+
+ZeroAbsorptionZeroDiffusionMultigroup::ZeroAbsorptionZeroDiffusionMultigroup(
+    std::vector<double> const& energy_groups_center_,
+    std::vector<double> const& energy_groups_boundary_
+) : MultigroupDiffusionCoefficientCalculator(energy_groups_center_, energy_groups_boundary_) {}

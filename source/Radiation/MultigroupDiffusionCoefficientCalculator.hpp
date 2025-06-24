@@ -120,4 +120,18 @@ public:
     double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override;
 };
 
+class ZeroAbsorptionZeroDiffusionMultigroup : public MultigroupDiffusionCoefficientCalculator {
+public:
+    ZeroAbsorptionZeroDiffusionMultigroup(
+        std::vector<double> const& energy_groups_center_,
+        std::vector<double> const& energy_groups_boundary_
+    );
+
+    double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override { return std::sqrt(std::numeric_limits<double>::min()*1e50); }
+
+    double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override { return std::numeric_limits<double>::min()*1e50; }
+
+    double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const override { return std::numeric_limits<double>::min()*1e50; }
+};
+
 #endif // MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
