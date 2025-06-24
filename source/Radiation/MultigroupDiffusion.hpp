@@ -110,9 +110,6 @@ public:
     mutable std::vector<double> old_Er; // total radiation energy per cell at the beggining of the time step [cell]
     mutable std::vector<double> old_Tm; // temperature per cell at the beggining of the time step [cell]
 
-    mutable std::vector<double> max_abs_grad_E; // maximal gradient of the total energy between a cell and its neighbors [cell]
-    mutable std::vector<double> max_neighbor_abs_grad_E;
-
     mutable std::vector<Vector3D> grad; // numerical gradient operator bewteen cells ij for i < j [face]
 
     bool const doppler_on_; // flag to indicate whether to add the doppler terms to the matrix
