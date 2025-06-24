@@ -163,7 +163,7 @@ rank_t ReallocationAgent::ShouldReallocate(void) const
     MPI_Status status;
     int flag;
     MPI_Iprobe(MPI_ANY_SOURCE, ASK_REALLOCATION_TAG, this->comm, &flag, &status);
-    if(flag)
+    if(__glibc_unlikely(flag))
     {
         int dummy;
         MPI_Recv(&dummy, 1, MPI_INT, status.MPI_SOURCE, ASK_REALLOCATION_TAG, this->comm, &status);
