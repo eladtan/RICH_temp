@@ -4,7 +4,7 @@
 #include <array>
 #include "../HilbertConvertor3D.hpp"
 
-#define MAX_HILBERT_DEPTH 50
+#define MAX_HILBERT_DEPTH 54
 
 /**
  * see here the algorithm: https://github.com/jakubcerveny/gilbert

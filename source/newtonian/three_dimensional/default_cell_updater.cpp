@@ -7,7 +7,7 @@
 namespace
 {
 	void EntropyFix(EquationOfState const& eos, ComputationalCell3D &res, size_t entropy_index, double &energy,
-		Conserved3D &extensive)
+		Conserved3D &extensive, double Et_min)
 	{
 		if(!(res.density > 0) || !(res.tracers[entropy_index] > 0))
 		{
@@ -16,10 +16,35 @@ namespace
 			eo.addEntry("density", res.density);
 			throw eo;
 		}
-	  	double new_pressure = eos.sd2p(res.tracers[entropy_index], res.density, res.tracers, ComputationalCell3D::tracerNames);
-		res.pressure = new_pressure;
-		double de = eos.dp2e(res.density, res.pressure) - energy;
-		energy += de;
+		double de = 0;
+		try
+		{
+	  		double new_pressure = eos.sd2p(res.tracers[entropy_index], res.density, res.tracers, ComputationalCell3D::tracerNames);
+			res.pressure = new_pressure;
+			double new_energy = std::max(Et_min, eos.dp2e(res.density, new_pressure));
+			if(new_energy == Et_min)
+			{
+				res.pressure = eos.de2p(res.density, new_energy);
+				double new_entropy = eos.dp2s(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
+				res.tracers[entropy_index] = new_entropy;
+				extensive.tracers[entropy_index] = new_entropy * extensive.mass;
+			}
+			de = new_energy - energy;
+			energy += de;
+			res.internal_energy = energy;
+			extensive.energy += de * extensive.mass;
+			extensive.internal_energy += de * extensive.mass;
+		}
+		catch(UniversalError const& eo)
+		{
+			de = Et_min - energy;
+			energy = Et_min;
+			res.pressure = eos.de2p(res.density, energy);
+			res.internal_energy = energy;
+			extensive.energy += de * extensive.mass;
+			extensive.internal_energy += de * extensive.mass;
+		}
+		
 		if(!(energy > 0))
 		{
 			UniversalError eo("negative thermal energu in entropy fix");
@@ -29,9 +54,6 @@ namespace
 			eo.addEntry("density", res.density);
 			throw eo;
 		}
-		res.internal_energy = energy;
-		extensive.energy += de * extensive.mass;
-		extensive.internal_energy += de * extensive.mass;
 	}
 
 	void EntropyFixSR(EquationOfState const& eos, ComputationalCell3D &res, size_t entropy_index, Conserved3D &extensive, double vol)
@@ -82,7 +104,6 @@ namespace
 					extensive.internal_energy *= d_factor;
 					for (size_t j = 0; j < Ntracers; ++j)
 						extensive.tracers[j] *= d_factor;
-					extensive.Erad *= d_factor;
 				}
 				double const old_etherm = res[i].internal_energy;
 				res[i].velocity = extensive.momentum / extensive.mass;
@@ -93,18 +114,19 @@ namespace
 				// Entropy fix if needed
 				if (entropy_index < ComputationalCell3D::tracerNames.size())
 				{
+					double Et_min = 0;
 					try
 					{
 						if(min_temperature > 0)
 						{
-							double const Et_min = eos.dT2e(res[i].density, min_temperature, res[i].tracers, ComputationalCell3D::tracerNames);
+							Et_min = eos.dT2e(res[i].density, min_temperature, res[i].tracers, ComputationalCell3D::tracerNames);
 							if(energy < Et_min)
 							{
-								energy = Et_min;
 								res[i].temperature = min_temperature;
 								res[i].internal_energy = Et_min;
 								extensive.energy += (res[i].internal_energy - energy) * extensive.mass;
 								extensive.internal_energy += (res[i].internal_energy - energy) * extensive.mass;
+								energy = Et_min;
 								res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy, res[i].tracers, ComputationalCell3D::tracerNames);
 								double new_entropy = eos.dp2s(res[i].density, res[i].pressure, res[i].tracers, ComputationalCell3D::tracerNames);
 								res[i].tracers[entropy_index] = new_entropy;
@@ -114,7 +136,7 @@ namespace
 						// Do we have a negative thermal energy?
 						if (energy < 0)
 						{
-							EntropyFix(eos, res[i], entropy_index, energy, extensive);
+							EntropyFix(eos, res[i], entropy_index, energy, extensive, Et_min);
 						}
 						else
 						{
@@ -122,7 +144,7 @@ namespace
 							if ((energy*extensive.mass < 0.005*extensive.energy) &&
 								HighRelativeKineticEnergy(tess, i, extensives, extensive))
 							{
-								EntropyFix(eos, res[i], entropy_index, energy, extensive);
+								EntropyFix(eos, res[i], entropy_index, energy, extensive, Et_min);
 							}
 							else
 							{
@@ -150,6 +172,7 @@ namespace
 						eo.addEntry("Cell volume", vol);
 						eo.addEntry("Cell energy", extensives[i].energy);
 						eo.addEntry("Cell thermal energy per unit mass", energy);
+						eo.addEntry("Et_min", Et_min);
 						eo.addEntry("old_etherm", old_etherm);
 						eo.addEntry("Cell id", static_cast<double>(res[i].ID));
 						for(size_t j = 0; j <ComputationalCell3D::tracerNames.size(); ++j)

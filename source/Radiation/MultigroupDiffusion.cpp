@@ -199,7 +199,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
     double max_Er = old_Er.size() > 0 ? *std::max_element(old_Er.begin(), old_Er.end()) : std::numeric_limits<double>::min();
     double max_rhoT = 0;
     auto const N = tess.GetPointNo();
-    
+
     for (size_t i=0; i < N; ++i) max_rhoT = std::max(max_rhoT, cells[i].density * cells[i].temperature);
 
 #ifdef RICH_MPI
@@ -286,11 +286,11 @@ double MultigroupDiffusion::calculate_dt(double const dt,
         std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" fleck factor "<<fleck_factor[max_loc]<<" which one "<<max_which<<" equlibrium_factor "<<equlibrium_factor_final<<" final_Erad_eq "<<final_Erad_eq<<std::endl;
 
         if (max_which >= 2) std::cout << "Group number "<<max_which - 2<<" New_Eg="<<cells[max_loc].Eg[max_which - 2]*cells[max_loc].density<<" old_Eg="<<old_Eg[max_loc][max_which - 2]<<std::endl;
-        // for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
-        //     std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density<<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]<<" bg="<<
-        //     planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< 
-        //     " bg_old="<<
-        //     planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], old_Tm[max_loc]) * pow<2>(time_scale_) * length_scale_ / mass_scale_<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
+        for (size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+            std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density*mass_scale_ / (length_scale_ * pow<2>(time_scale_)) <<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]*mass_scale_ / (length_scale_ * pow<2>(time_scale_))<<" energy(keV) "<<energy_groups_center[j] / units::kev<<" bg="<<
+            planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature)<<
+            " bg_old="<<
+            planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], old_Tm[max_loc])<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
         // std::cout << "which one " << max_which << std::endl;
         // PrintDebugData(max_loc);
     }
@@ -331,7 +331,10 @@ bool MultigroupDiffusion::step(double const tolerance,
     calculate_fleck_factor(tess, cells, dt * time_scale_);
 
     std::size_t tot_iters = 0;
-    new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full);
+    bool good_end = false;
+    new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full, good_end);
+    if (not good_end)
+        return false;
     tot_iters += total_iters;
 
     if (rank == 0) std::cout << "Total iterations: " << tot_iters << std::endl;
@@ -357,7 +360,7 @@ double  MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, 
     double const slope_left = (cell.Eg[g] * cell.density / energy_groups_width[g] - cell.Eg[g - 1] * cell.density / energy_groups_width[g - 1]) / dw_left;
     double const slope_right = (cell.Eg[g + 1] * cell.density / energy_groups_width[g + 1] - cell.Eg[g] * cell.density / energy_groups_width[g]) / dw_right;
 
-    double const r = slope_left / (slope_right + std::max({slope_right, slope_left, std::numeric_limits<double>::min() * 1e50})*1e-16);
+    double const r = slope_left / (slope_right + std::max({ slope_right, slope_left, std::numeric_limits<double>::min() * 1e50 })*1e-16);
 
     double const slope = std::max(std::max(0.0, std::min(2 * r, 1.0)), std::min(r, 2.0));
 
@@ -419,7 +422,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
 
     // Add the emission term to the matrix
     for (std::size_t i=0; i < Nlocal; ++i) {
-        bool const do_compton = compton_on_ && (Gammas[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
+        bool const do_compton = compton_on_ && (sigma_absorption_planck[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
         if (do_compton) {
             generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs);
         }
@@ -521,7 +524,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         <<" grad_Eg "<<abs(grad_temp_array[g]) / (tess.GetVolume(i) * pow<3>(length_scale_))<<" Eg "<<cells_cgs[i].Eg[g] * cells_cgs[i].density<<std::endl;
                 }
             }
-        } 
+        }
     } else {
         R2.resize(Nlocal);
         for (std::size_t i=0; i < Nlocal; ++i) {
@@ -804,7 +807,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
         double dE_absorption_emission = -volume * f * cdt * kp*Um;
 
         double dE_compton = 0.0;
-        bool const do_compton = compton_on_ && (Gammas[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
+        bool const do_compton = compton_on_ && (sigma_absorption_planck[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
         if (do_compton) {
             generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs);
 
@@ -838,7 +841,6 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
 
             // dE_absorption_emission += f * volume * cdt * full_CG_res_i * sigma_absorption_group[i][group];
             dE_absorption_emission += volume * cdt * CG_res * sigma_absorption_group[i][group];
-
             auto const bg = planck_integal_group[i][group];
             for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
 
@@ -1092,6 +1094,8 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
         sigma_scattering_group[i].resize(ENERGY_GROUPS_NUM);
 
         auto const& cell = cells[i];
+        double const kT_1 = 1.0 / (CG::boltzmann_constant * cell.temperature);
+        double const Um = get_radiation_energy_density(cell.temperature);
         for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
 
             sigma_absorption_group[i][g] = std::min(coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g),
@@ -1101,6 +1105,15 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
                     sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g],
                         cv * Trad / (CG::speed_of_light * dt * cells[i].Erad * cells[i].density));
                 }
+            }
+
+            double const a = energy_groups_boundary[g] * kT_1;
+            double const b = energy_groups_boundary[g+1] * kT_1;
+            double const bg = planck_integral::planck_integral(a, b);
+            if (cell.density > 1e-12 && CG::speed_of_light * dt * sigma_absorption_group[i][g] * (cell.Eg[g] * cell.density - bg * Um) > 2 * cv * cell.temperature)
+            {
+                double const new_sigma =  2 * cv * cell.temperature / (CG::speed_of_light * dt * (cell.Eg[g] * cell.density - bg * Um));
+                sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g], new_sigma);//std::max(cell.density * 0.34 * 0.1, new_sigma));
             }
 
             if (sigma_absorption_group[i][g] < 0.) {
@@ -1261,17 +1274,12 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
             double const dE_factor = 0.4;
             if (dE < -dE_factor * E_cell) {
                 double const reduce_factor = std::abs(dE_factor * E_cell / dE);
-                double reduce_factor_dT = reduce_factor;
-                if (dE_dT < 0 && dE_dT > 0.75 * dE) {
-                    reduce_factor_dT *= std::min(10.0, 0.75 * dE / dE_dT);
-                }
-
-                reduce_factor_dT = std::min(1.0, reduce_factor_dT);
-                if (reduce_factor < 1) {
+                if (reduce_factor < 1)
+                {
                     for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
                         for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
                             S[gt][g] *= reduce_factor;
-                            dSdUm[gt][g] *= reduce_factor_dT;
+                            dSdUm[gt][g] *= reduce_factor;
                         }
                     }
                 }
@@ -1292,7 +1300,7 @@ double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) c
     }
 
     if (Upsilon < -1e-29) {
-        std::cout<<"Negative Upsilon in cell "<<cell.ID<<std::endl;
+        std::cout<<"Negative Upsilon in cell "<<cell.ID<<cell<<std::endl;
         double sum = 0;
         for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
             std::cout<<"sum "<<sum<<" ";
@@ -1301,6 +1309,7 @@ double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) c
                 sum += dSdUm[gt][gtt] * cell.Eg[gt] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
             }
             std::cout<<std::endl;
+            std::cout<<"sum "<<sum<<std::endl;
         }
     }
     return Upsilon;

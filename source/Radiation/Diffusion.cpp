@@ -142,8 +142,8 @@ double Diffusion::calculate_dt(double const dt,
 			continue;
 		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
 		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Er);
-		// if(fleck_factor[i] < 0.5)
-		// 	diff *= 0.1;
+		if(fleck_factor[i] < 0.4)
+			diff *= 0.2;
 		if(diff > max_diff)
 		{
 			max_diff = diff;
@@ -168,11 +168,12 @@ double Diffusion::calculate_dt(double const dt,
 	{
 		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
 		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
-		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<cells[max_loc].temperature<<std::endl;
+		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_T[max_loc]<<" location "<<tess.GetMeshPoint(max_loc)<<std::endl;
 		PrintDebugData(max_loc);
+        std::cout<<"Next time step is "<<dt * std::min(1.25, 0.15 / max_diff)<<std::endl;
 	}
 
-    return dt * 0.15 / max_diff;
+    return dt * std::min(1.25, 0.15 / max_diff);
 }
 
 bool Diffusion::step(double const tolerance, 
@@ -192,7 +193,10 @@ bool Diffusion::step(double const tolerance,
     cells_temp = cells;
 
     std::size_t const N = tess.GetPointNo();
-    new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full);
+    bool good_end = false;
+    new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
+    if(not good_end)
+        return false;
     
     double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
 
@@ -200,22 +204,30 @@ bool Diffusion::step(double const tolerance,
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
 
-    double min_Er = 1.0;
+   struct MinErData {
+        double value;
+        int rank;
+    };
+    MinErData minErData = {1.0, rank};
+    size_t min_index = -1;
     for(std::size_t i=0; i < N; ++i){
         if(new_Er[i] < 0.0 && std::abs(new_Er[i]) < 1e-9 * max_Er){
             new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells[i].temperature * cells[i].temperature * cells[i].temperature * cells[i].temperature);
         }
 
-        min_Er = std::min(min_Er, new_Er[i]);
+        if(new_Er[i] < minErData.value) {
+            minErData.value = new_Er[i];
+            min_index = i;
+        }
     }
 
 #ifdef RICH_MPI
-		MPI_Allreduce(MPI_IN_PLACE, &min_Er, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &minErData, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
 #endif
 
-    if(min_Er < 0){
-        if(rank == 0){
-			std::cout<<"Negative Er!"<<std::endl;
+    if(minErData.value < 0) {
+        if(rank == minErData.rank) {
+            std::cout << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" "<<cells[min_index]<<std::endl;
         }
 
         return false;
@@ -557,13 +569,14 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 #endif
 
     int good_end = 1;
-
+    old_T.resize(N, 0);
     for(size_t i = 0; i < N; ++i)
     {
         double const old_e_therm = extensives[i].internal_energy;
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
         extensives[i].Erad = CG_result[i] * volume * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         double const T = cells[i].temperature;
+        old_T[i] = T;
         double dE = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
             -0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
 	    double old_Tr = 0;
@@ -579,9 +592,10 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
             compton_term = pre_factor * (old_Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
             compton_term = pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
-            compton_term *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
             dE += pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
         }
+        if(compton_on_)
+            compton_term *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         dE *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         e_absorb *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         e_emitt *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
@@ -596,6 +610,8 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 std::cout<<" CG_result "<<CG_result[i]<<" old Er "<<cells[i].Erad * cells[i].density * mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
                 <<" v "<<fastabs(cells[i].velocity)<<" mass "<<
                 extensives[i].mass<<" dE "<<dE<<" R2 "<<R2[i]<<" old_e_therm "<<old_e_therm<<std::endl;
+            std::cout<<cells[i]<<std::endl;
+            std::cout<<extensives[i]<<std::endl;
              std::cout<<"max emitt "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant
              * volume * time_scale_ * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" full_CG_result "<<full_CG_result[i]<<std::endl;
              std::cout<<"relativity "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i]
@@ -776,8 +792,8 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
-    // if(rank == 0)
-    //     std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
+    if(rank == 0)
+        std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
 }
 
 void DiffusionSideBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 
