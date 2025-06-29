@@ -202,22 +202,24 @@ int main(void)
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
 	double init_dt = 1e-13 / tscale;
-	double const tf = 5e-8 / tscale;
+	double const tf = 1e-8 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
 	double old_dt = init_dt;
+	double new_dt = init_dt;
+	
 	vector<DiagnosticAppendix3D *> appendices;
 	WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
 	++counter;
 	while (sim.getTime() < tf)
 	{
-		if (sim.getCycle() % 1 == 0)
+		if (sim.getCycle() % 25 == 0)
 		{
 			if (rank == 0)
 			{
 				std::cout<<std::endl;
-				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << sim.getTimeStep() << std::endl;
+				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << new_dt << std::endl;
 			}
 		}
 		if (sim.getTime() > nextT)
@@ -228,12 +230,9 @@ int main(void)
 		}
 		try
 		{
-			double new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
-			// tsf.SetTimeStep(new_dt);
-			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt,tf/1000.0);
-			if (rank == 0)
-				std::cout<<"New time step is "<<new_dt<<std::endl;
+			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
+
+			new_dt=std::min(new_dt,tf/1000.0);			
 			old_dt = new_dt;
 		}
 		catch (UniversalError const &eo)
