@@ -772,8 +772,10 @@ double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix
 	int total_iters = 0;
 	double const CG_eps = 1e-11;
 	size_t const N = tess_.GetPointNo();
-	
+
+#ifdef DEBUG
 	if(N == 0) std::cout<<"Zero cells in RadiationTimeStep"<<std::endl;
+#endif
 
 	int rank = 0;
 #ifdef RICH_MPI

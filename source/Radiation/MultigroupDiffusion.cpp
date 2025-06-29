@@ -286,13 +286,14 @@ double MultigroupDiffusion::calculate_dt(double const dt,
         std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" fleck factor "<<fleck_factor[max_loc]<<" which one "<<max_which<<" equlibrium_factor "<<equlibrium_factor_final<<" final_Erad_eq "<<final_Erad_eq<<std::endl;
 
         if (max_which >= 2) std::cout << "Group number "<<max_which - 2<<" New_Eg="<<cells[max_loc].Eg[max_which - 2]*cells[max_loc].density<<" old_Eg="<<old_Eg[max_loc][max_which - 2]<<std::endl;
-        for (size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+#ifdef DEBUG
+        for (size_t j = 0; j < ENERGY_GROUPS_NUM; ++j) {
             std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density*mass_scale_ / (length_scale_ * pow<2>(time_scale_)) <<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]*mass_scale_ / (length_scale_ * pow<2>(time_scale_))<<" energy(keV) "<<energy_groups_center[j] / units::kev<<" bg="<<
             planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature)<<
             " bg_old="<<
             planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], old_Tm[max_loc])<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
-        // std::cout << "which one " << max_which << std::endl;
-        // PrintDebugData(max_loc);
+        }
+#endif
     }
 
     return std::min(dt * 0.15 / max_diff, dt*1.4);
@@ -546,7 +547,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
 
         Vector3D const r_i = tess.GetMeshPoint(i);
 
-        auto& cell_i = cells_cgs[i]; // reference and not const reference is because we change cell_i.temperature to calculate the diffusion coefficient 
+        auto& cell_i = cells_cgs[i]; // reference and not const reference is because we change cell_i temperature to calculate the diffusion coefficient 
 
         for (std::size_t j=0; j < Nneighbors; ++j) {
             std::size_t const neighbor_j = neighbors[j];
