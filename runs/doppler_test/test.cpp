@@ -38,6 +38,7 @@ namespace fs = std::filesystem;
 #include <source/Radiation/CMMC/src/planck_integral/planck_integral.hpp>
 #include <algorithm>
 #include "boost/math/special_functions/pow.hpp"
+#include <charconv>
 
 
 typedef std::array<double, 4> state_type;
@@ -48,7 +49,7 @@ static constexpr double kev = 1e3*ev;
 static constexpr double ev_kelvin = ev / CG::boltzmann_constant;
 static constexpr double kev_kelvin = 1e3*ev_kelvin;
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
@@ -80,8 +81,21 @@ int main(void)
 		energy_groups_boundary.push_back(std::pow(Emax/Emin, 1.0/geometric_grid_size)*energy_groups_boundary[g]);
 	}
 	
-	constexpr double E_thresh_left = 1.0*kev; // lower threshold of trunckated spectrum
-	constexpr double E_thresh_right = 8.0*kev; // upper threshold of trunckated spectrum
+	if (argc < 3){
+		std::cout << "Expecting at least 2 additional arguments, the first is `Elow` second `Ehigh`" << std::endl;
+		exit(1);
+	}
+	
+	double E_thresh_left_kev = 0.0;
+	double E_thresh_right_kev = 0.0;
+	std::string Elow_str{argv[1]};
+	std::string Ehigh_str{argv[2]};
+
+	std::from_chars(Elow_str.data(), Elow_str.data()+Elow_str.size(), E_thresh_left_kev);
+	std::from_chars(Ehigh_str.data(), Ehigh_str.data()+Ehigh_str.size(), E_thresh_right_kev);
+	
+	double const E_thresh_left = E_thresh_left_kev*kev; // lower threshold of trunckated spectrum
+	double const E_thresh_right = E_thresh_right_kev*kev; // upper threshold of trunckated spectrum
 	
 	// add thresholds to boundaries
 	energy_groups_boundary.push_back(E_thresh_left);
