@@ -58,32 +58,45 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	
+	// energy grid sizes
+	constexpr std::size_t energy_groups_num = ENERGY_GROUPS_NUM;
+	static_assert(energy_groups_num > 3, "Energy groups number must be greater than 3");
+	
+	constexpr auto boundaries_num = energy_groups_num+1;
+	constexpr auto geometric_grid_size = boundaries_num-3;
 
-	std::size_t const G = ENERGY_GROUPS_NUM;
-	std::vector<double> energy_groups_center(G);
-	std::vector<double> energy_groups_boundary(G+1);
+	std::vector<double> energy_groups_center{};
+	
+	std::vector<double> energy_groups_boundary{};
+	energy_groups_boundary.reserve(boundaries_num);
 
 	double const Emin = kev*1e-4;
 	double const Emax = kev*1e2;
 	
-	static_assert(ENERGY_GROUPS_NUM > 3, "Energy groups number must be greater than 3");
-
-	energy_groups_boundary[0] = Emin;
-	for(std::size_t g=0; g < G; ++g){
-		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
-		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
+	// create a geometric grid for the energy bins
+	energy_groups_boundary.push_back(Emin);
+	for(std::size_t g=0; g < geometric_grid_size; ++g){
+		energy_groups_boundary.push_back(std::pow(Emax/Emin, 1.0/geometric_grid_size)*energy_groups_boundary[g]);
 	}
+	
+	constexpr double E_thresh_left = 1.0*kev; // lower threshold of trunckated spectrum
+	constexpr double E_thresh_right = 8.0*kev; // upper threshold of trunckated spectrum
+	
+	// add thresholds to boundaries
+	energy_groups_boundary.push_back(E_thresh_left);
+	energy_groups_boundary.push_back(E_thresh_right);
 
-	// energy groups will be filled from energy_groups_boundary[thresh_hold_boundary_left] to energy_groups_boundary[thresh_hold_boundary_right]
-	// equivalent to filling only the energy groups `thresh_hold_boundary_left` up to `thresh_hold_boundary_right-1`
-	unsigned int const thresh_hold_boundary_left = 70;
-	unsigned int const thresh_hold_boundary_right = 85;	
-
-	double const E_thresh_left = energy_groups_boundary[thresh_hold_boundary_left];
-	double const E_thresh_right = energy_groups_boundary[thresh_hold_boundary_right];
+	// sort boundary vector with the two new energy boundaries in place
+	std::sort(
+		energy_groups_boundary.begin(),
+		energy_groups_boundary.end(),
+		std::less<double>{}
+	);
+	
+	for(std::size_t g=0; g < energy_groups_num; ++g) energy_groups_center.push_back(0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]));
 	
 	if(rank == 0) {
-		std::cout << "thresh_hold_boundary_left" << thresh_hold_boundary_left << ", thresh_hold_boundary_right: " << thresh_hold_boundary_right <<  std::endl;
 		std::cout << "E_thresh_left: " << E_thresh_left/kev << "KeV, E_thresh_right: " << E_thresh_right/kev << "KeV" << std::endl;
 	}
 
@@ -123,7 +136,8 @@ int main(void)
 		init_cell_left.velocity = Vector3D(0.0, 0.0, 0.0);
 
 		// fill only the energy groups between the thresholds
-		for(std::size_t g=thresh_hold_boundary_left; g < thresh_hold_boundary_right; ++g){
+		for(std::size_t g=0; g < energy_groups_num; ++g){
+			if(energy_groups_center[g] < E_thresh_left || E_thresh_right < energy_groups_center[g]) continue;
             init_cell_left.Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T);
 			init_cell_left.Eg[g] *= tscale * tscale / (init_cell_left.density * mscale / lscale); 
         }
@@ -195,14 +209,12 @@ int main(void)
 	vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
 	ConditionExtensiveUpdater3D eu(eu_sequence);
 
-
-
 	CourantFriedrichsLewy tsf(0.25, 1, force);
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
 	double init_dt = 1e-13 / tscale;
-	double const tf = 1e-8 / tscale;
+	double const tf = 3e-8 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
