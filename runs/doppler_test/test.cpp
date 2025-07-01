@@ -71,7 +71,7 @@ int main(int argc, char *argv[])
 	energy_groups_boundary.reserve(boundaries_num);
 
 	double const Emin = kev*1e-4;
-	double const Emax = kev*1e2;
+	double const Emax = kev*1e3;
 	
 	// create a geometric grid for the energy bins
 	energy_groups_boundary.push_back(Emin);
@@ -116,6 +116,10 @@ int main(int argc, char *argv[])
 	for(std::size_t g=0; g < energy_groups_num; ++g) energy_groups_center.push_back(0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]));
 	
 	if(rank == 0) {
+		for(std::size_t g=0; g < boundaries_num; ++g){
+			std::cout << energy_groups_boundary[g]/kev << ", ";
+		}
+		std::cout << " KeV" << std::endl;
 		std::cout << "E_thresh_left: " << E_thresh_left/kev << "KeV, E_thresh_right: " << E_thresh_right/kev << "KeV" << std::endl;
 	}
 
@@ -233,7 +237,7 @@ int main(int argc, char *argv[])
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
 	double init_dt = 1e-13 / tscale;
-	double const tf = 3e-8 / tscale;
+	double const tf = 5e-8 / tscale;
 	double const dt_output = tf / 10.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
