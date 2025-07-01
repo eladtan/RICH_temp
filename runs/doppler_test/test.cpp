@@ -65,8 +65,6 @@ int main(int argc, char *argv[])
 	static_assert(energy_groups_num > 3, "Energy groups number must be greater than 3");
 	
 	constexpr auto boundaries_num = energy_groups_num+1;
-	constexpr auto geometric_grid_size = boundaries_num-3;
-
 	std::vector<double> energy_groups_center{};
 	
 	std::vector<double> energy_groups_boundary{};
@@ -77,8 +75,8 @@ int main(int argc, char *argv[])
 	
 	// create a geometric grid for the energy bins
 	energy_groups_boundary.push_back(Emin);
-	for(std::size_t g=0; g < geometric_grid_size; ++g){
-		energy_groups_boundary.push_back(std::pow(Emax/Emin, 1.0/geometric_grid_size)*energy_groups_boundary[g]);
+	for(std::size_t g=0; g < energy_groups_num; ++g){
+		energy_groups_boundary.push_back(std::pow(Emax/Emin, 1.0/energy_groups_num)*energy_groups_boundary[g]);
 	}
 	
 	if (argc < 3){
@@ -98,16 +96,23 @@ int main(int argc, char *argv[])
 	double const E_thresh_right = E_thresh_right_kev*kev; // upper threshold of trunckated spectrum
 	
 	// add thresholds to boundaries
-	energy_groups_boundary.push_back(E_thresh_left);
-	energy_groups_boundary.push_back(E_thresh_right);
-
-	// sort boundary vector with the two new energy boundaries in place
-	std::sort(
+	// energy_groups_boundary.push_back(E_thresh_left);
+	// energy_groups_boundary.push_back(E_thresh_right);
+	auto left_thresh_bin = std::lower_bound(
 		energy_groups_boundary.begin(),
 		energy_groups_boundary.end(),
-		std::less<double>{}
+		E_thresh_left
 	);
-	
+	*left_thresh_bin = E_thresh_left;
+
+	auto right_thresh_bin = std::upper_bound(
+		energy_groups_boundary.begin(),
+		energy_groups_boundary.end(),
+		E_thresh_right
+	);
+	*right_thresh_bin = E_thresh_right;
+
+	// sort boundary vector with the two new energy boundaries in place
 	for(std::size_t g=0; g < energy_groups_num; ++g) energy_groups_center.push_back(0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]));
 	
 	if(rank == 0) {
