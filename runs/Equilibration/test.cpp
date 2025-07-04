@@ -228,6 +228,7 @@ int main(int argc, char *argv[])
 	constexpr bool hydro_on = false;
 	const     bool compton_on = current_case.compton_on;
 	constexpr bool doppler_on = false;
+	constexpr bool protections_on = false;
 
 	MultigroupDiffusion matrix_builder{
 		energy_groups_center, 
@@ -239,7 +240,9 @@ int main(int argc, char *argv[])
 		flux_limiter, 
 		hydro_on, 
 		compton_on, 
-		doppler_on};
+		doppler_on,
+		-1.0,
+		protections_on};
 
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
