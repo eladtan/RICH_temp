@@ -38,9 +38,11 @@ namespace fs = std::filesystem;
 #include <source/Radiation/CMMC/src/planck_integral/planck_integral.hpp>
 #include <algorithm>
 #include "boost/math/special_functions/pow.hpp"
+#include <string_view>
+#include <charconv>
+#include <optional>
 
-
-typedef std::array<double, 4> state_type;
+namespace {
 
 static constexpr double ev = 1.602176634e-12;
 static constexpr double kev = 1e3*ev;
@@ -48,7 +50,39 @@ static constexpr double kev = 1e3*ev;
 static constexpr double ev_kelvin = ev / CG::boltzmann_constant;
 static constexpr double kev_kelvin = 1e3*ev_kelvin;
 
-int main(void)
+struct Case {
+	std::string const description;
+	double const T_mat;
+	double const T_rad;
+	bool   const compton_on;
+	bool   const absorption_on;	 
+};
+
+Case get_case(std::string_view const case_num_sv){
+	int case_num = -1;
+	std::from_chars(case_num_sv.data(), case_num_sv.data() + case_num_sv.size(), case_num);
+
+	switch(case_num){
+		case 0:
+			return {"Winslow", 20.0*kev_kelvin, 1.0*kev_kelvin, true, true};
+		case 1: 
+			return {"Winslow, no absorption", 20.0*kev_kelvin, 1.0*kev_kelvin, true, false};
+		case 2: 
+			return {"Winslow, no compton", 20.0*kev_kelvin, 1.0*kev_kelvin, false, true};
+		case 3: 
+			return {"Till", 1.0*kev_kelvin, 10.0*kev_kelvin, true, true};
+		case 4: 
+			return {"Till, no compton", 1.0*kev_kelvin, 10.0*kev_kelvin, false, true};
+		default:
+			std::cout << "Error! No Such case as: " << case_num_sv << std::endl;
+			std::cout << "Available cases: 0, 1, 2, 3, 4" << std::endl;
+			exit(1);
+	}
+}
+
+}
+
+int main(int argc, char *argv[])
 {
 	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
@@ -191,12 +225,16 @@ int main(void)
 
     using boost::math::pow;
 
-	FreeFreeAbsorptionOpacityMultigroup opacity(1.0, energy_groups_center, energy_groups_boundary);
+	FreeFreeAbsorptionOpacityMultigroup opacity(
+		current_case.absorption_on ? 1.0 : 1e-80, 
+		energy_groups_center, 
+		energy_groups_boundary);
+
 	int counter = 0;
 	ComputationalCell3D init_cell;
 
-	double const T_mat = 1.0*kev_kelvin;
-	double const T_rad = 10.0*kev_kelvin;
+	double const T_mat = current_case.T_mat;
+	double const T_rad = current_case.T_rad;
 
 	try
 	{
@@ -245,7 +283,24 @@ int main(void)
 	RoundCells3D pm(bpm, eos, 3.75, 0.01, false, 1.25);
 	
 	MultigroupDiffusionClosedBoundary D_boundary{};
-	MultigroupDiffusion matrix_builder(energy_groups_center, energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string> (), true, false, true, true, false);
+
+	constexpr bool flux_limiter = true;
+	constexpr bool hydro_on = false;
+	const     bool compton_on = current_case.compton_on;
+	constexpr bool doppler_on = false;
+
+	MultigroupDiffusion matrix_builder{
+		energy_groups_center, 
+		energy_groups_boundary, 
+		opacity, 
+		D_boundary, 
+		eos, 
+		std::vector<std::string> (), 
+		flux_limiter, 
+		hydro_on, 
+		compton_on, 
+		doppler_on};
+
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -279,7 +334,8 @@ int main(void)
 	double old_dt = init_dt;
 	vector<DiagnosticAppendix3D *> appendices;
 	WriteSnapshot3D(sim, "init.h5", appendices, true);
-	double new_dt = init_dt;
+	double new_dt = force_time_step ? *force_time_step : init_dt;
+
 	while (sim.getTime() < tf)
 	{
 		if (sim.getCycle() % 1 == 0)
@@ -299,10 +355,12 @@ int main(void)
 		try
 		{
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
-			// tsf.SetTimeStep(new_dt);
-			// sim.SetTimeStep(new_dt);
+
 			new_dt=std::min(new_dt, sim.getTime()/50.0);
 			new_dt=std::max(new_dt, 1e-15);
+
+			if (force_time_step) new_dt = force_time_step.value();
+
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;
