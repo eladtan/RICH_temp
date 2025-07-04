@@ -287,7 +287,7 @@ int main(int argc, char *argv[])
 				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << new_dt << std::endl;
 			}
 		}
-		if (sim.getTime() > nextT || sim.getCycle() % 10 == 0)
+		if (sim.getTime() > nextT)
 		{
 			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
 			nextT = sim.getTime() + dt_output;
