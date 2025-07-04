@@ -94,100 +94,40 @@ int main(int argc, char *argv[])
 #endif
 
 	std::size_t const G = ENERGY_GROUPS_NUM;
+
+	if(argc < 2){
+		std::cout << "Not Enough arguments need to give the {case_number}" << std::endl;
+		exit(1);
+	}
+
+	auto const current_case = get_case(argv[1]);
+	std::cout << "Running case: " << current_case.description << std::endl;
+	std::cout << "T_mat = " << current_case.T_mat/kev_kelvin << " KeV, T_rad = " << current_case.T_rad/kev_kelvin << " KeV, compton = " << std::string(current_case.compton_on ? "ON " : "OFF") << ", absorption = " << std::string(current_case.absorption_on ? "ON " : "OFF") << std::endl;
+
+	std::optional<double> force_time_step{};
+	if(argc == 3){
+		std::cout << "Force Time Step ON" << std::endl;
+		double time_step = -1.0;
+		std::string_view time_step_sv = argv[2];
+		std::from_chars(time_step_sv.data(), time_step_sv.data() + time_step_sv.size(), time_step);
+		
+		force_time_step = time_step;
+
+		std::cout << "Time step = " << *force_time_step << std::endl;
+	}
+
 	std::vector<double> energy_groups_center(G);
 	std::vector<double> energy_groups_boundary(G+1);
 
-	double const Emin = kev*1e-3;
-	double const Emax = kev*2e2;
+	double const Emin = kev*1e-4;
+	double const Emax = kev*1e3;
 	
+	// Create a geometric energy grid
 	energy_groups_boundary[0] = Emin;
 	for(std::size_t g=0; g < G; ++g){
 		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
 		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
 	}
-	
-    // std::vector<double> energy_groups_center = {
-    // /*1*/ 6.9994e-11,
-    // /*2*/ 2.7376e-10,
-    // /*3*/ 7.8057e-10,
-    // /*4*/ 1.5182e-9,
-    // /*5*/ 2.3446e-9,
-    // /*6*/ 3.5047e-9,
-    // /*7*/ 5.4287e-9,
-    // /*8*/ 9.5892e-9,
-    // /*9*/ 1.5905e-8,
-    // /*10*/2.482e-8,
-    // /*11*/3.3511e-8,
-    // /*12*/3.8708e-8,
-    // /*13*/4.312e-8,
-    // /*14*/4.8197e-8,
-    // /*15*/5.4063e-8,
-    // /*16*/6.0867e-8,
-    // /*17*/6.8793e-8,
-    // /*18*/7.8068e-8,
-    // /*19*/8.8971e-8,
-    // /*20*/1.0185e-7,
-    // /*21*/1.1714e-7,
-    // /*22*/1.3539e-7,
-    // /*23*/1.5728e-7,
-    // /*24*/1.8371e-7,
-    // /*25*/2.1579e-7,
-    // /*26*/2.5499e-7,
-    // /*27*/3.0332e-7};
-    
-    // std::vector<double> energy_groups_boundary = {
-    // /*1*/ 1.286e-11,
-    // /*2*/ 1.2713e-10,
-    // /*3*/ 4.2038e-10,
-    // /*4*/ 1.1407e-9,
-    // /*5*/ 1.8957e-9,
-    // /*6*/ 2.7936e-9,
-    // /*7*/ 4.2159e-9,
-    // /*8*/ 6.6415e-9,
-    // /*9*/ 1.2537e-8,
-    // /*10*/1.9273e-8,
-    // /*11*/3.0367e-8,
-    // /*12*/3.6654e-8,
-    // /*13*/4.0762e-8,
-    // /*14*/4.5478e-8,
-    // /*15*/5.0916e-8,
-    // /*16*/5.7209e-8,
-    // /*17*/6.4524e-8,
-    // /*18*/7.3062e-8,
-    // /*19*/8.3074e-8,
-    // /*20*/9.4868e-8,
-    // /*21*/1.0883e-7,
-    // /*22*/1.2545e-7,
-    // /*23*/1.4533e-7,
-    // /*24*/1.6924e-7,
-    // /*25*/1.9818e-7,
-    // /*26*/2.3341e-7,
-    // /*27*/2.7657e-7,
-    // /*28*/3.3008e-5
-    // };
-
-	// std::vector<double> energy_groups_center = {
-	// 	1.5182e-9,
-	// 	3.0948e-9,
-	// 	1.051e-8,
-	// 	2.9166e-8,
-	// 	5.399e-8,
-	// 	8.7321e-8,
-	// 	1.5281e-7,
-	// 	3.0332e-7
-	// };
-
-	// std::vector<double> energy_groups_boundary = {
-	// 	9.8694e-10,
-	// 	2.0495e-9,
-	// 	4.14e-9,
-	// 	1.6879e-8,
-	// 	4.1453e-8,
-	// 	6.5327e-8,
-	// 	1.0932e-7,
-	// 	1.9631e-7,
-	// 	4.1033e-7
-    // };
 	
 	if(energy_groups_center.size() != ENERGY_GROUPS_NUM){
 		std::cout << "Error: energy_groups_center size does not match ENERGY_GROUPS_NUM" << std::endl;
@@ -319,8 +259,6 @@ int main(int argc, char *argv[])
 
 	vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
 	ConditionExtensiveUpdater3D eu(eu_sequence);
-
-
 
 	CourantFriedrichsLewy tsf(0.25, 1, force);
 
