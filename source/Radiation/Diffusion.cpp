@@ -427,7 +427,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                     
                     double const T1 = cells_cgs[i].temperature;
                     double const T2 = cells_cgs[neighbor_j].temperature;
-                    double const maxT = std::max(T1, T2);
+                    double const maxT = std::pow(0.5 * (pow<4>(T1) + pow<4>(T2)), 0.25);
                     cells_cgs[i].temperature = maxT;
                     double const D1 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
                     cells_cgs[i].temperature = T1;
