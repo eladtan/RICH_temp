@@ -75,9 +75,24 @@ namespace
 		size_t Norg = tess.GetPointNo();
 		Vector3D Vcell = cell.momentum / cell.mass;
 		double Et = cell.energy / cell.mass - 0.5*ScalarProd(Vcell, Vcell);
+		double div_V = 0;
+		Vector3D const r_i = tess.GetMeshPoint(index);
+		auto faces = tess.GetCellFaces(index);
 		for (size_t i = 0; i < N; ++i)
-			if (neigh[i] < Norg || !tess.IsPointOutsideBox(neigh[i]))
-				maxDV = std::max(maxDV, abs(Vcell - cells.at(neigh[i]).momentum / cells[neigh[i]].mass));
+		{
+			size_t neighbor_j = neigh[i];
+			if (neighbor_j < Norg || !tess.IsPointOutsideBox(neighbor_j))
+			{
+				auto const r_ij = normalize(r_i - tess.GetMeshPoint(neighbor_j));
+				double const A_ij = tess.GetArea(faces[i]);
+				Vector3D velocity_j = cells.at(neighbor_j).momentum / cells[neighbor_j].mass;
+				div_V -= 0.5*ScalarProd(Vcell+velocity_j, r_ij) * A_ij;
+				maxDV = std::max(maxDV, abs(Vcell - velocity_j));
+			}
+		}
+		div_V /= tess.GetVolume(index);
+		if(div_V < 0 && (div_V * tess.GetWidth(index) < fastabs(Vcell) * 0.05))
+			return false;
 		return 0.005*maxDV*maxDV > Et;
 	}
 
@@ -86,6 +101,7 @@ namespace
 		EquationOfState const& eos, bool const includes_temperature, const RadiationDriver* diffusion, double const min_temperature)
 	{
 		size_t Nloop = tess.GetPointNo();
+		size_t print_id = -1;
 		size_t Ntracers = ComputationalCell3D::tracerNames.size();
 		for (size_t i = 0; i < Nloop; ++i)
 		{
@@ -136,6 +152,8 @@ namespace
 						// Do we have a negative thermal energy?
 						if (energy < 0)
 						{
+							if(print_id == res[i].ID)
+								std::cout<<"Entered entropy fix1"<<std::endl;
 							EntropyFix(eos, res[i], entropy_index, energy, extensive, Et_min);
 						}
 						else
@@ -144,6 +162,8 @@ namespace
 							if ((energy*extensive.mass < 0.005*extensive.energy) &&
 								HighRelativeKineticEnergy(tess, i, extensives, extensive))
 							{
+								if(print_id == res[i].ID)
+									std::cout<<"Entered entropy fix2"<<std::endl;
 								EntropyFix(eos, res[i], entropy_index, energy, extensive, Et_min);
 							}
 							else
