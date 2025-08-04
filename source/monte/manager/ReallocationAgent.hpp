@@ -11,9 +11,9 @@ class ReallocationAgent
 public:
     ReallocationAgent(const MPI_Comm &comm, const std::function<void(rank_t)> &reallocationFunction);
 
-    ~ReallocationAgent();
+    ~ReallocationAgent() = default;
 
-    rank_t ShouldReallocate(void) const;
+    rank_t ShouldReallocate(void);
 
     void RequestReallocation(rank_t fromRank);
 
@@ -24,21 +24,6 @@ private:
     rank_t rank;
     rank_t size; // todo: unnecessary
     std::function<void(rank_t)> reallocationFunction;
-    
-    // rank_t *who_to_reallocate;
-    // rank_t *wants_for_reallocation;
-    // MPI_Win win;
-    // MPI_Win wants_win;
-
-    void RequestReallocation(rank_t fromRank, rank_t toRank);
-
-    void FreeReallocation(rank_t rank);
-
-    void SetMyWant(rank_t rank);
-
-    void LockForChanges(void);
-
-    void UnlockForChanges(void);
 };
 
 #endif // RICH_MPI

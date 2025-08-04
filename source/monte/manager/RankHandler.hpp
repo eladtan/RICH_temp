@@ -30,10 +30,6 @@ public:
     
     void TransferParticles(const std::vector<MCParticle> &particles);
 
-    // OPTIMIZATION: Add asynchronous transfer support
-    MPI_Request TransferParticlesAsync(const std::vector<MCParticle> &particles);
-    void WaitTransfer(MPI_Request &request);
-
     void RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num);
 
     void Sync(void);
@@ -57,11 +53,6 @@ public:
     std::shared_ptr<ReallocationAgent> &reallocationAgent;
     
     void Reallocate(double factor);
-
-    // OPTIMIZATION: Add efficient buffer management
-    void PreallocateBuffer(size_t expectedParticles);
-    void ShrinkBufferIfNeeded(void);
-    size_t GetOptimalBufferSize(void) const;
 
     // todo: necessary?
     inline void LockSelfBuffer(void)
@@ -90,12 +81,7 @@ private:
     std::shared_ptr<DistributedMutex> remoteTHMutex;
     bool destroyed;
     MPI_Group group_world, group_internal;
-    
-    // OPTIMIZATION: Memory pool for particle transfers
-    std::vector<MCParticle> transferBuffer;
-    std::vector<index_t> indexBuffer;
-    size_t transferBufferSize;
-    
+
     #ifdef ADVANCED_MONTECARLO_DEBUG
     void ValidateArraysContents(void) const;
 
@@ -630,7 +616,7 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     {
         if(*this->th_length != 0)
         {
-            std::cerr << "Can not shrink memory when there are particles" << std::endl;
+            std::cerr << "Can not shrink memory when there are particles (there are " << (*this->th_length) << " particles)" << std::endl;
             exit(1);
         }
     }
@@ -796,6 +782,8 @@ void RankHandler<T, Grid>::Reallocate(double factor)
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &particles)
 {
+    // static int minus_one = -1;
+    // static int plus_one = 1;
     size_t Np = particles.size();
     int decrement = -static_cast<int>(Np);
     int increment = static_cast<int>(Np);
@@ -826,6 +814,7 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         {
             int availLength;
             MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_length_win);
+            // todo: get to fetch_and_op
             int retval = MPI_Fetch_and_op(&decrement, &availLength, MPI_INT, this->other_rank, 0, MPI_SUM, this->av_length_win);
             assert(retval == MPI_SUCCESS);
             MPI_Win_flush(this->other_rank, this->av_length_win);
@@ -872,17 +861,12 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         assert(retval == MPI_SUCCESS);
         MPI_Win_unlock(this->other_rank, this->av_win);
 
-        // OPTIMIZATION: Batch all particle transfers in a single window operation
         MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->particles_win);
 
         #ifdef MONTECARLO_DEBUG
             boost::container::flat_map<index_t, size_t> availIndicesMap;
         #endif // MONTECARLO_DEBUG
 
-        // OPTIMIZATION: Prepare all particle data in a contiguous buffer
-        std::vector<MCParticle> particleBuffer(Np);
-        std::vector<MPI_Aint> displacements(Np);
-        
         for(size_t i = 0; i < Np; i++)
         {
             index_t availIndex = availIndices[i];
@@ -914,41 +898,48 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
                 throw eo;
             }
             #endif // MONTECARLO_DEBUG
+            /* put particle itself */
+            // std::cout << "Rank " << this->rank_world << " transferrs particle " << particle->id << " of rank " << particle->rank << " to rank " << this->peer_rank_world << std::endl;
             
-            // Prepare particle data and displacement
-            particleBuffer[i] = *particle;
-            displacements[i] = availIndex * sizeof(MCParticle);
+            assert(this->other_rank != this->rank_internal);
+            retval = MPI_Put(particle, sizeof(MCParticle), MPI_BYTE, this->other_rank, availIndex, sizeof(MCParticle), MPI_BYTE, this->particles_win);
+            #ifdef MONTECARLO_DEBUG
+            if(retval != MPI_SUCCESS or particle->nextRank != this->peer_rank_world)
+            {
+                UniversalError eo("Put failed");
+                eo.addEntry("Particle", *particle);
+                eo.addEntry("Origin", this->rank_world);
+                eo.addEntry("Expected Rank", particle->nextRank);
+                eo.addEntry("Next Rank", this->peer_rank_world);
+                eo.addEntry("Put Return Value", retval);
+                throw eo;
+            }
+            #endif // MONTECARLO_DEBUG
+            assert(retval == MPI_SUCCESS);
         }
-
-        // OPTIMIZATION: Single batched transfer instead of individual puts
-        retval = MPI_Put(particleBuffer.data(), Np, MPI_BYTE, this->other_rank, 0, Np, MPI_BYTE, this->particles_win);
-        #ifdef MONTECARLO_DEBUG
-        if(retval != MPI_SUCCESS)
-        {
-            UniversalError eo("Batched Put failed");
-            eo.addEntry("Put Return Value", retval);
-            throw eo;
-        }
-        #endif // MONTECARLO_DEBUG
-        assert(retval == MPI_SUCCESS);
-        
         MPI_Win_flush(this->other_rank, this->particles_win);
+        MPI_Win_sync(this->particles_win);
         MPI_Win_unlock(this->other_rank, this->particles_win);
 
-        // OPTIMIZATION: Combine th_length operations
+        /* put in to handle list */
+
+        // get length of to handle list
         MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
         int toHandleLength;
         retval = MPI_Get(&toHandleLength, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, this->th_length_win);
         assert(retval == MPI_SUCCESS);
-        
-        // Update th_length atomically
-        MPI_Accumulate(&increment, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, MPI_SUM, this->th_length_win);
         MPI_Win_unlock(this->other_rank, this->th_length_win);
+        assert(toHandleLength >= 0);
+        assert(toHandleLength < this->peer_buffsize);
 
-        // Update th list
         MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_win);
         MPI_Put(availIndices.data(), Np, MPI_INDEX_T, this->other_rank, toHandleLength, Np, MPI_INDEX_T, this->th_win);
         MPI_Win_unlock(this->other_rank, this->th_win);
+
+        // add 1 to to handle index
+        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
+        MPI_Accumulate(&increment, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, MPI_SUM, this->th_length_win);
+        MPI_Win_unlock(this->other_rank, this->th_length_win);
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
             try
@@ -967,8 +958,11 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             }
         #endif // ADVANCED_MONTECARLO_DEBUG
 
-        // release remote mutex
+            // release remote mutex
         this->remoteTHMutex->Unlock();
+
+        // std::cout << "In sending of from rank " << this->rank_world << " to rank " << this->peer_rank_world << ", avail length of peer is " << availLength << ", and to handle " << toHandleLength << std::endl;
+
     }
     else
     {
