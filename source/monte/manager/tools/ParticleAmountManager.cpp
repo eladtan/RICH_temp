@@ -2,16 +2,28 @@
 
 #include "ParticleAmountManager.hpp"
 
-ParticleAmountManager::ParticleAmountManager(MPI_Comm comm)
-    : comm(comm)
+ParticleAmountManager::ParticleAmountManager(MPI_Comm comm, bool withRDMA)
+    : comm(comm), withRDMA(withRDMA)
 {
     MPI_Comm_rank(this->comm, &this->rank);
     MPI_Comm_size(this->comm, &this->size);
     this->counter = 0;
-    MPI_Win_allocate(1, sizeof(int), MPI_INFO_NULL, this->comm, &this->shouldVerify, &this->shouldVerifyWin);
-    *this->shouldVerify = 0; // Initialize to false
-    MPI_Win_allocate(1, sizeof(bool), MPI_INFO_NULL, this->comm, &this->done, &this->doneWin);
-    *this->done = false; // Initialize to false
+    this->timesSentVerifies = 0;
+    this->doneVerifyCycle = false;
+
+    if(this->withRDMA)
+    {
+        MPI_Win_allocate(1, sizeof(int), MPI_INFO_NULL, this->comm, &this->shouldVerify, &this->shouldVerifyWin);
+        *this->shouldVerify = 0; // Initialize to false
+        MPI_Win_allocate(1, sizeof(bool), MPI_INFO_NULL, this->comm, &this->done, &this->doneWin);
+        *this->done = false; // Initialize to false
+    }
+    else
+    {
+        this->requests = std::vector<MPI_Request>(this->size, MPI_REQUEST_NULL);
+        this->done = new int(0);
+        this->shouldVerify = new int(0);
+    }
     this->request = MPI_REQUEST_NULL;
     this->verifyRequest = MPI_REQUEST_NULL;
     this->destroyed = false;
@@ -24,10 +36,8 @@ void ParticleAmountManager::Verify(bool verify)
     assert(*this->shouldVerify);
     // send a commit
     this->dummy = (verify)? 1 : 0;
-    if(verify)
-    {
-        MPI_Isend(&this->dummy, 1, MPI_INT, 0, COMMIT_VERIFY_TAG, this->comm, &this->verifyRequest);
-    }
+    MPI_Isend(&this->dummy, 1, MPI_INT, 0, COMMIT_VERIFY_TAG, this->comm, &this->verifyRequest);
+    // std::cout << "Sending verify request " << this->verifyRequest << std::endl;
     *this->shouldVerify = 0;
 }
 
@@ -41,13 +51,38 @@ void ParticleAmountManager::ReceiveVerifies(void)
         MPI_Recv(&verify, 1, MPI_INT, _rank, COMMIT_VERIFY_TAG, this->comm, MPI_STATUS_IGNORE);
         if(!verify)
         {
+            // std::cout << "Can't finish, got " << verify << " from rank " << _rank << std::endl;
             can_finish = false;
+            this->doneVerifyCycle = false;
         }
     }
 
     if(can_finish)
     {
+        // std::cout << "Can finish." << std::endl;
         this->MarkAllDone();
+    }
+}
+
+void ParticleAmountManager::Progress(void)
+{
+    if(this->withRDMA)
+    {
+        return; // function is unused
+    }
+    int flag;
+    MPI_Iprobe(0, ASK_COMMIT_TAG, this->comm, &flag, MPI_STATUS_IGNORE);
+    if(flag)
+    {
+        MPI_Recv(MPI_BOTTOM, 0, MPI_INT, 0, ASK_COMMIT_TAG, this->comm, MPI_STATUS_IGNORE);
+        *this->shouldVerify = 1;
+    }
+
+    MPI_Iprobe(0, MARK_DONE_TAG, this->comm, &flag, MPI_STATUS_IGNORE);
+    if(flag)
+    {
+        MPI_Recv(MPI_BOTTOM, 0, MPI_INT, 0, MARK_DONE_TAG, this->comm, MPI_STATUS_IGNORE);
+        *this->done = 1;
     }
 }
 
@@ -55,24 +90,54 @@ void ParticleAmountManager::MarkAllDone(void)
 {
     static int one = 1;
     assert(this->rank == 0);
-    for(int _rank = 0; _rank < this->size; _rank++)
+    if(this->withRDMA)
     {
-        MPI_Win_lock(MPI_LOCK_EXCLUSIVE, _rank, MPI_MODE_NOCHECK, this->doneWin);
-        MPI_Put(&one, 1, MPI_INT, _rank, 0, 1, MPI_INT, this->doneWin);
-        MPI_Win_unlock(_rank, this->doneWin);
+        for(int _rank = 0; _rank < this->size; _rank++)
+        {
+            MPI_Win_lock(MPI_LOCK_EXCLUSIVE, _rank, MPI_MODE_NOCHECK, this->doneWin);
+            MPI_Put(&one, 1, MPI_INT, _rank, 0, 1, MPI_INT, this->doneWin);
+            MPI_Win_unlock(_rank, this->doneWin);
+        }
+    }
+    else
+    {
+        MPI_Waitall(this->requests.size(), this->requests.data(), MPI_STATUSES_IGNORE);
+        for(int _rank = 0; _rank < this->size; _rank++)
+        {
+            MPI_Isend(MPI_BOTTOM, 0, MPI_INT, _rank, MARK_DONE_TAG, this->comm, &this->requests[_rank]);
+        }
     }
 }
 
 void ParticleAmountManager::MarkShouldVerify(void)
 {
     static int one = 1;
-    assert(this->rank == 0);
-    for(int _rank = 0; _rank < this->size; _rank++)
+    if(this->doneVerifyCycle)
     {
-        MPI_Win_lock(MPI_LOCK_SHARED, _rank, MPI_MODE_NOCHECK, this->shouldVerifyWin);
-        MPI_Put(&one, 1, MPI_INT, _rank, 0, 1, MPI_INT, this->shouldVerifyWin);
-        MPI_Win_unlock(_rank, this->shouldVerifyWin);
+        // don't send again!
+        return;
     }
+    this->timesSentVerifies++;
+    assert(this->rank == 0);
+    if(this->withRDMA)
+    {
+        for(int _rank = 0; _rank < this->size; _rank++)
+        {
+            MPI_Win_lock(MPI_LOCK_SHARED, _rank, MPI_MODE_NOCHECK, this->shouldVerifyWin);
+            MPI_Put(&one, 1, MPI_INT, _rank, 0, 1, MPI_INT, this->shouldVerifyWin);
+            MPI_Win_unlock(_rank, this->shouldVerifyWin);
+        }
+    }
+    else
+    {
+        MPI_Waitall(this->requests.size(), this->requests.data(), MPI_STATUSES_IGNORE);
+        for(int _rank = 0; _rank < this->size; _rank++)
+        {
+            MPI_Isend(MPI_BOTTOM, 0, MPI_INT, _rank, ASK_COMMIT_TAG, this->comm, &this->requests[_rank]);
+        }
+        // std::cout << "Sent verifies to all ranks, for the " << this->timesSentVerifies << "-th time" << std::endl;
+    }
+    this->doneVerifyCycle = true;
     // std::cout << "Done sending verify requests" << std::endl;
 }
 
@@ -87,9 +152,11 @@ void ParticleAmountManager::CheckToFinish(void)
         {
             // receive
             int amount;
-            MPI_Recv(&amount, 1, MPI_INT, MPI_ANY_SOURCE, INCREASE_TAG, this->comm, MPI_STATUS_IGNORE);
+            MPI_Status status;
+            MPI_Recv(&amount, 1, MPI_INT, MPI_ANY_SOURCE, INCREASE_TAG, this->comm, &status);
             // std::cout << "Current counter value is " << this->counter << ", increases by " << amount << std::endl;
             this->counter += amount; 
+            // std::cout << "Rank " << status.MPI_SOURCE << " increased counter by " << amount << " (current: " << this->counter << ", initial: " << this->initialValue << ")" << std::endl;
             if(this->counter < 0)
             {
                 std::cerr << "Counter cannot be negative after increase (" << amount << "), current value " << this->counter << std::endl;
@@ -110,6 +177,7 @@ void ParticleAmountManager::CheckToFinish(void)
 void ParticleAmountManager::Initialize(int num)
 {
     MPI_Reduce(&num, &this->counter, 1, MPI_INT, MPI_SUM, 0, this->comm);
+    this->initialValue = this->counter;
 }
 
 void ParticleAmountManager::Increase(int n)
@@ -118,6 +186,7 @@ void ParticleAmountManager::Increase(int n)
     if(this->rank == 0)
     {
         this->counter += n;
+        // std::cout << "Self Increased counter by " << n << " (current: " << this->counter << ", initial: " << this->initialValue << ")" << std::endl;
         this->CheckToFinish();
         return;
     }
@@ -128,6 +197,7 @@ void ParticleAmountManager::Increase(int n)
         this->request = MPI_REQUEST_NULL;
     }
     this->tmpValue = n;
+    // std::cout << "Rank " << this->rank << " sends a message to increase by " << this->tmpValue << std::endl;
     MPI_Isend(&this->tmpValue, 1, MPI_INT, 0, INCREASE_TAG, this->comm, &this->request);
 }
 
@@ -142,8 +212,19 @@ void ParticleAmountManager::Destroy(void)
     {
         return;
     }
-    MPI_Win_free(&this->shouldVerifyWin);
-    MPI_Win_free(&this->doneWin);
+    if(this->withRDMA)
+    {
+        MPI_Win_free(&this->shouldVerifyWin);
+        MPI_Win_free(&this->doneWin);
+    }
+    else
+    {
+        MPI_Wait(&this->verifyRequest, MPI_STATUS_IGNORE);
+        MPI_Wait(&this->request, MPI_STATUS_IGNORE);
+        MPI_Waitall(this->requests.size(), this->requests.data(), MPI_STATUSES_IGNORE);
+        delete this->shouldVerify;
+        delete this->done;
+    }
     MPI_Barrier(this->comm);
     this->destroyed = true;
 }

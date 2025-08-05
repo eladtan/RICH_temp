@@ -5,16 +5,19 @@
 
 #include <mpi.h>
 #include <iostream>
+#include <vector>
 #include <cassert>
 
 #define INCREASE_TAG 2018
 #define VERIFY_TAG 2019
 #define COMMIT_VERIFY_TAG 2020
+#define ASK_COMMIT_TAG 2021
+#define MARK_DONE_TAG 2022
 
 class ParticleAmountManager
 {
 public:
-    ParticleAmountManager(MPI_Comm comm);
+    ParticleAmountManager(MPI_Comm comm, bool withRDMA);
 
     ~ParticleAmountManager();
 
@@ -30,6 +33,8 @@ public:
 
     void Verify(bool done);
 
+    void Progress(void);
+
     int *shouldVerify;
     int *done;
 
@@ -41,8 +46,12 @@ private:
     MPI_Comm comm;
     int rank, size;
     int counter;
+    int initialValue;
     MPI_Win shouldVerifyWin;
     MPI_Win doneWin;
+    bool withRDMA;
+    size_t timesSentVerifies;
+    bool doneVerifyCycle;
     
     int dummy;
     MPI_Request verifyRequest;
@@ -51,8 +60,8 @@ private:
     MPI_Request request;
 
     bool destroyed;
-
-    void SendVerifies(void);
+    
+    std::vector<MPI_Request> requests; // for non-RDMA mode
     
     void MarkAllDone(void);
 

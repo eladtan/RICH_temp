@@ -71,9 +71,9 @@ struct MonteCarloParticle
     friend inline std::ostream &operator<<(std::ostream &stream, const MonteCarloParticle &particle)
     {
         #ifdef RICH_MPI
-                return stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
+                return stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
         #else // RICH_MPI
-                return stream << "Particle(ID " << particle.id << ", location " << particle.location << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
+                return stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
         #endif // RICH_MPI
     }
 
