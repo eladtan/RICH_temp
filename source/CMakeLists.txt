@@ -1,9 +1,8 @@
 cmake_minimum_required(VERSION 3.20.2)
 project(rich)
 enable_language(Fortran CXX)
-
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
 if (${MPI})
     message("Compiling with MPI")
 else()
@@ -77,7 +76,7 @@ find_package(VTK COMPONENTS
     FiltersSources
     IOXML 
     IOParallelXML 
-    ParallelMPI 
+    #ParallelMPI 
     InteractionStyle
     NO_MODULE 
     PATHS ${VTK_DIRECTORY} NO_DEFAULT_PATH
@@ -101,8 +100,8 @@ message("VTK ${VTK_DIR}")
 # vcl
 if(VCL_INCLUDE)
     message("VCL ${VCL_INCLUDE}")
-    include_directories("${VCL_INCLUDE}")
-    add_compile_definitions("USE_VCL_VECTORIZATION")
+    #include_directories("${VCL_INCLUDE}")
+    #add_compile_definitions("USE_VCL_VECTORIZATION")
 endif()
 
 # clipper
@@ -153,13 +152,13 @@ else()
 endif()
 
 # vtune
-if(DEFINED VTUNE_INCLUDE)
+#if(DEFINED VTUNE_INCLUDE)
     # target json_cpp
-    message("VTUNE ${VTUNE_INCLUDE}")
-    include_directories(${VTUNE_INCLUDE})
-else()
-    message("NO VTUNE")
-endif()
+#    message("VTUNE ${VTUNE_INCLUDE}")
+#    include_directories(${VTUNE_INCLUDE})
+#else()
+#    message("NO VTUNE")
+#endif()
 
 add_executable(${EXE_NAME} ${TEST_DIR} ${SRC_R3D} ${SRC_CPP})
 
@@ -193,12 +192,12 @@ if(DEFINED PYTHON_LIB_LIBRARY)
 endif()
 
 # link vtune
-if((DEFINED VTUNE_INCLUDE) AND (DEFINED VTUNE_LIB_DIRECTORY))
-    set(VTUNE_LIB ${VTUNE_LIB_DIRECTORY}/libittnotify.a)
-    message("VTUNE_LIB ${VTUNE_LIB}")
-    target_link_libraries(${EXE_NAME} PRIVATE "${VTUNE_LIB}")
-    add_compile_definitions("WITH_VTUNE")
-endif()
+#if((DEFINED VTUNE_INCLUDE) AND (DEFINED VTUNE_LIB_DIRECTORY))
+#    set(VTUNE_LIB ${VTUNE_LIB_DIRECTORY}/libittnotify.a)
+#    message("VTUNE_LIB ${VTUNE_LIB}")
+#    target_link_libraries(${EXE_NAME} PRIVATE "${VTUNE_LIB}")
+#    add_compile_definitions("WITH_VTUNE")
+#endif()
 vtk_module_autoinit(
   TARGETS ${EXE_NAME}
   MODULES ${VTK_LIBRARIES}

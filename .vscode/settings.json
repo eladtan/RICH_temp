@@ -1,201 +1,67 @@
 {
     "files.associations": {
+        "iostream": "cpp",
+        "__bit_reference": "cpp",
+        "__hash_table": "cpp",
+        "__locale": "cpp",
+        "__node_handle": "cpp",
+        "__split_buffer": "cpp",
+        "__tree": "cpp",
+        "__verbose_abort": "cpp",
+        "any": "cpp",
         "array": "cpp",
-        "*.tcc": "cpp",
-        "dense": "cpp",
-        "geometry": "cpp",
-        "*.ipp": "cpp",
-        "optional": "cpp",
-        "istream": "cpp",
-        "ostream": "cpp",
-        "system_error": "cpp",
-        "functional": "cpp",
-        "tuple": "cpp",
-        "type_traits": "cpp",
-        "utility": "cpp",
-        "variant": "cpp",
-        "random": "cpp",
-        "memory": "cpp",
+        "bitset": "cpp",
         "cctype": "cpp",
+        "charconv": "cpp",
+        "cinttypes": "cpp",
         "clocale": "cpp",
         "cmath": "cpp",
+        "complex": "cpp",
         "cstdarg": "cpp",
-        "cstddef": "cpp",
+        "cstdint": "cpp",
         "cstdio": "cpp",
         "cstdlib": "cpp",
         "cstring": "cpp",
         "ctime": "cpp",
         "cwchar": "cpp",
         "cwctype": "cpp",
-        "atomic": "cpp",
-        "strstream": "cpp",
-        "complex": "cpp",
-        "cstdint": "cpp",
         "deque": "cpp",
+        "execution": "cpp",
+        "memory": "cpp",
         "forward_list": "cpp",
-        "list": "cpp",
-        "unordered_map": "cpp",
-        "unordered_set": "cpp",
-        "vector": "cpp",
-        "exception": "cpp",
-        "algorithm": "cpp",
-        "iterator": "cpp",
-        "map": "cpp",
-        "memory_resource": "cpp",
-        "numeric": "cpp",
-        "set": "cpp",
-        "string": "cpp",
-        "string_view": "cpp",
         "fstream": "cpp",
         "initializer_list": "cpp",
         "iomanip": "cpp",
+        "ios": "cpp",
         "iosfwd": "cpp",
-        "iostream": "cpp",
+        "istream": "cpp",
         "limits": "cpp",
+        "list": "cpp",
+        "locale": "cpp",
+        "map": "cpp",
+        "mutex": "cpp",
         "new": "cpp",
+        "optional": "cpp",
+        "print": "cpp",
+        "queue": "cpp",
+        "ratio": "cpp",
+        "set": "cpp",
         "sstream": "cpp",
+        "stack": "cpp",
         "stdexcept": "cpp",
         "streambuf": "cpp",
-        "cfenv": "cpp",
-        "cinttypes": "cpp",
+        "string": "cpp",
+        "string_view": "cpp",
         "typeindex": "cpp",
         "typeinfo": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
         "valarray": "cpp",
-        "bit": "cpp",
-        "thread": "cpp",
-        "bitset": "cpp",
-        "chrono": "cpp",
-        "ratio": "cpp",
-        "compare": "cpp",
-        "codecvt": "cpp",
-        "concepts": "cpp",
-        "condition_variable": "cpp",
-        "mutex": "cpp",
-        "numbers": "cpp",
-        "semaphore": "cpp",
-        "stop_token": "cpp",
-        "*.txx": "cpp",
-        "csignal": "cpp",
-        "any": "cpp",
-        "charconv": "cpp",
-        "source_location": "cpp",
-        "regex": "cpp",
-        "shared_mutex": "cpp"
+        "variant": "cpp",
+        "vector": "cpp",
+        "algorithm": "cpp",
+        "filesystem": "cpp",
+        "cstddef": "cpp"
     },
-    "cmake.configureOnOpen": true,
-
-    // maor:
-    "git.autofetch": true,
-    "[python]": {
-        "editor.formatOnType": true
-    },
-    "editor.fontSize": 18,
-    "files.autoSave": "afterDelay",
-    "editor.cursorSmoothCaretAnimation": "on",
-    "explorer.confirmDelete": false,
-    "workbench.editor.closeOnFileDelete": true,
-    "workbench.colorTheme": "Atom One Dark",
-
-    "editor.tokenColorCustomizations": {
-        "textMateRules": [
-            {
-                "scope": "variable.other.property",
-                "settings": {
-                    // "fontStyle": "italic",
-                    "foreground": "#ea7878" // "#E06C75"
-                }
-            },
-            {
-                "scope": "entity.name.function.cpp",
-                "settings": {
-                    "foreground": "#617def"
-                }
-            },
-            {
-                "scope": "entity.name.type",
-                "settings": {
-                    // "fontStyle": "bold",
-                    "foreground": "#db9f6a" // "#6ab479"
-                }
-            },
-            {
-                "scope": "entity.name.function.macro",
-                "settings": {
-                    "fontStyle": "bold"
-                }
-            },
-            {
-                "scope": "entity.name.function.member.cpp",
-                "settings": {
-                    "foreground": "#8489d7",
-                    "fontStyle": "italic"
-                }
-            },
-            {
-                "scope": "variable.language.this.cpp, variable.language.this.java",
-                "settings": {
-                    "fontStyle": "bold",
-                    "foreground": "#99a4ea" // "#EA99A2"
-                }
-            },
-            {
-                "scope": "entity.name.namespace",
-                "settings": {
-                    "fontStyle": "bold",
-                    "foreground": "#59af76"
-                }
-            },
-            {
-                "scope": "entity.name.function.macro",
-                "settings": {
-                    "fontStyle": "bold"
-                }
-            },
-            {
-                "scope": "variable.other.local.cpp",
-                "settings": {
-                    "foreground": "#a2acb9" // "#a2acb9"
-                }
-            },
-            {
-                "scope": "variable.other.constant",
-                "settings": {
-                    "fontStyle": "bold"
-                }
-            },
-            {
-                "scope": "entity.name.function.definition.cpp",
-                "settings": {
-                    "fontStyle": "bold"
-                }
-            },
-            {
-                "scope": "support.type.built-in.posix-reserved.cpp",
-                "settings": {
-                    "foreground": "#1dbbcf"
-                }
-            },
-            {
-                "scope": "variable.other.constant",
-                "settings": {
-                    "fontStyle": "bold"
-                }
-            },
-            {
-                "scope": "variable.parameter.cpp",
-                "settings": {
-                    "foreground": "#aeb68a"
-                }
-            }
-        ]        
-    },
-    "C_Cpp.files.exclude": 
-    {
-        "*.h5": true,
-        "*.txt": true,
-        "*.vtu": true,
-        "**/.vscode": true,
-        "**/.vs": true
-    },
-    "cmake.sourceDirectory": "RICH/source"
+    "cmake.sourceDirectory": "/Users/yihanwang/Repositories/RICH/source"
 }

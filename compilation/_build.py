@@ -17,7 +17,8 @@ sys.path.append(root_dir)
 RELEASE_OPTIMIZATION_LEVEL = "-O3" 
 
 def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None, definitionOfReal=8):
-    warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
+    #warning_flags = " -Wextra -Wshadow -Wunused-value -Wunused-variable -Wunused-function -Wunused-macros"
+    warning_flags = " -w"
     common_cxx_flags = f" {warning_flags} -fno-common -fstack-protector-all -rdynamic -g -DENERGY_GROUPS_NUM={int(args.energy_groups_num)} "
     common_cxx_flags_debug = " -DDEBUG -O0 -g3 -gdwarf-3 "
     common_cxx_flags_release = f" -DNDEBUG -DOMPI_SKIP_MPICXX {RELEASE_OPTIMIZATION_LEVEL}"
@@ -32,7 +33,8 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_fortran_flags = f" -fall-intrinsics -std=f2018 -fdec-static -finit-local-zero -finit-integer=-2147483647 -finit-real=snan -finit-logical=True -finit-derived -ffpe-trap=invalid,zero,overflow -ffree-line-length-none -cpp -fdefault-real-{definitionOfReal} {'-fdefault-double-8' if definitionOfReal==8 else ''} -fbacktrace -g -Wall -Wextra -Wsurprising  -Wpedantic -Wno-uninitialized "
         cmake_fortran_flags_debug = " -O0 -fcheck=all -Wno-maybe-uninitialized -Wno-tabs -Wno-conversion "
         cmake_fortran_flags_release = " -O2 "
-        cmake_fortran_flags += "  -mcmodel=medium -shared-libgcc "
+        #cmake_fortran_flags += "  -mcmodel=medium -shared-libgcc "
+        cmake_fortran_flags += "   -shared-libgcc "
 
         c_compiler = SysLibsDict["gcc"]
         cxx_compiler = SysLibsDict["g++"]
@@ -41,6 +43,7 @@ def _run_cmake(*, build_dir, exe_name, config, SysLibsDict, test_dir, args=None,
         cmake_cxx_flags = " -rdynamic -Wdouble-promotion -fstrict-aliasing -Wno-deprecated-copy -Wno-double-promotion -Wno-shadow "
         cmake_cxx_flags_debug = " -D_GLIBCXX_DEBUG "
         cmake_cxx_flags_release = " "
+
     elif config.startswith("intel"):
         fortran_compiler = SysLibsDict["ifort"]
         c_compiler = SysLibsDict["icx-cc"]
