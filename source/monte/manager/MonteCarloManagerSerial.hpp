@@ -372,9 +372,18 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     // measure time
     vtune_start();
     auto start = std::chrono::high_resolution_clock::now();
-    while(this->particlesData.th_length != 0)
+
+    try
     {
-        this->HandleAll(data);
+        while(this->particlesData.th_length != 0)
+        {
+            this->HandleAll(data);
+        }
+    }
+    catch(const UniversalError &eo)
+    {
+        reportError(eo);
+        throw;
     }
     auto end = std::chrono::high_resolution_clock::now();
 

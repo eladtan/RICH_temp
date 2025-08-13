@@ -4,7 +4,6 @@ MCPowerLawOpacity::MCPowerLawOpacity(double sigmaA0, double sigmaS0, double sigm
     : sigmaA0(sigmaA0), sigmaS0(sigmaS0), sigmaA_rho(sigmaA_rho), sigmaA_T(sigmaA_T), sigmaS_rho(sigmaS_rho), sigmaS_T(sigmaS_T)
 {
     this->rng = std::mt19937_64(0); // seed 0
-
 }
 
 double MCPowerLawOpacity::getPlanckOpacity(const ComputationalCell3D &cell) const

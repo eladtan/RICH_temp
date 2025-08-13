@@ -23,22 +23,35 @@ ParticleAmountManager::ParticleAmountManager(MPI_Comm comm, bool withRDMA)
         this->requests = std::vector<MPI_Request>(this->size, MPI_REQUEST_NULL);
         this->done = new int(0);
         this->shouldVerify = new int(0);
+        MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, 0, ASK_COMMIT_TAG, this->comm, &this->askCommitRequest);
+        MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, 0, MARK_DONE_TAG, this->comm, &this->markDoneRequest);
     }
-    this->request = MPI_REQUEST_NULL;
+
     this->verifyRequest = MPI_REQUEST_NULL;
     this->destroyed = false;
-    MPI_Barrier(this->comm);
+    // MPI_Barrier(this->comm);
 }
+
 
 void ParticleAmountManager::Verify(bool verify)
 {
     // std::cout << "Rank " << this->rank << " verifies " << ((verify)? "OK" : "NOT OK") << std::endl;
     assert(*this->shouldVerify);
     // send a commit
+    if(this->verifyRequest != MPI_REQUEST_NULL)
+    {
+        // make sure we can use `this->dummy` safely
+        MPI_Wait(&this->verifyRequest, MPI_STATUS_IGNORE);
+    }
+
     this->dummy = (verify)? 1 : 0;
     MPI_Isend(&this->dummy, 1, MPI_INT, 0, COMMIT_VERIFY_TAG, this->comm, &this->verifyRequest);
-    // std::cout << "Sending verify request " << this->verifyRequest << std::endl;
+
     *this->shouldVerify = 0;
+    if(not this->withRDMA)
+    {
+        MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, 0, ASK_COMMIT_TAG, this->comm, &this->askCommitRequest);
+    }
 }
 
 void ParticleAmountManager::ReceiveVerifies(void)
@@ -70,18 +83,17 @@ void ParticleAmountManager::Progress(void)
     {
         return; // function is unused
     }
+
     int flag;
-    MPI_Iprobe(0, ASK_COMMIT_TAG, this->comm, &flag, MPI_STATUS_IGNORE);
+    MPI_Test(&this->askCommitRequest, &flag, MPI_STATUS_IGNORE);
     if(flag)
     {
-        MPI_Recv(MPI_BOTTOM, 0, MPI_INT, 0, ASK_COMMIT_TAG, this->comm, MPI_STATUS_IGNORE);
         *this->shouldVerify = 1;
     }
 
-    MPI_Iprobe(0, MARK_DONE_TAG, this->comm, &flag, MPI_STATUS_IGNORE);
+    MPI_Test(&this->markDoneRequest, &flag, MPI_STATUS_IGNORE);
     if(flag)
     {
-        MPI_Recv(MPI_BOTTOM, 0, MPI_INT, 0, MARK_DONE_TAG, this->comm, MPI_STATUS_IGNORE);
         *this->done = 1;
     }
 }
@@ -174,9 +186,9 @@ void ParticleAmountManager::CheckToFinish(void)
     }
 }
 
-void ParticleAmountManager::Initialize(int num)
+void ParticleAmountManager::Initialize(int64_t num)
 {
-    MPI_Reduce(&num, &this->counter, 1, MPI_INT, MPI_SUM, 0, this->comm);
+    MPI_Reduce(&num, &this->counter, 1, MPI_INT64_T, MPI_SUM, 0, this->comm);
     this->initialValue = this->counter;
 }
 
@@ -190,15 +202,12 @@ void ParticleAmountManager::Increase(int n)
         this->CheckToFinish();
         return;
     }
-    if(this->request != MPI_REQUEST_NULL)
-    {
-        // can't send, wait to completion
-        MPI_Wait(&this->request, MPI_STATUS_IGNORE);
-        this->request = MPI_REQUEST_NULL;
-    }
-    this->tmpValue = n;
-    // std::cout << "Rank " << this->rank << " sends a message to increase by " << this->tmpValue << std::endl;
-    MPI_Isend(&this->tmpValue, 1, MPI_INT, 0, INCREASE_TAG, this->comm, &this->request);
+
+    MPI_Request &request = increaseRequests.emplace_back(MPI_REQUEST_NULL);
+    this->tmpValues.push_back(std::vector<int>(1, n));
+
+    // std::cout << "Rank " << this->rank << " sends a message to increase by " << this->tmpValues.back() << std::endl;
+    MPI_Isend(this->tmpValues.back().data(), 1, MPI_INT, 0, INCREASE_TAG, this->comm, &request);
 }
 
 ParticleAmountManager::~ParticleAmountManager()
@@ -220,8 +229,9 @@ void ParticleAmountManager::Destroy(void)
     else
     {
         MPI_Wait(&this->verifyRequest, MPI_STATUS_IGNORE);
-        MPI_Wait(&this->request, MPI_STATUS_IGNORE);
+        MPI_Waitall(this->increaseRequests.size(), this->increaseRequests.data(), MPI_STATUSES_IGNORE);
         MPI_Waitall(this->requests.size(), this->requests.data(), MPI_STATUSES_IGNORE);
+        MPI_Cancel(&this->askCommitRequest);
         delete this->shouldVerify;
         delete this->done;
     }

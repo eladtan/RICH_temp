@@ -474,7 +474,7 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
         #endif // MONTECARLO_DEBUG
     }
 
-    // this->progress->Increment(particlesNum);
+    this->localDecrementAmount -= static_cast<int>(particlesNum);
     // std::cout << "Done add particles" << std::endl;
 }
 
@@ -534,6 +534,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(const std::
 
     RankHandler *handler = this->rankHandlers[this->rank_world];
 
+    #ifdef MONTECARLO_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
     for(const MCParticle &particle : particles)
     {
@@ -552,6 +553,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(const std::
         }
         particlesSet.insert(particleSetKey);
     }
+    #endif // MONTECARLO_DEBUG
 
     size_t particlesNum = particles.size();
     if(handler->buffsize < particlesNum)
@@ -1442,7 +1444,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
     size_t preStepParticlesNum = newParticles1.size();
-    size_t startingParticleNum = particleList.size() + preStepParticlesNum;
+    int64_t startingParticleNum = particleList.size() + preStepParticlesNum;
 
     this->localDecrementAmount = 0;
     ParticleAmountManager amountManager(this->comm_world, true /* use RDMA */);
@@ -1460,51 +1462,59 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     volatile int &verify = *amountManager.shouldVerify;
     volatile int &done = *amountManager.done;
 
-    while(not done)
+    try
     {
-        i++;
-        lastLocalDecrementAmount = this->localDecrementAmount;
-
-        bool isEmpty = this->HandleAll(data);
-
-        if(isEmpty and (this->localDecrementAmount > 0) and (this->localDecrementAmount == lastLocalDecrementAmount))
+        while(not done)
         {
-            decrementTryCounter++;
-        }
-        if(decrementTryCounter == 40)
-        {
-            numOfCounterDecrementations++;
-            amountManager.Decrease(this->localDecrementAmount);
-            this->localDecrementAmount = 0;
-            decrementTryCounter = 0;
-        }
-        
-        if(this->rank_world == 0 and i % 20 == 0)
-        {
-            amountManager.CheckToFinish();
-        }
-        if(verify)
-        {
-            // std::cout << "Rank " << this->rank_world << " should verify" << std::endl;
-            bool ok = true;
-            for(RankHandler *handler : this->rankHandlers)
+            i++;
+            lastLocalDecrementAmount = this->localDecrementAmount;
+    
+            bool isEmpty = this->HandleAll(data);
+    
+            if(isEmpty and (this->localDecrementAmount > 0) and (this->localDecrementAmount == lastLocalDecrementAmount))
             {
-                if(handler == nullptr)
+                decrementTryCounter++;
+            }
+            if(decrementTryCounter == 40)
+            {
+                numOfCounterDecrementations++;
+                amountManager.Decrease(this->localDecrementAmount);
+                this->localDecrementAmount = 0;
+                decrementTryCounter = 0;
+            }
+            
+            if(this->rank_world == 0 and i % 20 == 0)
+            {
+                amountManager.CheckToFinish();
+            }
+            if(verify)
+            {
+                // std::cout << "Rank " << this->rank_world << " should verify" << std::endl;
+                bool ok = true;
+                for(RankHandler *handler : this->rankHandlers)
                 {
-                    continue;
+                    if(handler == nullptr)
+                    {
+                        continue;
+                    }
+                    if(*handler->th_length != 0)
+                    {
+                        ok = false;
+                        break;
+                    }
                 }
-                if(*handler->th_length != 0)
+                amountManager.Verify(ok);
+                if(this->rank_world == 0)
                 {
-                    ok = false;
-                    break;
+                    amountManager.ReceiveVerifies();
                 }
             }
-            amountManager.Verify(ok);
-            if(this->rank_world == 0)
-            {
-                amountManager.ReceiveVerifies();
-            }
         }
+    }
+    catch(const UniversalError &eo)
+    {
+        reportError(eo);
+        throw;
     }
     auto end = std::chrono::high_resolution_clock::now();
     

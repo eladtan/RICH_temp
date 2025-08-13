@@ -26,6 +26,11 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 #ifndef RICH_MPI
     for(Particle3D &p : particles)
     {
+        if(tess.IsPointInCell(p.location, p.cellIndex))
+        {
+            // the point is inside my domain, correct location
+            continue; // done!
+        }
         p.cellIndex = tess.GetContainingCell(p.location);
     }
 #else // RICH_MPI
@@ -65,13 +70,23 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
     {
         // first, test whether the point is inside my domain
         Particle3D &p = particles[i];
+        if(p.cellIndex < N and tess.IsPointInCell(p.location, p.cellIndex))
+        {
+            // the point is inside my domain, correct location
+            newParticles.push_back(p);
+            continue; // done!
+        }
         size_t closestCell = octTree.closestPoint(p.location).getIndex();
+        if(closestCell >= N)
+        {
+            continue;
+        }
         if(tess.IsPointInCell(p.location, closestCell))
         {
-            // the point is inside my domain
+            // the point is inside my domain, new location
             p.cellIndex = closestCell;
             newParticles.push_back(p);
-            // done!
+        // done!
         }
         else
         {

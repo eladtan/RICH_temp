@@ -23,7 +23,7 @@ public:
 
     void Destroy(void);
 
-    void Initialize(int num);
+    void Initialize(int64_t num);
 
     void Increase(int n);
 
@@ -42,26 +42,31 @@ public:
 
     void ReceiveVerifies(void);
 
+    inline int64_t GetCounter(void) const{return this->counter;};
+
 private:
     MPI_Comm comm;
     int rank, size;
-    int counter;
-    int initialValue;
+    int64_t counter;
+    int64_t initialValue;
     MPI_Win shouldVerifyWin;
     MPI_Win doneWin;
     bool withRDMA;
     size_t timesSentVerifies;
     bool doneVerifyCycle;
-    
+    std::vector<MPI_Request> increaseRequests;
+
+    std::vector<std::vector<int>> tmpValues;
     int dummy;
     MPI_Request verifyRequest;
-
+    
     int tmpValue;
-    MPI_Request request;
 
     bool destroyed;
     
-    std::vector<MPI_Request> requests; // for non-RDMA mode
+    // for non-RDMA mode
+    MPI_Request askCommitRequest, markDoneRequest;
+    std::vector<MPI_Request> requests; 
     
     void MarkAllDone(void);
 

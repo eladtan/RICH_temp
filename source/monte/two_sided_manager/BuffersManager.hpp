@@ -23,13 +23,17 @@ public:
 
     void HandleIncomingOutcoming();
 
-    inline size_t CountOutcoming() const{return activeSendRequests;};
+    inline size_t CountOutcoming() const{return this->sendRequests.size();};
 
     inline size_t GetPendingNumber() const{return this->ranksSendBuffers.size();};
 
     inline size_t GetSentCounter() const {return this->sendCounter;};
 
     inline size_t GetRecvCounter() const {return this->recvCounter;};
+
+    inline const std::vector<size_t> &GetAllSendCounters() const {return this->sendCounters;};
+
+    inline const std::vector<size_t> &GetAllRecvCounters() const {return this->recvCounters;};
 
 private:
     MPI_Comm comm;
@@ -48,6 +52,9 @@ private:
 
     size_t sendCounter;
     size_t recvCounter;
+
+    std::vector<size_t> sendCounters;
+    std::vector<size_t> recvCounters;
 
     void Dispatch(rank_t rank);
 
@@ -72,6 +79,9 @@ BuffersManager<T>::BuffersManager(const MPI_Comm &comm, const std::function<void
     this->activeSendRequests = 0;
     this->sendCounter = 0;
     this->recvCounter = 0;
+
+    this->sendCounters.resize(this->size_world, 0);
+    this->recvCounters.resize(this->size_world, 0);
 
     if(this->buffersSize < this->minSizeToDispatch)
     {
@@ -98,47 +108,73 @@ BuffersManager<T>::BuffersManager(const MPI_Comm &comm, const std::function<void
 template<typename T>
 BuffersManager<T>::~BuffersManager()
 {
+    if(this->activeSendRequests != 0)
+    {
+        UniversalError eo("BuffersManager: not all send requests were handled");
+        eo.addEntry("Active send requests", this->activeSendRequests);
+        throw eo;
+    }
+
+    size_t sentToMe = 0;
+    std::vector<int> counts(this->size_world, 1);
+    MPI_Reduce_scatter(this->sendCounters.data(), &sentToMe, counts.data(), MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm);
+    
+    if(this->recvCounter != sentToMe)
+    {
+        UniversalError eo("BuffersManager: not all receive requests were handled");
+        eo.addEntry("Total Receive requests", this->recvCounter);
+        eo.addEntry("Sent to me", sentToMe);
+        throw eo;
+    }
     for(MPI_Request &request : this->receiveRequests)
     {
         MPI_Cancel(&request);
     }
+    MPI_Barrier(this->comm);
 }
 
 template<typename T>
 void BuffersManager<T>::Receive(void)
 {
-    static std::vector<int> array_of_indices;
-    static std::vector<MPI_Status> array_of_statuses;
+    // static std::vector<int> array_of_indices;
+    // static std::vector<MPI_Status> array_of_statuses;
 
-    if(array_of_indices.size() != this->receiveRequests.size())
+    // if(array_of_indices.size() != this->receiveRequests.size())
+    // {
+    //     array_of_indices.resize(this->receiveRequests.size());
+    // }
+    // if(array_of_statuses.size() != this->receiveRequests.size())
+    // {
+    //     array_of_statuses.resize(this->receiveRequests.size());
+    // }
+
+    // int outcount;
+    // MPI_Testsome(this->receiveRequests.size(), this->receiveRequests.data(), &outcount, array_of_indices.data(), array_of_statuses.data());
+
+    MPI_Status status;
+    int is_done = 0;
+    do
     {
-        array_of_indices.resize(this->receiveRequests.size());
-    }
-    if(array_of_statuses.size() != this->receiveRequests.size())
-    {
-        array_of_statuses.resize(this->receiveRequests.size());
-    }
+        MPI_Test(this->receiveRequests.data(), &is_done, &status);
+        if(is_done)
+        {
+            size_t requestIndex = 0;
+            rank_t fromRank = status.MPI_SOURCE;
+            int count;
+            MPI_Get_count(&status, MPI_BYTE, &count);
+            count /= sizeof(T);
+            size_t bufferIndex = this->recvBuffersByRequests.at(requestIndex);
 
-    int outcount;
-    MPI_Testsome(this->receiveRequests.size(), this->receiveRequests.data(), &outcount, array_of_indices.data(), array_of_statuses.data());
+            MPI_Request &request = this->receiveRequests[requestIndex];
+            this->receiveCallback(this->buffers[bufferIndex].data(), static_cast<size_t>(count), fromRank);
 
-    for(int i = 0; i < outcount; i++)
-    {
-        size_t requestIndex = static_cast<size_t>(array_of_indices[i]);
-        rank_t fromRank = array_of_statuses[i].MPI_SOURCE;
-        int count;
-        MPI_Get_count(&array_of_statuses[i], MPI_BYTE, &count);
-        count /= sizeof(T);
-        size_t bufferIndex = this->recvBuffersByRequests.at(requestIndex);
-
-        MPI_Request &request = this->receiveRequests[requestIndex];
-        this->receiveCallback(this->buffers[bufferIndex].data(), static_cast<size_t>(count), fromRank);
-
-        // recycle buffer and request, use for receiving again
-        this->recvBuffersByRequests[requestIndex] = bufferIndex;
-        this->recvCounter++;
-        MPI_Irecv(this->buffers[bufferIndex].data(), this->buffersSize * sizeof(T), MPI_BYTE, MPI_ANY_SOURCE, this->tag, MPI_COMM_WORLD, &request);
-    }
+            // recycle buffer and request, use for receiving again
+            this->recvBuffersByRequests[requestIndex] = bufferIndex;
+            this->recvCounter++;
+            this->recvCounters[fromRank]++;
+            MPI_Irecv(this->buffers[bufferIndex].data(), this->buffersSize * sizeof(T), MPI_BYTE, MPI_ANY_SOURCE, this->tag, MPI_COMM_WORLD, &request);
+        }
+    } while(is_done);
 }
 
 template<typename T>
@@ -171,7 +207,7 @@ void BuffersManager<T>::Add(rank_t rank, const T &value)
         bufferIndex = it->second;
         // std::cout << "Buffer of rank " << rank << " already exists, index " << bufferIndex << std::endl;
     }
-
+    
     // std::cout << "Uses buffer " << bufferIndex << " to rank " << rank << std::endl;
     this->ranksSendBuffers[rank] = bufferIndex;
 
@@ -219,13 +255,15 @@ void BuffersManager<T>::Dispatch(rank_t rank)
     assert(this->ranksSendBuffers.find(rank) != this->ranksSendBuffers.end());
     size_t bufferIndex = this->ranksSendBuffers.at(rank);
 
+    assert(not this->buffers[bufferIndex].empty());
     // std::cout << "Dispatches buffer " << bufferIndex << " to rank " << rank << std::endl;
     MPI_Request &request = this->sendRequests.emplace_back(MPI_REQUEST_NULL);
-    MPI_Isend(this->buffers[bufferIndex].data(), this->buffers[bufferIndex].size() * sizeof(T), MPI_BYTE, rank, this->tag, this->comm, &request);
     this->sendBuffersByRequests[this->sendRequests.size() - 1] = bufferIndex;
+    MPI_Isend(this->buffers[bufferIndex].data(), this->buffers[bufferIndex].size() * sizeof(T), MPI_BYTE, rank, this->tag, this->comm, &request);
     this->activeSendRequests++;
     this->buffersToCycles[rank] = 0; // reset cycles
     this->ranksSendBuffers.erase(rank); // remove rank from send buffers
+    this->sendCounters[rank]++;
     this->sendCounter++;
 }
 
@@ -269,7 +307,6 @@ void BuffersManager<T>::CleanSendRequests(void)
         }
         std::swap(request, this->sendRequests.back());
         this->sendRequests.pop_back();
-
 
         this->activeSendRequests--;
     }

@@ -8,6 +8,7 @@
 #include <utility>
 #include <type_traits>
 #include <stack>
+#include <queue>
 
 #ifdef DEBUG_MODE
 #include <iostream>
@@ -816,53 +817,93 @@ template<typename T>
 template<typename U>
 std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point, bool includeSelf) const
 {
-    this->nodes_stack.push_back(this->getRoot());
-
-    T closestPoint;
-    typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+    // Use priority queue for better traversal order (closest nodes first)
+    struct NodeDistancePair {
+        const OctTreeNode* node;
+        typename T::coord_type distSquared;
+        
+        bool operator>(const NodeDistancePair& other) const {
+            return distSquared > other.distSquared;
+        }
+    };
     
-    while(!this->nodes_stack.empty())
+    std::priority_queue<NodeDistancePair, std::vector<NodeDistancePair>, std::greater<NodeDistancePair>> pq;
+    
+    T closestPoint;
+    typename T::coord_type closestDistanceSquared = std::numeric_limits<typename T::coord_type>::max();
+    bool foundPoint = false;
+    
+    if(this->getRoot() != nullptr)
     {
-        const OctTreeNode *node = this->nodes_stack.back();
-        this->nodes_stack.pop_back();
-
+        typename T::coord_type rootDist = this->getRoot()->boundingBox.distanceSquared(point);
+        pq.push({this->getRoot(), rootDist});
+    }
+    
+    while(!pq.empty())
+    {
+        NodeDistancePair current = pq.top();
+        pq.pop();
+        
+        const OctTreeNode *node = current.node;
+        
         if(node == nullptr)
         {
             continue;
         }
-        const T &closestPointInBox = node->boundingBox.closestPoint(point);
         
-        // calculate distance squared
-        typename T::coord_type dist = 0;
-        for(int i = 0; i < DIM; i++)
-        {
-            dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
-        }
-        if(dist >= closestDistance)
+        // Early termination: if this node's minimum distance is already worse than our best
+        if(current.distSquared >= closestDistanceSquared)
         {
             continue;
         }
-        // there might be a closer point in the subtrees
+        
         if(node->isLeaf)
         {
-            if(not includeSelf and node->value == point)
+            // Calculate actual distance to the point stored in leaf
+            typename T::coord_type actualDistSquared = 0;
+            for(int i = 0; i < DIM; i++)
             {
-                // don't check that point (otherwise the distance is 0...)
+                typename T::coord_type diff = node->value[i] - point[i];
+                actualDistSquared += diff * diff;
+            }
+            
+            if(not includeSelf and actualDistSquared < EPSILON * EPSILON)
+            {
+                // Skip if this is the same point and we don't want to include self
                 continue;
             }
-            closestPoint = node->value;
-            closestDistance = dist;
+            
+            if(actualDistSquared < closestDistanceSquared)
+            {
+                closestPoint = node->value;
+                closestDistanceSquared = actualDistSquared;
+                foundPoint = true;
+            }
         }
         else
         {
+            // Add children to priority queue with their distances
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push_back(node->children[i]);
+                if(node->children[i] != nullptr)
+                {
+                    typename T::coord_type childDist = node->children[i]->boundingBox.distanceSquared(point);
+                    // Only add if it could potentially be better than current best
+                    if(childDist < closestDistanceSquared)
+                    {
+                        pq.push({node->children[i], childDist});
+                    }
+                }
             }
         }
     }
+    
+    if(!foundPoint)
+    {
+        throw UniversalError("OctTree::getClosestPointInfo: No valid point found in tree");
+    }
 
-    return {closestPoint, sqrt(closestDistance)};
+    return {closestPoint, sqrt(closestDistanceSquared)};
 }
 #endif // _OCTTREE_HPP
 
