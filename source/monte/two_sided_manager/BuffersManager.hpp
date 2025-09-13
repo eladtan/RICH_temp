@@ -19,13 +19,15 @@ public:
 
     void Add(rank_t rank, const T &value);
 
-    void Receive(void);
+    void Receive(bool ignore = false);
 
     void HandleIncomingOutcoming();
 
     inline size_t CountOutcoming() const{return this->sendRequests.size();};
 
     inline size_t GetPendingNumber() const{return this->ranksSendBuffers.size();};
+
+    inline size_t GetActiveSendsNumber() const{return this->activeSendRequests;};
 
     inline size_t GetSentCounter() const {return this->sendCounter;};
 
@@ -108,6 +110,12 @@ BuffersManager<T>::BuffersManager(const MPI_Comm &comm, const std::function<void
 template<typename T>
 BuffersManager<T>::~BuffersManager()
 {
+    if(not this->sendRequests.empty())
+    {
+        MPI_Waitall(this->sendRequests.size(), this->sendRequests.data(), MPI_STATUSES_IGNORE);
+        this->activeSendRequests = 0;
+    }
+
     if(this->activeSendRequests != 0)
     {
         UniversalError eo("BuffersManager: not all send requests were handled");
@@ -119,10 +127,35 @@ BuffersManager<T>::~BuffersManager()
     std::vector<int> counts(this->size_world, 1);
     MPI_Reduce_scatter(this->sendCounters.data(), &sentToMe, counts.data(), MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm);
     
+    size_t shouldReceiveMore = std::numeric_limits<size_t>::max();
+    if(sentToMe < this->recvCounter)
+    {
+        UniversalError eo("BuffersManager: too many received were handled");
+        eo.addEntry("Total Receive requests", this->recvCounter);
+        eo.addEntry("Sent to me", sentToMe);
+        throw eo;
+    }
+    else if(sentToMe > this->recvCounter)
+    {
+        size_t requestIndex = 0;
+        size_t bufferIndex = this->recvBuffersByRequests.at(requestIndex);
+        MPI_Request &request = this->receiveRequests[requestIndex];
+        shouldReceiveMore = sentToMe - this->recvCounter;
+        for(size_t i = 0; i < shouldReceiveMore; i++)
+        {
+            MPI_Wait(&request, MPI_STATUS_IGNORE);
+            this->recvCounter++;
+            // ignore
+            MPI_Irecv(this->buffers[bufferIndex].data(), this->buffersSize * sizeof(T), MPI_BYTE, MPI_ANY_SOURCE, this->tag, MPI_COMM_WORLD, &request);
+        }
+    }
+
+    // should not reach here anyway
     if(this->recvCounter != sentToMe)
     {
         UniversalError eo("BuffersManager: not all receive requests were handled");
         eo.addEntry("Total Receive requests", this->recvCounter);
+        eo.addEntry("Should Have Received More", shouldReceiveMore);
         eo.addEntry("Sent to me", sentToMe);
         throw eo;
     }
@@ -134,7 +167,7 @@ BuffersManager<T>::~BuffersManager()
 }
 
 template<typename T>
-void BuffersManager<T>::Receive(void)
+void BuffersManager<T>::Receive(bool ignore)
 {
     // static std::vector<int> array_of_indices;
     // static std::vector<MPI_Status> array_of_statuses;
@@ -166,7 +199,10 @@ void BuffersManager<T>::Receive(void)
             size_t bufferIndex = this->recvBuffersByRequests.at(requestIndex);
 
             MPI_Request &request = this->receiveRequests[requestIndex];
-            this->receiveCallback(this->buffers[bufferIndex].data(), static_cast<size_t>(count), fromRank);
+            if(not ignore)
+            {
+                this->receiveCallback(this->buffers[bufferIndex].data(), static_cast<size_t>(count), fromRank);
+            }
 
             // recycle buffer and request, use for receiving again
             this->recvBuffersByRequests[requestIndex] = bufferIndex;
@@ -211,8 +247,8 @@ void BuffersManager<T>::Add(rank_t rank, const T &value)
     // std::cout << "Uses buffer " << bufferIndex << " to rank " << rank << std::endl;
     this->ranksSendBuffers[rank] = bufferIndex;
 
-    // std::cout << "Adds " << value << " to rank " << rank << "'s buffer" << std::endl;
-    assert(std::find(this->buffers[bufferIndex].cbegin(), this->buffers[bufferIndex].cend(), value) == this->buffers[bufferIndex].cend());
+    // // std::cout << "Adds " << value << " to rank " << rank << "'s buffer" << std::endl;
+    // assert(std::find(this->buffers[bufferIndex].cbegin(), this->buffers[bufferIndex].cend(), value) == this->buffers[bufferIndex].cend());
 
     // add value to internal buffer
     this->buffers[bufferIndex].push_back(value);
@@ -315,7 +351,6 @@ void BuffersManager<T>::CleanSendRequests(void)
 template<typename T>
 void BuffersManager<T>::HandleIncomingOutcoming(void)
 {
-    this->CleanSendRequests();
     for(const auto &it : this->ranksSendBuffers)
     {
         rank_t rank = it.first;

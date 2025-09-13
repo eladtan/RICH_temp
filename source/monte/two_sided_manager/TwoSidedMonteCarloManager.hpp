@@ -576,84 +576,84 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 template<typename T, typename Grid>
 std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::step(const std::vector<MCParticle> &particleList, dt_t fullDt)
 {
-    this->Ncells = this->grid.GetPointNo();
-    this->ranks_ghost_map = GetGhostMap(this->grid);
-    std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
-
-    this->PutSelfParticles(particleList.data(), particleList.size());
-    this->resetTracker();
-    this->currentStep++;
-    this->iteration = 0;
-    this->allStepsCounter = 0;
-    // this->neighbors = this->grid.GetDuplicatedProcs();    
-    this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
-    this->transfersCounter = 0;
-    MPI_Barrier(this->comm_world);
-    
-    size_t length = this->particles.size();
-    for(int i = 0; i < length; i++)
-    {
-        MCParticle &p = this->particles[i];
-        #ifdef MONTECARLO_DEBUG
-        p.checkedHere = true;
-        p.nextRank = std::numeric_limits<rank_t>::max();
-        p.removedFromRank = false;
-        p.sentByRank = std::numeric_limits<rank_t>::max();
-        p.lastSeen = 0;
-        #endif // MONTECARLO_DEBUG
-        p.timeLeft = fullDt;
-        p.initialWeight = p.weight;
-        p.steps = 0;
-    }
-
-    MPI_Barrier(this->comm_world);
-
-    size_t initialParticlesNum = particleList.size();
-    
-    this->physics->updateGridData();
-
-    std::chrono::high_resolution_clock::time_point preStepStart = std::chrono::high_resolution_clock::now();
-    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
-    std::chrono::high_resolution_clock::time_point preStepEnd = std::chrono::high_resolution_clock::now();
-
-    double preStepSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(preStepEnd - preStepStart).count(); // todo: necessary?
-
-    this->PutSelfParticles(newParticles1.data(), newParticles1.size());
-    // MPI_Barrier(this->comm_world);
-
-    size_t numParticles = this->particles.size();
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-
-    size_t preStepParticlesNum = newParticles1.size();
-    int64_t startingParticleNum = particleList.size() + preStepParticlesNum;
-
-    this->localDecrementAmount = 0;
-    ParticleAmountManager amountManager(this->comm_world, false /* no RDMA */);
-    amountManager.Initialize(startingParticleNum);
-
-    MonteCarloStepFinalData data;
-    // measure time
-    // vtune_start();
-    size_t numOfCounterDecrementations = 0;
-    auto start = std::chrono::high_resolution_clock::now();
-    size_t lastLocalDecrementAmount;
-    size_t decrementTryCounter = 0;
-
-    size_t i = 0;
-    volatile int &verify = *amountManager.shouldVerify;
-    volatile int &done = *amountManager.done;
-
-    auto receiveCallback = [this](const MCParticle *newValues, size_t newValuesCount, rank_t fromRank)
-                                {
-                                    // std::cout << "Rank " << this->rank_world << " is here, got " << newValuesCount << " new particles from rank " << fromRank << "." << std::endl;
-                                    this->PutSelfParticles(newValues, newValuesCount);
-                                };
-    this->buffersManager = std::make_shared<BuffersManager<MCParticle>>(this->comm_world, receiveCallback, PARTICLES_TAG, RECV_BUFFER_MAX_SIZE, SEND_BUFFER_DISPATCH_MIN_SIZE, SEND_BUFFER_DISPATCH_MIN_CYCLES, 1 /* std::max(this->size_world / 4, 1 */);
-
-    bool printed = false; // todo remove
-    
     try
     {
+        this->Ncells = this->grid.GetPointNo();
+        this->ranks_ghost_map = GetGhostMap(this->grid);
+        std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
+
+        this->PutSelfParticles(particleList.data(), particleList.size());
+        this->resetTracker();
+        this->currentStep++;
+        this->iteration = 0;
+        this->allStepsCounter = 0;
+        // this->neighbors = this->grid.GetDuplicatedProcs();    
+        this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
+        this->transfersCounter = 0;
+        MPI_Barrier(this->comm_world);
+        
+        size_t length = this->particles.size();
+        for(int i = 0; i < length; i++)
+        {
+            MCParticle &p = this->particles[i];
+            #ifdef MONTECARLO_DEBUG
+            p.checkedHere = true;
+            p.nextRank = std::numeric_limits<rank_t>::max();
+            p.removedFromRank = false;
+            p.sentByRank = std::numeric_limits<rank_t>::max();
+            p.lastSeen = 0;
+            #endif // MONTECARLO_DEBUG
+            p.timeLeft = fullDt;
+            p.initialWeight = p.weight;
+            p.steps = 0;
+        }
+
+        MPI_Barrier(this->comm_world);
+
+        size_t initialParticlesNum = particleList.size();
+        
+        this->physics->updateGridData();
+
+        std::chrono::high_resolution_clock::time_point preStepStart = std::chrono::high_resolution_clock::now();
+        std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+        std::chrono::high_resolution_clock::time_point preStepEnd = std::chrono::high_resolution_clock::now();
+
+        double preStepSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(preStepEnd - preStepStart).count(); // todo: necessary?
+
+        this->PutSelfParticles(newParticles1.data(), newParticles1.size());
+        // MPI_Barrier(this->comm_world);
+
+        size_t numParticles = this->particles.size();
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+
+        size_t preStepParticlesNum = newParticles1.size();
+        int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
+
+        this->localDecrementAmount = 0;
+        ParticleAmountManager amountManager(this->comm_world, false /* no RDMA */);
+        amountManager.Initialize(startingParticleNum);
+
+        MonteCarloStepFinalData data;
+        // measure time
+        // vtune_start();
+        size_t numOfCounterDecrementations = 0;
+        auto start = std::chrono::high_resolution_clock::now();
+        size_t lastLocalDecrementAmount;
+        size_t decrementTryCounter = 0;
+
+        size_t i = 0;
+        volatile int &verify = *amountManager.shouldVerify;
+        volatile int &done = *amountManager.done;
+
+        auto receiveCallback = [this](const MCParticle *newValues, size_t newValuesCount, rank_t fromRank)
+                                    {
+                                        // std::cout << "Rank " << this->rank_world << " is here, got " << newValuesCount << " new particles from rank " << fromRank << "." << std::endl;
+                                        this->PutSelfParticles(newValues, newValuesCount);
+                                    };
+        this->buffersManager = std::make_shared<BuffersManager<MCParticle>>(this->comm_world, receiveCallback, PARTICLES_TAG, RECV_BUFFER_MAX_SIZE, SEND_BUFFER_DISPATCH_MIN_SIZE, SEND_BUFFER_DISPATCH_MIN_CYCLES, 1 /* std::max(this->size_world / 4, 1 */);
+
+        bool printed = false; // todo remove
+    
         while(not done)
         {        
             i++;
@@ -694,83 +694,83 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
                 }
             }
         }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        
+        std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
+        this->physics->postStep(populationControlParticles, fullDt);
+
+        double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+        // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
+
+        size_t newParticlesNum = populationControlParticles.size();
+        size_t leavingNumber = data.leaving.size();
+
+        size_t totalSteps = this->allStepsCounter;
+        size_t totalCounterDecrementations = numOfCounterDecrementations;
+        size_t callsToTransfer = this->transfersCounter;
+
+        struct
+        {
+            int x;
+            int rank;
+        } mySteps, maxSteps, myTransfers, maxTransfers;
+
+        mySteps.x = 0;
+        for(size_t counter : this->cellsStepsCounters)
+        {
+            mySteps.x += static_cast<int>(counter);
+        }
+        mySteps.rank = this->rank_world;
+        
+        MPI_Reduce(&mySteps, &maxSteps, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
+
+        myTransfers.x = static_cast<int>(this->transfersCounter);
+        myTransfers.rank = this->rank_world;
+        MPI_Reduce(&myTransfers, &maxTransfers, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
+
+        // std::cout << "leavingNumber = " << leavingNumber << " and newParticlesNum = " << newParticlesNum << std::endl; 
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &initialParticlesNum, &initialParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepParticlesNum, &preStepParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &leavingNumber, &leavingNumber, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &newParticlesNum, &newParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &totalSteps, &totalSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &totalCounterDecrementations, &totalCounterDecrementations, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &startingParticleNum, &startingParticleNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &callsToTransfer, &callsToTransfer, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+
+        int sent = this->buffersManager->GetSentCounter();
+        int recv = this->buffersManager->GetRecvCounter();
+
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &sent, &sent, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &recv, &recv, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
+
+        if(this->rank_world == 0)
+        {
+            std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
+            std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
+            std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
+            std::cout << "Total send communications: " << sent << ", total receive communications: " << recv << std::endl;
+            std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
+            std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
+            assert(sent == recv);
+        }
+
+
+        assert(this->particles.empty());
+        MPI_Barrier(this->comm_world);
+
+        this->buffersManager = nullptr; // TODO: good?
+        // if(this->rank_world == 0)
+        // std::cout << "====================================" << std::endl;
+        // MPI_Barrier(this->comm_world);
+        return populationControlParticles;
     } 
     catch(const UniversalError &eo)
     {
         reportError(eo);
         throw;
     }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    
-    std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
-    this->physics->postStep(populationControlParticles);
-
-    double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-    // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
-
-    size_t newParticlesNum = populationControlParticles.size();
-    size_t leavingNumber = data.leaving.size();
-
-    size_t totalSteps = this->allStepsCounter;
-    size_t totalCounterDecrementations = numOfCounterDecrementations;
-    size_t callsToTransfer = this->transfersCounter;
-
-    struct
-    {
-        int x;
-        int rank;
-    } mySteps, maxSteps, myTransfers, maxTransfers;
-
-    mySteps.x = 0;
-    for(size_t counter : this->cellsStepsCounters)
-    {
-        mySteps.x += static_cast<int>(counter);
-    }
-    mySteps.rank = this->rank_world;
-    
-    MPI_Reduce(&mySteps, &maxSteps, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
-
-    myTransfers.x = static_cast<int>(this->transfersCounter);
-    myTransfers.rank = this->rank_world;
-    MPI_Reduce(&myTransfers, &maxTransfers, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
-
-    // std::cout << "leavingNumber = " << leavingNumber << " and newParticlesNum = " << newParticlesNum << std::endl; 
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &initialParticlesNum, &initialParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepParticlesNum, &preStepParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &leavingNumber, &leavingNumber, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &newParticlesNum, &newParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &totalSteps, &totalSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &totalCounterDecrementations, &totalCounterDecrementations, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &startingParticleNum, &startingParticleNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &callsToTransfer, &callsToTransfer, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
-
-    int sent = this->buffersManager->GetSentCounter();
-    int recv = this->buffersManager->GetRecvCounter();
-
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &sent, &sent, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &recv, &recv, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
-
-    if(this->rank_world == 0)
-    {
-        std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
-        std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
-        std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
-        std::cout << "Total send communications: " << sent << ", total receive communications: " << recv << std::endl;
-        std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
-        std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
-        assert(sent == recv);
-    }
-
-
-    assert(this->particles.empty());
-    MPI_Barrier(this->comm_world);
-
-    this->buffersManager = nullptr; // TODO: good?
-    // if(this->rank_world == 0)
-    // std::cout << "====================================" << std::endl;
-    // MPI_Barrier(this->comm_world);
-    return populationControlParticles;
 }
 
 #endif // TWO_SIDED_MONTE_CARLO_MANAGER_HPP

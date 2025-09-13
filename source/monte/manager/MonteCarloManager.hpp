@@ -253,6 +253,7 @@ private:
     std::vector<rank_t> neighbors;
     std::vector<size_t> cellsStepsCounters;
     size_t iteration;
+    size_t dynamicallyAdded;
     
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -428,8 +429,9 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
 
     if(*myHandler->av_length < particles.size())
     {
-        double factor = std::ceil(static_cast<double>(particles.size()) / static_cast<double>(*myHandler->av_length));
+        double factor = std::max(BUFFER_REALLOCATION_FACTOR, std::ceil(static_cast<double>(particles.size() + myHandler->buffsize) / static_cast<double>(myHandler->buffsize)));
         myHandler->Reallocate(factor);
+        assert(*myHandler->av_length >= particles.size());
     }
 
     // set particles
@@ -453,6 +455,14 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
         // set ID
         particle->rank = this->rank_world;
         particle->id = firstID + i;
+
+        #ifdef MONTECARLO_DEBUG
+            particle->checkedHere = true;
+            particle->nextRank = std::numeric_limits<rank_t>::max();
+            particle->removedFromRank = false;
+            particle->sentByRank = std::numeric_limits<rank_t>::max();
+            particle->lastSeen = 0;
+        #endif // MONTECARLO_DEBUG
 
         #ifdef MONTECARLO_DEBUG
         if(not this->grid.IsPointInCell(particle->location, particle->cellIndex))
@@ -481,10 +491,11 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
 template<typename T, typename Grid>
 MonteCarloManager<T, Grid>::~MonteCarloManager()
 {
-    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
-    this->FreeHandlers();
-    this->ClearCommunicator();
-    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
+    if(not std::uncaught_exception())
+    {
+        this->FreeHandlers();
+        this->ClearCommunicator();
+    }
 }
 
 template<typename T, typename Grid>
@@ -869,6 +880,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     static std::vector<std::vector<size_t>> removeParticlesVec;
     static std::vector<std::vector<rank_t>> transferToRanks;
     static std::vector<std::vector<size_t>> transferParticlesVec;
+    static std::vector<MCParticle> particlesToAdd;
 
     // static std::uniform_real_distribution<double> dist(0, 1);
     // static std::mt19937 re(this->rank_world);
@@ -1131,7 +1143,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
 
                 if(not functionality.particlesToAdd.empty())
                 {
-                    this->AddParticles(functionality.particlesToAdd);
+                    particlesToAdd.insert(particlesToAdd.end(), functionality.particlesToAdd.cbegin(), functionality.particlesToAdd.cend());
                 }
                 if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
                 {
@@ -1320,7 +1332,13 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     }
     active_ranks.swap(next_active_ranks);
 
-    return isEmpty;
+    if(not particlesToAdd.empty())
+    {
+        this->dynamicallyAdded += particlesToAdd.size();
+        this->AddParticles(particlesToAdd);
+    }
+
+    return isEmpty and particlesToAdd.empty();
 }
 
 template<typename T, typename Grid>
@@ -1375,6 +1393,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->currentStep++;
     this->iteration = 0;
     this->allStepsCounter = 0;
+    this->dynamicallyAdded = 0;
     // this->neighbors = this->grid.GetDuplicatedProcs();    
     this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
     this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
@@ -1444,7 +1463,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
     size_t preStepParticlesNum = newParticles1.size();
-    int64_t startingParticleNum = particleList.size() + preStepParticlesNum;
+    int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
 
     this->localDecrementAmount = 0;
     ParticleAmountManager amountManager(this->comm_world, true /* use RDMA */);
@@ -1519,7 +1538,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     auto end = std::chrono::high_resolution_clock::now();
     
     std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
-    this->physics->postStep(populationControlParticles);
+    this->physics->postStep(populationControlParticles, fullDt);
 
     double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;

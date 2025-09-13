@@ -23,7 +23,7 @@ public:
 
     virtual MonteCarloFunctionality<T, Grid> step(MCParticle &particle) = 0;
 
-    virtual void postStep(const std::vector<MCParticle> &particles) = 0;
+    virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
 
 protected:
     const Grid &grid;

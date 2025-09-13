@@ -16,7 +16,7 @@ public:
 
     Functionality step(Particle &particle) override;
 
-    void postStep(const std::vector<MCParticle> &particles) override;
+    void postStep(const std::vector<MCParticle> &particles, double fullDt) override;
 
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
 
@@ -24,7 +24,7 @@ public:
 
     const std::vector<double> &getPlanckOpacities(void) const { return this->planckOpacities; }
 
-    private:    
+private:    
     std::vector<MCParticle> generateParticles(double fullDt);
 
     std::vector<double> factorFleck;

@@ -29,7 +29,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     double dopplerShift = (this->withHydro) ? DopplerShift(particle, cell.velocity) : 1.0;
 
     double scatteringLength = 1.0 / (opacity.getScatteringOpacity(cell) + (1 - this->factorFleck[cellIndex]) * this->planckOpacities[cellIndex]);
-    double _log1p = -std::log1p(this->dist(this->re) - 1); // temporary 
+    double _log1p = -std::log1p(this->dist(this->re) - 1); 
     distance_t scatteringDistance = scatteringLength * _log1p / dopplerShift; 
     if(scatteringDistance < 0)
     {
@@ -116,7 +116,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     return functionality;
 }
 
-void RadiationIMC::postStep(const std::vector<MCParticle> &particles)
+void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double fullDt)
 {
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
