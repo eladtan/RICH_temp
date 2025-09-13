@@ -53,12 +53,13 @@ void DistributedMutex::Destroy()
 
 DistributedMutex::~DistributedMutex()
 {
-    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
-    if(not this->destroyed)
+    if(not std::uncaught_exception())
     {
-        this->Destroy();
+        if(not this->destroyed)
+        {
+            this->Destroy();
+        }
     }
-    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
 }
 
 void DistributedMutex::Sync(void)

@@ -65,12 +65,13 @@ void ProgressCounter::Destroy(void)
 
 ProgressCounter::~ProgressCounter()
 {
-    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
-    if(not this->destroyed)
+    if(not std::uncaught_exception())
     {
-        this->Destroy();
+        if(not this->destroyed)
+        {
+            this->Destroy();
+        }
     }
-    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
 }
 
 int ProgressCounter::Increment(int n)

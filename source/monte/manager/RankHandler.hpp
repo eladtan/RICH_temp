@@ -290,12 +290,13 @@ void RankHandler<T, Grid>::Destroy(void)
 template<typename T, typename Grid>
 RankHandler<T, Grid>::~RankHandler()
 {
-    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
-    if(not this->destroyed)
+    if(not std::uncaught_exception())
     {
-        this->Destroy();
+        if(not this->destroyed)
+        {
+            this->Destroy();
+        }
     }
-    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
 }
 
 #ifdef ADVANCED_MONTECARLO_DEBUG

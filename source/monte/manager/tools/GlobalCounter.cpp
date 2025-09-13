@@ -63,12 +63,13 @@ void GlobalCounter::Destroy(void)
 
 GlobalCounter::~GlobalCounter()
 {
-    #ifndef DISABLE_SYNCHRONIZED_DESTRUCTORS
-    if(not this->destroyed)
+    if(not std::uncaught_exception())
     {
-        this->Destroy();
+        if(not this->destroyed)
+        {
+            this->Destroy();
+        }
     }
-    #endif // DISABLE_SYNCHRONIZED_DESTRUCTORS
 }
 
 void GlobalCounter::Set(int n)
