@@ -7,6 +7,7 @@ endif()
 include(${CMAKE_SOURCE_DIR}/../config/parse_arguments.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/set_compilers.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/compiler_flags.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/mixed.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_static_library.cmake)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -152,6 +153,11 @@ if(DEFINED VTUNE_INCLUDE)
 endif()
 
 add_executable(${EXE_NAME} ${TEST_DIR} ${SRC})
+
+if(${MIXED_BUILD})
+    message(STATUS "Mixed build: marking some files for debug")
+    mark_debug_sources("${EXE_NAME}")
+endif()
 
 # ======================= LINKING =======================
 

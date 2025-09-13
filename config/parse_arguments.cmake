@@ -16,6 +16,7 @@ else()
     endif()
 endif()
 
+set(MIXED_BUILD 0)
 if(${CONFIG} MATCHES "Prof")
     message(STATUS "With Prof")
     set(Prof 1)
@@ -29,7 +30,13 @@ else()
         message(STATUS "Debug")
         set(CMAKE_BUILD_TYPE "Debug")
     else()
-        # error
-        message(FATAL_ERROR "Unknown build type: ${CONFIG}. Expected 'Release' or 'Debug'.")
+        if(${CONFIG} MATCHES "Mixed")
+            message(STATUS "Mixed")
+            set(MIXED_BUILD 1)
+            set(CMAKE_BUILD_TYPE "Release") # default
+        else()
+            # error
+            message(FATAL_ERROR "Unknown build type: ${CONFIG}. Expected 'Release' or 'Debug' or 'Mixed'.")
+        endif()
     endif()
 endif()

@@ -41,23 +41,24 @@ if(DEFINED MC_DEBUG)
     # status message
     message(STATUS "Monte Carlo Debug Mode Enabled")
     add_definitions("-DMONTECARLO_DEBUG")
-    add_definitions("-DDISABLE_SYNCHRONIZED_DESTRUCTORS")
-    message(STATUS "Defined 'MONTECARLO_DEBUG' and 'DISABLE_SYNCHRONIZED_DESTRUCTORS'")
+    message(STATUS "Defined 'MONTECARLO_DEBUG'")
 endif()
 
 # if build is Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions("-DDEBUG")
     message(STATUS "Build Type: Debug")
-    list(APPEND CMAKE_CXX_FLAGS_DEBUG
-            "-O0"
-            "-gdwarf-3")
 else()
     add_definitions("-DNDEBUG")
     add_definitions("-DOMPI_SKIP_MPICXX")
-    list(APPEND CMAKE_CXX_FLAGS_RELEASE
-            "-O3")
 endif()
+
+list(APPEND CMAKE_CXX_FLAGS_RELEASE "-O3")
+list(APPEND CMAKE_CXX_FLAGS_DEBUG
+        "-O0"
+        "-gdwarf-3"
+        "-D_GLIBCXX_ASSERTIONS" # "-D_GLIBCXX_DEBUG"
+        "-DDEBUG")
 
 if(DEFINED GNU)
     list(APPEND CMAKE_CXX_FLAGS
@@ -101,10 +102,6 @@ if(DEFINED GNU)
             "-Wno-tabs"
             "-Wno-conversion")
     list(APPEND CMAKE_Fortran_FLAGS_RELEASE "-O2")
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        add_definitions("-D_GLIBCXX_DEBUG")
-    endif()
 endif()
 
 if(DEFINED INTEL)
