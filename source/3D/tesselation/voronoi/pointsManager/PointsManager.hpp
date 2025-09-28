@@ -13,6 +13,7 @@
 #include "utils/exchange/exchange.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
 
 #define BALANCE_FACTOR 1.15
 
@@ -65,25 +66,47 @@ public:
 
     virtual const EnvironmentAgent *getEnvironmentAgent() const = 0;
 
+    virtual void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
+
+    virtual std::shared_ptr<LoadBalancer> getLoadBalancer(void) = 0;
+
     bool checkForRebalance(double myWeight) const
     {
+        struct
+        {
+            double weight;
+            int rank;
+        } myWeightRanked, maxWeight;
+
         // checks if I have too many weight, and notify other ranks
         double totalWeight;
         MPI_Allreduce(&myWeight, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         double idealWeight = totalWeight / this->size;
-        int I_say = (myWeight >= (BALANCE_FACTOR * idealWeight))? 1 : 0; // if I say 'rebalance' or not
-        if(I_say)
+        myWeightRanked.weight = myWeight;
+        myWeightRanked.rank = this->rank;
+        MPI_Allreduce(&myWeightRanked, &maxWeight, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+        if(this->rank == 0)
         {
-            std::cout << "my weight is " << myWeight << " and the ideal weight is " << idealWeight << std::endl;
+            std::cout << "Max weight in rank " << maxWeight.rank << ", its weight is " << maxWeight.weight << ", ideal is " << idealWeight << std::endl;
         }
-        int rebalance = 0; // if someone says 'rebalance' or not
-        MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if((rebalance > 0) and (this->rank == 0))
+        if(maxWeight.weight >= (BALANCE_FACTOR * idealWeight))
         {
-            std::cout << "doing rebalance" << std::endl;
+            if(this->rank == 0)
+            {
+                std::cout << "Doing rebalance!" << std::endl;
+            }
+            return true;
         }
-        return (rebalance > 0);
+        return false;
     };
+
+    inline bool shouldRebalance(const std::vector<double> weights) const
+    {
+        double totalWeight = std::accumulate(weights.cbegin(), weights.cend(), 0.0);
+        return this->checkForRebalance(totalWeight);
+    };
+
+    inline bool shouldRebalance(void) const {return this->checkForRebalance(this->totalWeight);};
 
     PointsExchangeResult update(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool doRebalance = true)
     {

@@ -13,6 +13,7 @@
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
 #include "mpi/mpi_exchange_commands.hpp"
 
 //! \brief Container for points defining a face
@@ -52,6 +53,14 @@ public:
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
 
   virtual int GetOwner(const Vector3D &point) const = 0;
+
+  virtual void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
+
+  virtual bool ShouldRebalance(const std::vector<double> &weights) const = 0;
+
+  virtual bool ShouldRebalance(void) const = 0;
+
+  virtual std::shared_ptr<LoadBalancer> GetLoadBalancer(void) = 0;
 
   virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
 

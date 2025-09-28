@@ -11,6 +11,7 @@
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 #include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
 #include "3D/hilbert/ordinary/HilbertOrdinaryConvertor3D.hpp"
+#include "3D/tesselation/loadBalancing/PartitionLoadBalancer.hpp"
 
 #define SPACE_FACTOR 1e-5
 
@@ -51,6 +52,10 @@ public:
 
     const Kernelization3D::IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
     
+    void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
+
+    std::shared_ptr<LoadBalancer> getLoadBalancer(void) override;
+
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
@@ -59,7 +64,7 @@ private:
     HilbertCurveEnvironmentAgent *envAgent;
     HilbertConvertor3D *convertor;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
-    std::vector<hilbert_index_t> responsibilityRange;
+    std::shared_ptr<LoadBalancer> loadBalancer;
     bool customIndexingIsSet;
 };
 

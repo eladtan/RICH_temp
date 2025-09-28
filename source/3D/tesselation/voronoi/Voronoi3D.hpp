@@ -27,6 +27,7 @@
 #include <boost/multiprecision/cpp_dec_float.hpp>
 #include <boost/container/static_vector.hpp>
 #include <boost/container/small_vector.hpp>
+#include "utils/debug/SmartTimer.hpp"
 #include <omp.h>
 
 #ifdef USE_VCL_VECTORIZATION
@@ -286,6 +287,14 @@ public:
   void output_buildextra(std::string const& filename) const;
 
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
+
+  inline void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override {return this->pointsManager->setLoadBalancer(loadBalancer);};
+
+  inline bool ShouldRebalance(const std::vector<double> &weights) const override {return this->pointsManager->shouldRebalance(weights);}
+
+  inline bool ShouldRebalance(void) const override {return this->pointsManager->shouldRebalance();}
+    
+  inline std::shared_ptr<LoadBalancer> GetLoadBalancer(void) override {return this->pointsManager->getLoadBalancer();};
 
   void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
 

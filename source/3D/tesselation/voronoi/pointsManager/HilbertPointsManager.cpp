@@ -5,12 +5,14 @@
 PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
 {
     PointsExchangeResult exchangeResult;
+    const std::vector<size_t> &responsibilityRange = dynamic_cast<const PartitionLoadBalancer*>(this->loadBalancer.get())->boundaries;
+
     if(this->envAgent != nullptr)
     {
-        exchangeResult = this->pointsExchange([this](const _3DPointData &_point)
+        exchangeResult = this->pointsExchange([this, &responsibilityRange](const _3DPointData &_point)
         {
             hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
-            size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
+            size_t index = std::distance(responsibilityRange.cbegin(), std::upper_bound(responsibilityRange.cbegin(), responsibilityRange.cend(), d));
             return std::min<hilbert_index_t>(index, (this->size - 1));
         },
         allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM); // exchange
@@ -27,7 +29,30 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
         }
         exchangeResult = this->initialize(allPoints, allWeights, radiuses, previous_CM);
     }
+
     return exchangeResult;
+}
+
+void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+{
+    if(dynamic_cast<PartitionLoadBalancer*>(loadBalancer.get()) == nullptr)
+    {
+        throw UniversalError("HilbertPointsManager::setLoadBalancer: given load balancer is not a PartitionLoadBalancer");
+    }
+    if(this->rank == 0)
+    {
+        std::cout << "Restoring Load Balancer" << std::endl;
+    }
+    this->loadBalancer = loadBalancer;
+    if(this->envAgent != nullptr)
+    {
+        this->envAgent->updateBorders(dynamic_cast<const PartitionLoadBalancer*>(this->loadBalancer.get())->boundaries, this->convertor->getOrder());
+    }
+}
+
+std::shared_ptr<LoadBalancer> HilbertPointsManager::getLoadBalancer(void)
+{
+    return this->loadBalancer;
 }
 
 void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights)
@@ -43,19 +68,28 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const 
         indices.push_back(this->convertor->xyz2d((*this->indexing)(point)));
     }
 
-    if(weights.empty())
+    std::vector<size_t> responsibilityRange;
+    int dont_do_weights = (weights.empty() and std::all_of(weights.cbegin(), weights.cend(), [&weights](const double &x){return x == weights[0];}))? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &dont_do_weights, 1, MPI_INT, MPI_MAX, this->comm);
+    if(this->rank == 0)
     {
-        this->responsibilityRange = getBorders(indices);
+        std::cout << "Running rebalancing" << std::endl;
+    }
+    if(dont_do_weights)
+    {
+        responsibilityRange = getBorders(indices);
     }
     else
     {
-        this->responsibilityRange = getWeightedBorders(indices, weights);
+        responsibilityRange = getWeightedBorders(indices, weights);
     }
     
     if(this->envAgent != nullptr)
     {
-        this->envAgent->updateBorders(this->responsibilityRange, this->convertor->getOrder());
+        this->envAgent->updateBorders(responsibilityRange, this->convertor->getOrder());
     }
+    
+    this->loadBalancer = std::make_shared<PartitionLoadBalancer>(responsibilityRange);
 }
 
 /*
@@ -128,6 +162,7 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     // }
 
     // calculate the first and initial order, and set it to the deepest hilbert order we have
+
     std::vector<size_t> allIndices(points.size());
     std::iota(allIndices.begin(), allIndices.end(), 0);
 
@@ -135,11 +170,13 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
 
     this->rebalance(points, weights); // determines initial borders
 
+    const std::vector<size_t> &responsibilityRange = dynamic_cast<const PartitionLoadBalancer*>(this->loadBalancer.get())->boundaries;
+
     // making exchange according to these borders
-    PointsExchangeResult exchangeResult = this->pointsExchange([this](const _3DPointData &_point)
+    PointsExchangeResult exchangeResult = this->pointsExchange([this, &responsibilityRange](const _3DPointData &_point)
     {
         hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
-        size_t index = std::distance(this->responsibilityRange.cbegin(), std::upper_bound(this->responsibilityRange.cbegin(), this->responsibilityRange.cend(), d));
+        size_t index = std::distance(responsibilityRange.cbegin(), std::upper_bound(responsibilityRange.cbegin(), responsibilityRange.cend(), d));
         return std::min<hilbert_index_t>(index, (this->size - 1));
     },
     points, weights, allIndices, radiuses, previous_CM); // exchange
@@ -147,12 +184,12 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     // initialize environment agent
     if(this->customIndexingIsSet)
     {
-        this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor, this->indexing.get());
+        this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, responsibilityRange, this->convertor, this->indexing.get());
     }
     else
     {
         // use hilbert tree, as it is better
-        this->envAgent = new HilbertTreeEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, this->responsibilityRange, this->convertor);
+        this->envAgent = new HilbertTreeEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, responsibilityRange, this->convertor);
     }
 
     return exchangeResult;

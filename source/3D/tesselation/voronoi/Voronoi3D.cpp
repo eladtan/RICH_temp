@@ -1374,6 +1374,8 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     }
 
     std::chrono::high_resolution_clock::time_point start, end;
+    SmartTimer t1("Prepare to build");
+
     start = std::chrono::high_resolution_clock::now();
 
     std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, allWeights, indicesToBuild, suppressRebalancing);
@@ -1433,6 +1435,8 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         throw eo;
     }
 
+    SmartTimer t2("Tree construction");
+
     start = std::chrono::high_resolution_clock::now();
 
     Vector3D width = this->ur_ - this->ll_;
@@ -1456,7 +1460,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
                                                                         IndexedVector3D(this->ur_ + width * 0.00001, std::numeric_limits<size_t>::max()));
         for(size_t pointIdx = 0; pointIdx < this->Norg_; pointIdx++)
         {
-            const Vector3D &point = activePoints[pointIdx];
+            const Vector3D &point = this->allMyPoints[this->indicesInAllMyPoints[pointIdx]];
             this->myPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
         }
     }
@@ -1466,6 +1470,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         std::cout << "Time for tree: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
     
+    SmartTimer t3("Radiuses calculation");
     start = std::chrono::high_resolution_clock::now();
     this->UpdateRadiuses(activePoints);    
     end = std::chrono::high_resolution_clock::now();
@@ -1474,6 +1479,8 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     {
         std::cout << "Time for radiuses: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
+
+    SmartTimer t4("Range agent update");
 
     start = std::chrono::high_resolution_clock::now();
     this->UpdateRangeFinder();
@@ -1484,7 +1491,10 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         std::cout << "Time for range agent: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
 
+    SmartTimer t5("Bringing ghosts");
     this->BringGhostPointsToBuild(MPI_COMM_WORLD);
+
+    SmartTimer t6("Building voronoi");
 
     start = std::chrono::high_resolution_clock::now();
     
@@ -2000,9 +2010,13 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 
     auto start = std::chrono::high_resolution_clock::now();
     
+    SmartTimer t1("Main Loop");
     size_t total_new_points = 0;
     while(true) // loop is not really infinite (has 'break')
     {
+        SmartTimer t("Iteration " + std::to_string(iterations), false);
+        t.Silent();
+
         auto start_iter = std::chrono::high_resolution_clock::now();
         
         boost::container::flat_map<size_t, size_t> numOfResultsForSmallPoints;
@@ -2136,6 +2150,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         std::cout << "Total small queries: " << totalSmallQueries << ", total big queries: " << totalBigQueries << std::endl;
     }
     
+    SmartTimer t2("Organizing sent/recv and ghosts arrays", t1);
     #ifdef RICH_MPI        
         const std::vector<std::vector<size_t>> &sentPoints = pointsContainer.getSentData();
         const std::vector<int> &sentProc = pointsContainer.getSentProc();
