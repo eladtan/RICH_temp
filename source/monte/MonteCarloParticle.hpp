@@ -42,10 +42,11 @@ struct MonteCarloParticle
         #endif // MONTECARLO_DEBUG
     #endif // RICH_MPI
     size_t id = std::numeric_limits<size_t>::max();
-    T location = T(std::numeric_limits<double>::max());
-    T velocity = T(std::numeric_limits<double>::max());
+    size_t cellID = std::numeric_limits<size_t>::max();
+    T location = T(std::numeric_limits<typename T::value_type>::max());
+    T velocity = T(std::numeric_limits<typename T::value_type>::max());
     size_t cellIndex = std::numeric_limits<size_t>::max();
-    dt_t timeLeft = std::numeric_limits<double>::max();
+    dt_t timeLeft = std::numeric_limits<dt_t>::max();
     double energy = std::numeric_limits<double>::max();
     double weight = std::numeric_limits<double>::max();
     double initialWeight = std::numeric_limits<double>::max();

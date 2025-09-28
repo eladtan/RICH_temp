@@ -660,19 +660,34 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         MCParticle *new_particles;
         int err = MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &new_particles, &new_particles_win);
         reportErrorAndExit("MPI_Win_allocate new_particles with buffsize = " + std::to_string(this->buffsize), err);
-        assert(new_particles != nullptr);
+        if(new_particles == nullptr)
+        {
+            UniversalError eo("Allocation in MPI_Win_allocate (new_particles) returned null");
+            eo.addEntry("Buffersize", this->buffsize);
+            throw eo;
+        }
 
         MPI_Win new_av_win;
         index_t *new_av;
         err = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &new_av, &new_av_win);
         reportErrorAndExit("MPI_Win_allocate new_av with buffsize = " + std::to_string(this->buffsize), err);
-        assert(new_av != nullptr);
+        if(new_av == nullptr)
+        {
+            UniversalError eo("Allocation in MPI_Win_allocate (new_av) returned null");
+            eo.addEntry("Buffersize", this->buffsize);
+            throw eo;
+        }
 
         MPI_Win new_th_win;
         index_t *new_th;
         err = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &new_th, &new_th_win);
         reportErrorAndExit("MPI_Win_allocate new_th with buffsize = " + std::to_string(this->buffsize), err);
-        assert(new_th != nullptr);
+        if(new_th == nullptr)
+        {
+            UniversalError eo("Allocation in MPI_Win_allocate (new_th) returned null");
+            eo.addEntry("Buffersize", this->buffsize);
+            throw eo;
+        }
 
         if(this->buffsize >= oldBuffSize)
         {

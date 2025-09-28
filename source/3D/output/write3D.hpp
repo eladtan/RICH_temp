@@ -9,6 +9,8 @@
 #include "write_vtu_3d.hpp"
 #include "DiagnosticAppendix3D.hpp"
 #include "Snapshot3D.hpp"
+#include "MC/read_write_particles.hpp"
+#include "MC/read_write_imc.hpp"
 
 namespace fs = std::filesystem;
 using namespace H5;
