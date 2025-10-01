@@ -14,9 +14,7 @@ ParticleAmountManager::ParticleAmountManager(MPI_Comm comm, bool withRDMA)
     if(this->withRDMA)
     {
         MPI_Win_allocate(1, sizeof(int), MPI_INFO_NULL, this->comm, &this->shouldVerify, &this->shouldVerifyWin);
-        *this->shouldVerify = 0; // Initialize to false
         MPI_Win_allocate(1, sizeof(bool), MPI_INFO_NULL, this->comm, &this->done, &this->doneWin);
-        *this->done = false; // Initialize to false
     }
     else
     {
@@ -27,11 +25,22 @@ ParticleAmountManager::ParticleAmountManager(MPI_Comm comm, bool withRDMA)
         MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, 0, MARK_DONE_TAG, this->comm, &this->markDoneRequest);
     }
 
-    this->verifyRequest = MPI_REQUEST_NULL;
-    this->destroyed = false;
-    // MPI_Barrier(this->comm);
+    this->Reset();
 }
 
+void ParticleAmountManager::Reset(void)
+{
+    *this->shouldVerify = 0; // Initialize to false
+    *this->done = false; // Initialize to false
+    this->verifyRequest = MPI_REQUEST_NULL;
+    this->askCommitRequest = MPI_REQUEST_NULL;
+    this->markDoneRequest = MPI_REQUEST_NULL;
+    this->doneVerifyCycle = false;
+    this->destroyed = false;
+    this->increaseRequests.clear();
+    this->tmpValues.clear();
+    this->requests.clear();
+}
 
 void ParticleAmountManager::Verify(bool verify)
 {
@@ -188,6 +197,7 @@ void ParticleAmountManager::CheckToFinish(void)
 
 void ParticleAmountManager::Initialize(int64_t num)
 {
+    this->Reset();
     MPI_Reduce(&num, &this->counter, 1, MPI_INT64_T, MPI_SUM, 0, this->comm);
     this->initialValue = this->counter;
 }

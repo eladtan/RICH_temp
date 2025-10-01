@@ -21,6 +21,8 @@ public:
 
     ~ParticleAmountManager();
 
+    void Reset(void);
+    
     void Destroy(void);
 
     void Initialize(int64_t num);
