@@ -9,6 +9,44 @@
 #include "mpi/mpi_commands.hpp"
 #include "misc/universal_error.hpp"
 
+#define MPI_EXCHANGE_ALLTOALL_TAG 1039
+
+template<typename T, template<typename...> class Container, typename... Ts>
+std::vector<std::vector<T>> MPI_Iexchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
+{
+    rank_t size;
+    MPI_Comm_size(comm, &size);
+    std::vector<MPI_Request> requests(size);
+    std::vector<Serializer> senders(size);
+    for(size_t i = 0; i < size; i++)
+    {
+        senders[i].insert_all(data[i]);
+        MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, i, MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
+    }
+
+    std::vector<Serializer> receivers(size);
+    for(size_t i = 0; i < size; i++)
+    {
+        MPI_Status status;
+        MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
+        int count;
+        MPI_Get_count(&status, MPI_BYTE, &count);
+        receivers[status.MPI_SOURCE].resize(count);
+        MPI_Recv(receivers[status.MPI_SOURCE].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
+    }
+    std::vector<std::vector<T>> result(size);
+    for(size_t i = 0; i < size; i++)
+    {
+        receivers[i].extract_all(result[i]);
+    }
+    if(not requests.empty())
+    {
+        MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
+    }
+    MPI_Barrier(comm);
+    return result;
+}
+
 template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
 {
