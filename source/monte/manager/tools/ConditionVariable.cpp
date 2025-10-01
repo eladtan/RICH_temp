@@ -35,7 +35,7 @@ ConditionVariable::ConditionVariable(const MPI_Comm &comm)
 
 ConditionVariable::~ConditionVariable(void)
 {
-    if(not std::uncaught_exception())
+    if(not std::uncaught_exceptions())
     {
         if(not this->destroyed)
         {

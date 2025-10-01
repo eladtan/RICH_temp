@@ -10,7 +10,6 @@
 #include "DiagnosticAppendix3D.hpp"
 #include "Snapshot3D.hpp"
 #include "MC/read_write_particles.hpp"
-#include "MC/read_write_imc.hpp"
 
 namespace fs = std::filesystem;
 using namespace H5;
@@ -41,6 +40,11 @@ void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
                           const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(),
                           const std::vector<std::vector<std::string>> &dataStr = std::vector<std::vector<std::string>>(), const std::vector<std::string>& namesStr = std::vector<std::string>(),
                           const std::vector<std::pair<std::string, double>> &scalar_values = std::vector<std::pair<std::string, double>>(), bool write_vtu = true);
+
+void WriteVoronoiVTKOnly(const Voronoi3D &tri, const std::string &filename,
+                          const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(),
+                          const std::vector<std::vector<std::string>> &dataStr = std::vector<std::vector<std::string>>(), const std::vector<std::string>& namesStr = std::vector<std::string>(),
+                          const std::vector<std::pair<std::string, double>> &scalar_values = std::vector<std::pair<std::string, double>>());
 
 /*! \brief Write voronoi data to a file
   \param tri Voronoit tessellation

@@ -63,7 +63,7 @@ void GlobalCounter::Destroy(void)
 
 GlobalCounter::~GlobalCounter()
 {
-    if(not std::uncaught_exception())
+    if(not std::uncaught_exceptions())
     {
         if(not this->destroyed)
         {

@@ -65,7 +65,7 @@ void ProgressCounter::Destroy(void)
 
 ProgressCounter::~ProgressCounter()
 {
-    if(not std::uncaught_exception())
+    if(not std::uncaught_exceptions())
     {
         if(not this->destroyed)
         {

@@ -53,7 +53,7 @@ void DistributedMutex::Destroy()
 
 DistributedMutex::~DistributedMutex()
 {
-    if(not std::uncaught_exception())
+    if(not std::uncaught_exceptions())
     {
         if(not this->destroyed)
         {
