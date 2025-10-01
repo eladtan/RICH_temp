@@ -23,6 +23,12 @@ public:
 
     inline size_t GetNorg(void) const{return this->globalTransfer.size();};
 
+    inline const RankTransferMap &GetTranslationMap(void) const{return this->globalTransfer;};
+
+    inline const RankTransferMap &GetReversedTranslationMap(void) const{return this->globalTransferOrigins;};
+
+    ExchangeChain Reverse(void) const;
+    
 private:
     MPI_Comm comm;
     rank_t rank, size;

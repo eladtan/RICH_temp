@@ -1,3 +1,5 @@
+#ifdef RICH_MPI
+
 #include "ExchangeChain.hpp"
 
 ExchangeChain::ExchangeChain(const MPI_Comm &comm) : comm(comm)
@@ -62,6 +64,16 @@ void ExchangeChain::UpdateTransferMap(const std::vector<rank_t> &ranks, const st
             this->lastTransfer[index] = std::make_pair(_rank, rankOffset + j);
         }
     }
+}
+
+ExchangeChain ExchangeChain::Reverse(void) const
+{
+    ExchangeChain reversed(this->comm);
+    reversed.globalTransfer = this->globalTransferOrigins;
+    reversed.globalTransferOrigins = this->globalTransfer;
+    reversed.lastTransfer = this->origins;
+    reversed.origins = this->lastTransfer;
+    return reversed;
 }
 
 void ExchangeChain::Exchange(const std::vector<rank_t> &ranks, const std::vector<std::vector<size_t>> &indices, const std::vector<size_t> &localIndices)
@@ -136,3 +148,5 @@ void ExchangeChain::Exchange(const std::vector<rank_t> &ranks, const std::vector
         }
     }
 }
+
+#endif // RICH_MPI
