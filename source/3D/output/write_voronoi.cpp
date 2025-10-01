@@ -287,6 +287,61 @@ void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
     writeVTU(filename, tri, vtu);
 }
 
+void WriteVoronoiVTKOnly(const Voronoi3D &tri, const std::string &filename,
+                          const std::vector<std::vector<double>> &data, const std::vector<std::string>& names,
+                          const std::vector<std::vector<std::string>> &dataStr, const std::vector<std::string>& namesStr,
+                          const std::vector<std::pair<std::string, double>> &scalar_values)
+{
+    Voronoi_VTU_Output vtu;
+    std::vector<std::vector<double>> &vtu_cell_variables = vtu.vtu_cell_variables;
+    std::vector<std::string> &vtu_cell_variable_names = vtu.vtu_cell_variable_names;
+    std::vector<std::vector<std::string>> &vtu_cell_strings = vtu.vtu_cell_strings;
+    std::vector<std::string> &vtu_cell_strings_names = vtu.vtu_cell_strings_names;
+    std::vector<std::string> &vtu_cell_vectors_names = vtu.vtu_cell_vectors_names;
+    std::vector<std::vector<Vector3D>> &vtu_cell_vectors = vtu.vtu_cell_vectors;
+    vtu.vtu_scalar_values = scalar_values;
+
+    assert(data.size() == names.size());
+    for(size_t i = 0; i < data.size(); ++i)
+    {
+        assert(data[i].size() == names[i].size());
+        vtu_cell_variables.push_back(data[i]);
+        vtu_cell_variable_names.push_back(names[i]);
+    }
+
+    assert(dataStr.size() == namesStr.size());
+    for(size_t i = 0; i < dataStr.size(); ++i)
+    {
+        assert(dataStr[i].size() == namesStr[i].size());
+        vtu_cell_strings.push_back(dataStr[i]);
+        vtu_cell_strings_names.push_back(namesStr[i]);
+    }
+
+    vector<double> x, y, z, vx, vy, vz;
+    vector<size_t> Nfaces;
+    vector<size_t> Nvert;
+    vector<size_t> FacesInCell;
+    vector<size_t> VerticesInFace;
+    size_t Npoints = tri.GetPointNo();
+
+    vtu_cell_vectors_names.push_back("Coordinates");
+    std::vector<Vector3D> vel(Npoints);
+    for(size_t i = 0; i < Npoints; ++i)
+        vel[i] = tri.GetMeshPoint(i);
+    vtu_cell_vectors.push_back(vel);
+
+    std::vector<double> temp(Npoints);
+
+    for(size_t i = 0; i < Npoints; ++i)
+    {
+        temp[i] = i;
+    }
+    vtu_cell_variables.push_back(temp);
+    vtu_cell_variable_names.push_back("Point Index");
+
+    writeVTU(filename, tri, vtu);
+}
+
 void WriteVoronoiSerial(const Voronoi3D &tri, const std::string &filename,
                         const std::vector<std::vector<double>> &data, const std::vector<std::string>& names,
                         const std::vector<std::vector<std::string>> &dataStr, const std::vector<std::string>& namesStr,
