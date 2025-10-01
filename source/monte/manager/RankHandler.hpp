@@ -290,7 +290,7 @@ void RankHandler<T, Grid>::Destroy(void)
 template<typename T, typename Grid>
 RankHandler<T, Grid>::~RankHandler()
 {
-    if(not std::uncaught_exception())
+    if(not std::uncaught_exceptions())
     {
         if(not this->destroyed)
         {
