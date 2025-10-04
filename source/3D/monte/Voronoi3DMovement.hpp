@@ -5,6 +5,7 @@
 #include "3D/tesselation/voronoi/Voronoi3D.hpp"
 #include "monte/MonteCarloParticle.hpp"
 #include "ds/OctTree/OctTree.hpp"
+#include "utils/debug/SmartTimer.hpp"
 #ifdef RICH_MPI
     #include "mpi/serialize/mpi_commands.hpp"
     #include "3D/range/finders/utils/RankedIndexedVector.hpp"

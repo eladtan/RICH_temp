@@ -14,6 +14,7 @@
 #include "utils/debug/vtune.h" // TODO: remove
 #include "RankHandler.hpp"
 #include "ReallocationAgent.hpp"
+#include "utils/debug/SmartTimer.hpp"
 #include <memory>
 #include <random>
 #include <mpi.h>
@@ -284,8 +285,8 @@ void MonteCarloManager<T, Grid>::FreeHandlers(void)
 {
     auto freeHandler = [&](rank_t _rank)
     {
-        this->rankHandlers[otherRank]->Destroy();
-        delete this->rankHandlers[otherRank];    
+        this->rankHandlers[_rank]->Destroy();
+        delete this->rankHandlers[_rank];    
     };
     
     ForEachRankSync(this->comm_world, this->ranksOrder, freeHandler);
@@ -1244,6 +1245,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     // {
     //     std::cout << "Changed grid for rank " << this->rank_world << ": " << this->Ncells << " -> " << this->grid.GetPointNo() <<  std::endl;
     // }
+    START_TIMER_PREEMPTIVE("Initialization");
+
     this->Ncells = this->grid.GetPointNo();
     this->ranks_ghost_map = GetGhostMap(this->grid);
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
@@ -1294,6 +1297,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     // this->progress->Reset(totalParticles);
     MPI_Barrier(this->comm_world);
 
+    START_TIMER_PREEMPTIVE("Prestep");
+
     size_t initialParticlesNum = particleList.size();
 
     RankHandler *handler = this->rankHandlers[this->rank_world];
@@ -1322,7 +1327,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         // std::cout << "Prestep average time: " << preStepSeconds / this->size_world << " seconds, max is " << maxPreStepData.seconds << " on rank " << maxPreStepData.rank << std::endl;
     }
     // MPI_Barrier(MPI_COMM_WORLD);
-    this->AddParticles(newParticles1);
+
+    {
+        START_TIMER("Adding Particles");
+        this->AddParticles(newParticles1);
+    }
     // MPI_Barrier(this->comm_world);
     size_t numParticles = *handler->th_length;
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
@@ -1345,6 +1354,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     volatile int &verify = *this->amountManager->shouldVerify;
     volatile int &done = *this->amountManager->done;
 
+    START_TIMER_PREEMPTIVE("Main Loop");
     try
     {
         while(not done)
@@ -1401,8 +1411,13 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     }
     auto end = std::chrono::high_resolution_clock::now();
     
+    START_TIMER_PREEMPTIVE("Boundary Condition");
     std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
+    
+    START_TIMER_PREEMPTIVE("Poststep");
     this->physics->postStep(populationControlParticles, fullDt);
+
+    START_TIMER_PREEMPTIVE("Diagnostics");
 
     double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;

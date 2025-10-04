@@ -8,6 +8,7 @@
 // Move according to sent points
 void InternalMovements(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs)
 {
+    START_TIMER("Internal Movement");
     size_t count = 0;
     boost::container::flat_map<size_t, size_t> cellIDtoIndex;
     size_t N = cellIDs.size();
@@ -48,6 +49,7 @@ void InternalMovements(const Tessellation3D &tess, std::vector<Particle3D> &part
 
 void AssertLocations(const Tessellation3D &tess, const std::vector<Particle3D> &particles)
 {
+    START_TIMER("Assert Locations");
     size_t Nparticles = particles.size();
     // check if the particles are inside the cells by checking the scalar products
     for(size_t i = 0; i < Nparticles; i++)
@@ -75,9 +77,10 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    START_TIMER("Prepare Transfer Data");
+
     std::vector<std::vector<Particle3D>> particlesToProcessors(size);
     std::vector<Particle3D> selfParticles;
-
     size_t sentCounter = 0;
     for(Particle3D &p : particles)
     {
@@ -94,7 +97,12 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
             sentCounter++;
         }
     }
-    std::vector<std::vector<Particle3D>> allNewParticles = MPI_Iexchange_all_to_all(particlesToProcessors, MPI_COMM_WORLD);
+
+    std::vector<std::vector<Particle3D>> allNewParticles;
+    {
+        START_TIMER_PREEMPTIVE("Particles Exchange");
+        allNewParticles = MPI_Iexchange_all_to_all(particlesToProcessors, MPI_COMM_WORLD);
+    }
 
     size_t receivedCounter = 0;
     particles = std::move(selfParticles);
@@ -140,6 +148,7 @@ void UpdateNewCellsAfterExchange(const Tessellation3D &tess, std::vector<Particl
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs)
 {
     bool verbose = true;
+    START_TIMER("Update New Cells");
 
     try
     {
@@ -164,6 +173,8 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 
         InternalMovements(tess, particles, cellIDs);
 
+        START_TIMER_PREEMPTIVE("Local Trees Construction");
+        
         Vector3D ll(std::numeric_limits<double>::max());
         Vector3D ur(std::numeric_limits<double>::lowest());
 
@@ -212,10 +223,12 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         }
         assert(octTree.getSize() == N);
         
+        START_TIMER_PREEMPTIVE("Distributed OctTree Construction");
         DistributedOctTree<IndexedVector3D> distributedOctTree(&octTree);
-
+    
         std::vector<Particle3D> newParticles;
 
+        START_TIMER_PREEMPTIVE("Calculating Radiuses");
         double avgCellSize = 0;
         if(N > 0)
         {
@@ -236,6 +249,7 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 
         boost::container::flat_set<size_t> particlesLeft;
 
+        START_TIMER_PREEMPTIVE("Self Update");
         if(octTree.getSize() > 0)
         {
             for(size_t i = 0; i < particles.size(); i++)
@@ -288,6 +302,7 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         size_t iterations = 0;
         rank_t maxRanksTested = 0;
 
+        START_TIMER_PREEMPTIVE("Main Loop");
         while(true)
         {
             iterations++;
