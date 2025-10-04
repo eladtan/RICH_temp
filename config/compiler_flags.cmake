@@ -22,6 +22,7 @@ list(APPEND CMAKE_CXX_FLAGS ${CXX_WARNING_FLAGS})
 list(APPEND CMAKE_CXX_FLAGS
     "-g3"
     "-fno-omit-frame-pointer"
+    "-fno-optimize-sibling-calls"
     "-fno-common"
     "-fstack-protector-all")
 
