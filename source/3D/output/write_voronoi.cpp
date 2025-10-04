@@ -304,7 +304,6 @@ void WriteVoronoiVTKOnly(const Voronoi3D &tri, const std::string &filename,
     assert(data.size() == names.size());
     for(size_t i = 0; i < data.size(); ++i)
     {
-        assert(data[i].size() == names[i].size());
         vtu_cell_variables.push_back(data[i]);
         vtu_cell_variable_names.push_back(names[i]);
     }
@@ -312,7 +311,6 @@ void WriteVoronoiVTKOnly(const Voronoi3D &tri, const std::string &filename,
     assert(dataStr.size() == namesStr.size());
     for(size_t i = 0; i < dataStr.size(); ++i)
     {
-        assert(dataStr[i].size() == namesStr[i].size());
         vtu_cell_strings.push_back(dataStr[i]);
         vtu_cell_strings_names.push_back(namesStr[i]);
     }
