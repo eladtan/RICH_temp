@@ -21,6 +21,7 @@ TEST_ARG="$2"
 TEST_NAME="${TEST_ARG#--test_name=}"
 
 CMAKE_FLAGS=""
+MIXED_DEBUG_FILES=""
 # Parse remaining optional args
 for arg in "${@:3}"; do
     case "$arg" in
@@ -30,6 +31,11 @@ for arg in "${@:3}"; do
         --energy_groups_num=*)
             val="${arg#--energy_groups_num=}"
             CMAKE_FLAGS+=" -DENERGY_GROUPS_NUM=$val "
+            ;;
+        --debug_files=*)
+            val="${arg#--debug_files=}"
+            MIXED_DEBUG_FILES=$(realpath "$val")
+            CMAKE_FLAGS+=" -DDEBUG_FILES=$val "
             ;;
         --mc_debug)
             CMAKE_FLAGS+=" -DMC_DEBUG=1 "
@@ -45,6 +51,7 @@ done
 ORIG_DIR="$(pwd)"
 BUILD_DIR="$ORIG_DIR/build/$CONFIG"
 CMD_FILE="$BUILD_DIR/.build_cmd"
+DEBUG_FILES_FILE="$BUILD_DIR/.debug_files"
 
 MAKE_OUT="$BUILD_DIR/${CONFIG}_build.out"
 MAKE_ERR="$BUILD_DIR/${CONFIG}_build.err"
@@ -81,8 +88,21 @@ cd "$BUILD_DIR" || { echo -e "${RED}Failed to cd into $BUILD_DIR${NC}"; exit 1; 
 # Save command for future comparison
 echo "$CURRENT_CMD" > "$CMD_FILE"
 
+# Run CMake if Makefile doesn't exist, or if "MIXED_DEBUG_FILES" is not empty, and '$BUILD_DIR/debug.txt', '$MIXED_DEBUG_FILES' are different
+if [[ $MIXED_DEBUG_FILES && -f "$DEBUG_FILES_FILE" ]]; then
+    if ! cmp -s "$MIXED_DEBUG_FILES" "$DEBUG_FILES_FILE";
+    then
+        echo -e "${PURPLE}Debug files list changed. Cleaning $BUILD_DIR...${NC}"
+        rm -rf "$BUILD_DIR"
+        mkdir -p "$BUILD_DIR" || { echo -e "${RED}Failed to create $BUILD_DIR${NC}"; exit 1; }
+        cd "$BUILD_DIR" || { echo -e "${RED}Failed to cd into $BUILD_DIR${NC}"; exit 1; }
+    fi
+fi
 
-# Run CMake if Makefile doesn't exist
+if [[ $MIXED_DEBUG_FILES ]]; then
+    cp "$MIXED_DEBUG_FILES" "$DEBUG_FILES_FILE"
+fi
+# ==================== Run CMake if needed ====================
 if [[ ! -f Makefile ]]; then
     echo -e "${ORANGE}Running CMake...${NC}"
     cmake -S "$ORIG_DIR/source" -DCONFIG="$CONFIG" -DTEST_DIR="$TEST_NAME" $CMAKE_FLAGS > "$CMAKE_OUT" 2> "$CMAKE_ERR"

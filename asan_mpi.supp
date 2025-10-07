@@ -1,0 +1,12 @@
+leak:libmpi
+leak:libopen-pal
+leak:libopen-rte
+leak:opal_show_help_vstring
+leak:libpmix
+leak:libucp
+leak:libucs
+leak:libibverbs
+# glibc formatting path sometimes used at MPI teardown
+leak:__vasprintf_internal
+leak:vasprintf
+
