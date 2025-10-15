@@ -1155,7 +1155,7 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
 
         if (planck_sum < (1. - 1e-4) && not displayed_warning_) {
             displayed_warning_ = true;
-            std::cout << "bad groups! planckian not covered well! cell " << i << " T " << old_Tm[i] <<" ID "<<cells[i].ID<<std::endl;
+            std::cout << "bad groups! planckian not covered well! cell " << i << " T " << old_Tm[i] / units::kev_kelvin  <<"KeV, ID "<<cells[i].ID<<std::endl;
             std::cout << "bad planck_sum " << planck_sum << std::endl;
             throw UniversalError("bad groups! planckian not covered well!");
         }
