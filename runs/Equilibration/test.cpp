@@ -119,8 +119,8 @@ int main(int argc, char *argv[])
 	std::vector<double> energy_groups_center(G);
 	std::vector<double> energy_groups_boundary(G+1);
 
-	double const Emin = kev*1e-4;
-	double const Emax = kev*1e3;
+	double const Emin = ev;
+	double const Emax = kev*2e2;
 	
 	// Create a geometric energy grid
 	energy_groups_boundary[0] = Emin;
@@ -149,8 +149,10 @@ int main(int argc, char *argv[])
 		std::cout << "start eos" << std::endl;
 
 	double constexpr m_p = 1.6726231e-24;
-	double constexpr cv = 1.0 * CG::boltzmann_constant / (1.4-1.0) / m_p;
-    IdealGas eos(/*gamma=*/1.4, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
+	double constexpr gamma = 5.0/3.0;
+	double constexpr cv = 2.0 * CG::boltzmann_constant / (gamma-1.0) / m_p;
+
+	IdealGas eos(/*gamma=*/gamma, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
 
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
@@ -267,14 +269,17 @@ int main(int argc, char *argv[])
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
-	double init_dt = 1e-15 / tscale;
+	double init_dt = 5e-12 / tscale;
 	double const tf = 3e-8 / tscale;
 	double const dt_output = tf / 100.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
 	double old_dt = init_dt;
 	vector<DiagnosticAppendix3D *> appendices;
-	WriteSnapshot3D(sim, "init.h5", appendices, true);
+
+	WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
+	++counter;
+
 	double new_dt = force_time_step ? *force_time_step : init_dt;
 
 	while (sim.getTime() < tf)
@@ -287,7 +292,7 @@ int main(int argc, char *argv[])
 				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << new_dt << std::endl;
 			}
 		}
-		if (sim.getTime() > nextT)
+		if (sim.getTime() > nextT or sim.getCycle() % 10 == 0 or sim.getCycle() < 10)
 		{
 			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
 			nextT = sim.getTime() + dt_output;
@@ -297,13 +302,14 @@ int main(int argc, char *argv[])
 		{
 			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 
-			new_dt=std::min(new_dt, sim.getTime()/50.0);
-			new_dt=std::max(new_dt, 1e-15);
+			if (force_time_step) { 
+				new_dt = force_time_step.value();
+			} else {
+				new_dt = std::min(old_dt*1.2, 5e-11);
+			}
 
-			if (force_time_step) new_dt = force_time_step.value();
-
-			if (rank == 0)
-				std::cout<<"New time step is "<<new_dt<<std::endl;
+			if (rank == 0) std::cout<<"New time step is "<<new_dt<<std::endl;
+			
 			old_dt = new_dt;
 		}
 		catch (UniversalError const &eo)
