@@ -330,8 +330,8 @@ bool MultigroupDiffusion::step(double const tolerance,
 
     calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs, dt * time_scale_);
     calculate_planck_integrals(tess, cells_cgs);
-    calculate_planck_absorption_coefficient(tess, cells);
-    calculate_fleck_factor(tess, cells, dt * time_scale_);
+    calculate_planck_absorption_coefficient(tess, cells_cgs); // can remove cells
+    calculate_fleck_factor(tess, cells, dt * time_scale_); // WARNINS: should use `cells` since there is a call to the eos 
 
     std::size_t tot_iters = 0;
     bool good_end = false;
