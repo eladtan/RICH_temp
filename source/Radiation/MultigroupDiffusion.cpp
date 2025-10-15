@@ -1163,12 +1163,11 @@ void MultigroupDiffusion::calculate_planck_integrals(Tessellation3D const& tess,
 }
 
 void MultigroupDiffusion::calculate_planck_absorption_coefficient(Tessellation3D const& tess,
-                                                                                std::vector<ComputationalCell3D> const& cells) const {
+                                                                  std::vector<ComputationalCell3D> const& /*cells*/) const {
     auto const N = tess.GetPointNo();
     std::fill(sigma_absorption_planck.begin(), sigma_absorption_planck.end(), 0.0);
 
     for (std::size_t i=0; i<N; ++i) {
-        auto const& cell = cells[i];
         for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
             double const sigma = sigma_absorption_group[i][g];
             double const bg = planck_integal_group[i][g];
