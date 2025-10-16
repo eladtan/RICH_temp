@@ -624,8 +624,6 @@ namespace
 				std::cout << "rho_x = " << rho_x << std::endl;
 			for (size_t i = 0; i < Norg; ++i)
 			{
-				if(cells[i].ID == 21015251)
-					std::cout << "Cell " << i << " has density " << cells[i].density << " relative dist from CM "<<fastabs(tess.GetCellCM(i) - tess.GetMeshPoint(i)) / tess.GetWidth(i)<< std::endl;
 				if (fastabs(tess.GetCellCM(i) - tess.GetMeshPoint(i)) > (tess.GetWidth(i) * 0.15))
 					continue;
 				double r_dist = std::max(fastabs(tess.GetMeshPoint(i)), Rt * smooth_factor);
@@ -636,7 +634,7 @@ namespace
 				bool first_refine = false;
 				if(cells[i].density < 1e-19 && r_dist < 0.5 * apocenter && r_dist > 0.6 * Rt && ((V > 0.01 * z_abs * z_abs * z_abs) || (z_abs < 20)))
 				{
-					if(V > 4*target_volume * std::pow(r_dist / Rt, 1.5))
+					if(V > 4*target_volume * std::max(1.0, std::pow(r_dist / Rt, 1.5)))
 						first_refine = true;
 				}
 				if ((r_dist < (1.75 * Rt) || r_dist > 3 * apocenter) && (not first_refine))
@@ -746,13 +744,15 @@ namespace
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double w = tess.GetWidth(i);
 				double Vol = tess.GetVolume(i);
-				if(w < 0.6 * min_cell_size)
+				if(w < 0.6 * min_cell_size || (w < min_cell_size && r_org < 0.58 * Rt))
 				{
 					res.push_back(i);
 					merits.push_back(1.0 / Vol);
 					continue;
 				}
 				if(r_org < 1.75 * Rt && r_org > 0.6 * Rt)
+					continue;
+				if(r_org < 3 * Rt && cells[i].temperature < 1e7 && cells[i].velocity.x < -10)
 					continue;
 				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 4.5) ? MaxMass : MaxMass * 30;
 				double r_i = std::max(Rt * smooth_factor, r_org);
