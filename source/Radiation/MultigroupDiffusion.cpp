@@ -19,6 +19,39 @@ void fill_zero(std::vector<std::vector<double>>& mat) {
 bool is_first_group(std::size_t const group) { return group == 0; }
 bool is_last_group(std::size_t const group){ return group == ENERGY_GROUPS_NUM - 1; }
 
+struct matrix_index {
+    std::size_t cell_index;
+    std::size_t group;
+
+    std::size_t index() const { return cell_index * ENERGY_GROUPS_NUM + group; };
+      
+};
+
+std::ostream& operator<<(std::ostream& os, matrix_index const& mat_i){
+    os << "(cell: " << mat_i.cell_index << ", group: " << mat_i.group << ")";
+    return os;
+}
+
+std::size_t find_index_in_matrix(
+    CG::size_t_mat const& A_indeces, 
+    matrix_index const row_index,
+    matrix_index const to_check
+){
+    auto const row = A_indeces[row_index.index()];
+
+    auto const it = std::find(row.cbegin(), 
+                              row.cend(), 
+                              to_check.index());
+
+    if (it == row.cend()) {
+        std::stringstream err_msg{};
+        err_msg << "Not found index " << to_check << " in A_indeces at " << row_index;
+        throw UniversalError(err_msg.str());
+    }
+
+    return static_cast<std::size_t>(std::distance(row.cbegin(), it));
+}
+
 std::vector<double> compton_temperatures() {
     // std::vector<double> tmp_grid = linspace(-2, 4, 128);
     std::vector<double> tmp_grid = linspace(0.8, 10.2, 20);
@@ -354,7 +387,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     return true;
 }
 
-double MultigroupDiffusion::get_doppler_slope_limiter(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
+double MultigroupDiffusion::get_doppler_slope_limiter(ComputationalCell3D const& cell, size_t const g) const
 {
     if (is_first_group(g) or is_last_group(g)) {
         return 0.0;
@@ -670,26 +703,22 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
 
         if (doppler_on_) {
             // double const coeff = -div_V * dt_cgs / 3;
+            
             double const coeff = -div_V * dt_cgs;
-            for (std::size_t g=1; g<ENERGY_GROUPS_NUM; ++g) {
-                if (div_V < 0) {
-                    double const slope_limiter_left = get_doppler_slope_limiter(cells_cgs[i], g - 1, false);
+            bool const contraction = div_V < 0;
+
+            for (std::size_t g=1; g<ENERGY_GROUPS_NUM-1; ++g) {
+                
+                if (contraction) {
+                    
                     size_t const gm = g - 1;
-                    auto it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + g].begin(), A_indeces[i * ENERGY_GROUPS_NUM + g].end(), i * ENERGY_GROUPS_NUM + gm);
-                    if (it == A_indeces[i * ENERGY_GROUPS_NUM + g].end()) {
-                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + g - 1] in A_indeces (1)");
-                    }
-                    std::size_t const gm_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + g].begin());
+                    double const slope_limiter_left = get_doppler_slope_limiter(cells_cgs[i], gm);
+                    
+                    std::size_t const gm_index = find_index_in_matrix(A_indeces, {i, g}, {i, gm});
+                    std::size_t const g_index  = find_index_in_matrix(A_indeces, {i, gm}, {i, g});
 
-                    if (A_indeces[i * ENERGY_GROUPS_NUM + g][gm_index] != i*ENERGY_GROUPS_NUM + gm) {
-                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gm] in A_indeces (2)");
-                    }
-
-                    it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + gm].begin(), A_indeces[i * ENERGY_GROUPS_NUM + gm].end(), i * ENERGY_GROUPS_NUM + g);
-                    if (it == A_indeces[i * ENERGY_GROUPS_NUM + gm].end()) {
-                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + g] in A_indeces (1)");
-                    }
-                    std::size_t const g_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + gm].begin());
+                    double coeff_gm = 0.5 * slope_limiter_left  / energy_groups_width[gm];
+                    coeff_gm -= (1.0 / energy_groups_width[gm]);
 
                     double coeff_left = 1 / energy_groups_width[gm] - 0.5 * slope_limiter_left  / energy_groups_width[gm];
                     coeff_left *= 0.5 - 0.5*R2[i][gm];
@@ -706,7 +735,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                     A[i * ENERGY_GROUPS_NUM + gm][g_index] += coeff_right;
                     
                 } else {
-                    double const slope_limiter_right = get_doppler_slope_limiter(cells_cgs[i], g, true);
+                    double const slope_limiter_right = get_doppler_slope_limiter(cells_cgs[i], g);
                     size_t const gm = g - 1;
                     auto it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + gm].begin(), A_indeces[i * ENERGY_GROUPS_NUM + gm].end(), i * ENERGY_GROUPS_NUM + g);
                     if (it == A_indeces[i * ENERGY_GROUPS_NUM + gm].end()) {
