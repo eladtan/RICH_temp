@@ -16,6 +16,9 @@ void fill_zero(std::vector<std::vector<double>>& mat) {
     }
 }
 
+bool is_first_group(std::size_t const group) { return group == 0; }
+bool is_last_group(std::size_t const group){ return group == ENERGY_GROUPS_NUM; }
+
 std::vector<double> compton_temperatures() {
     // std::vector<double> tmp_grid = linspace(-2, 4, 128);
     std::vector<double> tmp_grid = linspace(0.8, 10.2, 20);
@@ -353,7 +356,7 @@ bool MultigroupDiffusion::step(double const tolerance,
 
 double  MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
 {
-    if (g == 0 or (g + 1) == ENERGY_GROUPS_NUM) {
+    if (is_first_group(g) or is_last_group(g)) {
         return 0.0;
     }
 
