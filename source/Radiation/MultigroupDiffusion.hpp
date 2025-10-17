@@ -179,7 +179,7 @@ private:
                                                   std::size_t const g,
                                                   double const dt_cgs) const;
 
-    double get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
+    double get_doppler_slope_limiter(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
 };
 
 #endif
