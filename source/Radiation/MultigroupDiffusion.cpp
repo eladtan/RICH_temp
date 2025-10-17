@@ -17,7 +17,7 @@ void fill_zero(std::vector<std::vector<double>>& mat) {
 }
 
 bool is_first_group(std::size_t const group) { return group == 0; }
-bool is_last_group(std::size_t const group){ return group == ENERGY_GROUPS_NUM; }
+bool is_last_group(std::size_t const group){ return group == ENERGY_GROUPS_NUM - 1; }
 
 std::vector<double> compton_temperatures() {
     // std::vector<double> tmp_grid = linspace(-2, 4, 128);
