@@ -354,23 +354,35 @@ bool MultigroupDiffusion::step(double const tolerance,
     return true;
 }
 
-double  MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
+double MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
 {
     if (is_first_group(g) or is_last_group(g)) {
         return 0.0;
     }
+    
+    double const slope_left = [&] {
+        double const dw_left = energy_groups_center[g] - energy_groups_center[g-1];
+        
+        double const E_nu_g = cell.Eg[g] * cell.density / energy_groups_width[g];
+        double const E_nu_gm = cell.Eg[g - 1] * cell.density / energy_groups_width[g - 1];
+        
+        return (E_nu_g - E_nu_gm) / dw_left;
+    }();
+    
+    double const slope_right = [&]{
+        double const dw_right = energy_groups_center[g+1] - energy_groups_center[g];
 
-    double const dw_left = expansion ? energy_groups_width[g] : energy_groups_width[g - 1];
-    double const dw_right = expansion ? energy_groups_width[g + 1] : energy_groups_width[g];
+        double const E_nu_g = cell.Eg[g] * cell.density / energy_groups_width[g];
+        double const E_nu_gp = cell.Eg[g + 1] * cell.density / energy_groups_width[g + 1];
 
-    double const slope_left = (cell.Eg[g] * cell.density / energy_groups_width[g] - cell.Eg[g - 1] * cell.density / energy_groups_width[g - 1]) / dw_left;
-    double const slope_right = (cell.Eg[g + 1] * cell.density / energy_groups_width[g + 1] - cell.Eg[g] * cell.density / energy_groups_width[g]) / dw_right;
+        return (E_nu_gp - E_nu_g) / dw_right;
+    } ();
 
     double const r = slope_left / (slope_right + std::max({ slope_right, slope_left, std::numeric_limits<double>::min() * 1e50 })*1e-16);
 
-    double const slope = std::max(std::max(0.0, std::min(2 * r, 1.0)), std::min(r, 2.0));
+    double const slope_limiter = std::max(std::max(0.0, std::min(2 * r, 1.0)), std::min(r, 2.0));
 
-    return slope;
+    return slope_limiter;
 }
 
 void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
