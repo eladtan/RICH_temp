@@ -705,35 +705,57 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
             // double const coeff = -div_V * dt_cgs / 3;
             
             double const coeff = -div_V * dt_cgs;
+            double const alpha = -div_V * dt_cgs/3.0;
+
             bool const contraction = div_V < 0;
 
             for (std::size_t g=1; g<ENERGY_GROUPS_NUM-1; ++g) {
                 
                 if (contraction) {
-                    
-                    size_t const gm = g - 1;
-                    double const slope_limiter_left = get_doppler_slope_limiter(cells_cgs[i], gm);
+                    std::size_t const gm = g - 1;
+                    std::size_t const gp = g + 1;
                     
                     std::size_t const gm_index = find_index_in_matrix(A_indeces, {i, g}, {i, gm});
-                    std::size_t const g_index  = find_index_in_matrix(A_indeces, {i, gm}, {i, g});
-
-                    double coeff_gm = 0.5 * slope_limiter_left  / energy_groups_width[gm];
-                    coeff_gm -= (1.0 / energy_groups_width[gm]);
-
-                    double coeff_left = 1 / energy_groups_width[gm] - 0.5 * slope_limiter_left  / energy_groups_width[gm];
-                    coeff_left *= 0.5 - 0.5*R2[i][gm];
-                    coeff_left *= coeff * energy_groups_boundary[g];
-
-                    double coeff_right = 0.5 * slope_limiter_left  / energy_groups_width[g];
-                    coeff_right *= 0.5 - 0.5*R2[i][g];
-                    coeff_right *= coeff * energy_groups_boundary[g];
-
-                    A[i * ENERGY_GROUPS_NUM + gm][0] += coeff_left;
-                    A[i * ENERGY_GROUPS_NUM + g][0]  -= coeff_right;
-
-                    A[i * ENERGY_GROUPS_NUM + g][gm_index] -= coeff_left;
-                    A[i * ENERGY_GROUPS_NUM + gm][g_index] += coeff_right;
+                    std::size_t const gp_index = find_index_in_matrix(A_indeces, {i, g}, {i, gp});
                     
+                    std::size_t const g_index  = find_index_in_matrix(A_indeces, {i, gm}, {i, g});
+                    
+                    double const slope_limiter_gm = get_doppler_slope_limiter(cells_cgs[i], gm);
+                    double const slope_limiter_g = get_doppler_slope_limiter(cells_cgs[i], g);
+                    
+                    double const dnu_gm = energy_groups_center[g] - energy_groups_center[gm];
+                    double const dnu_g =  energy_groups_center[gp] - energy_groups_center[g];
+
+                    double const coeff_gm = [&]{
+                        double coeff_builder = 0.5*slope_limiter_gm / dnu_gm;
+                        coeff_builder -= 1.0/energy_groups_width[gm];
+                        coeff_builder *= alpha*energy_groups_boundary[g];
+                        return coeff_builder;
+                    }();
+                    
+                    double const coeff_g = [&]{
+                        double coeff_builder_1 = 1.0 / energy_groups_width[g];
+                        coeff_builder_1 -= 0.5*slope_limiter_g/dnu_g;
+                        coeff_builder_1 *= alpha*energy_groups_boundary[gp];
+
+                        double coeff_builder_2 = 0.5*slope_limiter_gm * energy_groups_width[gm] / (energy_groups_width[g] * dnu_gm); 
+                        coeff_builder_2 *= alpha*energy_groups_boundary[g];
+
+                        return coeff_builder_1 - coeff_builder_2;
+                    }();
+
+                    double const coeff_gp = [&] {
+                        double coeff_builder = 0.5*slope_limiter_g*energy_groups_width[g] / (dnu_g*energy_groups_width[gp]);
+                        coeff_builder *= alpha*energy_groups_boundary[gp];
+
+                        return coeff_builder;
+                    }();
+
+                    auto& row_values = A[matrix_index{i, g}.index()];
+                    
+                    row_values[0] += coeff_g; // diagonal
+                    row_values[gm_index] += coeff_gm;
+                    row_values[gp_index] += coeff_gp;
                 } else {
                     double const slope_limiter_right = get_doppler_slope_limiter(cells_cgs[i], g);
                     size_t const gm = g - 1;
