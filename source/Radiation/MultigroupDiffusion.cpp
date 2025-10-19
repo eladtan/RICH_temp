@@ -702,9 +702,6 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
         }
 
         if (doppler_on_) {
-            // double const coeff = -div_V * dt_cgs / 3;
-            
-            double const coeff = -div_V * dt_cgs;
             double const alpha = -div_V * dt_cgs/3.0;
 
             bool const contraction = div_V < 0;
@@ -717,8 +714,6 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                     
                     std::size_t const gm_index = find_index_in_matrix(A_indeces, {i, g}, {i, gm});
                     std::size_t const gp_index = find_index_in_matrix(A_indeces, {i, g}, {i, gp});
-                    
-                    std::size_t const g_index  = find_index_in_matrix(A_indeces, {i, gm}, {i, g});
                     
                     double const slope_limiter_gm = get_doppler_slope_limiter(cells_cgs[i], gm);
                     double const slope_limiter_g = get_doppler_slope_limiter(cells_cgs[i], g);
@@ -757,42 +752,63 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                     row_values[gm_index] += coeff_gm;
                     row_values[gp_index] += coeff_gp;
                 } else {
-                    double const slope_limiter_right = get_doppler_slope_limiter(cells_cgs[i], g);
-                    size_t const gm = g - 1;
-                    auto it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + gm].begin(), A_indeces[i * ENERGY_GROUPS_NUM + gm].end(), i * ENERGY_GROUPS_NUM + g);
-                    if (it == A_indeces[i * ENERGY_GROUPS_NUM + gm].end()) {
-                        throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + g] in A_indeces (1)");
-                    }
-                    std::size_t const g_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + gm].begin());
 
-                    double coeff_right = 1 / energy_groups_width[g];
-                    double coeff_right_right = 0;
-                    if ((g + 1) < ENERGY_GROUPS_NUM) {
-                        coeff_right += 0.5 * slope_limiter_right  / energy_groups_width[g + 1];
-                        coeff_right_right = -0.5 * slope_limiter_right * energy_groups_width[g] / (energy_groups_width[g + 1] * energy_groups_width[g + 1]);
-                    }
-                    coeff_right *= coeff * (0.5 - 0.5*R2[i][g]) * energy_groups_boundary[g];
-                    coeff_right_right *= coeff * energy_groups_boundary[g];
+                    std::size_t const gm = g - 1;
+                    std::size_t const gp = g + 1;
+                    std::size_t const gpp = g + 2;
 
-                    coeff_right_right *= (g + 1) < ENERGY_GROUPS_NUM ? 0.5 - 0.5*R2[i][g+1] : 0.5 - 0.5*R2[i][g];
+                    auto const gp_index = find_index_in_matrix(A_indeces, {i, g}, {i, gp});
 
-                    A[i * ENERGY_GROUPS_NUM + g][0] -= coeff_right;
-                    A[i * ENERGY_GROUPS_NUM + gm][g_index] += coeff_right;
-                    if (g + 1 < ENERGY_GROUPS_NUM) {
-                        size_t const gp = g + 1;
-                        it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + g].begin(), A_indeces[i * ENERGY_GROUPS_NUM + g].end(), i * ENERGY_GROUPS_NUM + gp);
-                        std::size_t gp_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + g].begin());
-                        if (A_indeces[i * ENERGY_GROUPS_NUM + g][gp_index] != i*ENERGY_GROUPS_NUM + gp) {
-                            throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gp] in A_indeces (2)");
-                        }
-                        A[i * ENERGY_GROUPS_NUM + g][gp_index] -= coeff_right_right;
+                    double const slope_limiter_g = get_doppler_slope_limiter(cells_cgs[i], g);
+                    double const slope_limiter_gp = get_doppler_slope_limiter(cells_cgs[i], gp);
 
-                        it = std::find(A_indeces[i * ENERGY_GROUPS_NUM + gm].begin(), A_indeces[i * ENERGY_GROUPS_NUM + gm].end(), i * ENERGY_GROUPS_NUM + gp);
-                        gp_index = static_cast<std::size_t>(it - A_indeces[i * ENERGY_GROUPS_NUM + gm].begin());
-                        if (A_indeces[i * ENERGY_GROUPS_NUM + gm][gp_index] != i*ENERGY_GROUPS_NUM + gp) {
-                            throw UniversalError("Not found [i*ENERGY_GROUPS_NUM + gp] in A_indeces (2)");
-                        }
-                        A[i * ENERGY_GROUPS_NUM + gm][gp_index] += coeff_right_right;
+                    double const dnu_g = energy_groups_center[gp] - energy_groups_center[g];
+
+                    double const coeff_g = [&]{
+                        double coeff_builder = -1.0 / energy_groups_width[g];
+                        coeff_builder -= 0.5 * slope_limiter_g / dnu_g;
+                        coeff_builder *= alpha*energy_groups_boundary[g];
+                        
+                        return coeff_builder;
+                    }();
+
+                    // part of the coefficient independeng of energy group g+2
+                    double const coeff_gp_1 = [&]{
+                        double const coeff_builder_1 = alpha*energy_groups_boundary[gp] / energy_groups_width[gp];
+
+                        double coeff_builder_2 = 0.5 * slope_limiter_g * energy_groups_width[g] / (dnu_g * energy_groups_width[gp]);
+                        coeff_builder_2 *= alpha*energy_groups_boundary[g];
+
+                        return coeff_builder_1 + coeff_builder_2;
+                    }();
+
+                    auto& row_values = A[matrix_index{i, g}.index()];
+                    
+                    row_values[0] += coeff_g;
+                    row_values[gp_index] += coeff_gp_1;
+
+                    // part of coefficients dependent on group g+2
+                    if(not is_last_group(g+1)){
+                        auto const gpp_index = find_index_in_matrix(A_indeces, {i, g}, {i, gpp});
+
+                        double const dnu_gp = energy_groups_center[gpp] - energy_groups_center[gp];
+                        
+                        double const coeff_gp_2 = [&]{
+                            double coeff_builder = 0.5*slope_limiter_gp / dnu_gp;
+                            coeff_builder *= alpha*energy_groups_boundary[gp];
+
+                            return coeff_builder;
+                        }();
+
+                        double const coeff_gpp = [&]{
+                            double coeff_builder = 0.5*slope_limiter_gp*energy_groups_width[gp] / (dnu_gp*energy_groups_width[gpp]);
+                            coeff_builder *= -alpha*energy_groups_boundary[gp];
+
+                            return coeff_builder;
+                        }();
+
+                        row_values[gp_index]  += coeff_gp_2;
+                        row_values[gpp_index] += coeff_gpp;
                     }
                 }
             }
