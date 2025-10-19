@@ -702,7 +702,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
         }
 
         if (doppler_on_) {
-            double const alpha = -div_V * dt_cgs/3.0;
+            double const alpha = -div_V * dt_cgs;
 
             bool const contraction = div_V < 0;
 
@@ -725,6 +725,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         double coeff_builder = 0.5*slope_limiter_gm / dnu_gm;
                         coeff_builder -= 1.0/energy_groups_width[gm];
                         coeff_builder *= alpha*energy_groups_boundary[g];
+                        coeff_builder *= 0.5*(1.0 - R2[i][g]);
                         return coeff_builder;
                     }();
                     
@@ -732,9 +733,11 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         double coeff_builder_1 = 1.0 / energy_groups_width[g];
                         coeff_builder_1 -= 0.5*slope_limiter_g/dnu_g;
                         coeff_builder_1 *= alpha*energy_groups_boundary[gp];
+                        coeff_builder_1 *= 0.5*(1.0 - R2[i][gp]);
 
                         double coeff_builder_2 = 0.5*slope_limiter_gm * energy_groups_width[gm] / (energy_groups_width[g] * dnu_gm); 
                         coeff_builder_2 *= alpha*energy_groups_boundary[g];
+                        coeff_builder_2 *= 0.5*(1.0 - R2[i][g]);
 
                         return coeff_builder_1 - coeff_builder_2;
                     }();
@@ -742,6 +745,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                     double const coeff_gp = [&] {
                         double coeff_builder = 0.5*slope_limiter_g*energy_groups_width[g] / (dnu_g*energy_groups_width[gp]);
                         coeff_builder *= alpha*energy_groups_boundary[gp];
+                        coeff_builder *= 0.5*(1.0 - R2[i][gp]);
 
                         return coeff_builder;
                     }();
@@ -752,7 +756,6 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                     row_values[gm_index] += coeff_gm;
                     row_values[gp_index] += coeff_gp;
                 } else {
-
                     std::size_t const gm = g - 1;
                     std::size_t const gp = g + 1;
                     std::size_t const gpp = g + 2;
@@ -768,16 +771,19 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         double coeff_builder = -1.0 / energy_groups_width[g];
                         coeff_builder -= 0.5 * slope_limiter_g / dnu_g;
                         coeff_builder *= alpha*energy_groups_boundary[g];
+                        coeff_builder *= 0.5*(1.0 - R2[i][g]);
                         
                         return coeff_builder;
                     }();
 
                     // part of the coefficient independeng of energy group g+2
                     double const coeff_gp_1 = [&]{
-                        double const coeff_builder_1 = alpha*energy_groups_boundary[gp] / energy_groups_width[gp];
+                        double coeff_builder_1 = alpha*energy_groups_boundary[gp] / energy_groups_width[gp];
+                        coeff_builder_1 *= 0.5*(1.0 - R2[i][gp]);
 
                         double coeff_builder_2 = 0.5 * slope_limiter_g * energy_groups_width[g] / (dnu_g * energy_groups_width[gp]);
                         coeff_builder_2 *= alpha*energy_groups_boundary[g];
+                        coeff_builder_2 *= 0.5*(1.0 - R2[i][g]);
 
                         return coeff_builder_1 + coeff_builder_2;
                     }();
@@ -796,6 +802,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         double const coeff_gp_2 = [&]{
                             double coeff_builder = 0.5*slope_limiter_gp / dnu_gp;
                             coeff_builder *= alpha*energy_groups_boundary[gp];
+                            coeff_builder *= 0.5*(1.0 - R2[i][gp]);
 
                             return coeff_builder;
                         }();
@@ -803,6 +810,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         double const coeff_gpp = [&]{
                             double coeff_builder = 0.5*slope_limiter_gp*energy_groups_width[gp] / (dnu_gp*energy_groups_width[gpp]);
                             coeff_builder *= -alpha*energy_groups_boundary[gp];
+                            coeff_builder *= 0.5*(1.0 - R2[i][gp]);
 
                             return coeff_builder;
                         }();
