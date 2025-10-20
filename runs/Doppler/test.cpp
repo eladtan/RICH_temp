@@ -65,7 +65,6 @@ int main(int argc, char *argv[])
 	static_assert(energy_groups_num > 3, "Energy groups number must be greater than 3");
 	
 	constexpr auto boundaries_num = energy_groups_num+1;
-	std::vector<double> energy_groups_center{};
 	
 	std::vector<double> energy_groups_boundary{};
 	energy_groups_boundary.reserve(boundaries_num);
@@ -104,7 +103,7 @@ int main(int argc, char *argv[])
 		E_thresh_left
 	);
 	*left_thresh_bin = E_thresh_left;
-
+	
 	auto right_thresh_bin = std::upper_bound(
 		energy_groups_boundary.begin(),
 		energy_groups_boundary.end(),
@@ -113,7 +112,10 @@ int main(int argc, char *argv[])
 	*right_thresh_bin = E_thresh_right;
 
 	// sort boundary vector with the two new energy boundaries in place
-	for(std::size_t g=0; g < energy_groups_num; ++g) energy_groups_center.push_back(0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]));
+	std::vector<double> energy_groups_center{};
+	for(std::size_t g=0; g < energy_groups_num; ++g) {
+		energy_groups_center.push_back(0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]));
+	}
 	
 	if(rank == 0) {
 		for(std::size_t g=0; g < boundaries_num; ++g){
