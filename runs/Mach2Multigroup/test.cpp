@@ -18,8 +18,7 @@
 #include "source/Radiation/MultigroupDiffusion.hpp"
 #include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
-#include "source/Radiation/MultigroupDiffusionForce.hpp"
-#include "source/Radiation/planck_integral/planck_integral.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 namespace
 {
@@ -99,7 +98,7 @@ static constexpr double kev = 1e3*ev;
 
 int main(void)
 {
-    size_t const Np = 1024;
+    size_t const Np = 256;
     // Set up size of the domain
     double const box_size = 1e3;
     double const dy = 3 * box_size / (2 * Np);
@@ -141,7 +140,8 @@ int main(void)
     }
 
     //Set up the EOS
-    IdealGas eos(5./3., CG::boltzmann_constant / (1.67e-24 * (5.0 / 3.0 - 1)), 1, 0);
+    constexpr double N_avogadro = 6.0221408e+23;
+    IdealGas eos(5./3., CG::boltzmann_constant*N_avogadro / (5.0 / 3.0 - 1), 1, 0);
 
     // Create the hydro data
     size_t const Nlocal = tess.GetPointNo();
@@ -230,18 +230,36 @@ int main(void)
 
     // The diffusion class
     GrayPowerLawOpacity opacity(CG::speed_of_light / (3 * 0.848902), 0, 0, 3.93e-5, 0, 0);
+    
     MultigroupDiffusionXInflowBoundary diffusion_boundary(left_cell, right_cell, opacity);
-    MultigroupDiffusion diffusion(energy_groups_center, energy_groups_boundary, opacity, diffusion_boundary, eos, std::vector<std::string>(), true, true, false, true, false);
+    
+    constexpr bool flux_limiter = true;
+	constexpr bool hydro_on = true;
+	constexpr bool compton_on = false;
+	constexpr bool doppler_on = true;
+
+    MultigroupDiffusion diffusion(
+        energy_groups_center, 
+        energy_groups_boundary, 
+        opacity, 
+        diffusion_boundary, 
+        eos, 
+        std::vector<std::string>(), 
+		flux_limiter, 
+		hydro_on, 
+		compton_on, 
+		doppler_on, 
+        -1.0, 
+        false);
 
     // Primitive updater
-    DefaultCellUpdater cu(false, 0, true, &diffusion);
-
-    // External force
-    MultigroupDiffusionForce force(diffusion, eos);
+    DefaultCellUpdater cu(false, 0.0, true, 0.0, &diffusion);
 
     // Time step function
     double const hydro_cfl = 0.3;
     double const force_cfl = 1;
+    ZeroForce3D force = ZeroForce3D();
+
     CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
 
     // Set point motion
@@ -253,6 +271,10 @@ int main(void)
 
     double old_time = sim.getTime();
     double current_dt = 1e-7;
+    std::size_t snap_num = 0;
+
+    WriteSnapshot3D(sim, "snap_"+std::to_string(snap_num)+".h5");
+    snap_num++;
     while (sim.getTime() < 0.02)
     {
         try
@@ -266,7 +288,10 @@ int main(void)
             double new_dt = sim.RadiationTimeStep(current_dt, diffusion);
             tsf.SetTimeStep(new_dt);
             // Write to file every 100 time steps
-            if (sim.getCycle() % 100 == 0) WriteSnapshot3D(sim, "Mach2_"+std::to_string(sim.getCycle())+".h5");
+            if (sim.getCycle() % 100 == 0) {
+                WriteSnapshot3D(sim, "snap_"+std::to_string(snap_num)+".h5");
+                snap_num++;
+            }
             // Main time step       
             old_time = sim.getTime();
             sim.timeAdvance2();
@@ -276,7 +301,7 @@ int main(void)
             throw;
         }
     }
-    WriteSnapshot3D(sim, "Mach2_final.h5");
+    WriteSnapshot3D(sim, "snap_" + std::to_string(snap_num) + ".h5");
 #ifdef RICH_MPI
     MPI_Finalize();
 #endif
