@@ -112,13 +112,21 @@ Case get_case(std::string_view const case_num_sv){
 	std::from_chars(case_num_sv.data(), case_num_sv.data() + case_num_sv.size(), case_num);
 
 	switch(case_num){
+		// from Menahem's and Nitai's Paper
 		case 1:
-			return {"Test 1", 1.5, 0.2, 40.0, 0.1, -20.0/19.0, 3.4, 0.14, 1e14, 1e-9, true, 0.0005 * kev_kelvin, [](double const time){ return 1.0470478 * std::pow(time/1e-9, 86.0/57.0) * kev_kelvin; }};
+			return {"Test 1, 2nd Paper", 1.5, 0.2, 40.0, 0.1, -20.0/19.0, 3.4, 0.14, 1e14, 1e-9, true, 0.0005 * kev_kelvin, [](double const time){ return 1.0470478 * std::pow(time/1e-9, 86.0/57.0) * kev_kelvin;} };
 		case 3:
-			return {"Test 3", 4.5, 0.9, 2.0, 1e-3, 40.0/139.0, 6.0, 0.3, 1e14, 1e-9, false, 0.005 * kev_kelvin, [](double const time){ return 1.01008116 * std::pow(time/1e-9, 14.0/139.0) * kev_kelvin; }};
+			return {"Test 3, 2nd Paper", 4.5, 0.9, 2.0, 1e-3, 40.0/139.0, 6.0, 0.3, 1e14, 1e-9, false, 0.005 * kev_kelvin, [](double const time){ return 1.01008116 * std::pow(time/1e-9, 14.0/139.0) * kev_kelvin;} };
+		// From Menahems second paper
+		case 22:
+			return {"Test 2, 1st Paper", 3.0, -1.0, 100.0, 0.1, 0.0, 4.0, 1.0, 1.372017e14/0.2, 1e-9, true, 0.005 * kev_kelvin, [](double const time){ return 1.008038 * std::pow(time/1e-9, 1.0/3.0) * kev_kelvin;} };
+		case 33:
+			return {"Test 3, 1st Paper", 3.0, -1.0, 100.0, 100.0, 0.0, 4.0, 1.0, 1.372017e14/0.2, 1e-9, true, 0.005 * kev_kelvin, [](double const time){ return 1.014565 * std::pow(time/1e-9, 1.0/3.0) * kev_kelvin;} };
+		
+		
 		default:
 			std::cout << "Error! No Such case as: " << case_num_sv << std::endl;
-			std::cout << "Available cases: 1, 3" << std::endl;
+			std::cout << "Available cases: 1, 3, 22, 33" << std::endl;
 			exit(1);
 	}
 }
