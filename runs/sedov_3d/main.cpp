@@ -19,7 +19,7 @@
 
 int main(void)
 {
-    size_t const Np = 1e5;
+    size_t const Np = 1e3;
     // Set up size of the domain
     Vector3D ll(-1, -1, -1), ur(1, 1, 1);
     int rank = 0;

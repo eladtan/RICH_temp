@@ -257,8 +257,10 @@ void HDSim3D::timeAdvance2(void)
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 	auto t1 = get_time();
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
-	auto t2 = get_time();
-	DisplayTime(t1, t2, "Source time ");
+        auto t2 = get_time();
+#ifdef DEBUG
+        DisplayTime(t1, t2, "Source time ");
+#endif
 	if (pt_.cycle % 10 == 0 && pm_.MovedPoints())
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
@@ -277,11 +279,15 @@ void HDSim3D::timeAdvance2(void)
 	ComputationalCell3D cdummy;
 	if(pm_.MovedPoints())
 	{
-		MovePoints(tess_, point_vel, dt);
-		t1 = get_time();
-		UpdateTessellation(tess_, point_vel, dt);
+          MovePoints(tess_, point_vel, dt);
+#ifdef DEBUG
+          t1 = get_time();
+#endif
+          UpdateTessellation(tess_, point_vel, dt);
+#ifdef DEBUG
 		t2 = get_time();
-		DisplayTime(t1, t2, "Voronoi build time ");
+                DisplayTime(t1, t2, "Voronoi build time ");
+#endif
 #ifdef RICH_MPI
 		// Keep relevant points
 		MPI_exchange_data(tess_, mid_extensives, false);
@@ -304,7 +310,9 @@ face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.get
 t1 = get_time();
 source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
 t2 = get_time();
+#ifdef DEBUG
 DisplayTime(t1, t2, "Second source time ");
+#endif
 eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);

@@ -1,4 +1,26 @@
 {
+    "editor.formatOnSave": true,
+    "C_Cpp.formatting": "clangFormat",
+    "C_Cpp.clang_format_path": "/opt/homebrew/bin/clang-format",
+    "C_Cpp.clang_format_style": "file",
+    "C_Cpp.clang_format_fallbackStyle": "LLVM",
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.cStandard": "c11",
+    "[cpp]": {
+        "editor.defaultFormatter": "xaver.clang-format",
+        "editor.formatOnSave": true,
+        "editor.formatOnType": false
+    },
+    "[c]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": true,
+        "editor.formatOnType": false
+    },
+    "[hpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools",
+        "editor.formatOnSave": true,
+        "editor.formatOnType": false
+    },
     "files.associations": {
         "iostream": "cpp",
         "__bit_reference": "cpp",

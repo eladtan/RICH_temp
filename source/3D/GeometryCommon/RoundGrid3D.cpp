@@ -23,7 +23,9 @@ vector<Vector3D> RoundGrid3D(vector<Vector3D> const& points, Vector3D const& ll,
     //	size_t N = tess->GetPointNo();
     vector<Vector3D> res(points);
     for (size_t j = 0; j < NumberIt; ++j) {
+#ifdef DEBUG
         if (rank == 0) std::cout << "Round Grid Iteration: " << j << std::endl;
+#endif
         size_t N = tess->GetPointNo();
 #ifdef RICH_MPI
         res = tess->getMeshPoints();

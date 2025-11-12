@@ -516,9 +516,9 @@ public:
   */
   void SetBox(Vector3D const& ll, Vector3D const& ur) override;
 
-  std::vector<Face> GetBoxFaces(void) const {return box_faces_;}
+  std::vector<Face> GetBoxFaces(void) const override {return box_faces_;}
 
-  std::vector<Face>& ModifyBoxFaces(void) {return box_faces_;}
+  std::vector<Face>& ModifyBoxFaces(void) override {return box_faces_;}
 };
 
 /**

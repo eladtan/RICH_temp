@@ -1865,8 +1865,10 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &smallPointsNum, &smallPointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &largePointsNum, &largePointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
         #endif // RICH_MPI
-        iterations++;
+            iterations++;
+        #ifdef DEBUG
         if(rank == 0) std::cout << "iteration " << iterations << " (" << smallPointsNum << " small points, " << largePointsNum << " large points)" << std::endl;
+        #endif
         auto [smallQueries, bigQueries] = this->CreateBatches(smallPoints, largePoints, firstLargeIteration, currentRadiuses, iterations);
         std::vector<std::pair<size_t, size_t>> mirroredPoints = MirrorPoints(smallQueries, box, normals);
         std::vector<std::pair<size_t, size_t>> moreMirroredPoints = MirrorPoints(bigQueries, box, normals);

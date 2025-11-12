@@ -41,7 +41,9 @@ double IdealGas::de2p(double d, double e, tvector const& /*tracers*/, vector<str
     }
 #endif  // RICH_DEBUG
 
-    if (e < 0) throw UniversalError("Negative thermal energy");
+    if (e < 0) {
+        throw UniversalError("Negative thermal energy");
+    }
     return (g_ - 1) * e * d;
 }
 

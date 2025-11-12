@@ -173,7 +173,7 @@ public:
 
     double GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt) const;
 
-    virtual void PrintDebugData(size_t const index) const
+    void PrintDebugData(size_t const index) const override
     {
         std::cout<<"Diffusion debug data:"<<std::endl;
         std::cout<<"sigma_planck "<<sigma_planck[index]<<" sigma_s "<<sigma_s[index]<<

@@ -17,6 +17,7 @@
 #include "source/newtonian/two_dimensional/point_motions/round_cells.hpp"
 #include "source/newtonian/two_dimensional/simple_cell_updater.hpp"
 #include "source/newtonian/two_dimensional/simple_extensive_updater.hpp"
+// #include "source/newtonian/two_dimensional/source_terms/CenterGravity.hpp"
 #include "source/newtonian/two_dimensional/source_terms/cylindrical_complementary.hpp"
 #include "source/newtonian/two_dimensional/source_terms/zero_force.hpp"
 #include "source/newtonian/two_dimensional/spatial_distributions/uniform2d.hpp"
@@ -25,35 +26,56 @@
 #include "source/tessellation/VoronoiMesh.hpp"
 #include "source/tessellation/geometry.hpp"
 #include "source/tessellation/tessellation.hpp"
-int main(void) {
-    size_t Ny = 100;
-    size_t Nz = 100;
 
-    
+class CenterGravWithCentrifugal : public Acceleration {
+   public:
+    CenterGravWithCentrifugal(double M, double Rmin) : M_(M), Rmin_(Rmin) {};
+
+    Vector2D operator()(const Tessellation& tess, const vector<ComputationalCell>& cells,
+                        const vector<Extensive>& fluxes, const double time, const int point) const override {
+        const Vector2D pos(tess.GetCellCM(point));
+        const double r = abs(pos);
+        const double r3 = r * r * r + Rmin_ * Rmin_ * Rmin_;
+        return (-M_ / r3) * Vector2D(0, pos.y);
+    }
+
+   private:
+    const double M_;
+    const double Rmin_;
+};
+
+int main(void) {
+    size_t Ntot = 10000;
+
     double Ly = 10;
     double Lz = 10;
+    double r_min = 1;
+    double softening_len = r_min;
+    double r_max = Lz;
     double gap_width = Ly / 5;
     double center_y = 0;
-    double gap_start = center_y - gap_width / 2;
-    double gap_end = center_y + gap_width / 2;
+    // double gap_start = center_y - gap_width / 2;
+    // double gap_end = center_y + gap_width / 2;
     double tend = 20;
 
     // Set up size of the domain
-    // Vector2D ll(0, 0), ur(Ly, Lz);
-    Vector2D ll(-Ly / 2, -Lz / 2), ur(Ly / 2, Lz / 2);
+    Vector2D ll(r_min, 0), ur(Ly, Lz);
+    // Vector2D ll(-Ly, -Lz), ur(Ly, Lz);
     int rank = 0;
 
     // Create the initial points
     std::vector<Vector2D> points;
 
-    // points = RandRectangular(Np, ll, ur);
-    points = cartesian_mesh(Ny, Nz, ll, ur);
+    points = RandSquare(Ntot, ll, ur);
+    // points = CirclePointsRmax_1(Ntot, r_min, r_max, 0, 0, Lz, Lz, 0, 0);
+
+    std::cout << "Done generating points" << std::endl;
     SquareBox outer_boundary(ll, ur);
 
     // Make the points roundish
-    points = RoundGridV(points, outer_boundary);
+    // points = RoundGridV(points, outer_boundary);
 
-    std::cout << "Done round" << std::endl;
+    // std::cout << "Done round" << std::endl;
 
     // Create the tesselation
     VoronoiMesh tess;
@@ -61,35 +83,42 @@ int main(void) {
 
     // tess.Build(points);
 
-    // CylindricalSymmetry geometry(Vector2D(0., 0.), Vector2D(1., 0.));
-    SlabSymmetry geometry;
+    CylindricalSymmetry geometry(Vector2D(0., 0.), Vector2D(0., 1.));
+    // SlabSymmetry geometry;
 
     double gamma = 5. / 3.;
     // Set up the EOS
     IdealGas eos(gamma);
 
-    double h = 0.1;
-    double alpha = 0.5;
-
     // Create the hydro data
     size_t const Nlocal = tess.GetPointNo();
     std::vector<ComputationalCell> cells(Nlocal);
-    ComputationalCell disk_cell, gap_cell;
 
-    disk_cell.density = 1;
-    disk_cell.pressure = 10;
-    disk_cell.velocity = Vector2D(0, 0);
+    double M_bh = 1;
 
-    gap_cell.density = 1e-5;
-    gap_cell.pressure = 1e-5;
-    gap_cell.velocity = Vector2D(0, 0);
+    double rho_floor = 1e-10;
 
     for (size_t i = 0; i < Nlocal; ++i) {
-        double const x = tess.GetMeshPoint(i).x;
-        if (x < gap_start || x > gap_end)
-            cells[i] = disk_cell;
-        else
-            cells[i] = gap_cell;
+        double const r = tess.GetMeshPoint(i).x;
+        double const z = tess.GetMeshPoint(i).y;
+        double const R = std::sqrt(r * r + z * z);
+
+        double const Omega = sqrt(M_bh / (R * R * R));
+        double const h = 1e-1 * std::pow(r, 1. / 8);
+        double const H = r * h;
+        double const cs = Omega * H;
+        double const rho0 = 1 * std::pow(r, -15. / 8);
+
+        cells[i].density = std::max(rho0 * std::exp(-z * z / (2 * H * H)), rho_floor);
+        cells[i].pressure = cs * cs * cells[i].density;
+        cells[i].velocity = Vector2D(0, 0);
+
+        std::cout << "R: " << R << " Omega: " << Omega << " h: " << h << " H: " << H << " cs: " << cs << ' '
+                  << cells[i].density << ' ' << cells[i].pressure << "\n";
+
+        /*cells[i].density = 1;
+        cells[i].pressure = 1;
+        cells[i].velocity = Vector2D(0, 0);*/
     }
 
     // Rieamann solver
@@ -140,7 +169,7 @@ int main(void) {
 
     // External force
 
-    CenterGravity acc(M_bh, softening_len, Vector2D(-r, Ly / 2));
+    CenterGravWithCentrifugal acc(M_bh, softening_len);
     ConservativeForce force(acc);
     // ZeroForce force;
 
