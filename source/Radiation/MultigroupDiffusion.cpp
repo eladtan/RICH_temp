@@ -624,7 +624,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         // calculate the diffusion coefficient on the boundary using the maximal temperature of the cells
                         double const T_i = cell_i.temperature;
                         double const T_j = cell_j->temperature;
-                        double const max_T = std::pow(pow<4>(T_i) + pow<4>(T_j), 0.25) * 0.5;
+                        double const max_T = std::pow(0.5*(pow<4>(T_i) + pow<4>(T_j)), 0.25);
 
                         cell_j->temperature = max_T;
                         cell_i.temperature = max_T;
