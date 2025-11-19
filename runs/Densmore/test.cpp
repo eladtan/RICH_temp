@@ -146,7 +146,8 @@ int main(int argc, char *argv[])
 
 	const double width = current_case.system_length / lscale;
 	
-	size_t const Nx = 128;
+	// size_t const Nx = 128;
+	size_t const Nx = 256;
 	
 	Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx), ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
 	
@@ -295,10 +296,10 @@ int main(int argc, char *argv[])
 		}
 		try
 		{
-			new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
+			double const dt_unused = sim.RadiationTimeStep(old_dt, matrix_builder, true);
 			// tsf.SetTimeStep(new_dt);
 			// sim.SetTimeStep(new_dt);
-			new_dt=std::min(new_dt,5e-12);
+			new_dt=std::min(new_dt*1.05,1e-11);
 			if (rank == 0)
 				std::cout<<"New time step is "<<new_dt<<std::endl;
 			old_dt = new_dt;

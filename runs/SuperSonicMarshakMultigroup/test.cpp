@@ -258,7 +258,7 @@ int main(int argc, char *argv[])
 			points = CartesianMesh(Nx, 1, 1, ll, ur);
 		} else {
 			for(size_t i = 0; i < Nx; ++i)
-			points.push_back(Vector3D(0.5e-5 + 2.24e-2 * (std::pow(1.0075, 1.0 * i) - 1), 0.5 * width / Nx, 0.5 * width / Nx));
+				points.push_back(Vector3D(0.5e-5 + 2.24e-2 * (std::pow(1.0075, 1.0 * i) - 1), 0.5 * width / Nx, 0.5 * width / Nx));
 		}
 	}
 #ifdef RICH_MPI

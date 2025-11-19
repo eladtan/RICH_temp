@@ -120,7 +120,7 @@ int main(int argc, char *argv[])
 	std::vector<double> energy_groups_boundary(G+1);
 
 	double const Emin = ev;
-	double const Emax = kev*2e2;
+	double const Emax = kev*1e3;
 	
 	// Create a geometric energy grid
 	energy_groups_boundary[0] = Emin;
@@ -150,7 +150,8 @@ int main(int argc, char *argv[])
 
 	double constexpr m_p = 1.6726231e-24;
 	double constexpr gamma = 5.0/3.0;
-	double constexpr cv = 2.0 * CG::boltzmann_constant / (gamma-1.0) / m_p;
+	double constexpr N_avogadro = 6.0221408e23;
+	double constexpr cv = 2.0 * CG::boltzmann_constant * N_avogadro / (gamma-1.0); // / m_p;
 
 	IdealGas eos(/*gamma=*/gamma, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
 

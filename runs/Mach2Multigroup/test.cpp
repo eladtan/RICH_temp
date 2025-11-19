@@ -99,6 +99,7 @@ static constexpr double kev = 1e3*ev;
 int main(void)
 {
     size_t const Np = 256;
+    // size_t const Np = 256*4;
     // Set up size of the domain
     double const box_size = 1e3;
     double const dy = 3 * box_size / (2 * Np);
