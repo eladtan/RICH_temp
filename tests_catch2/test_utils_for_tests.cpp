@@ -2,7 +2,9 @@
 #include "utils_for_tests.hpp"
 #include <filesystem>
 
-TEST_CASE("Test_Zip") {
+namespace mpi = utils_for_tests::mpi;
+
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "Test_Zip") {
     std::vector<int> const v_int{1,2,3};
     std::vector<double> const v_double{11.0, 12.0, 13.0};
     SECTION("zip int and double"){
@@ -49,7 +51,7 @@ TEST_CASE("Test_Zip") {
     }
 }
 
-TEST_CASE("Test unzip"){
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "Test unzip"){
     std::vector<std::tuple<int, double>> const vec_zip{{1, 2.0}, {3, 4.0}, {5, 6.0}};
     
     SECTION("<int, double> vector unzip"){
@@ -73,7 +75,7 @@ TEST_CASE("Test unzip"){
     }
 }
 
-TEST_CASE("sort_vectors_by_index<0> sorts by first vector (two vectors)", "[sort_vectors_by_index]")
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "sort_vectors_by_index<0> sorts by first vector (two vectors)", "[sort_vectors_by_index]")
 {
     std::vector<int>    ids    {3, 1, 2};
     std::vector<double> values {30.0, 10.0, 20.0};
@@ -84,7 +86,7 @@ TEST_CASE("sort_vectors_by_index<0> sorts by first vector (two vectors)", "[sort
     REQUIRE(sorted_values == std::vector<double>{10.0, 20.0, 30.0});
 }
 
-TEST_CASE("sort_vectors_by_index<1> sorts by second vector (two vectors)", "[sort_vectors_by_index]")
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "sort_vectors_by_index<1> sorts by second vector (two vectors)", "[sort_vectors_by_index]")
 {
     std::vector<int>    ids    {3, 1, 2};
     std::vector<double> values {30.0, 10.0, 20.0};
@@ -96,7 +98,7 @@ TEST_CASE("sort_vectors_by_index<1> sorts by second vector (two vectors)", "[sor
     REQUIRE(sorted_ids    == std::vector<int>   {1, 2, 3});  // ids follow the sort
 }
 
-TEST_CASE("sort_vectors_by_index works with three vectors and different sort indices", "[sort_vectors_by_index]")
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "sort_vectors_by_index works with three vectors and different sort indices", "[sort_vectors_by_index]")
 {
     std::vector<int>         ids    {3, 1, 2};
     std::vector<double>      scores {9.5, 7.0, 8.0};
@@ -131,7 +133,7 @@ TEST_CASE("sort_vectors_by_index works with three vectors and different sort ind
     }
 }
 
-TEST_CASE("sort_vectors_by_index on empty vectors returns empty vectors", "[sort_vectors_by_index]")
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "sort_vectors_by_index on empty vectors returns empty vectors", "[sort_vectors_by_index]")
 {
     std::vector<int>         ids;
     std::vector<double>      scores;
@@ -144,7 +146,7 @@ TEST_CASE("sort_vectors_by_index on empty vectors returns empty vectors", "[sort
     REQUIRE(s_names.empty());
 }
 
-TEST_CASE("sort_vectors_by_index throws when vector sizes differ", "[sort_vectors_by_index]")
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "sort_vectors_by_index throws when vector sizes differ", "[sort_vectors_by_index]")
 {
     std::vector<int>    ids    {1, 2, 3};
     std::vector<double> values {10.0, 20.0};  // shorter
@@ -156,39 +158,37 @@ TEST_CASE("sort_vectors_by_index throws when vector sizes differ", "[sort_vector
     );
 }
 
-TEST_CASE("json utilities"){
+TEST_CASE_METHOD(mpi::RichNoMpiTestFixture, "json utilities"){
     using namespace utils_for_tests;
     using namespace utils_for_tests::json;
     std::filesystem::path tmp_dir = std::filesystem::path{__FILE__}.parent_path() / "tmp"; 
     
-    if(utils_for_tests::mpi::get_mpi_rank() == 0){
-        SECTION("json test sucess"){
-            auto const path_to_json = tmp_dir / "test_save_data_to_json_file_section_1.json";
+    SECTION("json test sucess"){
+        auto const path_to_json = tmp_dir / "test_save_data_to_json_file_section_1.json";
 
-            auto const a_int_vec = make_named_vector<int>("a_vec", {1, 2, 3});
-            auto const b_double_vec = make_named_vector<double>("b_vec", {4.0, 5.0, 6.0});
-            auto const c_string_vec = make_named_vector<std::string>("c_vec", {"yo", "yoyo", "yoyoyoyo", "yoyoyoyoyo"});
-            
-            save_data_to_json_file(path_to_json, a_int_vec, b_double_vec, c_string_vec);
+        auto const a_int_vec = make_named_vector<int>("a_vec", {1, 2, 3});
+        auto const b_double_vec = make_named_vector<double>("b_vec", {4.0, 5.0, 6.0});
+        auto const c_string_vec = make_named_vector<std::string>("c_vec", {"yo", "yoyo", "yoyoyoyo", "yoyoyoyoyo"});
+        
+        save_data_to_json_file(path_to_json, a_int_vec, b_double_vec, c_string_vec);
 
-            auto const& [a_load, b_load, c_load] = load_data_from_json<int, double, std::string>(path_to_json, {"a_vec", "b_vec", "c_vec"});
-            
-            REQUIRE(a_load.name == a_int_vec.name);
-            REQUIRE(a_load.vec == a_int_vec.vec);
-            
-            REQUIRE(b_load.name == b_double_vec.name);
-            REQUIRE(b_load.vec == b_double_vec.vec);
-            
-            REQUIRE(c_load.name == c_string_vec.name);
-            REQUIRE(c_load.vec == c_string_vec.vec);
-        }
+        auto const& [a_load, b_load, c_load] = load_data_from_json<int, double, std::string>(path_to_json, {"a_vec", "b_vec", "c_vec"});
+        
+        REQUIRE(a_load.name == a_int_vec.name);
+        REQUIRE(a_load.vec == a_int_vec.vec);
+        
+        REQUIRE(b_load.name == b_double_vec.name);
+        REQUIRE(b_load.vec == b_double_vec.vec);
+        
+        REQUIRE(c_load.name == c_string_vec.name);
+        REQUIRE(c_load.vec == c_string_vec.vec);
+    }
 
-        SECTION("json different number of parameters"){
-            auto const a_int_vec = make_named_vector<int>("a_vec", {1, 2, 3});
-            auto const path_to_json = tmp_dir / "test_save_data_to_json_file_data_section_2.json";
+    SECTION("json different number of parameters"){
+        auto const a_int_vec = make_named_vector<int>("a_vec", {1, 2, 3});
+        auto const path_to_json = tmp_dir / "test_save_data_to_json_file_data_section_2.json";
 
-            save_data_to_json_file(path_to_json, a_int_vec);
-            REQUIRE_THROWS(load_data_from_json<int, double, std::string>(path_to_json, {"a_vec", "b_vec", "c_vec"}));
-        }
+        save_data_to_json_file(path_to_json, a_int_vec);
+        REQUIRE_THROWS(load_data_from_json<int, double, std::string>(path_to_json, {"a_vec", "b_vec", "c_vec"}));
     }
 }
