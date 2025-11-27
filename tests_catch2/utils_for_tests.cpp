@@ -1,10 +1,6 @@
 #include "utils_for_tests.hpp"
 
-#ifdef RICH_MPI
-#include <mpi.h>
-#endif
-
-namespace utils_for_tests {
+namespace utils_for_tests::mpi {
     int get_mpi_rank() {
         int rank = 0;
         
@@ -23,5 +19,21 @@ namespace utils_for_tests {
         #endif
 
         return ws;
+    }
+
+    void mpi_barrier(){
+        #ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+        #endif
+    }
+
+
+    MpiSyncFixture::MpiSyncFixture(){
+        rank = get_mpi_rank();
+        comm_size = get_mpi_world_size();
+    }
+
+    MpiSyncFixture::~MpiSyncFixture(){
+        mpi_barrier();
     }
 }

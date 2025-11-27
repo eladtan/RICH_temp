@@ -157,10 +157,11 @@ TEST_CASE("sort_vectors_by_index throws when vector sizes differ", "[sort_vector
 }
 
 TEST_CASE("json utilities"){
+    using namespace utils_for_tests;
     using namespace utils_for_tests::json;
     std::filesystem::path tmp_dir = std::filesystem::path{__FILE__}.parent_path() / "tmp"; 
     
-    if(utils_for_tests::get_mpi_rank() == 0){
+    if(utils_for_tests::mpi::get_mpi_rank() == 0){
         SECTION("json test sucess"){
             auto const path_to_json = tmp_dir / "test_save_data_to_json_file_section_1.json";
 

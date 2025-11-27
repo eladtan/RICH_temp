@@ -12,9 +12,49 @@
 #include <utility>
 #include <fstream>
 #include <algorithm>
+#include "source/mpi/serialize/mpi_commands.hpp"
+#include "source/mpi/types.h"
+
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
 
 namespace utils_for_tests {
-    
+
+/// @brief A structure that associates a name with a vector of data.
+/// @tparam T Type of elements in the vector.
+template<typename T>
+struct named_vector {
+    std::string name;  ///< The name/key for this vector.
+    std::vector<T> vec;  ///< The vector of data.
+};
+
+/// @brief Factory function to create a named_vector from a name and vector.
+/// @tparam T Type of elements in the vector.
+/// @param name The name to associate with the vector.
+/// @param vec The vector of data (will be moved).
+/// @return A named_vector containing the provided name and vector.
+template<typename T>
+[[nodiscard]] 
+named_vector<T> make_named_vector(std::string name, std::vector<T> vec) {
+    return {std::move(name), std::move(vec)};
+}
+
+/// @brief Factory function to create a named_vector from a name and vector.
+/// @tparam T Type of elements in the vector.
+/// @param name The name to associate with the vector.
+/// @param init_list The init_list of data (will be moved).
+/// @return A named_vector containing the provided name and vector.
+template<typename T>
+[[nodiscard]] 
+named_vector<T> make_named_vector(std::string name, std::initializer_list<T> init_list){
+    return {std::move(name), std::vector<T>(init_list)};
+}
+
+namespace mpi {
+
+static constexpr rank_t rank_root = 0;
+
 /// @brief Gets the MPI rank of the current process.
 /// @return The MPI rank (0-based) of the current process in MPI_COMM_WORLD.
 ///         Returns 0 if MPI is not enabled (RICH_MPI not defined).
@@ -24,6 +64,31 @@ int get_mpi_rank();
 /// @return The size of MPI_COMM_WORLD (total number of processes).
 ///         Returns 1 if MPI is not enabled (RICH_MPI not defined).
 int get_mpi_world_size();
+
+template<typename T>
+std::vector<T> mpi_gather_vector(std::vector<T> const& vector){
+    static_assert(not std::is_same_v<T, std::string>, "MPI_Gatherv_serializable does not know how to serialize strings!");
+
+    std::vector result{vector};
+
+    #ifdef RICH_MPI
+    result = MPI_Gatherv_serializable(vector, rank_root, MPI_COMM_WORLD);
+    #endif
+
+    return result;
+}
+
+void mpi_barrier();
+
+struct MpiSyncFixture {
+    MpiSyncFixture();
+    ~MpiSyncFixture();
+
+    int comm_size;
+    int rank;
+};
+
+} // namespace mpi
 
 /// @brief Extracts the size of the first object in a variadic pack.
 /// @tparam First Type of the first object (must have a size() method).
@@ -200,29 +265,12 @@ std::vector<T> json_array_to_vector(Json::Value const& arr){
 
     std::vector<T> result{};
     result.reserve(arr.size());
-    for(auto const& element : arr){
+    for(int i=0; i < arr.size(); ++i){
+        auto const& element = arr[i];
         result.push_back(element.as<T>());
     } 
 
     return result;
-}
-
-/// @brief A structure that associates a name with a vector of data.
-/// @tparam T Type of elements in the vector.
-template<typename T>
-struct named_vector {
-    std::string name;  ///< The name/key for this vector.
-    std::vector<T> vec;  ///< The vector of data.
-};
-
-/// @brief Factory function to create a named_vector from a name and vector.
-/// @tparam T Type of elements in the vector.
-/// @param name The name to associate with the vector.
-/// @param vec The vector of data (will be moved).
-/// @return A named_vector containing the provided name and vector.
-template<typename T>
-named_vector<T> make_named_vector(std::string name, std::vector<T> vec) {
-    return {std::move(name), std::move(vec)};
 }
 
 /// @brief Adds a named vector to a JSON root object as a key-value pair.
