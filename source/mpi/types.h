@@ -1,9 +1,9 @@
 #ifndef MPI_TYPES_H
 #define MPI_TYPES_H
 
-#ifdef RICH_MPI
-
 using rank_t = int;
+
+#ifdef RICH_MPI
 
 template<typename Test, template<typename...> class Ref>
 struct is_specialization : std::false_type {};
