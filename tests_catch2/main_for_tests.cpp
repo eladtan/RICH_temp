@@ -17,12 +17,15 @@ int main(int argc, char* argv[]) {
     tests_config::assert_order_arg_is_given(argc, argv);
     tests_config::parseTestsConfigArguments(argc, argv);
 
-    if(utils_for_tests::mpi::get_mpi_rank() == 0) { 
+    auto const rank = utils_for_tests::mpi::get_mpi_rank();
+    if(rank == utils_for_tests::mpi::rank_root) { 
         std::cout << "Tests Config: " << tests_config::TestsConfig::instance().repr() << std::endl; 
     }
     
     // There must be only one call to Catch::Session.... 
     int result = Catch::Session().run(argc, argv);
+    std::cout << "Tests Finished Rank " << rank << std::endl;
+    
 
 #ifdef RICH_MPI
     MPI_Finalize();
