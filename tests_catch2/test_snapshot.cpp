@@ -147,17 +147,17 @@ TEST_CASE_METHOD(mpi::RichMpiFixture, "Test_SnapShot", "[snapshot]"){
     SECTION("Test CompareOrSaveGather"){
         snapshot::SnapShot const snap{"test_compare_or_save_gather"};
         
-        auto const rank = mpi::get_mpi_rank();
+        auto const rank_size_t = static_cast<std::size_t>(rank);
         auto const rank_double = static_cast<double>(rank);
         auto const rank_float = static_cast<float>(rank);
 
-        std::vector<int> id{rank*3, rank*3+1, rank*3+2};
+        std::vector<std::size_t> id{rank_size_t*3, rank_size_t*3+1, rank_size_t*3+2};
         std::vector<double> values{3.0*rank_double, 3.0*rank_double+1.0, 3.0*rank_double+2.0};
         std::vector<float> values_float{3.0f*rank_float, 3.0f*rank_float+1.0f, 3.0f*rank_float+2.0f};
 
         auto const compare_success = snap.CompareOrSaveGather(
-                std::nullopt,
-                id,
+                "snap_shot_test_comm_size_" + std::to_string(rank),
+                make_named_vector("ID", id),
                 make_named_vector("values", values),
                 make_named_vector("values_float", values_float)
             );

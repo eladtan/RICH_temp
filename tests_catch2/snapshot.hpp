@@ -28,7 +28,7 @@ class SnapShot {
         [[nodiscard]] 
         bool CompareOrSaveGather(
             std::optional<std::string> const& data_file_name,
-            std::vector<int> ID, 
+            named_vector<std::size_t> ID, 
             named_vector<Ts>... data
         ) const;
 
@@ -97,11 +97,10 @@ bool compare_vectors_check(
 template<typename... Ts>
 bool SnapShot::CompareOrSaveGather(
     std::optional<std::string> const& data_file_name,
-    std::vector<int> ID, 
+    named_vector<std::size_t> ID, 
     named_vector<Ts>... data
 ) const {
-    auto named_ID = utils_for_tests::make_named_vector("ID", ID);
-    Gather(named_ID, data...);
+    Gather(ID, data...);
 
     if(mpi::get_mpi_rank() == mpi::rank_root){
         auto const data_path = test_data_path(data_file_name);
@@ -111,7 +110,7 @@ bool SnapShot::CompareOrSaveGather(
         if(regenerate || not std::filesystem::exists(data_path)){
             utils_for_tests::json::save_data_to_json_file(
                 data_path,
-                named_ID,
+                ID,
                 data...
             );
 
