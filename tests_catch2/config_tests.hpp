@@ -16,7 +16,7 @@ struct TestsConfig {
     SnapshotDataConfig _mode = SnapshotDataConfig::Compare;
     double _relative_tolerance_compare = 100.0*std::numeric_limits<double>::epsilon();
     
-    std::filesystem::path _golder_dir = std::filesystem::path{__FILE__}.parent_path() / "golder_dir";
+    std::filesystem::path _golden_dir = std::filesystem::path{__FILE__}.parent_path() / "golden_dir";
 
     std::string repr() const;
     // Scott Meyers' singleton pattern
@@ -24,7 +24,7 @@ struct TestsConfig {
     
     static SnapshotDataConfig mode();
     static double relative_tolerance_compare();
-    static std::filesystem::path golder_dir(); 
+    static std::filesystem::path golden_dir(); 
 };
 
 void parseTestsConfigArguments(int& argc, char**& argv);

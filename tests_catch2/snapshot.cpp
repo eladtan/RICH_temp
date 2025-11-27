@@ -29,7 +29,7 @@ SnapShot::SnapShot(std::optional<std::string> test_name_)
 }
 
 fs::path SnapShot::test_dir() const{
-    return tests_config::TestsConfig::golder_dir() / test_name;
+    return tests_config::TestsConfig::golden_dir() / test_name;
 }
 
 fs::path SnapShot::test_data_path(

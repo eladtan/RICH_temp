@@ -34,8 +34,8 @@ namespace tests_config {
         return TestsConfig::instance()._relative_tolerance_compare;
     }
 
-    std::filesystem::path TestsConfig::golder_dir(){
-        return TestsConfig::instance()._golder_dir;
+    std::filesystem::path TestsConfig::golden_dir(){
+        return TestsConfig::instance()._golden_dir;
     }
 
     std::string TestsConfig::repr() const {
@@ -43,7 +43,7 @@ namespace tests_config {
 
         oss << (_mode == SnapshotDataConfig::Regenerate ? "regenerate" : "compare")
             << ", rel_tol = " << _relative_tolerance_compare
-            << ", golder_dir = " << golder_dir 
+            << ", golden_dir = " << golden_dir 
             << "}";
 
         return oss.str();
@@ -80,11 +80,11 @@ namespace tests_config {
 
             if(arg == "--golden_dir"){
                 if (i+1 >= argc) {
-                    std::cerr << "Missing value after --golder_dir" << std::endl;
+                    std::cerr << "Missing value after --golden_dir" << std::endl;
                     std::exit(1);
                 }
 
-                config._golder_dir = std::filesystem::path(argv[++i]);
+                config._golden_dir = std::filesystem::path(argv[++i]);
                 continue;
             }
 
