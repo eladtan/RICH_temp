@@ -80,12 +80,20 @@ std::vector<T> mpi_gather_vector(std::vector<T> const& vector){
 
 void mpi_barrier();
 
-struct MpiSyncFixture {
-    MpiSyncFixture();
-    ~MpiSyncFixture();
+struct RichBasicTestFixture {
+    int const comm_size;
+    int const rank;
+    
+    protected:
+    RichBasicTestFixture();
+};
 
-    int comm_size;
-    int rank;
+struct RichNoMpiTestFixture : public RichBasicTestFixture {
+    RichNoMpiTestFixture();
+};
+
+struct RichMpiFixture : public RichBasicTestFixture {
+    RichMpiFixture();
 };
 
 } // namespace mpi
