@@ -14,6 +14,7 @@
 #include <algorithm>
 #include "source/mpi/serialize/mpi_commands.hpp"
 #include "source/mpi/types.h"
+#include "source/newtonian/three_dimensional/computational_cell.hpp"
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -50,6 +51,24 @@ template<typename T>
 named_vector<T> make_named_vector(std::string name, std::initializer_list<T> init_list){
     return {std::move(name), std::vector<T>(init_list)};
 }
+
+
+template<typename T>
+[[nodiscard]]
+named_vector<T> extract_data_from_cells(
+    std::string const& name,
+    std::vector<ComputationalCell3D> const& cells,
+    T ComputationalCell3D::* const ptr_to_cell_data
+){
+    std::vector<T> vec(cells.size(), T{});
+
+    for(std::size_t i=0; i < cells.size(); ++i){
+        vec[i] = cells[i].*ptr_to_cell_data;
+    }
+
+    return make_named_vector(name, vec);
+}
+
 
 namespace mpi {
 
