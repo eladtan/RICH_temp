@@ -29,5 +29,7 @@ struct TestsConfig {
 
 void parseTestsConfigArguments(int& argc, char**& argv);
 
+void assert_order_arg_is_given(int const& argc, char** const& argv);
+
 }; // namespace tests config
 #endif

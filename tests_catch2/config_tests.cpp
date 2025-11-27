@@ -97,4 +97,25 @@ namespace tests_config {
             argv[i] = newArgs[i];
         }
     }
+
+    void assert_order_arg_is_given(int const& argc, char** const& argv){
+        for(int i=1; i < argc; ++i){
+            std::string arg = argv[i];
+
+            if(arg == "--order"){
+                if(i+1 < argc){
+                    std::string value = argv[++i];
+                    
+                    if(value == "decl"){
+                        return;
+                    }
+                }
+            }
+        }
+
+        // RATIONAL: The default for Catch2 is to run the tests in a random order each time.
+        // For MPI runs this means that the different processes run different tests thus different sections of the code which fucks up the tests
+        throw std::invalid_argument("rich_tests run must ran with the command line option `--order decl`.");
+    }
+
 } // namespace tests_config

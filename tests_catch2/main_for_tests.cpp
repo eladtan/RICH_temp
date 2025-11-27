@@ -14,9 +14,10 @@ int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
 #endif
 
+    tests_config::assert_order_arg_is_given(argc, argv);
     tests_config::parseTestsConfigArguments(argc, argv);
 
-    if(utils_for_tests::get_mpi_rank() == 0) { 
+    if(utils_for_tests::mpi::get_mpi_rank() == 0) { 
         std::cout << "Tests Config: " << tests_config::TestsConfig::instance().repr() << std::endl; 
     }
     
