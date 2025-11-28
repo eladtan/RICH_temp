@@ -4,6 +4,7 @@
 #include <fstream>
 #include "config_tests.hpp"
 #include "utils_for_tests.hpp"
+#include <chrono>
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -22,9 +23,17 @@ int main(int argc, char* argv[]) {
         std::cout << "Tests Config: " << tests_config::TestsConfig::instance().repr() << std::endl; 
     }
     
-    // There must be only one call to Catch::Session.... 
+    using clock = std::chrono::steady_clock;
+
+    auto const start = clock::now();
+    // There must be only one call to Catch::Session....
     int result = Catch::Session().run(argc, argv);
+
+    auto const elapsed = std::chrono::duration<double>(clock::now() - start); 
+    
     std::cout << "Tests Finished Rank " << rank << std::endl;
+
+    std::cout << "Total Time Elapsed for Root: " << elapsed.count() << " seconds." << std::endl;
     
 
 #ifdef RICH_MPI
