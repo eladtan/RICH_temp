@@ -34,8 +34,8 @@ else()
     message(STATUS "Compiling without GProf")
 endif()
 
-message(STATUS "Adding linker -flto option")
-add_link_options(-flto)
+# message(STATUS "Adding linker -flto option")
+# add_link_options(-flto)
 
 set(proj_dir "${PROJECT_SOURCE_DIR}")
 
