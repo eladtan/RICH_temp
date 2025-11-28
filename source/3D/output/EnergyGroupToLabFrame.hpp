@@ -1,5 +1,5 @@
 #include "DiagnosticAppendix3D.hpp"
-#include "source/Radiation/MultigroupDiffusion.hpp"
+#include "source/Radiation/MultigroupDiffusion/MultigroupDiffusion.hpp"
 
 class EnergyGroupToLabFrame : public DiagnosticAppendix3D {
     private:

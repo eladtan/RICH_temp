@@ -13,7 +13,7 @@
 #include "SourceTerm3D.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include "Radiation/RadiationDriver.hpp"
-#include "Radiation/Diffusion.hpp"
+#include "Radiation/GrayDiffusion/Diffusion.hpp"
 
 //! \brief Three dimensional simulation
 class HDSim3D

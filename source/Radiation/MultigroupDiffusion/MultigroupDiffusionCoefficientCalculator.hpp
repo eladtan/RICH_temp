@@ -1,12 +1,12 @@
 #ifndef MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
 #define MULTI_GROUP_DIFFUSION_COEFFICIENT_CALCULATOR_HPP
 
-#include "conj_grad_solve.hpp"
+#include "source/Radiation/conj_grad_solve.hpp"
 #include <functional>
 
 #include <boost/math/special_functions/pow.hpp>
 // TODO: make a units namespace used by all the program 
-#include "CMMC/src/units/units.hpp"
+#include "source/Radiation/CMMC/src/units/units.hpp"
 
 
 class MultigroupDiffusionCoefficientCalculator {

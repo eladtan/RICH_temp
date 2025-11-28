@@ -1,8 +1,8 @@
-#include "Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
+#include "source/Radiation/GrayDiffusion/Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
 #include "MultigroupDiffusion.hpp"
 // TODO: make a units namespace used by all the program 
-#include "CMMC/src/units/units.hpp"
-#include "CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/Radiation/CMMC/src/units/units.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 using boost::math::pow;
 

@@ -20,10 +20,10 @@
 #include "source/3D/output/read3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
-#include "source/Radiation/Diffusion.hpp"
-#include "source/Radiation/DiffusionForce.hpp"
-#include "source/Radiation/MultigroupDiffusionForce.hpp"
-#include "source/Radiation/MultigroupDiffusion.hpp"
+#include "source/Radiation/GrayDiffusion/Diffusion.hpp"
+#include "source/Radiation/GrayDiffusion/DiffusionForce.hpp"
+#include "source/Radiation/MultigroupDiffusion/MultigroupDiffusionForce.hpp"
+#include "source/Radiation/MultigroupDiffusion/MultigroupDiffusion.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include "source/newtonian/three_dimensional/LagrangianExtensiveUpdater3D.hpp"
@@ -34,7 +34,7 @@
 #include <fenv.h>
 #include <filesystem>
 #include "source/3D/GeometryCommon/UpdateBox.hpp"
-#include "source/Radiation/STAgreyOpacity.hpp"
+#include "source/Radiation/GrayDiffusion/STAgreyOpacity.hpp"
 namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>

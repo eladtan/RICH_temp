@@ -1,12 +1,12 @@
 #ifndef MULTIGROUP_DIFFUSION_HPP
 #define MULTIGROUP_DIFFUSION_HPP
 
-#include "RadiationDriver.hpp"
-#include "conj_grad_solve.hpp"
+#include "source/Radiation/RadiationDriver.hpp"
+#include "source/Radiation/conj_grad_solve.hpp"
 #include "boost/math/special_functions/pow.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
-#include "CMMC/src/compton_matrix_mc.hpp"
+#include "source/Radiation/CMMC/src/compton_matrix_mc.hpp"
 
 using namespace CG;
 using namespace compton_matrix_mc;

@@ -1,6 +1,6 @@
 #ifndef DIFFUSION_FORCE_HPP
 #define DIFFUSION_FORCE_HPP 1
-#include "../newtonian/three_dimensional/SourceTerm3D.hpp"
+#include "source/newtonian/three_dimensional/SourceTerm3D.hpp"
 #include "Diffusion.hpp"
 
 class DiffusionForce : public SourceTerm3D

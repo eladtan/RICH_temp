@@ -1,8 +1,8 @@
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
 #include "boost/math/special_functions/pow.hpp"
-#include "RadiationDriver.hpp"
-#include "CMMC/src/planck_integral/planck_integral.hpp"
-#include "Diffusion.hpp" // for CalcSingleFluxLimiter
+#include "source/Radiation/RadiationDriver.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/Radiation/GrayDiffusion/Diffusion.hpp" // for CalcSingleFluxLimiter
 
 
 MultigroupDiffusionBoundaryCalculator

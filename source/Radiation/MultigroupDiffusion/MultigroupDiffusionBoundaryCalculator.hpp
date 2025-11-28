@@ -1,9 +1,9 @@
 #ifndef MULTI_GROUP_DIFFUSION_BOUNDARY_CALCULATOR_HPP
 #define MULTI_GROUP_DIFFUSION_BOUNDARY_CALCULATOR_HPP
 
-#include "conj_grad_solve.hpp"
+#include "source/Radiation/conj_grad_solve.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
-#include "CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 class MultigroupDiffusionBoundaryCalculator {
 public:

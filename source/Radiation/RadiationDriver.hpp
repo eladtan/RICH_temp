@@ -24,6 +24,7 @@ public:
                     bool const flux_limiter = true,
                     bool const hydro_on = true,
                     bool const compton_on = false) : 
+                                                        CG::MatrixBuilder(zero_cells_),
                                                         eos_(eos),
                                                         flux_limiter_(flux_limiter),
                                                         hydro_on_(hydro_on),
@@ -31,7 +32,10 @@ public:
                                                         mass_scale_(1.0),
                                                         length_scale_(1.0),
                                                         time_scale_(1.0),
-                                                        CG::MatrixBuilder(zero_cells_)
+                                                        density_scale_(1.0),
+                                                        energy_density_scale_(1.0),
+                                                        specific_energy_scale_(1.0),
+                                                        velocity_scale_(1.0)
                                                         {}
 
 /**
@@ -96,16 +100,32 @@ public:
  * 
  * @return The maximum allowable time step size.
  */
-        virtual double calculate_dt(double const dt,
+       virtual double calculate_dt(double const dt,
                                     Tessellation3D& tess, 
                                     std::vector<ComputationalCell3D>& cells) const = 0;
-    bool const flux_limiter_;
-    bool const hydro_on_;
-    bool const compton_on_;
 
-    double mass_scale_;
-    double length_scale_;
-    double time_scale_;
+       void set_scales(double const mass_scale, double const length_scale, double const time_scale) const {
+              mass_scale_ = mass_scale;
+              length_scale_ = length_scale;
+              time_scale_ = time_scale;
+
+              density_scale_ = mass_scale / (length_scale*length_scale*length_scale);
+              energy_density_scale_ = mass_scale / (time_scale * time_scale * length_scale);
+              specific_energy_scale_ = length_scale * length_scale / (time_scale * time_scale);
+       }
+
+       bool const flux_limiter_;
+       bool const hydro_on_;
+       bool const compton_on_;     
+       
+       mutable double mass_scale_;
+       mutable double length_scale_;
+       mutable double time_scale_;  
+       
+       mutable double density_scale_;
+       mutable double energy_density_scale_;
+       mutable double specific_energy_scale_;
+       mutable double velocity_scale_;
 
 protected:
     EquationOfState const& eos_;

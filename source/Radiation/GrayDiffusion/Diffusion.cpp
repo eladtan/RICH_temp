@@ -36,6 +36,11 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                      bool const flux_limiter, 
                      bool const hydro_on, 
                      bool const compton_on) : 
+                                            RadiationDriver(eos, 
+                                                            zero_cells, 
+                                                            flux_limiter, 
+                                                            hydro_on, 
+                                                            compton_on),
                                              D_coefficient_calcualtor(D_coefficient_calc),
                                              boundary_calc_(boundary_calc), 
                                              sigma_planck(),
@@ -49,11 +54,7 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                              old_Er(),
                                              cells_temp(),
                                              extensives_temp(),
-                                             RadiationDriver(eos, 
-                                                            zero_cells, 
-                                                            flux_limiter, 
-                                                            hydro_on, 
-                                                            compton_on) {}
+                                             do_iterations_on_Um(false) {}
 
 double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const
 {
@@ -184,6 +185,19 @@ bool Diffusion::step(double const tolerance,
                      double const dt,
                      double const time) const {
     
+    if (do_iterations_on_Um){
+        return step_iterations(
+            tolerance,
+            total_iters,
+            tess,
+            cells,
+            extensives,
+            dt,
+            time
+        );
+    }
+
+
     int rank = 0;
 #ifdef RICH_MPI
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -249,6 +263,54 @@ bool Diffusion::step(double const tolerance,
     return true;
 }
 
+bool Diffusion::step_iterations(
+    double const tolerance,
+    int& total_iters,
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D>& cells,
+    std::vector<Conserved3D>& extensives,
+    double const dt,
+    double const time
+) const {
+    extensives_temp = extensives;
+    cells_temp = cells;
+
+    auto cells_cgs = get_cells_cgs(tess, cells);
+
+
+    return true;
+}
+
+std::vector<ComputationalCell3D>
+Diffusion::get_cells_cgs(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells_not_cgs) const {
+    set_scales(mass_scale_, length_scale_, time_scale_);
+
+    std::vector<ComputationalCell3D> cells_cgs(cells_not_cgs);
+
+    auto const Nlocal = tess.GetPointNo();
+    for(std::size_t cell=0; cell < Nlocal; ++cell){
+        cells_cgs[cell].density     *= density_scale_;
+        cells_cgs[cell].Erad        *= specific_energy_scale_;
+        cells_cgs[cell].Erad_dt     *= specific_energy_scale_ / time_scale_;
+        cells_cgs[cell].Erad_dt_dt  *= specific_energy_scale_ / (time_scale_*time_scale_);
+        cells_cgs[cell].velocity    *= velocity_scale_;
+    }
+}
+
+void Diffusion::calculate_planck_absorption_coefficient(
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D> cells_cgs
+) const {}
+
+bool Diffusion::update_energy(
+    Tessellation3D const& tess, 
+    std::vector<Conserved3D>& extensives, 
+    double const dt, 
+    double const time
+) const {
+
+}
+
 void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
     double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const
 {
@@ -261,11 +323,11 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     std::vector<ComputationalCell3D> cells_cgs(cells);
     for(size_t i = 0; i < Nlocal; ++i)
     {
-        cells_cgs[i].density *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
-        cells_cgs[i].Erad *= length_scale_ * length_scale_ / (time_scale_ * time_scale_);
-        cells_cgs[i].Erad_dt *= length_scale_ * length_scale_ / (time_scale_ * time_scale_ * time_scale_);
+        cells_cgs[i].density    *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
+        cells_cgs[i].Erad       *= length_scale_ * length_scale_ / (time_scale_ * time_scale_);
+        cells_cgs[i].Erad_dt    *= length_scale_ * length_scale_ / (time_scale_ * time_scale_ * time_scale_);
         cells_cgs[i].Erad_dt_dt *= length_scale_ * length_scale_ / (time_scale_ * time_scale_ * time_scale_ * time_scale_);
-        cells_cgs[i].velocity *= length_scale_ / time_scale_;
+        cells_cgs[i].velocity   *= length_scale_ / time_scale_;
      }
 #ifdef RICH_MPI
 	MPI_exchange_data(tess, cells_cgs, true);	
@@ -794,73 +856,6 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 #endif
     if(rank == 0)
         std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
-}
-
-void DiffusionSideBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 
-        std::vector<ComputationalCell3D> const& /*cells*/, double const Area, double& A, double &b, size_t const /*face_index*/)const
-{
-    double const R = tess.GetWidth(index);
-    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4))
-    {
-        A += 0.5 * CG::speed_of_light * dt * Area;
-        b += 2 * Area * dt * CG::stefan_boltzman * T_ * T_ * T_ * T_;
-    }
-}
-
-void DiffusionSideBoundary::SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
-        ComputationalCell3D const& cell, double const Area, double& A, double &b, size_t const face_index, double const fleck_factor,
-        double const flux_limiter, double const D, double const sigma_planck)const
-{
-    double const R = tess.GetWidth(index);
-    Vector3D r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
-    double const r_ij_size = abs(r_ij);
-    r_ij *= 1.0 / r_ij_size;
-    double const momentum_relativity_term = -0.5 * fleck_factor * dt * flux_limiter * Area * 
-        (2 * 3 * sigma_planck * D / CG::speed_of_light - 1) * ScalarProd(cell.velocity, r_ij) / 3;
-    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4))
-    {
-        A += momentum_relativity_term;
-        b -= momentum_relativity_term * CG::radiation_constant * T_ * T_ * T_ * T_;
-    }
-    else
-        A += 2 * momentum_relativity_term;
-}
-
-void DiffusionSideBoundary::GetOutSideValues(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, size_t const index, size_t const outside_point,
-    std::vector<double> const& new_E, double& E_outside, Vector3D& v_outside)const
-{
-    double const R = tess.GetWidth(index);
-    if(tess.GetMeshPoint(index).x > (tess.GetMeshPoint(outside_point).x + R * 1e-4))
-        E_outside = CG::radiation_constant * T_ * T_ * T_ * T_;
-    else
-        E_outside = new_E[index];
-    v_outside = cells[index].velocity;
-}
-
-void DiffusionClosedBox::SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
-        ComputationalCell3D const& cell, double const Area, double& A, 
-        double& /*b*/, size_t const /*face_index*/, double const fleck_factor, double const flux_limiter, 
-        double const D, double const sigma_planck)const
-{
-    Vector3D r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
-    double const r_ij_size = abs(r_ij);
-    r_ij *= 1.0 / r_ij_size;
-    double const momentum_relativity_term = -0.5 * fleck_factor * dt * flux_limiter * Area * 
-        (2 * 3 * sigma_planck * D / CG::speed_of_light - 1) * ScalarProd(cell.velocity, r_ij) / 3;
-    A += 2 * momentum_relativity_term;
-}
-
-void DiffusionClosedBox::SetBoundaryValues(Tessellation3D const& /*tess*/, size_t const /*index*/, size_t const /*outside_point*/, double const /*dt*/, 
-        std::vector<ComputationalCell3D> const& /*cells*/, double const /*Area*/, double& /*A*/, double& /*b*/, size_t const /*face_index*/)const
-{}
-
-void DiffusionClosedBox::GetOutSideValues(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, size_t const index, size_t const outside_point,
-    std::vector<double> const& new_E, double& E_outside, Vector3D& v_outside)const
-{
-    E_outside = new_E[index];
-    Vector3D normal = normalize(tess.GetMeshPoint(outside_point) - tess.GetMeshPoint(index));
-    v_outside = cells[index].velocity;
-    v_outside -= 2 * normal * ScalarProd(normal, v_outside);
 }
 
 double PowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell) const

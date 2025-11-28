@@ -13,8 +13,8 @@
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
-#include "source/Radiation/Diffusion.hpp"
-#include "source/Radiation/DiffusionForce.hpp"
+#include "source/Radiation/GrayDiffusion/Diffusion.hpp"
+#include "source/Radiation/GrayDiffusion/DiffusionForce.hpp"
 
 
 #include <catch2/catch_test_macros.hpp>

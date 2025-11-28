@@ -13,11 +13,11 @@
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
-// #include "source/Radiation/Diffusion.hpp"
-// #include "source/Radiation/DiffusionForce.hpp"
-#include "source/Radiation/MultigroupDiffusion.hpp"
-#include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
-#include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
+// #include "source/Radiation/GrayDiffusion/Diffusion.hpp"
+// #include "source/Radiation/GrayDiffusion/DiffusionForce.hpp"
+#include "source/Radiation/MultigroupDiffusion/MultigroupDiffusion.hpp"
+#include "source/Radiation/MultigroupDiffusion/MultigroupDiffusionBoundaryCalculator.hpp"
+#include "source/Radiation/MultigroupDiffusion/MultigroupDiffusionCoefficientCalculator.hpp"
 #include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 namespace

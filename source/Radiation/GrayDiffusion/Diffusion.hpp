@@ -1,8 +1,8 @@
 #ifndef DIFFUSION_HPP
 #define DIFFUSION_HPP 1
 
-#include "conj_grad_solve.hpp"
-#include "RadiationDriver.hpp"
+#include "source/Radiation/conj_grad_solve.hpp"
+#include "source/Radiation/RadiationDriver.hpp"
 #include "source/newtonian/common/equation_of_state.hpp"
 #include "DiffusionBoundaryCalculator.hpp"
 #include "DiffusionCoefficientCalculator.hpp"
@@ -74,6 +74,31 @@ public:
         cell_flux_limiter[index]<<std::endl;
     }
 
+    bool step_iterations(
+        double const tolerance, 
+        int& total_iters, 
+        Tessellation3D const& tess, 
+        std::vector<ComputationalCell3D>& cells,
+        std::vector<Conserved3D>& extensives,
+        double const dt,
+        double const time
+    ) const;
+
+    bool update_energy(
+        Tessellation3D const& tess, 
+        std::vector<Conserved3D>& extensives, 
+        double const dt, 
+        double const time
+    ) const;
+
+    void calculate_planck_absorption_coefficient(
+        Tessellation3D const& tess,
+        std::vector<ComputationalCell3D> cells_cgs
+    ) const;
+
+    std::vector<ComputationalCell3D> 
+    get_cells_cgs(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells_not_cgs) const;
+
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
     DiffusionBoundaryCalculator const& boundary_calc_;
     
@@ -89,6 +114,8 @@ public:
     mutable std::vector<double> old_T;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
+
+    mutable bool do_iterations_on_Um;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

@@ -17,9 +17,9 @@
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
-#include "source/Radiation/Diffusion.hpp"
-#include "source/Radiation/DiffusionForce.hpp"
-#include "source/Radiation/STAgreyOpacity.hpp"
+#include "source/Radiation/GrayDiffusion/Diffusion.hpp"
+#include "source/Radiation/GrayDiffusion/DiffusionForce.hpp"
+#include "source/Radiation/GrayDiffusion/STAgreyOpacity.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include "source/newtonian/three_dimensional/LagrangianExtensiveUpdater3D.hpp"
