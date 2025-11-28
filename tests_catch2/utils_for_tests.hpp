@@ -56,8 +56,22 @@ named_vector<T> make_named_vector(std::string name, std::initializer_list<T> ini
 
 
 // only for arithmetic types
-template<typename T,
-         std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+/**
+ * @brief Extracts a named_vector of arithmetic data members from a vector of ComputationalCell3D objects.
+ * 
+ * @tparam T The arithmetic type of the data member to extract (e.g., double, int).
+ * @param name The name to be associated with the resultant named_vector.
+ * @param cells The vector of ComputationalCell3D from which to extract data.
+ * @param ptr_to_cell_data Pointer-to-member specifying which field to extract from each cell.
+ * @return named_vector<T> A named_vector with the provided name and the extracted values.
+ * 
+ * @note Example usage:
+ *   auto densities = extract_data_from_cells("density", cells, &ComputationalCell3D::density);
+ */
+template<
+    typename T,
+    std::enable_if_t<std::is_arithmetic_v<T>, int> = 0
+>
 [[nodiscard]]
 named_vector<T> extract_data_from_cells(
     std::string const& name,
@@ -66,14 +80,26 @@ named_vector<T> extract_data_from_cells(
 ){
     std::vector<T> vec(cells.size(), T{});
 
-    for(std::size_t i=0; i < cells.size(); ++i){
+    for(std::size_t i = 0; i < cells.size(); ++i){
         vec[i] = cells[i].*ptr_to_cell_data;
     }
 
     return make_named_vector(name, vec);
 }
 
-// for vector 3D
+/**
+ * @brief Extracts named_vectors of the x, y, and z components of a Vector3D data member from a vector of ComputationalCell3D objects.
+ * 
+ * @param name The base name to associate with each component vector ("_x", "_y", "_z" will be appended).
+ * @param cells The vector of ComputationalCell3D objects from which to extract vector components.
+ * @param ptr_to_cell_data Pointer-to-member indicating which Vector3D field to extract (e.g., &ComputationalCell3D::velocity).
+ * @return std::tuple<named_vector<double>, named_vector<double>, named_vector<double>> 
+ *         Tuple of named_vectors holding the x, y, and z components respectively.
+ * 
+ * @note Example usage:
+ *   auto [vx, vy, vz] = extract_data_from_cells("velocity", cells, &ComputationalCell3D::velocity);
+ *   // vx.name == "velocity_x", vx.vec holds all x components
+ */
 [[nodiscard]]
 std::tuple<
     named_vector<double>,
@@ -85,6 +111,11 @@ std::tuple<
     Vector3D ComputationalCell3D::* const ptr_to_cell_data
 );
 
+/**
+ * @brief Extract x, y, z cell center coordinates from a Tessellation3D.
+ * @param tess The tessellation to extract from.
+ * @return Tuple of named_vectors for x, y, and z.
+ */
 [[nodiscard]]
 std::tuple<
     named_vector<double>,
@@ -95,6 +126,7 @@ extract_center_of_mass(Tessellation3D const& tess);
 
 namespace mpi {
 
+/// @brief The MPI root rank 
 static constexpr rank_t rank_root = 0;
 
 /// @brief Gets the MPI rank of the current process.
@@ -107,6 +139,12 @@ int get_mpi_rank();
 ///         Returns 1 if MPI is not enabled (RICH_MPI not defined).
 int get_mpi_world_size();
 
+/**
+ * @brief Collects elements from all MPI ranks into a single vector on the root process. 
+ * Falls back to returning the input vector if MPI is not enabled.
+ * 
+ * @note T must be serializable (std::string is not supported).
+ */
 template<typename T>
 std::vector<T> mpi_gather_vector(std::vector<T> const& vector){
     static_assert(not std::is_same_v<T, std::string>, "MPI_Gatherv_serializable does not know how to serialize strings!");
@@ -120,20 +158,26 @@ std::vector<T> mpi_gather_vector(std::vector<T> const& vector){
     return result;
 }
 
+/**
+ * @brief Synchronizes all processes in the MPI communicator.
+ */
 void mpi_barrier();
 
+/// @brief Base test fixture that initializes MPI rank and size.
 struct RichBasicTestFixture {
-    int const comm_size;
-    int const rank;
+    int const comm_size; ///< Total MPI processes
+    int const rank;      ///< Current MPI rank
     
     protected:
     RichBasicTestFixture();
 };
 
+/// @brief Test fixture for single-process (non-MPI) tests; skips tests on non-root ranks.
 struct RichNoMpiTestFixture : public RichBasicTestFixture {
     RichNoMpiTestFixture();
 };
 
+/// @brief Test fixture for multi-process (MPI) tests.
 struct RichMpiFixture : public RichBasicTestFixture {
     RichMpiFixture();
 };
