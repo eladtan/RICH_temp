@@ -15,6 +15,8 @@
 #include "source/mpi/serialize/mpi_commands.hpp"
 #include "source/mpi/types.h"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
+#include "source/3D/tesselation/Tessellation3D.hpp"
+#include <type_traits>
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -53,7 +55,9 @@ named_vector<T> make_named_vector(std::string name, std::initializer_list<T> ini
 }
 
 
-template<typename T>
+// only for arithmetic types
+template<typename T,
+         std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
 [[nodiscard]]
 named_vector<T> extract_data_from_cells(
     std::string const& name,
@@ -69,6 +73,25 @@ named_vector<T> extract_data_from_cells(
     return make_named_vector(name, vec);
 }
 
+// for vector 3D
+[[nodiscard]]
+std::tuple<
+    named_vector<double>,
+    named_vector<double>,
+    named_vector<double>
+> extract_data_from_cells(
+    std::string const& name,
+    std::vector<ComputationalCell3D> const& cells,
+    Vector3D ComputationalCell3D::* const ptr_to_cell_data
+);
+
+[[nodiscard]]
+std::tuple<
+    named_vector<double>,
+    named_vector<double>,
+    named_vector<double>
+>
+extract_center_of_mass(Tessellation3D const& tess);
 
 namespace mpi {
 
