@@ -838,13 +838,3 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     if(rank == 0)
         std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
 }
-
-double PowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell) const
-{
-    return D0_ * std::pow(cell.density, alpha_) * std::pow(cell.temperature, beta_);
-}
-
-double PowerLawOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const
-{
-    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
-}
