@@ -38,7 +38,7 @@ fs::path SnapShot::test_data_path(
 
     if(data_file_name) return test_dir() / (*data_file_name + ".json");
 
-    return test_dir() / (test_name + ".json");
+    return test_dir() / (test_name + "_comm_size_" + std::to_string(utils_for_tests::mpi::get_mpi_world_size()) + ".json");
 }
 
 } // namespace snapshot
