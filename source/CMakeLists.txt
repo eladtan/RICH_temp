@@ -39,14 +39,6 @@ add_link_options(-flto)
 
 set(proj_dir "${PROJECT_SOURCE_DIR}")
 
-find_package(pybind11 QUIET REQUIRED PATHS ${PYBIND11} NO_DEFAULT_PATH)
-if(pybind11_FOUND)
-    message(STATUS "pybind11 directory: " ${pybind11_DIR})
-    message(STATUS "python exe path: " ${PYTHON_EXECUTABLE})
-else()
-    message(STATUS "PYBIND11 NOT FOUND")
-endif()
-
 # files to compile
 file(GLOB_RECURSE SRC_CPP FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp")
 file(GLOB_RECURSE TEST_DIR "${TEST_DIR}/*.cpp")
@@ -94,7 +86,6 @@ include_directories(${PROJECT_ROOT_DIR})
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 include_directories(${R3D_INCLUDE})
-include_directories("${PYBIND11_DIR}/include")
 
 message("BOOST DIRECTORY ${BOOST_DIR}")
 message("proj_dir ${proj_dir}")
@@ -187,11 +178,6 @@ target_link_libraries(
 # link boost
 if(DEFINED BOOST_DIR)
     target_link_directories(${EXE_NAME} PRIVATE ${BOOST_DIR}/lib)
-endif()
-
-# link pybind11
-if(pybind11_FOUND)
-    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
 endif()
 
 # link json cpp
