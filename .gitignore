@@ -29,3 +29,5 @@ result_dir*
 output
 *.log
 analysis
+tmp
+golden_dir*
