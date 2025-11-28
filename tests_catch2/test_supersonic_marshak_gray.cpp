@@ -349,7 +349,7 @@ supersonic_marshak(std::string case_num_str){
 
 } // namespace
 
-TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_1_2nd_Paper", "[supersonic_marshak]"){
+TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Gray_Diffusion_Test_1_2nd_Paper", "[supersonic_marshak][gray_diffusion]"){
 	snapshot::SnapShot snap;
 
 	auto const success = std::apply(
@@ -366,7 +366,7 @@ TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_1_2nd_Paper", "[su
 	REQUIRE(success);
 }
 
-TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_3_2nd_Paper", "[supersonic_marshak]"){
+TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Gray_Diffusion_Test_3_2nd_Paper", "[supersonic_marshak][gray_diffusion]"){
 	snapshot::SnapShot snap;
 
 	auto const success = std::apply(
@@ -383,7 +383,7 @@ TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_3_2nd_Paper", "[su
 	REQUIRE(success);
 }
 
-TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_2_1st_Paper", "[supersonic_marshak]"){
+TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Gray_Diffusion_Test_2_1st_Paper", "[supersonic_marshak][gray_diffusion]"){
 	snapshot::SnapShot snap;
 
 	auto const success = std::apply(
@@ -400,7 +400,7 @@ TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_2_1st_Paper", "[su
 	REQUIRE(success);
 }
 
-TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Test_3_1st_Paper", "[supersonic_marshak]"){
+TEST_CASE_METHOD(mpi::RichMpiFixture,"Supersonic_marshak_Gray_Diffusion_Test_3_1st_Paper", "[supersonic_marshak][gray_diffusion]"){
 	snapshot::SnapShot snap;
 
 	auto const success = std::apply(
