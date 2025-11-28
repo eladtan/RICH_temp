@@ -9,16 +9,6 @@
 
 using namespace CG;
 
-namespace CG
-{
-    double CalcSingleFluxLimiter(Vector3D const& grad, double const D, double const cell_value);
-
-    double FleckFactor(double const dt, double const beta, double const sigma_a);
-
-}
-
-
-
 //! \brief Class for calculating diffusion matrix data for the CG solver
 class Diffusion : public RadiationDriver
 {
@@ -132,44 +122,5 @@ public:
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const override;
 
     double CalcPlanckOpacity(ComputationalCell3D const& cell) const override;
-};
-//! \brief Class with constant states on the x sides and zero flux on other sides
-class DiffusionXInflowBoundary : public DiffusionBoundaryCalculator
-{
-    public:
-    /*!
-    \brief Class constructor
-    \param T Boundary temperature, in kelvin
-    */
-    DiffusionXInflowBoundary(ComputationalCell3D const& left_state, ComputationalCell3D const& right_state,
-        DiffusionCoefficientCalculator const& D_calc): left_state_(left_state), right_state_(right_state), D_calc_(D_calc){}
-
-    void SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
-        std::vector<ComputationalCell3D> const& cells, double const Area, double& A, double &b, size_t const face_index)const override;
-    
-    void GetOutSideValues(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, size_t const index, size_t const outside_point,
-        std::vector<double> const& new_E, double& E_outside, Vector3D& v_outside)const override;
-    
-   void SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
-        ComputationalCell3D const& cell, double const Area, double& A, double &b, size_t const face_index, 
-        double const fleck_factor, double const flux_limiter, double const D, double const sigma_planck)const override;
-
-    private:
-        ComputationalCell3D const& left_state_, right_state_;
-        DiffusionCoefficientCalculator const& D_calc_;
-};
-
-class DiffusionOpenBoundary : public DiffusionBoundaryCalculator
-{
-    public:
-    void SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
-        std::vector<ComputationalCell3D> const& cells, double const Area, double& A, double &b, size_t const face_index)const override;
-    
-    void GetOutSideValues(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, size_t const index, size_t const outside_point,
-        std::vector<double> const& new_E, double& E_outside, Vector3D& v_outside)const override;
-    
-   void SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
-        ComputationalCell3D const& cell, double const Area, double& A, double &b, size_t const face_index, 
-        double const fleck_factor, double const flux_limiter, double const D, double const sigma_planck)const override;
 };
 #endif

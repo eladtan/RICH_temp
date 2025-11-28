@@ -107,6 +107,10 @@ namespace CG
     double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
 
     double mpi_dot_product2(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
+
+    double CalcSingleFluxLimiter(Vector3D const& grad, double const D, double const cell_value);
+
+    double FleckFactor(double const dt, double const beta, double const sigma_a);
 }
 
 #endif

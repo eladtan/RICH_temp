@@ -7,6 +7,22 @@ using boost::math::pow;
 
 namespace CG
 {
+    // LP flux limiter taken from "EQUATIONS AND ALGORITHMS FOR MIXED-FRAME FLUX-LIMITED DIFFUSION RADIATION HYDRODYNAMICS"
+    double CalcSingleFluxLimiter(Vector3D const& grad, double const D, double const cell_value)
+    {
+        double const R = std::max(3 * abs(grad) * D / (cell_value * CG::speed_of_light + 1e-200), 1e-200);
+        
+        // series expansion
+        if(R < 1e-2) return 1 - R * R / 15 + 2 * R * R * R * R /315;
+        
+        return 3 * (1.0 / std::tanh(R) - 1.0 / R) / R;
+    }
+
+    double FleckFactor(double const dt, double const beta, double const sigma_a)
+    {
+        return 1.0 / (1 + beta * dt * sigma_a * CG::speed_of_light);
+    }
+
     // Matrix times vector
     void mat_times_vec(const mat &sub_A_values, const size_t_mat &sub_A_indices, const std::vector<double> &v, 
         std::vector<double> &result)
