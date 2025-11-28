@@ -132,13 +132,7 @@ Case get_case(std::string_view const case_num_sv){
 	}
 }
 
-std::tuple<
-	named_vector<std::size_t>,
-	named_vector<double>,
-	named_vector<double>,
-	named_vector<double>,
-	named_vector<double>>
-supersonic_marshak(std::string case_num_str){
+auto supersonic_marshak(std::string case_num_str){
 
 	int rank = mpi::get_mpi_rank();
 	int ws = mpi::get_mpi_world_size();
