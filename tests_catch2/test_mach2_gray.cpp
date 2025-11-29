@@ -101,7 +101,10 @@ namespace
 static constexpr double ev = 1.602176634e-12;
 static constexpr double kev = 1e3*ev;
 
-auto mach2gray()
+auto mach2gray(
+    double const mass_scale=1., 
+    double const length_scale=1., 
+    double  const time_scale=1.)
 {
     size_t const Np = 256;
 
@@ -228,6 +231,10 @@ auto mach2gray()
 		flux_limiter, 
 		hydro_on, 
 		compton_on);
+    
+    diffusion.length_scale_ = length_scale;
+	diffusion.time_scale_ = time_scale;
+	diffusion.mass_scale_ = mass_scale;
 
     // Primitive updater
     DefaultCellUpdater cu(false, 0.0, true, 0.0, &diffusion);
@@ -306,6 +313,24 @@ TEST_CASE_METHOD(mpi::RichMpiFixture, "Mach2_Gray", "[mach2][gray_diffusion]"){
 			);
 		},
 		mach2gray()
+	);
+
+	REQUIRE(success);
+}
+
+
+TEST_CASE_METHOD(mpi::RichMpiFixture, "Mach2_Gray_different_scales", "[mach2][gray_diffusion][scales]"){
+    snapshot::SnapShot snap;
+
+    auto const success = std::apply(
+		[&snap](auto const& ID, auto const&... run_info){
+			return snap.CompareOrSaveGather(
+				std::nullopt,
+				ID,
+				run_info...
+			);
+		},
+		mach2gray(4., 5., 6.)
 	);
 
 	REQUIRE(success);
