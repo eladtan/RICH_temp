@@ -121,6 +121,11 @@ public:
     void calculate_cell_diffusion_coefficients(
         Tessellation3D const& tess
     ) const;
+
+    void fix_small_negative_Er(
+        Tessellation3D const& tess,
+        std::vector<ComputationalCell3D> const& cells
+    ) const;
     
     mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable bool do_iterations_on_Um;

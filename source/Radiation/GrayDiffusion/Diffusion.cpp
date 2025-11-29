@@ -190,55 +190,31 @@ bool Diffusion::step(double const tolerance,
     std::vector<Conserved3D> extensives_temp(extensives);
     std::vector<ComputationalCell3D> cells_temp(cells);
 
+    // auto const max_number_of_iters = 100;
+    // for(int iter=-1; iter < 100; ++iter){
     load_cells_cgs(tess, cells);
 
     calculate_planck_absorption_coefficient(tess);
     calculate_scattering_coefficient(tess);
     calculate_cell_diffusion_coefficients(tess);
 
-    // must be after `calculate_planck_absorption_coefficient` and `calculate_scattering_coefficient`
-    calculate_fleck_factor(tess, cells, dt);
-
+    if(not do_iterations_on_Um) {
+        // must be after `calculate_planck_absorption_coefficient` and `calculate_scattering_coefficient`
+        calculate_fleck_factor(tess, cells, dt);
+    } else {
+        std::fill(fleck_factor.begin(), fleck_factor.end(), 1.0);
+    }
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
-    if(not good_end)
-        return false;
     
-    double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
-
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#endif
-
-   struct MinErData {
-        double value;
-        int rank;
-    };
+    if(not good_end) return false;
     
-    MinErData minErData = {1.0, rank};
-    size_t min_index = -1;
-    for(std::size_t i=0; i < N; ++i){
-        if(new_Er[i] < 0.0 && std::abs(new_Er[i]) < 1e-9 * max_Er){
-            new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells[i].temperature * cells[i].temperature * cells[i].temperature * cells[i].temperature);
-        }
-
-        if(new_Er[i] < minErData.value) {
-            minErData.value = new_Er[i];
-            min_index = i;
-        }
-    }
-
-#ifdef RICH_MPI
-		MPI_Allreduce(MPI_IN_PLACE, &minErData, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
-#endif
-
-    if(minErData.value < 0) {
-        if(rank == minErData.rank) {
-            std::cout << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" "<<cells[min_index]<<std::endl;
-        }
-
+    try {
+        fix_small_negative_Er(tess, cells);
+    } catch(UniversalError const& eo){
+        reportError(eo);
         return false;
     }
 
@@ -247,11 +223,11 @@ bool Diffusion::step(double const tolerance,
     } catch(UniversalError const& eo) {
         if(rank == 0){
             std::cout<< "PostCG Exception:" << std::endl;
-            std::cout<< eo.getErrorMessage() << std::endl;
+            reportError(eo);
         }
         
         extensives = std::move(extensives_temp);
-        cells = cells_temp;
+        cells = std::move(cells_temp);
         return false;
     }
 
@@ -889,4 +865,55 @@ void Diffusion::calculate_cell_diffusion_coefficients(
 #ifdef RICH_MPI
     MPI_exchange_data(tess, D, true);
 #endif    
+}
+
+void Diffusion::fix_small_negative_Er(
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D> const& cells
+) const 
+{
+    int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+
+    double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
+
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+
+   struct MinErData {
+        double value;
+        int rank;
+    };
+
+    MinErData minErData = {1.0, rank};
+    size_t min_index = -1;
+
+    std::size_t const N = tess.GetPointNo();
+    for(std::size_t i=0; i < N; ++i){
+        if(new_Er[i] < 0.0 && std::abs(new_Er[i]) < 1e-9 * max_Er){
+            new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells[i].temperature * cells[i].temperature * cells[i].temperature * cells[i].temperature);
+        }
+
+        if(new_Er[i] < minErData.value) {
+            minErData.value = new_Er[i];
+            min_index = i;
+        }
+    }
+
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &minErData, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+#endif
+
+    if(minErData.value < 0) {
+        if(rank == minErData.rank) {
+            throw UniversalError("Negative Er! Minimal Value")
+                    .addEntry("rank", minErData.rank)
+                    .addEntry("Index", min_index)
+                    .addEntry("Location", tess.GetMeshPoint(min_index))
+                    .addEntry("cell data", cells[min_index]);
+        }
+    }
 }
