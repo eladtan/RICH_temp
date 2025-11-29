@@ -92,8 +92,6 @@ public:
     mutable std::vector<double> new_Er_full;
     mutable std::vector<double> old_Er;
     mutable std::vector<double> old_T;
-    mutable std::vector<ComputationalCell3D> cells_temp;
-    mutable std::vector<Conserved3D> extensives_temp;
     
     private:
     void load_cells_cgs(

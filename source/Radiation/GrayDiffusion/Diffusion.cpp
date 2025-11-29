@@ -33,8 +33,6 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                              new_Er(),
                                              new_Er_full(),
                                              old_Er(),
-                                             cells_temp(),
-                                             extensives_temp(),
                                              do_iterations_on_Um(false) {}
 
 double Diffusion::GetSingleFleckFactor(
@@ -73,9 +71,7 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     new_Er_full.resize(N, 0.0);
     old_Er.resize(N, 0.0);
 
-    cells_temp.resize(N);
     cells_cgs.resize(N);
-    extensives_temp.resize(N);
 
     for(std::size_t i=0; i < N; ++i){
         old_Er[i] = cells[i].Erad * cells[i].density;
@@ -96,10 +92,7 @@ bool Diffusion::prestep(Tessellation3D const& tess,
 }
 
 bool Diffusion::poststep() const {    
-    std::vector<ComputationalCell3D>().swap(cells_temp);
     std::vector<ComputationalCell3D>().swap(cells_cgs);
-    std::vector<Conserved3D>().swap(extensives_temp);
-
     return true;
 }
 
@@ -194,8 +187,9 @@ bool Diffusion::step(double const tolerance,
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
     
-    extensives_temp = extensives;
-    cells_temp = cells;
+    std::vector<Conserved3D> extensives_temp(extensives);
+    std::vector<ComputationalCell3D> cells_temp(cells);
+
     load_cells_cgs(tess, cells);
 
     calculate_planck_absorption_coefficient(tess);
@@ -222,6 +216,7 @@ bool Diffusion::step(double const tolerance,
         double value;
         int rank;
     };
+    
     MinErData minErData = {1.0, rank};
     size_t min_index = -1;
     for(std::size_t i=0; i < N; ++i){
