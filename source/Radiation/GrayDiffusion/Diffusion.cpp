@@ -193,6 +193,8 @@ bool Diffusion::step(double const tolerance,
     load_cells_cgs(tess, cells);
 
     calculate_planck_absorption_coefficient(tess);
+    calculate_scattering_coefficient(tess);
+    
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
@@ -335,7 +337,6 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
             throw UniversalError("Negative D");
         double const T = cells_cgs[i].temperature;
 
-        sigma_s[i] = D_coefficient_calcualtor.CalcScatteringOpacity(cells_cgs[i]);
         double Cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
         double const energy_ratio = Cv * cells[i].temperature / (cells[i].internal_energy * cells[i].density);
         Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
@@ -836,6 +837,22 @@ void Diffusion::calculate_planck_absorption_coefficient(
         if(sigma_planck[i] < 0.0) {
             throw UniversalError("Negative Sigma Planck")
                     .addEntry("Sigma Planck", sigma_planck[i])
+                    .addEntry("cell ID", cells_cgs[i].ID);
+        }
+    }
+}
+
+void Diffusion::calculate_scattering_coefficient(
+    Tessellation3D const& tess
+) const
+{
+    auto const N = tess.GetPointNo();
+    for(std::size_t i=0; i < N; ++i){
+        sigma_s[i] = D_coefficient_calcualtor.CalcScatteringOpacity(cells_cgs[i]);
+        
+        if(sigma_s[i] < 0.0) {
+            throw UniversalError("Negative Sigma Scattering")
+                    .addEntry("Sigma Scattering", sigma_s[i])
                     .addEntry("cell ID", cells_cgs[i].ID);
         }
     }

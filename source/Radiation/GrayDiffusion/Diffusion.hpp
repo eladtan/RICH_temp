@@ -111,6 +111,10 @@ public:
         Tessellation3D const& tess
     ) const;
 
+    void calculate_scattering_coefficient(
+        Tessellation3D const& tess
+    ) const;
+
     mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable bool do_iterations_on_Um;
 };
