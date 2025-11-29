@@ -192,6 +192,8 @@ bool Diffusion::step(double const tolerance,
     cells_temp = cells;
     load_cells_cgs(tess, cells);
 
+    calculate_planck_absorption_coefficient(tess);
+
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
@@ -288,11 +290,6 @@ Diffusion::load_cells_cgs(
 #endif
 }
 
-void Diffusion::calculate_planck_absorption_coefficient(
-    Tessellation3D const& tess,
-    std::vector<ComputationalCell3D> cells_cgs
-) const {}
-
 bool Diffusion::update_energy(
     Tessellation3D const& tess, 
     std::vector<Conserved3D>& extensives, 
@@ -337,9 +334,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         if(D[i] < 0)
             throw UniversalError("Negative D");
         double const T = cells_cgs[i].temperature;
-        sigma_planck[i] = D_coefficient_calcualtor.CalcPlanckOpacity(cells_cgs[i]);
-        if(sigma_planck[i] < 0)
-            throw UniversalError("Negative sigma_planck");
+
         sigma_s[i] = D_coefficient_calcualtor.CalcScatteringOpacity(cells_cgs[i]);
         double Cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
         double const energy_ratio = Cv * cells[i].temperature / (cells[i].internal_energy * cells[i].density);
@@ -829,4 +824,19 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 #endif
     if(rank == 0)
         std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
+}
+
+void Diffusion::calculate_planck_absorption_coefficient(
+    Tessellation3D const& tess) const 
+{
+    auto const N = tess.GetPointNo();
+    for(std::size_t i=0; i < N; ++i){    
+        sigma_planck[i] = D_coefficient_calcualtor.CalcPlanckOpacity(cells_cgs[i]);
+
+        if(sigma_planck[i] < 0.0) {
+            throw UniversalError("Negative Sigma Planck")
+                    .addEntry("Sigma Planck", sigma_planck[i])
+                    .addEntry("cell ID", cells_cgs[i].ID);
+        }
+    }
 }
