@@ -200,9 +200,11 @@ bool Diffusion::step(double const tolerance,
 
     calculate_planck_absorption_coefficient(tess);
     calculate_scattering_coefficient(tess);
+    calculate_cell_diffusion_coefficients(tess);
 
     // must be after `calculate_planck_absorption_coefficient` and `calculate_scattering_coefficient`
     calculate_fleck_factor(tess, cells, dt);
+
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
@@ -324,12 +326,15 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 
     std::vector<size_t> neighbors;
     face_vec faces;
+    
     std::vector<size_t> zero_indeces;
     size_t const Nzero = zero_cells_.size();
     for(size_t i = 0; i < Nzero; ++i)
         zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
+    
     double const zero_value = 1e-10;
     std::vector<double> new_Er(Nlocal, 0), Er_for_limit(Nlocal, 0);
+    
     for(size_t i = 0; i < Nlocal; ++i)
     {
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
@@ -469,7 +474,6 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                     cells_cgs[neighbor_j].temperature = T2;
                     double mid_D = 2 * D1 * D2 / (D1 + D2);
 
-                    // double mid_D = 0.5 * (D[neighbor_j] + Dcell);
                     double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(grad_E) * (Er - Er_j)));
                     double grad_factor = 1;
                     max_neighbor_R[i] = std::max(max_neighbor_R[i], max_R[neighbor_j]);
@@ -876,4 +880,21 @@ void Diffusion::calculate_fleck_factor(
                     .addEntry("cell ID", cells[i].ID);
         }
     }
+}
+
+void Diffusion::calculate_cell_diffusion_coefficients(
+    Tessellation3D const& tess
+) const 
+{
+    auto const N = tess.GetPointNo();
+    
+    for (std::size_t i=0; i < N; ++i){
+        D[i] = D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
+
+        if(D[i] < 0.0){
+            throw UniversalError("Negative Diffusion Coefficient")
+                    .addEntry("Diffusion Coefficient", D[i])
+                    .addEntry("cell ID", cells_cgs[i].ID);
+        }
+    }    
 }

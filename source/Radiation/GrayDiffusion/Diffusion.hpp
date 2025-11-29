@@ -54,12 +54,6 @@ public:
     void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
         std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result) const override;
 
-    double GetSingleFleckFactor(
-        ComputationalCell3D const& cell, 
-        std::size_t const cell_index,
-        double const dt
-    ) const;
-
     virtual void PrintDebugData(size_t const index) const
     {
         std::cout<<"Diffusion debug data:"<<std::endl;
@@ -84,9 +78,6 @@ public:
         double const dt, 
         double const time
     ) const;
-
-    
-    
     
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
     DiffusionBoundaryCalculator const& boundary_calc_;
@@ -121,6 +112,16 @@ public:
         Tessellation3D const& tess,
         std::vector<ComputationalCell3D> const& cells,
         double const dt_cgs
+    ) const;
+
+    double GetSingleFleckFactor(
+        ComputationalCell3D const& cell, 
+        std::size_t const cell_index,
+        double const dt
+    ) const;
+
+    void calculate_cell_diffusion_coefficients(
+        Tessellation3D const& tess
     ) const;
     
     mutable std::vector<ComputationalCell3D> cells_cgs;
