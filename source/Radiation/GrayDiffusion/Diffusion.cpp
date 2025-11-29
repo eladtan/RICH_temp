@@ -314,10 +314,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 
     b.resize(Nlocal, 0);
     x0.resize(Nlocal, 0);
-    D.resize(Nlocal);
-    fleck_factor.resize(Nlocal);
-    sigma_planck.resize(Nlocal);
-    sigma_s.resize(Nlocal);
+
     std::vector<size_t> neighbors;
     face_vec faces;
     std::vector<size_t> zero_indeces;
@@ -375,10 +372,6 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     A.resize(Nlocal);
     A_indeces.clear();
     A_indeces.resize(Nlocal);
-    R2.clear();
-    R2.resize(Nlocal, 0);
-    cell_flux_limiter.clear();
-    cell_flux_limiter.resize(Nlocal, 0);
 
     // Build the matrix
     for(size_t i = 0; i < Nlocal; ++i)
