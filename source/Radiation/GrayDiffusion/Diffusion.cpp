@@ -37,19 +37,25 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                              extensives_temp(),
                                              do_iterations_on_Um(false) {}
 
-double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const
+double Diffusion::GetSingleFleckFactor(
+    ComputationalCell3D const& cell, 
+    std::size_t const cell_index, 
+    double const dt 
+) const 
 {
-    ComputationalCell3D cell_cgs(cell);
-    cell_cgs.density *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
-    double const Er = cell.Erad * cell.density *  mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
-    double const sigma_planck = D_coefficient_calcualtor.CalcPlanckOpacity(cell_cgs);
-    double const sigma_s = D_coefficient_calcualtor.CalcScatteringOpacity(cell_cgs);
+    double const Er = cell.Erad * cell.density * energy_density_scale_;
+    
     double const T = cell.temperature;
     double Cv = eos_.dT2cv(cell.density, T, cell.tracers, ComputationalCell3D::tracerNames);
-    double const energy_ratio = Cv * cell.temperature / (cell.internal_energy * cell.density);
-    Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
+    double const energy_ratio = Cv * T / (cell.internal_energy * cell.density);
+
+    Cv *= energy_density_scale_;
     double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
-    return compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck, sigma_s, Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck);
+
+    return compton_on_ ? 
+            FleckFactorCompton(dt * time_scale_, beta, sigma_planck[cell_index], sigma_s[cell_index], Er, Cv) 
+            : 
+            FleckFactor(dt * time_scale_, beta, sigma_planck[cell_index]);
 }
 
 bool Diffusion::prestep(Tessellation3D const& tess,
@@ -194,7 +200,9 @@ bool Diffusion::step(double const tolerance,
 
     calculate_planck_absorption_coefficient(tess);
     calculate_scattering_coefficient(tess);
-    
+
+    // must be after `calculate_planck_absorption_coefficient` and `calculate_scattering_coefficient`
+    calculate_fleck_factor(tess, cells, dt);
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
@@ -337,14 +345,8 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
             throw UniversalError("Negative D");
         double const T = cells_cgs[i].temperature;
 
-        double Cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
-        double const energy_ratio = Cv * cells[i].temperature / (cells[i].internal_energy * cells[i].density);
-        Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
-        double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
-        fleck_factor[i] = compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck[i], sigma_s[i], Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck[i]);
-        if(fleck_factor[i] < 0)
-            throw UniversalError("Negative fleck_factor");
         b[i] = volume * Er;
+
         double const Um = CG::radiation_constant * T * T * T * T;
         if(fleck_factor[i] < 0.8 && Um > Er)
         {
@@ -854,6 +856,24 @@ void Diffusion::calculate_scattering_coefficient(
             throw UniversalError("Negative Sigma Scattering")
                     .addEntry("Sigma Scattering", sigma_s[i])
                     .addEntry("cell ID", cells_cgs[i].ID);
+        }
+    }
+}
+
+void Diffusion::calculate_fleck_factor(
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D> const& cells,
+    double const dt
+) const {
+    auto const N = tess.GetPointNo();
+
+    for(std::size_t i=0; i < N; ++i){
+        fleck_factor[i] = GetSingleFleckFactor(cells[i], i, dt);
+
+        if(fleck_factor[i] < 0){
+            throw UniversalError("Negative fleck_factor")
+                    .addEntry("fleck factor", fleck_factor[i])
+                    .addEntry("cell ID", cells[i].ID);
         }
     }
 }
