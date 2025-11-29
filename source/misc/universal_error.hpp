@@ -71,9 +71,10 @@ public:
   UniversalError(const UniversalError& eo);
 
   template<typename T>
-  void addEntry(const std::string &name, const T &value)
+  UniversalError& addEntry(const std::string &name, const T &value)
   {
     this->fields_.emplace_back(name, value);
+    return *this;
   }
 
   /*! \brief Prints the contents of the error
