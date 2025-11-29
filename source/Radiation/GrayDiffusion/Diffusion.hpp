@@ -104,7 +104,13 @@ public:
     mutable std::vector<double> old_T;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
-
+    
+    private:
+    void load_cells_cgs(
+        Tessellation3D const& tess, 
+        std::vector<ComputationalCell3D> const& cells_not_cgs) const;
+    
+    mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable bool do_iterations_on_Um;
 };
 #endif

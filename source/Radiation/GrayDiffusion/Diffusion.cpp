@@ -68,6 +68,7 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     old_Er.resize(N, 0.0);
 
     cells_temp.resize(N);
+    cells_cgs.resize(N);
     extensives_temp.resize(N);
 
     for(std::size_t i=0; i < N; ++i){
@@ -83,14 +84,17 @@ bool Diffusion::prestep(Tessellation3D const& tess,
         }
     }
 
+    set_scales(mass_scale_, length_scale_, time_scale_);
+
     return true;
 }
 
 bool Diffusion::poststep() const {    
     std::vector<ComputationalCell3D>().swap(cells_temp);
+    std::vector<ComputationalCell3D>().swap(cells_cgs);
     std::vector<Conserved3D>().swap(extensives_temp);
 
-    return false;
+    return true;
 }
 
 double Diffusion::calculate_dt(double const dt,
@@ -186,6 +190,7 @@ bool Diffusion::step(double const tolerance,
     
     extensives_temp = extensives;
     cells_temp = cells;
+    load_cells_cgs(tess, cells);
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
@@ -256,17 +261,18 @@ bool Diffusion::step_iterations(
     extensives_temp = extensives;
     cells_temp = cells;
 
-    auto cells_cgs = get_cells_cgs(tess, cells);
+    // auto cells_cgs = get_cells_cgs(tess, cells);
 
 
     return true;
 }
 
-std::vector<ComputationalCell3D>
-Diffusion::get_cells_cgs(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells_not_cgs) const {
-    set_scales(mass_scale_, length_scale_, time_scale_);
+void
+Diffusion::load_cells_cgs(
+    Tessellation3D const& tess, 
+    std::vector<ComputationalCell3D> const& cells_not_cgs) const {
 
-    std::vector<ComputationalCell3D> cells_cgs(cells_not_cgs);
+    cells_cgs = cells_not_cgs;
 
     auto const Nlocal = tess.GetPointNo();
     for(std::size_t cell=0; cell < Nlocal; ++cell){
@@ -276,6 +282,10 @@ Diffusion::get_cells_cgs(Tessellation3D const& tess, std::vector<ComputationalCe
         cells_cgs[cell].Erad_dt_dt  *= specific_energy_scale_ / (time_scale_*time_scale_);
         cells_cgs[cell].velocity    *= velocity_scale_;
     }
+
+#ifdef RICH_MPI
+	MPI_exchange_data(tess, cells_cgs, true);	
+#endif
 }
 
 void Diffusion::calculate_planck_absorption_coefficient(
@@ -301,18 +311,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
     size_t const Nlocal = tess.GetPointNo();
-    std::vector<ComputationalCell3D> cells_cgs(cells);
-    for(size_t i = 0; i < Nlocal; ++i)
-    {
-        cells_cgs[i].density    *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
-        cells_cgs[i].Erad       *= length_scale_ * length_scale_ / (time_scale_ * time_scale_);
-        cells_cgs[i].Erad_dt    *= length_scale_ * length_scale_ / (time_scale_ * time_scale_ * time_scale_);
-        cells_cgs[i].Erad_dt_dt *= length_scale_ * length_scale_ / (time_scale_ * time_scale_ * time_scale_ * time_scale_);
-        cells_cgs[i].velocity   *= length_scale_ / time_scale_;
-     }
-#ifdef RICH_MPI
-	MPI_exchange_data(tess, cells_cgs, true);	
-#endif
+
     b.resize(Nlocal, 0);
     x0.resize(Nlocal, 0);
     D.resize(Nlocal);
