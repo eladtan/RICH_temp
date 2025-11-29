@@ -86,11 +86,6 @@ public:
     ) const;
 
     
-    void calculate_fleck_factor(
-        Tessellation3D const& tess,
-        std::vector<ComputationalCell3D> const& cells,
-        double const dt_cgs
-    ) const;
     
     
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
@@ -117,11 +112,17 @@ public:
     void calculate_planck_absorption_coefficient(
         Tessellation3D const& tess
     ) const;
-
+    
     void calculate_scattering_coefficient(
         Tessellation3D const& tess
     ) const;
-
+    
+    void calculate_fleck_factor(
+        Tessellation3D const& tess,
+        std::vector<ComputationalCell3D> const& cells,
+        double const dt_cgs
+    ) const;
+    
     mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable bool do_iterations_on_Um;
 };
