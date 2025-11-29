@@ -112,6 +112,7 @@ public:
               density_scale_ = mass_scale / (length_scale*length_scale*length_scale);
               energy_density_scale_ = mass_scale / (time_scale * time_scale * length_scale);
               specific_energy_scale_ = length_scale * length_scale / (time_scale * time_scale);
+              velocity_scale_ = length_scale / time_scale;
        }
 
        bool const flux_limiter_;
