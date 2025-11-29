@@ -31,10 +31,9 @@ int main(int argc, char* argv[]) {
 
     auto const elapsed = std::chrono::duration<double>(clock::now() - start); 
     
-    std::cout << "Tests Finished Rank " << rank << std::endl;
-
-    std::cout << "Total Time Elapsed for Root: " << elapsed.count() << " seconds." << std::endl;
-    
+    if(rank == utils_for_tests::mpi::rank_root){
+        std::cout << "Total Time Elapsed for Root: " << elapsed.count() << " seconds." << std::endl;
+    }
 
 #ifdef RICH_MPI
     MPI_Finalize();
