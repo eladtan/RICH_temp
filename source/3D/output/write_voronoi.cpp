@@ -8,12 +8,14 @@ struct VTU_Output
     std::vector<std::vector<Vector3D>> vtu_cell_vectors;
 };
 
+#ifdef RICH_VTK
 void writeVTU(const std::string &filename, const Tessellation3D &tri, const VTU_Output &data)
 {
     std::filesystem::path vtu_name(filename);
     vtu_name.replace_extension("vtu");
     write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, tri);
 }
+#endif
 
 VTU_Output WriteVoronoiHelper(H5File &file, Group &writegroup, const std::string &filename, const Voronoi3D &tri, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names, bool write_vtu)
 {
@@ -164,7 +166,9 @@ VTU_Output WriteVoronoiHelper(H5File &file, Group &writegroup, const std::string
 
         writegroup.close();
         file.close();
+#ifdef RICH_VTK
         writeVTU(filename, tri, vtu);
+#endif
 
         MPI_Barrier(MPI_COMM_WORLD);
         // only rank 0 makes the shared file
@@ -260,7 +264,9 @@ void WriteVoronoi(Voronoi3D const &tri, std::string const &filename, const std::
     #else
         file.close();
     #endif
+#ifdef RICH_VTK
     writeVTU(filename, tri, vtu);
+#endif
 }
 
 void WriteVoronoiSerial(Voronoi3D const &tri, std::string const &filename, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names, bool writevtu)
@@ -277,7 +283,9 @@ void WriteVoronoiSerial(Voronoi3D const &tri, std::string const &filename, const
 
     Group writegroup = file.openGroup("/");
     VTU_Output vtu = WriteVoronoiHelper(file, writegroup, filename, tri, data, names, writevtu);
+#ifdef RICH_VTK
     writeVTU(filename, tri, vtu);
+#endif
     writegroup.close();
     file.close();
 }

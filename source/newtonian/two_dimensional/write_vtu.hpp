@@ -4,6 +4,8 @@
 #include <vector>
 #include <string>
 
+#ifdef RICH_VTK
+
 namespace write_vtu{
 
 /**
@@ -36,5 +38,7 @@ void write_vtu(std::string const& file_name,
 			   std::size_t cycle);
 
 } //namespace
+
+#endif // RICH_VTK
 
 #endif /* WRITE_VTU_HPP_ */

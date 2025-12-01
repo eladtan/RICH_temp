@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <cassert>
 
+#ifdef RICH_VTK
+
 #if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 #include <mpi.h>
 #endif
@@ -62,5 +64,7 @@ inline void write_vtu_3d(std::filesystem::path const& file_name, std::vector<std
 }
 
 } // namespace write_vtu3d
+
+#endif // RICH_VTK
 
 #endif /* WRITE_VTU_HPP_ */

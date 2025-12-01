@@ -786,8 +786,10 @@ void Voronoi3D::BuildInitialize(size_t num_points)
 */
 bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
 {
-    int rank;
+    int rank = 0;
+#ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
     assert(this->pointsManager.get() != nullptr);
     assert(this->pointsManager->getEnvironmentAgent() != nullptr);
     return (this->GetOwner(point) == rank);
@@ -2876,7 +2878,9 @@ void Voronoi3D::output_buildextra(std::string const &filename) const
     stemp = del_.points_.size();
     binary_write_single_int(static_cast<int>(stemp), file_handle);
     int rank = 0;
+#ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
     // Points
     for (std::size_t i = 0; i < stemp; ++i)
     {

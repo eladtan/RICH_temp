@@ -1,4 +1,7 @@
 #include "write_vtu_3d.hpp"
+
+#ifdef RICH_VTK
+
 #include <set>
 
 namespace write_vtu3d
@@ -355,3 +358,5 @@ void write_vtu_3d_points(std::filesystem::path const& file_name,
 }
 
 } //namespace
+
+#endif // RICH_VTK

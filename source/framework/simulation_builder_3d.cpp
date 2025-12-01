@@ -22,6 +22,10 @@
 #include <cstdlib>
 #include <string>
 
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
+
 namespace rich3d {
 
 using std::pair;
@@ -166,9 +170,25 @@ static void run_simulation_loop(const Problem3DConfig& config, ::HDSim3D& sim, :
 }
 
 void Simulation3DBuilder::build_and_run(const Problem3DConfig& config) {
-    std::cout << "================================================================\n";
-    std::cout << "RICH 3D Simulation: " << config.name << "\n";
-    std::cout << "================================================================\n\n";
+    // Initialize MPI if enabled
+#ifdef RICH_MPI
+    int mpi_initialized = 0;
+    MPI_Initialized(&mpi_initialized);
+    if (!mpi_initialized) {
+        MPI_Init(nullptr, nullptr);
+    }
+
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    if (rank == 0) {
+#endif
+        std::cout << "================================================================\n";
+        std::cout << "RICH 3D Simulation: " << config.name << "\n";
+        std::cout << "================================================================\n\n";
+#ifdef RICH_MPI
+    }
+#endif
 
     // Validate required configuration
     if (!config.physics.eos) {
@@ -227,6 +247,15 @@ void Simulation3DBuilder::build_and_run(const Problem3DConfig& config) {
 
     // Run the main simulation loop
     run_simulation_loop(config, sim, numerical.timestep, source_components, amr_components);
+
+    // Finalize MPI if we initialized it
+#ifdef RICH_MPI
+    int mpi_finalized = 0;
+    MPI_Finalized(&mpi_finalized);
+    if (!mpi_finalized) {
+        MPI_Finalize();
+    }
+#endif
 }
 
 } // namespace rich3d

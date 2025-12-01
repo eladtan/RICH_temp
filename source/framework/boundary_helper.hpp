@@ -73,14 +73,17 @@ inline std::unique_ptr<BoundaryPackage> create_boundary_conditions(
         // Simple uniform case - use single ghost
         std::shared_ptr<Ghost3D> ghost;
         if (bc.x_lower == BoundaryConfig::Type::RIGID_WALL) {
+            std::cout << "  Boundary: Uniform RIGID_WALL (simple path)\n";
             ghost = std::make_shared<RigidWallGenerator3D>();
         } else {
+            std::cout << "  Boundary: Uniform FREE_FLOW (simple path)\n";
             ghost = std::make_shared<FreeFlowGenerator3D>();
         }
         return std::make_unique<BoundaryPackage>(ghost);
     }
 
     // Mixed boundaries - use SeveralGhostGenerator3D
+    std::cout << "  Boundary: Mixed (using SeveralGhostGenerator3D)\n";
     auto pkg = std::make_unique<BoundaryPackage>(nullptr);
 
     // Build ghost pointer list using VALUE member addresses

@@ -24,28 +24,42 @@ RICH is a compressible hydrodynamic simulation code on a moving mesh written in 
 **Libraries:**
 - CMake 3.20+
 - HDF5 (with C++ bindings)
-- VTK 9.x
 - Boost
 - pybind11
 - OpenMP (optional, for performance)
 - MPI (optional, for parallel runs)
+- VTK 9.x (optional, for VTU visualization output)
 
 ### Installation
 
 **macOS (Homebrew):**
+
 ```bash
-brew install cmake gcc boost hdf5 vtk open-mpi
+# Minimal (required libraries only)
+brew install cmake gcc boost hdf5
+
+# With optional features
+brew install cmake gcc boost hdf5 open-mpi vtk
 ```
 
 **Ubuntu/Debian:**
+
 ```bash
-sudo apt install cmake gcc g++ gfortran libhdf5-dev libvtk9-dev libboost-all-dev libopenmpi-dev
+# Minimal (required libraries only)
+sudo apt install cmake gcc g++ gfortran libhdf5-dev libboost-all-dev
+
+# With optional features
+sudo apt install cmake gcc g++ gfortran libhdf5-dev libboost-all-dev libopenmpi-dev libvtk9-dev
 ```
 
 **HPC/Cluster:**
+
 ```bash
 # Load modules (names vary by system)
-module load cmake gcc hdf5 vtk boost openmpi
+module load cmake gcc hdf5 boost
+
+# Optional: MPI and VTK
+module load openmpi vtk
 
 # Save configuration (if using Lmod)
 module save rich_build
@@ -70,6 +84,7 @@ module save rich_build
 - `--compiler=gnu|intel` (default: gnu)
 - `--build=release|debug` (default: release)
 - `--mpi` - Enable MPI for parallel runs
+- `--vtk` - Enable VTK output (VTU files for visualization)
 - `--profile` - Enable profiling with gprof
 - `--energy-groups=N` - Multigroup radiation (default: 1)
 
@@ -97,9 +112,20 @@ make -j
 ./config.py --problem=sedov3d_framework --build=debug
 make -j
 
-# Parallel MPI run
+# Parallel MPI run (2 processes)
 ./config.py --problem=TDE_framework --mpi
 make -j
+mpirun -np 2 ./build/rich
+
+# With VTK output for visualization
+./config.py --problem=sedov3d_framework --vtk
+make -j
+./build/rich  # Generates both .h5 and .vtu files
+
+# MPI + VTK (requires VTK compiled with MPI support)
+./config.py --problem=TDE_framework --mpi --vtk
+make -j
+mpirun -np 4 ./build/rich
 
 # With profiling
 ./config.py --problem=sedov3d_framework --profile
@@ -108,6 +134,7 @@ make -j
 # Intel compiler with MPI
 ./config.py --problem=TDE_framework --compiler=intel --mpi
 make -j
+mpirun -np 2 ./build/rich
 ```
 
 ---
@@ -359,7 +386,6 @@ config.sources.source_terms.push_back(my_custom_source);
 ```cpp
 config.output.output_directory = "./";
 config.output.output_prefix = "snapshot";
-config.output.format = OutputConfig::Format::HDF5;  // or VTK
 
 // Output timing
 config.output.mode = OutputConfig::Mode::CYCLE;     // or TIME
@@ -373,6 +399,13 @@ config.output.max_cycles = 1000000;
 // Custom diagnostics
 config.output.diagnostics.push_back(my_diagnostic);
 ```
+
+**Output Formats:**
+
+- **HDF5** (`.h5`) - Always generated, primary data format
+- **VTU** (`.vtu`) - Generated automatically when compiled with `--vtk` flag
+
+VTK output is controlled at compile time via the `--vtk` configuration flag, not at runtime. When enabled, both HDF5 and VTU files are written for each snapshot.
 
 ### 9. Tracers and Stickers
 

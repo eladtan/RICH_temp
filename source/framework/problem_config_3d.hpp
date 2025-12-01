@@ -333,12 +333,6 @@ struct OutputConfig {
 
     std::string output_prefix = "snapshot";
 
-    enum class Format {
-        HDF5, ///< HDF5 format
-        VTK   ///< VTK format
-    };
-    Format format = Format::HDF5;
-
     // Output mode: time-based or cycle-based
     enum class Mode {
         TIME, ///< Output at fixed time intervals

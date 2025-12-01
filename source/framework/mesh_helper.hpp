@@ -13,6 +13,11 @@
 #include <iostream>
 #include <stdexcept>
 
+#ifdef RICH_MPI
+#include "mpi/mpi_commands.hpp"
+#include <mpi.h>
+#endif
+
 namespace rich3d {
 
 using ::ComputationalCell3D;
@@ -50,24 +55,47 @@ inline ComputationalCell3D get_expansion_reference_cell(const Problem3DConfig& c
 inline vector<Vector3D> create_mesh_points(const DomainConfig& domain, const MeshConfig& mesh) {
     vector<Vector3D> points;
 
+#ifdef RICH_MPI
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+
     switch (mesh.type) {
         case MeshConfig::Type::CARTESIAN: {
-            std::cout << "  Generating " << (mesh.nx * mesh.ny * mesh.nz) << " Cartesian mesh points...\n";
+#ifdef RICH_MPI
+            if (rank == 0)
+#endif
+                std::cout << "  Generating " << (mesh.nx * mesh.ny * mesh.nz) << " Cartesian mesh points...\n";
             points = ::CartesianMesh(mesh.nx, mesh.ny, mesh.nz, domain.lower_bound, domain.upper_bound);
-            std::cout << "    Done!\n";
+#ifdef RICH_MPI
+            if (rank == 0)
+#endif
+                std::cout << "    Done!\n";
             break;
         }
 
         case MeshConfig::Type::RANDOM: {
-            std::cout << "  Generating " << mesh.num_points << " random points...\n";
-            points = ::RandRectangular(mesh.num_points, domain.lower_bound, domain.upper_bound);
-
-            // Apply RoundGrid3D
-            if (mesh.round_iterations > 0) {
+#ifdef RICH_MPI
+            if (rank == 0) {
+#endif
+                std::cout << "  Generating " << mesh.num_points << " random points...\n";
+                points = ::RandRectangular(mesh.num_points, domain.lower_bound, domain.upper_bound);
+#ifdef RICH_MPI
+            }
+            // Distribute points from rank 0 to all ranks
+            points = ::MPI_Spread(points, 0, MPI_COMM_WORLD);
+            if (rank == 0)
+#endif
                 std::cout << "  Applying RoundGrid3D with " << mesh.round_iterations << " iterations...\n";
+
+            // Apply RoundGrid3D (all ranks participate)
+            if (mesh.round_iterations > 0) {
                 points = ::RoundGrid3D(points, domain.lower_bound, domain.upper_bound, mesh.round_iterations);
             }
-            std::cout << "    Done!\n";
+#ifdef RICH_MPI
+            if (rank == 0)
+#endif
+                std::cout << "    Done!\n";
             break;
         }
 
@@ -111,9 +139,21 @@ inline MeshSetupResult setup_initial_mesh(const Problem3DConfig& config, Voronoi
     }
 
     // Build tessellation
-    std::cout << "  Building Voronoi tessellation...\n";
+#ifdef RICH_MPI
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if (rank == 0)
+#endif
+        std::cout << "  Building Voronoi tessellation...\n";
+#ifdef RICH_MPI
+    tess.BuildParallel(points);
+#else
     tess.Build(points);
-    std::cout << "    Tessellation built successfully!\n";
+#endif
+#ifdef RICH_MPI
+    if (rank == 0)
+#endif
+        std::cout << "    Tessellation built successfully!\n";
 
     // Apply initial conditions
     vector<ComputationalCell3D> cells;

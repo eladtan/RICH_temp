@@ -8,12 +8,14 @@ struct VTU_Output
     std::vector<std::vector<Vector3D>> vtu_cell_vectors;
 };
 
+#ifdef RICH_VTK
 void writeVTU(const std::string &filename, const HDSim3D &sim, const VTU_Output &data)
 {
     std::filesystem::path vtu_name(filename);
     vtu_name.replace_extension("vtu");
     write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, sim.getTime(), sim.getCycle(), sim.getTesselation());
 }
+#endif
 
 VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Group &stickers, const std::string &filename, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
 {
@@ -311,7 +313,9 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
         writegroup.close();
         file.close();
 
+#ifdef RICH_VTK
         writeVTU(filename, sim, vtu);
+#endif
         MPI_Barrier(MPI_COMM_WORLD);
         // only rank 0 makes the shared file
         if(rank == 0)
@@ -459,6 +463,8 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
         file.close();
     #endif
 
+#ifdef RICH_VTK
     if(write_vtu)
         writeVTU(filename, sim, vtu);
+#endif
 }

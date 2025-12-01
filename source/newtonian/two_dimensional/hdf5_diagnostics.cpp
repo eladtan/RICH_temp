@@ -376,7 +376,8 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 				sim.getCycle()
 			);
 		}
-		
+
+#ifdef RICH_VTK
 		if(write_vtu){
 			write_vtu::write_vtu(
 				file_name_base,
@@ -390,10 +391,11 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 				cell_vectors_x,
 				cell_vectors_y,
 
-				sim.getTime(), 
+				sim.getTime(),
 				sim.getCycle()
 			);
 		}
+#endif
 	}
 }
 

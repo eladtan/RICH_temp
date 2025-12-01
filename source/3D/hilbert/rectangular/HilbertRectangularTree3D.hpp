@@ -65,8 +65,13 @@ public:
     HilbertTree3D(const HilbertRectangularConvertor3D* convertor,
                   const std::vector<hilbert_index_t>& responsibilityRange, const MPI_Comm& comm = MPI_COMM_WORLD)
         : comm(comm) {
+#ifdef RICH_MPI
         MPI_Comm_rank(this->comm, &this->rank);
         MPI_Comm_size(this->comm, &this->size);
+#else
+        this->rank = 0;
+        this->size = 1;
+#endif
 #ifdef DEBUG_MODE
         this->convertor = convertor;
 #endif // DEBUG_MODE

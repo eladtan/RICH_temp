@@ -1,5 +1,7 @@
 #include "write_vtu.hpp"
 
+#ifdef RICH_VTK
+
 #include <cassert>
 
 #ifdef RICH_MPI
@@ -212,3 +214,5 @@ void write_vtu(std::string const& file_name,
 }
 
 } //namespace
+
+#endif // RICH_VTK
