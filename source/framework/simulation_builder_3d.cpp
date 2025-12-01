@@ -73,7 +73,7 @@ static void run_simulation_loop(const Problem3DConfig& config, ::HDSim3D& sim, :
 
             timestep.SetTimeStep(new_dt);
         }
-
+       
         sim.timeAdvance2();
 
         // Post-step hook
@@ -191,8 +191,9 @@ void Simulation3DBuilder::build_and_run(const Problem3DConfig& config) {
     auto [points, cells] = setup_initial_mesh(config, tess);
 
     // Setup boundary conditions
-    auto [ghost_ptr, ghost_owner] =
+    auto boundary_pkg =
         create_boundary_conditions(config.boundary, config.domain.lower_bound, config.domain.upper_bound);
+    Ghost3D* ghost_ptr = boundary_pkg->get_ghost_ptr();
 
     // Setup source terms (accelerations + custom + radiation)
     SourceTermComponents source_components = setup_source_terms(config);

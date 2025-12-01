@@ -48,9 +48,23 @@ configure_file(
 # Find dependencies
 find_package(OpenMP)
 find_package(HDF5 REQUIRED COMPONENTS C CXX HL)
+
+# VTK - basic components always required
 find_package(VTK REQUIRED COMPONENTS
     CommonCore CommonColor CommonDataModel CommonTransforms
-    FiltersGeneral FiltersSources IOXML IOParallelXML InteractionStyle)
+    FiltersGeneral FiltersSources IOXML InteractionStyle)
+
+# VTK MPI components - optional, only when MPI is enabled
+if(ENABLE_MPI)
+    find_package(VTK QUIET COMPONENTS ParallelMPI IOParallel IOParallelXML)
+    if(VTK_ParallelMPI_FOUND)
+        message(STATUS "VTK MPI support: Found")
+        add_compile_definitions(RICH_VTK_MPI)
+    else()
+        message(STATUS "VTK MPI support: Not found (parallel VTU output will be disabled)")
+    endif()
+endif()
+
 find_package(Boost REQUIRED)
 
 # pybind11 - check local first
@@ -66,10 +80,6 @@ find_package(jsoncpp QUIET)
 file(GLOB_RECURSE SRC_CPP "${CMAKE_SOURCE_DIR}/source/*.cpp")
 file(GLOB_RECURSE PROBLEM_SRC "${CMAKE_SOURCE_DIR}/runs/${PROBLEM_NAME}/*.cpp")
 file(GLOB SRC_R3D "${CMAKE_SOURCE_DIR}/source/opt/r3d/src/*.c")
-
-set_source_files_properties(${SRC_R3D} PROPERTIES
-    COMPILE_FLAGS "-Wno-error=flexible-array-extensions"
-)
 
 if(NOT PROBLEM_SRC)
     message(FATAL_ERROR "No source files in runs/${PROBLEM_NAME}/")

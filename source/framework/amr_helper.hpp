@@ -46,13 +46,13 @@ public:
         vector<size_t> to_remove;
         vector<double> merits;
 
-        for (size_t i = 0; i < cells.size(); ++i) {
+        for (size_t i = 0; i < tess.GetPointNo(); ++i) {
             const Vector3D& pos = tess.GetMeshPoint(i);
 
             // Check if point is outside domain (with margin)
             if (!is_point_in_domain(pos, lower_bound_, upper_bound_, margin_)) {
                 to_remove.push_back(i);
-                merits.push_back(1.0); // All have equal merit
+                merits.push_back(1.0); // TODO: based on distance?
             }
         }
 

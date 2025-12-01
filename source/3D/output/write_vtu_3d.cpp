@@ -15,7 +15,7 @@ namespace write_vtu3d
 		std::size_t const num_vertices = vertices.size();
 		std::size_t const num_cells = tess.GetPointNo();
 
-		#ifdef RICH_MPI
+		#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 			int mpi_rank;
 			int mpi_size;
 			MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -109,7 +109,7 @@ namespace write_vtu3d
 		}
 
 		// write mpi rank as a cell centered data
-		#ifdef RICH_MPI
+		#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 			vtkNew<vtkIntArray> var_mpi_rank;
 			var_mpi_rank->SetName(std::string("mpi_rank").c_str());
 			var_mpi_rank->SetNumberOfComponents(1);
@@ -156,7 +156,7 @@ namespace write_vtu3d
 	https://github.com/libMesh/libmesh/blob/484c8652977b6504e1613633b4c7d87297f94957/src/mesh/vtk_io.C#L275-L286
 	but it only works if VTK library was compiled with MPI.
 	*/
-	#ifdef RICH_MPI
+	#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 		vtkNew<vtkXMLPUnstructuredGridWriter> pwriter;
 
 		// Set VTK library to use the same MPI communicator as we do
@@ -205,7 +205,7 @@ void write_vtu_3d_points(std::filesystem::path const& file_name,
 	std::vector<Vector3D> cm_points = tess.GetAllCM();
 	cm_points.resize(num_points);
 
-	#ifdef RICH_MPI
+	#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 		int mpi_rank;
 		int mpi_size;
 		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -260,7 +260,7 @@ void write_vtu_3d_points(std::filesystem::path const& file_name,
 	}
 
 	// write mpi rank as a cell centered data
-	#ifdef RICH_MPI
+	#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 		vtkNew<vtkIntArray> var_mpi_rank;
 		var_mpi_rank->SetName(std::string("mpi_rank").c_str());
 		var_mpi_rank->SetNumberOfComponents(1);
@@ -319,7 +319,7 @@ void write_vtu_3d_points(std::filesystem::path const& file_name,
 	https://github.com/libMesh/libmesh/blob/484c8652977b6504e1613633b4c7d87297f94957/src/mesh/vtk_io.C#L275-L286
 	but it only works if VTK library was compiled with MPI.
 	*/
-	#ifdef RICH_MPI
+	#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
 		vtkNew<vtkXMLPUnstructuredGridWriter> pwriter;
 
 		// Set VTK library to use the same MPI communicator as we do

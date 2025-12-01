@@ -6,9 +6,9 @@
 #include <filesystem>
 #include "3D/tesselation/voronoi/Voronoi3D.hpp"
 #include "misc/hdf5_utils.hpp"
-#include "write_vtu_3d.hpp"
 #include "DiagnosticAppendix3D.hpp"
 #include "Snapshot3D.hpp"
+#include "write_vtu_3d.hpp"
 
 namespace fs = std::filesystem;
 using namespace H5;

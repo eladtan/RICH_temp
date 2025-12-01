@@ -85,5 +85,5 @@
         "filesystem": "cpp",
         "cstddef": "cpp"
     },
-    "cmake.sourceDirectory": "/Users/yihanwang/Repositories/RICH/source"
+    "cmake.sourceDirectory": "/Users/yihanwang/Repositories/RICH"
 }

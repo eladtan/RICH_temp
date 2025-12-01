@@ -19,7 +19,7 @@ void MPI_Timed_barrier(const MPI_Comm &comm, double seconds, std::string const &
 	int ifNewMessageArrived = 0;
 	MPI_Status status;
 
-	std::chrono::_V2::system_clock::time_point start, end;
+	std::chrono::system_clock::time_point start, end;
 	start = std::chrono::system_clock::now();
 
 	while(numArrived != size)

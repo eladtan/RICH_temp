@@ -34,12 +34,12 @@ RICH is a compressible hydrodynamic simulation code on a moving mesh written in 
 
 **macOS (Homebrew):**
 ```bash
-brew install cmake gcc vtk boost hdf5
+brew install cmake gcc boost hdf5 vtk open-mpi
 ```
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install cmake gcc g++ gfortran libhdf5-dev libvtk9-dev libboost-all-dev
+sudo apt install cmake gcc g++ gfortran libhdf5-dev libvtk9-dev libboost-all-dev libopenmpi-dev
 ```
 
 **HPC/Cluster:**

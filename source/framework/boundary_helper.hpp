@@ -1,108 +1,112 @@
-
 #ifndef BOUNDARY_HELPER_HPP
 #define BOUNDARY_HELPER_HPP
 
 #include "problem_config_3d.hpp"
 #include "newtonian/three_dimensional/Ghost3D.hpp"
 #include <memory>
-#include <map>
+#include <array>
 
 namespace rich3d {
 
-// Import legacy RICH types from global namespace
+// Import legacy RICH types
 using ::FreeFlowGenerator3D;
 using ::Ghost3D;
 using ::RigidWallGenerator3D;
 using ::SeveralGhostGenerator3D;
 using ::Tessellation3D;
 using ::Vector3D;
-using GhostBoundaryResult = pair<Ghost3D*, std::shared_ptr<void>>;
 
-class FaceIndexChooser : public SeveralGhostGenerator3D::GhostCriteria3D {
-private:
-    std::array<size_t, 6> face_to_ghost_; // [x-, x+, y-, y+, z-, z+]
+// Face selector for mixed boundaries
+class FaceSelector : public SeveralGhostGenerator3D::GhostCriteria3D {
+    std::array<size_t, 6> indices_;
     Vector3D lower_, upper_;
 
 public:
-    FaceIndexChooser(const std::array<size_t, 6>& indices, const Vector3D& lower, const Vector3D& upper)
-        : face_to_ghost_(indices), lower_(lower), upper_(upper) {}
+    FaceSelector(const std::array<size_t, 6>& idx, const Vector3D& lo, const Vector3D& hi)
+        : indices_(idx), lower_(lo), upper_(hi) {}
 
     size_t GhostChoose(Tessellation3D const& tess, size_t index) const override {
         const Vector3D& p = tess.GetMeshPoint(index);
-        const double eps = 1e-10;
-
-        if (std::abs(p.x - lower_.x) < eps)
-            return face_to_ghost_[0]; // x-
-        if (std::abs(p.x - upper_.x) < eps)
-            return face_to_ghost_[1]; // x+
-        if (std::abs(p.y - lower_.y) < eps)
-            return face_to_ghost_[2]; // y-
-        if (std::abs(p.y - upper_.y) < eps)
-            return face_to_ghost_[3]; // y+
-        if (std::abs(p.z - lower_.z) < eps)
-            return face_to_ghost_[4]; // z-
-        if (std::abs(p.z - upper_.z) < eps)
-            return face_to_ghost_[5]; // z+
-
-        return 0; // Fallback
+        if (p.x < lower_.x) return indices_[0];
+        if (p.x > upper_.x) return indices_[1];
+        if (p.y < lower_.y) return indices_[2];
+        if (p.y > upper_.y) return indices_[3];
+        if (p.z < lower_.z) return indices_[4];
+        if (p.z > upper_.z) return indices_[5];
+        return indices_[0];
     }
 };
 
+// Boundary package - keeps all ghost generators alive with stable addresses
 struct BoundaryPackage {
-    std::map<BoundaryConfig::Type, std::unique_ptr<Ghost3D>> standard_ghosts;
-    std::unique_ptr<FaceIndexChooser> chooser;
-    std::unique_ptr<SeveralGhostGenerator3D> several;
+    // Value members for base ghosts - stable addresses guaranteed
+    FreeFlowGenerator3D free_flow;
+    RigidWallGenerator3D rigid_wall;
+
+    // For mixed boundaries
+    std::vector<std::shared_ptr<Ghost3D>> custom_ghosts;
+    std::shared_ptr<FaceSelector> selector;
+    std::shared_ptr<SeveralGhostGenerator3D> several;
+
+    // Single ghost for uniform case
+    std::shared_ptr<Ghost3D> ghost;
+
+    BoundaryPackage(const std::shared_ptr<Ghost3D>& g) : ghost(g) {}
+
+    Ghost3D* get_ghost_ptr() {
+        return several ? several.get() : ghost.get();
+    }
 };
 
-inline std::string get_boundary_type_name(BoundaryConfig::Type type) {
-    switch (type) {
-        case BoundaryConfig::Type::RIGID_WALL:
-            return "RIGID_WALL";
-        case BoundaryConfig::Type::FREE_FLOW:
-            return "FREE_FLOW";
-        case BoundaryConfig::Type::PERIODIC:
-            return "PERIODIC";
-        case BoundaryConfig::Type::CUSTOM:
-            return "CUSTOM";
-        default:
-            return "UNKNOWN";
+// Factory
+inline std::unique_ptr<BoundaryPackage> create_boundary_conditions(
+    const BoundaryConfig& bc, const Vector3D& lower, const Vector3D& upper) {
+
+    // Check if all boundaries are the same type (no custom)
+    bool all_same = (bc.x_lower == bc.x_upper && bc.x_lower == bc.y_lower &&
+                     bc.x_lower == bc.y_upper && bc.x_lower == bc.z_lower && bc.x_lower == bc.z_upper);
+
+    if (all_same && !bc.custom_x_lower && !bc.custom_x_upper &&
+        !bc.custom_y_lower && !bc.custom_y_upper &&
+        !bc.custom_z_lower && !bc.custom_z_upper) {
+
+        // Simple uniform case - use single ghost
+        std::shared_ptr<Ghost3D> ghost;
+        if (bc.x_lower == BoundaryConfig::Type::RIGID_WALL) {
+            ghost = std::make_shared<RigidWallGenerator3D>();
+        } else {
+            ghost = std::make_shared<FreeFlowGenerator3D>();
+        }
+        return std::make_unique<BoundaryPackage>(ghost);
     }
-}
 
-inline GhostBoundaryResult create_boundary_conditions(const BoundaryConfig& bc, const Vector3D& lower,
-                                                      const Vector3D& upper) {
-    auto package = std::make_shared<BoundaryPackage>();
+    // Mixed boundaries - use SeveralGhostGenerator3D
+    auto pkg = std::make_unique<BoundaryPackage>(nullptr);
 
-    // Standard ghosts at fixed indices: [0]=FREE_FLOW, [1]=RIGID_WALL
-    package->standard_ghosts[BoundaryConfig::Type::FREE_FLOW] = std::make_unique<FreeFlowGenerator3D>();
-    package->standard_ghosts[BoundaryConfig::Type::RIGID_WALL] = std::make_unique<RigidWallGenerator3D>();
+    // Build ghost pointer list using VALUE member addresses
+    std::vector<Ghost3D*> ghost_ptrs = {&pkg->free_flow, &pkg->rigid_wall};
+    std::array<size_t, 6> face_idx;
 
-    std::vector<Ghost3D*> ghost_list = {
-        package->standard_ghosts[BoundaryConfig::Type::FREE_FLOW].get(), // index 0
-        package->standard_ghosts[BoundaryConfig::Type::RIGID_WALL].get() // index 1
-    };
-
-    // Helper to get index for a face
     auto add_face = [&](BoundaryConfig::Type type, const std::shared_ptr<Ghost3D>& custom) -> size_t {
         if (custom) {
-            ghost_list.push_back(custom.get());
-            return ghost_list.size() - 1;
+            pkg->custom_ghosts.push_back(custom);
+            ghost_ptrs.push_back(custom.get());
+            return ghost_ptrs.size() - 1;
         }
-        // PERIODIC is handled by tessellation, use FREE_FLOW as placeholder
-        if (type == BoundaryConfig::Type::RIGID_WALL)
-            return 1;
-        return 0; // FREE_FLOW or PERIODIC -> index 0
+        return (type == BoundaryConfig::Type::RIGID_WALL) ? 1 : 0;
     };
 
-    std::array<size_t, 6> face_indices = {
-        add_face(bc.x_lower, bc.custom_x_lower), add_face(bc.x_upper, bc.custom_x_upper),
-        add_face(bc.y_lower, bc.custom_y_lower), add_face(bc.y_upper, bc.custom_y_upper),
-        add_face(bc.z_lower, bc.custom_z_lower), add_face(bc.z_upper, bc.custom_z_upper)};
+    face_idx[0] = add_face(bc.x_lower, bc.custom_x_lower);
+    face_idx[1] = add_face(bc.x_upper, bc.custom_x_upper);
+    face_idx[2] = add_face(bc.y_lower, bc.custom_y_lower);
+    face_idx[3] = add_face(bc.y_upper, bc.custom_y_upper);
+    face_idx[4] = add_face(bc.z_lower, bc.custom_z_lower);
+    face_idx[5] = add_face(bc.z_upper, bc.custom_z_upper);
 
-    package->chooser = std::make_unique<FaceIndexChooser>(face_indices, lower, upper);
-    package->several = std::make_unique<SeveralGhostGenerator3D>(ghost_list, *package->chooser);
+    pkg->selector = std::make_shared<FaceSelector>(face_idx, lower, upper);
+    pkg->several = std::make_shared<SeveralGhostGenerator3D>(ghost_ptrs, *pkg->selector);
 
-    return {package->several.get(), package};
+    return pkg;
 }
 
 } // namespace rich3d

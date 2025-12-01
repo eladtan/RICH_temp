@@ -6,8 +6,8 @@
 #include <filesystem>
 #include <cassert>
 
-#ifdef RICH_MPI
-	#include <mpi.h>
+#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
+#include <mpi.h>
 #endif
 
 #include <vtkUnstructuredGrid.h>
@@ -25,17 +25,16 @@
 #include <vtkProperty.h>
 #include <vtkNew.h>
 
-#ifdef RICH_MPI
-	#include <vtkMPI.h>
-	#include <vtkMPICommunicator.h>
-	#include <vtkMPIController.h>
+#if defined(RICH_MPI) && defined(RICH_VTK_MPI)
+#include <vtkMPI.h>
+#include <vtkMPICommunicator.h>
+#include <vtkMPIController.h>
 #endif
 
 #include "../tesselation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/hdsim_3d.hpp"
 
-namespace write_vtu3d
-{
+namespace write_vtu3d {
 
 /**
  * @brief write a vtu snapshot file (in parallel mode a pvtu file is also written)
@@ -48,25 +47,20 @@ namespace write_vtu3d
  * @param time 
  * @param cycle 
  */
-void write_vtu_3d(std::filesystem::path const& file_name,
-			   std::vector<std::string> const& cell_variable_names,
-			   std::vector<std::vector<double>> const& cell_variables,
-			   std::vector<std::string> const& cell_vectors_names,
-			   std::vector<std::vector<Vector3D> > const& cell_vectors,
-			   double const time,
-			   std::size_t cycle,
-               Tessellation3D const& tess);
+void write_vtu_3d(std::filesystem::path const& file_name, std::vector<std::string> const& cell_variable_names,
+                  std::vector<std::vector<double>> const& cell_variables,
+                  std::vector<std::string> const& cell_vectors_names,
+                  std::vector<std::vector<Vector3D>> const& cell_vectors, double const time, std::size_t cycle,
+                  Tessellation3D const& tess);
 
-inline void write_vtu_3d(std::filesystem::path const& file_name,
-			   std::vector<std::string> const& cell_variable_names,
-			   std::vector<std::vector<double>> const& cell_variables,
-			   std::vector<std::string> const& cell_vectors_names,
-			   std::vector<std::vector<Vector3D> > const& cell_vectors,
-               Tessellation3D const& tess)
-{
-	write_vtu_3d(file_name, cell_variable_names, cell_variables, cell_vectors_names, cell_vectors, std::numeric_limits<double>::max(), std::numeric_limits<size_t>::max(), tess); 
+inline void write_vtu_3d(std::filesystem::path const& file_name, std::vector<std::string> const& cell_variable_names,
+                         std::vector<std::vector<double>> const& cell_variables,
+                         std::vector<std::string> const& cell_vectors_names,
+                         std::vector<std::vector<Vector3D>> const& cell_vectors, Tessellation3D const& tess) {
+    write_vtu_3d(file_name, cell_variable_names, cell_variables, cell_vectors_names, cell_vectors,
+                 std::numeric_limits<double>::max(), std::numeric_limits<size_t>::max(), tess);
 }
 
-} //namespace
+} // namespace write_vtu3d
 
 #endif /* WRITE_VTU_HPP_ */
