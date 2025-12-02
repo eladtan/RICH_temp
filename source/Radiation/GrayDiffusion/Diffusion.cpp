@@ -588,6 +588,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 
         extensives[i].energy += dE;
         extensives[i].internal_energy += dE;
+        
         if(extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || extensives[i].Erad < 0)
         {
             good_end = 0;
@@ -625,12 +626,11 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         Vector3D gradE(0, 0, 0);
         Vector3D r_ij;
         Vector3D const CM = tess.GetCellCM(i);
-        double const Erad_factor = mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
-        double const cell_old_Er = Erad_factor * cells[i].Erad * cells[i].density;
 
         double total_relativity = 0;
         double etherm_mid = extensives[i].internal_energy;
-        double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells[i].velocity) * length_scale_ / time_scale_ + 1e-2));
+        double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+        
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
@@ -645,12 +645,13 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
   
 
             gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * length_scale_ * length_scale_;
-            double const momentum_term = (0.5 * dt * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
-            double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light;
-            extensives[i].energy += /*momentum_term + */fleck_factor[i] * relativity_term;
+            double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3);
+            double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
+            extensives[i].energy += /* momentum_term + */fleck_factor[i] * relativity_term;
             extensives[i].internal_energy += fleck_factor[i] * relativity_term;
             total_relativity += fleck_factor[i] * relativity_term;
         }
+        
         Vector3D dP;
         double Erad_dE = 0;
         if(hydro_on_)
