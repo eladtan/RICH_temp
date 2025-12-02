@@ -526,6 +526,8 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         std::vector<double>const& full_CG_result, std::vector<double> const& CG_result) const
 {
     double const max_v = 0.1 * CG::speed_of_light * velocity_scale_;
+    double const dt_cgs = dt * time_scale_;
+
     Vector3D dummy_v;
     std::vector<size_t> neighbors;
     face_vec faces;
@@ -546,11 +548,13 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     {
         double const old_e_therm = extensives[i].internal_energy;
         double const volume = tess.GetVolume(i) * volume_scale_;
-        extensives[i].Erad = CG_result[i] * volume * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
+        extensives[i].Erad = CG_result[i] * volume / energy_scale_;
         double const T = cells[i].temperature;
-        double dE = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
-            -0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
-	    double old_Tr = 0;
+        
+        double dE = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
+            -0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * full_CG_result[i] / (CG::speed_of_light * CG::speed_of_light)) * volume;
+	    
+        double old_Tr = 0;
         double compton_term = 0;
         double e_absorb = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * full_CG_result[i] * volume * time_scale_;
         double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume * time_scale_;

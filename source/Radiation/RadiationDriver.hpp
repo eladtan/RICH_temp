@@ -112,7 +112,10 @@ public:
               density_scale_ = mass_scale / (length_scale*length_scale*length_scale);
               energy_density_scale_ = mass_scale / (time_scale * time_scale * length_scale);
               specific_energy_scale_ = length_scale * length_scale / (time_scale * time_scale);
+              energy_scale_ = mass_scale * length_scale * length_scale / (time_scale * time_scale);
+
               velocity_scale_ = length_scale / time_scale;
+              volume_scale_ = length_scale * length_scale * length_scale;
        }
 
        bool const flux_limiter_;
@@ -126,7 +129,10 @@ public:
        mutable double density_scale_;
        mutable double energy_density_scale_;
        mutable double specific_energy_scale_;
+       mutable double energy_scale_;
+       
        mutable double velocity_scale_;
+       mutable double volume_scale_;
 
 protected:
     EquationOfState const& eos_;
