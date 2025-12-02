@@ -408,7 +408,6 @@ void Diffusion::BuildMatrix(
     std::vector<double> max_neighbor_R(Nlocal, 0);
     for(size_t i = 0; i < Nlocal; ++i)
     {
-        double const volume = tess.GetVolume(i) * volume_scale_;
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
         size_t const Nneigh = neighbors.size();
