@@ -188,18 +188,6 @@ bool Diffusion::step(double const tolerance,
                      std::vector<Conserved3D>& extensives,
                      double const dt,
                      double const time) const {
-    
-    if (do_iterations_on_Um){
-        return step_iterations(
-            tolerance,
-            total_iters,
-            tess,
-            cells,
-            extensives,
-            dt,
-            time
-        );
-    }
 
 
     int rank = 0;
@@ -209,23 +197,14 @@ bool Diffusion::step(double const tolerance,
     
     std::vector<Conserved3D> extensives_temp(extensives);
     std::vector<ComputationalCell3D> cells_temp(cells);
-
-    // auto const max_number_of_iters = 100;
-    // for(int iter=-1; iter < 100; ++iter){
+    
     load_cells_cgs(tess, cells);
-
     calculate_planck_absorption_coefficient(tess);
     calculate_scattering_coefficient(tess);
     calculate_cell_diffusion_coefficients(tess);
 
-    if(not do_iterations_on_Um) {
-        // must be after `calculate_planck_absorption_coefficient` and `calculate_scattering_coefficient`
-        calculate_fleck_factor(tess, cells, dt);
-    } else {
-        std::fill(fleck_factor.begin(), fleck_factor.end(), 1.0);
-    }
+    calculate_fleck_factor(tess, cells, dt);
 
-    std::size_t const N = tess.GetPointNo();
     bool good_end = false;
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
     
@@ -254,23 +233,6 @@ bool Diffusion::step(double const tolerance,
     return true;
 }
 
-bool Diffusion::step_iterations(
-    double const tolerance,
-    int& total_iters,
-    Tessellation3D const& tess,
-    std::vector<ComputationalCell3D>& cells,
-    std::vector<Conserved3D>& extensives,
-    double const dt,
-    double const time
-) const {
-    extensives_temp = extensives;
-    cells_temp = cells;
-
-    // auto cells_cgs = get_cells_cgs(tess, cells);
-
-
-    return true;
-}
 
 void
 Diffusion::load_cells_cgs(
@@ -291,15 +253,6 @@ Diffusion::load_cells_cgs(
 #ifdef RICH_MPI
 	MPI_exchange_data(tess, cells_cgs, true);	
 #endif
-}
-
-bool Diffusion::update_energy(
-    Tessellation3D const& tess, 
-    std::vector<Conserved3D>& extensives, 
-    double const dt, 
-    double const time
-) const {
-
 }
 
 void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
@@ -638,18 +591,6 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
              * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" density "<<cells[i].density<<
              " compton_term "<<compton_term<<" old_Tr "<<old_Tr<<std::endl;
             break;
-            // UniversalError eo("Bad internal energy in Diffusion::PostCG");
-            // eo.addEntry("cell index", i);
-            // eo.addEntry("energy", extensives[i].internal_energy);
-	        // eo.addEntry("mass",extensives[i].mass);
-            // eo.addEntry("CG_result", CG_result[i]);
-            // eo.addEntry("T", T);
-            // eo.addEntry("Density", cells[i].density);
-            // eo.addEntry("ID", cells[i].ID);
-            // eo.addEntry("Fleck",fleck_factor[i]);
-            // eo.addEntry("old_Tr",old_Tr);
-            // eo.addEntry("dE",dE);
-            // throw eo;
         }
 
         tess.GetNeighbors(i, neighbors);

@@ -61,23 +61,6 @@ public:
         " fleck_factor "<<fleck_factor[index]<<" D "<<D[index]<<" cell_flux_limiter "<<
         cell_flux_limiter[index]<<std::endl;
     }
-
-    bool step_iterations(
-        double const tolerance, 
-        int& total_iters, 
-        Tessellation3D const& tess, 
-        std::vector<ComputationalCell3D>& cells,
-        std::vector<Conserved3D>& extensives,
-        double const dt,
-        double const time
-    ) const;
-
-    bool update_energy(
-        Tessellation3D const& tess, 
-        std::vector<Conserved3D>& extensives, 
-        double const dt, 
-        double const time
-    ) const;
     
     DiffusionCoefficientCalculator const& D_coefficient_calcualtor;
     DiffusionBoundaryCalculator const& boundary_calc_;
@@ -125,6 +108,18 @@ public:
     void fix_small_negative_Er(
         Tessellation3D const& tess,
         std::vector<ComputationalCell3D> const& cells
+    ) const;
+
+    bool step_iterations(
+        double const tolerance, 
+        int& total_iters, 
+        Tessellation3D const& tess, 
+        std::vector<ComputationalCell3D>& cells,
+        std::vector<ComputationalCell3D> const& cells_old,
+        std::vector<Conserved3D>& extensives,
+        std::vector<Conserved3D> const& extensives_old,
+        double const dt,
+        double const time
     ) const;
     
     mutable std::vector<ComputationalCell3D> cells_cgs;
