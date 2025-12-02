@@ -32,4 +32,26 @@ public:
 	virtual ~TimeStepFunction3D(void);
 };
 
+//! \brief class for a user given time step. Simply returns the dt value given by the user (mainly for testing)
+class UserDeterminedTimeStep : public TimeStepFunction3D 
+{
+	public:
+	
+	UserDeterminedTimeStep(double const initial_dt);
+
+	virtual double operator()(
+		const Tessellation3D& /* tess */, 
+		const vector<ComputationalCell3D>& /* cells */,
+		const EquationOfState& /* eos */, 
+		const vector<Vector3D>& /* face_velocities */, 
+		const double /* time */) const;
+
+	virtual ~UserDeterminedTimeStep() = default;
+
+	void SetTimeStep(double const user_dt);
+
+	private:
+	double current_dt;
+};
+
 #endif  // TIME_STEP_FUNCTION3D_HPP
