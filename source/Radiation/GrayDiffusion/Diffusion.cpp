@@ -1,14 +1,34 @@
 #include "Diffusion.hpp"
 #include <boost/math/special_functions.hpp>
+#include <algorithm>
 
-#ifdef RICH_MPI
+#ifdef    RICH_MPI
 #include "mpi/mpi_commands.hpp"
 #endif
+
+namespace {
 
 double FleckFactorCompton(double const dt, double const beta, double const sigma_a, double const sigma_s, double const Erad, double const Cv)
 {
     return 1.0 / (1 + beta * dt * sigma_a * CG::speed_of_light + dt * 16 * sigma_s * CG::boltzmann_constant * Erad / (CG::electron_mass * CG::speed_of_light * Cv));
 }
+
+double calculate_total_energy(
+    Tessellation3D const& tess,
+    std::vector<Conserved3D> const& extensives
+){     
+    auto const N = tess.GetPointNo();
+    
+    double total_energy = 0.0;
+    for(size_t i = 0; i < N; ++i) total_energy += extensives[i].Erad + extensives[i].energy;
+    
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &total_energy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif  
+    return total_energy;
+}
+
+} // namespace 
 
 Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
                      DiffusionBoundaryCalculator const& boundary_calc,
@@ -562,13 +582,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     for(size_t i = 0; i < Nzero; ++i)
         zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
 
-    double Einit = 0;
-    for(size_t i = 0; i < N; ++i)
-        Einit += extensives[i].Erad + extensives[i].energy;
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &Einit, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
+    double const Einit = calculate_total_energy(tess, extensives);
 
     int good_end = 1;
     old_T.resize(N, 0);
