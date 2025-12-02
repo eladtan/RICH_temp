@@ -267,8 +267,15 @@ Diffusion::load_cells_cgs(
 #endif
 }
 
-void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
-    double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const
+void Diffusion::BuildMatrix(
+    Tessellation3D const& tess, 
+    mat& A, 
+    size_t_mat& A_indeces, 
+    std::vector<ComputationalCell3D> const& cells,
+    double const dt, 
+    std::vector<double>& b, 
+    std::vector<double>& x0, 
+    double const current_time) const
 {
     int rank = 0;
 #ifdef RICH_MPI
@@ -290,13 +297,16 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     double const zero_value = 1e-10;
     std::vector<double> new_Er(Nlocal, 0), Er_for_limit(Nlocal, 0);
     
+    double const dt_cgs = dt * time_scale_;
     for(size_t i = 0; i < Nlocal; ++i)
     {
-        double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
+        double const volume = tess.GetVolume(i) * volume_scale_;
         bool set_to_zero = false;
+        
         for(size_t j = 0; j < Nzero; ++j)
             if(cells_cgs[i].stickers[zero_indeces[j]])
                 set_to_zero = true;
+        
         double const Er = cells_cgs[i].Erad * cells_cgs[i].density * (set_to_zero ? zero_value : 1);
         new_Er[i] = Er;
 
@@ -311,11 +321,11 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
             x0[i] = (Er + prefactor * Um) / (1 + prefactor);
         }
         else
-            x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt * time_scale_  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt * dt * time_scale_ * time_scale_));//std::max(Er + 0.5 * std::min(fleck_factor[i] * dt * sigma_planck[i] * CG::speed_of_light * time_scale_, 1.0) * (CG::radiation_constant * T * T * T * T - Er), 0.25 * Er);
+            x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt_cgs  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt_cgs * dt_cgs));
             
-        b[i] += volume * fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant * time_scale_;
+        b[i] += volume * fleck_factor[i] * dt_cgs * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant;
 
-        Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt * time_scale_ * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
+        Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt_cgs * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
     }
 
     size_t max_neigh = 0;
@@ -323,6 +333,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     for(size_t i = 0; i < Nlocal; ++i)
         max_neigh = std::max(max_neigh, tess.GetNeighbors(i).size());
     ++max_neigh;
+    
     A.clear();
     A.resize(Nlocal);
     A_indeces.clear();
@@ -332,21 +343,33 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     for(size_t i = 0; i < Nlocal; ++i)
     {
         A_indeces[i].push_back(i);
-        double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
+        double const volume = tess.GetVolume(i) * volume_scale_;
         double const T = cells_cgs[i].temperature;
-        A[i].push_back(volume * (1 + fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * time_scale_));
+        
+        A[i].push_back(volume * (1 + fleck_factor[i] * dt_cgs * CG::speed_of_light * sigma_planck[i]));
+        
         if(compton_on_ && cells[i].tracers[1] > 0.5)
         {
-            double const Tr = std::pow(new_Er[i] / CG::radiation_constant, 0.25);
-	        double const pre_factor = fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
+            double const Tr = Trad(new_Er[i]);
+	        double const pre_factor = fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
             double const compton_term = pre_factor * (Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
+            
             A[i][0] += pre_factor * (Tr - (1 - theta) * T) * volume;
             b[i] += pre_factor * volume * theta * T * new_Er[i];
         }
-        if(A[i][0] < 0)
-	        std::cout<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
-	        " sig_P "<<sigma_planck[i]<<" sig_s "<<sigma_s[i]<<" dt "<<dt * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<" compton term "<<fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light)<<std::endl;
+        
+        if(A[i][0] < 0){
+	        std::cout   << "Negative A in matrix build, density " <<cells_cgs[i].density
+                        << " T " << cells_cgs[i].temperature 
+                        << " fleck " << fleck_factor[i]
+                        << " sig_P " << sigma_planck[i] 
+                        << " sig_s " << sigma_s[i] 
+                        << " dt " << dt_cgs 
+                        << " Erad " << cells_cgs[i].Erad * cells_cgs[i].density
+                        << " compton term " << fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light) 
+                        << std::endl;
+        }
     }
 
     std::vector<double> max_R;
@@ -367,9 +390,11 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 for(size_t k = 0; k < Nzero; ++k)
                     if(cells_cgs[neighbor_j].stickers[zero_indeces[k]])
                         set_to_zero = true;
+                
                 double const Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density * (set_to_zero ? zero_value : 1);
                 Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
                 Vector3D const grad_E = cm_ij * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));                
+                
                 max_R_local = std::max(max_R_local, std::abs(fastabs(grad_E) * (Er - Er_j)));
             }
         }
@@ -383,18 +408,22 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     std::vector<double> max_neighbor_R(Nlocal, 0);
     for(size_t i = 0; i < Nlocal; ++i)
     {
-        double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
+        double const volume = tess.GetVolume(i) * volume_scale_;
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
         size_t const Nneigh = neighbors.size();
         Vector3D const CM = tess.GetCellCM(i);
         Vector3D const point = tess.GetMeshPoint(i);
-        gradE[i] = Vector3D(0, 0, 0) ;
+        
+        gradE[i] = Vector3D(0, 0, 0);
+        
         double const Er = cells_cgs[i].Erad * cells_cgs[i].density;
         bool self_zero = false;
+        
         for(size_t k = 0; k < Nzero; ++k)
             if(cells_cgs[i].stickers[zero_indeces[k]])
                 self_zero = true;
+        
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
@@ -402,13 +431,16 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
             double const r_ij_size = abs(r_ij);
             r_ij *= 1.0 / r_ij_size;
             double Er_j = 0;
+            
             if(!tess.IsPointOutsideBox(neighbor_j))
             {
                 bool set_to_zero = false;
                 for(size_t k = 0; k < Nzero; ++k)
                     if(cells_cgs[neighbor_j].stickers[zero_indeces[k]])
                         set_to_zero = true;
+                
                 Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density * (set_to_zero ? zero_value : 1);
+                
                 if(i < neighbor_j)
                 {
                     Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
@@ -416,13 +448,16 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                     
                     double const T1 = cells_cgs[i].temperature;
                     double const T2 = cells_cgs[neighbor_j].temperature;
-                    double const maxT = std::pow(0.5 * (pow<4>(T1) + pow<4>(T2)), 0.25);
-                    cells_cgs[i].temperature = maxT;
+                    double const avgT = std::pow(0.5 * (pow<4>(T1) + pow<4>(T2)), 0.25);
+                    
+                    cells_cgs[i].temperature = avgT;
                     double const D1 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
                     cells_cgs[i].temperature = T1;
-                    cells_cgs[neighbor_j].temperature = maxT;
+                    
+                    cells_cgs[neighbor_j].temperature = avgT;
                     double const D2 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[neighbor_j]);
                     cells_cgs[neighbor_j].temperature = T2;
+                    
                     double mid_D = 2 * D1 * D2 / (D1 + D2);
 
                     double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(grad_E) * (Er - Er_j)));
@@ -432,7 +467,9 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                         grad_factor = 0.15 * (max_R[i] + max_R[neighbor_j]) / grad_magnitude;
                     double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * ((Er - Er_j) * grad_factor), mid_D, 0.5 * (Er + Er_j)) : 1;
                     mid_D *= flux_limiter;
+                    
                     double const flux = ((self_zero || set_to_zero) ? tess.GetArea(faces[j]) * dt * CG::speed_of_light * 0.5 : ScalarProd(grad_E, r_ij) * tess.GetArea(faces[j]) * dt * mid_D) * length_scale_ * length_scale_ * time_scale_; 
+                    
                     if(neighbor_j < Nlocal)
                     {
                         A[i][0] += flux;
@@ -486,20 +523,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 r_ij *= 1.0 / r_ij_size;
                 Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
                 Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
-                // double mid_D = 0.5 * (D[neighbor_j] + Dcell);
-                // double const Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density;
-                // double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (Er - Er_j), mid_D, 0.5 * (Er + Er_j)) : 1;
 
-                // double const T1 = cells_cgs[i].temperature;
-                // double const T2 = cells_cgs[neighbor_j].temperature;
-                // double const maxT = std::max(T1, T2);
-                // cells_cgs[i].temperature = maxT;
-                // double const D1 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
-                // cells_cgs[i].temperature = T1;
-                // cells_cgs[neighbor_j].temperature = maxT;
-                // double const D2 =  D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[neighbor_j]);
-                // cells_cgs[neighbor_j].temperature = T2;
-                // double mid_D = 2 * D1 * D2 / (D1 + D2);
                 double const mid_D = D[i];
                 double const momentum_relativity_term = -0.5 * dt * flux_limiter * tess.GetArea(faces[j]) * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * length_scale_ * length_scale_ * time_scale_
                     * ScalarProd(cells_cgs[i].velocity, r_ij) / 3;
