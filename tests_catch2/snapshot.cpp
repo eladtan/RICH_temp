@@ -25,7 +25,7 @@ using namespace utils_for_tests;
 SnapShot::SnapShot(std::optional<std::string> test_name_)
 : test_name{test_name_? test_name_.value() : get_current_test_name()}
 {
-    INFO("Test Name: " + test_name);    
+    UNSCOPED_INFO("Test Name: " + test_name);    
 }
 
 fs::path SnapShot::test_dir() const{

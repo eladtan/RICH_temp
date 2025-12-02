@@ -183,11 +183,11 @@ bool SnapShot::CompareOrSaveGather(
             bool const compare_result = std::apply(
                 [&](auto const& ... expected_vectors){
                     return (compare_vectors_check(
-                        "Compare " + data.name,
+                        test_name  + ":: Compare " + data.name,
                         data.vec,
                         expected_vectors.vec,
                         tc::TestsConfig::relative_tolerance_compare()
-                    ) && ...);
+                    ) & ...); // We fold on & since && only runs until first failure and I want to run all the comparisons.
                 },
                 expected
             );
