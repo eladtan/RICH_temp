@@ -591,22 +591,30 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         if(extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || extensives[i].Erad < 0)
         {
             good_end = 0;
-            std::cout<<"Negative internal energy in postcg1, "<<extensives[i].internal_energy<<" ID "<<cells[i].ID<<
-                " T "<<T<<std::endl;
-                std::cout<<" CG_result "<<CG_result[i]<<" old Er "<<cells[i].Erad * cells[i].density * mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
-                <<" v "<<fastabs(cells[i].velocity)<<" mass "<<
-                extensives[i].mass<<" dE "<<dE<<" R2 "<<R2[i]<<" old_e_therm "<<old_e_therm<<std::endl;
-            std::cout<<cells[i]<<std::endl;
-            std::cout<<extensives[i]<<std::endl;
-             std::cout<<"max emitt "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant
-             * volume * time_scale_ * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" full_CG_result "<<full_CG_result[i]<<std::endl;
-             std::cout<<"relativity "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i]
-             *0.5 * (3 - R2[i]) * ScalarProd(cells[i].velocity, cells[i].velocity) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_) * volume * time_scale_* time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<std::endl;
-             std::cout<<" fleck "<<fleck_factor[i]<<" sigma_planck "<<sigma_planck[i]<<
-                " other dE "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
-            -0.5 * (3 - R2[i]) * ScalarProd(cells[i].velocity, cells[i].velocity) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_
-             * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" density "<<cells[i].density<<
-             " compton_term "<<compton_term<<" old_Tr "<<old_Tr<<std::endl;
+            std::cout   << "Negative internal energy in postcg1, " 
+                        << extensives[i].internal_energy 
+                        << " ID " << cells[i].ID 
+                        << " T " << T << "\n"
+                        << " CG_result " << CG_result[i] 
+                        << " old Er " << cells[i].Erad * cells[i].density * energy_density_scale_
+                        << " v " << fastabs(cells[i].velocity) 
+                        << " mass " << extensives[i].mass
+                        << " dE " << dE 
+                        << " R2 " << R2[i] 
+                        << " old_e_therm " << old_e_therm << std::endl;
+            
+            std::cout   << cells[i] << std::endl;
+            std::cout   << extensives[i] << std::endl;
+
+            std::cout   << "max emitt " << -e_emitt
+                        << " full_CG_result " << full_CG_result[i]
+                        << " relativity " << -e_v2
+                        << " fleck " << fleck_factor[i]
+                        << " sigma_planck " << sigma_planck[i]
+                        << " other dE " << e_absorb_emitt + e_v2 
+                        << " density " << cells[i].density
+                        << " compton_term " << compton_term 
+                        << " old_Tr " << old_Tr << std::endl;
             break;
         }
 
