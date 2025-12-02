@@ -205,7 +205,7 @@ int main(int argc, char *argv[])
     if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
-	size_t const Nx = 512;
+	size_t const Nx = 100;
 	double width = 1;
 	Vector3D ll(0, 0, 0), ur(width, width / Nx, width / Nx);
 	Voronoi3D tess(ll, ur);
