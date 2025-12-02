@@ -86,6 +86,8 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     D.resize(N, 0.0);
     R2.resize(N, 0.0);
     cell_flux_limiter.resize(N, 0.0);
+    old_T.resize(N, 0.0);
+
 
     new_Er.resize(N, 0.0);
     new_Er_full.resize(N, 0.0);
@@ -104,6 +106,8 @@ bool Diffusion::prestep(Tessellation3D const& tess,
 			eo.addEntry("density", cells[i].density);
             throw eo;
         }
+
+        old_T[i] = cells[i].temperature;
     }
 
     set_scales(mass_scale_, length_scale_, time_scale_);
@@ -521,7 +525,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
         std::vector<double>const& full_CG_result, std::vector<double> const& CG_result) const
 {
-    double const max_v = 0.1 * CG::speed_of_light * time_scale_ / length_scale_;
+    double const max_v = 0.1 * CG::speed_of_light * velocity_scale_;
     Vector3D dummy_v;
     std::vector<size_t> neighbors;
     face_vec faces;
@@ -538,14 +542,12 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     double const Einit = calculate_total_energy(tess, extensives);
 
     int good_end = 1;
-    old_T.resize(N, 0);
     for(size_t i = 0; i < N; ++i)
     {
         double const old_e_therm = extensives[i].internal_energy;
-        double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
+        double const volume = tess.GetVolume(i) * volume_scale_;
         extensives[i].Erad = CG_result[i] * volume * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         double const T = cells[i].temperature;
-        old_T[i] = T;
         double dE = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
             -0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
 	    double old_Tr = 0;
