@@ -28,11 +28,11 @@ double calculate_total_energy(
     return total_energy;
 }
 
-double const Trad(double const Er) {
+double Trad(double const Er) {
     return std::pow(Er / CG::radiation_constant, 0.25);
 }
 
-double const Um(double const T) {
+double Um(double const T) {
     return CG::radiation_constant*T*T*T*T;
 }
 
