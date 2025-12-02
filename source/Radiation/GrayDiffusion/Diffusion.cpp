@@ -639,12 +639,12 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
             r_ij *= 1.0 / r_ij_size;
             double Er_j = 0;
             if(tess.IsPointOutsideBox(neighbor_j))
-                boundary_calc_.GetOutSideValues(tess, cells, i, neighbor_j, full_CG_result, Er_j, dummy_v);
+                boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, full_CG_result, Er_j, dummy_v);
             else
                 Er_j = full_CG_result[neighbor_j];
   
 
-            gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * length_scale_ * length_scale_;
+            gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * area_scale_;
             double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3);
             double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
             extensives[i].energy += /* momentum_term + */fleck_factor[i] * relativity_term;
@@ -657,24 +657,46 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         if(hydro_on_)
         {
             double const old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-            dP = (cell_flux_limiter[i] * dt * time_scale_ / 3) * gradE * (time_scale_ / (length_scale_ * mass_scale_));
+            dP = (cell_flux_limiter[i] * dt_cgs / 3) * gradE / momentum_scale_;
             Erad_dE = ScalarProd(dP, extensives[i].momentum) / extensives[i].mass;
             extensives[i].momentum += dP;
             double const new_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
             double const dE = -new_Ek + old_Ek + Erad_dE;
             extensives[i].Erad += dE;
+            
             if(extensives[i].Erad < 0 && dE < 0 && std::abs(dE) < extensives[i].energy * 0.01)
                  extensives[i].Erad -= dE;
+            
             extensives[i].energy = extensives[i].internal_energy +  ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
         }
+
         if(extensives[i].Erad < 0 || extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || cells[i].Erad < 0)
         {
-            std::cout<<"Negative internal energy is postcg2, "<<extensives[i].internal_energy<<" ID "<<cells[i].ID<<
-                " T "<<T<<" CG_result "<<CG_result[i]<<" full_CG_result "<<full_CG_result[i]<<" v "<<fastabs(cells[i].velocity)<<" sigma_planck "<<
-                sigma_planck[i]<<" sigma_r "<<CG::speed_of_light / (3 * D[i])<<" E_init "<<cells[i].Erad*cells[i].density* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
-                <<" volume "<<tess.GetVolume(i)<<" Erad "<<extensives[i].Erad<<" mass "<<extensives[i].mass<<" dP "<<dP.x<<","<<dP.y<<","<<dP.z<<" momentum "<<extensives[i].momentum.x<<","<<extensives[i].momentum.y<<","<<extensives[i].momentum.z<<std::endl;
-            std::cout<<"Erad_dE "<<Erad_dE<<" cell_flux_limiter "<<cell_flux_limiter[i]<<" e_absorb "<<e_absorb<<" e_emitt "<<e_emitt<<" e_v2 "<<e_v2<<std::endl;
-            std::cout<<"total relativity "<<total_relativity<<" etherm_mid "<<etherm_mid<<" fleck_factor "<<fleck_factor[i]<<" gradE "<<gradE * (1.0 / tess.GetVolume(i))<<std::endl;
+            std::cout   << "Negative internal energy is postcg2, " 
+                        << extensives[i].internal_energy
+                        << " ID " << cells[i].ID 
+                        << " T " << T 
+                        << " CG_result " << CG_result[i]
+                        << " full_CG_result " << full_CG_result[i] 
+                        << " v " << fastabs(cells[i].velocity) 
+                        << " sigma_planck " << sigma_planck[i]
+                        << " sigma_r " << CG::speed_of_light / (3 * D[i]) 
+                        << " E_init " << cells[i].Erad*cells[i].density* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
+                        << " volume " << tess.GetVolume(i)
+                        << " Erad " << extensives[i].Erad
+                        << " mass " << extensives[i].mass
+                        << " dP " << dP.x << "," << dP.y << "," << dP.z 
+                        << " momentum " << extensives[i].momentum.x << "," << extensives[i].momentum.y << "," << extensives[i].momentum.z << "\n"
+                        << "Erad_dE " << Erad_dE 
+                        << " cell_flux_limiter " << cell_flux_limiter[i] 
+                        << " e_absorb " << e_absorb 
+                        << " e_emitt "<< e_emitt 
+                        << " e_v2 " << e_v2 << "\n"
+                        << "total relativity " << total_relativity 
+                        << " etherm_mid " << etherm_mid
+                        << " fleck_factor " << fleck_factor[i]
+                        << " gradE " << gradE * (1.0 / tess.GetVolume(i)) << std::endl;
+
             for(size_t j = 0; j < Nneigh; ++j)
             {
                 size_t const neighbor_j = neighbors[j];
@@ -683,7 +705,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 r_ij *= 1.0 / r_ij_size;
                 double Er_j = 0;
                 if(tess.IsPointOutsideBox(neighbor_j))
-                    boundary_calc_.GetOutSideValues(tess, cells, i, neighbor_j, CG_result, Er_j, dummy_v);
+                    boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
                 else
                     Er_j = full_CG_result[neighbor_j];
 
@@ -691,12 +713,20 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
                 double mid_D = 0.5 * (D[neighbor_j] + D[i]);
                 double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (CG_result[i] - Er_j), mid_D, 0.5 * (CG_result[i] + Er_j)) : 1;
-                double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells[i].velocity, r_ij)));
-                double const v_ratio = max_local_v / ScalarProd(cells[i].velocity, r_ij);
-                double const momentum_term = (0.5 * dt * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
-                double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light;
-                std::cout<<"relativity_term "<<relativity_term<<" flux_limiter_face "<<flux_limiter_face<<" Er_j "<<Er_j<<" Er_j_init "<<cells[neighbor_j].density * 
-                    cells[neighbor_j].Erad* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)<<" ID "<<cells[neighbor_j].ID<<" v_ratio "<<v_ratio<<" Area "<<tess.GetArea(faces[j])<<std::endl;
+                
+                double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells_cgs[i].velocity, r_ij)));
+                double const v_ratio = max_local_v / ScalarProd(cells_cgs[i].velocity, r_ij);
+                
+                double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3);
+                double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
+                
+                std::cout   << "relativity_term " << relativity_term
+                            << " flux_limiter_face " << flux_limiter_face
+                            << " Er_j " << Er_j
+                            << " Er_j_init " << cells[neighbor_j].density * cells[neighbor_j].Erad * energy_density_scale_
+                            << " ID " << cells[neighbor_j].ID
+                            << " v_ratio " << v_ratio
+                            << " Area " << tess.GetArea(faces[j]) << std::endl;
             }
 
             good_end = 0;
