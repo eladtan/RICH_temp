@@ -461,14 +461,16 @@ void Diffusion::BuildMatrix(
                     double mid_D = 2 * D1 * D2 / (D1 + D2);
 
                     double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(grad_E) * (Er - Er_j)));
-                    double grad_factor = 1;
+                    double grad_factor = 1.0;
                     max_neighbor_R[i] = std::max(max_neighbor_R[i], max_R[neighbor_j]);
+                    
                     if(grad_magnitude < 0.15 * (max_R[i] + max_R[neighbor_j]))
                         grad_factor = 0.15 * (max_R[i] + max_R[neighbor_j]) / grad_magnitude;
+                    
                     double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * ((Er - Er_j) * grad_factor), mid_D, 0.5 * (Er + Er_j)) : 1;
                     mid_D *= flux_limiter;
                     
-                    double const flux = ((self_zero || set_to_zero) ? tess.GetArea(faces[j]) * dt * CG::speed_of_light * 0.5 : ScalarProd(grad_E, r_ij) * tess.GetArea(faces[j]) * dt * mid_D) * length_scale_ * length_scale_ * time_scale_; 
+                    double const flux = ((self_zero || set_to_zero) ? tess.GetArea(faces[j]) * area_scale_ * dt_cgs * CG::speed_of_light * 0.5 : ScalarProd(grad_E, r_ij) * tess.GetArea(faces[j]) * area_scale_ * dt_cgs * mid_D); 
                     
                     if(neighbor_j < Nlocal)
                     {
@@ -490,29 +492,32 @@ void Diffusion::BuildMatrix(
             else
             {
                 if(i < neighbor_j)
-                    boundary_calc_.SetBoundaryValues(tess, i, neighbor_j, dt * time_scale_, cells_cgs, tess.GetArea(faces[j]) * length_scale_ * length_scale_, A[i][0], b[i], faces[j]);
+                    boundary_calc_.SetBoundaryValues(tess, i, neighbor_j, dt_cgs, cells_cgs, tess.GetArea(faces[j]) * area_scale_, A[i][0], b[i], faces[j]);
                 boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, new_Er, Er_j, dummy_v);
             }
-            gradE[i] += r_ij * (tess.GetArea(faces[j]) * 0.5 * (Er + Er_j) * length_scale_ * length_scale_);
+            gradE[i] += r_ij * (tess.GetArea(faces[j]) * area_scale_ * 0.5 * (Er + Er_j));
         }
     }
     for(size_t i = 0; i < Nlocal; ++i)
     {
-        double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
+        double const volume = tess.GetVolume(i) * volume_scale_;
         gradE[i] *= -1.0 / volume;
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
         size_t const Nneigh = neighbors.size();
         Vector3D const point = tess.GetMeshPoint(i);
+        
         double const Er = cells_cgs[i].Erad * cells_cgs[i].density; 
 
         double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(gradE[i])));
         if(grad_magnitude < 0.5 * max_neighbor_R[i])
             gradE[i] *= 0.5 * max_neighbor_R[i] / grad_magnitude;
+        
         double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(gradE[i], D[i], Er_for_limit[i]) : 1;
         cell_flux_limiter[i] = flux_limiter;
         Vector3D const CM = tess.GetCellCM(i);
         double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+        
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
@@ -525,32 +530,38 @@ void Diffusion::BuildMatrix(
                 Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
 
                 double const mid_D = D[i];
-                double const momentum_relativity_term = -0.5 * dt * flux_limiter * tess.GetArea(faces[j]) * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * length_scale_ * length_scale_ * time_scale_
-                    * ScalarProd(cells_cgs[i].velocity, r_ij) / 3;
+                double const momentum_relativity_term = -0.5 * dt_cgs * flux_limiter * tess.GetArea(faces[j]) * area_scale_ * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * ScalarProd(cells_cgs[i].velocity, r_ij) / 3;
                 A[i][0] += momentum_relativity_term;
+                
                 auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
-                if(it == A_indeces[i].end())
-                    throw UniversalError("Key not equal in diffusion");
+                if(it == A_indeces[i].end()) throw UniversalError("Key not equal in diffusion");
+                
                 size_t const neigh_counter = static_cast<size_t>(it - A_indeces[i].begin());
-                if(A_indeces[i][neigh_counter] != neighbor_j)
-                    throw UniversalError("Key not equal value in diffusion");
+                if(A_indeces[i][neigh_counter] != neighbor_j) throw UniversalError("Key not equal value in diffusion");
+                
                 A[i][neigh_counter] += momentum_relativity_term;
             }
             else
-                boundary_calc_.SetMomentumTermBoundary(tess, i, neighbor_j, dt * time_scale_, cells_cgs[i],
-                    tess.GetArea(faces[j]) * length_scale_ * length_scale_, A[i][0], b[i], faces[j], fleck_factor[i],
+                boundary_calc_.SetMomentumTermBoundary(tess, i, neighbor_j, dt_cgs, cells_cgs[i],
+                    tess.GetArea(faces[j]) * area_scale_, A[i][0], b[i], faces[j], fleck_factor[i],
                     flux_limiter, D[i], sigma_planck[i]);
         }
+        
         R2[i] = flux_limiter_ ? flux_limiter / 3 + boost::math::pow<2>(flux_limiter * abs(gradE[i]) * D[i] / (CG::speed_of_light * Er)) : 1.0 / 3.0;
-        A[i][0] -= volume * fleck_factor[i] * dt * 0.5 * (3 - R2[i]) * sigma_planck[i] * std::min(0.01 * CG::speed_of_light * CG::speed_of_light, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * time_scale_ / CG::speed_of_light;
+        A[i][0] -= volume * fleck_factor[i] * dt_cgs * 0.5 * (3 - R2[i]) * sigma_planck[i] * std::min(0.01 * CG::speed_of_light * CG::speed_of_light, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) / CG::speed_of_light;
     }
     for(size_t i = 0; i < Nlocal; ++i)
     {
         A[i].resize(max_neigh, 0);
         A_indeces[i].resize(max_neigh, max_size_t);
-	if(A[i][0] < 0)
-	  std::cout<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
-	    " sig_P "<<sigma_planck[i]<<" dt "<<dt * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<std::endl;
+	
+        if(A[i][0] < 0)
+	        std::cout   << "Negative A in matrix build, density " << cells_cgs[i].density
+                        << " T " << cells_cgs[i].temperature 
+                        << " fleck " << fleck_factor[i]
+                        << " sig_P " << sigma_planck[i] << " dt " << dt_cgs 
+                        << " Erad " << cells_cgs[i].Erad * cells_cgs[i].density 
+                        << std::endl;
     }
 }
 
