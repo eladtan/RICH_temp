@@ -730,41 +730,39 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
             }
 
             good_end = 0;
-            std::cout<<"Negative internal energy is postcg2, "<<extensives[i].internal_energy<<" ID "<<cells[i].ID<<
-                " T "<<T<<" CG_result "<<CG_result[i]<<" v "<<fastabs(cells[i].velocity)<<" mass "<<
-                extensives[i].mass<<std::endl;
-            break;
-            UniversalError eo("Bad internal energy in Diffusion::PostCG second part");
-            eo.addEntry("cell index", i);
-            eo.addEntry("energy", extensives[i].internal_energy);
-            eo.addEntry("CG_result", CG_result[i]);
-            eo.addEntry("T", T);
-            eo.addEntry("Density", cells[i].density);
-            eo.addEntry("ID", cells[i].ID);
-            eo.addEntry("cell_flux_limiter", cell_flux_limiter[i]);
-            eo.addEntry("sigma_planck", sigma_planck[i]);
-            eo.addEntry("sigma_rossland", CG::speed_of_light / (3 * D[i]));
-            eo.addEntry("Vx", cells[i].velocity.x);
-            eo.addEntry("Vy", cells[i].velocity.y);
-            eo.addEntry("Vz", cells[i].velocity.z);
-            eo.addEntry("newVx", extensives[i].momentum.x / extensives[i].mass);
-            eo.addEntry("newVy", extensives[i].momentum.y / extensives[i].mass);
-            eo.addEntry("newVz", extensives[i].momentum.z / extensives[i].mass);
-            throw eo;
+            std::cout   << "Negative internal energy is postcg2, " 
+                        << extensives[i].internal_energy 
+                        << " ID " << cells[i].ID 
+                        << " T " << T 
+                        << " CG_result " << CG_result[i] 
+                        << " v " << fastabs(cells[i].velocity) 
+                        << " mass " << extensives[i].mass << std::endl;
         }
 
         double const old_Edot = cells[i].Erad_dt;
         cells[i].Erad_dt = (extensives[i].Erad / extensives[i].mass - cells[i].Erad) / dt;
         cells[i].Erad_dt_dt = (cells[i].Erad_dt - old_Edot) / dt;
-        if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt))
-            std::cout<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
+        
+        if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt)) {
+            std::cout   << "Bad Edot " << cells[i].Erad_dt 
+                        << " edot_dt_dt " << cells[i].Erad_dt_dt 
+                        << " i " << i 
+                        << " ID " << cells[i].ID 
+                        << " dt " << dt 
+                        << " Erad " << extensives[i].Erad 
+                        << " m " << extensives[i].mass 
+                        << " old_Edot " << old_Edot << std::endl;
+        }
+
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
+        
         try
         {
             cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
             cells[i].pressure = eos_.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
             cells[i].velocity = extensives[i].momentum / extensives[i].mass;    
+            
             if(entropy)
             {
                 cells[i].tracers[entropy_index] = eos_.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
@@ -784,28 +782,20 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     bool was_bad = false;
     if(good_end == 0)
     {
-        std::cout<<"Zero good_end rank "<<rank<<std::endl;
+        std::cout << "Zero good_end rank " << rank << std::endl;
         was_bad = true;
     }
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &good_end, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    if(was_bad)
-        std::cout<<"rank "<<rank<<" good_end "<<good_end<<std::endl;
+    
+    if(was_bad) std::cout<<"rank "<<rank<<" good_end "<<good_end<<std::endl;
 #endif
-    if(good_end == 0)
-    {
-        // std::cout<<"throwing error"<<std::endl;
-        throw UniversalError("Negative energy in POSTCG");
-    }
+    
+    if(good_end == 0) throw UniversalError("Negative energy in POSTCG");
 
-    double Efinal = 0;
-    for(size_t i = 0; i < N; ++i)
-        Efinal += extensives[i].Erad + extensives[i].energy;
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-#endif
-    if(rank == 0)
-        std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
+    double const Efinal = calculate_total_energy(tess, extensives);
+
+    if(rank == 0) std::cout<<std::setprecision(14) << "Einit " << Einit << " Efinal " << Efinal << std::endl;
 }
 
 void Diffusion::calculate_planck_absorption_coefficient(

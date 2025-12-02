@@ -115,6 +115,7 @@ public:
               energy_scale_ = mass_scale * length_scale * length_scale / (time_scale * time_scale);
 
               velocity_scale_ = length_scale / time_scale;
+              momentum_scale_ = mass_scale * length_scale / time_scale;
 
               area_scale_   = length_scale * length_scale;
               volume_scale_ = length_scale * length_scale * length_scale;
@@ -134,6 +135,8 @@ public:
        mutable double energy_scale_;
        
        mutable double velocity_scale_;
+       mutable double momentum_scale_;
+       
        mutable double area_scale_;
        mutable double volume_scale_;
 
