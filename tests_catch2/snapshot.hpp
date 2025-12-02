@@ -129,13 +129,17 @@ bool compare_vectors_check(
     auto const size = v1.size();
     auto number_of_close_enough = 0;
 
+    double max_rel_error = 0.0;
     for(std::size_t i=0; i < v1.size(); ++i){
         if(close_enough(v1[i], v2[i], rel_tol)) ++number_of_close_enough;
+        else max_rel_error = std::max(max_rel_error, 2.0 * std::abs(v1[i] - v2[i]) / (std::abs(v1[i]) + std::abs(v2[i])));
     }
 
     std::ostringstream oss;
-    oss << description << ": number of elements that are close up to relative tolerance " << rel_tol
-        << " is " << number_of_close_enough << "/" << size;
+    oss << description 
+        << ": number of elements that are close up to relative tolerance " << rel_tol
+        << " is " << number_of_close_enough << "/" << size << "\n"
+        << "max relative error: " << max_rel_error;
 
     INFO(oss.str());
     CHECK(number_of_close_enough == size);
