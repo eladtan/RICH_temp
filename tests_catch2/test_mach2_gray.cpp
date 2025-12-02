@@ -244,7 +244,8 @@ auto mach2gray(
     double const force_cfl = 1;
     DiffusionForce force = DiffusionForce(diffusion, eos);
 
-    CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
+    double current_dt = 1e-11;
+    UserDeterminedTimeStep tsf{current_dt};
 
     // Set point motion
     Eulerian3D pm;
@@ -254,7 +255,6 @@ auto mach2gray(
     HDSim3D sim(tess, cells, eos, pm, tsf, flux, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
     double old_time = sim.getTime();
-    double current_dt = 1e-7;
     while (sim.getTime() < 0.02)
     {
         try
@@ -265,7 +265,8 @@ auto mach2gray(
                 std::cout<<"Iteration "<<sim.getCycle()<<" dt "<<current_dt<<" time "<<sim.getTime()<<std::endl;
             }
             // Do radiation transfer step
-            double new_dt = sim.RadiationTimeStep(current_dt, diffusion);
+            double _ = sim.RadiationTimeStep(current_dt, diffusion);
+            double const new_dt = std::min(current_dt*1.05, 6e-6);
             tsf.SetTimeStep(new_dt);
 
             // Main time step       

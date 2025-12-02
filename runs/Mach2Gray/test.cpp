@@ -229,7 +229,9 @@ int main(void)
     double const force_cfl = 1;
     DiffusionForce force = DiffusionForce(diffusion, eos);
 
-    CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
+    // CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
+    double current_dt = 1e-11;
+    UserDeterminedTimeStep tsf{current_dt};
 
     // Set point motion
     Eulerian3D pm;
@@ -239,7 +241,6 @@ int main(void)
     HDSim3D sim(tess, cells, eos, pm, tsf, flux, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
     double old_time = sim.getTime();
-    double current_dt = 1e-7;
     std::size_t snap_num = 0;
 
     WriteSnapshot3D(sim, "snap_"+std::to_string(snap_num)+".h5");
@@ -254,7 +255,9 @@ int main(void)
                 std::cout<<"Iteration "<<sim.getCycle()<<" dt "<<current_dt<<" time "<<sim.getTime()<<std::endl;
             }
             // Do radiation transfer step
-            double new_dt = sim.RadiationTimeStep(current_dt, diffusion);
+            double const _ = sim.RadiationTimeStep(current_dt, diffusion);
+
+            double const new_dt = std::min(current_dt*1.05, 6e-6);
             tsf.SetTimeStep(new_dt);
             // Write to file every 100 time steps
             if (sim.getCycle() % 100 == 0) {
