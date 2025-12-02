@@ -157,7 +157,8 @@ auto supersonic_marshak(std::string case_num_str){
     if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
-	size_t const Nx = 50;
+	// the log grid is taylored to 512 cells
+	size_t const Nx = current_case.cartesian_mesh ? 50 : 512;
 	double width = 1;
 	Vector3D ll(0, 0, 0), ur(width, width / Nx, width / Nx);
 	Voronoi3D tess(ll, ur);
