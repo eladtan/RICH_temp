@@ -551,30 +551,33 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         extensives[i].Erad = CG_result[i] * volume / energy_scale_;
         double const T = cells[i].temperature;
         
-        double dE = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
-            -0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * full_CG_result[i] / (CG::speed_of_light * CG::speed_of_light)) * volume;
-	    
         double old_Tr = 0;
         double compton_term = 0;
-        double e_absorb = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * full_CG_result[i] * volume * time_scale_;
-        double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume * time_scale_;
-        double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
+        double e_absorb = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * full_CG_result[i] * volume;
+        double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume;
+        double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * full_CG_result[i] / (CG::speed_of_light * CG::speed_of_light)) * volume;
+        
+        double const e_absorb_emitt = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant) * volume;
+        double dE = e_absorb_emitt + e_v2;        
+
         if(compton_on_)
         {
-            double const old_Er = cells[i].Erad * cells[i].density * mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
+            double const old_Er = cells[i].Erad * cells[i].density * energy_density_scale_;
             old_Tr = std::pow(old_Er / CG::radiation_constant, 0.25);
-	        double const pre_factor = fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
+	        double const pre_factor = fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
             compton_term = pre_factor * (old_Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
             compton_term = pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
-            dE += pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
+            dE += compton_term;
+
+            compton_term /= energy_scale_;
         }
-        if(compton_on_)
-            compton_term *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
-        dE *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
-        e_absorb *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
-        e_emitt *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
-        e_v2 *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
+        
+        dE /= energy_scale_;
+        e_absorb /= energy_scale_;
+        e_emitt /= energy_scale_;
+        e_v2 = energy_scale_;
+
         extensives[i].energy += dE;
         extensives[i].internal_energy += dE;
         if(extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || extensives[i].Erad < 0)
