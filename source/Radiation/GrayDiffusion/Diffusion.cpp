@@ -28,6 +28,14 @@ double calculate_total_energy(
     return total_energy;
 }
 
+double const Trad(double const Er) {
+    return std::pow(Er / CG::radiation_constant, 0.25);
+}
+
+double const Um(double const T) {
+    return CG::radiation_constant*T*T*T*T;
+}
+
 } // namespace 
 
 Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
@@ -554,16 +562,16 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double old_Tr = 0;
         double compton_term = 0;
         double e_absorb = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * full_CG_result[i] * volume;
-        double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume;
+        double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * Um(T) * volume;
         double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * full_CG_result[i] / (CG::speed_of_light * CG::speed_of_light)) * volume;
         
-        double const e_absorb_emitt = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant) * volume;
+        double const e_absorb_emitt = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (full_CG_result[i] - Um(T)) * volume;
         double dE = e_absorb_emitt + e_v2;        
 
         if(compton_on_)
         {
             double const old_Er = cells[i].Erad * cells[i].density * energy_density_scale_;
-            old_Tr = std::pow(old_Er / CG::radiation_constant, 0.25);
+            old_Tr = Trad(old_Er);
 	        double const pre_factor = fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
             compton_term = pre_factor * (old_Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
