@@ -314,18 +314,18 @@ void Diffusion::BuildMatrix(
 
         b[i] = volume * Er;
 
-        double const Um = CG::radiation_constant * T * T * T * T;
-        if(fleck_factor[i] < 0.8 && Um > Er)
+        double const Um_i = Um(T);
+        if(fleck_factor[i] < 0.8 && Um_i > Er)
         {
             double const prefactor = fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i];
-            x0[i] = (Er + prefactor * Um) / (1 + prefactor);
+            x0[i] = (Er + prefactor * Um_i) / (1 + prefactor);
         }
         else
             x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt_cgs  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt_cgs * dt_cgs));
             
-        b[i] += volume * fleck_factor[i] * dt_cgs * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant;
+        b[i] += volume * fleck_factor[i] * dt_cgs * CG::speed_of_light * sigma_planck[i] * Um_i;
 
-        Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt_cgs * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
+        Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt_cgs * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (Um_i - Er)));
     }
 
     size_t max_neigh = 0;
