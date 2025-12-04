@@ -603,7 +603,14 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * Um(T) * volume;
         double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * full_CG_result[i] / (CG::speed_of_light * CG::speed_of_light)) * volume;
         
-        double const e_absorb_emitt = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (full_CG_result[i] - Um(T)) * volume;
+        double const e_absorb_emitt = dE_absorption_emission(
+            tess,
+            i,
+            full_CG_result[i],
+            cells[i].temperature,
+            dt_cgs
+        );
+
         double dE = e_absorb_emitt + e_v2;        
 
         if(compton_on_)
@@ -955,4 +962,17 @@ void Diffusion::fix_small_negative_Er(
                     .addEntry("cell data", cells[min_index]);
         }
     }
+}
+
+double Diffusion::dE_absorption_emission(
+    Tessellation3D const& tess,
+    std::size_t i,
+    double const Er,
+    double const temperature,
+    double const dt_cgs
+) const 
+{
+    double const volume = tess.GetVolume(i) * volume_scale_;
+    
+    return fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (Er - Um(temperature)) * volume;
 }
