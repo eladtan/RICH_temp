@@ -110,18 +110,6 @@ public:
         std::vector<ComputationalCell3D> const& cells
     ) const;
 
-    bool step_iterations(
-        double const tolerance, 
-        int& total_iters, 
-        Tessellation3D const& tess, 
-        std::vector<ComputationalCell3D>& cells,
-        std::vector<ComputationalCell3D> const& cells_old,
-        std::vector<Conserved3D>& extensives,
-        std::vector<Conserved3D> const& extensives_old,
-        double const dt,
-        double const time
-    ) const;
-
     double dE_absorption_emission(
         Tessellation3D const& tess,
         std::size_t i,
