@@ -36,6 +36,10 @@ double Um(double const T) {
     return CG::radiation_constant*T*T*T*T;
 }
 
+double radiation_cv(double const T){
+    return 4 * CG::radiation_constant * T * T * T;
+}
+
 } // namespace 
 
 Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
@@ -76,8 +80,8 @@ double Diffusion::GetSingleFleckFactor(
     double const energy_ratio = Cv * T / (cell.internal_energy * cell.density);
 
     Cv *= energy_density_scale_;
-    double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
-
+    double const beta = std::max(1.0, 0.5 * energy_ratio) * radiation_cv(T) / Cv;
+    
     return compton_on_ ? 
             FleckFactorCompton(dt * time_scale_, beta, sigma_planck[cell_index], sigma_s[cell_index], Er, Cv) 
             : 
