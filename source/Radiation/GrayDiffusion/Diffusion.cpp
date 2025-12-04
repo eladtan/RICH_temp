@@ -601,11 +601,17 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double compton_term = 0;
         double e_absorb = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * full_CG_result[i] * volume;
         double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * Um(T) * volume;
-        double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * full_CG_result[i] / (CG::speed_of_light * CG::speed_of_light)) * volume;
+        
+        double e_v2 =  dE_v_squared(
+            tess, i,
+            full_CG_result[i],
+            cells_cgs[i].velocity,
+            max_v,
+            dt_cgs
+        );
         
         double const e_absorb_emitt = dE_absorption_emission(
-            tess,
-            i,
+            tess, i,
             full_CG_result[i],
             cells[i].temperature,
             dt_cgs
@@ -975,4 +981,18 @@ double Diffusion::dE_absorption_emission(
     double const volume = tess.GetVolume(i) * volume_scale_;
     
     return fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * (Er - Um(temperature)) * volume;
+}
+
+double Diffusion::dE_v_squared(
+    Tessellation3D const& tess,
+    std::size_t i,
+    double const Er,
+    Vector3D const& velocity_cgs,
+    double const max_velocity_cgs,
+    double const dt_cgs
+) const {
+    double const volume = tess.GetVolume(i) * volume_scale_;
+    double const v_squared = std::min(max_velocity_cgs * max_velocity_cgs, ScalarProd(velocity_cgs, velocity_cgs));
+
+    return -0.5 * (3 - R2[i]) * fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] *  v_squared * Er / (CG::speed_of_light * CG::speed_of_light) * volume;
 }
