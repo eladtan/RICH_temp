@@ -138,6 +138,15 @@ public:
         double const max_velocity_cgs,
         double const dt_cgs
     ) const;
+
+    double dE_compton(
+        Tessellation3D const& tess,
+        std::size_t i,
+        double const Er,
+        double const temperature,
+        double const old_Er,
+        double const dt_cgs
+    ) const;
     
     mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable bool do_iterations_on_Um;

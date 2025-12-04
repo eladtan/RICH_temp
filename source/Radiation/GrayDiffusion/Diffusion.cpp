@@ -621,12 +621,17 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
 
         if(compton_on_)
         {
-            double const old_Er = cells[i].Erad * cells[i].density * energy_density_scale_;
+            double const old_Er = cells_cgs[i].Erad * cells_cgs[i].density;
             old_Tr = Trad(old_Er);
-	        double const pre_factor = fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
-            compton_term = pre_factor * (old_Tr - T);
-            double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
-            compton_term = pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
+	        
+            compton_term = dE_compton(
+                tess, i,
+                full_CG_result[i],
+                cells[i].temperature,
+                old_Er,
+                dt_cgs
+            );
+
             dE += compton_term;
 
             compton_term /= energy_scale_;
@@ -995,4 +1000,26 @@ double Diffusion::dE_v_squared(
     double const v_squared = std::min(max_velocity_cgs * max_velocity_cgs, ScalarProd(velocity_cgs, velocity_cgs));
 
     return -0.5 * (3 - R2[i]) * fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] *  v_squared * Er / (CG::speed_of_light * CG::speed_of_light) * volume;
+}
+
+double Diffusion::dE_compton(
+    Tessellation3D const& tess,
+    std::size_t i,
+    double const Er,
+    double const temperature,
+    double const old_Er,
+    double const dt_cgs
+) const
+{
+    double const volume = tess.GetVolume(i) * volume_scale_;
+    double const old_Tr = Trad(old_Er);
+    
+    double const pre_factor = fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
+    
+    double result = pre_factor * (old_Tr - temperature);
+    double const theta = (fleck_factor[i] < 0.5 || std::abs(result) > 1e-3) ? 1 : 0.1;
+    
+    result =  pre_factor * volume * (Er * (old_Tr - temperature * (1 - theta)) - temperature * theta * old_Er);
+
+    return result;
 }
