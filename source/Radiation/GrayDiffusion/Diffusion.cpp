@@ -568,8 +568,14 @@ void Diffusion::BuildMatrix(
     }
 }
 
-void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
-        std::vector<double>const& full_CG_result, std::vector<double> const& CG_result) const
+void Diffusion::PostCG(
+    Tessellation3D const& tess, 
+    std::vector<Conserved3D>& extensives, 
+    double const dt, 
+    std::vector<ComputationalCell3D>& cells,
+    std::vector<double>const& full_CG_result, 
+    std::vector<double> const& CG_result
+) const
 {
     double const max_v = 0.1 * CG::speed_of_light * velocity_scale_;
     double const dt_cgs = dt * time_scale_;
