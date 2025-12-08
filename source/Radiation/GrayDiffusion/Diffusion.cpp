@@ -675,7 +675,7 @@ void Diffusion::PostCG(
         dE /= energy_scale_;
         e_absorb /= energy_scale_;
         e_emitt /= energy_scale_;
-        e_v2 = energy_scale_;
+        e_v2 /= energy_scale_;
 
         extensives[i].energy += dE;
         extensives[i].internal_energy += dE;
