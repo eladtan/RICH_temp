@@ -135,8 +135,29 @@ public:
         double const old_Er,
         double const dt_cgs
     ) const;
+
+    bool iterations(
+        double const tolerance, 
+        int& total_iters, 
+        Tessellation3D const& tess, 
+        std::vector<ComputationalCell3D>& cells,
+        std::vector<Conserved3D>& extensives,
+        double const dt,
+        double const time
+    ) const;
+
+    bool update_energy_iterations(
+        Tessellation3D const& tess,
+        std::vector<ComputationalCell3D>& cells,
+        std::vector<Conserved3D>& extensives,
+        double const dt,
+        std::vector<double>& Er_full,
+        std::vector<double>& Er,
+        double& newton_raphson_error
+    ) const;
     
     mutable std::vector<ComputationalCell3D> cells_cgs;
     mutable bool do_iterations_on_Um;
+    mutable bool use_new_Er_for_x0;
 };
 #endif

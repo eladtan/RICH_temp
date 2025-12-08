@@ -65,7 +65,8 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                              new_Er(),
                                              new_Er_full(),
                                              old_Er(),
-                                             do_iterations_on_Um(false) {}
+                                             do_iterations_on_Um(false),
+                                             use_new_Er_for_x0(false) {}
 
 double Diffusion::GetSingleFleckFactor(
     ComputationalCell3D const& cell, 
@@ -250,6 +251,28 @@ bool Diffusion::step(double const tolerance,
         return false;
     }
 
+    extensives = extensives_temp;
+    cells = cells_temp;
+    
+    double const iterations_CG_eps = 1e-20;
+    int total_iters_2=0;
+    bool const res_iterations = iterations(
+        iterations_CG_eps,
+        total_iters_2,
+        tess,
+        cells_temp,
+        extensives_temp,
+        dt,
+        time
+    );
+
+    if(!res_iterations){
+        return false;
+    }
+
+    extensives = extensives_temp;
+    cells = cells_temp;
+
     return true;
 }
 
@@ -322,13 +345,16 @@ void Diffusion::BuildMatrix(
 
         b[i] = volume * Er;
 
-        double const Um_i = Um(T);
-        if(fleck_factor[i] < 0.8 && Um_i > Er)
+        // cells have the updated temperature while cells_cgs have the ones at the start of the time step
+        double const Um_i = Um(cells[i].temperature);
+        if(use_new_Er_for_x0){
+            x0[i] = new_Er[i];
+        } else if(fleck_factor[i] < 0.8 && Um_i > Er)
         {
             double const prefactor = fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i];
             x0[i] = (Er + prefactor * Um_i) / (1 + prefactor);
         }
-        else
+        else 
             x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt_cgs  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt_cgs * dt_cgs));
             
         b[i] += volume * fleck_factor[i] * dt_cgs * CG::speed_of_light * sigma_planck[i] * Um_i;
@@ -1031,4 +1057,164 @@ double Diffusion::dE_compton(
     result =  pre_factor * volume * (Er * (old_Tr - temperature * (1 - theta)) - temperature * theta * old_Er);
 
     return result;
+}
+
+bool Diffusion::iterations(
+    double const tolerance, 
+    int& total_iters, 
+    Tessellation3D const& tess, 
+    std::vector<ComputationalCell3D>& cells,
+    std::vector<Conserved3D>& extensives,
+    double const dt,
+    double const time
+) const 
+{   
+    int rank = 0;
+    int ws = 1;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &ws);
+#endif
+
+    std::fill(
+        fleck_factor.begin(), fleck_factor.end(), 
+        1.0);
+
+    int const max_iterations = 100;
+    double const outer_iterations_eps = 1e3*std::sqrt(tolerance);
+
+    load_cells_cgs(tess, cells);
+    
+    calculate_planck_absorption_coefficient(tess);
+    calculate_scattering_coefficient(tess);
+    calculate_cell_diffusion_coefficients(tess);
+
+    auto const N = tess.GetPointNo();
+    
+    double total_N_all_processes = static_cast<double>(N);
+    #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &total_N_all_processes, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    #endif
+
+    double error = 0.0;
+    int iter=0;
+    use_new_Er_for_x0 = false;
+    for(iter=0; iter < max_iterations; ++iter){
+        int num_of_inner_iters = 0;
+        // solve for E(Um^k)
+        bool good_end = false;
+        new_Er = CG::BiCGSTAB(tolerance, num_of_inner_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
+        use_new_Er_for_x0 = true;
+
+        total_iters += num_of_inner_iters;
+
+        if(not good_end) {
+            use_new_Er_for_x0 = false;
+            return false;
+        }
+
+        std::vector<double> old_internal_energy(N, 0.0);
+        for(std::size_t i=0; i < N; ++i){
+            old_internal_energy[i] = extensives[i].internal_energy;
+        }
+
+        update_energy_iterations(
+            tess,
+            cells,
+            extensives,
+            dt,
+            new_Er_full,
+            new_Er,
+            error
+        );
+
+        double max_internal_energy = *std::max_element(old_internal_energy.begin(), old_internal_energy.end());
+        
+        #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &max_internal_energy, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        #endif
+
+        error /= max_internal_energy * total_N_all_processes;
+        
+        if (rank == 0)
+            std::cout   << "error: " << error 
+                        << ", iteration: " << iter 
+                        << ", inner_iterations: " << num_of_inner_iters << std::endl;
+        
+        if(error < outer_iterations_eps){
+            break;
+        }
+    }
+
+    if (rank == 0)
+        std::cout   << "error: " << error << "\n"
+                    << "iteration: " << iter << std::endl;
+    
+    PostCG(tess, extensives, dt, cells, new_Er_full, new_Er);
+    
+    use_new_Er_for_x0 = false;
+    return error < outer_iterations_eps;
+}
+
+bool Diffusion::update_energy_iterations(
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D>& cells,
+    std::vector<Conserved3D>& extensives,
+    double const dt,
+    std::vector<double>& Er_full,
+    std::vector<double>& Er,
+    double& newton_raphson_error
+) const
+{
+    auto const N = tess.GetPointNo();
+    double const dt_cgs = dt * time_scale_;
+
+    double nr_error_tmp = 0.0;
+    for(std::size_t i=0; i < N; ++i){
+        double const volume = tess.GetVolume(i);
+        double const E_old = extensives[i].internal_energy;
+        double const temperature_k = cells[i].temperature;
+        
+        double const dE_abs_emiss = dE_absorption_emission(
+            tess,
+            i,
+            Er_full[i],
+            temperature_k,
+            dt_cgs
+        ) / energy_scale_;
+
+        double Cv = eos_.dT2cv(cells[i].density, temperature_k, cells[i].tracers, ComputationalCell3D::tracerNames) * energy_density_scale_;
+        double const beta = radiation_cv(temperature_k) / Cv;
+        double const cdt = CG::speed_of_light * dt_cgs;
+
+        double const E_prev = cells[i].internal_energy * extensives[i].mass;
+        
+        double const dE_newton_raphson = (E_old + dE_abs_emiss - E_prev) / (1.0 + beta*cdt*sigma_planck[i]);
+        
+        nr_error_tmp += std::abs(E_old + dE_abs_emiss - E_prev); 
+        
+        double const E_new = E_prev + dE_newton_raphson;
+        
+        cells[i].internal_energy = std::max(E_new / extensives[i].mass, 1e-20);
+
+        cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+        
+        double constexpr minimal_temp = 3000.0;
+        if(cells[i].temperature < minimal_temp){
+            cells[i].temperature = minimal_temp;
+
+            cells[i].internal_energy = eos_.dT2e(cells[i].density, cells[i].temperature, cells[i].tracers, ComputationalCell3D::tracerNames);
+
+            Er_full[i] = Um(minimal_temp);
+            Er[i] = Um(minimal_temp);
+        }
+    }
+
+    #ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &nr_error_tmp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    #endif
+    
+    newton_raphson_error = nr_error_tmp;
+    
+    return true;
 }
