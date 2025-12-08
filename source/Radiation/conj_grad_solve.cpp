@@ -675,6 +675,11 @@ namespace CG
         MPI_exchange_data(tess, sub_x, true, slice);
         MPI_exchange_data(tess, sub_x_solution, true, slice);
 #endif
+
+        if(rank == 0){
+            std::cout << "BICGSTAB err: " << sub_r_sqrd / scale_b << std::endl; 
+        }
+
         return sub_x;
     }
 }
