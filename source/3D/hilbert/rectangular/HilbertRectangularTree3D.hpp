@@ -211,7 +211,6 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
 
     std::pair<int, int> ranksMatching = {0, this->size - 1};
 
-
     if(current_d >= responsibilityRange.back())
     {
         ranksMatching = {this->size-1, this->size-1};
@@ -335,6 +334,12 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTree(const HilbertRectangularConver
     using RecursionArguments = HilbertRectangularConvertor3D::RecursionArguments;
     using direction_t = HilbertRectangularConvertor3D::direction_t;
     hilbert_index_t d = 0;
+    
+    if(responsibilityRange.empty())
+    {
+        UniversalError eo("Responsibility Range (Hilbert partition boundaries) given to tree is empty");
+        throw eo;
+    }
 
     this->root = new Node(nullptr);
     this->buildTreeHelper(this->root, {{0, 0, 0}, {convertor->div.x, 0, 0}, {0, convertor->div.y, 0}, {0, 0, convertor->div.z}}, 0, d, convertor, responsibilityRange);
