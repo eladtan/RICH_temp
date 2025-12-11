@@ -12,6 +12,7 @@
 #include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
 #include "3D/hilbert/ordinary/HilbertOrdinaryConvertor3D.hpp"
 #include "3D/tesselation/loadBalancing/PartitionLoadBalancer.hpp"
+#include "utils/balance/weightedBalance2.hpp"
 
 #define SPACE_FACTOR 1e-5
 

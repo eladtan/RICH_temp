@@ -77,11 +77,13 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const 
     }
     if(dont_do_weights)
     {
-        responsibilityRange = getBorders(indices);
+        // responsibilityRange = getBorders(indices);
+        responsibilityRange = getWeightedBorders2(indices, std::vector<double>(points.size(), 1.0));
     }
     else
     {
-        responsibilityRange = getWeightedBorders(indices, weights);
+        // responsibilityRange = getWeightedBorders(indices, weights);
+        responsibilityRange = getWeightedBorders2(indices, weights);
     }
     
     if(this->envAgent != nullptr)

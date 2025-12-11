@@ -54,6 +54,8 @@ public:
 
   virtual int GetOwner(const Vector3D &point) const = 0;
 
+  virtual void SetImbalanceTolerance(double tolerance) = 0;
+
   virtual void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
 
   virtual bool ShouldRebalance(const std::vector<double> &weights) const = 0;

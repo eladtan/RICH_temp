@@ -161,6 +161,9 @@ public:
 
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
 
+    template<typename U>
+    const T &GetContainingNodeValue(const U &point) const;
+
     inline void clear()
     {
         this->deleteSubtree(this->getRoot());
@@ -547,6 +550,18 @@ void OctTree<T>::printHelper(const OctTreeNode *node, int indent) const
     }
 }
 #endif // DEBUG_MODE
+
+template<typename T>
+template<typename U>
+const T &OctTree<T>::GetContainingNodeValue(const U &point) const
+{
+    const OctTreeNode *node = this->root;
+    while(not node->isLeaf)
+    {
+        node = node->getChildContaining(point);
+    }
+    return node->value;
+}
 
 template<typename T>
 template<typename U>

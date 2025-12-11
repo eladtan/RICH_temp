@@ -842,6 +842,11 @@ inline int Voronoi3D::GetOwner(const Vector3D &point) const
     return this->pointsManager->getEnvironmentAgent()->getOwner(point);
 }
 
+inline void Voronoi3D::SetImbalanceTolerance(double tolerance)
+{
+    this->pointsManager->setImbalanceTolerance(tolerance);
+}
+
 std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>>
     Voronoi3D::InitialGhostPointsExchange(const MPI_Comm &comm) const
 {

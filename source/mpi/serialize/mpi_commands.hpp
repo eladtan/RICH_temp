@@ -95,8 +95,8 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(const std::vector<Container<
     return result;
 }
 
-template<typename T>
-std::vector<std::vector<T>> MPI_Exchange_by_ownership_by_ranks(const std::vector<T> &data, const std::function<rank_t(const T&)> &ownership, const MPI_Comm &comm)
+template<typename T, typename FunctionType = std::function<rank_t(const T&)>>
+std::vector<std::vector<T>> MPI_Exchange_by_ownership_by_ranks(const std::vector<T> &data, const FunctionType &ownership, const MPI_Comm &comm)
 {
 	rank_t rank, size;
 	MPI_Comm_rank(comm, &rank);
@@ -119,8 +119,8 @@ std::vector<std::vector<T>> MPI_Exchange_by_ownership_by_ranks(const std::vector
 	return MPI_Exchange_all_to_all(dataByRanks, comm);
 }
 
-template<typename T>
-std::vector<T> MPI_Exchange_by_ownership(const std::vector<T> &data, const std::function<rank_t(const T&)> &ownership, const MPI_Comm &comm)
+template<typename T, typename FunctionType = std::function<rank_t(const T&)>>
+std::vector<T> MPI_Exchange_by_ownership(const std::vector<T> &data, const FunctionType &ownership, const MPI_Comm &comm)
 {
 	std::vector<std::vector<T>> exchangedData = MPI_Exchange_by_ownership_by_ranks(data, ownership, comm);
 	std::vector<T> result;

@@ -288,6 +288,8 @@ public:
 
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
+  inline void SetPointsManager(std::shared_ptr<PointsManager> pointsManager){this->pointsManager = pointsManager;};
+
   inline void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override {return this->pointsManager->setLoadBalancer(loadBalancer);};
 
   inline bool ShouldRebalance(const std::vector<double> &weights) const override {return this->pointsManager->shouldRebalance(weights);}
@@ -303,6 +305,8 @@ public:
   bool PointInMyDomain(const Vector3D &point) const override;
 
   int GetOwner(const Vector3D &point) const override;
+
+  void SetImbalanceTolerance(double tolerance) override;
 
 #endif // RICH_MPI
 
