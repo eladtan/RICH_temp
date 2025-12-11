@@ -6,14 +6,15 @@
 #include <vector>
 #include <memory>
 #include <iostream>
+#include <chrono>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
 #include "tools/DistributedMutex.hpp"
 #include "tools/ConditionVariable.hpp"
 #include "ReallocationAgent.hpp"
 
-#define BUFFER_REALLOCATION_FACTOR 2 // 1.618033 // golden ratio
-#define MINIMAL_BUFF_SIZE 10
+#define BUFFER_REALLOCATION_FACTOR 3 // 1.618033 // golden ratio
+#define MINIMAL_BUFF_SIZE 50
 #define BUFFER_SHRINK_FACTOR 0.5
 #define MPI_INDEX_T MPI_UINT32_T
 
@@ -71,6 +72,10 @@ public:
         }
     }
 
+    double reallocationTime;
+    size_t reallocationsThisStep;
+    size_t reallocationsTotal;
+
 private:
     MPI_Win particles_win;
     MPI_Win av_win;
@@ -80,6 +85,7 @@ private:
     std::shared_ptr<DistributedMutex> localTHMutex;
     std::shared_ptr<DistributedMutex> remoteTHMutex;
     bool destroyed;
+    double requestedFactor;
     MPI_Group group_world, group_internal;
 
     #ifdef ADVANCED_MONTECARLO_DEBUG
@@ -93,7 +99,7 @@ template<typename T, typename Grid>
 RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent):
     comm_world(comm_world), comm(private_comm), buffsize(buffsize), particles_win(MPI_WIN_NULL),
     av_win(MPI_WIN_NULL), th_win(MPI_WIN_NULL), av_length_win(MPI_WIN_NULL), th_length_win(MPI_WIN_NULL),
-    destroyed(false), reallocationAgent(reallocationAgent)
+    destroyed(false), reallocationAgent(reallocationAgent), reallocationsTotal(0)
 {
     assert(private_comm != MPI_COMM_NULL);
 
@@ -104,6 +110,8 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
     
     assert(this->size_internal == 2 or this->size_internal == 1);
     assert(this->rank_internal == 0 or this->rank_internal == 1);
+    
+    this->requestedFactor = 1;
     
     if(this->size_internal > 1)
     {
@@ -610,7 +618,21 @@ template<typename T, typename Grid>
 void RankHandler<T, Grid>::Reallocate(double factor)
 {
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
+    // std::cout << "Rank " << this->rank_world << " reallocates (with rank " << this->peer_rank_world << ", factor " << factor << ", current size " << this->buffsize << ")" << std::endl;
+    
+    this->reallocationsThisStep++;
+    this->reallocationsTotal++;
 
+    double requestedFactorSelf;
+    MPI_Sendrecv(&this->requestedFactor, 1, MPI_DOUBLE, this->other_rank, 0, &requestedFactorSelf, 1, MPI_DOUBLE, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
+    factor = std::max(factor, requestedFactorSelf);
+
+    // if(this->rank_world <= this->peer_rank_world)
+    // {
+    //     std::cout << "Ranks " << this->rank_world << " and " << this->peer_rank_world << " have reallocation, for " << this->reallocationsThisStep << " times this step and " << this->reallocationsTotal << " times in total. ";
+    //     std::cout << "Increasing sizes to " << (this->buffsize * factor) << " (current: " << this->buffsize << ")" << std::endl;
+    // }
+    
     size_t newBuffSize = std::ceil(this->buffsize * factor); // ceil is necessary to avoid 0
     size_t oldBuffSize = this->buffsize;
     if(oldBuffSize > newBuffSize)
@@ -791,8 +813,9 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         #ifdef ADVANCED_MONTECARLO_DEBUG
             this->ValidateArraysContents();
         #endif // ADVANCED_MONTECARLO_DEBUG
-
     }
+
+    this->requestedFactor = 1;
 }
 
 template<typename T, typename Grid>
@@ -860,15 +883,25 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         };
 
         int availLength = getAvailableLength();
+        auto start = std::chrono::high_resolution_clock::now();
+        size_t requestReallocationTimes = 0;
         while(availLength < Np)
         {
+            this->requestedFactor = static_cast<double>((Np + availLength)) / this->peer_buffsize + 1;
             this->remoteTHMutex->Unlock();
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
             this->remoteTHMutex->Lock();
             availLength = getAvailableLength();
+            requestReallocationTimes++;
         }
         assert(availLength >= Np);
+        auto end = std::chrono::high_resolution_clock::now();
+        this->reallocationTime += std::chrono::duration<double>(end - start).count();
 
+        if(requestReallocationTimes > 1)
+        {
+            std::cout << "Rank " << this->rank_world << " and " << this->peer_rank_world << ", requested allocations " << requestReallocationTimes << " times before being able to transfer " << Np << " particles" << std::endl;
+        }
         // get particle empty index from avail list
         std::vector<index_t> availIndices(Np);
 

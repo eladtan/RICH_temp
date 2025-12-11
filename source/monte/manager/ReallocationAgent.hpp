@@ -19,10 +19,13 @@ public:
 
     void HandleWaitingReallocations(void);
 
+    void HandleAllWaitingReallocations(void);
+
 private:
     MPI_Comm comm;
     rank_t rank;
     rank_t size; // todo: unnecessary
+    std::vector<std::pair<rank_t, double>> incoming;
     std::function<void(rank_t)> reallocationFunction;
 };
 

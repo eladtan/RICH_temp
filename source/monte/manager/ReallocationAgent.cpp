@@ -17,17 +17,35 @@ ReallocationAgent::ReallocationAgent(const MPI_Comm &comm, const std::function<v
 
 rank_t ReallocationAgent::ShouldReallocate(void)
 {
+    if(!this->incoming.empty())
+    {
+        rank_t toHandle = this->incoming.front().first;
+        this->incoming.erase(this->incoming.begin());
+        return toHandle;
+    }
     MPI_Status status;
     int flag;
-    MPI_Iprobe(MPI_ANY_SOURCE, ASK_REALLOCATION_TAG, this->comm, &flag, &status);
-    if(__glibc_unlikely(flag))
+    while(true)
     {
-        MPI_Request request;
-        MPI_Recv(MPI_BOTTOM, 0, MPI_INT, status.MPI_SOURCE, ASK_REALLOCATION_TAG, this->comm, &status);
-        MPI_Isend(MPI_BOTTOM, 0, MPI_INT, status.MPI_SOURCE, ANSWER_REALLOCATION_TAG, this->comm, &request);
-        MPI_Wait(&request, MPI_STATUS_IGNORE);
-        return status.MPI_SOURCE;
+        MPI_Iprobe(MPI_ANY_SOURCE, ASK_REALLOCATION_TAG, this->comm, &flag, &status);
+        if(__glibc_unlikely(flag))
+        {
+            MPI_Request request;
+            double time;
+            MPI_Recv(&time, 1, MPI_DOUBLE, status.MPI_SOURCE, ASK_REALLOCATION_TAG, this->comm, &status);
+            MPI_Isend(MPI_BOTTOM, 0, MPI_INT, status.MPI_SOURCE, ANSWER_REALLOCATION_TAG, this->comm, &request);
+            MPI_Wait(&request, MPI_STATUS_IGNORE);
+            this->incoming.push_back({status.MPI_SOURCE, time});
+        }
+        else
+        {
+            break;
+        }
     }
+    std::sort(this->incoming.begin(), this->incoming.end(), [](const std::pair<rank_t, double> &a, const std::pair<rank_t, double> &b)
+    {
+        return a.second < b.second;
+    });
     return NO_RANK;
 }
 
@@ -41,11 +59,23 @@ void ReallocationAgent::HandleWaitingReallocations(void)
     }
 }
 
+void ReallocationAgent::HandleAllWaitingReallocations(void)
+{
+    rank_t handle = this->ShouldReallocate();
+    while(handle != NO_RANK)
+    {
+        assert(handle != this->rank);
+        this->reallocationFunction(handle);
+        handle = this->ShouldReallocate();
+    }
+}
+
 void ReallocationAgent::RequestReallocation(rank_t fromRank)
 {
     MPI_Request request1, request2;
     MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, fromRank, ANSWER_REALLOCATION_TAG, this->comm, &request1);
-    MPI_Isend(MPI_BOTTOM, 0, MPI_INT, fromRank, ASK_REALLOCATION_TAG, this->comm, &request2);
+    double time = MPI_Wtime();
+    MPI_Isend(&time, 1, MPI_DOUBLE, fromRank, ASK_REALLOCATION_TAG, this->comm, &request2);
     while(true)
     {
         int flag;
