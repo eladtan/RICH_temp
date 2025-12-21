@@ -90,3 +90,59 @@ vector<Vector3D> RoundGrid3DSingle(vector<Vector3D> const& points, Vector3D cons
 	return res;
 }
 #endif
+
+std::vector<Vector3D> RoundGridSphere3D(std::vector<Vector3D> const& points, Vector3D const& ll, Vector3D const& ur, Vector3D const center,
+	size_t NumberIt, Tessellation3D *tess, std::function<bool(Vector3D)> const& criteria)
+{
+	Voronoi3D default_tess(ll, ur);
+	if (tess == nullptr)
+		tess = &default_tess;
+	int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	tess->BuildParallel(points);
+#else
+	tess->Build(points);
+#endif
+	double eta_ = 0.02, chi_ = 1;
+	std::vector<Vector3D> res(points);
+	for (size_t j = 0; j < NumberIt; ++j)
+	{
+		if(rank == 0)
+			std::cout<<"Round Grid Sphere Iteration: "<<j<<std::endl;
+	  size_t N = tess->GetPointNo();
+#ifdef RICH_MPI
+		res = tess->getMeshPoints();
+		res.resize(static_cast<size_t>(N));
+#endif
+		for (size_t i = 0; i < N; ++i)
+		{
+			double R = tess->GetWidth(i);
+            Vector3D s = tess->GetCellCM(i);
+            Vector3D r = tess->GetMeshPoint(i);
+			if(not criteria(r))
+				continue;
+			double d = fastabs(s - r);
+			Vector3D dw;
+			if (d / eta_ / R < 0.95)
+				dw = 0 * s;
+			else
+				dw = chi_*0.25*(s - r);
+			double const oldR = abs(r - center);
+			res[i] = tess->GetMeshPoint(i) + dw;
+			Vector3D const dir = normalize(res[i] - center);
+			res[i] = center + dir * oldR;
+		}
+#ifdef RICH_MPI
+		tess->BuildParallel(res);
+#else
+		tess->Build(res);
+#endif
+	}
+#ifdef RICH_MPI
+	size_t N = tess->GetPointNo();
+	res = tess->getMeshPoints();
+	res.resize(N);
+#endif
+	return res;
+}
