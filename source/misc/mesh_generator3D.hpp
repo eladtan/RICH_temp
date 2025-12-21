@@ -92,5 +92,22 @@ vector<Vector3D> RandSphereR1(std::size_t PointNum, Vector3D const& ll, Vector3D
  */
 vector<Vector3D> RandSphereRa(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,double a, Vector3D const& center);
 
+/*! \brief Generate random points on a sphere surface with iterative rounding
+  \param Radius Radius of the sphere
+  \param PointNum Number of points to generate
+  \param center Sphere centre (default is origin)
+  \param Niterations Number of iterations for rounding/optimization (default is 100)
+  \return List of points on the sphere surface
+ */
+std::vector<Vector3D> RandSphereSurfaceRounded(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0), size_t const Niterations = 100);
+
+/*! \brief Generate random points on a sphere surface
+  \param Radius Radius of the sphere
+  \param PointNum Number of points to generate
+  \param center Sphere centre (default is origin)
+  \return List of points on the sphere surface
+ */
+std::vector<Vector3D> RandSphereSurface(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0));
+
 #endif //MESHGENERATOR3D_HPP
 
