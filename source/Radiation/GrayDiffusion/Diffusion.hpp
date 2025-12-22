@@ -54,7 +54,7 @@ public:
     void PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& extensives, double const dt, std::vector<ComputationalCell3D>& cells,
         std::vector<double>const& CG_result, std::vector<double> const&  full_CG_result) const override;
 
-    virtual void PrintDebugData(size_t const index) const
+    virtual void PrintDebugData(size_t const index) const override
     {
         std::cout<<"Diffusion debug data:"<<std::endl;
         std::cout<<"sigma_planck "<<sigma_planck[index]<<" sigma_s "<<sigma_s[index]<<
