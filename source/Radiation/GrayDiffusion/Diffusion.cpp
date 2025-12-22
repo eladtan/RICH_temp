@@ -1265,7 +1265,7 @@ bool Diffusion::update_energy_iterations(
         double const dE_abs_emiss = dE_absorption_emission(
             tess,
             i,
-            Er_full[i],
+            Er[i],
             temperature_k,
             dt_cgs
         ) / energy_scale_;
@@ -1276,7 +1276,8 @@ bool Diffusion::update_energy_iterations(
 
         double const E_prev = cells[i].internal_energy * extensives[i].mass;
         
-        double const dE_newton_raphson = (E_old + dE_abs_emiss - E_prev) / (1.0 + beta*cdt*sigma_planck[i]);
+        double const cdtkp = cdt*sigma_planck[i];
+        double const dE_newton_raphson = (E_old + dE_abs_emiss - E_prev) / (1.0 + beta*cdtkp/(1.0+cdtkp));
         
         double const err_cell = std::abs(E_old + dE_abs_emiss - E_prev) / E_prev;
         
