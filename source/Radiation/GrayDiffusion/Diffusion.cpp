@@ -1,6 +1,7 @@
 #include "Diffusion.hpp"
 #include <boost/math/special_functions.hpp>
 #include <algorithm>
+#include <boost/math/tools/roots.hpp>
 
 #ifdef    RICH_MPI
 #include "mpi/mpi_commands.hpp"
@@ -681,6 +682,46 @@ void Diffusion::PostCG(
         extensives[i].energy += dE;
         extensives[i].internal_energy += dE;
         
+        if(do_iterations_on_Um and GetSingleFleckFactor(cells[i], i, dt) < 0.1){
+            auto const internal_and_Erad_tot_cgs = (extensives[i].Erad + extensives[i].internal_energy) * energy_scale_;
+
+            if(internal_and_Erad_tot_cgs > 0.0){
+                auto func = [&](double const equilibrium_temperature){
+                    double const internal_energy_cgs = extensives[i].mass*eos_.dT2e(
+                        cells[i].density, 
+                        equilibrium_temperature,
+                        cells[i].tracers,
+                        ComputationalCell3D::tracerNames
+                    ) * energy_scale_;
+
+                    return Um(equilibrium_temperature)*volume + internal_energy_cgs - internal_and_Erad_tot_cgs;
+                };
+
+                boost::math::tools::eps_tolerance<double> tol(26);
+                std::uintmax_t it = 150;
+
+                double const T_right_bracket = Trad(internal_and_Erad_tot_cgs / volume) * 1.2;
+                double const T_left_bracket = T_right_bracket*1e-2;
+                auto r = boost::math::tools::bisect(
+                    func,
+                    T_left_bracket,
+                    T_right_bracket,
+                    tol,
+                    it
+                );
+
+                double const equilibrium_temperature = 0.5 * (r.first + r.second);
+                extensives[i].internal_energy = eos_.dT2e(
+                    cells[i].density,
+                    equilibrium_temperature,
+                    cells[i].tracers,
+                    ComputationalCell3D::tracerNames
+                ) * extensives[i].mass;
+
+                extensives[i].Erad = tess.GetVolume(i) * Um(equilibrium_temperature) / energy_density_scale_; 
+            }
+        }
+
         if(extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || extensives[i].Erad < 0)
         {
             good_end = 0;
