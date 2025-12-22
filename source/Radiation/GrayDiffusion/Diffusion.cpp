@@ -1081,7 +1081,7 @@ bool Diffusion::iterations(
         fleck_factor.begin(), fleck_factor.end(), 
         1.0);
 
-    int const max_iterations = 100;
+    int const max_iterations = 20;
     double const outer_iterations_eps = 1e3*std::sqrt(tolerance);
 
     load_cells_cgs(tess, cells);
