@@ -153,7 +153,8 @@ public:
         double const dt,
         std::vector<double>& Er_full,
         std::vector<double>& Er,
-        double& newton_raphson_error
+        double& newton_raphson_error,
+        std::vector<double>& error_per_cell
     ) const;
     
     mutable std::vector<ComputationalCell3D> cells_cgs;

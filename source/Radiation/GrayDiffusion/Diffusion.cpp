@@ -1097,8 +1097,11 @@ bool Diffusion::iterations(
         MPI_Allreduce(MPI_IN_PLACE, &total_N_all_processes, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
+    double error_sie = 0.0;
+    double error_Um = 0.0;
     double error = 0.0;
-    int iter=0;
+    std::vector<double> error_per_cell(N, 1e200);
+    int iter = 0;
     use_new_Er_for_x0 = false;
     for(iter=0; iter < max_iterations; ++iter){
         int num_of_inner_iters = 0;
@@ -1115,8 +1118,10 @@ bool Diffusion::iterations(
         }
 
         std::vector<double> old_internal_energy(N, 0.0);
+        std::vector<double> old_Um(N, 0.0);
         for(std::size_t i=0; i < N; ++i){
-            old_internal_energy[i] = extensives[i].internal_energy;
+            old_Um[i] = Um(cells[i].temperature);
+            old_internal_energy[i] = cells[i].internal_energy;
         }
 
         update_energy_iterations(
@@ -1126,35 +1131,74 @@ bool Diffusion::iterations(
             dt,
             new_Er_full,
             new_Er,
-            error
+            error,
+            error_per_cell
         );
 
         double max_internal_energy = *std::max_element(old_internal_energy.begin(), old_internal_energy.end());
+        double max_Um = *std::max_element(old_Um.begin(), old_Um.end());
         
         #ifdef RICH_MPI
         MPI_Allreduce(MPI_IN_PLACE, &max_internal_energy, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &max_Um, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
         #endif
 
-        error /= max_internal_energy * total_N_all_processes;
+        error_Um = 0.0;
+        error_sie = 0.0;
+        for(std::size_t i=0; i<N; ++i){
+            error_Um += std::abs(Um(cells[i].temperature) - old_Um[i]) / (0.5*(Um(cells[i].temperature) + old_Um[i]) + 1e-3*max_Um);
+            error_sie = std::max(error_sie, std::abs(cells[i].internal_energy - old_internal_energy[i]) / old_internal_energy[i]);
+        }
+
+        #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &error_Um, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &error_sie, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        #endif
+
+        error_Um /= total_N_all_processes;
+        
         
         if (rank == 0)
-            std::cout   << "error: " << error 
+            std::cout   << "error_nr: " << error
+                        << ", error_sie: " << error_sie
+                        << ", error_Um: " << error_Um 
                         << ", iteration: " << iter 
-                        << ", inner_iterations: " << num_of_inner_iters << std::endl;
-        
-        if(error < outer_iterations_eps){
+                        << ", inner_iterations: " << num_of_inner_iters 
+                        << ", total_iters: " << total_iters << std::endl;
+
+        if(error_Um < 1e-3 && error < 1e-1){
             break;
         }
     }
 
-    if (rank == 0)
-        std::cout   << "error: " << error << "\n"
-                    << "iteration: " << iter << std::endl;
     
+    if (rank == 0)
+            std::cout   << "error_sie: " << error_sie << "\n"
+        << "error_Um: " << error_Um << "\n"
+        << "iteration: " << iter << std::endl;
+
+    if(iter == max_iterations){
+        if (rank == 0)
+            std::cout << "Max iterations reached" << std::endl;
+        return false;
+    }
+
+    bool good_end = false;
+    int num_of_inner_iters = 0;
+    new_Er = CG::BiCGSTAB(tolerance, num_of_inner_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
+
+    total_iters += num_of_inner_iters;
+
+    if(not good_end) {
+        use_new_Er_for_x0 = false;
+        return false;
+    }
+
     PostCG(tess, extensives, dt, cells, new_Er_full, new_Er);
     
     use_new_Er_for_x0 = false;
-    return error < outer_iterations_eps;
+
+    return true;
 }
 
 bool Diffusion::update_energy_iterations(
@@ -1164,7 +1208,8 @@ bool Diffusion::update_energy_iterations(
     double const dt,
     std::vector<double>& Er_full,
     std::vector<double>& Er,
-    double& newton_raphson_error
+    double& newton_raphson_error,
+    std::vector<double>& error_per_cell
 ) const
 {
     auto const N = tess.GetPointNo();
@@ -1192,27 +1237,20 @@ bool Diffusion::update_energy_iterations(
         
         double const dE_newton_raphson = (E_old + dE_abs_emiss - E_prev) / (1.0 + beta*cdt*sigma_planck[i]);
         
-        nr_error_tmp += std::abs(E_old + dE_abs_emiss - E_prev); 
+        double const err_cell = std::abs(E_old + dE_abs_emiss - E_prev) / E_prev;
         
+        error_per_cell[i] = err_cell;
+        nr_error_tmp = std::max(nr_error_tmp, err_cell); 
+
         double const E_new = E_prev + dE_newton_raphson;
         
         cells[i].internal_energy = std::max(E_new / extensives[i].mass, 1e-20);
-
-        cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
         
-        double constexpr minimal_temp = 3000.0;
-        if(cells[i].temperature < minimal_temp){
-            cells[i].temperature = minimal_temp;
-
-            cells[i].internal_energy = eos_.dT2e(cells[i].density, cells[i].temperature, cells[i].tracers, ComputationalCell3D::tracerNames);
-
-            Er_full[i] = Um(minimal_temp);
-            Er[i] = Um(minimal_temp);
-        }
+        cells[i].temperature = eos_.de2T(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
     }
 
     #ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &nr_error_tmp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &nr_error_tmp, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     #endif
     
     newton_raphson_error = nr_error_tmp;
