@@ -136,6 +136,48 @@ public:
         double const dt_cgs
     ) const;
 
+    bool is_energy_invalid(Conserved3D const& extensive) const;
+
+    void print_postcg1_debug(
+        std::size_t i,
+        std::vector<ComputationalCell3D> const& cells,
+        std::vector<Conserved3D> const& extensives,
+        std::vector<double> const& CG_result,
+        std::vector<double> const& full_CG_result,
+        double T,
+        double dE,
+        double old_e_therm,
+        double e_emitt,
+        double e_v2,
+        double e_absorb_emitt,
+        double compton_term,
+        double old_Tr
+    ) const;
+
+    void print_postcg2_debug(
+        std::size_t i,
+        Tessellation3D const& tess,
+        std::vector<ComputationalCell3D> const& cells,
+        std::vector<Conserved3D> const& extensives,
+        std::vector<double> const& CG_result,
+        std::vector<double> const& full_CG_result,
+        double T,
+        double max_v,
+        double dt_cgs,
+        Vector3D const& dP,
+        double Erad_dE,
+        double e_absorb,
+        double e_emitt,
+        double e_v2,
+        double total_relativity,
+        double etherm_mid,
+        Vector3D const& gradE,
+        Vector3D const& CM,
+        Vector3D const& point,
+        std::vector<size_t> const& neighbors,
+        face_vec const& faces
+    ) const;
+
     bool iterations(
         double const tolerance, 
         int& total_iters, 

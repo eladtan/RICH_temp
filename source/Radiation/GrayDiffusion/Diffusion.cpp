@@ -722,33 +722,10 @@ void Diffusion::PostCG(
             }
         }
 
-        if(extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || extensives[i].Erad < 0)
+        if(is_energy_invalid(extensives[i]))
         {
             good_end = 0;
-            std::cout   << "Negative internal energy in postcg1, " 
-                        << extensives[i].internal_energy 
-                        << " ID " << cells[i].ID 
-                        << " T " << T << "\n"
-                        << " CG_result " << CG_result[i] 
-                        << " old Er " << cells[i].Erad * cells[i].density * energy_density_scale_
-                        << " v " << fastabs(cells[i].velocity) 
-                        << " mass " << extensives[i].mass
-                        << " dE " << dE 
-                        << " R2 " << R2[i] 
-                        << " old_e_therm " << old_e_therm << std::endl;
-            
-            std::cout   << cells[i] << std::endl;
-            std::cout   << extensives[i] << std::endl;
-
-            std::cout   << "max emitt " << -e_emitt
-                        << " full_CG_result " << full_CG_result[i]
-                        << " relativity " << -e_v2
-                        << " fleck " << fleck_factor[i]
-                        << " sigma_planck " << sigma_planck[i]
-                        << " other dE " << e_absorb_emitt + e_v2 
-                        << " density " << cells[i].density
-                        << " compton_term " << compton_term 
-                        << " old_Tr " << old_Tr << std::endl;
+            print_postcg1_debug(i, cells, extensives, CG_result, full_CG_result, T, dE, old_e_therm, e_emitt, e_v2, e_absorb_emitt, compton_term, old_Tr);
             break;
         }
 
@@ -803,73 +780,10 @@ void Diffusion::PostCG(
             extensives[i].energy = extensives[i].internal_energy +  ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
         }
 
-        if(extensives[i].Erad < 0 || extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || cells[i].Erad < 0)
+        if(is_energy_invalid(extensives[i]) || cells[i].Erad < 0)
         {
-            std::cout   << "Negative internal energy is postcg2, " 
-                        << extensives[i].internal_energy
-                        << " ID " << cells[i].ID 
-                        << " T " << T 
-                        << " CG_result " << CG_result[i]
-                        << " full_CG_result " << full_CG_result[i] 
-                        << " v " << fastabs(cells[i].velocity) 
-                        << " sigma_planck " << sigma_planck[i]
-                        << " sigma_r " << CG::speed_of_light / (3 * D[i]) 
-                        << " E_init " << cells[i].Erad*cells[i].density* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
-                        << " volume " << tess.GetVolume(i)
-                        << " Erad " << extensives[i].Erad
-                        << " mass " << extensives[i].mass
-                        << " dP " << dP.x << "," << dP.y << "," << dP.z 
-                        << " momentum " << extensives[i].momentum.x << "," << extensives[i].momentum.y << "," << extensives[i].momentum.z << "\n"
-                        << "Erad_dE " << Erad_dE 
-                        << " cell_flux_limiter " << cell_flux_limiter[i] 
-                        << " e_absorb " << e_absorb 
-                        << " e_emitt "<< e_emitt 
-                        << " e_v2 " << e_v2 << "\n"
-                        << "total relativity " << total_relativity 
-                        << " etherm_mid " << etherm_mid
-                        << " fleck_factor " << fleck_factor[i]
-                        << " gradE " << gradE * (1.0 / tess.GetVolume(i)) << std::endl;
-
-            for(size_t j = 0; j < Nneigh; ++j)
-            {
-                size_t const neighbor_j = neighbors[j];
-                r_ij = point - tess.GetMeshPoint(neighbor_j);
-                double const r_ij_size = abs(r_ij);
-                r_ij *= 1.0 / r_ij_size;
-                double Er_j = 0;
-                if(tess.IsPointOutsideBox(neighbor_j))
-                    boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
-                else
-                    Er_j = CG_result[neighbor_j];
-
-                Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
-                Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
-                double mid_D = 0.5 * (D[neighbor_j] + D[i]);
-                double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (CG_result[i] - Er_j), mid_D, 0.5 * (CG_result[i] + Er_j)) : 1;
-                
-                double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells_cgs[i].velocity, r_ij)));
-                double const v_ratio = max_local_v / ScalarProd(cells_cgs[i].velocity, r_ij);
-                
-                double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
-                double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
-                
-                std::cout   << "relativity_term " << relativity_term
-                            << " flux_limiter_face " << flux_limiter_face
-                            << " Er_j " << Er_j
-                            << " Er_j_init " << cells[neighbor_j].density * cells[neighbor_j].Erad * energy_density_scale_
-                            << " ID " << cells[neighbor_j].ID
-                            << " v_ratio " << v_ratio
-                            << " Area " << tess.GetArea(faces[j]) << std::endl;
-            }
-
+            print_postcg2_debug(i, tess, cells, extensives, CG_result, full_CG_result, T, max_v, dt_cgs, dP, Erad_dE, e_absorb, e_emitt, e_v2, total_relativity, etherm_mid, gradE, CM, point, neighbors, faces);
             good_end = 0;
-            std::cout   << "Negative internal energy is postcg2, " 
-                        << extensives[i].internal_energy 
-                        << " ID " << cells[i].ID 
-                        << " T " << T 
-                        << " CG_result " << CG_result[i] 
-                        << " v " << fastabs(cells[i].velocity) 
-                        << " mass " << extensives[i].mass << std::endl;
         }
 
         double const old_Edot = cells[i].Erad_dt;
@@ -1099,6 +1013,146 @@ double Diffusion::dE_compton(
     result =  pre_factor * volume * (Er * (old_Tr - temperature * (1 - theta)) - temperature * theta * old_Er);
 
     return result;
+}
+
+bool Diffusion::is_energy_invalid(Conserved3D const& extensive) const
+{
+    return extensive.Erad < 0 || extensive.internal_energy < 0 || !std::isfinite(extensive.internal_energy);
+}
+
+void Diffusion::print_postcg1_debug(
+    std::size_t i,
+    std::vector<ComputationalCell3D> const& cells,
+    std::vector<Conserved3D> const& extensives,
+    std::vector<double> const& CG_result,
+    std::vector<double> const& full_CG_result,
+    double T,
+    double dE,
+    double old_e_therm,
+    double e_emitt,
+    double e_v2,
+    double e_absorb_emitt,
+    double compton_term,
+    double old_Tr
+) const
+{
+    std::cout   << "Negative internal energy in postcg1, " 
+                << extensives[i].internal_energy 
+                << " ID " << cells[i].ID 
+                << " T " << T << "\n"
+                << " CG_result " << CG_result[i] 
+                << " old Er " << cells[i].Erad * cells[i].density * energy_density_scale_
+                << " v " << fastabs(cells[i].velocity) 
+                << " mass " << extensives[i].mass
+                << " dE " << dE 
+                << " R2 " << R2[i] 
+                << " old_e_therm " << old_e_therm << std::endl;
+    
+    std::cout   << cells[i] << std::endl;
+    std::cout   << extensives[i] << std::endl;
+
+    std::cout   << "max emitt " << -e_emitt
+                << " full_CG_result " << full_CG_result[i]
+                << " relativity " << -e_v2
+                << " fleck " << fleck_factor[i]
+                << " sigma_planck " << sigma_planck[i]
+                << " other dE " << e_absorb_emitt + e_v2 
+                << " density " << cells[i].density
+                << " compton_term " << compton_term 
+                << " old_Tr " << old_Tr << std::endl;
+}
+
+void Diffusion::print_postcg2_debug(
+    std::size_t i,
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D> const& cells,
+    std::vector<Conserved3D> const& extensives,
+    std::vector<double> const& CG_result,
+    std::vector<double> const& full_CG_result,
+    double T,
+    double max_v,
+    double dt_cgs,
+    Vector3D const& dP,
+    double Erad_dE,
+    double e_absorb,
+    double e_emitt,
+    double e_v2,
+    double total_relativity,
+    double etherm_mid,
+    Vector3D const& gradE,
+    Vector3D const& CM,
+    Vector3D const& point,
+    std::vector<size_t> const& neighbors,
+    face_vec const& faces
+) const
+{
+    std::cout   << "Negative internal energy is postcg2, " 
+                << extensives[i].internal_energy
+                << " ID " << cells[i].ID 
+                << " T " << T 
+                << " CG_result " << CG_result[i]
+                << " full_CG_result " << full_CG_result[i] 
+                << " v " << fastabs(cells[i].velocity) 
+                << " sigma_planck " << sigma_planck[i]
+                << " sigma_r " << CG::speed_of_light / (3 * D[i]) 
+                << " E_init " << cells[i].Erad*cells[i].density* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
+                << " volume " << tess.GetVolume(i)
+                << " Erad " << extensives[i].Erad
+                << " mass " << extensives[i].mass
+                << " dP " << dP.x << "," << dP.y << "," << dP.z 
+                << " momentum " << extensives[i].momentum.x << "," << extensives[i].momentum.y << "," << extensives[i].momentum.z << "\n"
+                << "Erad_dE " << Erad_dE 
+                << " cell_flux_limiter " << cell_flux_limiter[i] 
+                << " e_absorb " << e_absorb 
+                << " e_emitt "<< e_emitt 
+                << " e_v2 " << e_v2 << "\n"
+                << "total relativity " << total_relativity 
+                << " etherm_mid " << etherm_mid
+                << " fleck_factor " << fleck_factor[i]
+                << " gradE " << gradE * (1.0 / tess.GetVolume(i)) << std::endl;
+
+    size_t const Nneigh = neighbors.size();
+    Vector3D dummy_v;
+    
+    for(size_t j = 0; j < Nneigh; ++j)
+    {
+        size_t const neighbor_j = neighbors[j];
+        Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
+        double const r_ij_size = abs(r_ij);
+        r_ij *= 1.0 / r_ij_size;
+        double Er_j = 0;
+        if(tess.IsPointOutsideBox(neighbor_j))
+            boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
+        else
+            Er_j = CG_result[neighbor_j];
+
+        Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
+        Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
+        double mid_D = 0.5 * (D[neighbor_j] + D[i]);
+        double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (CG_result[i] - Er_j), mid_D, 0.5 * (CG_result[i] + Er_j)) : 1;
+        
+        double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells_cgs[i].velocity, r_ij)));
+        double const v_ratio = max_local_v / ScalarProd(cells_cgs[i].velocity, r_ij);
+        
+        double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
+        double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
+        
+        std::cout   << "relativity_term " << relativity_term
+                    << " flux_limiter_face " << flux_limiter_face
+                    << " Er_j " << Er_j
+                    << " Er_j_init " << cells[neighbor_j].density * cells[neighbor_j].Erad * energy_density_scale_
+                    << " ID " << cells[neighbor_j].ID
+                    << " v_ratio " << v_ratio
+                    << " Area " << tess.GetArea(faces[j]) << std::endl;
+    }
+
+    std::cout   << "Negative internal energy is postcg2, " 
+                << extensives[i].internal_energy 
+                << " ID " << cells[i].ID 
+                << " T " << T 
+                << " CG_result " << CG_result[i] 
+                << " v " << fastabs(cells[i].velocity) 
+                << " mass " << extensives[i].mass << std::endl;
 }
 
 bool Diffusion::iterations(
