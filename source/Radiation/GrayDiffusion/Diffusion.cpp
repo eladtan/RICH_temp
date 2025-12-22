@@ -254,7 +254,8 @@ bool Diffusion::step(double const tolerance,
     extensives = extensives_temp;
     cells = cells_temp;
     
-    double const iterations_CG_eps = 1e-20;
+    double const iterations_CG_eps = 1e-16;
+    do_iterations_on_Um = true;
     int total_iters_2=0;
     bool const res_iterations = iterations(
         iterations_CG_eps,
