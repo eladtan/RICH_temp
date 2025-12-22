@@ -630,17 +630,17 @@ void Diffusion::PostCG(
     {
         double const old_e_therm = extensives[i].internal_energy;
         double const volume = tess.GetVolume(i) * volume_scale_;
-        extensives[i].Erad = CG_result[i] * volume / energy_scale_;
+        extensives[i].Erad = full_CG_result[i] * volume / energy_scale_;
         double const T = cells[i].temperature;
         
         double old_Tr = 0;
         double compton_term = 0;
-        double e_absorb = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * full_CG_result[i] * volume;
+        double e_absorb = fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * CG_result[i] * volume;
         double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cgs * sigma_planck[i] * Um(T) * volume;
         
         double e_v2 =  dE_v_squared(
             tess, i,
-            full_CG_result[i],
+            CG_result[i],
             cells_cgs[i].velocity,
             max_v,
             dt_cgs
@@ -648,7 +648,7 @@ void Diffusion::PostCG(
         
         double const e_absorb_emitt = dE_absorption_emission(
             tess, i,
-            full_CG_result[i],
+            CG_result[i],
             cells[i].temperature,
             dt_cgs
         );
@@ -662,7 +662,7 @@ void Diffusion::PostCG(
 	        
             compton_term = dE_compton(
                 tess, i,
-                full_CG_result[i],
+                CG_result[i],
                 cells[i].temperature,
                 old_Er,
                 dt_cgs
@@ -731,13 +731,13 @@ void Diffusion::PostCG(
             r_ij *= 1.0 / r_ij_size;
             double Er_j = 0;
             if(tess.IsPointOutsideBox(neighbor_j))
-                boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, full_CG_result, Er_j, dummy_v);
+                boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
             else
-                Er_j = full_CG_result[neighbor_j];
+                Er_j = CG_result[neighbor_j];
   
 
-            gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * area_scale_;
-            double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3);
+            gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + CG_result[i])) * r_ij * area_scale_;
+            double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
             double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
             extensives[i].energy += /* momentum_term + */fleck_factor[i] * relativity_term;
             extensives[i].internal_energy += fleck_factor[i] * relativity_term;
@@ -799,7 +799,7 @@ void Diffusion::PostCG(
                 if(tess.IsPointOutsideBox(neighbor_j))
                     boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
                 else
-                    Er_j = full_CG_result[neighbor_j];
+                    Er_j = CG_result[neighbor_j];
 
                 Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
                 Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
@@ -809,7 +809,7 @@ void Diffusion::PostCG(
                 double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells_cgs[i].velocity, r_ij)));
                 double const v_ratio = max_local_v / ScalarProd(cells_cgs[i].velocity, r_ij);
                 
-                double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3);
+                double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
                 double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
                 
                 std::cout   << "relativity_term " << relativity_term
