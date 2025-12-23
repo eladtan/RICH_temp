@@ -928,6 +928,8 @@ double Diffusion::dE_v_squared(
     double const max_velocity_cgs,
     double const dt_cgs
 ) const {
+    if (not hydro_on_) return 0.0;
+
     double const volume = tess.GetVolume(i) * volume_scale_;
     double const v_squared = std::min(max_velocity_cgs * max_velocity_cgs, ScalarProd(velocity_cgs, velocity_cgs));
 
@@ -966,10 +968,11 @@ double Diffusion::dE_relativity(
     std::size_t i,
     std::vector<double> const& CG_result,
     double const dt_cgs,
-    std::vector<Conserved3D>& extensives,
     Vector3D& gradE
 ) const
 {
+    if(not hydro_on_) return 0.0;
+    
     std::vector<size_t> neighbors;
     tess.GetNeighbors(i, neighbors);
     size_t const Nneigh = neighbors.size();
