@@ -143,7 +143,6 @@ public:
         std::size_t i,
         std::vector<double> const& CG_result,
         double const dt_cgs,
-        std::vector<Conserved3D>& extensives,
         Vector3D& gradE
     ) const;
 

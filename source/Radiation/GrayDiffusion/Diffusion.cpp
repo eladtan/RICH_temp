@@ -699,7 +699,9 @@ void Diffusion::PostCG(
         double etherm_mid = extensives[i].internal_energy;
         
         Vector3D gradE;
-        double total_relativity = dE_relativity(tess, i, CG_result, dt_cgs, extensives, gradE);
+        double total_relativity = dE_relativity(tess, i, CG_result, dt_cgs, gradE);
+        extensives[i].energy += total_relativity;
+        extensives[i].internal_energy += total_relativity;
         
         Vector3D dP;
         double Erad_dE = 0;
@@ -994,8 +996,6 @@ double Diffusion::dE_relativity(
         gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + CG_result[i])) * r_ij * area_scale_;
         double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
         double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
-        extensives[i].energy += fleck_factor[i] * relativity_term;
-        extensives[i].internal_energy += fleck_factor[i] * relativity_term;
         total_relativity += fleck_factor[i] * relativity_term;
     }
     
