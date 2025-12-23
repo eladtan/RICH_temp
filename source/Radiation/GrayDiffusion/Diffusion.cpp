@@ -730,37 +730,13 @@ void Diffusion::PostCG(
         }
 
         tess.GetNeighbors(i, neighbors);
-        size_t const Nneigh = neighbors.size();
         faces = tess.GetCellFaces(i);
         Vector3D const point = tess.GetMeshPoint(i);
-        Vector3D gradE(0, 0, 0);
-        Vector3D r_ij;
         Vector3D const CM = tess.GetCellCM(i);
-
-        double total_relativity = 0;
         double etherm_mid = extensives[i].internal_energy;
-        double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
         
-        for(size_t j = 0; j < Nneigh; ++j)
-        {
-            size_t const neighbor_j = neighbors[j];
-            r_ij = point - tess.GetMeshPoint(neighbor_j);
-            double const r_ij_size = abs(r_ij);
-            r_ij *= 1.0 / r_ij_size;
-            double Er_j = 0;
-            if(tess.IsPointOutsideBox(neighbor_j))
-                boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
-            else
-                Er_j = CG_result[neighbor_j];
-  
-
-            gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + CG_result[i])) * r_ij * area_scale_;
-            double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
-            double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
-            extensives[i].energy += /* momentum_term + */fleck_factor[i] * relativity_term;
-            extensives[i].internal_energy += fleck_factor[i] * relativity_term;
-            total_relativity += fleck_factor[i] * relativity_term;
-        }
+        Vector3D gradE;
+        double total_relativity = dE_relativity(tess, i, CG_result, dt_cgs, extensives, gradE);
         
         Vector3D dP;
         double Erad_dE = 0;
@@ -1018,6 +994,49 @@ double Diffusion::dE_compton(
 bool Diffusion::is_energy_invalid(Conserved3D const& extensive) const
 {
     return extensive.Erad < 0 || extensive.internal_energy < 0 || !std::isfinite(extensive.internal_energy);
+}
+
+double Diffusion::dE_relativity(
+    Tessellation3D const& tess,
+    std::size_t i,
+    std::vector<double> const& CG_result,
+    double const dt_cgs,
+    std::vector<Conserved3D>& extensives,
+    Vector3D& gradE
+) const
+{
+    std::vector<size_t> neighbors;
+    tess.GetNeighbors(i, neighbors);
+    size_t const Nneigh = neighbors.size();
+    face_vec faces = tess.GetCellFaces(i);
+    Vector3D const point = tess.GetMeshPoint(i);
+    Vector3D dummy_v;
+    
+    double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+    double total_relativity = 0;
+    gradE = Vector3D(0, 0, 0);
+    
+    for(size_t j = 0; j < Nneigh; ++j)
+    {
+        size_t const neighbor_j = neighbors[j];
+        Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
+        double const r_ij_size = abs(r_ij);
+        r_ij *= 1.0 / r_ij_size;
+        double Er_j = 0;
+        if(tess.IsPointOutsideBox(neighbor_j))
+            boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, CG_result, Er_j, dummy_v);
+        else
+            Er_j = CG_result[neighbor_j];
+
+        gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + CG_result[i])) * r_ij * area_scale_;
+        double const momentum_term = (0.5 * dt_cgs * cell_flux_limiter[i] * tess.GetArea(faces[j]) * area_scale_ * ScalarProd(cells_cgs[i].velocity, r_ij) * (Er_j + CG_result[i]) / 3);
+        double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * D[i] / CG::speed_of_light / energy_scale_;
+        extensives[i].energy += fleck_factor[i] * relativity_term;
+        extensives[i].internal_energy += fleck_factor[i] * relativity_term;
+        total_relativity += fleck_factor[i] * relativity_term;
+    }
+    
+    return total_relativity;
 }
 
 void Diffusion::print_postcg1_debug(

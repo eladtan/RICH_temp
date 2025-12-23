@@ -138,6 +138,15 @@ public:
 
     bool is_energy_invalid(Conserved3D const& extensive) const;
 
+    double dE_relativity(
+        Tessellation3D const& tess,
+        std::size_t i,
+        std::vector<double> const& CG_result,
+        double const dt_cgs,
+        std::vector<Conserved3D>& extensives,
+        Vector3D& gradE
+    ) const;
+
     void print_postcg1_debug(
         std::size_t i,
         std::vector<ComputationalCell3D> const& cells,
