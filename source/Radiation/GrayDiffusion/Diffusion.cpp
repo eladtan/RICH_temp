@@ -740,20 +740,20 @@ void Diffusion::PostCG(
         
         Vector3D dP;
         double Erad_dE = 0;
+        double dE_mom = 0;
         if(hydro_on_)
         {
-            double const old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-            dP = (cell_flux_limiter[i] * dt_cgs / 3) * gradE / momentum_scale_;
-            Erad_dE = ScalarProd(dP, extensives[i].momentum) / extensives[i].mass;
+            auto const [dP_val, dE_val, Erad_dE_val] = dP_and_dE_momentum(i, gradE, dt_cgs, extensives[i].momentum, extensives[i].mass);
+            dP = dP_val;
+            dE_mom = dE_val;
+            Erad_dE = Erad_dE_val;
             extensives[i].momentum += dP;
-            double const new_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-            double const dE = -new_Ek + old_Ek + Erad_dE;
-            extensives[i].Erad += dE;
+            extensives[i].Erad += dE_mom;
             
-            if(extensives[i].Erad < 0 && dE < 0 && std::abs(dE) < extensives[i].energy * 0.01)
-                 extensives[i].Erad -= dE;
+            if(extensives[i].Erad < 0 && dE_mom < 0 && std::abs(dE_mom) < extensives[i].energy * 0.01)
+                 extensives[i].Erad -= dE_mom;
             
-            extensives[i].energy = extensives[i].internal_energy +  ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
+            extensives[i].energy = extensives[i].internal_energy + ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
         }
 
         if(is_energy_invalid(extensives[i]) || cells[i].Erad < 0)
@@ -1037,6 +1037,23 @@ double Diffusion::dE_relativity(
     }
     
     return total_relativity;
+}
+
+std::tuple<Vector3D, double, double> Diffusion::dP_and_dE_momentum(
+    std::size_t i,
+    Vector3D const& gradE,
+    double const dt_cgs,
+    Vector3D const& momentum,
+    double const mass
+) const
+{
+    double const old_Ek = 0.5 * ScalarProd(momentum, momentum) / mass;
+    Vector3D const dP = (cell_flux_limiter[i] * dt_cgs / 3) * gradE / momentum_scale_;
+    double const Erad_dE = ScalarProd(dP, momentum) / mass;
+    Vector3D const new_momentum = momentum + dP;
+    double const new_Ek = 0.5 * ScalarProd(new_momentum, new_momentum) / mass;
+    double const dE = -new_Ek + old_Ek + Erad_dE;
+    return {dP, dE, Erad_dE};
 }
 
 void Diffusion::print_postcg1_debug(

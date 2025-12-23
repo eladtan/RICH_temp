@@ -147,6 +147,14 @@ public:
         Vector3D& gradE
     ) const;
 
+    std::tuple<Vector3D, double, double> dP_and_dE_momentum(
+        std::size_t i,
+        Vector3D const& gradE,
+        double const dt_cgs,
+        Vector3D const& momentum,
+        double const mass
+    ) const;
+
     void print_postcg1_debug(
         std::size_t i,
         std::vector<ComputationalCell3D> const& cells,
