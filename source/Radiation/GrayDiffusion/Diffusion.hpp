@@ -155,6 +155,14 @@ public:
         double const mass
     ) const;
 
+    void compute_equilibrium_from_energy_sum(
+        Tessellation3D const& tess,
+        std::size_t i,
+        std::vector<ComputationalCell3D> const& cells,
+        std::vector<Conserved3D>& extensives,
+        double const volume
+    ) const;
+
     void print_postcg1_debug(
         std::size_t i,
         std::vector<ComputationalCell3D> const& cells,
