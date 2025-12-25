@@ -1436,7 +1436,8 @@ bool Diffusion::update_energy_iterations(
         
         double const cdtkp = cdt*sigma_planck[i];
 
-        double const compton_in_fleck_term = compton_on_ ? -dt_cgs*4.0*sigma_s[i]*CG::boltzmann_constant/(CG::electron_mass*CG::speed_of_light) * (Er[i] / Cv + beta*cdtkp/(1.0+cdtkp)*temperature_k) : 0.0;
+        double const compton_in_fleck_term = compton_on_ ? -dt_cgs*4.0*sigma_s[i]*CG::boltzmann_constant/(CG::electron_mass*CG::speed_of_light) * (Trad(cells_cgs[i].Erad * cells_cgs[i].density) - cells_cgs[i].temperature) *beta*cdtkp/(1.0+cdtkp) : 0.0;
+        
         double const fleck_like_factor = 1.0 / (1.0 + beta*cdtkp/(1.0+cdtkp) + compton_in_fleck_term);
         double const dE_newton_raphson = (E_old + dE_total - E_prev) * fleck_like_factor;
         
