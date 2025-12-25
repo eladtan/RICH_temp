@@ -947,6 +947,8 @@ double Diffusion::dE_compton(
     double const dt_cgs
 ) const
 {
+    if (not compton_on_) return 0.0;
+    
     double const volume = tess.GetVolume(i) * volume_scale_;
     double const old_Tr = Trad(old_Er);
     
