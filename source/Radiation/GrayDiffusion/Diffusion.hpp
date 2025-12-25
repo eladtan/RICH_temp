@@ -159,7 +159,9 @@ public:
         std::size_t i,
         std::vector<ComputationalCell3D> const& cells,
         std::vector<Conserved3D>& extensives,
-        double const volume
+        double const volume,
+        std::vector<double> const& CG_result,
+        double const dt_cgs
     ) const;
 
     void print_postcg1_debug(
