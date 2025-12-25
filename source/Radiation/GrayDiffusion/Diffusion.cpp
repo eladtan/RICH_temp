@@ -380,12 +380,12 @@ void Diffusion::BuildMatrix(
     {
         A_indeces[i].push_back(i);
         double const volume = tess.GetVolume(i) * volume_scale_;
-        double const T = cells_cgs[i].temperature;
         
         A[i].push_back(volume * (1 + fleck_factor[i] * dt_cgs * CG::speed_of_light * sigma_planck[i]));
         
         if(compton_on_ && cells[i].tracers[1] > 0.5)
         {
+            double const T = cells_cgs[i].temperature;
             double const Tr = Trad(new_Er[i]);
 	        double const pre_factor = fleck_factor[i] * dt_cgs * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
             double const compton_term = pre_factor * (Tr - T);
@@ -664,7 +664,7 @@ void Diffusion::PostCG(
             compton_term = dE_compton(
                 tess, i,
                 CG_result[i],
-                cells[i].temperature,
+                cells_cgs[i].temperature,
                 old_Er,
                 dt_cgs
             );
