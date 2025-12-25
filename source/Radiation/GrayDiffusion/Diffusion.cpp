@@ -1384,12 +1384,14 @@ bool Diffusion::update_energy_iterations(
     std::vector<double>& error_per_cell
 ) const
 {
+    double const max_v = 0.1 * CG::speed_of_light * velocity_scale_;
+    Vector3D gradE_dummy;
+
     auto const N = tess.GetPointNo();
     double const dt_cgs = dt * time_scale_;
 
     double nr_error_tmp = 0.0;
     for(std::size_t i=0; i < N; ++i){
-        double const volume = tess.GetVolume(i);
         double const E_old = extensives[i].internal_energy;
         double const temperature_k = cells[i].temperature;
         
@@ -1401,6 +1403,34 @@ bool Diffusion::update_energy_iterations(
             dt_cgs
         ) / energy_scale_;
 
+        double const dE_v2 = dE_v_squared(
+            tess,
+            i,
+            Er[i],
+            cells_cgs[i].velocity,
+            max_v,
+            dt_cgs
+        ) / energy_scale_;
+
+        double const dE_compton_term = dE_compton(
+            tess,
+            i,
+            Er[i],
+            cells_cgs[i].temperature,
+            cells_cgs[i].Erad * cells_cgs[i].density,
+            dt_cgs
+        ) / energy_scale_;
+
+        double const dE_relativity_term = dE_relativity(
+            tess,
+            i,
+            Er,
+            dt_cgs,
+            gradE_dummy
+        ) / energy_scale_;
+
+        double const dE_total = dE_abs_emiss + dE_v2 + dE_relativity_term + dE_compton_term;
+
         double Cv = eos_.dT2cv(cells[i].density, temperature_k, cells[i].tracers, ComputationalCell3D::tracerNames) * energy_density_scale_;
         double const beta = radiation_cv(temperature_k) / Cv;
         double const cdt = CG::speed_of_light * dt_cgs;
@@ -1408,9 +1438,12 @@ bool Diffusion::update_energy_iterations(
         double const E_prev = cells[i].internal_energy * extensives[i].mass;
         
         double const cdtkp = cdt*sigma_planck[i];
-        double const dE_newton_raphson = (E_old + dE_abs_emiss - E_prev) / (1.0 + beta*cdtkp/(1.0+cdtkp));
+
+        double const compton_in_fleck_term = compton_on_ ? -dt_cgs*4.0*sigma_s[i]*CG::boltzmann_constant/(CG::electron_mass*CG::speed_of_light) * (Er[i] / Cv + beta*cdtkp/(1.0+cdtkp)*temperature_k) : 0.0;
+        double const fleck_like_factor = 1.0 / (1.0 + beta*cdtkp/(1.0+cdtkp) + compton_in_fleck_term);
+        double const dE_newton_raphson = (E_old + dE_total - E_prev) * fleck_like_factor;
         
-        double const err_cell = std::abs(E_old + dE_abs_emiss - E_prev) / E_prev;
+        double const err_cell = std::abs(E_old + dE_total - E_prev) / E_prev;
         
         error_per_cell[i] = err_cell;
         nr_error_tmp = std::max(nr_error_tmp, err_cell); 
