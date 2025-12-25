@@ -1031,9 +1031,23 @@ void Diffusion::compute_equilibrium_from_energy_sum(
     std::size_t i,
     std::vector<ComputationalCell3D> const& cells,
     std::vector<Conserved3D>& extensives,
-    double const volume
+    double const volume,
+    std::vector<double> const& CG_result,
+    double const dt_cgs
 ) const
 {
+    
+    if(hydro_on_)
+    {
+        // Call dE_relativity only to calculate gradE for momentum calculation below
+        Vector3D gradE;
+        dE_relativity(tess, i, CG_result, dt_cgs, gradE);
+
+        auto const [dP, dE_mom, Erad_dE] = dP_and_dE_momentum(i, gradE, dt_cgs, extensives[i].momentum, extensives[i].mass);
+        extensives[i].momentum += dP;
+        extensives[i].Erad += dE_mom;
+    }
+
     auto const internal_and_Erad_tot_cgs = (extensives[i].Erad + extensives[i].internal_energy) * energy_scale_;
 
     if(internal_and_Erad_tot_cgs > 0.0)
