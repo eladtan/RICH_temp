@@ -1050,41 +1050,50 @@ void Diffusion::compute_equilibrium_from_energy_sum(
 
     auto const internal_and_Erad_tot_cgs = (extensives[i].Erad + extensives[i].internal_energy) * energy_scale_;
 
-    if(internal_and_Erad_tot_cgs > 0.0)
-    {
-        auto func = [&](double const equilibrium_temperature){
-            double const internal_energy_cgs = extensives[i].mass * eos_.dT2e(
-                cells[i].density, 
-                equilibrium_temperature,
-                cells[i].tracers,
-                ComputationalCell3D::tracerNames
-            ) * energy_scale_;
+    if(internal_and_Erad_tot_cgs < 0.0){
+        throw UniversalError("Diffusion::compute_equilibrium_from_energy_sum: Negative internal and Erad total")
+                .addEntry("internal_and_Erad_tot_cgs", internal_and_Erad_tot_cgs)
+                .addEntry("cell ID", cells[i].ID)
+                .addEntry("cell", cells[i]);
+    } 
 
-            return Um(equilibrium_temperature) * volume + internal_energy_cgs - internal_and_Erad_tot_cgs;
-        };
-
-        boost::math::tools::eps_tolerance<double> tol(26);
-        std::uintmax_t it = 150;
-
-        double const T_right_bracket = Trad(internal_and_Erad_tot_cgs / volume) * 1.2;
-        double const T_left_bracket = T_right_bracket * 1e-2;
-        auto r = boost::math::tools::bisect(
-            func,
-            T_left_bracket,
-            T_right_bracket,
-            tol,
-            it
-        );
-
-        double const equilibrium_temperature = 0.5 * (r.first + r.second);
-        extensives[i].internal_energy = eos_.dT2e(
-            cells[i].density,
+    auto func = [&](double const equilibrium_temperature){
+        double const internal_energy_cgs = extensives[i].mass * eos_.dT2e(
+            cells[i].density, 
             equilibrium_temperature,
             cells[i].tracers,
             ComputationalCell3D::tracerNames
-        ) * extensives[i].mass;
+        ) * energy_scale_;
 
-        extensives[i].Erad = tess.GetVolume(i) * Um(equilibrium_temperature) / energy_density_scale_;
+        return Um(equilibrium_temperature) * volume + internal_energy_cgs - internal_and_Erad_tot_cgs;
+    };
+
+    boost::math::tools::eps_tolerance<double> tol(26);
+    std::uintmax_t it = 150;
+
+    double const T_right_bracket = Trad(internal_and_Erad_tot_cgs / volume) * 1.2;
+    double const T_left_bracket = T_right_bracket * 1e-2;
+    auto r = boost::math::tools::bisect(
+        func,
+        T_left_bracket,
+        T_right_bracket,
+        tol,
+        it
+    );
+
+    double const equilibrium_temperature = 0.5 * (r.first + r.second);
+    extensives[i].internal_energy = eos_.dT2e(
+        cells[i].density,
+        equilibrium_temperature,
+        cells[i].tracers,
+        ComputationalCell3D::tracerNames
+    ) * extensives[i].mass;
+
+    extensives[i].Erad = tess.GetVolume(i) * Um(equilibrium_temperature) / energy_density_scale_;
+
+    extensives[i].energy = extensives[i].internal_energy;
+    if(hydro_on_){
+        extensives[i].energy += ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
     }
 }
 
