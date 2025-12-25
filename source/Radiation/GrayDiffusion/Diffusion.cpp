@@ -682,49 +682,51 @@ void Diffusion::PostCG(
         extensives[i].energy += dE;
         extensives[i].internal_energy += dE;
         
-        if(do_iterations_on_Um and GetSingleFleckFactor(cells[i], i, dt) < 0.1)
-            compute_equilibrium_from_energy_sum(tess, i, cells, extensives, volume);
+        if(do_iterations_on_Um and GetSingleFleckFactor(cells[i], i, dt) < 0.1){
+            compute_equilibrium_from_energy_sum(tess, i, cells, extensives, volume, CG_result, dt_cgs);
+        } else {
+            if(is_energy_invalid(extensives[i]))
+            {
+                good_end = 0;
+                print_postcg1_debug(i, cells, extensives, CG_result, full_CG_result, T, dE, old_e_therm, e_emitt, e_v2, e_absorb_emitt, compton_term, old_Tr);
+                break;
+            }
 
-        if(is_energy_invalid(extensives[i]))
-        {
-            good_end = 0;
-            print_postcg1_debug(i, cells, extensives, CG_result, full_CG_result, T, dE, old_e_therm, e_emitt, e_v2, e_absorb_emitt, compton_term, old_Tr);
-            break;
-        }
 
-        tess.GetNeighbors(i, neighbors);
-        faces = tess.GetCellFaces(i);
-        Vector3D const point = tess.GetMeshPoint(i);
-        Vector3D const CM = tess.GetCellCM(i);
-        double etherm_mid = extensives[i].internal_energy;
-        
-        Vector3D gradE;
-        double total_relativity = dE_relativity(tess, i, CG_result, dt_cgs, gradE);
-        extensives[i].energy += total_relativity;
-        extensives[i].internal_energy += total_relativity;
-        
-        Vector3D dP;
-        double Erad_dE = 0;
-        double dE_mom = 0;
-        if(hydro_on_)
-        {
-            auto const [dP_val, dE_val, Erad_dE_val] = dP_and_dE_momentum(i, gradE, dt_cgs, extensives[i].momentum, extensives[i].mass);
-            dP = dP_val;
-            dE_mom = dE_val;
-            Erad_dE = Erad_dE_val;
-            extensives[i].momentum += dP;
-            extensives[i].Erad += dE_mom;
+            tess.GetNeighbors(i, neighbors);
+            faces = tess.GetCellFaces(i);
+            Vector3D const point = tess.GetMeshPoint(i);
+            Vector3D const CM = tess.GetCellCM(i);
+            double etherm_mid = extensives[i].internal_energy;
             
-            if(extensives[i].Erad < 0 && dE_mom < 0 && std::abs(dE_mom) < extensives[i].energy * 0.01)
-                 extensives[i].Erad -= dE_mom;
+            Vector3D gradE;
+            double total_relativity = dE_relativity(tess, i, CG_result, dt_cgs, gradE);
+            extensives[i].energy += total_relativity;
+            extensives[i].internal_energy += total_relativity;
             
-            extensives[i].energy = extensives[i].internal_energy + ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
-        }
+            Vector3D dP;
+            double Erad_dE = 0;
+            double dE_mom = 0;
+            if(hydro_on_)
+            {
+                auto const [dP_val, dE_val, Erad_dE_val] = dP_and_dE_momentum(i, gradE, dt_cgs, extensives[i].momentum, extensives[i].mass);
+                dP = dP_val;
+                dE_mom = dE_val;
+                Erad_dE = Erad_dE_val;
+                extensives[i].momentum += dP;
+                extensives[i].Erad += dE_mom;
+                
+                if(extensives[i].Erad < 0 && dE_mom < 0 && std::abs(dE_mom) < extensives[i].energy * 0.01)
+                    extensives[i].Erad -= dE_mom;
+                
+                extensives[i].energy = extensives[i].internal_energy + ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
+            }
 
-        if(is_energy_invalid(extensives[i]) || cells[i].Erad < 0)
-        {
-            print_postcg2_debug(i, tess, cells, extensives, CG_result, full_CG_result, T, max_v, dt_cgs, dP, Erad_dE, e_absorb, e_emitt, e_v2, total_relativity, etherm_mid, gradE, CM, point, neighbors, faces);
-            good_end = 0;
+            if(is_energy_invalid(extensives[i]) || cells[i].Erad < 0)
+            {
+                print_postcg2_debug(i, tess, cells, extensives, CG_result, full_CG_result, T, max_v, dt_cgs, dP, Erad_dE, e_absorb, e_emitt, e_v2, total_relativity, etherm_mid, gradE, CM, point, neighbors, faces);
+                good_end = 0;
+            }
         }
 
         double const old_Edot = cells[i].Erad_dt;
