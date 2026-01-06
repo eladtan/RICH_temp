@@ -1038,6 +1038,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
 void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const
 {
     size_t const N = tess.GetPointNo();
+    bool printed_warning = false;
     for (size_t i = 0; i < N; ++i) {
         double const sigma_planck = sigma_absorption_planck[i];
         double const T = old_Tm[i];
@@ -1062,20 +1063,24 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
         double f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, Gamma);
 
         if (f < 0 || (negative_upsilon && std::abs(upsilon) > 0.1 * sigma_planck)) {
-            std::cout << "Warning: Negative fleck factor in cell " << cells[i].ID 
-                      << ", recalculating with n=0" << std::endl;
-            std::cout << "  Original: Gamma=" << Gamma << ", upsilon=" << upsilon 
-                      << ", f=" << f << std::endl;
-            
+            if (!printed_warning && f < 0.5) {
+                std::cout << "Warning: Negative fleck factor in cell " << cells[i].ID 
+                        << ", recalculating with n=0" << std::endl;
+                std::cout << "  Original: Gamma=" << Gamma << ", upsilon=" << upsilon 
+                        << ", f=" << f << std::endl;
+            }
+            double old_f = f;
             // Recalculate with n=0 and remember this for PostCG
             use_n_zero[i] = true;
             generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs, false);
             upsilon = calculate_Upsilon(cells[i]);
             Gamma = sigma_planck + upsilon;
             f = CG::FleckFactor(dt_cgs, 1.0/cv_bar, Gamma);
-            
-            std::cout << "  With n=0: Gamma=" << Gamma << ", upsilon=" << upsilon 
-                      << ", f=" << f << std::endl;
+            if(not printed_warning && 0.5 > old_f) {
+                std::cout << "  With n=0: Gamma=" << Gamma << ", upsilon=" << upsilon 
+                        << ", f=" << f << std::endl;
+                printed_warning = true;
+            }
         } else {
             use_n_zero[i] = false;
         }
