@@ -24,14 +24,20 @@ message("CMAKE_Fortran_FLAGS_RELEASE = " ${CMAKE_Fortran_FLAGS_RELEASE})
 message("CMAKE_Fortran_FLAGS_DEBUG = " ${CMAKE_Fortran_FLAGS_DEBUG})
 message("Root_dir = " ${PROJECT_ROOT_DIR})
 
-# ADDING PROFILER
+
+# ADDING PERF PROFILER SUPPORT
+# Unlike gprof, perf needs: debug symbols (-g), frame pointers, and NO -pg flag
 if (${PROF})
-    message("Compiling with GProf")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -pg")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -pg")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -pg")
+    message("Compiling with Perf support (debug symbols + frame pointers)")
+    # -fno-omit-frame-pointer is essential for perf to get accurate call stacks
+    # -g provides debug symbols for perf report to show function names
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -fno-omit-frame-pointer")
+    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -g -fno-omit-frame-pointer")
+    set(CMAKE_Fortran_FLAGS_RELEASE "${CMAKE_Fortran_FLAGS_RELEASE} -g -fno-omit-frame-pointer")
 else()
-    message("Compiling without GProf")
+    message("Compiling without Perf support")
 endif()
 
 set(proj_dir "${PROJECT_SOURCE_DIR}")
