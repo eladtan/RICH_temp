@@ -82,7 +82,7 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 		}
 		for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 		{
-			if(extensives[i].Eg[j] < 0)
+			if(extensives[i].Eg[j] < 0 && extensives[i].mass > 0)
 			{
 
 				UniversalError eo("Negative energy group");
