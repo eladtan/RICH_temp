@@ -46,6 +46,7 @@ private:
     mutable std::vector<const Node*> nodes_stack;
     MPI_Comm comm;
     int rank, size;
+    size_t depth;
     #ifdef DEBUG_MODE
         const HilbertConvertor3D *convertor;
     #endif // DEBUG_MODE
@@ -66,6 +67,7 @@ public:
         #ifdef DEBUG_MODE
             this->convertor = convertor;
         #endif // DEBUG_MODE
+        this->depth = 0;
         this->buildTree(convertor, responsibilityRange);
     }
 
@@ -97,6 +99,8 @@ public:
     std::vector<std::vector<BoundingBox<Vector3D>>> getBoundingBoxesOfRanks(void) const;
 
     std::vector<const Node*> getValuesIf(const std::function<bool(const Node*)> ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const;
+
+    inline size_t getDepth() const{return this->depth;};
 };
 
 template<int max_ranks_per_leaf>
@@ -183,6 +187,8 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
     {
         return;
     }
+
+    this->depth = std::max(this->depth, currentDepth);
 
     const DirectionVector3D &startPoint = current_args.startPoint;
     const DirectionVector3D &a = current_args.a;
