@@ -18,9 +18,9 @@ using distance_t = double;
 
 template<typename T, typename Grid>
 struct MonteCarloParticle
-                    // #ifdef RICH_MPI
-                    //     : public Serializable
-                    // #endif // RICH_MPI
+                    #ifdef RICH_MPI
+                        : public Serializable
+                    #endif // RICH_MPI
 {
     #ifdef RICH_MPI
         rank_t rank = -1;
@@ -82,6 +82,12 @@ struct MonteCarloParticle
     {
         return this->id == other.id and this->rank == other.rank;
     }
+
+    #ifdef RICH_MPI
+        size_t dump(Serializer *serializer) const override;
+
+        size_t load(const Serializer *serializer, size_t byteOffset) override;
+    #endif // RICH_MPI
 };
 
 template<typename T, typename Grid>
@@ -266,5 +272,71 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
     }
     throw eo;
 }
+
+#ifdef RICH_MPI
+template<typename T, typename Grid>
+size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
+{
+    size_t bytes = 0;
+    bytes += serializer->insert(this->rank);
+    bytes += serializer->insert(this->id);
+    bytes += serializer->insert(this->cellID);
+    bytes += serializer->insert(this->location);
+    bytes += serializer->insert(this->velocity);
+    bytes += serializer->insert(this->cellIndex);
+    bytes += serializer->insert(this->timeLeft);
+    bytes += serializer->insert(this->energy);
+    bytes += serializer->insert(this->weight);
+    bytes += serializer->insert(this->initialWeight);
+    bytes += serializer->insert(this->steps);
+    bytes += serializer->insert(this->on_track);
+    bytes += serializer->insert(this->sent);
+    #ifdef MONTECARLO_DEBUG
+    bytes += serializer->insert(this->checkedHere);
+    bytes += serializer->insert(this->ghostIndex);
+    bytes += serializer->insert(this->newCellValue);
+    bytes += serializer->insert(this->nextRank);
+    bytes += serializer->insert(this->removedFromRank);
+    bytes += serializer->insert(this->sentByRank);
+    bytes += serializer->insert(this->lastSeen);
+    bytes += serializer->insert(this->lastSeenRank);
+    bytes += serializer->insert(this->lastSeenRankBuf);
+    bytes += serializer->insert(this->lastSeenIndex);
+    #endif // MONTECARLO_DEBUG
+    return bytes;
+}
+
+template<typename T, typename Grid>
+size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t byteOffset)
+{
+    size_t bytes = 0;
+    bytes += serializer->extract(this->rank, byteOffset);
+    bytes += serializer->extract(this->id, byteOffset + bytes);
+    bytes += serializer->extract(this->cellID, byteOffset + bytes);
+    bytes += serializer->extract(this->location, byteOffset + bytes);
+    bytes += serializer->extract(this->velocity, byteOffset + bytes);
+    bytes += serializer->extract(this->cellIndex, byteOffset + bytes);
+    bytes += serializer->extract(this->timeLeft, byteOffset + bytes);
+    bytes += serializer->extract(this->energy, byteOffset + bytes);
+    bytes += serializer->extract(this->weight, byteOffset + bytes);
+    bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
+    bytes += serializer->extract(this->steps, byteOffset + bytes);
+    bytes += serializer->extract(this->on_track, byteOffset + bytes);
+    bytes += serializer->extract(this->sent, byteOffset + bytes);
+    #ifdef MONTECARLO_DEBUG
+    bytes += serializer->extract(this->checkedHere, byteOffset + bytes);
+    bytes += serializer->extract(this->ghostIndex, byteOffset + bytes);
+    bytes += serializer->extract(this->newCellValue, byteOffset + bytes);
+    bytes += serializer->extract(this->nextRank, byteOffset + bytes);
+    bytes += serializer->extract(this->removedFromRank, byteOffset + bytes);
+    bytes += serializer->extract(this->sentByRank, byteOffset + bytes);
+    bytes += serializer->extract(this->lastSeen, byteOffset + bytes);
+    bytes += serializer->extract(this->lastSeenRank, byteOffset + bytes);
+    bytes += serializer->extract(this->lastSeenRankBuf, byteOffset + bytes);
+    bytes += serializer->extract(this->lastSeenIndex, byteOffset + bytes);
+    #endif // MONTECARLO_DEBUG
+    return bytes;
+}
+#endif // RICH_MPI
 
 #endif // MONTE_CARLO_PARTICLE_HPP

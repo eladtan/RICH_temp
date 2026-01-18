@@ -50,8 +50,8 @@
 #include "misc/io3D.hpp"
 
 #ifdef RICH_MPI
-#include "newtonian/three_dimensional/computational_cell.hpp"
 #include "mpi/mpi_commands.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 #endif
 
 // finders
@@ -141,6 +141,8 @@ private:
 					vector<vector<size_t> > &past_duplicate);
   void BuildVoronoi(std::vector<size_t> const& order);
 
+  size_t SetPointTetras(void);
+
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   void BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
@@ -170,13 +172,15 @@ private:
   void UpdateCMs(void);
   
   void UpdateRangeFinder(void);
+
+  void UpdatePointsTree(const std::vector<Vector3D> &activePoints);
   
   #ifdef RICH_MPI
-    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
+    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange);
     void FilterRealGhostPoints();
     void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
     void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
-    std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const MPI_Comm &comm = MPI_COMM_WORLD) const;
+    std::tuple<std::vector<Vector3D>, std::vector<std::vector<size_t>>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const MPI_Comm &comm = MPI_COMM_WORLD) const;
     void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints, const MPI_Comm &comm = MPI_COMM_WORLD);
     void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);  
     void BringRemoteGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
@@ -290,7 +294,7 @@ public:
 
   inline void SetPointsManager(std::shared_ptr<PointsManager> pointsManager){this->pointsManager = pointsManager;};
 
-  inline void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override {return this->pointsManager->setLoadBalancer(loadBalancer);};
+  void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
 
   inline bool ShouldRebalance(const std::vector<double> &weights) const override {return this->pointsManager->shouldRebalance(weights);}
 
@@ -298,7 +302,7 @@ public:
     
   inline std::shared_ptr<LoadBalancer> GetLoadBalancer(void) override {return this->pointsManager->getLoadBalancer();};
 
-  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
+  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) override;
 
   bool CheckContinuityOfZone(void) const;
   

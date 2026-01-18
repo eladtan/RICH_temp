@@ -28,6 +28,7 @@
 #define SILENCE_TIMERS() SmartTimer::TimerCreator::globalSilent = true;
 #define UNSILENCE_TIMERS() SmartTimer::TimerCreator::globalSilent = false;
 #define CLEAR_TIMES() SmartTimer::Node::root = SmartTimer::Node::MakeRoot();
+#define DISABLE_TIMERS() SmartTimer::TimerCreator::disable = true;
 
 namespace SmartTimer
 {
@@ -85,6 +86,7 @@ namespace SmartTimer
         bool silent;
         std::weak_ptr<Node> node;
         static bool globalSilent;
+        static bool disable;
     };
 
     void PrintTimes(void);

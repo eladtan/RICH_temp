@@ -35,7 +35,7 @@ add_definitions("-DENERGY_GROUPS_NUM=${ENERGY_GROUPS_NUM}")
 
 if(DEFINED ASAN)
     message(STATUS "Address Sanitizer Enabled")
-    list(APPEND CMAKE_CXX_FLAGS "-fsanitize=address")
+    list(APPEND CMAKE_CXX_FLAGS "-fsanitize=address,undefined,bounds")
 endif()
 
 if(DEFINED MC_DEBUG)

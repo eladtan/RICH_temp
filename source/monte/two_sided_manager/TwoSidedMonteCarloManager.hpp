@@ -13,13 +13,14 @@
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "monte/manager/tools/ParticleAmountManager.hpp"
+#include "monte/manager/tools/ParticleAmountManager2.hpp"
 #include "BuffersManager.hpp"
 
 #define MONTECARLO_EPSILON 1e-8
 #define PARTICLES_TAG 8817
-#define RECV_BUFFER_MAX_SIZE 200
-#define SEND_BUFFER_DISPATCH_MIN_SIZE 80
-#define SEND_BUFFER_DISPATCH_MIN_CYCLES 50
+#define RECV_BUFFER_MAX_SIZE 1000
+#define SEND_BUFFER_DISPATCH_MIN_SIZE 500
+#define SEND_BUFFER_DISPATCH_MIN_CYCLES 500
 
 template<typename T, typename Grid>
 class TwoSidedMonteCarloManager
@@ -27,18 +28,12 @@ class TwoSidedMonteCarloManager
     using MCParticle = MonteCarloParticle<T, Grid>;
 
 public:
-    struct MonteCarloStepFinalData
-    {
-        std::vector<MCParticle> remaining;
-        std::vector<MCParticle> leaving;
-    };
-
     TwoSidedMonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
                     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
                     const MPI_Comm &comm = MPI_COMM_WORLD);
 
-    ~TwoSidedMonteCarloManager() = default;
+    virtual ~TwoSidedMonteCarloManager() = default;
 
     inline size_t GetStepCounter(void) const{return this->allStepsCounter;};
 
@@ -72,6 +67,12 @@ public:
     inline void resetTracker(void){this->tracker.Reset();};
 
 private:
+    struct MonteCarloStepFinalData
+    {
+        std::vector<MCParticle> remaining;
+        std::vector<MCParticle> leaving;
+    };
+
     const Grid &grid;
     MPI_Comm comm_world;
     rank_t rank_world, size_world;
@@ -84,11 +85,10 @@ private:
     
     std::vector<MCParticle> particles;
     std::shared_ptr<BuffersManager<MCParticle>> buffersManager;
-    size_t localDecrementAmount;
+    typename ParticleAmountManager2::counter_t localDecrementAmount;
     Tracker tracker;
 
     size_t allStepsCounter;
-    size_t transfersCounter;
     std::vector<size_t> cellsStepsCounters;
 
     size_t iteration;
@@ -219,8 +219,10 @@ template<typename T, typename Grid>
 bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
 {
     static std::vector<size_t> removeParticlesVec;
+    static std::vector<MCParticle> newParticles;
     removeParticlesVec.clear();
-
+    newParticles.clear();
+    
     auto eliminateParticle = [&](size_t particleIndex)
     {
         removeParticlesVec.push_back(particleIndex);
@@ -399,7 +401,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 
             if(not functionality.particlesToAdd.empty())
             {
-                this->PutSelfParticles(functionality.particlesToAdd.data(), functionality.particlesToAdd.size());
+                newParticles.insert(newParticles.end(), functionality.particlesToAdd.cbegin(), functionality.particlesToAdd.cend());
             }
             if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
             {
@@ -410,7 +412,6 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 
                 rank_t rank;
                 MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
                 if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                 {
                     // local neighbor
@@ -544,6 +545,11 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
     {
         this->RemoveParticles(removeParticlesVec);
     }
+    if(not newParticles.empty())
+    {        
+        this->PutSelfParticles(newParticles.data(), newParticles.size());
+        this->localDecrementAmount -= newParticles.size();
+    }
     return (length == 0);
 }
 
@@ -555,6 +561,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         this->Ncells = this->grid.GetPointNo();
         this->ranks_ghost_map = GetGhostMap(this->grid);
         std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
+        this->particles.clear();
 
         this->PutSelfParticles(particleList.data(), particleList.size());
         this->resetTracker();
@@ -563,7 +570,6 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         this->allStepsCounter = 0;
         // this->neighbors = this->grid.GetDuplicatedProcs();    
         this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
-        this->transfersCounter = 0;
         MPI_Barrier(this->comm_world);
         
         size_t length = this->particles.size();
@@ -602,9 +608,10 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
         size_t preStepParticlesNum = newParticles1.size();
         int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
+        // std::cout << "Rank " << this->rank_world << ", startingParticleNum is " << startingParticleNum << " = " << initialParticlesNum << " + " << preStepParticlesNum << std::endl;
 
         this->localDecrementAmount = 0;
-        ParticleAmountManager amountManager(this->comm_world, false /* no RDMA */);
+        ParticleAmountManager2 amountManager(this->comm_world);
         amountManager.Initialize(startingParticleNum);
 
         MonteCarloStepFinalData data;
@@ -616,56 +623,39 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         size_t decrementTryCounter = 0;
 
         size_t i = 0;
-        volatile int &verify = *amountManager.shouldVerify;
-        volatile int &done = *amountManager.done;
+        // volatile int &verify = *amountManager.shouldVerify;
+        const bool &done = amountManager.GetDoneRef();
+        const bool &verify = amountManager.GetVerifyRef();
 
         auto receiveCallback = [this](const MCParticle *newValues, size_t newValuesCount, rank_t fromRank)
                                     {
                                         // std::cout << "Rank " << this->rank_world << " is here, got " << newValuesCount << " new particles from rank " << fromRank << "." << std::endl;
                                         this->PutSelfParticles(newValues, newValuesCount);
                                     };
-        this->buffersManager = std::make_shared<BuffersManager<MCParticle>>(this->comm_world, receiveCallback, PARTICLES_TAG, RECV_BUFFER_MAX_SIZE, SEND_BUFFER_DISPATCH_MIN_SIZE, SEND_BUFFER_DISPATCH_MIN_CYCLES, 1 /* std::max(this->size_world / 4, 1 */);
+        this->buffersManager = std::make_shared<BuffersManager<MCParticle>>(this->comm_world, receiveCallback, PARTICLES_TAG, RECV_BUFFER_MAX_SIZE * sizeof(MCParticle), SEND_BUFFER_DISPATCH_MIN_SIZE * sizeof(MCParticle), SEND_BUFFER_DISPATCH_MIN_CYCLES, this->size_world);
 
         bool printed = false; // todo remove
     
         while(not done)
         {        
             i++;
-            lastLocalDecrementAmount = this->localDecrementAmount;
-            
-            bool isEmpty = this->HandleAll(data);
             
             if(i % 20 == 0)
             {
                 this->buffersManager->HandleIncomingOutcoming();
-                amountManager.Progress();
             }
-            if(isEmpty and (this->localDecrementAmount > 0) and (this->localDecrementAmount == lastLocalDecrementAmount))
-            {
-                decrementTryCounter++;
-            }
-            if(decrementTryCounter == 40)
-            {
-                numOfCounterDecrementations++;
-                amountManager.Decrease(this->localDecrementAmount);
-                this->localDecrementAmount = 0;
-                decrementTryCounter = 0;
-            }
-            
-            if(this->rank_world == 0 and i % 20 == 0)
-            {
-                amountManager.CheckToFinish();
-            }
+
+            bool isEmpty = this->HandleAll(data);
+
+            amountManager.Decrease(static_cast<ParticleAmountManager2::counter_t>(this->localDecrementAmount));
+            this->localDecrementAmount = 0;
+
+            amountManager.Progress();
+
             if(verify)
             {
-                // std::cout << "Rank " << this->rank_world << " should verify" << std::endl;
-                bool ok = this->particles.empty() and (this->buffersManager->CountOutcoming() == 0);
-                // std::cout << "Got the verify request, answering " << ok << std::endl;
+                bool ok = this->particles.empty() and this->buffersManager->CountOutcoming() == 0;
                 amountManager.Verify(ok);
-                if(this->rank_world == 0)
-                {
-                    amountManager.ReceiveVerifies();
-                }
             }
         }
 
@@ -682,7 +672,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
         size_t totalSteps = this->allStepsCounter;
         size_t totalCounterDecrementations = numOfCounterDecrementations;
-        size_t callsToTransfer = this->transfersCounter;
+        size_t callsToTransfer = this->buffersManager->GetSentCounter();
 
         struct
         {
@@ -699,7 +689,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         
         MPI_Reduce(&mySteps, &maxSteps, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
 
-        myTransfers.x = static_cast<int>(this->transfersCounter);
+        myTransfers.x = static_cast<int>(callsToTransfer);
         myTransfers.rank = this->rank_world;
         MPI_Reduce(&myTransfers, &maxTransfers, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
 
@@ -716,6 +706,12 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         int sent = this->buffersManager->GetSentCounter();
         int recv = this->buffersManager->GetRecvCounter();
 
+        struct
+        {
+            int x;
+            int rank;
+        } recvMax, recvRanked = {recv, this->rank_world};
+        MPI_Reduce(&recvRanked, &recvMax, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
         MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &sent, &sent, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
         MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &recv, &recv, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
 
@@ -724,7 +720,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
             std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
             std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
             std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
-            std::cout << "Total send communications: " << sent << ", total receive communications: " << recv << std::endl;
+            std::cout << "Total send communications: " << sent << ", total receive communications: " << recv << " (max: " << recvMax.x << " in rank " << recvMax.rank << ")" << std::endl;
             std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
             std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
             assert(sent == recv);

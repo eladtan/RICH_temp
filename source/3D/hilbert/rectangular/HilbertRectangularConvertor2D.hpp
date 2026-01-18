@@ -2,6 +2,7 @@
 #define HILBERT_RECTANGULAR_CONVERTOR_2D_HPP
 
 #include "tessellation/geometry.hpp" // for Vector2D
+#include "misc/universal_error.hpp"
 #include "../hilbertTypes.h"
 
 #define MAX_HILBERT_ORDER 28

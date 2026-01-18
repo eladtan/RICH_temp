@@ -33,15 +33,41 @@ struct PointsExchangeResult
     std::vector<bool> participatingIndices;
 };
 
-typedef struct _3DPointData
+struct PointData : public Serializable
 {
     size_t indexInAllPoints;
-    _3DPoint point;
+    Vector3D point;
     double radius;
-    _3DPoint CM;
+    Vector3D CM;
     double weight;
     bool participating;
-} _3DPointData;
+
+    PointData() = default;
+
+    size_t dump(Serializer *serializer) const override
+    {
+        size_t bytes = 0;
+        bytes += serializer->insert(this->indexInAllPoints);
+        bytes += serializer->insert(this->point);
+        bytes += serializer->insert(this->radius);
+        bytes += serializer->insert(this->CM);
+        bytes += serializer->insert(this->weight);
+        bytes += serializer->insert(this->participating);
+        return bytes;
+    }
+
+    size_t load(const Serializer *serializer, size_t byteOffset) override
+    {
+        size_t bytes = 0;
+        bytes += serializer->extract(this->indexInAllPoints, byteOffset);
+        bytes += serializer->extract(this->point, byteOffset + bytes);
+        bytes += serializer->extract(this->radius, byteOffset + bytes);
+        bytes += serializer->extract(this->CM, byteOffset + bytes);
+        bytes += serializer->extract(this->weight, byteOffset + bytes);
+        bytes += serializer->extract(this->participating, byteOffset + bytes);
+        return bytes;
+    }
+};
 
 /**
  * \author Maor Mizrachi
@@ -99,18 +125,18 @@ protected:
 template<typename DetermineFunc>
 PointsExchangeResult PointsManager::pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) const
 {
-    std::vector<_3DPointData> data;
+    std::vector<PointData> data;
     data.reserve(allPoints.size());
     for(size_t pointIdx = 0; pointIdx < allPoints.size(); pointIdx++)
     {
         const Vector3D &point = allPoints[pointIdx];
         data.emplace_back();
-        _3DPointData &pointRadius = data.back();
+        PointData &pointRadius = data.back();
         pointRadius.indexInAllPoints = pointIdx;
-        pointRadius.point = _3DPoint(point.x, point.y, point.z);
+        pointRadius.point = point;
         pointRadius.radius = radiuses[pointIdx];
         pointRadius.weight = allWeights[pointIdx];
-        pointRadius.CM = _3DPoint(previous_CM[pointIdx].x, previous_CM[pointIdx].y, previous_CM[pointIdx].z);
+        pointRadius.CM = previous_CM[pointIdx];
         pointRadius.participating = false;
     }
     
@@ -120,8 +146,7 @@ PointsExchangeResult PointsManager::pointsExchange(const DetermineFunc &func, co
     }
 
     // // re-build the function so that it maintains the points that are not participating
-    // auto new_func = [&func, this, &participating](const _3DPointData &point){return ((not participating[point.indexInAllPoints])? this->rank : func(point));};
-    ExchangeAnswer<_3DPointData> answer = dataExchange(data, func, this->comm);
+    ExchangeAnswer<PointData> answer = dataExchange(data, func, this->comm);
 
     // arrange the return value data structure
     PointsExchangeResult toReturn;
@@ -130,14 +155,14 @@ PointsExchangeResult PointsManager::pointsExchange(const DetermineFunc &func, co
     toReturn.sentProcessors = std::move(answer.processesSend);
     toReturn.sentIndicesToProcessors = std::move(answer.indicesToProcesses);
 
-    std::vector<_3DPointData> &ans = answer.output;
+    std::vector<PointData> &ans = answer.output;
     toReturn.newPoints.reserve(ans.size());
     toReturn.newRadiuses.reserve(ans.size());
     toReturn.newCMs.reserve(ans.size());
     toReturn.newWeights.reserve(ans.size());
     toReturn.participatingIndices.resize(ans.size(), false);
 
-    for(const _3DPointData &_point : ans)
+    for(const PointData &_point : ans)
     {
         size_t pointIdx = toReturn.newPoints.size();
         toReturn.newPoints.emplace_back(_point.point.x, _point.point.y, _point.point.z);

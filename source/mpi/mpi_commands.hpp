@@ -41,6 +41,7 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> 
 		if(location >= correspondents.size())
 		{
 			UniversalError eo("Bad location in mpi exchange");
+			eo.addEntry("Type", typeid(T).name());
 			eo.addEntry("Location (Index)", location);
 			eo.addEntry("Correspondents.size()", correspondents.size());
 			throw eo;
@@ -83,6 +84,7 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 		if(location >= correspondents.size())
 		{
 			UniversalError eo("Bad location in mpi exchange");
+			eo.addEntry("Type", typeid(T).name());
 			eo.addEntry("Location (Index)", location);
 			eo.addEntry("Correspondents.size()", correspondents.size());
 			throw eo;

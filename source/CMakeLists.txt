@@ -52,6 +52,7 @@ include(${CMAKE_SOURCE_DIR}/../config/find_Boost.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_cgal.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_python.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_vtune.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_ParMETIS.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/include_3rdparty.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_pybind11.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/set_placeholders.cmake)
@@ -140,6 +141,24 @@ if(JSONCPP_INCLUDE AND JSONCPP_LIB_DIRECTORY)
     endif()
 endif()
 
+# parmetis
+if(PARMETIS_INCLUDE AND PARMETIS_LIB_DIRECTORY)
+    include_directories(${PARMETIS_INCLUDE})
+    find_static_library(PARMETIS_LIB parmetis PATHS ${PARMETIS_LIB_DIRECTORY})
+endif()
+
+# metis
+if(METIS_INCLUDE AND METIS_LIB_DIRECTORY)
+    include_directories(${METIS_INCLUDE})
+    find_library(METIS_LIB metis PATHS ${METIS_LIB_DIRECTORY})
+endif()
+
+# gklib
+if(GKLIB_INCLUDE AND GKLIB_LIB_DIRECTORY)
+    include_directories(${GKLIB_INCLUDE})
+    find_static_library(GKLIB_LIB GKlib PATHS ${GKLIB_LIB_DIRECTORY})
+endif()
+
 # cgal
 if(CGAL_DIRECTORY)
     # TODO Later: crashes (MPFR)
@@ -185,6 +204,20 @@ if(DEFINED JSONCPP_LIB)
     target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
 endif()
 
+if(DEFINED PARMETIS_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${PARMETIS_LIB})
+    # define "WITH_PARMETIS"
+    add_compile_definitions("WITH_PARMETIS")
+endif()
+
+if(DEFINED METIS_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${METIS_LIB})
+endif()
+
+if(DEFINED GKLIB_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${GKLIB_LIB})
+endif()
+
 # link boost
 if(DEFINED BOOST_DIR)
     target_link_directories(${EXE_NAME} PRIVATE ${BOOST_DIR}/lib)
@@ -195,12 +228,7 @@ if(pybind11_FOUND)
     target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
 endif()
 
-# link json cpp
-if(DEFINED JSONCPP_LIB_DIRECTORY)
-    target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
-endif()
-
-# link json cpp
+# link python
 if(DEFINED PYTHON_LIB_LIBRARY)
     target_link_libraries(${EXE_NAME} PRIVATE ${PYTHON_LIB})
 endif()

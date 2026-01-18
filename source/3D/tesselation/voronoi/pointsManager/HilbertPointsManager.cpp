@@ -9,7 +9,7 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
 
     if(this->envAgent != nullptr)
     {
-        exchangeResult = this->pointsExchange([this, &responsibilityRange](const _3DPointData &_point)
+        exchangeResult = this->pointsExchange([this, &responsibilityRange](const PointData &_point)
         {
             hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
             size_t index = std::distance(responsibilityRange.cbegin(), std::upper_bound(responsibilityRange.cbegin(), responsibilityRange.cend(), d));
@@ -175,9 +175,9 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     const std::vector<size_t> &responsibilityRange = dynamic_cast<const PartitionLoadBalancer*>(this->loadBalancer.get())->boundaries;
 
     // making exchange according to these borders
-    PointsExchangeResult exchangeResult = this->pointsExchange([this, &responsibilityRange](const _3DPointData &_point)
+    PointsExchangeResult exchangeResult = this->pointsExchange([this, &responsibilityRange](const PointData &_point)
     {
-        hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point.x, _point.point.y, _point.point.z));
+        hilbert_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point));
         size_t index = std::distance(responsibilityRange.cbegin(), std::upper_bound(responsibilityRange.cbegin(), responsibilityRange.cend(), d));
         return std::min<hilbert_index_t>(index, (this->size - 1));
     },

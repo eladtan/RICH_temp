@@ -136,6 +136,8 @@ private:
     std::vector<size_t> cellsStepsCounters;
     size_t iteration;
     size_t dynamicallyAdded;
+    size_t maxConsecutiveSteps;
+    double maxConsecutiveStepsTime;
     
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -846,6 +848,9 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         #ifdef ADVANCED_MONTECARLO_DEBUG
             handler->LockSelfBuffer();
         #endif // ADVANCED_MONTECARLO_DEBUG
+        
+        size_t consecutiveSteps = 0;
+        auto stepStartTime = std::chrono::high_resolution_clock::now();
 
         for(int i = 0; i < length; i++)
         {
@@ -877,6 +882,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             isEmpty = false;
             while(true)
             {
+                consecutiveSteps++;
                 // debug = debug or (particle.id == 6480574 and particle.rank == 21);
                 // debug = debug or (particle.id == 6531002 and particle.rank == 9);
                 // debug = debug or (particle.id == 6531241 and particle.rank == 27);
@@ -1181,6 +1187,12 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             next_active_ranks.push_back(_rank);
         }
 
+        double consecutiveStepsTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - stepStartTime).count();
+        this->maxConsecutiveSteps = std::max(this->maxConsecutiveSteps, consecutiveSteps);
+        this->maxConsecutiveStepsTime = std::max(this->maxConsecutiveStepsTime, consecutiveStepsTime);
+        
+        this->reallocationAgent->HandleAllWaitingReallocations();
+
         #ifdef ADVANCED_MONTECARLO_DEBUG
             handler->UnlockSelfBuffer();
         #endif // ADVANCED_MONTECARLO_DEBUG
@@ -1253,7 +1265,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->Ncells = this->grid.GetPointNo();
     this->ranks_ghost_map = GetGhostMap(this->grid);
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
-
+    
     this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
     this->ResetAllBuffers();
     if(this->currentStep > 0 and this->currentStep % SHRINK_BUFFERS_CYCLE == 0)
@@ -1265,6 +1277,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->currentStep++;
     this->iteration = 0;
     this->allStepsCounter = 0;
+    this->maxConsecutiveSteps = 0;
+    this->maxConsecutiveStepsTime = 0;
     this->dynamicallyAdded = 0;
     // this->neighbors = this->grid.GetDuplicatedProcs();    
     this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
@@ -1364,11 +1378,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         while(not done)
         {
             lastLocalDecrementAmount = this->localDecrementAmount;
-    
-            // if(this->iteration % 2 == 0)
-            {
-                this->reallocationAgent->HandleAllWaitingReallocations();
-            }
+
+            this->reallocationAgent->HandleAllWaitingReallocations();
 
             bool isEmpty = this->HandleAll(data);
     
@@ -1486,16 +1497,19 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &callsToTransfer, &callsToTransfer, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce(&reallocationTime, &maxReallocationTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &reallocationTime, &reallocationTime, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
-
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &this->maxConsecutiveSteps, &this->maxConsecutiveSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &this->maxConsecutiveStepsTime, &this->maxConsecutiveStepsTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    
     if(this->rank_world == 0)
     {
-        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-        std::cout << "Elapsed: " << elapsed << " seconds, max " << maxReallocationTime << " in reallocation (average: " << reallocationTime / this->size_world << ")" << std::endl;
+        // double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+        // std::cout << "Elapsed: " << elapsed << " seconds, max " << maxReallocationTime << " in reallocation (average: " << reallocationTime / this->size_world << ")" << std::endl;
         // std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
         // std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
         // std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
-        // std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
-        // std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
+        // // std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
+        // // std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
+        // std::cout << "Max consecutive steps: " << this->maxConsecutiveSteps << ", time " << this->maxConsecutiveStepsTime << std::endl;
     }
     MPI_Barrier(this->comm_world);
     // vtune_stop();

@@ -73,7 +73,7 @@ std::vector<HilbertRectangularConvertor2D::RecursionArguments> HilbertRectangula
         // long horizontal
         toReturn.push_back({{startPoint.x + b2.x, startPoint.y + b2.y}, a, {b.x - b2.x, b.y - b2.y}});
         // down
-        toReturn.push_back({{startPoint.x + (a.x - dax) + (b2.x - dbx), startPoint.y + (a.y - day) + (b2.y - dby)}, 
+    toReturn.push_back({{startPoint.x + (a.x - dax) + (b2.x - dbx), startPoint.y + (a.y - day) + (b2.y - dby)}, 
                         {-b2.x, -b2.y}, {-(a.x - a2.x), -(a.y - a2.y)}});
     }
 

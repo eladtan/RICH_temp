@@ -7,7 +7,6 @@
 #include "mpi/mpi_commands.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 #include "TimeRequestData.hpp"
-#include "3D/hilbert/hilbertTypes.h" // for _3DPoint
 
 #define TIME_POINTS_REQUEST_TAG 606
 #define TIME_POINTS_SEND_TAG 607

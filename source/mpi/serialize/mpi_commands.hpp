@@ -18,14 +18,14 @@ std::vector<std::vector<T>> MPI_Iexchange_all_to_all(const std::vector<Container
     MPI_Comm_size(comm, &size);
     std::vector<MPI_Request> requests(size);
     std::vector<Serializer> senders(size);
-    for(size_t i = 0; i < size; i++)
+    for(rank_t i = 0; i < size; i++)
     {
         senders[i].insert_all(data[i]);
         MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, i, MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
     }
 
     std::vector<Serializer> receivers(size);
-    for(size_t i = 0; i < size; i++)
+    for(rank_t i = 0; i < size; i++)
     {
         MPI_Status status;
         MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
@@ -35,13 +35,58 @@ std::vector<std::vector<T>> MPI_Iexchange_all_to_all(const std::vector<Container
         MPI_Recv(receivers[status.MPI_SOURCE].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
     }
     std::vector<std::vector<T>> result(size);
-    for(size_t i = 0; i < size; i++)
+    for(rank_t i = 0; i < size; i++)
     {
         receivers[i].extract_all(result[i]);
     }
     if(not requests.empty())
     {
         MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
+    }
+    MPI_Barrier(comm);
+    return result;
+}
+
+template<typename T, template<typename...> class Container, typename... Ts>
+std::vector<std::vector<T>> MPI_Iexchange_by_ranks(const std::vector<Container<T, Ts...>> &data, const std::vector<rank_t> &correspondents, const MPI_Comm &comm)
+{
+    rank_t rank;
+    MPI_Comm_rank(comm, &rank);
+
+    size_t sendSize = correspondents.size();
+
+    std::vector<MPI_Request> requests(sendSize);
+    std::vector<Serializer> senders(sendSize);
+    for(size_t i = 0; i < sendSize; i++)
+    {
+        senders[i].insert_all(data[i]);
+        MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, correspondents[i], MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
+    }
+
+    std::vector<std::vector<T>> result(sendSize);
+    for(size_t i = 0; i < sendSize; i++)
+    {
+        Serializer receiver;
+        MPI_Status status;
+        MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
+        size_t index = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE));
+        if(index >= sendSize)
+        {
+            UniversalError eo("MPI_Iexchange_by_ranks: received from an unexpected rank");
+            eo.addEntry("My rank", rank);
+            eo.addEntry("Received From", status.MPI_SOURCE);
+            eo.addEntry("Correspondents", correspondents);
+            throw eo;
+        }
+        int count;
+        MPI_Get_count(&status, MPI_BYTE, &count);
+        receiver.resize(count);
+        MPI_Recv(receiver.getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
+        receiver.extract(result[index], 0);
+    }
+    if(not requests.empty())
+    {
+        MPI_Waitall(static_cast<int>(sendSize), requests.data(), MPI_STATUSES_IGNORE);
     }
     MPI_Barrier(comm);
     return result;

@@ -5,6 +5,7 @@
 #include "misc/io3D.hpp"
 #include "3D/GeometryCommon/Intersections.hpp"
 #include "misc/int2str.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 
 #ifdef RICH_MPI
 
@@ -282,110 +283,6 @@ namespace
         return R;
     }
 
-    size_t SetPointTetras(vector<tetra_vec> &PointTetras, size_t Norg, vector<Tetrahedron> &tetras, std::vector<std::pair<size_t, Tetrahedron>> &changed_tetras,
-                                                boost::container::flat_set<size_t> const &empty_tetras)
-    {
-        // static vector<tetra_vec> tmpPointTetras;
-
-        // PointTetras.clear();
-        PointTetras.resize(Norg);
-
-        #ifdef USE_VCL_VECTORIZATION
-            Vec4uq _Norg(Norg);
-        #endif // USE_VCL_VECTORIZATION
-
-        size_t Ntetra = tetras.size();
-        size_t bigtet(0);
-        bool has_good, has_big;
-        // change empty tetras to be not relevant
-        for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
-        {
-            for (size_t i = 0; i < 4; ++i)
-            {
-                if(tetras[*it].points[i] < Norg)
-                {
-                    tetra_vec &points_tetras = PointTetras[tetras[*it].points[i]];
-                    auto it2 = std::find(points_tetras.begin(), points_tetras.end(), *it);
-                    if(it2 != points_tetras.end())
-                    {
-                        points_tetras.erase(it2);
-                    }
-                }
-                tetras[*it].points[i] = std::numeric_limits<std::size_t>::max();
-                tetras[*it].neighbors[i] = std::numeric_limits<std::size_t>::max();
-            }
-        }
-
-        for (const std::pair<size_t, Tetrahedron> &tetraInfo : changed_tetras)
-        {
-            const size_t &tetraIndex = tetraInfo.first;
-            const Tetrahedron &tetra = tetraInfo.second;
-
-            for (size_t i = 0; i < 4; ++i)
-            {
-                if(tetra.points[i] < Norg)
-                {
-                    tetra_vec &points_tetras = PointTetras[tetra.points[i]];
-                    auto it2 = std::find(points_tetras.begin(), points_tetras.end(), tetraIndex);
-                    if(it2 != points_tetras.end())
-                    {
-                        points_tetras.erase(it2);
-                    }
-                }
-            }
-        }
-
-        size_t counter = 0;
-
-        for (size_t i = 0; i < Ntetra; ++i)
-        {
-            const Tetrahedron &tet = tetras[i];
-
-            if(not tet.newTetra)
-            {
-                continue;
-            }
-            has_good = false;
-            has_big = false;
-            counter++;
-
-            #ifdef USE_VCL_VECTORIZATION
-                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
-                Vec4qb cmp = (_points < _Norg);
-            #endif // USE_VCL_VECTORIZATION
-            
-            for(int j = 0; j < 4; ++j)
-            {
-                #ifdef USE_VCL_VECTORIZATION
-                    if(cmp[j])
-                #else // USE_VCL_VECTORIZATION
-                    if(tet.points[j] < Norg)
-                #endif // USE_VCL_VECTORIZATION
-                {
-                    has_good = true;
-                    PointTetras[tet.points[j]].push_back(i);
-                }
-                else
-                {
-                    has_big = true;
-                }
-            }
-            if(has_big and has_good)
-            {
-                bigtet = i;
-            }
-        }
-
-        changed_tetras.clear();
-        for(Tetrahedron &tet : tetras)
-        {
-            tet.newTetra = false;
-        }
-
-        // std::cout << "Tetra counter: " << counter << " / " << Ntetra << std::endl;
-        return bigtet;
-    }
-
     bool CleanSameLine(boost::container::small_vector<size_t, 8> &indeces, vector<Vector3D> const& face_points, std::array<double, 128> &area_vec_temp)
     {
         point_vec old;
@@ -618,6 +515,132 @@ namespace
     }
 }
 
+size_t Voronoi3D::SetPointTetras(void)
+{
+    std::vector<Tetrahedron> &tetras = this->del_.tetras_;
+    std::vector<std::pair<size_t, Tetrahedron>> &changed_tetras = this->del_.changed_tetras_;
+    boost::container::flat_set<size_t> const &empty_tetras = this->del_.empty_tetras_;
+    std::vector<size_t> &newTetras = this->del_.newTetras_;
+    PointTetras_.resize(this->Norg_);
+    // static vector<tetra_vec> tmpPointTetras;
+
+    #ifdef USE_VCL_VECTORIZATION
+        Vec4uq _Norg(this->Norg_);
+    #endif // USE_VCL_VECTORIZATION
+
+    size_t Ntetra = tetras.size();
+    size_t bigtet(0);
+    bool has_good, has_big;
+    // change empty tetras to be not relevant
+    for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
+    {
+        for (size_t i = 0; i < 4; ++i)
+        {
+            if(tetras[*it].points[i] < this->Norg_)
+            {
+                tetra_vec &points_tetras = PointTetras_[tetras[*it].points[i]];
+                auto it2 = std::find(points_tetras.begin(), points_tetras.end(), *it);
+                if(it2 != points_tetras.end()) {
+                    *it2 = points_tetras.back();
+                    points_tetras.pop_back();
+                }
+            }
+            tetras[*it].points[i] = std::numeric_limits<std::size_t>::max();
+            tetras[*it].neighbors[i] = std::numeric_limits<std::size_t>::max();
+        }
+    }
+
+    for (const std::pair<size_t, Tetrahedron> &tetraInfo : changed_tetras)
+    {
+        const size_t &tetraIndex = tetraInfo.first;
+        const Tetrahedron &tetra = tetraInfo.second;
+
+        for (size_t i = 0; i < 4; ++i)
+        {
+            if(tetra.points[i] < this->Norg_)
+            {
+                tetra_vec &points_tetras = PointTetras_[tetra.points[i]];
+                auto it2 = std::find(points_tetras.begin(), points_tetras.end(), tetraIndex);
+                if(it2 != points_tetras.end())
+                {
+                    *it2 = points_tetras.back();
+                    points_tetras.pop_back();
+                }
+            }
+        }
+    }
+
+    size_t counter = 0;
+
+    // std::sort(newTetras.begin(), newTetras.end());
+    // auto it = std::unique(newTetras.begin(), newTetras.end());
+    // newTetras.resize(std::distance(newTetras.begin(), it));
+    // size_t redundentNum = Ntetra - newTetras.size();
+    // #ifdef RICH_MPI
+    //     int rank;
+    //     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    //     MPI_Allreduce(MPI_IN_PLACE, &redundentNum, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+    //     if(rank == 0)
+    //     {
+    //         std::cout << "Redundent number max: " << redundentNum << std::endl;
+    //     }
+    // #endif // RICH_MPI
+    
+    // for (size_t i = 0; i < Ntetra; ++i)
+    for(size_t i : newTetras)
+    {
+        Tetrahedron &tet = tetras[i];
+        this->R_[i] = RADIUS_UNINITIALIZED;
+
+        if(not tet.newTetra)
+        {
+            continue;
+        }
+        assert(tet.newTetra);
+        tet.newTetra = false;
+
+        // if(not tet.newTetra)
+        // {
+        //     continue;
+        // }
+        has_good = false;
+        has_big = false;
+        counter++;
+
+        #ifdef USE_VCL_VECTORIZATION
+            Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
+            Vec4qb cmp = (_points < _Norg);
+        #endif // USE_VCL_VECTORIZATION
+        
+        for(int j = 0; j < 4; ++j)
+        {
+        #ifdef USE_VCL_VECTORIZATION
+            if(cmp[j])
+        #else // USE_VCL_VECTORIZATION
+            if(tet.points[j] < Norg)
+        #endif // USE_VCL_VECTORIZATION
+            {
+                has_good = true;
+                PointTetras_[tet.points[j]].push_back(i);
+            }
+            else
+            {
+                has_big = true;
+            }
+        }
+        if(has_big and has_good)
+        {
+            bigtet = i;
+        }
+    }
+
+    changed_tetras.clear();
+    newTetras.clear();
+
+    // std::cout << "Tetra counter: " << counter << " / " << Ntetra << std::endl;
+    return bigtet;
+}
+
 Voronoi3D::Voronoi3D(std::vector<Face> const& box_faces) : Voronoi3D()
 {
     this->box_faces_ = box_faces;
@@ -830,11 +853,8 @@ void Voronoi3D::BuildInitialize(size_t num_points)
 */
 bool Voronoi3D::PointInMyDomain(const Vector3D &point) const
 {
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    assert(this->pointsManager.get() != nullptr);
-    assert(this->pointsManager->getEnvironmentAgent() != nullptr);
-    return (this->GetOwner(point) == rank);
+    size_t containingCell = this->GetContainingCell(point);
+    return this->IsPointInCell(point, containingCell);
 }
 
 inline int Voronoi3D::GetOwner(const Vector3D &point) const
@@ -847,98 +867,57 @@ inline void Voronoi3D::SetImbalanceTolerance(double tolerance)
     this->pointsManager->setImbalanceTolerance(tolerance);
 }
 
-std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>>
+std::tuple<std::vector<Vector3D>, std::vector<std::vector<size_t>>, std::vector<std::vector<size_t>>>
     Voronoi3D::InitialGhostPointsExchange(const MPI_Comm &comm) const
 {
     int size;
     MPI_Comm_size(comm, &size);
 
-    std::vector<int> toSendSizes(size);
-    std::vector<int> sendDisplacements(size);
-    std::vector<_3DPoint> pointsToSend;
+    std::vector<std::vector<Vector3D>> sentPoints(size);
+    std::vector<std::vector<size_t>> sentPointsIndices(size);
 
-    std::vector<int> sentProcs;
-    std::vector<std::vector<size_t>> sentPoints;
-
+    
     for(int _rank = 0; _rank < size; _rank++)
     {
         size_t rankIndex = std::distance(this->real_duplicated_proc.begin(), std::find(this->real_duplicated_proc.begin(), this->real_duplicated_proc.end(), _rank));
-        if(rankIndex == this->real_duplicated_proc.size())
+        if(rankIndex != this->real_duplicated_proc.size())
         {
-            // rank _rank is not duplicated
-            toSendSizes[_rank] = 0;
-        }
-        else
-        {
-            std::vector<size_t> sentIndices;
+            // found
+            std::vector<size_t> &sentIndices = sentPointsIndices[_rank];
+            std::vector<Vector3D> &pointsToSend = sentPoints[_rank];
+
             // rank _rank is duplicated
-            toSendSizes[_rank] = 0;
             for(size_t pointIdx : this->real_duplicated_points[rankIndex])
             {
                 if(pointIdx < this->Norg_)
                 {
                     sentIndices.push_back(pointIdx);
-                    toSendSizes[_rank]++;
-                    pointsToSend.push_back(_3DPoint(this->allMyPoints[pointIdx]));
+                    pointsToSend.push_back(this->allMyPoints[pointIdx]);
                 }
             }
-            if(not sentIndices.empty())
-            {
-                sentProcs.push_back(_rank);
-                sentPoints.emplace_back(sentIndices);
-            }
-        }
-        toSendSizes[_rank] *= sizeof(_3DPoint);
-        if(_rank == 0)
-        {
-            sendDisplacements[_rank] = 0;
-        }
-        else
-        {
-            sendDisplacements[_rank] = sendDisplacements[_rank - 1] + toSendSizes[_rank - 1];
         }
     }
 
-    std::vector<int> toRecvSizes(size);
-    MPI_Alltoall(toSendSizes.data(), 1, MPI_INT, toRecvSizes.data(), 1, MPI_INT, comm);
-    std::vector<int> recvDisplacements(size);
+    std::vector<std::vector<Vector3D>> recvPoints = MPI_Iexchange_all_to_all(sentPoints, comm);
+
+    std::vector<Vector3D> ghostPoints;
+    std::vector<std::vector<size_t>> recvPointsIndices(size);
     size_t totalSize = 0;
-    std::vector<int> recvProcs;
-    std::vector<std::vector<size_t>> recvPoints;
 
     for(int _rank = 0; _rank < size; _rank++)
     {
-        if(_rank == 0)
+        std::vector<Vector3D> &receivedFromRank = recvPoints[_rank];
+        std::vector<size_t> &receivedIndices = recvPointsIndices[_rank];
+        size_t receiving = receivedFromRank.size();
+        for(size_t i = 0; i < receiving; i++)
         {
-            recvDisplacements[_rank] = 0;
+            receivedIndices.push_back(totalSize);
+            totalSize++;
         }
-        else
-        {
-            recvDisplacements[_rank] = recvDisplacements[_rank - 1] + toRecvSizes[_rank - 1];
-        }
-        size_t receiving = toRecvSizes[_rank] / sizeof(_3DPoint);
-        if(receiving > 0)
-        {
-            std::vector<size_t> receivedIndices; 
-            for(size_t i = 0; i < receiving; i++)
-            {
-                receivedIndices.push_back(totalSize);
-                totalSize++;
-            }
-            recvProcs.push_back(_rank);
-            recvPoints.emplace_back(receivedIndices);
-        }
+        ghostPoints.insert(ghostPoints.end(), receivedFromRank.begin(), receivedFromRank.end());
     }
-    std::vector<_3DPoint> almostGhostPoints(totalSize);
-    MPI_Alltoallv(pointsToSend.data(), toSendSizes.data(), sendDisplacements.data(), MPI_BYTE, almostGhostPoints.data(), toRecvSizes.data(), recvDisplacements.data(), MPI_BYTE, comm);
-    
-    std::vector<Vector3D> ghostPoints;
-    ghostPoints.reserve(almostGhostPoints.size());
-    for(const _3DPoint &point : almostGhostPoints)
-    {
-        ghostPoints.emplace_back(point.x, point.y, point.z);
-    }
-    return std::tuple(ghostPoints, sentProcs, sentPoints, recvProcs, recvPoints);
+
+    return std::tuple(ghostPoints, sentPointsIndices, recvPointsIndices);
 }
 
 void Voronoi3D::FilterRealGhostPoints()
@@ -1038,170 +1017,170 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
     }
 }
 
-void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints, const MPI_Comm &comm)
-{
-    const EnvironmentAgent *envAgent = this->pointsManager->getEnvironmentAgent();
-    bool supportsFurthestClosestRanks;
-    std::function<HilbertCurveEnvironmentAgent::DistancesVector(const _3DPoint&)> getFurthestClosestRanks;
+// void Voronoi3D::InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints, const MPI_Comm &comm)
+// {
+//     const EnvironmentAgent *envAgent = this->pointsManager->getEnvironmentAgent();
+//     bool supportsFurthestClosestRanks;
+//     std::function<HilbertCurveEnvironmentAgent::DistancesVector(const Vector3D&)> getFurthestClosestRanks;
 
-    // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)            
-    const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(envAgent);
-    if(distribuedOctEnvAgent != nullptr)
-    {
-        supportsFurthestClosestRanks = true;
-        getFurthestClosestRanks = [distribuedOctEnvAgent](const _3DPoint &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
-    }
-    const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(envAgent);
-    if(hilbertTreeEnvAgent != nullptr)
-    {
-        supportsFurthestClosestRanks = true;
-        getFurthestClosestRanks = [hilbertTreeEnvAgent](const _3DPoint &point){return hilbertTreeEnvAgent->getClosestFurthestPointsByRanks(point);};
-    }
+//     // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)            
+//     const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(envAgent);
+//     if(distribuedOctEnvAgent != nullptr)
+//     {
+//         supportsFurthestClosestRanks = true;
+//         getFurthestClosestRanks = [distribuedOctEnvAgent](const Vector3D &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
+//     }
+//     const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(envAgent);
+//     if(hilbertTreeEnvAgent != nullptr)
+//     {
+//         supportsFurthestClosestRanks = true;
+//         getFurthestClosestRanks = [hilbertTreeEnvAgent](const Vector3D &point){return hilbertTreeEnvAgent->getClosestFurthestPointsByRanks(point);};
+//     }
 
-    if(not supportsFurthestClosestRanks)
-    {
-        return;
-    }
+//     if(not supportsFurthestClosestRanks)
+//     {
+//         return;
+//     }
     
-    int rank, size;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &size);
+//     int rank, size;
+//     MPI_Comm_rank(comm, &rank);
+//     MPI_Comm_size(comm, &size);
 
-    size_t counter = 0;
+//     size_t counter = 0;
 
-    for(size_t pointIdx = 0; pointIdx < points.size(); pointIdx++)
-    {
-        bool isBorderPoint = false;
-        for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
-        {
-            const Tetrahedron &tet = this->del_.tetras_[tetraIdx];
-            isBorderPoint = (tet.points[0] >= this->Norg_) or (tet.points[1] >= this->Norg_) or (tet.points[2] >= this->Norg_) or (tet.points[3] >= this->Norg_);
-            if(isBorderPoint)
-            {
-                break;
-            }
-        }
-        if(!isBorderPoint)
-        {
-            continue;
-        }
-        int closestRank = std::numeric_limits<int>::max();
-        double closestDistance = std::numeric_limits<double>::max();
-        auto distances = getFurthestClosestRanks(points[pointIdx]);
-        for(int _rank = 0; _rank < size; _rank++)
-        {
-            if(_rank == rank)
-            {
-                continue;
-            }
-            if(distances[_rank].first < closestDistance)
-            {
-                closestDistance = distances[_rank].first;
-                closestRank = _rank;
-            }
-        }
-        size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), closestRank));
-        if(rankIdx == sentProc.size())
-        {
-            sentProc.push_back(closestRank);
-            sentPoints.emplace_back(std::vector<size_t>());
-        }
-        sentPoints[rankIdx].push_back(pointIdx);
-        counter++;
-    }
+//     for(size_t pointIdx = 0; pointIdx < points.size(); pointIdx++)
+//     {
+//         bool isBorderPoint = false;
+//         for(const size_t &tetraIdx : this->PointTetras_[pointIdx])
+//         {
+//             const Tetrahedron &tet = this->del_.tetras_[tetraIdx];
+//             isBorderPoint = (tet.points[0] >= this->Norg_) or (tet.points[1] >= this->Norg_) or (tet.points[2] >= this->Norg_) or (tet.points[3] >= this->Norg_);
+//             if(isBorderPoint)
+//             {
+//                 break;
+//             }
+//         }
+//         if(!isBorderPoint)
+//         {
+//             continue;
+//         }
+//         int closestRank = std::numeric_limits<int>::max();
+//         double closestDistance = std::numeric_limits<double>::max();
+//         auto distances = getFurthestClosestRanks(points[pointIdx]);
+//         for(int _rank = 0; _rank < size; _rank++)
+//         {
+//             if(_rank == rank)
+//             {
+//                 continue;
+//             }
+//             if(distances[_rank].first < closestDistance)
+//             {
+//                 closestDistance = distances[_rank].first;
+//                 closestRank = _rank;
+//             }
+//         }
+//         size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), closestRank));
+//         if(rankIdx == sentProc.size())
+//         {
+//             sentProc.push_back(closestRank);
+//             sentPoints.emplace_back(std::vector<size_t>());
+//         }
+//         sentPoints[rankIdx].push_back(pointIdx);
+//         counter++;
+//     }
 
-    std::vector<size_t> sendLengths(size, 0);
-    std::vector<std::vector<_3DPoint>> toSend;
-    toSend.resize(sentProc.size());
+//     std::vector<size_t> sendLengths(size, 0);
+//     std::vector<std::vector<Vector3D>> toSend;
+//     toSend.resize(sentProc.size());
     
-    std::vector<MPI_Request> requests;
-    requests.reserve(4 * sentProc.size()); // heuristic
+//     std::vector<MPI_Request> requests;
+//     requests.reserve(4 * sentProc.size()); // heuristic
 
-    std::vector<size_t> recvLengths(size, 0);
+//     std::vector<size_t> recvLengths(size, 0);
 
-    for(size_t i = 0; i < sentProc.size(); i++)
-    {
-        int _rank = sentProc[i];
-        sendLengths[_rank] = sentPoints[i].size();
-        toSend[i].reserve(sentPoints[i].size());
-        for(size_t &pointIdx : sentPoints[i])
-        {
-            toSend[i].emplace_back(_3DPoint(points[pointIdx].x, points[pointIdx].y, points[pointIdx].z));
-        }
-    }
+//     for(size_t i = 0; i < sentProc.size(); i++)
+//     {
+//         int _rank = sentProc[i];
+//         sendLengths[_rank] = sentPoints[i].size();
+//         toSend[i].reserve(sentPoints[i].size());
+//         for(size_t &pointIdx : sentPoints[i])
+//         {
+//             toSend[i].emplace_back(points[pointIdx]);
+//         }
+//     }
 
-    MPI_Alltoall(&sendLengths[0], sizeof(size_t), MPI_BYTE, &recvLengths[0], sizeof(size_t), MPI_BYTE, comm);
+//     MPI_Alltoall(&sendLengths[0], sizeof(size_t), MPI_BYTE, &recvLengths[0], sizeof(size_t), MPI_BYTE, comm);
 
-    size_t totalLength = 0; 
-    for(int _rank = 0; _rank < size; _rank++)
-    {
-        if(recvLengths[_rank] > 0)
-        {
-            totalLength += recvLengths[_rank];
-            size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
-            if(rankIdx != sentProc.size())
-            {
-                // rank has already been found
-                continue;
-            }
-            sentProc.push_back(_rank);
-            sentPoints.emplace_back(std::vector<size_t>());
-        }
-    }
+//     size_t totalLength = 0; 
+//     for(int _rank = 0; _rank < size; _rank++)
+//     {
+//         if(recvLengths[_rank] > 0)
+//         {
+//             totalLength += recvLengths[_rank];
+//             size_t rankIdx = std::distance(sentProc.begin(), std::find(sentProc.begin(), sentProc.end(), _rank));
+//             if(rankIdx != sentProc.size())
+//             {
+//                 // rank has already been found
+//                 continue;
+//             }
+//             sentProc.push_back(_rank);
+//             sentPoints.emplace_back(std::vector<size_t>());
+//         }
+//     }
 
-    std::vector<_3DPoint> almostExtraPoints;
-    almostExtraPoints.resize(totalLength);
-    size_t insertedSoFar = 0; 
-    for(const int &_rank : sentProc)
-    {
-        if(recvLengths[_rank] > 0)
-        {
-            // std::cout << "rank " << rank << " is receiving " << recvLengths[_rank] << " from rank " << _rank << ", insertedSoFar is " << insertedSoFar << "(total length: " << totalLength << ")" << std::endl;
-            requests.push_back(MPI_REQUEST_NULL);
-            MPI_Irecv(&almostExtraPoints[insertedSoFar], sizeof(_3DPoint) * recvLengths[_rank], MPI_BYTE, _rank, INITIAL_SENDRECV_TAG, comm, &requests[requests.size() - 1]);
-            size_t dupRankIdx = std::distance(this->duplicatedprocs_.begin(), std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank));
-            if(dupRankIdx == this->duplicatedprocs_.size())
-            {
-                // new rank in this->duplicatedprocs_, initialize it
-                this->duplicatedprocs_.push_back(_rank);
-                this->duplicated_points_.emplace_back(std::vector<size_t>());
-                this->Nghost_.emplace_back(std::vector<size_t>());
-            }
-            for(size_t i = 0; i < recvLengths[_rank]; i++)
-            {
-                // batchInfo.pointsFromRanks[_rank][i] holds an index of point, but this point will be added to my delaunay, so
-                // its index there will be this->del_.points_.size() + batchInfo.pointsFromRanks[_rank][i]
-                this->Nghost_[dupRankIdx].push_back(this->del_.points_.size() + insertedSoFar + i);
-            }
-        }
-    }
+//     std::vector<PointData> almostExtraPoints;
+//     almostExtraPoints.resize(totalLength);
+//     size_t insertedSoFar = 0; 
+//     for(const int &_rank : sentProc)
+//     {
+//         if(recvLengths[_rank] > 0)
+//         {
+//             // std::cout << "rank " << rank << " is receiving " << recvLengths[_rank] << " from rank " << _rank << ", insertedSoFar is " << insertedSoFar << "(total length: " << totalLength << ")" << std::endl;
+//             requests.push_back(MPI_REQUEST_NULL);
+//             MPI_Irecv(&almostExtraPoints[insertedSoFar], sizeof(PointData) * recvLengths[_rank], MPI_BYTE, _rank, INITIAL_SENDRECV_TAG, comm, &requests[requests.size() - 1]);
+//             size_t dupRankIdx = std::distance(this->duplicatedprocs_.begin(), std::find(this->duplicatedprocs_.begin(), this->duplicatedprocs_.end(), _rank));
+//             if(dupRankIdx == this->duplicatedprocs_.size())
+//             {
+//                 // new rank in this->duplicatedprocs_, initialize it
+//                 this->duplicatedprocs_.push_back(_rank);
+//                 this->duplicated_points_.emplace_back(std::vector<size_t>());
+//                 this->Nghost_.emplace_back(std::vector<size_t>());
+//             }
+//             for(size_t i = 0; i < recvLengths[_rank]; i++)
+//             {
+//                 // batchInfo.pointsFromRanks[_rank][i] holds an index of point, but this point will be added to my delaunay, so
+//                 // its index there will be this->del_.points_.size() + batchInfo.pointsFromRanks[_rank][i]
+//                 this->Nghost_[dupRankIdx].push_back(this->del_.points_.size() + insertedSoFar + i);
+//             }
+//         }
+//     }
 
-    for(size_t i = 0; i < toSend.size(); i++)
-    {
-        int _rank = sentProc[i];
-        // std::cout << "rank " << rank << " is sending " << toSend[i].size() << " to rank " << _rank << std::endl;
-        requests.push_back(MPI_REQUEST_NULL);
-        MPI_Isend(&toSend[i][0], sizeof(_3DPoint) * toSend[i].size(), MPI_BYTE, _rank, INITIAL_SENDRECV_TAG, comm, &requests[requests.size() - 1]);
-    }
+//     for(size_t i = 0; i < toSend.size(); i++)
+//     {
+//         int _rank = sentProc[i];
+//         // std::cout << "rank " << rank << " is sending " << toSend[i].size() << " to rank " << _rank << std::endl;
+//         requests.push_back(MPI_REQUEST_NULL);
+//         MPI_Isend(&toSend[i][0], sizeof(_3DPoint) * toSend[i].size(), MPI_BYTE, _rank, INITIAL_SENDRECV_TAG, comm, &requests[requests.size() - 1]);
+//     }
 
-    if(!requests.empty())
-    {
-        MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
-    }   
+//     if(!requests.empty())
+//     {
+//         MPI_Waitall(requests.size(), &requests[0], MPI_STATUSES_IGNORE);
+//     }   
 
-    std::vector<Vector3D> extraPoints;
-    for(const _3DPoint &_point : almostExtraPoints)
-    {
-        extraPoints.emplace_back(Vector3D(_point.x, _point.y, _point.z));
-    }
+//     std::vector<Vector3D> extraPoints;
+//     for(const _3DPoint &_point : almostExtraPoints)
+//     {
+//         extraPoints.emplace_back(Vector3D(_point.x, _point.y, _point.z));
+//     }
 
-    this->del_.BuildExtra(extraPoints);
+//     this->del_.BuildExtra(extraPoints);
 
-    this->R_.resize(this->del_.tetras_.size());
-    std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
-    this->tetra_centers_.resize(this->R_.size());
-    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
-}
+//     this->R_.resize(this->del_.tetras_.size());
+//     std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+//     this->tetra_centers_.resize(this->R_.size());
+//     this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+// }
 
 
 /**
@@ -1235,7 +1214,7 @@ void Voronoi3D::SetGhostArray(const std::vector<int> &recvProc, const std::vecto
  * \author Maor Mizrachi
  * \brief Makes load rebalancing if needed, if needed, and initializing the environment agent (the object which is responsible for dividing the space to ranks)
 */
-std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
+std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange)
 {
     if(this->radiuses.size() < allPoints.size())
     {
@@ -1268,7 +1247,11 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     MPI_Allreduce(MPI_IN_PLACE, &canDoRebalance, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
     bool allowRebalance = (canDoRebalance == 1);
 
-    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, allWeights, indicesToBuild, this->radiuses, this->all_CM, allowRebalance); // does rebalancing (if necessary) and exchanging
+    int canDoExchange = (not suppressExchange) ? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &canDoExchange, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    bool allowExchange = (canDoExchange == 1);
+
+    PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, allowExchange? allWeights : this->allPointsWeights, indicesToBuild, this->radiuses, this->all_CM, allowRebalance); // does rebalancing (if necessary) and exchanging
 
     this->allMyPoints = std::move(exchangeResult.newPoints);
     this->radiuses = std::move(exchangeResult.newRadiuses);
@@ -1361,89 +1344,10 @@ void Voronoi3D::PreparePoints(const std::vector<Vector3D> &points, const std::ve
     this->radiuses = std::move(newRadiuses);
 }
 
-void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing)
-{
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-    for(const size_t &idx : indicesToBuild)
-    {
-        if(idx >= allPoints.size())
-        {
-            UniversalError eo("BuildParatiallyParallel: Illegal point was given");
-            eo.addEntry("Index", idx);
-            eo.addEntry("Size", allPoints.size());
-            throw eo;
-        }
-    }
-
-    std::chrono::high_resolution_clock::time_point start, end;
-    START_TIMER_PREEMPTIVE("Prepare to build");
-
-    start = std::chrono::high_resolution_clock::now();
-
-    std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, allWeights, indicesToBuild, suppressRebalancing);
-    end = std::chrono::high_resolution_clock::now();
-    if(rank == 0)
-    {
-        std::cout << "Time for preparing (hilbert tree + load balancing): " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
-    }
-
-    start = std::chrono::high_resolution_clock::now();
-
-    std::vector<size_t> order;
-
-    // build delaunay
-    if(not activePoints.empty())
-    {
-        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(activePoints[0], activePoints[0]);
-        for(const Vector3D &point : activePoints)
-        {
-            bounding_box.first.x = std::min(bounding_box.first.x, point.x);
-            bounding_box.second.x = std::max(bounding_box.second.x, point.x);
-            bounding_box.first.y = std::min(bounding_box.first.y, point.y);
-            bounding_box.second.y = std::max(bounding_box.second.y, point.y);
-            bounding_box.first.z = std::min(bounding_box.first.z, point.z);
-            bounding_box.second.z = std::max(bounding_box.second.z, point.z);
-        }
-
-        // performs internal tesselation:
-        // std::cout << "checking duplications..." << std::endl;
-        // reportDuplications(new_points);
-        order = HilbertOrder3D(activePoints);
-        
-        // initial build for the points
-        this->del_.Build(activePoints, bounding_box.second, bounding_box.first, order);
-    }
-
-    // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
-    this->R_.resize(this->del_.tetras_.size());
-    std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
-    this->tetra_centers_.resize(this->R_.size());
-    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
-
-    // MPI_Barrier(MPI_COMM_WORLD);
-
-    end = std::chrono::high_resolution_clock::now();
-    if(rank == 0)
-    {
-        std::cout << "Time for initial build: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
-    }
-
-    if(this->radiuses.size() < this->Norg_)
-    {
-        UniversalError eo("Voronoi3D:BuildPartiallyParallel: wrong size of radiuses array");
-        eo.addEntry("Rank", rank);
-        eo.addEntry("radiuses.size()", this->radiuses.size());
-        eo.addEntry("Norg_", this->Norg_);
-        throw eo;
-    }
-
-    START_TIMER_PREEMPTIVE("Tree construction");
-
-    start = std::chrono::high_resolution_clock::now();
-
+void Voronoi3D::UpdatePointsTree(const std::vector<Vector3D> &activePoints)
+{    
+    auto start = std::chrono::high_resolution_clock::now();
+    
     Vector3D width = this->ur_ - this->ll_;
     this->allMyPointsTree = std::make_shared<OctTree<IndexedVector3D>>(IndexedVector3D(this->ll_ - width * 0.00001, std::numeric_limits<size_t>::max()),
                                                                     IndexedVector3D(this->ur_ + width * 0.00001, std::numeric_limits<size_t>::max()));
@@ -1469,11 +1373,104 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
             this->myPointsTree->insert(IndexedVector3D(point.x, point.y, point.z, pointIdx));
         }
     }
-    end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::high_resolution_clock::now();
+
+    rank_t rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     if(rank == 0)
     {
         std::cout << "Time for tree: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
+}
+
+void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange)
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    for(const size_t &idx : indicesToBuild)
+    {
+        if(idx >= allPoints.size())
+        {
+            UniversalError eo("BuildParatiallyParallel: Illegal point was given");
+            eo.addEntry("Index", idx);
+            eo.addEntry("Size", allPoints.size());
+            throw eo;
+        }
+    }
+
+    std::chrono::high_resolution_clock::time_point start, end;
+    START_TIMER_PREEMPTIVE("Prepare to build");
+
+    start = std::chrono::high_resolution_clock::now();
+
+    std::vector<Vector3D> activePoints = this->PrepareToBuildParallel(allPoints, allWeights, indicesToBuild, suppressRebalancing, suppressExchange);
+    end = std::chrono::high_resolution_clock::now();
+    if(rank == 0)
+    {
+        std::cout << "Time for preparing (hilbert tree + load balancing): " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+
+    start = std::chrono::high_resolution_clock::now();
+
+    std::vector<size_t> order;
+
+    // build delaunay
+    if(not activePoints.empty())
+    {
+        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(activePoints[0], activePoints[0]);
+        for(const Vector3D &point : activePoints)
+        {
+            bounding_box.first.x = std::min(bounding_box.first.x, point.x);
+            bounding_box.second.x = std::max(bounding_box.second.x, point.x);
+            bounding_box.first.y = std::min(bounding_box.first.y, point.y);
+            bounding_box.second.y = std::max(bounding_box.second.y, point.y);
+            bounding_box.first.z = std::min(bounding_box.first.z, point.z);
+            bounding_box.second.z = std::max(bounding_box.second.z, point.z);
+        }
+
+        if(activePoints.size() == 1)
+        {
+            bounding_box.second = this->ur_;
+            bounding_box.first = this->ll_;
+        }
+
+        // performs internal tesselation:
+        // std::cout << "checking duplications..." << std::endl;
+        // reportDuplications(new_points);
+        order = HilbertOrder3D(activePoints);
+        
+        // initial build for the points
+        this->del_.Build(activePoints, bounding_box.second, bounding_box.first, order);
+    }
+
+    // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
+    this->R_.resize(this->del_.tetras_.size());
+    // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+    this->tetra_centers_.resize(this->R_.size());
+    this->bigtet_ = SetPointTetras();
+
+    // MPI_Barrier(MPI_COMM_WORLD);
+
+    end = std::chrono::high_resolution_clock::now();
+    if(rank == 0)
+    {
+        std::cout << "Time for initial build: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
+    }
+
+    if(this->radiuses.size() < this->Norg_)
+    {
+        UniversalError eo("Voronoi3D:BuildPartiallyParallel: wrong size of radiuses array");
+        eo.addEntry("Rank", rank);
+        eo.addEntry("radiuses.size()", this->radiuses.size());
+        eo.addEntry("Norg_", this->Norg_);
+        throw eo;
+    }
+
+    START_TIMER_PREEMPTIVE("Tree construction");
+
+    this->UpdatePointsTree(activePoints);
     
     START_TIMER_PREEMPTIVE("Radiuses calculation");
     start = std::chrono::high_resolution_clock::now();
@@ -1529,6 +1526,322 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     // save the list of the real ghost points
     // this->FilterRealGhostPoints();
 }
+
+boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostInfo(const std::vector<rank_t> &duplicatedProcs, const std::vector<std::vector<size_t>> &duplicatedPoints, const std::vector<std::vector<size_t>> &Nghost, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &whereNow)
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    std::vector<std::vector<std::pair<rank_t, size_t>>> toSend(size);
+
+    for(size_t i = 0; i < duplicatedProcs.size(); i++)
+    {
+        rank_t _rank = duplicatedProcs[i];
+        const std::vector<size_t> &dupPoints = duplicatedPoints[i]; // points I sent to `_rank`
+        for(size_t j = 0; j < dupPoints.size(); j++)
+        {
+            size_t pointIdx = dupPoints[j];
+            auto it = whereNow.find(pointIdx);
+            assert(it != whereNow.end());
+            toSend[_rank].push_back(it->second);
+        }
+    }
+
+    std::vector<std::vector<std::pair<rank_t, size_t>>> received = MPI_Iexchange_all_to_all(toSend, MPI_COMM_WORLD);
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghostsInfo;
+    for(size_t i = 0; i < duplicatedProcs.size(); i++)
+    {
+        rank_t _rank = duplicatedProcs[i];
+        const std::vector<size_t> &NghostOfRank = Nghost[i];
+        const std::vector<std::pair<rank_t, size_t>> &receivedFromRank = received[_rank];
+        assert(NghostOfRank.size() == receivedFromRank.size());
+        for(size_t j = 0; j < NghostOfRank.size(); j++)
+        {
+            size_t oldIndex = NghostOfRank[j];
+            ghostsInfo.insert({oldIndex, receivedFromRank[j]});
+        }
+    }
+    return ghostsInfo;
+}
+
+boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetRemoteIndices(const std::vector<size_t> &selfIndex, const std::vector<rank_t> &sentProcs, const std::vector<std::vector<size_t>> &sentPoints)
+{    
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    std::vector<size_t> sentPointsNum(size, 0), recvPointsNum(size);
+    for(size_t i = 0; i < sentProcs.size(); i++)
+    {
+        rank_t _rank = sentProcs[i];
+        sentPointsNum[_rank] = sentPoints[i].size();
+    }
+    MPI_Alltoall(sentPointsNum.data(), 1, MPI_UNSIGNED_LONG_LONG, recvPointsNum.data(), 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
+
+    std::vector<size_t> newPointsOffsets(size,  0);
+    size_t currentOffset = selfIndex.size();
+    for(rank_t _rank = 0; _rank < size; _rank++)
+    {
+        if(_rank == rank)
+        {
+            newPointsOffsets[_rank] = 0;
+            continue;
+        }
+        newPointsOffsets[_rank] = currentOffset;
+        currentOffset += recvPointsNum[_rank];
+    }
+
+    std::vector<size_t> remoteOffsets(size);
+    MPI_Alltoall(newPointsOffsets.data(), 1, MPI_UNSIGNED_LONG_LONG, remoteOffsets.data(), 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
+
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> whereNow;
+
+    // first my points
+    for(size_t i = 0; i < selfIndex.size(); i++)
+    {
+        size_t previousIdx = selfIndex[i];
+        size_t newIdx = i;
+        whereNow[previousIdx] = std::make_pair(rank, newIdx);
+    }
+
+    // now other
+    for(size_t i = 0; i < sentProcs.size(); i++)
+    {
+        rank_t _rank = sentProcs[i];
+        const std::vector<size_t> &sentPointsOfRank = sentPoints[i];
+        for(size_t j = 0; j < sentPointsOfRank.size(); j++)
+        {
+            size_t previousIdx = sentPointsOfRank[j];
+            size_t newIdx = remoteOffsets[_rank] + j;
+            whereNow[previousIdx] = std::make_pair(_rank, newIdx);
+        }
+    }
+    return whereNow;
+}
+
+void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    this->pointsManager->setLoadBalancer(loadBalancer);
+
+    std::vector<Vector3D> previousPoints = this->allMyPoints;
+    std::vector<size_t> allIndices(previousPoints.size());
+    std::iota(allIndices.begin(), allIndices.end(), 0);
+    PointsExchangeResult exchangeResult = this->pointsManager->update(previousPoints, this->allPointsWeights, allIndices, this->radiuses, this->all_CM, false); // doesn't do rebalancing
+
+    this->allMyPoints = std::move(exchangeResult.newPoints);
+    this->radiuses = std::move(exchangeResult.newRadiuses);
+    this->all_CM = std::move(exchangeResult.newCMs);
+    this->sentprocs_ = std::move(exchangeResult.sentProcessors);
+    this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
+    this->self_index_ = std::move(exchangeResult.indicesToSelf);
+    this->allPointsWeights = std::move(exchangeResult.newWeights);
+
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> whereNow = GetRemoteIndices(this->self_index_, this->sentprocs_, this->sentpoints_); // previous point -> holder (rank + index)
+    assert(whereNow.size() == this->Norg_);
+    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghostsInfo = GetGhostInfo(this->duplicatedprocs_, this->duplicated_points_, this->Nghost_, whereNow); // previous ghost -> holder (rank + index)
+
+    std::vector<Vector3D> delaunayPoints = this->del_.points_;
+
+    std::vector<Vector3D> new_points;
+    this->indicesInAllMyPoints = Tessellation3D::AllPointsMap();
+    size_t numOfSelfPoints = this->self_index_.size();
+
+    // this loop determines the points list, and the matching indices of each point (in the points list) to the long points list
+    size_t allPointsSize = this->allMyPoints.size();
+    for(size_t pointIdx = 0; pointIdx < allPointsSize; pointIdx++)
+    {
+        if(exchangeResult.participatingIndices.at(pointIdx))
+        {
+            this->indicesInAllMyPoints[new_points.size()] = pointIdx;
+            new_points.push_back(this->allMyPoints[pointIdx]);
+        }
+    }
+    
+    // now find what ghosts should be sent
+    std::vector<std::vector<boost::container::flat_set<size_t>>> askToSend(size, std::vector<boost::container::flat_set<size_t>>(size)); // [sender][receiver][points...]
+    std::vector<std::vector<Vector3D>> mirrorsToSend(size);
+    std::vector<Vector3D> allMirrors;
+
+    size_t previousN = this->Norg_;
+    for(size_t i = 0; i < previousN; i++)
+    {
+        // looking for previous point `i`
+        const auto &[newOwner, newIndex] = whereNow.at(i);
+        const std::vector<size_t> &neighbors = this->GetNeighbors(i);
+        for(size_t neighbor : neighbors)
+        {
+            // looking for previous neighbor `neighbor`
+            if(neighbor < previousN)
+            {
+                // original point and neighbor are both local
+                const auto &[neighborNewOwner, neighborNewIndex] = whereNow.at(neighbor);
+                askToSend[neighborNewOwner][newOwner].insert(neighborNewIndex);
+            }
+            else
+            {
+                assert(neighbor >= previousN + 4); // 4 for the big tetra
+                // neighbor is either a ghost or a mirror
+                auto it = ghostsInfo.find(neighbor);
+                if(it != ghostsInfo.end())
+                {
+                    // neighbor is a ghost
+                    const auto &[neighborNewOwner, neighborNewIndex] = it->second;
+                    askToSend[neighborNewOwner][newOwner].insert(neighborNewIndex);
+                }
+                else
+                {
+                    // mirror
+                    mirrorsToSend[newOwner].push_back(delaunayPoints[neighbor]);
+                    allMirrors.push_back(delaunayPoints[neighbor]);
+                }
+            }
+        }
+    }
+
+    mirrorsToSend = std::vector<std::vector<Vector3D>>(size, allMirrors); // todo: remove
+
+    this->BuildInitialize(new_points.size());
+    std::vector<size_t> order;
+    if(not new_points.empty())
+    {
+        order = HilbertOrder3D(new_points);
+        std::pair<Vector3D, Vector3D> bounding_box = std::make_pair(new_points[0], new_points[0]);
+        for(const Vector3D &point : new_points)
+        {
+            bounding_box.first.x = std::min(bounding_box.first.x, point.x);
+            bounding_box.second.x = std::max(bounding_box.second.x, point.x);
+            bounding_box.first.y = std::min(bounding_box.first.y, point.y);
+            bounding_box.second.y = std::max(bounding_box.second.y, point.y);
+            bounding_box.first.z = std::min(bounding_box.first.z, point.z);
+            bounding_box.second.z = std::max(bounding_box.second.z, point.z);
+        }
+        
+        if(new_points.size() == 1)
+        {
+            bounding_box.second = this->ur_;
+            bounding_box.first = this->ll_;
+        }
+        this->del_.Build(new_points, bounding_box.second, bounding_box.first, order);
+    }
+    // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
+    this->R_.resize(this->del_.tetras_.size());
+    // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+    this->tetra_centers_.resize(this->R_.size());
+    this->bigtet_ = SetPointTetras();
+
+    this->UpdatePointsTree(new_points);
+    this->UpdateRadiuses(new_points);
+    this->UpdateRangeFinder();
+
+    size_t countMirrors = 0;
+    for(const std::vector<Vector3D> &incomingMirrors : MPI_Iexchange_all_to_all(mirrorsToSend, MPI_COMM_WORLD))
+    {
+        if(this->Norg_ > 0)
+        {
+            this->del_.BuildExtra(incomingMirrors);
+            countMirrors += incomingMirrors.size();
+        }
+    }
+
+    std::vector<std::vector<std::vector<size_t>>> askToSendVectors(size, std::vector<std::vector<size_t>>(size));
+    for(rank_t _rank = 0; _rank < size; _rank++)
+    {
+        for(rank_t _rank2 = 0; _rank2 < size; _rank2++)
+        {
+            askToSendVectors[_rank][_rank2] = std::vector<size_t>(askToSend[_rank][_rank2].begin(), askToSend[_rank][_rank2].end());
+        }
+    }
+    std::vector<std::vector<std::vector<size_t>>> whatIshouldSend = MPI_Iexchange_all_to_all(askToSendVectors, MPI_COMM_WORLD);
+    std::vector<std::vector<Vector3D>> whatIShouldSendToRanks(size);
+
+    std::vector<rank_t> newDuplicatedProcs;
+    std::vector<std::vector<size_t>> newDuplicatedPoints;
+    std::vector<boost::container::flat_set<size_t>> sentToProcessors(size);
+
+    for(const std::vector<std::vector<size_t>> &sendInfo : whatIshouldSend)
+    {
+        for(rank_t _rank = 0; _rank < size; _rank++)
+        {
+            if(sendInfo[_rank].empty())
+            {
+                continue;
+            }
+            if(_rank == rank)
+            {
+                continue;
+            }
+            size_t idx = std::distance(newDuplicatedProcs.begin(), std::find(newDuplicatedProcs.begin(), newDuplicatedProcs.end(), _rank));
+            if(idx == newDuplicatedProcs.size())
+            {
+                newDuplicatedProcs.push_back(_rank);
+                newDuplicatedPoints.emplace_back();
+            }
+            std::vector<size_t> &newDuplicatedPointsOfRank = newDuplicatedPoints[idx];
+
+            for(size_t pointIdx : sendInfo[_rank])
+            {
+                if(sentToProcessors[_rank].find(pointIdx) == sentToProcessors[_rank].end())
+                {
+                    sentToProcessors[_rank].insert(pointIdx);
+                    whatIShouldSendToRanks[_rank].push_back(new_points[pointIdx]);
+                    newDuplicatedPointsOfRank.push_back(pointIdx);
+                }
+            }
+        }
+    }
+
+    // todo: first build delaunay
+    size_t currentIndex = this->del_.points_.size();
+    std::vector<Vector3D> buildExtra;
+
+    std::vector<std::vector<size_t>> newNghost(newDuplicatedProcs.size());
+
+    std::vector<std::vector<Vector3D>> receivedByRanks = MPI_Iexchange_all_to_all(whatIShouldSendToRanks, MPI_COMM_WORLD);
+    for(rank_t _rank = 0; _rank < size; _rank++)
+    {
+        if(receivedByRanks[_rank].empty())
+        {
+            continue;
+        }
+        assert(_rank != rank); // not me
+        size_t idx = std::distance(newDuplicatedProcs.begin(), std::find(newDuplicatedProcs.begin(), newDuplicatedProcs.end(), _rank));
+        assert(idx != newDuplicatedProcs.size());
+        std::vector<size_t> &NghostOfRank = newNghost[idx];
+
+        for(const Vector3D &point : receivedByRanks[_rank])
+        {
+            buildExtra.push_back(point);
+            NghostOfRank.push_back(currentIndex);
+            currentIndex++;
+        }
+    }
+
+    this->del_.BuildExtra(buildExtra);
+    this->R_.resize(this->del_.tetras_.size());
+    std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+    this->tetra_centers_.resize(this->R_.size());
+    this->bigtet_ = this->SetPointTetras();
+
+    this->duplicatedprocs_ = std::move(newDuplicatedProcs);
+    this->duplicated_points_ = std::move(newDuplicatedPoints);
+    this->Nghost_ = std::move(newNghost);
+
+    CM_.resize(del_.points_.size());
+    volume_.resize(Norg_);
+
+    if(not new_points.empty())
+    {
+        // Create Voronoi
+        this->BuildVoronoi(order);
+    }
+
+    this->UpdateCMs();
+}
+
 #endif // RICH_MPI
 
 /**
@@ -1827,16 +2140,13 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
         // large points queries
         {
             start1 = std::chrono::high_resolution_clock::now();
-            QueryBatchInfo<BigRangeQueryData, _3DPoint> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
+            QueryBatchInfo<BigRangeQueryData, Vector3D> bigBatchInfo = bigRangeAgent.runBatch(bigQueries);
             newPoints.reserve(bigBatchInfo.result.size());
-            for(const QueryInfo<BigRangeQueryData, _3DPoint> &ans : bigBatchInfo.queriesAnswers)
+            for(const QueryInfo<BigRangeQueryData, Vector3D> &ans : bigBatchInfo.queriesAnswers)
             {
                 numOfResultsForBigPoints[ans.data.pointIdx] += ans.finalResults.size();
             }
-            for(const _3DPoint &_point : bigBatchInfo.result)
-            {
-                newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
-            }
+            newPoints.insert(newPoints.end(), bigBatchInfo.result.begin(), bigBatchInfo.result.end());
             this->SetGhostArray(bigRangeAgent.getRecvProc(), bigRangeAgent.getRecvPoints());
             this->del_.BuildExtra(newPoints);
             end1 = std::chrono::high_resolution_clock::now();
@@ -1844,17 +2154,14 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
         // small points queries
         {        
             start2 = std::chrono::high_resolution_clock::now();
-            QueryBatchInfo<SmallRangeQueryData, _3DPoint> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
-            for(const QueryInfo<SmallRangeQueryData, _3DPoint> &ans : smallBatchInfo.queriesAnswers)
+            QueryBatchInfo<SmallRangeQueryData, Vector3D> smallBatchInfo = smallRangeAgent.runBatch(smallQueries);
+            for(const QueryInfo<SmallRangeQueryData, Vector3D> &ans : smallBatchInfo.queriesAnswers)
             {
                 numOfResultsForSmallPoints[ans.data.pointIdx] += ans.finalResults.size();
             }
             newPoints.clear();
             newPoints.reserve(smallBatchInfo.result.size());
-            for(const _3DPoint &_point : smallBatchInfo.result)
-            {
-                newPoints.push_back(Vector3D(_point.x, _point.y, _point.z));
-            }
+            newPoints.insert(newPoints.end(), smallBatchInfo.result.begin(), smallBatchInfo.result.end());
             this->SetGhostArray(smallRangeAgent.getRecvProc(), smallRangeAgent.getRecvPoints());
             this->del_.BuildExtra(newPoints);
             end2 = std::chrono::high_resolution_clock::now();
@@ -1978,14 +2285,31 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     }
 
     #ifdef RICH_MPI
-        auto [ghostPointsFromLastBuild, alreadySentProc, alreadySentPoints, alreadyRecvProcs, alreadyRecvPoints] = this->InitialGhostPointsExchange();
-        this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints);
+        auto [ghostPointsFromLastBuild, alreadySentPoints1, alreadyRecvPoints1] = this->InitialGhostPointsExchange();
+        std::vector<int> alreadySentProcs, alreadyRecvProcs;
+        std::vector<std::vector<size_t>> alreadySentPoints2, alreadyRecvPoints2;
+        for(rank_t _rank = 0; _rank < size; _rank++)
+        {
+            if(alreadySentPoints1[_rank].size() > 0)
+            {
+                alreadySentProcs.push_back(_rank);
+                // move alreadySentPoints1[_rank]
+                alreadySentPoints2.emplace_back(std::move(alreadySentPoints1[_rank]));
+            }
+            if(alreadyRecvPoints1[_rank].size() > 0)
+            {
+                alreadyRecvProcs.push_back(_rank);
+                // move alreadyRecvPoints1[_rank]
+                alreadyRecvPoints2.emplace_back(std::move(alreadyRecvPoints1[_rank]));
+            }
+        }
+        this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints2);
         this->del_.BuildExtra(ghostPointsFromLastBuild);
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
-        std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+        // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
-        this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
-        SentPointsContainer pointsContainer(alreadySentProc, alreadySentPoints);
+        this->bigtet_ = SetPointTetras();
+        SentPointsContainer pointsContainer(alreadySentProcs, alreadySentPoints2);
     #endif // RICH_MPI
     
     #ifdef RICH_MPI
@@ -2098,9 +2422,9 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         auto start3 = std::chrono::high_resolution_clock::now();
 
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
-        std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+        // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
-        this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+        this->bigtet_ = SetPointTetras();
 
         auto end3 = std::chrono::high_resolution_clock::now();
         
@@ -2140,6 +2464,8 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             break;
         }
     }
+
+    std::cout << "Rank " << rank << ", total number of mirrored points: " << allMirrored.size() << std::endl;
 
     auto end = std::chrono::high_resolution_clock::now();
     if(rank == 0)
@@ -2302,9 +2628,9 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     }
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
+    // std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
-    bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, this->del_.changed_tetras_, del_.empty_tetras_);
+    bigtet_ = SetPointTetras();
 
     CM_.resize(Norg_);
     volume_.resize(Norg_, 0);
@@ -2334,10 +2660,10 @@ void Voronoi3D::BuildDebug(int rank)
     points = read_vec3d("points4_" + std::to_string(rank) + ".bin");
     del_.BuildExtra(points);
 
-    bigtet_ = SetPointTetras(PointTetras_, Norg_, del_.tetras_, this->del_.changed_tetras_, del_.empty_tetras_);
+    bigtet_ = SetPointTetras();
 
     R_.resize(del_.tetras_.size());
-    std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
+    // std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
 
     CM_.resize(del_.points_.size());
@@ -2430,9 +2756,9 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     }        
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
     this->R_.resize(this->del_.tetras_.size());
-    std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+    // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
-    this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+    this->bigtet_ = SetPointTetras();
     
     end = std::chrono::high_resolution_clock::now();
     std::cout << "Time for initial build: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;

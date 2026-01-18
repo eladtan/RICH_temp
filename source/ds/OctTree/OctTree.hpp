@@ -428,7 +428,7 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBo
     const U &BB_center = (boundingBox.getLL() + boundingBox.getUR()) * 0.5;
     while(current != nullptr)
     {
-        if(boundingBox.contained(current->boundingBox))
+        if(boundingBox.contains(current->boundingBox))
         {
             return current;
         }

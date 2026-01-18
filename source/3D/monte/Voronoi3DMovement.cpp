@@ -1,4 +1,5 @@
 #include "Voronoi3DMovement.hpp"
+#include "3D/environment/EnvironmentAgent.h"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 
 #define RADIUSES_FACTOR 2
@@ -145,6 +146,48 @@ void UpdateNewCellsAfterExchange(const Tessellation3D &tess, std::vector<Particl
 
 #endif // RICH_MPI
 
+#ifdef RICH_MPI
+void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D> &particles)
+{
+    rank_t rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    const EnvironmentAgent *envAgent = tess.GetEnvironmentAgent();
+    std::vector<Particle3D> newParticles;
+    std::vector<std::vector<Particle3D>> sendValues(size);
+
+    size_t sentCounter = 0;
+    for(Particle3D &p : particles)
+    {
+        rank_t approxOwner = envAgent->getOwner(p.location);
+        if(approxOwner == rank)
+        {
+            newParticles.push_back(p);
+        }
+        else
+        {
+            sendValues[approxOwner].push_back(p);
+            sentCounter++;
+        }
+    }
+    
+    std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all(sendValues, MPI_COMM_WORLD);
+    for(rank_t _rank = 0; _rank < size; _rank++)
+    {
+        const std::vector<Particle3D> &particlesFromRank = receiveValues[_rank];
+        newParticles.insert(newParticles.end(), particlesFromRank.cbegin(), particlesFromRank.cend());
+    }
+    particles = std::move(newParticles);
+
+    MPI_Allreduce(MPI_IN_PLACE, &sentCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if(rank == 0)
+    {
+        std::cout << "First inaccurate movements sent for " << sentCounter << " particles" << std::endl;
+    }
+}
+#endif // RICH_MPI
+
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs)
 {
     bool verbose = true;
@@ -173,6 +216,8 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 
         InternalMovements(tess, particles, cellIDs);
 
+        FirstInaccurateMovements(tess, particles);
+
         START_TIMER_PREEMPTIVE("Local Trees Construction");
         
         Vector3D ll(std::numeric_limits<double>::max());
@@ -194,10 +239,12 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         }
 
         auto [tess_ll, tess_ur] = tess.GetBoxCoordinates();
+        tess_ll -= EPSILON * (tess_ur - tess_ll);
+        tess_ur += EPSILON * (tess_ur - tess_ll);
         BoundingBox<Vector3D> bb(tess_ll, tess_ur);
         BoundingBox<Vector3D> subBox(ll, ur);
 
-        if(not bb.contained(subBox))
+        if(not bb.contains(subBox))
         {
             UniversalError eo("UpdateNewCells: Sub-box is not contained within the main bounding box");
             eo.addEntry("Voronoi box", bb);
@@ -213,13 +260,11 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         }
 
         OctTree<IndexedVector3D> octTree(IndexedVector3D(ll, std::numeric_limits<size_t>::max()), IndexedVector3D(ur, std::numeric_limits<size_t>::max()));
-        OctTree<IndexedVector3D> octTree2(IndexedVector3D(tess_ll, std::numeric_limits<size_t>::max()), IndexedVector3D(tess_ur, std::numeric_limits<size_t>::max()));
 
         for(size_t i = 0; i < N; i++)
         {
             const Vector3D &point = tess.GetMeshPoint(i);
             octTree.insert(IndexedVector3D(point, i));
-            octTree2.insert(IndexedVector3D(point, i));
         }
         assert(octTree.getSize() == N);
         
@@ -243,7 +288,6 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             avgCellSize = abs(tess_ur - tess_ll);
         }
         double initialRadius = avgCellSize;
-
         std::vector<double> radiuses(particles.size(), initialRadius);
         std::vector<boost::container::flat_set<rank_t>> ranksTested(particles.size());
 
@@ -293,6 +337,13 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             {
                 particlesLeft.insert(i);
             }
+        }
+
+        size_t numParticlesLeft = particlesLeft.size();
+        MPI_Allreduce(MPI_IN_PLACE, &numParticlesLeft, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        if(verbose and rank == 0)
+        {
+            std::cout << "Number of particles left to determination: " << numParticlesLeft << std::endl;
         }
 
         std::vector<std::vector<Particle3D>> sendValues(size);

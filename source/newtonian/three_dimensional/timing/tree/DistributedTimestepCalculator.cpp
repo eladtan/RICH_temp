@@ -130,13 +130,13 @@ std::vector<std::vector<typename DistributedTimestepCalculator::NodeData>> Distr
         // {
         //     const typename DistributedOctTree<NodeData, 1>::DistributedOctTreeNode *globalNode = distributedTree.getOctTree()->getNodeByDirections(direction.data());
         //     const typename TimingTree<Vector3D>::Node *node = this->timingTree->getOctTree()->getNodeByDirections(direction.data());
-        //     if(not globalNode->boundingBox.contained(node->boundingBox))
+        //     if(not globalNode->boundingBox.contains(node->boundingBox))
         //     {
         //         std::cout << "Rank is " << this->rank << " , its directions are " << direction << ", in global tree that's node of BB " << globalNode->boundingBox << ", and in local " << node->boundingBox << std::endl;
         //     }
         //     else
         //     {
-        //         if(globalNode->parent->boundingBox.contained(node->boundingBox))
+        //         if(globalNode->parent->boundingBox.contains(node->boundingBox))
         //         {
         //             std::cout << "Rank is " << this->rank << " , its directions are " << direction << ", in global tree that's node of BB " << globalNode->boundingBox << ", and in local PARENT " << node->parent->boundingBox << std::endl;
         //         }

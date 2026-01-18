@@ -2,13 +2,13 @@
 
 #include "MonteCarloManager3D.hpp"
 
-MonteCarloManager3D::MonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
+RDMAMonteCarloManager3D::RDMAMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
                                          const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
                                          const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
                                          size_t bufferSizes, const MPI_Comm &comm): MonteCarloManager<Vector3D, Tessellation3D>(grid, physics, populationControl, boundaryCondition, bufferSizes, comm)
 {}
 
-std::vector<typename MonteCarloManager3D::MCParticle> MonteCarloManager3D::step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt)
+std::vector<typename RDMAMonteCarloManager3D::MCParticle> RDMAMonteCarloManager3D::step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt)
 {
     std::vector<MCParticle> newParticles = MonteCarloManager<Vector3D, Tessellation3D>::step(particleList, fullDt);
     for(MCParticle &p : newParticles)

@@ -12,6 +12,8 @@
 #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
 
+#define SIGN(x) ((x > 0) - (x < 0))
+
 //! \brief 2D Mathematical vector
 class Vector2D
           #ifdef RICH_MPI

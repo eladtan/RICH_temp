@@ -1,6 +1,10 @@
 external_libraries
 library_*
 runs/temp_*
+*.vtu
+*.pvtu
+*.out
+*.err
 build
 *.pyc
 __pycache__
@@ -28,3 +32,8 @@ validation*/*
 result_dir*
 ./output
 *.log
+*.a
+*.la
+*.so
+runs
+.cache

@@ -3,6 +3,9 @@
 
 #ifdef RICH_MPI
 
+#include <type_traits> // for std::is_convertible
+#include <vector> // for std::vector
+
 using rank_t = int;
 
 template<typename Test, template<typename...> class Ref>
@@ -10,9 +13,6 @@ struct is_specialization : std::false_type {};
 
 template<template<typename...> class Ref, typename... Args>
 struct is_specialization<Ref<Args...>, Ref>: std::true_type {};
-
-template<typename T>
-using is_vector = is_specialization<T, std::vector>;
 
 #endif // RICH_MPI
 

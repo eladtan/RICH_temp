@@ -12,44 +12,15 @@ namespace SmartTimer
 
     std::shared_ptr<Node> Node::root = Node::MakeRoot();
     bool TimerCreator::globalSilent = false;
+    bool TimerCreator::disable = false;
 
     std::vector<std::string> GetStack(void)
     {
-        // constexpr int MAX_FRAMES = 128;
-        // void* addrs[MAX_FRAMES];
-        // int n = ::backtrace(addrs, MAX_FRAMES);
-        // char** syms = ::backtrace_symbols(addrs, n);
-        // std::vector<std::string> out;
-
-        // out.reserve(n);
-        // for (int i = 0; i < n; ++i) {
-        //     std::string name = syms[i];
-
-        //     // Try to extract and demangle "(mangled+offset)" part
-        //     auto lpar = name.find('(');
-        //     auto plus = name.find('+', lpar == std::string::npos ? 0 : lpar);
-        //     if (lpar != std::string::npos && plus != std::string::npos && plus > lpar + 1) {
-        //         std::string mangled = name.substr(lpar + 1, plus - (lpar + 1));
-        //         int status = 0;
-        //         if (char* dem = abi::__cxa_demangle(mangled.c_str(), nullptr, nullptr, &status)) {
-        //             name = dem;
-        //             std::free(dem);
-        //         }
-        //     }
-        //     name = std::string(name.cbegin(), name.cbegin() + name.find("("));
-        //     out.emplace_back(std::move(name));
-        // }
-        // std::free(syms);
-
-        // std::reverse(out.begin(), out.end());
-        // out = std::vector<std::string>(out.begin() + 3, out.end() - 4); // drop
-        // return out;
-
         std::vector<std::string> out;
         const boost::stacktrace::stacktrace st;
         out.reserve(st.size());
         // Bottom to top (so "main" first)
-        for (int i = static_cast<int>(st.size()) - 4; i >= 0; --i) 
+        for(int i = static_cast<int>(st.size()) - 4; i >= 0; --i) 
         {
             // name() is usually enough; to_string(st[i]) can include file:line (needs -g)
             std::string name = st[i].name();
@@ -172,21 +143,28 @@ namespace SmartTimer
 
     TimerCreator::TimerCreator(const std::string &name, bool distinct, bool preempt)
     {
-        this->silent = TimerCreator::globalSilent;
-        if(not this->silent)
+        if(not TimerCreator::disable)
         {
-            this->node = GetNode(name, distinct, preempt);
-            std::shared_ptr<Node> node = this->node.lock();
-            assert(node->timer != nullptr);
-            node->creator = this;
-            node->timer->done = false;
-            node->timer->start = std::chrono::high_resolution_clock::now();
+            this->silent = TimerCreator::globalSilent;
+            if(not this->silent)
+            {
+                this->node = GetNode(name, distinct, preempt);
+                std::shared_ptr<Node> node = this->node.lock();
+                assert(node->timer != nullptr);
+                node->creator = this;
+                node->timer->done = false;
+                node->timer->start = std::chrono::high_resolution_clock::now();
+            }
+            this->destroyed = false;
         }
-        this->destroyed = false;
     }
 
     void TimerCreator::Destroy(void)
     {
+        if(TimerCreator::disable)
+        {
+            return;
+        }
         if(this->destroyed)
         {
             return;
@@ -224,17 +202,24 @@ namespace SmartTimer
 
     Timer::Timer()
     {
-        #ifdef RICH_MPI
+        if(not TimerCreator::disable)
+        {
+            #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
-        #endif // RICH_MPI
-        this->done = false;
-        this->start = std::chrono::high_resolution_clock::now();
-        this->time = 0;
-        this->totalTime = 0;
+            #endif // RICH_MPI
+            this->done = false;
+            this->start = std::chrono::high_resolution_clock::now();
+            this->time = 0;
+            this->totalTime = 0;
+        }
     }
 
     void Timer::Destroy(void)
     {
+        if(TimerCreator::disable)
+        {
+            return;
+        }
         if(std::uncaught_exceptions())
         {
             return;
@@ -254,7 +239,6 @@ namespace SmartTimer
             this->done = true;
         }
     }
-
 
     void Node::PrintHelper(std::ostream &stream, const std::vector<std::pair<size_t, std::string>> &indentations) const
     {
@@ -299,6 +283,11 @@ namespace SmartTimer
 
     void PrintTimes(void)
     {
+        if(TimerCreator::disable)
+        {
+            return;
+        }
+
         Node::root->PrintHelper(std::cout, {{0, ""}});
     }
 }

@@ -3,6 +3,8 @@
 
 #ifdef RICH_MPI
 
+#include <boost/container/flat_set.hpp>
+
 template<typename QueryData>
 class TalkAgent
 {

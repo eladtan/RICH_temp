@@ -1,7 +1,12 @@
 #ifndef QUERY_DATA_HPP
 #define QUERY_DATA_HPP
 
+#include <cstdint>
+#include <vector>
+
+#ifdef RICH_MPI
 #include "mpi/serialize/Serializer.hpp"
+#endif // RICH_MPI
 
 template<typename QueryData>
 struct SubQueryData
@@ -15,10 +20,12 @@ struct SubQueryData
     SubQueryData(const QueryData &data, size_t parent_id): data(data), parent_id(parent_id)
     {};
 
+    virtual ~SubQueryData() = default;
+
     SubQueryData(): data(QueryData()), parent_id(0){};
 
     #ifdef RICH_MPI
-        force_inline size_t load(const Serializer *serializer, size_t byteOffset) override
+        virtual size_t load(const Serializer *serializer, size_t byteOffset) override
         {
             size_t bytes = 0;
             bytes += serializer->extract(this->parent_id, byteOffset);
@@ -26,7 +33,7 @@ struct SubQueryData
             return bytes;
         }
 
-        force_inline size_t dump(Serializer *serializer) const override
+        virtual size_t dump(Serializer *serializer) const override
         {
             size_t bytes = 0;
             bytes += serializer->insert(this->parent_id);

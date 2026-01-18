@@ -131,7 +131,7 @@ public:
      * returns whether the other bounding box is contained in me.
     */
     template<typename U>
-    inline bool contained(const BoundingBox<U> &other) const
+    inline bool contains(const BoundingBox<U> &other) const
     {
         // need: other.ll[i] >= this->ll[i] and other.ur[i] <= this->ur[i] for all i
         for(int i = 0; i < DIM; i++)

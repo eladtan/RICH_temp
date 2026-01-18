@@ -77,7 +77,6 @@ typedef struct RankedIndexedVector3D
 
     inline size_t getIndex() const{return this->index;};
     inline rank_t getRank() const{return this->rank;};
-    inline _3DPoint getData() const{return _3DPoint(values[0], values[1], values[2]);};
     inline Vector3D getVector() const{return Vector3D(values[0], values[1], values[2]);};
 
     #ifdef RICH_MPI

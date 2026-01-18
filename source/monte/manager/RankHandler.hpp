@@ -276,6 +276,8 @@ void RankHandler<T, Grid>::Destroy(void)
         MPI_Win_free(&this->th_win);
         MPI_Win_free(&this->av_length_win);
         MPI_Win_free(&this->th_length_win);
+        MPI_Group_free(&this->group_world);
+        MPI_Group_free(&this->group_internal);
         DistributedMutex *mutex1 = (this->rank_internal == 0)? this->localTHMutex.get() : this->remoteTHMutex.get();
         DistributedMutex *mutex2 = (this->rank_internal == 1)? this->localTHMutex.get() : this->remoteTHMutex.get();
         mutex1->Destroy();
@@ -710,6 +712,7 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             eo.addEntry("Buffersize", this->buffsize);
             throw eo;
         }
+        MPI_Info_free(&info);
 
         if(this->buffsize >= oldBuffSize)
         {
@@ -772,12 +775,11 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             this->ValidateArraysContents();
         #endif // ADVANCED_MONTECARLO_DEBUG
         // std::cout << "Rank " << this->rank_world << " AV old window: " << oldwin << ", new window: " << new_av_win << " (peer size: " << this->peer_buffsize << ")" << std::endl;
+        
         MPI_Barrier(this->comm); // unnecessary because of the sendrecv above
     }
     else
     {        
-        this->buffsize = newBuffSize;
-
         MCParticle *new_particles = new MCParticle[this->buffsize];
         index_t *new_av = new typename RankHandler::index_t[this->buffsize];
         index_t *new_th = new typename RankHandler::index_t[this->buffsize];
@@ -887,7 +889,7 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         size_t requestReallocationTimes = 0;
         while(availLength < Np)
         {
-            this->requestedFactor = static_cast<double>((Np + availLength)) / this->peer_buffsize + 1;
+            this->requestedFactor = static_cast<double>((Np + availLength)) / this->peer_buffsize * 1.5; // request 50% more than needed
             this->remoteTHMutex->Unlock();
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
             this->remoteTHMutex->Lock();
@@ -898,10 +900,10 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         auto end = std::chrono::high_resolution_clock::now();
         this->reallocationTime += std::chrono::duration<double>(end - start).count();
 
-        if(requestReallocationTimes > 1)
-        {
-            std::cout << "Rank " << this->rank_world << " and " << this->peer_rank_world << ", requested allocations " << requestReallocationTimes << " times before being able to transfer " << Np << " particles" << std::endl;
-        }
+        // if(requestReallocationTimes > 1)
+        // {
+        //     std::cout << "Rank " << this->rank_world << " and " << this->peer_rank_world << ", requested allocations " << requestReallocationTimes << " times before being able to transfer " << Np << " particles" << std::endl;
+        // }
         // get particle empty index from avail list
         std::vector<index_t> availIndices(Np);
 

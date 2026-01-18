@@ -224,11 +224,19 @@ void Delaunay3D::flip23(std::size_t tetra0, std::size_t tetra1, std::size_t loca
   tetras_[tetra0].newTetra = true;
   tetras_[tetra1].newTetra = true;
   newtet_.newTetra = true;
+  newTetras_.push_back(tetra0);
+  newTetras_.push_back(tetra1);
 
   if (used_empty)
+  {
     tetras_[Nloc] = std::move(newtet_);
+    newTetras_.push_back(Nloc);
+  }
   else
+  {
+    newTetras_.push_back(tetras_.size());
     tetras_.emplace_back(newtet_);
+  }
 
   if (location0 % 2 == 0)
     {
@@ -527,11 +535,14 @@ void Delaunay3D::flip32(std::size_t tetra0, std::size_t tetra1, std::size_t loca
     }
   tetras_[tetra1] = newtet_;
 
+
   // mark tetras as new (need to be checked)
   tetras_[tetra0].checkBig = true;
   tetras_[tetra1].checkBig = true;
   tetras_[tetra0].newTetra = true;
   tetras_[tetra1].newTetra = true;
+  newTetras_.push_back(tetra0);
+  newTetras_.push_back(tetra1);
   
   to_check_.push_back(tetra0);
   to_check_.push_back(tetra1);
@@ -965,7 +976,7 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
   // mark tetras as new (need to be checked)
   toadd.checkBig = true;
   toadd.newTetra = true;
-  
+    
   if (toadd.neighbors[2] != outside_neighbor_)
     {
       size_t temploc = toadd.neighbors[2];
@@ -974,9 +985,15 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
       tetras_[toadd.neighbors[2]].neighbors[loctemp] = Nloc[0];
     }
   if (!cleared_empty)
+  {
+    newTetras_.push_back(tetras_.size());
     tetras_.push_back(toadd);
+  }
   else
+  {
+    newTetras_.push_back(Nloc[0]);
     tetras_[Nloc[0]] = toadd;
+  }
 
   toadd.neighbors[0] = Nloc[0];
   toadd.neighbors[1] = Nloc[2];
@@ -987,15 +1004,27 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
   toadd.points[2] = tetras_[tetra].points[3];
   toadd.points[3] = point;
   if (toadd.neighbors[3] != outside_neighbor_)
-    {
-      size_t loctemp=0;
-      GetOppositePoint(tetras_[toadd.neighbors[3]], tetra, loctemp);
-      tetras_[toadd.neighbors[3]].neighbors[loctemp] = Nloc[1];
-    }
+  {
+    size_t loctemp=0;
+    GetOppositePoint(tetras_[toadd.neighbors[3]], tetra, loctemp);
+    tetras_[toadd.neighbors[3]].neighbors[loctemp] = Nloc[1];
+  }
   if (!cleared_empty)
+  {
+    if(tetras_[tetra].newTetra)
+    {
+      newTetras_.push_back(tetras_.size());
+    }
     tetras_.push_back(toadd);
+  }
   else
+  {
+    if(tetras_[tetra].newTetra)
+    {
+      newTetras_.push_back(Nloc[1]);
+    }
     tetras_[Nloc[1]] = toadd;
+  }
 
   toadd.neighbors[0] = Nloc[0];
   toadd.neighbors[1] = tetra;
@@ -1012,9 +1041,21 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
       tetras_[toadd.neighbors[3]].neighbors[loctemp] = Nloc[2];
     }
   if (!cleared_empty)
+  {
+    if(tetras_[tetra].newTetra)
+    {
+      newTetras_.push_back(tetras_.size());
+    }
     tetras_.push_back(toadd);
+  }
   else
+  {
+    if(tetras_[tetra].newTetra)
+    {
+      newTetras_.push_back(Nloc[2]);
+    }
     tetras_[Nloc[2]] = toadd;
+  }
 
   if(not tetras_[tetra].newTetra)
   {
@@ -1029,6 +1070,7 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
   // mark tetras as new (need to be checked)
   tetras_[tetra].checkBig = true;
   tetras_[tetra].newTetra = true;
+  newTetras_.push_back(tetra);
 
   to_check_.push_back(tetra);
   to_check_.push_back(Nloc[0]);

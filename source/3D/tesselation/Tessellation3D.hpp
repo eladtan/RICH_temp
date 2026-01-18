@@ -64,23 +64,23 @@ public:
 
   virtual std::shared_ptr<LoadBalancer> GetLoadBalancer(void) = 0;
 
-  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
+  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) = 0;
 
-  inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false)
+  inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false)
   {
-    this->BuildPartiallyParallel(allPoints, std::vector<double>(allPoints.size(), 1.0), indicesToBuild, suppressRebalancing);
+    this->BuildPartiallyParallel(allPoints, std::vector<double>(allPoints.size(), 1.0), indicesToBuild, suppressRebalancing, suppressExchange);
   }
 
-  virtual void BuildParallel(const std::vector<Vector3D> &points, const std::vector<double> &weights, bool suppressRebalancing = false)
+  virtual void BuildParallel(const std::vector<Vector3D> &points, const std::vector<double> &weights, bool suppressRebalancing = false, bool suppressExchange = false)
   {
       std::vector<size_t> indicesToBuild(points.size());
       std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
-      this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing);
+      this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing, suppressExchange);
   }
 
-  inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false, bool suppressExchange = false)
   {
-      this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing);
+      this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing, suppressExchange);
   }
 
   virtual const std::vector<double> &GetPointsBuildWeights() const = 0;

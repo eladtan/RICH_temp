@@ -52,6 +52,8 @@ ORIG_DIR="$(pwd)"
 BUILD_DIR="$ORIG_DIR/build/$CONFIG"
 CMD_FILE="$BUILD_DIR/.build_cmd"
 DEBUG_FILES_FILE="$BUILD_DIR/.debug_files"
+SOURCE_FILES_FILE="$BUILD_DIR/.source_files"
+CMAKE_MTIMES_FILE="$BUILD_DIR/.cmake_mtimes"
 
 MAKE_OUT="$BUILD_DIR/${CONFIG}_build.out"
 MAKE_ERR="$BUILD_DIR/${CONFIG}_build.err"
@@ -102,16 +104,69 @@ fi
 if [[ $MIXED_DEBUG_FILES ]]; then
     cp "$MIXED_DEBUG_FILES" "$DEBUG_FILES_FILE"
 fi
+
+# ==================== Track Source Files (detect add/remove) ====================
+RERUN_CMAKE=0
+
+# Generate current list of source files (sorted for consistent comparison)
+CURRENT_SOURCE_FILES=$(find "$ORIG_DIR/source" "$ORIG_DIR/runs/$TEST_NAME" \
+    -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.hpp" -o -name "*.h" \) \
+    2>/dev/null | sort)
+
+if [[ -f "$SOURCE_FILES_FILE" ]]; then
+    OLD_SOURCE_FILES=$(<"$SOURCE_FILES_FILE")
+    if [[ "$OLD_SOURCE_FILES" != "$CURRENT_SOURCE_FILES" ]]; then
+        echo -e "${PURPLE}Source files changed (added/removed). Will re-run CMake...${NC}"
+        RERUN_CMAKE=1
+    fi
+else
+    # First build - need to run cmake anyway
+    RERUN_CMAKE=1
+fi
+
+# ==================== Track CMake Files (detect modifications) ====================
+# Dynamically find all CMake files to track
+mapfile -t CMAKE_FILES < <(find "$ORIG_DIR/source" "$ORIG_DIR/config" \
+    -type f \( -name "CMakeLists.txt" -o -name "*.cmake" \) \
+    2>/dev/null | sort)
+
+# Generate current mtimes for cmake files (fix: avoid having a trailing newline difference)
+CURRENT_CMAKE_MTIMES=""
+for cmake_file in "${CMAKE_FILES[@]}"; do
+    if [[ -f "$cmake_file" ]]; then
+        mtime=$(stat -c %Y "$cmake_file" 2>/dev/null || stat -f %m "$cmake_file" 2>/dev/null)
+        CURRENT_CMAKE_MTIMES+="$cmake_file:$mtime
+"
+    fi
+done
+
+# Strip trailing newlines (important: both old and current must be normalized)
+strip_trailing_newlines() {
+    sed ':a;N;$!ba;s/\n*$//'
+}
+if [[ -f "$CMAKE_MTIMES_FILE" ]]; then
+    OLD_CMAKE_MTIMES=$(<"$CMAKE_MTIMES_FILE")
+    # strip trailing newlines before comparing!
+    if [[ "$(echo "$OLD_CMAKE_MTIMES" | strip_trailing_newlines)" != "$(echo "$CURRENT_CMAKE_MTIMES" | strip_trailing_newlines)" ]]; then
+        echo -e "${PURPLE}CMake files modified. Will re-run CMake...${NC}"
+        RERUN_CMAKE=1
+    fi
+fi
+
 # ==================== Run CMake if needed ====================
-if [[ ! -f Makefile ]]; then
+if [[ ! -f Makefile || $RERUN_CMAKE -eq 1 ]]; then
     echo -e "${ORANGE}Running CMake...${NC}"
     cmake -S "$ORIG_DIR/source" -DCONFIG="$CONFIG" -DTEST_DIR="$TEST_NAME" $CMAKE_FLAGS > "$CMAKE_OUT" 2> "$CMAKE_ERR"
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}CMake failed. See $CMAKE_ERR${NC}"
         exit 1
     fi
+    # Save current source files list and cmake mtimes after successful cmake
+    echo "$CURRENT_SOURCE_FILES" > "$SOURCE_FILES_FILE"
+    # Avoid a trailing newline to keep comparison precise
+    echo -n "$CURRENT_CMAKE_MTIMES" | strip_trailing_newlines > "$CMAKE_MTIMES_FILE"
 else
-    echo -e "${BLUE}CMake skipped: Makefile already exists.${NC}"
+    echo -e "${BLUE}CMake skipped: Makefile already exists and no changes detected.${NC}"
 fi
 
 # ==================== Linking Filter ====================
