@@ -1,4 +1,5 @@
 #include "computational_cell.hpp"
+#include <cstring>  // for memcpy
 
 ComputationalCell3D::ComputationalCell3D(void):
   density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0),
@@ -74,13 +75,26 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 	this->Erad_dt += other.Erad_dt;
 	this->Erad_dt_dt += other.Erad_dt_dt;
 	this->cs += other.cs;
-#ifdef __INTEL_COMPILER
-#pragma omp simd
+	
+	double* __restrict__ t = this->tracers.data();
+	const double* __restrict__ ot = other.tracers.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		this->tracers[j] += other.tracers[j];
+		t[j] += ot[j];
+	
+	double* __restrict__ eg = this->Eg.data();
+	const double* __restrict__ oeg = other.Eg.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
-	    this->Eg[j] += other.Eg[j];
+	    eg[j] += oeg[j];
 	return *this;
 }
 
@@ -96,13 +110,26 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 	this->Erad_dt -= other.Erad_dt;
 	this->Erad_dt_dt -= other.Erad_dt_dt;	
 	this->cs -= other.cs;
-#ifdef __INTEL_COMPILER
-#pragma ivdep
+	
+	double* __restrict__ t = this->tracers.data();
+	const double* __restrict__ ot = other.tracers.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		this->tracers[j] -= other.tracers[j];
+		t[j] -= ot[j];
+	
+	double* __restrict__ eg = this->Eg.data();
+	const double* __restrict__ oeg = other.Eg.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
-	    this->Eg[j] -= other.Eg[j];
+	    eg[j] -= oeg[j];
 	return *this;
 }
 
@@ -117,10 +144,24 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->Erad_dt *= s;
 	this->Erad_dt_dt *= s;
 	this->cs *= s;
+	
+	double* __restrict__ t = this->tracers.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		this->tracers[j] *= s;
+		t[j] *= s;
+	
+	double* __restrict__ eg = this->Eg.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
-	    this->Eg[j] *= s;
+	    eg[j] *= s;
 	return *this;
 }
 
@@ -193,25 +234,98 @@ size_t Slope3D::load(const Serializer *serializer, std::size_t byteOffset)
 
 void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D const& other, double scalar)
 {
-	res.density += other.density*scalar;
-	res.pressure += other.pressure*scalar;
-	res.internal_energy += other.internal_energy*scalar;
-	res.velocity += other.velocity*scalar;
-	res.temperature += other.temperature*scalar;
-	res.Erad += other.Erad*scalar;
-	res.Erad_dt += other.Erad_dt*scalar;
-	res.Erad_dt_dt += other.Erad_dt_dt*scalar;
-	res.cs += other.cs*scalar;
+	// Process scalar fields - group for better cache utilization
+	res.density += other.density * scalar;
+	res.pressure += other.pressure * scalar;
+	res.internal_energy += other.internal_energy * scalar;
+	res.temperature += other.temperature * scalar;
+	res.Erad += other.Erad * scalar;
+	res.Erad_dt += other.Erad_dt * scalar;
+	res.Erad_dt_dt += other.Erad_dt_dt * scalar;
+	res.cs += other.cs * scalar;
 	res.dt += other.dt * scalar;
-	//assert(res.tracers.size() == other.tracers.size());
-	//size_t N = res.tracers.size();
-#ifdef __INTEL_COMPILER
-#pragma omp simd
+	
+	// Velocity - 3 components
+	res.velocity.x += other.velocity.x * scalar;
+	res.velocity.y += other.velocity.y * scalar;
+	res.velocity.z += other.velocity.z * scalar;
+	
+	// Tracers - use restrict pointers and explicit vectorization hints
+	double* __restrict__ res_tracers = res.tracers.data();
+	const double* __restrict__ other_tracers = other.tracers.data();
+	
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		res.tracers[j] += other.tracers[j] * scalar;
-	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
-		res.Eg[j] += other.Eg[j] * scalar;
+		res_tracers[j] += other_tracers[j] * scalar;
+	
+	// Energy groups - use restrict pointers
+	double* __restrict__ res_eg = res.Eg.data();
+	const double* __restrict__ other_eg = other.Eg.data();
+	const size_t eg_size = res.Eg.size();
+	
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
+	for (size_t j = 0; j < eg_size; ++j)
+		res_eg[j] += other_eg[j] * scalar;
+}
+
+// Vectorized version that processes all 3 derivatives at once
+// More cache-friendly: one pass through data instead of 3
+void ComputationalCellAddMult3(ComputationalCell3D &res, 
+	ComputationalCell3D const& dx, ComputationalCell3D const& dy, ComputationalCell3D const& dz,
+	double sx, double sy, double sz)
+{
+	// Scalar fields - process all 3 at once for better instruction pipelining
+	res.density += dx.density * sx + dy.density * sy + dz.density * sz;
+	res.pressure += dx.pressure * sx + dy.pressure * sy + dz.pressure * sz;
+	res.internal_energy += dx.internal_energy * sx + dy.internal_energy * sy + dz.internal_energy * sz;
+	res.temperature += dx.temperature * sx + dy.temperature * sy + dz.temperature * sz;
+	res.Erad += dx.Erad * sx + dy.Erad * sy + dz.Erad * sz;
+	res.Erad_dt += dx.Erad_dt * sx + dy.Erad_dt * sy + dz.Erad_dt * sz;
+	res.Erad_dt_dt += dx.Erad_dt_dt * sx + dy.Erad_dt_dt * sy + dz.Erad_dt_dt * sz;
+	res.cs += dx.cs * sx + dy.cs * sy + dz.cs * sz;
+	res.dt += dx.dt * sx + dy.dt * sy + dz.dt * sz;
+	
+	// Velocity
+	res.velocity.x += dx.velocity.x * sx + dy.velocity.x * sy + dz.velocity.x * sz;
+	res.velocity.y += dx.velocity.y * sx + dy.velocity.y * sy + dz.velocity.y * sz;
+	res.velocity.z += dx.velocity.z * sx + dy.velocity.z * sy + dz.velocity.z * sz;
+	
+	// Tracers - vectorized loop with restrict pointers
+	double* __restrict__ res_t = res.tracers.data();
+	const double* __restrict__ dx_t = dx.tracers.data();
+	const double* __restrict__ dy_t = dy.tracers.data();
+	const double* __restrict__ dz_t = dz.tracers.data();
+	
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
+	for (size_t j = 0; j < MAX_TRACERS; ++j)
+		res_t[j] += dx_t[j] * sx + dy_t[j] * sy + dz_t[j] * sz;
+	
+	// Energy groups - vectorized
+	double* __restrict__ res_eg = res.Eg.data();
+	const double* __restrict__ dx_eg = dx.Eg.data();
+	const double* __restrict__ dy_eg = dy.Eg.data();
+	const double* __restrict__ dz_eg = dz.Eg.data();
+	const size_t eg_size = res.Eg.size();
+	
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
+	for (size_t j = 0; j < eg_size; ++j)
+		res_eg[j] += dx_eg[j] * sx + dy_eg[j] * sy + dz_eg[j] * sz;
 }
 
 ComputationalCell3D operator+(ComputationalCell3D const& p1, ComputationalCell3D const& p2)
@@ -240,12 +354,25 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 	res.Erad_dt *= s_1;
 	res.Erad_dt_dt *= s_1;
 	res.cs *= s_1;
-	//size_t N = res.tracers.size();
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		res.tracers[j] *= s_1;
-	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
-		res.Eg[j] *= s_1;
 	res.velocity = res.velocity * s_1;
+	
+	double* __restrict__ t = res.tracers.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
+	for (size_t j = 0; j < MAX_TRACERS; ++j)
+		t[j] *= s_1;
+	
+	double* __restrict__ eg = res.Eg.data();
+#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
+	#pragma GCC ivdep
+#elif defined(__INTEL_COMPILER)
+	#pragma omp simd
+#endif
+	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
+		eg[j] *= s_1;
 	return res;
 }
 
@@ -276,28 +403,28 @@ ComputationalCell3D operator*(double s, ComputationalCell3D const& p)
 
 void ReplaceComputationalCell(ComputationalCell3D & cell, ComputationalCell3D const& other)
 {
+	// Copy scalar fields in bulk - these are contiguous in memory
 	cell.density = other.density;
 	cell.pressure = other.pressure;
 	cell.internal_energy = other.internal_energy;
+	cell.temperature = other.temperature;
 	cell.ID = other.ID;
 	cell.velocity = other.velocity;
 	cell.dt = other.dt;
-	cell.temperature = other.temperature;
 	cell.Erad = other.Erad;
-	cell.Eg = other.Eg;
 	cell.Erad_dt = other.Erad_dt;
 	cell.Erad_dt_dt = other.Erad_dt_dt;
 	cell.cs = other.cs;
-#ifdef __INTEL_COMPILER
-#pragma omp simd
-#endif
-	for (size_t j = 0; j < MAX_TRACERS; ++j)
-		cell.tracers[j] = other.tracers[j];
-#ifdef __INTEL_COMPILER
-#pragma ivdep
-#endif
-	for (size_t i = 0; i < MAX_STICKERS; ++i)
-		cell.stickers[i] = other.stickers[i];
+	
+	// Use memcpy for arrays - much faster than element-by-element
+	std::memcpy(cell.tracers.data(), other.tracers.data(), MAX_TRACERS * sizeof(double));
+	std::memcpy(cell.stickers.data(), other.stickers.data(), MAX_STICKERS * sizeof(bool));
+	
+	// Copy Eg vector (small_vector - need to handle size)
+	const size_t eg_size = other.Eg.size();
+	cell.Eg.resize(eg_size);
+	if (eg_size > 0)
+		std::memcpy(cell.Eg.data(), other.Eg.data(), eg_size * sizeof(double));
 }
 
 
