@@ -1509,11 +1509,14 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         BuildVoronoi(order);
     }
 
+
     // todo: why?
     // std::vector<double>().swap(this->R_);
     // std::vector<tetra_vec>().swap(this->PointTetras_);
 
     this->UpdateCMs();
+
+    MPI_exchange_data(*this, this->volume_, true);
 
     end = std::chrono::high_resolution_clock::now();
 
@@ -1521,7 +1524,6 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     {
         std::cout << "Time for build Voronoi from Delaunay: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
-
 
     // save the list of the real ghost points
     // this->FilterRealGhostPoints();
@@ -1696,13 +1698,13 @@ void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
                 {
                     // mirror
                     mirrorsToSend[newOwner].push_back(delaunayPoints[neighbor]);
-                    allMirrors.push_back(delaunayPoints[neighbor]);
+                    // allMirrors.push_back(delaunayPoints[neighbor]);
                 }
             }
         }
     }
 
-    mirrorsToSend = std::vector<std::vector<Vector3D>>(size, allMirrors); // todo: remove
+    // mirrorsToSend = std::vector<std::vector<Vector3D>>(size, allMirrors); // todo: remove
 
     this->BuildInitialize(new_points.size());
     std::vector<size_t> order;
