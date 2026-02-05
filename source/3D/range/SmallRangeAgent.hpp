@@ -84,7 +84,7 @@ private:
         #endif // RICH_MPI
         {}
 
-        std::vector<size_t> selfAnswer(const SmallRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
+        std::vector<size_t> selfAnswer(const SmallRangeQueryData &query, RangeFinder::_set<size_t> &ignore)
         {
             // a small query, bring the requested number of points
             std::vector<size_t> indicesResult = this->rangeFinder->range(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, query.maxPointsToGet, ignore);
@@ -160,8 +160,9 @@ private:
     #endif // RICH_MPI
 
 public:
+    // Use RangeFinder::_set (unordered_set) for consistency
     template<typename T>
-    using _set = boost::container::flat_set<T>;
+    using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
         SmallRangeAgent(const RangeFinder *rangeFinder, const EnvironmentAgent *envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
@@ -189,7 +190,7 @@ public:
         delete this->ansAgent;
     }
 
-    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<SmallRangeQueryData> &smallQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<SmallRangeQueryData> &smallQueriesBatch, _set<size_t> &ignore)
     {
         std::vector<std::vector<size_t>> result;
         for(const SmallRangeQueryData &query : smallQueriesBatch)

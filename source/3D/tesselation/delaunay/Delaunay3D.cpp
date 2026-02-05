@@ -55,24 +55,30 @@ namespace
   }
 
 	
-  inline void GetOppositePoint(Tetrahedron const& tetra, std::size_t neighbor, size_t &res)
+  void GetOppositePoint(Tetrahedron const& tetra, std::size_t neighbor,size_t &res)
   {
-    // Simple loop with early exit - fastest for 4 elements
-    const size_t* __restrict__ n = tetra.neighbors;
-    if (n[0] == neighbor) { res = 0; return; }
-    if (n[1] == neighbor) { res = 1; return; }
-    if (n[2] == neighbor) { res = 2; return; }
-    res = 3;  // Must be index 3
+#ifdef __INTEL_COMPILER
+#pragma ivdep
+#endif
+    for (size_t i=0; i < 4; i++)
+      if (tetra.neighbors[i] == neighbor)
+	{
+	  res = i;
+	  return;
+	}
   }
 
-  inline void GetPointLocationInTetra(Tetrahedron const& tetra, std::size_t point, size_t &res)
+  void GetPointLocationInTetra(Tetrahedron const& tetra, std::size_t point,size_t &res)
   {
-    // Simple loop with early exit - fastest for 4 elements
-    const size_t* __restrict__ p = tetra.points;
-    if (p[0] == point) { res = 0; return; }
-    if (p[1] == point) { res = 1; return; }
-    if (p[2] == point) { res = 2; return; }
-    res = 3;  // Must be index 3
+#ifdef __INTEL_COMPILER
+#pragma ivdep
+#endif
+    for (size_t i = 0; i < 4; i++)
+      if (tetra.points[i] == point)
+	{
+	  res = i;
+	  return;
+	}
   }
 
   std::pair<std::size_t,double> InTriangle(std::array<Vector3D, 3> &triangle, Vector3D &p)
@@ -643,18 +649,15 @@ void Delaunay3D::output(string const & filename) const
 
 std::size_t Delaunay3D::FindThirdNeighbor(std::size_t tetra0,std::size_t tetra1)
 {
-  // Cache neighbor arrays for better memory access
-  const size_t* __restrict__ n0 = tetras_[tetra0].neighbors;
-  const size_t* __restrict__ n1 = tetras_[tetra1].neighbors;
-  
-  // Unroll and check all combinations
   for (size_t i = 0; i < 4; ++i)
     {
-      const size_t ni = n0[i];
-      if (ni == n1[0] || ni == n1[1] || ni == n1[2] || ni == n1[3])
+      for (size_t j = 0; j < 4; ++j)
 	{
-	  b8s_temp_[0] = ni;
-	  return 1;
+	  if (tetras_[tetra0].neighbors[i] == tetras_[tetra1].neighbors[j])
+	    {
+	      b8s_temp_[0] = tetras_[tetra1].neighbors[j];
+	      return 1;
+	    }
 	}
     }
   return 0;
@@ -842,41 +845,21 @@ void Delaunay3D::InsertPoint(std::size_t index)
     {
       std::size_t cur_check = to_check_.back();
       to_check_.pop_back();
-      
-      Tetrahedron& cur_tet = tetras_[cur_check];
-      
-      // Skip if tetra was already checked (newTetra cleared) or is empty
-      if (!cur_tet.newTetra || (empty_tetras_.find(cur_check) != empty_tetras_.end()))
-	continue;
-      
       size_t p_loc=0;
-      GetPointLocationInTetra(cur_tet, index, p_loc);
-      std::size_t to_flip = cur_tet.neighbors[p_loc];
-      if (to_flip == outside_neighbor_)
-      {
-	cur_tet.newTetra = false;  // Mark as checked
+      GetPointLocationInTetra(tetras_[cur_check], index,p_loc);
+      std::size_t to_flip = tetras_[cur_check].neighbors[p_loc];
+      if (to_flip == outside_neighbor_ || (empty_tetras_.find(cur_check) != empty_tetras_.end()))
 	continue;
-      }
-      
-      Tetrahedron& flip_tet = tetras_[to_flip];
       size_t other_point_loc=0;
-      GetOppositePoint(flip_tet, cur_check, other_point_loc);
-      
-      // Cache point lookups
-      const size_t* __restrict__ cur_pts = cur_tet.points;
-      b5_temp_[0] = points_[cur_pts[0]];
-      b5_temp_[1] = points_[cur_pts[1]];
-      b5_temp_[2] = points_[cur_pts[2]];
-      b5_temp_[3] = points_[cur_pts[3]];
-      b5_temp_[4] = points_[flip_tet.points[other_point_loc]];
-      
+      GetOppositePoint(tetras_[to_flip], cur_check,other_point_loc);
+      b5_temp_[4] = points_[tetras_[to_flip].points[other_point_loc]];
+      b5_temp_[0] = points_[tetras_[cur_check].points[0]];
+      b5_temp_[1] = points_[tetras_[cur_check].points[1]];
+      b5_temp_[2] = points_[tetras_[cur_check].points[2]];
+      b5_temp_[3] = points_[tetras_[cur_check].points[3]];
       if (insphere(b5_temp_) < -0)
       {
-        FindFlip(cur_check, to_flip, index, p_loc, other_point_loc);
-      }
-      else
-      {
-        cur_tet.newTetra = false;  // Mark as Delaunay-verified
+        FindFlip(cur_check, to_flip,index,p_loc,other_point_loc);
       }
     }
 }
@@ -886,40 +869,26 @@ std::size_t Delaunay3D::Walk(std::size_t point, std::size_t first_guess)
   bool good = false;
   std::size_t cur_facet = first_guess;
   std::size_t counter=0;
-  const Vector3D& target_point = points_[point];
-  b4_temp_[3] = target_point;
+  b4_temp_[3] = points_[point];
   while (!good)
     {
       ++counter;
       good = true;
-      
-      // Cache the current tetrahedron's data to avoid repeated indexing
-      const Tetrahedron& cur_tet = tetras_[cur_facet];
-      const size_t* __restrict__ pts = cur_tet.points;
-      const size_t* __restrict__ neighs = cur_tet.neighbors;
-      
       for (size_t i = 0; i < 4; ++i)
 	{
-	  // Precompute face vertex indices
-	  size_t i1 = (i + 1) & 3;  // Faster modulo for power of 2
-	  size_t i2 = (i + 2) & 3;
-	  size_t i3 = (i + 3) & 3;
-	  
-	  b4_temp_[0] = points_[pts[i1]];
-	  b4_temp_[1] = points_[pts[i2]];
-	  b4_temp_[2] = points_[pts[i3]];
-	  
+	  for (size_t j = 0; j < 3; j++)
+	    b4_temp_[j] = points_[tetras_[cur_facet].points[(i + j + 1) % 4]];
 	  int sign = 2 * static_cast<int>(i % 2) - 1;
 	  if ((orient3d(b4_temp_)*sign)>0)
 	    {
 	      good = false;
 	      size_t old_facet = cur_facet;
-	      cur_facet = neighs[i];
+	      cur_facet = tetras_[cur_facet].neighbors[i];
 	      if(cur_facet == outside_neighbor_)
 		{
 		  std::cout<<"Walk wanted to goto outside neighbor"<<std::endl;
 		  std::cout << "Total of "<< Norg_ << " points" << std::endl;
-		  std::cout<<"point "<<point<<" "<<target_point.x<<" "<<target_point.y<<" "<<target_point.z<<" "<<std::endl;
+		  std::cout<<"point "<<point<<" "<<points_[point].x<<" "<<points_[point].y<<" "<<points_[point].z<<" "<<std::endl;
 		  std::cout<<"Big tetrahedron "<<points_[Norg_].x<<" "<<points_[Norg_].y<<" "<<points_[Norg_].z<<" "<<std::endl;
 		  std::cout<<"Big tetrahedron "<<points_[Norg_+1].x<<" "<<points_[Norg_+1].y<<" "<<points_[Norg_+1].z<<" "<<std::endl;
 		  std::cout<<"Big tetrahedron "<<points_[Norg_+2].x<<" "<<points_[Norg_+2].y<<" "<<points_[Norg_+2].z<<" "<<std::endl;
@@ -959,33 +928,24 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
 	Nloc[i] = Ntet + i;
     }
 
-  // Cache the source tetrahedron's data to avoid repeated indexing
-  Tetrahedron& src_tet = tetras_[tetra];
-  const size_t src_pts0 = src_tet.points[0];
-  const size_t src_pts1 = src_tet.points[1];
-  const size_t src_pts2 = src_tet.points[2];
-  const size_t src_pts3 = src_tet.points[3];
-  const size_t src_neigh0 = src_tet.neighbors[0];
-  const size_t src_neigh1 = src_tet.neighbors[1];
-  const size_t src_neigh2 = src_tet.neighbors[2];
-
   toadd.neighbors[0] = Nloc[1];
   toadd.neighbors[1] = Nloc[2];
-  toadd.neighbors[2] = src_neigh0;
+  toadd.neighbors[2] = tetras_[tetra].neighbors[0];
   toadd.neighbors[3] = tetra;
-  toadd.points[0] = src_pts1;
-  toadd.points[1] = src_pts2;
+  toadd.points[0] = tetras_[tetra].points[1];
+  toadd.points[1] = tetras_[tetra].points[2];
   toadd.points[2] = point;
-  toadd.points[3] = src_pts3;
+  toadd.points[3] = tetras_[tetra].points[3];
 
   // mark tetras as new (need to be checked)
   toadd.newTetra = true;
   
-  if (src_neigh0 != outside_neighbor_)
+  if (toadd.neighbors[2] != outside_neighbor_)
     {
+      size_t temploc = toadd.neighbors[2];
       size_t loctemp=0;
-      GetOppositePoint(tetras_[src_neigh0], tetra, loctemp);
-      tetras_[src_neigh0].neighbors[loctemp] = Nloc[0];
+      GetOppositePoint(tetras_[temploc], tetra, loctemp);
+      tetras_[toadd.neighbors[2]].neighbors[loctemp] = Nloc[0];
     }
   if (!cleared_empty)
     tetras_.push_back(toadd);
@@ -995,16 +955,16 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
   toadd.neighbors[0] = Nloc[0];
   toadd.neighbors[1] = Nloc[2];
   toadd.neighbors[2] = tetra;
-  toadd.neighbors[3] = src_neigh1;
-  toadd.points[0] = src_pts0;
-  toadd.points[1] = src_pts2;
-  toadd.points[2] = src_pts3;
+  toadd.neighbors[3] = tetras_[tetra].neighbors[1];
+  toadd.points[0] = tetras_[tetra].points[0];
+  toadd.points[1] = tetras_[tetra].points[2];
+  toadd.points[2] = tetras_[tetra].points[3];
   toadd.points[3] = point;
-  if (src_neigh1 != outside_neighbor_)
+  if (toadd.neighbors[3] != outside_neighbor_)
     {
       size_t loctemp=0;
-      GetOppositePoint(tetras_[src_neigh1], tetra, loctemp);
-      tetras_[src_neigh1].neighbors[loctemp] = Nloc[1];
+      GetOppositePoint(tetras_[toadd.neighbors[3]], tetra, loctemp);
+      tetras_[toadd.neighbors[3]].neighbors[loctemp] = Nloc[1];
     }
   if (!cleared_empty)
     tetras_.push_back(toadd);
@@ -1014,16 +974,16 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
   toadd.neighbors[0] = Nloc[0];
   toadd.neighbors[1] = tetra;
   toadd.neighbors[2] = Nloc[1];
-  toadd.neighbors[3] = src_neigh2;
-  toadd.points[0] = src_pts0;
-  toadd.points[1] = src_pts3;
-  toadd.points[2] = src_pts1;
+  toadd.neighbors[3] = tetras_[tetra].neighbors[2];
+  toadd.points[0] = tetras_[tetra].points[0];
+  toadd.points[1] = tetras_[tetra].points[3];
+  toadd.points[2] = tetras_[tetra].points[1];
   toadd.points[3] = point;
-  if (src_neigh2 != outside_neighbor_)
+  if (toadd.neighbors[3] != outside_neighbor_)
     {
       size_t loctemp=0;
-      GetOppositePoint(tetras_[src_neigh2], tetra, loctemp);
-      tetras_[src_neigh2].neighbors[loctemp] = Nloc[2];
+      GetOppositePoint(tetras_[toadd.neighbors[3]], tetra, loctemp);
+      tetras_[toadd.neighbors[3]].neighbors[loctemp] = Nloc[2];
     }
   if (!cleared_empty)
     tetras_.push_back(toadd);
@@ -1031,13 +991,13 @@ void Delaunay3D::flip14(std::size_t point, std::size_t tetra)
     tetras_[Nloc[2]] = toadd;
 
 	
-  src_tet.neighbors[0] = Nloc[0];
-  src_tet.neighbors[1] = Nloc[1];
-  src_tet.neighbors[2] = Nloc[2];
-  src_tet.points[3] = point;
+  tetras_[tetra].neighbors[0] = Nloc[0];
+  tetras_[tetra].neighbors[1] = Nloc[1];
+  tetras_[tetra].neighbors[2] = Nloc[2];
+  tetras_[tetra].points[3] = point;
 
   // mark tetras as new (need to be checked)
-  src_tet.newTetra = true;
+  tetras_[tetra].newTetra = true;
 
   to_check_.push_back(tetra);
   to_check_.push_back(Nloc[0]);

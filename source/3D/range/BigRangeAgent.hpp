@@ -79,7 +79,7 @@ private:
         #endif // RICH_MPI
         {}
 
-        std::vector<size_t> selfAnswer(const BigRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
+        std::vector<size_t> selfAnswer(const BigRangeQueryData &query, RangeFinder::_set<size_t> &ignore)
         {
             // a big query, bring only the closest point
             std::vector<size_t> indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.originalPoint.x, query.originalPoint.y, query.originalPoint.z), ignore);
@@ -256,8 +256,9 @@ private:
     #endif // RICH_MPI
 
 public:
+    // Use RangeFinder::_set (unordered_set) for consistency
     template<typename T>
-    using _set = boost::container::flat_set<T>;
+    using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
         BigRangeAgent(const RangeFinder *rangeFinder, const EnvironmentAgent *envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
@@ -291,7 +292,7 @@ public:
         };
     #endif // RICH_MPI
 
-    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<BigRangeQueryData> &bigQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<BigRangeQueryData> &bigQueriesBatch, _set<size_t> &ignore)
     {
         std::vector<std::vector<size_t>> result;
         for(const BigRangeQueryData &query : bigQueriesBatch)

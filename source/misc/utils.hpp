@@ -309,7 +309,7 @@ template <class T> vector<T> VectorValues(vector<T> const&v, vector<int> const &
 
 	vector<T> result(index.size());
 	for (std::size_t i = 0; i < index.size(); ++i)
-		result.at(i) = v.at(static_cast<std::size_t>(index.at(i)));
+		result[i] = v[static_cast<std::size_t>(index[i])];
 	return result;
 }
 
@@ -327,7 +327,7 @@ template <class T> vector<T> VectorValues
 
 	vector<T> result(index.size());
 	for (std::size_t i = 0; i < index.size(); ++i)
-		result.at(i) = v.at(index.at(i));
+		result[i] = v[index[i]];
 	return result;
 }
 

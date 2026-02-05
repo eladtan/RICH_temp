@@ -7,6 +7,8 @@ using boost::math::pow;
 
 namespace CG
 {
+    static constexpr bool use_crs_matvec = true;
+
     // Matrix times vector
     void mat_times_vec(const mat &sub_A_values, const size_t_mat &sub_A_indices, const std::vector<double> &v, 
         std::vector<double> &result)
@@ -28,6 +30,40 @@ namespace CG
                     break;
                 dot_prod += sub_A_values[i][j] * v[sub_A_indices[i][j]]; 
             }
+            result[i] = dot_prod;
+        }
+    }
+
+    void build_crs(const mat &sub_A_values, const size_t_mat &sub_A_indices,
+        std::vector<size_t> &row_ptr, std::vector<size_t> &col_idx, std::vector<double> &values)
+    {
+        size_t const sub_num_rows = sub_A_values.size();
+        row_ptr.assign(sub_num_rows + 1, 0);
+        col_idx.clear();
+        values.clear();
+        col_idx.reserve(sub_num_rows);
+        values.reserve(sub_num_rows);
+        for (size_t i = 0; i < sub_num_rows; ++i) {
+            for (size_t j = 0; j < sub_A_values[i].size(); ++j) {
+                if (sub_A_indices[i][j] == max_size_t)
+                    break;
+                col_idx.push_back(sub_A_indices[i][j]);
+                values.push_back(sub_A_values[i][j]);
+            }
+            row_ptr[i + 1] = col_idx.size();
+        }
+    }
+
+    void mat_times_vec_crs(const std::vector<size_t> &row_ptr, const std::vector<size_t> &col_idx,
+        const std::vector<double> &values, const std::vector<double> &v, std::vector<double> &result)
+    {
+        size_t const sub_num_rows = row_ptr.size() > 0 ? row_ptr.size() - 1 : 0;
+        if(sub_num_rows == 0) return;
+        result.resize(sub_num_rows, 0);
+        for (size_t i = 0; i < sub_num_rows; ++i) {
+            double dot_prod = 0.0;
+            for (size_t k = row_ptr[i]; k < row_ptr[i + 1]; ++k)
+                dot_prod += values[k] * v[col_idx[k]];
             result[i] = dot_prod;
         }
     }
@@ -105,8 +141,9 @@ namespace CG
         double error, double max_data_0_val, double max_data_1_val, double max_data_2_val,
         int max_data_0_id, int max_data_1_id, std::vector<double>& sub_x, std::vector<double>& sub_x_solution,
         std::vector<ComputationalCell3D> const& cells, Tessellation3D const& tess, int &total_iters,
-        CG::mat const& A, size_t_mat const& A_indeces, std::vector<double> const& b, size_t Nlocal,
-        double lengthscale, std::vector<double>& sub_a_times_p, std::vector<double>& sub_r)
+        const std::vector<size_t>& A_row_ptr, const std::vector<size_t>& A_col_idx, const std::vector<double>& A_values,
+        std::vector<double> const& b, size_t Nlocal, double lengthscale,
+        std::vector<double>& sub_a_times_p, std::vector<double>& sub_r)
     {
         max_loc0 /= slice;
         max_loc1 /= slice;
@@ -124,7 +161,7 @@ namespace CG
 #ifdef RICH_MPI
         MPI_exchange_data(tess, sub_x, true, slice);
 #endif
-        mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+        mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, sub_x, sub_a_times_p);
         sub_x.resize(Nlocal);
         vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
         sub_x_solution.resize(Nlocal);
@@ -199,6 +236,22 @@ namespace CG
         }
     }
 
+    void build_M_crs(const std::vector<size_t> &row_ptr, const std::vector<size_t> &col_idx,
+        const std::vector<double> &values, std::vector<double> &M)
+    {
+        size_t const sub_num_rows = row_ptr.size() > 0 ? row_ptr.size() - 1 : 0;
+        if(sub_num_rows == 0) return;
+        M.resize(sub_num_rows);
+        for (size_t i = 0; i < sub_num_rows; ++i) {
+            for (size_t k = row_ptr[i]; k < row_ptr[i + 1]; ++k) {
+                if (col_idx[k] == i) {
+                    M[i] = 1.0 / values[k];
+                    break;
+                }
+            }
+        }
+    }
+
     static bool abs_compare(double a, double b)
     {
         return (std::abs(a) < std::abs(b));
@@ -226,14 +279,23 @@ namespace CG
         std::vector<double> b;
         std::vector<double> sub_x; // this is for the initial guess
         matrix_builder.BuildMatrix(tess, A, A_indeces, cells, dt, b, sub_x, time);
+        std::vector<size_t> A_row_ptr, A_col_idx;
+        std::vector<double> A_values;
+        build_crs(A, A_indeces, A_row_ptr, A_col_idx, A_values);
         std::vector<double> M; // The preconditioner
-        build_M(A, A_indeces, M);
+        if(use_crs_matvec)
+            build_M_crs(A_row_ptr, A_col_idx, A_values, M);
+        else
+            build_M(A, A_indeces, M);
         std::vector<double> r_old, sub_a_times_p;
         std::vector<double> sub_r;
 #ifdef RICH_MPI
         MPI_exchange_data(tess, sub_x, true);
 #endif
-        mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+        if(use_crs_matvec)
+            mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, sub_x, sub_a_times_p);
+        else
+            mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
         // Find maximum value of A, this is used for normalization of the error
         double maxA[2] = {0, 0};
         size_t const Na = A.size();
@@ -283,7 +345,10 @@ namespace CG
             r_old = sub_r;                 // Store previous residual
             sub_r_sqrd_old = sub_r_sqrd;  // save a recalculation of r_old^2 later
 
-            mat_times_vec(A, A_indeces, p, sub_a_times_p);  //split up with MPI and then finer parallelize with openmp
+            if(use_crs_matvec)
+                mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, p, sub_a_times_p);  //split up with MPI and then finer parallelize with openmp
+            else
+                mat_times_vec(A, A_indeces, p, sub_a_times_p);
 
             sub_p_by_ap = mpi_dot_product(sub_p, sub_a_times_p);
 
@@ -297,7 +362,10 @@ namespace CG
 #ifdef RICH_MPI
                 MPI_exchange_data(tess, sub_x, true);
 #endif
-                mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+                if(use_crs_matvec)
+                    mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, sub_x, sub_a_times_p);
+                else
+                    mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
                 sub_x.resize(Nlocal);
                 vec_lin_combo(1.0, b, -1.0, sub_a_times_p, result1);    
             }
@@ -352,7 +420,10 @@ namespace CG
                 MPI_exchange_data(tess, sub_x, true);
 #endif
                 sub_x_solution = sub_x;
-                mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+                if(use_crs_matvec)
+                    mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, sub_x, sub_a_times_p);
+                else
+                    mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
                 sub_x.resize(Nlocal);
                 vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
                 break;
@@ -445,14 +516,27 @@ namespace CG
         std::vector<double> b;
         std::vector<double> sub_x; // this is for the initial guess
         matrix_builder.BuildMatrix(tess, A, A_indeces, cells, dt, b, sub_x, time);
+        std::vector<size_t> A_row_ptr, A_col_idx;
+        std::vector<double> A_values;
+        build_crs(A, A_indeces, A_row_ptr, A_col_idx, A_values);
         std::vector<double> M; // The preconditioner
-        build_M(A, A_indeces, M);
+        if(use_crs_matvec)
+            build_M_crs(A_row_ptr, A_col_idx, A_values, M);
+        else
+            build_M(A, A_indeces, M);
+        auto matvec = [&](const std::vector<double> &in, std::vector<double> &out)
+        {
+            if(use_crs_matvec)
+                mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, in, out);
+            else
+                mat_times_vec(A, A_indeces, in, out);
+        };
         std::vector<double> r_old, sub_a_times_p;
         std::vector<double> sub_r;
 #ifdef RICH_MPI
         MPI_exchange_data(tess, sub_x, true, slice);
 #endif
-        mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+        matvec(sub_x, sub_a_times_p);
         // Find maximum value of A, this is used for normalization of the error
         double maxA[2] = {0, 0};
         for(size_t i = 0; i < A.size(); ++i)
@@ -502,7 +586,7 @@ namespace CG
 #ifdef RICH_MPI
                 MPI_exchange_data(tess, sub_x, true, slice);
 #endif
-                mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
+                matvec(sub_x, sub_a_times_p);
                 sub_x.resize(Nlocal);
                 vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
                 sub_r.resize(Nlocal);
@@ -516,7 +600,7 @@ namespace CG
                     std::cout<<"Exited BiCGSTAB: rho0 is very small: "<<rho0<<std::endl;
                 finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
                     max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
-                    cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                    cells, tess, total_iters, A_row_ptr, A_col_idx, A_values, b, Nlocal, matrix_builder.GetLengthScale(),
                     sub_a_times_p, sub_r);
                 good_end = true;
                 break;
@@ -530,7 +614,7 @@ namespace CG
                     std::cout<<"Exited BiCGSTAB: sub_r_sqrd_old is very small: "<<sub_r_sqrd_old<<std::endl;
                 finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
                     max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
-                    cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                    cells, tess, total_iters, A_row_ptr, A_col_idx, A_values, b, Nlocal, matrix_builder.GetLengthScale(),
                     sub_a_times_p, sub_r);
                 break;
             }
@@ -540,7 +624,7 @@ namespace CG
 #ifdef RICH_MPI
             MPI_exchange_data(tess, y, true, slice);
 #endif
-            mat_times_vec(A, A_indeces, y, v);
+            matvec(y, v);
             y.resize(Nlocal);
             double const sub_r0_v = mpi_dot_product(sub_r0, v);
             double const alpha = std::abs(sub_r0_v) < std::numeric_limits<double>::min()*1e100 ? 0.0 : rho0 / sub_r0_v;
@@ -552,7 +636,7 @@ namespace CG
 #ifdef RICH_MPI
             MPI_exchange_data(tess, z, true, slice);
 #endif
-            mat_times_vec(A, A_indeces, z, t);
+            matvec(z, t);
             z.resize(Nlocal);
             double const up = mpi_dot_product(vector_rescale(t, M), vector_rescale(s, M));
             double const down = mpi_dot_product(vector_rescale(t, M), vector_rescale(t, M));
@@ -565,7 +649,7 @@ namespace CG
                     std::cout<<"Exited BiCGSTAB: alpha and w very small: alpha "<<alpha<<" w "<<w<<" rho0 "<<rho0<<std::endl;
                 finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
                     max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
-                    cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                    cells, tess, total_iters, A_row_ptr, A_col_idx, A_values, b, Nlocal, matrix_builder.GetLengthScale(),
                     sub_a_times_p, sub_r);
                 good_end = true;
                 break;
@@ -624,7 +708,7 @@ namespace CG
                 { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                     finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
                         max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
-                        cells, tess, total_iters, A, A_indeces, b, Nlocal, matrix_builder.GetLengthScale(),
+                        cells, tess, total_iters, A_row_ptr, A_col_idx, A_values, b, Nlocal, matrix_builder.GetLengthScale(),
                         sub_a_times_p, sub_r);
                     good_end = true;
                     break;
