@@ -40,10 +40,61 @@ namespace fs = std::filesystem;
 
 typedef std::array<double, 4> state_type;
 
-#define smooth_factor 0.6
+#define smooth_factor 0.5
+#define remove_center 1
 // #define hi_res 1
 namespace
 {
+	void RemoveCenter(HDSim3D& sim, double MBH, double Mstar, double Rstar,
+		EquationOfState const& eos, double beta)
+	{
+		double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333) / beta;
+		double Rsmooth = std::max(Rt * 0.4, std::min(Rt - Rstar * 15, Rt * smooth_factor));
+		std::vector<Conserved3D> &extensives = sim.getExtensives();
+		std::vector<ComputationalCell3D> &cells = sim.getCells();
+		size_t const N = sim.getTesselation().GetPointNo();
+		for(size_t i = 0; i < N; ++i)
+		{
+			double R = fastabs(sim.getTesselation().GetCellCM(i));
+			if(R < Rsmooth)
+			{
+				double new_density = std::max(1e-20, cells[i].density * 0.8);
+				double density_ratio = cells[i].density / new_density;
+				double old_T = cells[i].temperature;
+				double new_T = std::min(1e7, std::max(1e4, cells[i].temperature * 0.8));
+				cells[i].tracers[2] *= cells[i].density;
+				cells[i].tracers[2] += cells[i].density - new_density;
+				cells[i].density = new_density;
+				cells[i].tracers[2] /= new_density;
+				cells[i].temperature = new_T;
+				if(fastabs(cells[i].velocity) > 300)
+					cells[i].velocity *= 0.9;
+				cells[i].internal_energy = eos.dT2e(new_density, new_T, cells[i].tracers, ComputationalCell3D::tracerNames);
+				cells[i].pressure = eos.de2p(new_density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+				cells[i].tracers[0] = eos.dp2s(new_density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
+				double Erad_ratio = 1;//boost::math::pow<4>(new_T / old_T);
+				cells[i].Erad *= density_ratio * Erad_ratio;
+				for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+					cells[i].Eg[g] *= density_ratio * Erad_ratio;
+				cells[i].Erad_dt *= density_ratio * Erad_ratio;
+				cells[i].Erad_dt_dt *= density_ratio * Erad_ratio;
+				PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+			}
+			else 
+			{
+				if(R < std::min(Rt * 0.8, Rsmooth * 1.5) && cells[i].temperature > 1e9)
+				{
+					cells[i].temperature *= 0.8;
+					cells[i].internal_energy = eos.dT2e(cells[i].density, cells[i].temperature, cells[i].tracers, ComputationalCell3D::tracerNames);
+					cells[i].pressure = eos.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+					cells[i].tracers[0] = eos.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
+					PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+				}
+			}
+		}
+		MPI_exchange_data(sim.getTesselation(), cells, true);
+		MPI_exchange_data(sim.getTesselation(), extensives, true);
+	}
 	class DissipationDiag: public DiagnosticAppendix3D
 	{
 		private:
@@ -532,7 +583,7 @@ namespace
 					if(V > 4*target_volume * std::max(1.0, std::pow(r_dist / Rt, 1.5)))
 						first_refine = true;
 				}
-				if ((r_dist < (1.75 * Rt) || r_dist > 3 * apocenter) && (not first_refine))
+				if ((r_dist < (1.5 * Rt) || r_dist > 3 * apocenter) && (not first_refine))
 					continue;
 
 				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 4.5)) ? MaxMass : MaxMass * 30;
@@ -563,7 +614,7 @@ namespace
 				
 				if((r_dist < 1.25 * apocenter && cells[i].density > rho_x * 0.01))
 				{
-					if(V > std::min(200.0, target_volume * std::pow(r_dist / Rt, 1.5)))
+					if(V > std::min(200.0, target_volume * std::max(1.0, std::pow(0.5 * r_dist / Rt, 1.0))))
 					{
 						res.push_back(i);
 						continue;
@@ -672,7 +723,7 @@ namespace
 				double const z_abs = std::abs(tess.GetCellCM(i).z);
 				if((r_i < 1.25 * apocenter && cells[i].density > rho_x * 0.01 && r_i > Rt))
 				{
-					if(Vol > std::min(50.0, target_volume * std::pow(r_i / Rt, 1.5)))
+					if(Vol > std::min(50.0, target_volume * std::max(1.0, std::pow(0.5 * r_i / Rt, 1.0))))
 					{
 						continue;
 					}
@@ -1020,13 +1071,17 @@ int main(void)
 #endif
 		cells = snap.cells;
 		ComputationalCell3D::tracerNames = snap.tracerstickernames.first;
+#ifdef remove_center
+		if(ComputationalCell3D::tracerNames.size() < 3)
+			ComputationalCell3D::tracerNames.push_back("WasRemoved");
+#endif
 	}
 	else
 	{
 		double startfactor = 3;
 		double fstart = -acos(2 * Rp / (startfactor * Rt) - 1);
 		tstart = 0.3333333 * sqrt(2 * Rp * Rp * Rp / Mbh) * tan(0.5 * fstart) * (3 + tan(0.5 * fstart) * tan(0.5 * fstart));
-		size_t const np = std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4));
+		size_t const np = std::max(1e6, std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4)));
 		vector<Vector3D> ptemp;
 		if(rank == 0)
 		{
@@ -1060,6 +1115,7 @@ int main(void)
 		}
 		ComputationalCell3D::tracerNames.push_back("Entropy");
 		ComputationalCell3D::tracerNames.push_back("Star");
+		ComputationalCell3D::tracerNames.push_back("WasRemoved");
 	}
 	std::cout<<"Rank "<<rank<<" has "<<tess.GetPointNo()<<" points "<<" and "<<cells.size()<<" cells "<<std::endl;
 
@@ -1229,7 +1285,17 @@ int main(void)
 			}
 			double step_tstart = MPI_Wtime();
 #endif
+#ifdef RICH_MPI
+			MPI_Barrier(MPI_COMM_WORLD);
+			double rad_start_time = MPI_Wtime();
+#endif
 			double new_dt = sim->RadiationTimeStep(old_dt, matrix_builder);
+#ifdef RICH_MPI
+			MPI_Barrier(MPI_COMM_WORLD);
+			double rad_end_time = MPI_Wtime();
+			if(rank == 0)
+				std::cout << "Radiation step time: " << rad_end_time - rad_start_time << std::endl;
+#endif
 			new_dt = std::max(2.01e-4, new_dt);
 			// Prevent small time step
 			if(new_dt < 0.5 * old_dt)
@@ -1247,6 +1313,10 @@ int main(void)
 					std::cout<<"Doing AMR"<<std::endl;
 				amr(*sim);
 			}
+#ifdef remove_center
+			if(full_gravity)
+				RemoveCenter(*sim, Mbh, M, R, eos, beta);
+#endif
 			old_dt = sim->getTime() - old_t;
 			old_t = sim->getTime();
 			if(not full_gravity)
