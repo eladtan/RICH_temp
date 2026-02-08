@@ -534,11 +534,12 @@ size_t Voronoi3D::SetPointTetras(void)
     // change empty tetras to be not relevant
     for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
     {
+        Tetrahedron &tetra = tetras[*it];
         for (size_t i = 0; i < 4; ++i)
         {
-            if(tetras[*it].points[i] < this->Norg_)
+            if(tetra.points[i] < this->Norg_)
             {
-                tetra_vec &points_tetras = PointTetras_[tetras[*it].points[i]];
+                tetra_vec &points_tetras = PointTetras_[tetra.points[i]];
                 auto it2 = std::find(points_tetras.begin(), points_tetras.end(), *it);
                 if(it2 != points_tetras.end()) {
                     *it2 = points_tetras.back();
@@ -599,10 +600,6 @@ size_t Voronoi3D::SetPointTetras(void)
         assert(tet.newTetra);
         tet.newTetra = false;
 
-        // if(not tet.newTetra)
-        // {
-        //     continue;
-        // }
         has_good = false;
         has_big = false;
         counter++;
@@ -1179,7 +1176,7 @@ void Voronoi3D::EnsureSymmetry(const std::vector<int> &sentProc, const std::vect
 //     this->R_.resize(this->del_.tetras_.size());
 //     std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
 //     this->tetra_centers_.resize(this->R_.size());
-//     this->bigtet_ = SetPointTetras(this->PointTetras_, this->Norg_, this->del_.tetras_, this->del_.changed_tetras_, this->del_.empty_tetras_);
+//     this->bigtet_ = SetPointTetras();
 // }
 
 
@@ -2466,8 +2463,6 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             break;
         }
     }
-
-    std::cout << "Rank " << rank << ", total number of mirrored points: " << allMirrored.size() << std::endl;
 
     auto end = std::chrono::high_resolution_clock::now();
     if(rank == 0)

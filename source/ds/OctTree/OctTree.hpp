@@ -92,7 +92,7 @@ public:
         #endif // DEBUG_MODE
 
         bool isLeaf; // if a leaf
-        T value; // if a leaf, that's a point value, otherwise, thats the value for partition
+        T value; // if a leaf, that's a point value, and otherwise - the center of the bounding box
         BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
         std::array<OctTreeNode*, CHILDREN> children; // if a leaf, all children are nullptr
         OctTreeNode *parent;
@@ -121,7 +121,7 @@ protected:
     inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
 
     template<typename U>
-    OctTreeNode *tryInsert(const U &point);
+    OctTreeNode *tryInsert(const U &point, OctTreeNode *startHint = nullptr);
 
     #ifdef DEBUG_MODE
     void printHelper(const OctTreeNode *node, int indent) const;
@@ -213,7 +213,6 @@ public:
         }
         return node;
     }
-
 
     template<typename U>
     const OctTreeNode *findNodeContainingBoundingBox(const BoundingBox<U> &boundingBox) const; // TODO: necessary? What about just find value of that node?
@@ -560,12 +559,18 @@ const T &OctTree<T>::GetContainingNodeValue(const U &point) const
     {
         node = node->getChildContaining(point);
     }
+    if(node == nullptr)
+    {
+        UniversalError eo("OctTree: No node containing the point found. This should generally not happen.");
+        eo.addEntry("Point", point);
+        throw eo;
+    }
     return node->value;
 }
 
 template<typename T>
 template<typename U>
-typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
+typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point, OctTreeNode *startHint)
 {
     if(this->getRoot() == nullptr)
     {
@@ -578,7 +583,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
         throw eo;
     }
 
-    OctTreeNode *current = this->getRoot();
+    OctTreeNode *current = (startHint == nullptr)? this->getRoot() : startHint;
     while(current != nullptr)
     {
         // if we reached a leaf with the value `v`, start splitting until `v` and `point` are not in the same rectangle
@@ -846,8 +851,27 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
     
     T closestPoint;
     typename T::coord_type closestDistanceSquared = std::numeric_limits<typename T::coord_type>::max();
-    bool foundPoint = false;
-    
+
+    // quick good guess
+    if(includeSelf)
+    {
+        const OctTreeNode* commonAncestor = this->tryFindParent(point);
+        while(not commonAncestor->isLeaf)
+        {
+            // pick a child
+            for(size_t i = 0; i < CHILDREN; i++)
+            {
+                if(commonAncestor->children[i] != nullptr)
+                {
+                    commonAncestor = commonAncestor->children[i];
+                    break;
+                }
+            }
+        }
+        closestPoint = commonAncestor->value;
+        typename T::coord_type containingDistanceSquared = (closestPoint[0] - point[0]) * (closestPoint[0] - point[0]) + (closestPoint[1] - point[1]) * (closestPoint[1] - point[1]) + (closestPoint[2] - point[2]) * (closestPoint[2] - point[2]);
+        closestDistanceSquared = containingDistanceSquared;
+    }
     if(this->getRoot() != nullptr)
     {
         typename T::coord_type rootDist = this->getRoot()->boundingBox.distanceSquared(point);
@@ -876,11 +900,10 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
         {
             // Calculate actual distance to the point stored in leaf
             typename T::coord_type actualDistSquared = 0;
-            for(int i = 0; i < DIM; i++)
-            {
-                typename T::coord_type diff = node->value[i] - point[i];
-                actualDistSquared += diff * diff;
-            }
+            typename T::coord_type diff_x = node->value[0] - point[0];
+            typename T::coord_type diff_y = node->value[1] - point[1];
+            typename T::coord_type diff_z = node->value[2] - point[2];
+            actualDistSquared = diff_x * diff_x + diff_y * diff_y + diff_z * diff_z;
             
             if(not includeSelf and actualDistSquared < EPSILON * EPSILON)
             {
@@ -892,7 +915,6 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
             {
                 closestPoint = node->value;
                 closestDistanceSquared = actualDistSquared;
-                foundPoint = true;
             }
         }
         else
@@ -911,11 +933,6 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
                 }
             }
         }
-    }
-    
-    if(!foundPoint)
-    {
-        throw UniversalError("OctTree::getClosestPointInfo: No valid point found in tree");
     }
 
     return {closestPoint, sqrt(closestDistanceSquared)};
