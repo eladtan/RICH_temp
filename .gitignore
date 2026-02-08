@@ -28,3 +28,5 @@ validation*/*
 result_dir*
 ./output
 *.log
+error_*
+output_*
