@@ -1383,7 +1383,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
             bool isEmpty = this->HandleAll(data);
     
-            if(isEmpty and (this->localDecrementAmount > 0) and (this->localDecrementAmount == lastLocalDecrementAmount))
+            if(isEmpty and (this->localDecrementAmount != 0) and (this->localDecrementAmount == lastLocalDecrementAmount))
             {
                 decrementTryCounter++;
             }
