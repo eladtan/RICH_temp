@@ -1,6 +1,8 @@
 #include "Voronoi3DMovement.hpp"
+#include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
+#include "misc/universal_error.hpp"
 
 #define RADIUSES_FACTOR 2
 
@@ -216,8 +218,6 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 
         InternalMovements(tess, particles, cellIDs);
 
-        FirstInaccurateMovements(tess, particles);
-
         START_TIMER_PREEMPTIVE("Local Trees Construction");
         
         Vector3D ll(std::numeric_limits<double>::max());
@@ -260,19 +260,20 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         }
 
         OctTree<IndexedVector3D> octTree(IndexedVector3D(ll, std::numeric_limits<size_t>::max()), IndexedVector3D(ur, std::numeric_limits<size_t>::max()));
+        OctTree<IndexedVector3D> octTree2(IndexedVector3D(tess_ll, std::numeric_limits<size_t>::max()), IndexedVector3D(tess_ur, std::numeric_limits<size_t>::max()));
 
         for(size_t i = 0; i < N; i++)
         {
             const Vector3D &point = tess.GetMeshPoint(i);
             octTree.insert(IndexedVector3D(point, i));
+            octTree2.insert(IndexedVector3D(point, i));
         }
         assert(octTree.getSize() == N);
+        assert(octTree2.getSize() == N);
         
         START_TIMER_PREEMPTIVE("Distributed OctTree Construction");
-        DistributedOctTree<IndexedVector3D> distributedOctTree(&octTree);
+        DistributedOctTree<IndexedVector3D> distributedOctTree(&octTree2);
     
-        std::vector<Particle3D> newParticles;
-
         START_TIMER_PREEMPTIVE("Calculating Radiuses");
         double avgCellSize = 0;
         if(N > 0)
@@ -288,10 +289,10 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             avgCellSize = abs(tess_ur - tess_ll);
         }
         double initialRadius = avgCellSize;
-        std::vector<double> radiuses(particles.size(), initialRadius);
-        std::vector<boost::container::flat_set<rank_t>> ranksTested(particles.size());
 
         boost::container::flat_set<size_t> particlesLeft;
+        std::vector<Particle3D> myParticles;
+        std::vector<Particle3D> shouldExchangeParticles;
 
         START_TIMER_PREEMPTIVE("Self Update");
         if(octTree.getSize() > 0)
@@ -306,28 +307,30 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                     if(tess.IsPointInCell(p.location, p.cellIndex))
                     {
                         // the point is inside my domain, correct location
-                        newParticles.push_back(p);
+                        myParticles.push_back(p);
                         continue;
                     }
                 }
 
-                size_t closestCell = octTree.closestPoint(p.location).getIndex();
-                if(closestCell >= N)
+                if(tess.IsPointOutsideBox(p.location))
                 {
-                    // shouldn't reach here, but OK
-                    continue;
+                    UniversalError eo("Particle location is outside of the bounding box");
+                    eo.addEntry("Particle", p);
+                    eo.addEntry("Bounding Box", bb);
+                    throw eo;
                 }
+
+                size_t closestCell = octTree.closestPoint(p.location).getIndex();
                 if(tess.IsPointInCell(p.location, closestCell))
                 {
                     // the point is inside my domain, new location
                     p.cellIndex = closestCell;
-                    newParticles.push_back(p);
+                    myParticles.push_back(p);
                     // done!
                 }
                 else
                 {
-                    particlesLeft.insert(i);
-                    ranksTested[i].insert(rank);
+                    shouldExchangeParticles.push_back(p);
                 }
             }
         }
@@ -335,7 +338,7 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         {
             for(size_t i = 0; i < particles.size(); i++)
             {
-                particlesLeft.insert(i);
+                shouldExchangeParticles.push_back(particles[i]);
             }
         }
 
@@ -346,6 +349,34 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             std::cout << "Number of particles left to determination: " << numParticlesLeft << std::endl;
         }
 
+        // first guesses
+        FirstInaccurateMovements(tess, shouldExchangeParticles);
+
+        particles = myParticles;
+        std::vector<Particle3D> newParticles = std::move(myParticles);
+        std::vector<boost::container::flat_set<rank_t>> ranksTested(particles.size());
+
+        for(size_t i = 0; i < shouldExchangeParticles.size(); i++)
+        {
+            Particle3D &p = shouldExchangeParticles[i];
+            size_t closestCell = octTree.closestPoint(p.location).getIndex();
+
+            if(tess.IsPointInCell(p.location, closestCell))
+            {
+                p.cellIndex = closestCell;
+                newParticles.push_back(p);
+                ranksTested.push_back({});
+            }
+            else
+            {
+                size_t idx = particles.size();
+                particlesLeft.insert(idx);
+                ranksTested.push_back({rank});
+            }
+            particles.push_back(p);
+        }
+
+        std::vector<double> radiuses(particles.size(), initialRadius);
         std::vector<std::vector<Particle3D>> sendValues(size);
         std::vector<std::vector<size_t>> sendIndicesCpy(size);
         std::vector<std::vector<size_t>> acknowledgementValues(size);
@@ -354,6 +385,7 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         rank_t maxRanksTested = 0;
 
         START_TIMER_PREEMPTIVE("Main Loop");
+
         while(true)
         {
             iterations++;
