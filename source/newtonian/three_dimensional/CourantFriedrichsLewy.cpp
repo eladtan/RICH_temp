@@ -89,7 +89,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 	last_time_ = time;
-	if (debug_ || res<1e-7)
+	if (debug_)
 	{
 		if (1.0000001 * res > old_res && (dt_first_ < 0 || old_res < 0.99999 * dt_first_))
 		{

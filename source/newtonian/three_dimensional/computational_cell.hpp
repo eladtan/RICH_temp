@@ -191,6 +191,19 @@ ComputationalCell3D operator*(double s, ComputationalCell3D const& p);
  */
 void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D const& other, double scalar);
 
+/*! \brief Vectorized add-mult for 3 derivatives at once
+  \param res Result
+  \param dx X derivative
+  \param dy Y derivative
+  \param dz Z derivative
+  \param sx X scalar
+  \param sy Y scalar
+  \param sz Z scalar
+ */
+void ComputationalCellAddMult3(ComputationalCell3D &res, 
+	ComputationalCell3D const& dx, ComputationalCell3D const& dy, ComputationalCell3D const& dz,
+	double sx, double sy, double sz);
+
 /*! \brief Swap computation cell
   \param cell Result
   \param other Other cell

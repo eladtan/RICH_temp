@@ -127,6 +127,7 @@ public:
     mutable std::size_t cell_id_of_compton_matrices; // for debugging make sure that the compton values are generated for the correct cell 
 
     mutable std::vector<double> Gammas; // fleck_factor = 1.0 / (1.0 + c*dt*beta*Gamma)
+    mutable std::vector<bool> use_n_zero; // flag for cells that need to use n=0 due to negative fleck factor
 
 private:
     bool const protections_on_; // flag whether to use Elad's protections on the amount of change allowed per time step (should not be on when running tests...)
@@ -145,7 +146,7 @@ private:
     // helper functions
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
 
-    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs) const;
+    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs, bool const calculate_n = true) const;
 
     double calculate_Upsilon(ComputationalCell3D const& cell) const;
 

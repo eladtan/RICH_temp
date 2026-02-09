@@ -140,17 +140,18 @@ class BoundingBox
     template <typename U>
     inline typename T::coord_type distanceSquared(const U &point) const {
         T closestPoint = this->closestPoint(point);
-#ifdef USE_VCL_VECTORIZATION
-        Vec4d closestPointVec(closestPoint[0] - point[0], closestPoint[1] - point[1], closestPoint[2] - point[2], 0);
-        Vec4d pointSquaredVec = closestPointVec * closestPointVec;
-        return pointSquaredVec[0] + pointSquaredVec[1] + pointSquaredVec[2];
-#else
-        typename T::coord_type closestDistance = 0;
-        for (int i = 0; i < DIM; i++) {
-            closestDistance += (point[i] - closestPoint[i]);
-        }
-        return closestDistance;
-#endif  // USE_VCL_VECTORIZATION
+        #ifdef USE_VCL_VECTORIZATION
+            Vec4d closestPointVec(closestPoint[0] - point[0], closestPoint[1] - point[1], closestPoint[2] - point[2], 0);
+            Vec4d pointSquaredVec = closestPointVec * closestPointVec;
+            return pointSquaredVec[0] + pointSquaredVec[1] + pointSquaredVec[2];
+        #else
+            typename T::coord_type closestDistance = 0;
+            for(int i = 0; i < DIM; i++)
+            {
+                closestDistance += (point[i] - closestPoint[i]);
+            }
+            return closestDistance;
+        #endif // USE_VCL_VECTORIZATION
     }
 
     template <typename U>

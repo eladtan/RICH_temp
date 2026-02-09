@@ -288,55 +288,68 @@ namespace
         PointTetras.clear();
         PointTetras.resize(Norg);
 
-        #ifdef USE_VCL_VECTORIZATION
-            Vec4uq _Norg(Norg);
-        #endif // USE_VCL_VECTORIZATION
-
-        size_t Ntetra = tetras.size();
-        size_t bigtet(0);
-        bool has_good, has_big;
-        // change empty tetras to be not relevant
-        for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
+        size_t const Ntetra = tetras.size();
+        size_t bigtet = 0;
+        
+        // Mark empty tetras as invalid (unrolled for cache efficiency)
+        for (size_t empty_idx : empty_tetras)
         {
-#ifdef __INTEL_COMPILER
-#pragma omp simd early_exit
-#endif
-            for (size_t i = 0; i < 4; ++i)
+            Tetrahedron &tet = tetras[empty_idx];
+            tet.points[0] = std::numeric_limits<std::size_t>::max();
+            tet.points[1] = std::numeric_limits<std::size_t>::max();
+            tet.points[2] = std::numeric_limits<std::size_t>::max();
+            tet.points[3] = std::numeric_limits<std::size_t>::max();
+            tet.neighbors[0] = std::numeric_limits<std::size_t>::max();
+            tet.neighbors[1] = std::numeric_limits<std::size_t>::max();
+            tet.neighbors[2] = std::numeric_limits<std::size_t>::max();
+            tet.neighbors[3] = std::numeric_limits<std::size_t>::max();
+            }
+
+        // Count tetrahedra per point (unrolled inner loop)
+        std::vector<size_t> point_counts(Norg, 0);
+        for (size_t i = 0; i < Ntetra; ++i)
+        {
+            const size_t* pts = tetras[i].points;
+            // Must check bounds before accessing point_counts
+            if (pts[0] < Norg) point_counts[pts[0]]++;
+            if (pts[1] < Norg) point_counts[pts[1]]++;
+            if (pts[2] < Norg) point_counts[pts[2]]++;
+            if (pts[3] < Norg) point_counts[pts[3]]++;
+        }
+
+        // Reserve space for each point's tetra list
+        for (size_t i = 0; i < Norg; ++i)
             {
-                tetras[*it].points[i] = std::numeric_limits<std::size_t>::max();
-                tetras[*it].neighbors[i] = std::numeric_limits<std::size_t>::max();
+            if (point_counts[i] > 0)
+            {
+                PointTetras[i].reserve(point_counts[i]);
             }
         }
 
+        // Build the point-to-tetra mapping (unrolled, minimized branching)
         for (size_t i = 0; i < Ntetra; ++i)
         {
-            const Tetrahedron &tet = tetras[i];
-
-            has_good = false;
-            has_big = false;
-
-            #ifdef USE_VCL_VECTORIZATION
-                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
-                Vec4qb cmp = (_points < _Norg);
-            #endif // USE_VCL_VECTORIZATION
+            const size_t* pts = tetras[i].points;
+            const size_t p0 = pts[0];
+            const size_t p1 = pts[1];
+            const size_t p2 = pts[2];
+            const size_t p3 = pts[3];
             
-            for(int j = 0; j < 4; ++j)
-            {
-                #ifdef USE_VCL_VECTORIZATION
-                    if(cmp[j])
-                #else // USE_VCL_VECTORIZATION
-                    if(tet.points[j] < Norg)
-                #endif // USE_VCL_VECTORIZATION
-                {
-                    has_good = true;
-                    PointTetras[tet.points[j]].push_back(i);
-                }
-                else
-                {
-                    has_big = true;
-                }
-            }
-            if(has_big and has_good)
+            // Count valid (< Norg) and invalid (>= Norg) points
+            const bool v0 = (p0 < Norg);
+            const bool v1 = (p1 < Norg);
+            const bool v2 = (p2 < Norg);
+            const bool v3 = (p3 < Norg);
+            
+            // Add to point-tetra lists (only if valid)
+            if (v0) PointTetras[p0].push_back(i);
+            if (v1) PointTetras[p1].push_back(i);
+            if (v2) PointTetras[p2].push_back(i);
+            if (v3) PointTetras[p3].push_back(i);
+            
+            // Track bigtet: tetra that has both valid and invalid points
+            const int valid_count = v0 + v1 + v2 + v3;
+            if (valid_count > 0 && valid_count < 4)
             {
                 bigtet = i;
             }
@@ -1639,7 +1652,7 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
                                         BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                         boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
-                                        boost::container::flat_set<size_t> &selfIgnorePoints)
+                                        RangeFinder::_set<size_t> &selfIgnorePoints)
 {
     std::vector<Vector3D> newPoints;
     {
@@ -1844,12 +1857,13 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     #endif // RICH_MPI
     int finished;
 
-    std::vector<std::pair<size_t, size_t>> allMirrored;
+    // Use a set for O(1) lookup instead of O(n) linear search in the loop
+    std::set<std::pair<size_t, size_t>> allMirroredSet;
 
     size_t iterations = 0;
 
     bool considerOwnPoints = (size == 1) or (this->Norg_ != this->allMyPoints.size()); // there are points which we ignore in this step, so we have, in the range searching, communicate with us as well
-    boost::container::flat_set<size_t> selfIgnorePoints;
+    RangeFinder::_set<size_t> selfIgnorePoints;
     for(const std::pair<size_t, size_t> &indices : this->indicesInAllMyPoints)
     {
         selfIgnorePoints.insert(indices.second);
@@ -1894,13 +1908,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         
         std::vector<Vector3D> newPoints;
         newPoints.reserve(mirroredPoints.size());
-        allMirrored.reserve(allMirrored.size() + mirroredPoints.size());
         for(const std::pair<size_t, size_t> &pairFacePoint : mirroredPoints)
         {
-            // check if we have already mirrored this point with this face
-            if(std::find(allMirrored.begin(), allMirrored.end(), pairFacePoint) == allMirrored.end())
+            // check if we have already mirrored this point with this face - O(log n) lookup
+            if(allMirroredSet.find(pairFacePoint) == allMirroredSet.end())
             {
-                allMirrored.push_back(pairFacePoint); // remember we mirrored this point with this face
+                allMirroredSet.insert(pairFacePoint); // remember we mirrored this point with this face
                 newPoints.push_back(MirrorPoint(box[pairFacePoint.first], this->del_.points_[pairFacePoint.second]));
             }
         }

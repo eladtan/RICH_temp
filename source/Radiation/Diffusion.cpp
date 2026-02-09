@@ -60,7 +60,8 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
     ComputationalCell3D cell_cgs(cell);
     cell_cgs.density *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
     double const Er = cell.Erad * cell.density *  mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
-    double const sigma_planck = D_coefficient_calcualtor.CalcPlanckOpacity(cell_cgs);
+    double sigma_planck = D_coefficient_calcualtor.CalcPlanckOpacity(cell_cgs);
+    sigma_planck = std::min(sigma_planck, 100.0 / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
     double const sigma_s = D_coefficient_calcualtor.CalcScatteringOpacity(cell_cgs);
     double const T = cell.temperature;
     double Cv = eos_.dT2cv(cell.density, T, cell.tracers, ComputationalCell3D::tracerNames);
@@ -301,6 +302,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         sigma_planck[i] = D_coefficient_calcualtor.CalcPlanckOpacity(cells_cgs[i]);
         if(sigma_planck[i] < 0)
             throw UniversalError("Negative sigma_planck");
+        sigma_planck[i] = std::min(sigma_planck[i], 10.0 / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
         sigma_s[i] = D_coefficient_calcualtor.CalcScatteringOpacity(cells_cgs[i]);
         double Cv = eos_.dT2cv(cells[i].density, T, cells[i].tracers, ComputationalCell3D::tracerNames);
         double const energy_ratio = Cv * cells[i].temperature / (cells[i].internal_energy * cells[i].density);

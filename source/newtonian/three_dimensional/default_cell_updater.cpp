@@ -124,7 +124,7 @@ namespace
 				double const old_etherm = res[i].internal_energy;
 				res[i].velocity = extensive.momentum / extensive.mass;
 				double energy = extensive.internal_energy / extensive.mass;
-				extensive.energy = extensive.mass*(energy + 0.5*ScalarProd(res[i].velocity, res[i].velocity));
+				// extensive.energy = extensive.mass*(energy + 0.5*ScalarProd(res[i].velocity, res[i].velocity));
 				for (size_t j = 0; j < Ntracers; ++j)
 					res[i].tracers[j] = extensive.tracers[j] / extensive.mass;
 				// Entropy fix if needed

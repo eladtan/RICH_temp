@@ -4,14 +4,15 @@
 #ifdef RICH_MPI
 
 #include <vector>
-#include <boost/container/flat_set.hpp>
+#include <unordered_set>
 #include <algorithm>
 #include "misc/universal_error.hpp"
 
 class SentPointsContainer
 {
 public:
-    using PointsSet = boost::container::flat_set<size_t>;
+    // Using unordered_set for O(1) lookup instead of O(log N) for flat_set
+    using PointsSet = std::unordered_set<size_t>;
 
     inline SentPointsContainer(const std::vector<int> &sentProc = std::vector<int>(), const std::vector<std::vector<size_t>> &sentData = std::vector<std::vector<size_t>>())
     {

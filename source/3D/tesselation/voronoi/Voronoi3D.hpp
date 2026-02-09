@@ -142,7 +142,7 @@ private:
                               BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                               boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                               boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints,
-                              boost::container::flat_set<size_t> &selfIgnorePoints);
+                              RangeFinder::_set<size_t> &selfIgnorePoints);
     
   #ifdef RICH_MPI
     void BringGhostPointsToBuild(const MPI_Comm &comm);

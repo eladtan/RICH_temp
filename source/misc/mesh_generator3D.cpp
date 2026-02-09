@@ -1,4 +1,6 @@
 #include "mesh_generator3D.hpp"
+#include <boost/random/normal_distribution.hpp>
+#include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include <array>
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -161,4 +163,70 @@ vector<Vector3D> RandSphereRa(std::size_t PointNum, Vector3D const & ll, Vector3
 	return res;
 }
 
+std::vector<Vector3D> RandSphereSurface(double const Radius, size_t const PointNum, Vector3D const center)
+{
+	int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+	std::vector<Vector3D> points;
+	points.reserve(PointNum);
+	typedef boost::mt19937_64 base_generator_type;
+	base_generator_type generator(rank);
+	boost::random::normal_distribution<> dist;
+	double ran[3];
+	for(size_t i = 0; i < PointNum; ++i)
+	{
+		ran[0] = dist(generator);
+		ran[1] = dist(generator);
+		ran[2] = dist(generator);
+		double norm = std::sqrt(ran[0] * ran[0] + ran[1] * ran[1] + ran[2] * ran[2]);
+		Vector3D point = Vector3D(ran[0] / norm * Radius, ran[1] / norm * Radius, ran[2] / norm * Radius);
+		point += center;
+		points.push_back(point);
+	}
+	return points;
+}
 
+std::vector<Vector3D> RandSphereSurfaceRounded(double const Radius, size_t const PointNum, Vector3D const& center, size_t const Niterations)
+{
+	int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+	std::vector<Vector3D> points1;
+	double const dR = Radius / std::sqrt(PointNum);
+	double const new_R = Radius + 7 * dR;
+	Vector3D const ll = Vector3D(-new_R, -new_R, -new_R) + center;
+	Vector3D const ur = Vector3D(new_R, new_R, new_R) + center;
+	if(rank == 0)
+	{
+		points1 = RandSphereSurface(Radius, PointNum, center);
+		std::vector<Vector3D> points2 = RandSphereSurface(Radius - dR, PointNum, center);
+		points1.insert(points1.end(), points2.begin(), points2.end());
+		points2 = RandSphereSurface(Radius + dR, PointNum, center);
+		points1.insert(points1.end(), points2.begin(), points2.end());
+		points2 = RandSphereR(std::max(10, static_cast<int>(0.01 * PointNum * Radius / dR)), ll, ur, 0, Radius - 4 * dR, center);
+		points1.insert(points1.end(), points2.begin(), points2.end());
+		points2 = RandSphereR(std::max(10, static_cast<int>(0.01 * PointNum * Radius / dR)), ll, ur, Radius + 4 * dR, new_R * 1.4, center);
+		points1.insert(points1.end(), points2.begin(), points2.end());
+		std::cout << "Total points before rounding: " << points1.size() << std::endl;
+	}
+
+	std::function<bool(Vector3D const&)> criteriaR;
+	criteriaR = [center, Radius, dR](Vector3D const& point) {
+        return std::abs(Radius - abs(point - center)) < 0.25 * dR;
+    };
+
+	points1 = RoundGridSphere3D(points1, ll, ur, center, Niterations, nullptr, criteriaR);
+#ifdef RICH_MPI
+	points1 = MPI_Gatherv_serializable(points1, 0, MPI_COMM_WORLD);
+#endif
+	std::vector<Vector3D> points;
+	for(auto const& point : points1)
+	{
+		if(std::abs(Radius - abs(point - center)) < 0.25 * dR)
+			points.push_back(point);
+	}
+	return points;
+}
