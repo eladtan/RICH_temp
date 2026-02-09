@@ -9,4 +9,5 @@
 	url = git@gitlab.com:menikrief/radiative_shock.git
 [submodule "source/Radiation/CMMC"]
 	path = source/Radiation/CMMC
+	branch = elad_changes
 	url = git@github.com:menahemkrief/CMMC.git
