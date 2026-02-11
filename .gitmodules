@@ -1,6 +1,3 @@
-[submodule "compilation/buildutils"]
-	path = compilation/buildutils
-	url = git@gitlab.com:nadavhalahmi/buildutils.git
 [submodule "source/opt/r3d"]
 	path = source/opt/r3d
 	url = git@github.com:maormizrachi/r3d_rich

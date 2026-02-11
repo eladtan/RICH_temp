@@ -9,7 +9,6 @@
 #include "CMMC/src/compton_matrix_mc.hpp"
 
 using namespace CG;
-using namespace compton_matrix_mc;
 
 class MultigroupDiffusion : public RadiationDriver {
 public:

@@ -16,8 +16,8 @@ public:
 
     virtual inline int getCellOwner(curve_index_t d) const
     {
-        int index = static_cast<int>(std::distance(this->range.begin(), std::upper_bound(this->range.begin(), this->range.end(), d)));
-        return std::min<int>(index, this->size - 1);
+        size_t index = static_cast<size_t>(std::distance(this->range.begin(), std::upper_bound(this->range.begin(), this->range.end(), d)));
+        return std::min<size_t>(index, this->size - 1);
     };
 
     virtual void updatePoints(const std::vector<Vector3D> &newPoints)

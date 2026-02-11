@@ -1,6 +1,10 @@
 external_libraries
 library_*
 runs/temp_*
+*.vtu
+*.pvtu
+*.out
+*.err
 build
 *.pyc
 __pycache__
@@ -30,3 +34,8 @@ result_dir*
 *.log
 error_*
 output_*
+
+*.a
+*.la
+*.so
+.cache

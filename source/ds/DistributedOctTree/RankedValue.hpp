@@ -3,11 +3,18 @@
 
 #include <boost/container/small_vector.hpp>
 
+#ifdef RICH_MPI
+    #include "mpi/serialize/Serializer.hpp"
+#endif // RICH_MPI
+
 #define UNDEFINED_OWNER -1
 #define PATH_END_DIRECTION (-1)
 
 template<typename T, int max_ranks_per_leaf, int max_directions_size>
 struct OctTreeRankedValue
+                    #ifdef RICH_MPI
+                        : public Serializable
+                    #endif // RICH_MPI
 {
     using coord_type = typename T::coord_type;
     using Raw_type = typename is_raw_type_defined<T>::type;
@@ -78,6 +85,24 @@ struct OctTreeRankedValue
         }
         return stream << wrapper.owners[numOwners - 1] << "]";
     }
+
+    #ifdef RICH_MPI
+        size_t dump(Serializer *serializer) const override
+        {
+            // todo: full
+            size_t bytes = 0;
+            bytes += serializer->insert(this->value);
+            return bytes;
+        }
+        
+        size_t load(const Serializer *serializer, size_t byteOffset) override
+        {
+            // todo: full
+            size_t bytes = 0;
+            bytes += serializer->extract(this->value, byteOffset);
+            return bytes;
+        }
+    #endif // RICH_MPI
 };
 
 #endif // RANKED_VALUE_HPP

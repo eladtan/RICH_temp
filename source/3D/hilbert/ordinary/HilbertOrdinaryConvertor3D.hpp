@@ -9,6 +9,8 @@ class HilbertOrdinaryConvertor3D : public HilbertConvertor3D
 public:
     explicit HilbertOrdinaryConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
+    ~HilbertOrdinaryConvertor3D() override = default;
+    
     void changeOrder(size_t order) override
     {
         this->order = order;

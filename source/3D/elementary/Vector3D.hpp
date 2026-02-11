@@ -64,6 +64,8 @@ public:
 	*/
 	explicit inline Vector3D(void): Vector3D(0, 0, 0){};
 
+	explicit inline Vector3D(double value): Vector3D(value, value, value){};
+
 	/*! \brief Class copy constructor
 	\param other Other vector
 	*/
@@ -161,6 +163,11 @@ public:
 		y *= s;
 		z *= s;
 		return *this;
+	}
+
+	inline Vector3D& operator/=(double s)
+	{
+		return this->operator*=(1.0/s);
 	}
 
 	/*! \brief Compare 3D-Vectors (up to an arbitrary precision)

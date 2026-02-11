@@ -1,6 +1,10 @@
 #ifndef QUERY_AGENT_HPP
 #define QUERY_AGENT_HPP
 
+#ifdef RICH_MPI
+
+#include <mpi.h>
+
 #include "AnswerAgent.hpp"
 #include "TalkAgent.hpp"
 #include "QueryData.hpp"
@@ -37,5 +41,7 @@ QueryAgent<QueryData, AnswerType>::QueryAgent(const TalkAgent<QueryData> *talkAg
     this->sendToSelf = sendToSelf;
     this->comm = comm;
 }
+
+#endif // RICH_MPI
 
 #endif // QUERY_AGENT_HPP

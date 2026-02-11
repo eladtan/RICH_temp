@@ -82,10 +82,10 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     minimum_temperature_(minimum_temperature),
     displayed_warning_(false),
     compton_matrix_gen(
-        compton_on ? compton_temperatures() : std::vector<double>{ 1.0*units::kev_kelvin, 2.0*units::kev_kelvin },
         energy_groups_center_,
         energy_groups_boundary_,
-        compton_on ? 200000 : 10, // num of samples
+        compton_on ? 200000 : 10,
+        true, // num of samples
         1),
     tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
     dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -118,6 +118,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
             exit(1);
         }
     }
+    if(compton_on)
+        compton_matrix_gen.set_tables(compton_temperatures());
 }
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
@@ -840,9 +842,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
 
             cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
             Erad_tot += extensives[i].Eg[group];
-            // absorption + emission
-
-            // dE_absorption_emission += f * volume * cdt * full_CG_res_i * sigma_absorption_group[i][group];
+            // absorption + emission must use raw sub_x (CG_result)
             dE_absorption_emission += volume * cdt * CG_res * sigma_absorption_group[i][group];
             auto const bg = planck_integal_group[i][group];
             for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
@@ -1205,19 +1205,17 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
     double const A = 1.0;
     double const Z = 1.0;
-    double const T = std::min(compton_matrix_gen.get_maximum_compton_temperature() * 0.9999, old_Tm[cell_index]);
-    compton_matrix_gen.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau);
+    double const T = std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]);
+    compton_matrix_gen.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
 
-    // returns dtau_dT
-    compton_matrix_gen.get_dtau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, dtau_dUm);
 
     // transform dtau_dT to dtau_dUm
-    double const beta = 1.0 / (4.0*CG::radiation_constant*pow<3>(T));
-    for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
-        for (auto& val : dtau_dUm[g]) {
-            val *= beta;
-        }
-    }
+    // double const beta = 1.0 / (4.0*CG::radiation_constant*pow<3>(T));
+    // for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
+    //     for (auto& val : dtau_dUm[g]) {
+    //         val *= beta;
+    //     }
+    // }
 
     auto const [up_scattering_last, down_scattering_last] = compton_matrix_gen.get_last_group_upscattering_and_downscattering(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z);
 

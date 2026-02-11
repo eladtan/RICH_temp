@@ -13,6 +13,7 @@
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
 #include "mpi/mpi_exchange_commands.hpp"
 
 //! \brief Container for points defining a face
@@ -31,7 +32,9 @@ class Tessellation3D
 {
 public:
   using AllPointsMap = boost::container::flat_map<size_t, size_t>;
-
+  using Face_T = Face;
+  using Point_T = Vector3D;
+  
   virtual void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) = 0;
 
   /*! \brief Builds the tessellation
@@ -50,24 +53,34 @@ public:
   virtual bool PointInMyDomain(const Vector3D &point) const = 0;
 
   virtual int GetOwner(const Vector3D &point) const = 0;
-  
-  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) = 0;
 
-  inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false)
+  virtual void SetImbalanceTolerance(double tolerance) = 0;
+
+  virtual void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
+
+  virtual bool ShouldRebalance(const std::vector<double> &weights) const = 0;
+
+  virtual bool ShouldRebalance(void) const = 0;
+
+  virtual std::shared_ptr<LoadBalancer> GetLoadBalancer(void) = 0;
+
+  virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) = 0;
+
+  inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false)
   {
-    this->BuildPartiallyParallel(allPoints, std::vector<double>(allPoints.size(), 1.0), indicesToBuild, suppressRebalancing);
+    this->BuildPartiallyParallel(allPoints, std::vector<double>(allPoints.size(), 1.0), indicesToBuild, suppressRebalancing, suppressExchange);
   }
 
-  virtual void BuildParallel(const std::vector<Vector3D> &points, const std::vector<double> &weights, bool suppressRebalancing = false)
+  virtual void BuildParallel(const std::vector<Vector3D> &points, const std::vector<double> &weights, bool suppressRebalancing = false, bool suppressExchange = false)
   {
       std::vector<size_t> indicesToBuild(points.size());
       std::iota(indicesToBuild.begin(), indicesToBuild.end(), 0);
-      this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing);
+      this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing, suppressExchange);
   }
 
-  inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false)
+  inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false, bool suppressExchange = false)
   {
-      this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing);
+      this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing, suppressExchange);
   }
 
   virtual const std::vector<double> &GetPointsBuildWeights() const = 0;
@@ -100,7 +113,7 @@ public:
     \param index Mesh generating point index
     \return Position of mesh generating point
   */
-  virtual Vector3D GetMeshPoint(size_t index) const = 0;
+  virtual const Vector3D &GetMeshPoint(size_t index) const = 0;
 
   /*! \brief Returns Area of face
     \param index The index of the face
@@ -152,7 +165,7 @@ public:
   /*! \brief Get all cell faces
     \return List of all cell faces
    */
-  virtual vector<face_vec >const& GetAllCellFaces(void)const = 0;
+  virtual vector<face_vec> const &GetAllCellFaces(void) const = 0;
 
   /*!
     \brief Returns a reference to the point vector
@@ -243,6 +256,8 @@ public:
   */
   virtual bool BoundaryFace(size_t index) const = 0;
 
+  virtual bool IsPointInCell(const Vector3D &point, size_t cellIndex) const = 0;
+
   #ifdef RICH_MPI
     /*!
       \brief Returns the indeces of the points that were sent to other processors as ghost points 
@@ -327,13 +342,13 @@ public:
     \param point The index of the cell to calculate for
     \param result The neighbors and their neighbors indeces
   */
-  virtual void GetNeighborNeighbors(vector<size_t> &result,size_t point)const = 0;
+  virtual void GetNeighborNeighbors(vector<size_t> &result,size_t point) const = 0;
 
   /*! \brief Get the indices of neighbours of a face
     \param face_index Index of the face
     \return Pair of indices of cells on the two sides of the face
    */
-  virtual std::pair<size_t,size_t> GetFaceNeighbors(size_t face_index)const = 0;
+  virtual const std::pair<size_t,size_t> &GetFaceNeighbors(size_t face_index) const = 0;
 
   /*! \brief Retrieve all neighbouring points who share a face
     \return List of pairs of indices of all neighbouring points
@@ -377,7 +392,7 @@ public:
     \param index Face index
     \return Position of the face centre of mass
    */
-  virtual Vector3D FaceCM(size_t index)const=0;
+  virtual const Vector3D &FaceCM(size_t index)const=0;
 
   #ifdef RICH_MPI
     /*! \brief Get indices of ghost points
@@ -407,7 +422,9 @@ public:
     \param index Point index
     \return True if point is inside the box
    */
-  virtual bool IsPointOutsideBox(size_t index)const = 0;
+  virtual bool IsPointOutsideBox(size_t index) const = 0;
+
+  virtual bool IsPointOutsideBox(const Vector3D &point) const = 0;
 
   /*! \brief Write tessellation to file
     \param filename Name of output file
@@ -424,11 +441,18 @@ public:
 \return The box faces
 */
   virtual std::vector<Face>& ModifyBoxFaces(void) = 0;
-/*!
-\brief Access method to box faces
-\return The box faces
-*/
-  virtual std::vector<Face> GetBoxFaces(void) const = 0;
+
+  /*!
+  \brief Access method to box faces
+  \return The box faces
+  */
+  virtual const std::vector<Face> &GetBoxFaces(void) const = 0;
+
+  /*!
+  \brief Access method to box faces
+  \return The box faces
+  */
+  virtual std::vector<Face> GetBoxFaces(void) = 0;
 
   /**
    * Suppose `partialBuildData` contains correct local data for partial build, and that `allBuildData` have correct values for all the points (non active local).

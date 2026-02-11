@@ -19,6 +19,7 @@ public:
 
     virtual inline int getOwner(const Vector3D &point) const override
     {
+        // TODO: that's wrong
         return this->getCellOwner(this->convertor->xyz2d(point));
     };
 

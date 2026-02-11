@@ -1,6 +1,10 @@
 #ifndef HDSIM_3D_HPP
 #define HDSIM_3D_HPP 1
 
+#include <cassert>
+#include <chrono>
+#include "3D/hilbert/HilbertOrder3D.hpp"
+#include "misc/utils.hpp"
 #include "computational_cell.hpp"
 #include "3D/tesselation/Tessellation3D.hpp"
 #include "conserved_3d.hpp"
@@ -14,6 +18,12 @@
 #include "Radiation/conj_grad_solve.hpp"
 #include "Radiation/RadiationDriver.hpp"
 #include "Radiation/Diffusion.hpp"
+
+#ifdef RICH_MPI
+  #include <mpi.h>
+  #include "mpi/mpi_commands.hpp"
+  #include "mpi/ExchangeChain.hpp"
+#endif
 
 //! \brief Three dimensional simulation
 class HDSim3D
@@ -157,6 +167,10 @@ public:
 
   double getTimeStep(void) const {return dt_;}
 
+  #ifdef RICH_MPI
+    const ExchangeChain &GetExchangeChain(void) const {return this->exchange_chain_;}
+  #endif // RICH_MPI
+
 private:
   Tessellation3D& tess_;
   const EquationOfState& eos_;
@@ -171,6 +185,9 @@ private:
   ProgressTracker pt_;
   size_t Max_ID_;
   double dt_;
+  #ifdef RICH_MPI
+    ExchangeChain exchange_chain_;
+  #endif // RICH_MPI
 };
 
 #endif // HDSIM_3D_HPP

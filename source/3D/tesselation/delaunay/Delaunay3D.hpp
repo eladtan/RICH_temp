@@ -27,6 +27,8 @@ public:
   std::size_t Norg_; 
   //! \brief List of outside neighbours
   std::size_t outside_neighbor_;
+  std::vector<std::pair<size_t, Tetrahedron>> changed_tetras_;
+  std::vector<size_t> newTetras_;
 
   Delaunay3D();
 

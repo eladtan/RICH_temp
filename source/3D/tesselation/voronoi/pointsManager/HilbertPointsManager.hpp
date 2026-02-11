@@ -11,6 +11,8 @@
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
 #include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
 #include "3D/hilbert/ordinary/HilbertOrdinaryConvertor3D.hpp"
+#include "3D/tesselation/loadBalancing/PartitionLoadBalancer.hpp"
+#include "utils/balance/weightedBalance2.hpp"
 
 #define SPACE_FACTOR 1e-5
 
@@ -45,12 +47,16 @@ public:
 
     HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;
 
-    PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) override;
+    PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange) override;
 
     void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) override;
 
     const Kernelization3D::IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
     
+    void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
+
+    std::shared_ptr<LoadBalancer> getLoadBalancer(void) override;
+
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
@@ -59,7 +65,7 @@ private:
     HilbertCurveEnvironmentAgent *envAgent;
     HilbertConvertor3D *convertor;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
-    std::vector<hilbert_index_t> responsibilityRange;
+    std::shared_ptr<LoadBalancer> loadBalancer;
     bool customIndexingIsSet;
 };
 

@@ -1059,7 +1059,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveVector(mask, ToRemove.first);
 	mask.resize(new_mesh.size(), std::numeric_limits<size_t>::max());
 	tess.PreparePoints(new_mesh, mask);
-	tess.BuildParallel(new_mesh, true);
+	tess.BuildParallel(new_mesh, true /* no rebalance */, true /* no exchange */);
 #else // RICH_MPI
 	tess.Build(new_mesh);
 #endif

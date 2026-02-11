@@ -27,6 +27,7 @@
 #include <boost/multiprecision/cpp_dec_float.hpp>
 #include <boost/container/static_vector.hpp>
 #include <boost/container/small_vector.hpp>
+#include "utils/debug/SmartTimer.hpp"
 #include <omp.h>
 
 #ifdef USE_VCL_VECTORIZATION
@@ -49,8 +50,8 @@
 #include "misc/io3D.hpp"
 
 #ifdef RICH_MPI
-#include "newtonian/three_dimensional/computational_cell.hpp"
 #include "mpi/mpi_commands.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 #endif
 
 // finders
@@ -85,6 +86,10 @@ typedef std::array<std::size_t, 3> b_array_3;
 //! \brief A three dimensional voronoi tessellation
 class Voronoi3D : public Tessellation3D
 {
+public:
+  using Face_T = Face;
+  using Point_T = Vector3D;
+
 private:
   Vector3D ll_, ur_;
   std::size_t Norg_, bigtet_;
@@ -136,6 +141,8 @@ private:
 					vector<vector<size_t> > &past_duplicate);
   void BuildVoronoi(std::vector<size_t> const& order);
 
+  size_t SetPointTetras(void);
+
   void InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &normals);
 
   void BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
@@ -166,19 +173,21 @@ private:
   
   void UpdateRangeFinder(void);
 
+  void UpdatePointsTree(const std::vector<Vector3D> &activePoints);
+  
   #ifdef RICH_MPI
-    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing);
+    std::vector<Vector3D> PrepareToBuildParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange);
     void FilterRealGhostPoints();
     void UpdateDuplicatedPoints(const std::vector<int> &sentProc, const std::vector<std::vector<size_t>> &sentPoints);
     void EnsureSymmetry(const std::vector<int> &sentProc, const std::vector<std::vector<int>> &recvProcLists);
-    std::tuple<std::vector<Vector3D>, std::vector<int>, std::vector<std::vector<size_t>>, std::vector<int>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const MPI_Comm &comm = MPI_COMM_WORLD) const;
+    std::tuple<std::vector<Vector3D>, std::vector<std::vector<size_t>>, std::vector<std::vector<size_t>>> InitialGhostPointsExchange(const MPI_Comm &comm = MPI_COMM_WORLD) const;
     void InitialExchange(const std::vector<Vector3D> &points, std::vector<int> &sentProc, std::vector<std::vector<size_t>> &sentPoints, const MPI_Comm &comm = MPI_COMM_WORLD);
     void SetGhostArray(const std::vector<int> &recvProc, const std::vector<std::vector<size_t>> &recvPoints);  
     void BringRemoteGhostPoints(const std::vector<BigRangeQueryData> &bigQueries, const std::vector<SmallRangeQueryData> &smallQueries,
                                       BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints);
-  #endif // RICH_MPI
+    #endif // RICH_MPI
 
   Delaunay3D del_;
   //vector<vector<std::size_t> > PointTetras_; // The tetras containing each point
@@ -243,34 +252,36 @@ public:
   #endif // RICH_MPI
 
   #ifdef RICH_MPI
-    vector<int>& GetSentProcs(void) override;
+    vector<int> &GetSentProcs(void) override;
 
-    vector<vector<size_t> >& GetSentPoints(void) override;
+    vector<vector<size_t>> &GetSentPoints(void) override;
 
-    vector<size_t>& GetSelfIndex(void) override;
+    vector<size_t> &GetSelfIndex(void) override;
   #endif // RICH_MPI
 
-  vector<Vector3D>& GetAllFaceCM(void) override;
+  vector<Vector3D> &GetAllFaceCM(void) override;
 
   /*! \brief Calculates the centre of mass of a face
     \param index Face index
     \return Face centre of mass
    */
-  Vector3D FaceCM(std::size_t index)const override;
+  const Vector3D &FaceCM(std::size_t index) const override;
 
   /*! \brief class constructor
     \param ll Lower left
     \param ur Upper right
    */
-  Voronoi3D(Vector3D const& ll, Vector3D const& ur);
+  Voronoi3D(const Vector3D &ll, const Vector3D &ur);
 
-  Voronoi3D(std::vector<Face> const& box_faces);
+  Voronoi3D(const std::vector<Face> &box_faces);
 
   void output(std::string const& filename)const override;
 
   void BuildInitialize(size_t num_points);
 
   void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) override;
+
+  bool IsPointInCell(const Vector3D &point, size_t cellIndex) const override;
 
 #ifdef RICH_MPI
 
@@ -281,11 +292,25 @@ public:
 
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
-  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false) override;
+  inline void SetPointsManager(std::shared_ptr<PointsManager> pointsManager){this->pointsManager = pointsManager;};
 
+  void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
+
+  inline bool ShouldRebalance(const std::vector<double> &weights) const override {return this->pointsManager->shouldRebalance(weights);}
+
+  inline bool ShouldRebalance(void) const override {return this->pointsManager->shouldRebalance();}
+    
+  inline std::shared_ptr<LoadBalancer> GetLoadBalancer(void) override {return this->pointsManager->getLoadBalancer();};
+
+  void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) override;
+
+  bool CheckContinuityOfZone(void) const;
+  
   bool PointInMyDomain(const Vector3D &point) const override;
 
   int GetOwner(const Vector3D &point) const override;
+
+  void SetImbalanceTolerance(double tolerance) override;
 
 #endif // RICH_MPI
 
@@ -306,7 +331,7 @@ public:
     \param index Index
     \return Position of point
    */
-  Vector3D GetMeshPoint(std::size_t index) const override;
+  const Vector3D &GetMeshPoint(std::size_t index) const override;
 
   /*! \brief Calculate face area
     \param index Face index
@@ -450,7 +475,7 @@ public:
     \param face_index Index of face
     \return Indices of neighbour across face
    */
-  std::pair<std::size_t, std::size_t> GetFaceNeighbors(std::size_t face_index)const override;
+  const std::pair<std::size_t, std::size_t> &GetFaceNeighbors(std::size_t face_index) const override;
 
   #ifdef RICH_MPI
     /*! \brief Get the indices of ghost points
@@ -510,15 +535,19 @@ public:
    */
   bool IsPointOutsideBox(size_t index)const override;
 
+  bool IsPointOutsideBox(const Vector3D &point) const override;
+
   /*! \brief Adjust position of the boundary
     \param ll Lower left corner
     \param ur Upper right corner
   */
   void SetBox(Vector3D const& ll, Vector3D const& ur) override;
 
-  std::vector<Face> GetBoxFaces(void) const {return box_faces_;}
+  const std::vector<Face> &GetBoxFaces(void) const override {return this->box_faces_;}
 
-  std::vector<Face>& ModifyBoxFaces(void) {return box_faces_;}
+  std::vector<Face> GetBoxFaces(void) override {return this->box_faces_;}
+
+  std::vector<Face>& ModifyBoxFaces(void) override {return this->box_faces_;}
 };
 
 /**

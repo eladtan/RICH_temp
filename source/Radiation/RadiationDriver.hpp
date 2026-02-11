@@ -2,7 +2,7 @@
 #define RADIATION_DRIVER_HPP
 
 #include "conj_grad_solve.hpp"
-#include "source/newtonian/common/equation_of_state.hpp"
+#include "newtonian/common/equation_of_state.hpp"
 #include "boost/math/special_functions/pow.hpp"
 
 class RadiationDriver : public CG::MatrixBuilder {

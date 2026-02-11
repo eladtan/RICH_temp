@@ -13,8 +13,9 @@
 #include "utils/exchange/exchange.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
 
-#define BALANCE_FACTOR 1.15
+#define IMBALANCE_FACTOR 1.15
 
 /**
  * \author Maor Mizrachi
@@ -29,18 +30,44 @@ struct PointsExchangeResult
     std::vector<size_t> indicesToSelf;
     std::vector<Vector3D> newCMs;
     std::vector<double> newWeights;
-    std::vector<size_t> participatingIndices;
+    std::vector<bool> participatingIndices;
 };
 
-typedef struct _3DPointData
+struct PointData : public Serializable
 {
     size_t indexInAllPoints;
-    _3DPoint point;
+    Vector3D point;
     double radius;
-    _3DPoint CM;
+    Vector3D CM;
     double weight;
     bool participating;
-} _3DPointData;
+
+    PointData() = default;
+
+    size_t dump(Serializer *serializer) const override
+    {
+        size_t bytes = 0;
+        bytes += serializer->insert(this->indexInAllPoints);
+        bytes += serializer->insert(this->point);
+        bytes += serializer->insert(this->radius);
+        bytes += serializer->insert(this->CM);
+        bytes += serializer->insert(this->weight);
+        bytes += serializer->insert(this->participating);
+        return bytes;
+    }
+
+    size_t load(const Serializer *serializer, size_t byteOffset) override
+    {
+        size_t bytes = 0;
+        bytes += serializer->extract(this->indexInAllPoints, byteOffset);
+        bytes += serializer->extract(this->point, byteOffset + bytes);
+        bytes += serializer->extract(this->radius, byteOffset + bytes);
+        bytes += serializer->extract(this->CM, byteOffset + bytes);
+        bytes += serializer->extract(this->weight, byteOffset + bytes);
+        bytes += serializer->extract(this->participating, byteOffset + bytes);
+        return bytes;
+    }
+};
 
 /**
  * \author Maor Mizrachi
@@ -59,115 +86,97 @@ public:
 
     PointsManager &operator=(const PointsManager &other) = delete;
 
-    virtual PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) = 0;
+    virtual PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange) = 0;
 
     virtual void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) = 0;
 
     virtual const EnvironmentAgent *getEnvironmentAgent() const = 0;
 
-    bool checkForRebalance(double myWeight) const
-    {
-        // checks if I have too many weight, and notify other ranks
-        double totalWeight;
-        MPI_Allreduce(&myWeight, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        double idealWeight = totalWeight / this->size;
-        int I_say = (myWeight >= (BALANCE_FACTOR * idealWeight))? 1 : 0; // if I say 'rebalance' or not
-        if(I_say)
-        {
-            std::cout << "my weight is " << myWeight << " and the ideal weight is " << idealWeight << std::endl;
-        }
-        int rebalance = 0; // if someone says 'rebalance' or not
-        MPI_Allreduce(&I_say, &rebalance, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-        if((rebalance > 0) and (this->rank == 0))
-        {
-            std::cout << "doing rebalance" << std::endl;
-        }
-        return (rebalance > 0);
-    };
+    virtual void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
 
-    PointsExchangeResult update(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool doRebalance = true)
-    {
-        // if envAgent is null, the `exchange` will perform an initialization as well.
-        // `rebalance` is used only when the environment agent is initialized.
-        PointsExchangeResult result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
-        this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
-        if(doRebalance and this->checkForRebalance(this->totalWeight))
-        {
-            assert(this->getEnvironmentAgent() != nullptr);
-            this->rebalance(allPoints, allWeights);
-            result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM);
-            this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
-        }
-        // std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
-        return result;
-    }
+    virtual std::shared_ptr<LoadBalancer> getLoadBalancer(void) = 0;
+
+    void setImbalanceTolerance(double tolerance);
+
+    void reportImbalance(void) const;
+
+    bool checkForRebalance(double myWeight) const;
+
+    bool shouldRebalance(const std::vector<double> &weights) const;
+
+    inline bool shouldRebalance(void) const{return this->checkForRebalance(this->totalWeight);};
+
+    PointsExchangeResult update(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool doRebalance = true, bool doExchange = true);
 
 protected:
     Vector3D ll, ur;
     MPI_Comm comm;
     int rank, size;
     double totalWeight;
+    double imbalanceTolerance = IMBALANCE_FACTOR;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
     */
     template<typename DetermineFunc>
-    PointsExchangeResult pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) const
+    PointsExchangeResult pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) const;
+};
+
+template<typename DetermineFunc>
+PointsExchangeResult PointsManager::pointsExchange(const DetermineFunc &func, const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM) const
+{
+    std::vector<PointData> data;
+    data.reserve(allPoints.size());
+    for(size_t pointIdx = 0; pointIdx < allPoints.size(); pointIdx++)
     {
-        std::vector<_3DPointData> data;
-        data.reserve(allPoints.size());
-        for(size_t pointIdx = 0; pointIdx < allPoints.size(); pointIdx++)
+        const Vector3D &point = allPoints[pointIdx];
+        data.emplace_back();
+        PointData &pointRadius = data.back();
+        pointRadius.indexInAllPoints = pointIdx;
+        pointRadius.point = point;
+        pointRadius.radius = radiuses[pointIdx];
+        pointRadius.weight = allWeights[pointIdx];
+        pointRadius.CM = previous_CM[pointIdx];
+        pointRadius.participating = false;
+    }
+    
+    for(const size_t &pointIdx : indicesToWorkWith)
+    {
+        data[pointIdx].participating = true;
+    }
+
+    // // re-build the function so that it maintains the points that are not participating
+    ExchangeAnswer<PointData> answer = dataExchange(data, func, this->comm);
+
+    // arrange the return value data structure
+    PointsExchangeResult toReturn;
+    
+    toReturn.indicesToSelf = std::move(answer.indicesToMe);
+    toReturn.sentProcessors = std::move(answer.processesSend);
+    toReturn.sentIndicesToProcessors = std::move(answer.indicesToProcesses);
+
+    std::vector<PointData> &ans = answer.output;
+    toReturn.newPoints.reserve(ans.size());
+    toReturn.newRadiuses.reserve(ans.size());
+    toReturn.newCMs.reserve(ans.size());
+    toReturn.newWeights.reserve(ans.size());
+    toReturn.participatingIndices.resize(ans.size(), false);
+
+    for(const PointData &_point : ans)
+    {
+        size_t pointIdx = toReturn.newPoints.size();
+        toReturn.newPoints.emplace_back(_point.point.x, _point.point.y, _point.point.z);
+        if(_point.participating)
         {
-            const Vector3D &point = allPoints[pointIdx];
-            data.emplace_back();
-            _3DPointData &pointRadius = data.back();
-            pointRadius.indexInAllPoints = pointIdx;
-            pointRadius.point = _3DPoint(point.x, point.y, point.z);
-            pointRadius.radius = radiuses[pointIdx];
-            pointRadius.weight = allWeights[pointIdx];
-            pointRadius.CM = _3DPoint(previous_CM[pointIdx].x, previous_CM[pointIdx].y, previous_CM[pointIdx].z);
-            pointRadius.participating = false;
+            toReturn.participatingIndices[pointIdx] = true;
         }
-        
-        for(const size_t &pointIdx : indicesToWorkWith)
-        {
-            data[pointIdx].participating = true;
-        }
+        toReturn.newRadiuses.push_back(_point.radius);
+        toReturn.newCMs.emplace_back(_point.CM.x, _point.CM.y, _point.CM.z);
+        toReturn.newWeights.push_back(_point.weight);
+    }
 
-        // // re-build the function so that it maintains the points that are not participating
-        // auto new_func = [&func, this, &participating](const _3DPointData &point){return ((not participating[point.indexInAllPoints])? this->rank : func(point));};
-        ExchangeAnswer<_3DPointData> answer = dataExchange(data, func, this->comm);
-
-        // arrange the return value data structure
-        PointsExchangeResult toReturn;
-        
-        toReturn.indicesToSelf = std::move(answer.indicesToMe);
-        toReturn.sentProcessors = std::move(answer.processesSend);
-        toReturn.sentIndicesToProcessors = std::move(answer.indicesToProcesses);
-
-        std::vector<_3DPointData> &ans = answer.output;
-        toReturn.newPoints.reserve(ans.size());
-        toReturn.newRadiuses.reserve(ans.size());
-        toReturn.newCMs.reserve(ans.size());
-        toReturn.newWeights.reserve(ans.size());
-        toReturn.participatingIndices.resize(ans.size(), false);
-
-        for(const _3DPointData &_point : ans)
-        {
-            size_t pointIdx = toReturn.newPoints.size();
-            toReturn.newPoints.emplace_back(_point.point.x, _point.point.y, _point.point.z);
-            if(_point.participating)
-            {
-                toReturn.participatingIndices[pointIdx] = true;
-            }
-            toReturn.newRadiuses.push_back(_point.radius);
-            toReturn.newCMs.emplace_back(_point.CM.x, _point.CM.y, _point.CM.z);
-            toReturn.newWeights.push_back(_point.weight);
-        }
-
-        assert(toReturn.newPoints.size() == toReturn.newWeights.size());
-        return toReturn;
-    };
+    assert(toReturn.newPoints.size() == toReturn.newWeights.size());
+    return toReturn;
 };
 
 #endif // RICH_MPI

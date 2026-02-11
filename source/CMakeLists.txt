@@ -1,64 +1,87 @@
 cmake_minimum_required(VERSION 3.20.2)
-project(rich)
-enable_language(Fortran CXX)
+
+if(NOT DEFINED CONFIG)
+    message(FATAL_ERROR "Required config (-DCONFIG=): gnuReleaseMPI, gnuDebugMPI, intelReleaseMPI, intelDebugMPI, gnuRelease, gnuDebug, intelRelease, intelDebug")
+endif()
+
+include(${CMAKE_SOURCE_DIR}/../config/parse_arguments.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/set_compilers.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/compiler_flags.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/mixed.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_static_library.cmake)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if (${MPI})
-    message("Compiling with MPI")
-else()
-    message("Compiling without MPI")
-endif()
+message(STATUS "CXX Standard: " ${CMAKE_CXX_STANDARD})
+message(STATUS "Build Type: " ${CMAKE_BUILD_TYPE})
 
-message("CXX Compiler: " ${CMAKE_CXX_COMPILER})
-message("C Compiler: " ${CMAKE_C_COMPILER})
-message("Fortran Compiler: " ${CMAKE_Fortran_COMPILER})
-message("CXX Standard: " ${CMAKE_CXX_STANDARD})
-message("Build Type: " ${CMAKE_BUILD_TYPE})
+message(STATUS "CMAKE_CXX_FLAGS = " ${CMAKE_CXX_FLAGS})
+message(STATUS "CMAKE_CXX_FLAGS_RELEASE = " ${CMAKE_CXX_FLAGS_RELEASE})
+message(STATUS "CMAKE_CXX_FLAGS_DEBUG = " ${CMAKE_CXX_FLAGS_DEBUG})
+message(STATUS "CMAKE_Fortran_FLAGS = " ${CMAKE_Fortran_FLAGS})
+message(STATUS "CMAKE_Fortran_FLAGS_RELEASE = " ${CMAKE_Fortran_FLAGS_RELEASE})
+message(STATUS "CMAKE_Fortran_FLAGS_DEBUG = " ${CMAKE_Fortran_FLAGS_DEBUG})
 
-message("CMAKE_CXX_FLAGS = " ${CMAKE_CXX_FLAGS})
-message("CMAKE_CXX_FLAGS_RELEASE = " ${CMAKE_CXX_FLAGS_RELEASE})
-message("CMAKE_CXX_FLAGS_DEBUG = " ${CMAKE_CXX_FLAGS_DEBUG})
-message("CMAKE_Fortran_FLAGS = " ${CMAKE_Fortran_FLAGS})
-message("CMAKE_Fortran_FLAGS_RELEASE = " ${CMAKE_Fortran_FLAGS_RELEASE})
-message("CMAKE_Fortran_FLAGS_DEBUG = " ${CMAKE_Fortran_FLAGS_DEBUG})
-message("Root_dir = " ${PROJECT_ROOT_DIR})
+project(rich)
+
+set(EXE_NAME ${CMAKE_PROJECT_NAME}_${CONFIG})
+enable_language(Fortran CXX)
 
 
-# ADDING PERF PROFILER SUPPORT
-# Unlike gprof, perf needs: debug symbols (-g), frame pointers, and NO -pg flag
+# ADDING PROFILER
 if (${PROF})
-    message("Compiling with Perf support (debug symbols + frame pointers)")
-    # -fno-omit-frame-pointer is essential for perf to get accurate call stacks
-    # -g provides debug symbols for perf report to show function names
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -fno-omit-frame-pointer")
-    set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -g -fno-omit-frame-pointer")
-    set(CMAKE_Fortran_FLAGS_RELEASE "${CMAKE_Fortran_FLAGS_RELEASE} -g -fno-omit-frame-pointer")
+    message(STATUS "Compiling with GProf")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -pg")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -pg")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -pg")
 else()
-    message("Compiling without Perf support")
+    message(STATUS "Compiling without GProf")
 endif()
 
-set(proj_dir "${PROJECT_SOURCE_DIR}")
-
-find_package(pybind11 QUIET REQUIRED PATHS ${PYBIND11} NO_DEFAULT_PATH)
-if(pybind11_FOUND)
-    message("pybind11 directory: " ${pybind11_DIR})
-    message("python exe path: " ${PYTHON_EXECUTABLE})
-else()
-    message("PYBIND11 NOT FOUND")
+if(NOT TEST_DIR)
+    message(FATAL_ERROR "TEST_DIR is not set. Please set it (using '-DTEST_DIR=XX') to the name of the directory within 'runs' containing test files.")
 endif()
 
 # files to compile
-file(GLOB_RECURSE SRC_CPP FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp")
-file(GLOB_RECURSE TEST_DIR "${TEST_DIR}/*.cpp")
-file(GLOB SRC_R3D "${PROJECT_SOURCE_DIR}/opt/r3d/src/*.c")
+file(GLOB_RECURSE SRC FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/*.c")
+file(GLOB_RECURSE TEST_DIR "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}/*.c")
+
+include(${CMAKE_SOURCE_DIR}/../config/find_HDF5.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_VTK.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_JSON.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_Boost.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_cgal.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_python.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_vtune.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_ParMETIS.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/include_3rdparty.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_pybind11.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/set_placeholders.cmake)
+
+if(DEFINED PYBIND11_DIRECTORY)
+    set(PYBIND11_PYTHON_VERSION ${PYTHON_VERSION})
+    find_package(pybind11 QUIET REQUIRED PATHS ${PYBIND11_DIRECTORY} NO_DEFAULT_PATH)
+
+    if(pybind11_FOUND)
+        message(STATUS "pybind11 directory: " ${pybind11_DIR})
+        include_directories("${PYBIND11_DIR}/include")
+    else()
+        message(FATAL_ERROR "PYBIND11 NOT FOUND")
+    endif()
+else()
+    message(STATUS "No pybind11")
+endif()
 
 # HDF5
-find_library(HDF5 hdf5 PATHS ${HDF5_LIB_DIRECTORY} NO_DEFAULT_PATH)
-find_library(HDF5_HL hdf5_hl PATHS ${HDF5_LIB_DIRECTORY} NO_DEFAULT_PATH)
-find_library(HDF5_CPP hdf5_cpp PATHS ${HDF5_LIB_DIRECTORY} NO_DEFAULT_PATH)
+if(DEFINED DYNAMIC_LIBS)
+    find_library(HDF5 hdf5 PATHS ${HDF5_LIB_DIRECTORY})
+    find_library(HDF5_HL hdf5_hl PATHS ${HDF5_LIB_DIRECTORY})
+    find_library(HDF5_CPP hdf5_cpp PATHS ${HDF5_LIB_DIRECTORY})
+else()
+    find_static_library(HDF5 hdf5 PATHS ${HDF5_LIB_DIRECTORY})
+    find_static_library(HDF5_HL hdf5_hl PATHS ${HDF5_LIB_DIRECTORY})
+    find_static_library(HDF5_CPP hdf5_cpp PATHS ${HDF5_LIB_DIRECTORY})
+endif()
 set(HDF5_LIBS ${HDF5_CPP} ${HDF5_HL} ${HDF5})
 
 if (NOT HDF5_CPP)
@@ -74,6 +97,7 @@ endif()
 # VTK
 # see examples here 
 # https://vtk.org/doc/nightly/html/md__builds_gitlab-kitware-sciviz-ci_Documentation_Doxygen_ModuleMigration.html
+
 find_package(VTK COMPONENTS 
     CommonCore 
     CommonColor
@@ -88,95 +112,112 @@ find_package(VTK COMPONENTS
     NO_MODULE 
     PATHS ${VTK_DIRECTORY} NO_DEFAULT_PATH
 )
+
 if (NOT VTK_FOUND)
     message(FATAL_ERROR "NO VTK")
 endif()
 
 include_directories(${PROJECT_SOURCE_DIR})
-include_directories(${PROJECT_ROOT_DIR})
+include_directories("${PROJECT_SOURCE_DIR}/..") # TODO: REMOVE!
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 include_directories(${R3D_INCLUDE})
-include_directories("${PYBIND11_DIR}/include")
-
-message("BOOST DIRECTORY ${BOOST_DIR}")
-message("proj_dir ${proj_dir}")
-message("HDF5 ${HDF5_LIBS}")
-message("VTK ${VTK_DIR}")
-
-# vcl
-if(VCL_INCLUDE)
-    message("VCL ${VCL_INCLUDE}")
-    include_directories("${VCL_INCLUDE}")
-    add_compile_definitions("USE_VCL_VECTORIZATION")
-endif()
-
-# clipper
-if(CLIPPER_INCLUDE)
-    message("CLIPPER ${CLIPPER_INCLUDE}")
-    include_directories("${CLIPPER_INCLUDE}")
-    add_compile_definitions("USE_CLIPPER")
-endif()
 
 # python
-if(PYTHON_INCLUDE)
-    if(PYTHON_LIB_DIRECTORY)
-        # target json_cpp
-        message("JSON_CPP ${PYTHON_INCLUDE}, LIB ${PYTHON_LIB_DIRECTORY}")
-        include_directories(${PYTHON_INCLUDE})
-        
-        find_library(PYTHON_LIB NAMES python3.9 libpython3.9 PATHS ${PYTHON_LIB_DIRECTORY} NO_DEFAULT_PATH)
-        message("PYTHON_LIB ${PYTHON_LIB} (DIR ${PYTHON_LIB_DIRECTORY})")
-    else()
-        message("NOT INCLUDING PYTHON, LIB IS EMPTY (EVEN THOUGH INCLUDE IS NOT)")
-    endif()
+if(PYTHON_INCLUDE AND PYTHON_LIB_DIRECTORY)
+    include_directories(${PYTHON_INCLUDE})
+    find_library(PYTHON_LIB NAMES ${PYTHON_LIB_NAME} PATHS ${PYTHON_LIB_DIRECTORY} NO_DEFAULT_PATH)
 else()
-    message("NO PYTHON")
+    message(STATUS "NO PYTHON")
 endif()
 
 # json
-if(JSONCPP_INCLUDE)
-    if(JSONCPP_LIB_DIRECTORY)
-        # target json_cpp
-        message("JSON_CPP ${JSONCPP_INCLUDE}, LIB ${JSONCPP_LIB_DIRECTORY}")
-        include_directories(${JSONCPP_INCLUDE})
-        
-        find_library(JSONCPP_LIB NAMES jsoncpp libjsoncpp PATHS ${JSONCPP_LIB_DIRECTORY} NO_DEFAULT_PATH)
-        message("JSON_CPP_LIB ${JSONCPP_LIB} (DIR ${JSONCPP_LIB_DIRECTORY})")
+if(JSONCPP_INCLUDE AND JSONCPP_LIB_DIRECTORY)
+    include_directories(${JSONCPP_INCLUDE})
+    if(DEFINED DYNAMIC_LIBS)
+        find_library(JSONCPP_LIB jsoncpp PATHS ${JSONCPP_LIB_DIRECTORY})
     else()
-        message("NOT INCLUDING JSON_CPP, LIB IS EMPTY (EVEN THOUGH INCLUDE IS NOT)")
+        # static library
+        find_static_library(JSONCPP_LIB jsoncpp PATHS ${JSONCPP_LIB_DIRECTORY})
     endif()
-else()
-    message("NO JSON")
+endif()
+
+# parmetis
+if(PARMETIS_INCLUDE AND PARMETIS_LIB_DIRECTORY)
+    include_directories(${PARMETIS_INCLUDE})
+    find_static_library(PARMETIS_LIB parmetis PATHS ${PARMETIS_LIB_DIRECTORY})
+endif()
+
+# metis
+if(METIS_INCLUDE AND METIS_LIB_DIRECTORY)
+    include_directories(${METIS_INCLUDE})
+    find_library(METIS_LIB metis PATHS ${METIS_LIB_DIRECTORY})
+endif()
+
+# gklib
+if(GKLIB_INCLUDE AND GKLIB_LIB_DIRECTORY)
+    include_directories(${GKLIB_INCLUDE})
+    find_static_library(GKLIB_LIB GKlib PATHS ${GKLIB_LIB_DIRECTORY})
 endif()
 
 # cgal
-if(DEFINED CGAL_INCLUDE)
-    message("CGAL_INCLUDE ${CGAL_INCLUDE}")
-    include_directories(${CGAL_INCLUDE})
-else()
-    message("NO JSON")
+if(CGAL_DIRECTORY)
+    # TODO Later: crashes (MPFR)
+    # find_package(CGAL QUIET PATHS ${CGAL_DIRECTORY} NO_DEFAULT_PATH)
 endif()
 
 # vtune
 if(DEFINED VTUNE_INCLUDE)
     # target json_cpp
-    message("VTUNE ${VTUNE_INCLUDE}")
     include_directories(${VTUNE_INCLUDE})
-else()
-    message("NO VTUNE")
 endif()
 
-add_executable(${EXE_NAME} ${TEST_DIR} ${SRC_R3D} ${SRC_CPP})
+add_executable(${EXE_NAME} ${TEST_DIR} ${SRC})
+
+if(${MIXED_BUILD})
+    message(STATUS "Mixed build: marking some files for debug")
+    mark_debug_sources("${EXE_NAME}")
+endif()
+
+# ======================= LINKING =======================
+
+if(CGAL_DIRECTORY)
+    # TODO: at least this line
+    # target_link_libraries(${EXE_NAME} PRIVATE CGAL::CGAL)
+
+    # # Optionally: if you use CGAL Core
+    # if(TARGET CGAL::CGAL_Core)
+    #     target_link_libraries(my_program PRIVATE CGAL::CGAL_Core)
+    # endif()
+endif()
+
+find_package(ZLIB REQUIRED)
+target_link_libraries(${EXE_NAME} PRIVATE ${HDF5_LIBS} ZLIB::ZLIB)
 
 target_link_libraries(
     ${EXE_NAME} 
     PRIVATE
     ${HDF5_LIBS} 
     ${VTK_LIBRARIES}
-    ${JSONCPP_LIB}
-    "-lstdc++"
 )
+
+if(DEFINED JSONCPP_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
+endif()
+
+if(DEFINED PARMETIS_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${PARMETIS_LIB})
+    # define "WITH_PARMETIS"
+    add_compile_definitions("WITH_PARMETIS")
+endif()
+
+if(DEFINED METIS_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${METIS_LIB})
+endif()
+
+if(DEFINED GKLIB_LIB)
+    target_link_libraries(${EXE_NAME} PRIVATE ${GKLIB_LIB})
+endif()
 
 # link boost
 if(DEFINED BOOST_DIR)
@@ -188,12 +229,7 @@ if(pybind11_FOUND)
     target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
 endif()
 
-# link json cpp
-if(DEFINED JSONCPP_LIB_DIRECTORY)
-    target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
-endif()
-
-# link json cpp
+# link python
 if(DEFINED PYTHON_LIB_LIBRARY)
     target_link_libraries(${EXE_NAME} PRIVATE ${PYTHON_LIB})
 endif()
@@ -201,10 +237,10 @@ endif()
 # link vtune
 if((DEFINED VTUNE_INCLUDE) AND (DEFINED VTUNE_LIB_DIRECTORY))
     set(VTUNE_LIB ${VTUNE_LIB_DIRECTORY}/libittnotify.a)
-    message("VTUNE_LIB ${VTUNE_LIB}")
     target_link_libraries(${EXE_NAME} PRIVATE "${VTUNE_LIB}")
     add_compile_definitions("WITH_VTUNE")
 endif()
+
 vtk_module_autoinit(
   TARGETS ${EXE_NAME}
   MODULES ${VTK_LIBRARIES}

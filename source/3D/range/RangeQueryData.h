@@ -1,7 +1,10 @@
 #ifndef RANGE_QUERY_DATA
 #define RANGE_QUERY_DATA
 
-#include "utils/point/3DPoint.hpp"
+#include "3D/elementary/Vector3D.hpp"
+#ifdef RICH_MPI
+    #include "mpi/serialize/Serializer.hpp"
+#endif // RICH_MPI
 
 struct RangeQueryData 
                     #ifdef RICH_MPI
@@ -9,14 +12,14 @@ struct RangeQueryData
                     #endif // RICH_MPI
 {
     size_t pointIdx;
-    _3DPoint center;
-    typename _3DPoint::coord_type radius;
+    Vector3D center;
+    typename Vector3D::coord_type radius;
 
-    RangeQueryData(size_t pointIdx, const _3DPoint &center, typename _3DPoint::coord_type radius):
+    RangeQueryData(size_t pointIdx, const Vector3D &center, typename Vector3D::coord_type radius):
         pointIdx(pointIdx), center(center), radius(radius)
     {};
 
-    RangeQueryData(): pointIdx(0), center(_3DPoint()), radius(0){};
+    RangeQueryData(): pointIdx(0), center(Vector3D()), radius(0){};
     
     #ifdef RICH_MPI
         inline size_t dump(Serializer *serializer) const override

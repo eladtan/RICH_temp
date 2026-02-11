@@ -22,6 +22,8 @@ public:
         MPI_Comm_size(this->comm, &this->size);
     };
 
+    virtual void updatePoints(const std::vector<Vector3D> &newPoints) = 0;
+
     virtual ~EnvironmentAgent() = default;
     
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;

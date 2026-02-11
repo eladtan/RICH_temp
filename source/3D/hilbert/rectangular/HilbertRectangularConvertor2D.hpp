@@ -2,6 +2,7 @@
 #define HILBERT_RECTANGULAR_CONVERTOR_2D_HPP
 
 #include "tessellation/geometry.hpp" // for Vector2D
+#include "misc/universal_error.hpp"
 #include "../hilbertTypes.h"
 
 #define MAX_HILBERT_ORDER 28
@@ -34,6 +35,8 @@ private:
 
 public:
     explicit HilbertRectangularConvertor2D(const Vector2D &ll, const Vector2D &ur, size_t order);
+    
+    ~HilbertRectangularConvertor2D() = default;
     
     inline hilbert_index_t getHilbertSize() const{return this->total_points_num;};
     
