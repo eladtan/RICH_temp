@@ -28,6 +28,10 @@ git submodule
 
 # Compilation
 
+RICH now uses the top-level build helper script `build_rich.sh`.  
+This script wraps CMake + Make, keeps per-configuration build directories under `build/`,
+and automatically re-runs CMake when relevant files or build arguments change.
+
 ## Setting up GNU compiler environment
 
 ### Modules
@@ -83,13 +87,39 @@ ml restore rich_intel
 
 ## Compiling a specific run (`main.cpp`) file
 
-Once these modules which defines the correct compilation envoinronment are loaded, the code is compiled via the command:
+Once the required modules are loaded, compile with:
 
 ```shell
-./build_rich gnuReleaseMPI --test_name=sedov2d_test
+./build_rich.sh gnuReleaseMPI --test_name=sedov2d_test
 ```
 
 where `sedov2d_test` represents the subdirectory `runs/sedov2d_test` which contains a `main.cpp` file which defines a specific simulation. Other runs can be compiled by adding another directory with a `main.cpp` file to `runs/`.
+
+### Build command format
+
+```shell
+./build_rich.sh <config> --test_name=<run_dir> [options]
+```
+
+- `<config>` is one of the build configurations listed below.
+- `<run_dir>` is a directory under `runs/` that contains `main.cpp`.
+- Optional flags:
+  - `--with_asan` - Enable AddressSanitizer.
+  - `--energy_groups_num=<N>` - Override `ENERGY_GROUPS_NUM`.
+  - `--mc_debug` - Enable Monte-Carlo debug build flag.
+  - `--debug_files=<path>` - Provide a mixed-debug file list for `DEBUG_FILES`.
+
+### What the script does
+
+- Builds into `build/<config>/`.
+- Stores command/config tracking files in that directory and rebuilds cleanly when command arguments change.
+- Re-runs CMake when source files are added/removed or when `CMakeLists.txt` / `.cmake` files change.
+- Writes logs to:
+  - `build/<config>/<config>_cmake.out`
+  - `build/<config>/<config>_cmake.err`
+  - `build/<config>/<config>_build.out`
+  - `build/<config>/<config>_build.err`
+- Creates/updates the symlink `build/<config>/rich -> rich_<config>` after a successful build.
 
 For other compilation configurations, replace `gnuReleaseMPI` with one of:
 ```shell
