@@ -51,6 +51,15 @@ public:
     \return Length
   */
   double GetArea(void) const;
+
+  friend std::ostream &operator<<(std::ostream &stream, const Face &face)
+  {
+    for(size_t i = 0; i < face.vertices.size(); i++)
+    {
+      stream << i << " = " << face.vertices[i] << " ";
+    }
+    return stream;
+  }
 };
 
 /*! \brief Calculates the centroid of aa face
