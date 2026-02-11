@@ -117,7 +117,7 @@ int main(void)
     std::vector<double> density_sum(nbins, 0.0);
     std::vector<double> pressure_sum(nbins, 0.0);
     std::vector<double> vr_sum(nbins, 0.0);
-    std::vector<unsigned long long> count(nbins, 0);
+    std::vector<double> volume_sum(nbins, 0.0);
 
     double rmax_local = 0.0;
     for(size_t i = 0; i < sim.getCells().size(); ++i) {
@@ -144,11 +144,12 @@ int main(void)
         if(bin >= nbins) {
             bin = nbins - 1;
         }
-        r_sum[bin] += r;
-        density_sum[bin] += sim.getCells()[i].density;
-        pressure_sum[bin] += sim.getCells()[i].pressure;
-        vr_sum[bin] += vr;
-        count[bin] += 1;
+        double const cell_volume = sim.getTesselation().GetVolume(i);
+        r_sum[bin] += r * cell_volume;
+        density_sum[bin] += sim.getCells()[i].density * cell_volume;
+        pressure_sum[bin] += sim.getCells()[i].pressure * cell_volume;
+        vr_sum[bin] += vr * cell_volume;
+        volume_sum[bin] += cell_volume;
     }
 
 #ifdef RICH_MPI
@@ -156,20 +157,20 @@ int main(void)
     std::vector<double> density_sum_global(nbins, 0.0);
     std::vector<double> pressure_sum_global(nbins, 0.0);
     std::vector<double> vr_sum_global(nbins, 0.0);
-    std::vector<unsigned long long> count_global(nbins, 0);
+    std::vector<double> volume_sum_global(nbins, 0.0);
     MPI_Reduce(r_sum.data(), r_sum_global.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(density_sum.data(), density_sum_global.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(pressure_sum.data(), pressure_sum_global.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(vr_sum.data(), vr_sum_global.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(count.data(), count_global.data(), static_cast<int>(nbins), MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(volume_sum.data(), volume_sum_global.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if(rank == 0) {
         std::ofstream out("sedov_profile.txt");
         for(size_t b = 0; b < nbins; ++b) {
-            if(count_global[b] == 0) {
+            if(volume_sum_global[b] <= 0.0) {
                 continue;
             }
-            double const inv = 1.0 / static_cast<double>(count_global[b]);
+            double const inv = 1.0 / volume_sum_global[b];
             out << r_sum_global[b] * inv << " "
                 << density_sum_global[b] * inv << " "
                 << pressure_sum_global[b] * inv << " "
@@ -180,10 +181,10 @@ int main(void)
 #else
     std::ofstream out("sedov_profile.txt");
     for(size_t b = 0; b < nbins; ++b) {
-        if(count[b] == 0) {
+        if(volume_sum[b] <= 0.0) {
             continue;
         }
-        double const inv = 1.0 / static_cast<double>(count[b]);
+        double const inv = 1.0 / volume_sum[b];
         out << r_sum[b] * inv << " "
             << density_sum[b] * inv << " "
             << pressure_sum[b] * inv << " "
