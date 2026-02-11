@@ -39,12 +39,20 @@ else()
 endif()
 
 if(NOT TEST_DIR)
-    message(FATAL_ERROR "TEST_DIR is not set. Please set it (using '-DTEST_DIR=XX') to the name of the directory within 'runs' containing test files.")
+    message(FATAL_ERROR "TEST_DIR is not set. Please set it (using '-DTEST_DIR=XX') to a test directory under 'runs/' or a repo-relative directory.")
+endif()
+
+if(EXISTS "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}")
+    set(TEST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}")
+elseif(EXISTS "${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
+    set(TEST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
+else()
+    message(FATAL_ERROR "Could not find test directory. Checked: ${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR} and ${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
 endif()
 
 # files to compile
 file(GLOB_RECURSE SRC FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/*.c")
-file(GLOB_RECURSE TEST_DIR "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}/*.c")
+file(GLOB_RECURSE TEST_SRC FOLLOW_SYMLINKS "${TEST_SOURCE_DIR}/*.cpp" "${TEST_SOURCE_DIR}/*.c")
 
 include(${CMAKE_SOURCE_DIR}/../config/find_HDF5.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_VTK.cmake)
@@ -172,7 +180,7 @@ if(DEFINED VTUNE_INCLUDE)
     include_directories(${VTUNE_INCLUDE})
 endif()
 
-add_executable(${EXE_NAME} ${TEST_DIR} ${SRC})
+add_executable(${EXE_NAME} ${TEST_SRC} ${SRC})
 
 if(${MIXED_BUILD})
     message(STATUS "Mixed build: marking some files for debug")

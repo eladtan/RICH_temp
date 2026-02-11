@@ -142,6 +142,105 @@ intelDebugProf
 intelDebug
 ```
 
+## Local regression tests
+
+You can run a local full-benchmark regression suite after code changes:
+
+```shell
+./regression_tests/run_all.sh
+```
+
+The regression system is organized in its own directory:
+- `regression_tests/run_all.sh` - main runner
+- `regression_tests/tests/` - one test definition per benchmark
+- `regression_tests/lib/regression_checks.sh` - shared validation logic
+- `regression_tests/cases/*/test.cpp` - dedicated benchmark entry files used by the runner
+
+The suite builds and validates three dedicated regression cases:
+- `regression_tests/cases/sod_1d` (1D Sod benchmark)
+- `regression_tests/cases/sedov_3d_mpi` (3D MPI Sedov explosion, submitted to Slurm with `--ntasks=128 --exclusive --partition=bigrun`)
+- `regression_tests/cases/till_compton` (Till Compton test, case `3`)
+
+Acceptance checks are physics-based:
+- **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
+- **Sedov**: compare radial density/pressure/velocity profiles to the exact Sedov-Taylor ODE profile (`analytic/sedov_taylor.py`).
+- **Till**: require final gas and radiation temperatures to agree within **1%**.
+
+The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
+
+You can tune tolerances with environment variables:
+- `SOD_MAX_DENSITY_GOF`, `SOD_MAX_PRESSURE_GOF`
+- `SEDOV_MAX_DENSITY_REL_L1`, `SEDOV_MAX_PRESSURE_REL_L1`, `SEDOV_MAX_VELOCITY_REL_L1`
+
+### Options
+
+```shell
+./regression_tests/run_all.sh \
+  --config gnuReleaseMPI \
+  --mpi-np 4 \
+  --keep-artifacts \
+  --verbose
+```
+
+- `--config <name>`: build configuration (default: `gnuReleaseMPI`).
+- `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
+- `--clean-results`: remove `regression_results/` and exit.
+- `--keep-artifacts`: keep per-test logs even when all tests pass.
+- `--verbose`: stream run output to terminal while also writing logs.
+- Legacy compatibility command is still available: `./scripts/run_regression_tests.sh`.
+
+### Run a single regression test
+
+Run one benchmark with `--test`:
+
+```shell
+# Sod only
+./regression_tests/run_all.sh --test sod_1d
+
+# Sedov only (set MPI ranks with --mpi-np)
+./regression_tests/run_all.sh --test sedov_3d_mpi --mpi-np 8
+
+# Till only
+./regression_tests/run_all.sh --test till_compton
+```
+
+You can combine with `--config`, `--verbose`, and `--keep-artifacts`. For example:
+
+```shell
+./regression_tests/run_all.sh --test sod_1d --config gnuDebugMPI --verbose
+```
+
+Clean all saved regression logs:
+
+```shell
+./regression_tests/run_all.sh --clean-results
+```
+
+Convenience alias:
+
+```shell
+./scripts/clean_regression_results.sh
+```
+
+### Artifacts and pass/fail behavior
+
+- Logs are written under `regression_results/<timestamp>/`.
+- The script returns exit code `0` only if all tests pass.
+- Any failure returns non-zero exit code, prints a compact summary table, and keeps logs for inspection.
+- If all tests pass and `--keep-artifacts` is not provided, the run's artifact directory is removed.
+
+### Troubleshooting
+
+- Ensure required modules and dependencies are loaded (Boost/HDF5/VTK/OpenMPI as listed above).
+- Confirm `mpirun` is available in your environment for the Sedov MPI test.
+- Ensure Python packages `numpy` and `h5py` are available (used by exact-solution checkers).
+- If a run fails, inspect:
+  - `regression_results/<timestamp>/<case>/build.stderr.log`
+  - `regression_results/<timestamp>/<case>/run.stderr.log`
+  - `regression_results/<timestamp>/<case>/run.stdout.log`
+  - `regression_tests/cases/sod_1d/sod_check.stderr.log` (Sod exact-profile check details)
+  - `regression_tests/cases/sedov_3d_mpi/sedov_check.stderr.log` (Sedov exact-profile check details)
+
 
 ## Profiling
 

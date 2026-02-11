@@ -108,8 +108,19 @@ fi
 # ==================== Track Source Files (detect add/remove) ====================
 RERUN_CMAKE=0
 
+TEST_SOURCE_DIR="$ORIG_DIR/runs/$TEST_NAME"
+if [[ ! -d "$TEST_SOURCE_DIR" ]]; then
+    TEST_SOURCE_DIR="$ORIG_DIR/$TEST_NAME"
+fi
+if [[ ! -d "$TEST_SOURCE_DIR" ]]; then
+    echo -e "${RED}Test directory not found. Checked:$NC"
+    echo -e "${RED}  $ORIG_DIR/runs/$TEST_NAME$NC"
+    echo -e "${RED}  $ORIG_DIR/$TEST_NAME$NC"
+    exit 1
+fi
+
 # Generate current list of source files (sorted for consistent comparison)
-CURRENT_SOURCE_FILES=$(find "$ORIG_DIR/source" "$ORIG_DIR/runs/$TEST_NAME" \
+CURRENT_SOURCE_FILES=$(find "$ORIG_DIR/source" "$TEST_SOURCE_DIR" \
     -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.hpp" -o -name "*.h" \) \
     2>/dev/null | sort)
 
