@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include <boost/container/flat_map.hpp>
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "mpi/serialize/mpi_commands.hpp"
 

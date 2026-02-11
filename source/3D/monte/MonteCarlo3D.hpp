@@ -2,7 +2,7 @@
 #define MONTE_CARLO_3D_HPP
 
 #include "monte/MonteCarloParticle.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 
 using MonteCarloParticle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 

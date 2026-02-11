@@ -13,7 +13,7 @@
 #include "utils/exchange/exchange.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
+#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 
 #define IMBALANCE_FACTOR 1.15
 

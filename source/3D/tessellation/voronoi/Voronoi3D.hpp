@@ -38,11 +38,11 @@
   #include <mpi.h>
 #endif // RICH_MPI
 
-#include "3D/tesselation/Tessellation3D.hpp"
-#include "3D/tesselation/delaunay/Delaunay3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
+#include "3D/tessellation/delaunay/Delaunay3D.hpp"
 #include "3D/GeometryCommon/Intersections.hpp"
 #include "3D/elementary/Mat33.hpp"
-#include "3D/tesselation/utils/Predicates3D.hpp"
+#include "3D/tessellation/utils/Predicates3D.hpp"
 #include "3D/hilbert/HilbertOrder3D.hpp"
 #include "3D/range/SmallRangeAgent.hpp"
 #include "3D/range/BigRangeAgent.hpp"

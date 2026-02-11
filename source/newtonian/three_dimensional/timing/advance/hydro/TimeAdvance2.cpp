@@ -1,6 +1,6 @@
 // #include "TimeAdvance2.hpp"
 
-// #include "3D/tesselation/mpi_exchange.hpp"
+// #include "3D/tessellation/mpi_exchange.hpp"
 
 // void TimeAdvance2::UpdateVelocities(const std::vector<ComputationalCell3D> &activeCells, const std::vector<size_t> &participatingIndices, dt_t currentTime, dt_t dt)
 // {

@@ -6,10 +6,10 @@
 
 #include <parmetis.h>
 #include "PointsManager.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
-#include "3D/tesselation/loadBalancing/ParMETISLoadBalancer.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
+#include "3D/tessellation/loadBalancing/ParMETISLoadBalancer.hpp"
 #include "3D/environment/PlainDistributedOctEnvAgent.hpp"
-#include "3D/tesselation/ExchangeGhosts.hpp"
+#include "3D/tessellation/ExchangeGhosts.hpp"
 
 class ParMETISPointManager : public PointsManager
 {

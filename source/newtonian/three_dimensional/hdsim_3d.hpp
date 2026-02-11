@@ -6,7 +6,7 @@
 #include "3D/hilbert/HilbertOrder3D.hpp"
 #include "misc/utils.hpp"
 #include "computational_cell.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "conserved_3d.hpp"
 #include "../common/equation_of_state.hpp"
 #include "point_motion_3d.hpp"

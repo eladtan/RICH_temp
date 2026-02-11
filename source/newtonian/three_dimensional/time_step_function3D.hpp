@@ -6,7 +6,7 @@
 #ifndef TIME_STEP_FUNCTION3D_HPP
 #define TIME_STEP_FUNCTION3D_HPP 1
 
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "computational_cell.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #include "../common/equation_of_state.hpp"

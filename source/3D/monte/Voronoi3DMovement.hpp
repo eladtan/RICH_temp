@@ -2,7 +2,7 @@
 #define MONTE_CARLO_VORONOI3D_MOVEMENT
 
 #include "3D/elementary/Vector3D.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "monte/MonteCarloParticle.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "ds/OctTree/OctTree.hpp"

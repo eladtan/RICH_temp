@@ -1,6 +1,6 @@
 #include "HydroTimeAdvance.hpp"
 
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 
 void MovePoints(Tessellation3D& tess, std::vector<Vector3D> const& point_vel, double const dt)
 {

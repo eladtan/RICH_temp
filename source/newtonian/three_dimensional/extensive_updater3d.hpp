@@ -8,7 +8,7 @@
 
 #include "computational_cell.hpp"
 #include "conserved_3d.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "../common/equation_of_state.hpp"
 
 using std::vector;

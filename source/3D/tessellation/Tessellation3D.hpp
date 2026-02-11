@@ -13,7 +13,7 @@
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
 #include "3D/environment/EnvironmentAgent.h"
-#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
+#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 #include "mpi/mpi_exchange_commands.hpp"
 
 //! \brief Container for points defining a face

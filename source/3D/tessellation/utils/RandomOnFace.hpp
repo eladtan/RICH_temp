@@ -4,7 +4,7 @@
 #include <random>
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/elementary/Face.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 
 Vector3D RandomPointOnFace(const Tessellation3D &voronoi, size_t faceIndex);
 

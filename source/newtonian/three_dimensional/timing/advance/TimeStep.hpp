@@ -4,7 +4,7 @@
 #include <vector>
 #include "../timesteps.h"
 #include "hydro/HydroTimeAdvance.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/common/equation_of_state.hpp"
 #include "hydro/HydroTimeAdvance.hpp"

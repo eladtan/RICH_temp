@@ -4,7 +4,7 @@
 #include <H5Cpp.h>
 #include <filesystem>
 #include "monte/MonteCarloParticle.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 
 using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 

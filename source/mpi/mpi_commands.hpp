@@ -10,7 +10,7 @@ using rank_t = int;
 #include <mpi.h>
 #include <functional>
 #include "misc/utils.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
 #include "stdint.h"
 

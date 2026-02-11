@@ -7,7 +7,7 @@
 #define FLUX_CALCULATOR_HPP 1
 
 #include "conserved_3d.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "computational_cell.hpp"
 #include "../common/equation_of_state.hpp"
 #include "RiemannSolver3D.hpp"

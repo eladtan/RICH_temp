@@ -3,7 +3,7 @@
 
 #include "monte/MonteCarloParticle.hpp"
 #include "3D/elementary/Vector3D.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 
 using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;

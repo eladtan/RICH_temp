@@ -4,7 +4,7 @@
 #include <boost/scoped_ptr.hpp>
 #include <limits>
 #include "3D/r3d/Intersection3D.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "misc/utils.hpp"
 
 //#define debug_amr 1

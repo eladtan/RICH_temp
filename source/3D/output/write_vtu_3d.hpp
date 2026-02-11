@@ -32,7 +32,7 @@
 	#include <vtkMPIController.h>
 #endif
 
-#include "../tesselation/Tessellation3D.hpp"
+#include "../tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/hdsim_3d.hpp"
 
 namespace write_vtu3d

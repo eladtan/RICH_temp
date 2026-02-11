@@ -6,7 +6,7 @@
 #ifndef ROUNDGRID3D
 #define ROUNDGRID3D 1
 
-#include "../tesselation/voronoi/Voronoi3D.hpp"
+#include "../tessellation/voronoi/Voronoi3D.hpp"
 #include <functional>
 
 /*!

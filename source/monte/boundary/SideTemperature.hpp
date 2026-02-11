@@ -4,7 +4,7 @@
 #include <boost/math/special_functions/pow.hpp>
 #include "BoundaryCondition.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
-#include "3D/tesselation/utils/RandomOnFace.hpp"
+#include "3D/tessellation/utils/RandomOnFace.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 template<typename T, typename Grid>

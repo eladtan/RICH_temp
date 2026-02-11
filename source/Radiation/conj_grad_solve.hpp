@@ -13,7 +13,7 @@
 #include "mpi/mpi_commands.hpp"
 #endif
 #include <boost/container/small_vector.hpp>
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "misc/utils.hpp"

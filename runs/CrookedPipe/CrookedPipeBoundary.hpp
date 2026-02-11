@@ -4,7 +4,7 @@
 #include <boost/math/special_functions/pow.hpp>
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
-#include "3D/tesselation/utils/RandomOnFace.hpp"
+#include "3D/tessellation/utils/RandomOnFace.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 #define MONTECARLO_EPS 1e-8

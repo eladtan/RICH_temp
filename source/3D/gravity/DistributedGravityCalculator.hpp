@@ -2,7 +2,7 @@
 #define DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 
 #ifdef RICH_MPI
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "GravityTree.hpp"

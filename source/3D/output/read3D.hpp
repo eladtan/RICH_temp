@@ -4,7 +4,7 @@
 #include <filesystem>
 #include "read_utils.hpp"
 #include "Snapshot3D.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp" // includes Tessellation3D as well
+#include "3D/tessellation/voronoi/Voronoi3D.hpp" // includes Tessellation3D as well
 
 #if RICH_MPI
 /*! \brief Load snapshot data into memory

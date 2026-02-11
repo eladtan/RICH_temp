@@ -5,7 +5,7 @@
 
 #include <mpi.h>
 #include <vector>
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
 
 /*!

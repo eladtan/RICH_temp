@@ -4,7 +4,7 @@
 // #ifdef RICH_MPI
 
 // #include "mpi/mpi_exchange_commands.hpp"
-// #include "3D/tesselation/Tessellation3D.hpp"
+// #include "3D/tessellation/Tessellation3D.hpp"
 
 // template<typename T>
 // void MPI_Tessellation_movement_exchange_data(const Tessellation3D &tess, std::vector<T> &data)

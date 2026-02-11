@@ -7,8 +7,8 @@
 #include <memory>
 #include <string>
 #include "ProgressTracker.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
-#include "3D/tesselation/loadBalancing/LoadBalancer.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
+#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "PhysicsStep.hpp"

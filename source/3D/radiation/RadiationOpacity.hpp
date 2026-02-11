@@ -1,7 +1,7 @@
 #ifndef OPACITY_HPP
 #define OPACITY_HPP
 
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "monte/MonteCarloParticle.hpp"
