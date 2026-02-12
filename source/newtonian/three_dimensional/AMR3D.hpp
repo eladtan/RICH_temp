@@ -11,6 +11,7 @@
 #include "../common/equation_of_state.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include <boost/scoped_ptr.hpp>
+#include "3D/tessellation/utils/PolyClip.hpp"
 #include "LinearGauss3D.hpp"
 #include "hdsim_3d.hpp"
 

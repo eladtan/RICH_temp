@@ -1,6 +1,3 @@
-[submodule "source/opt/r3d"]
-	path = source/opt/r3d
-	url = git@github.com:maormizrachi/r3d_rich
 [submodule "source/opt/vcl"]
 	path = source/opt/vcl
 	url = git@github.com:maormizrachi/vcl_rich.git

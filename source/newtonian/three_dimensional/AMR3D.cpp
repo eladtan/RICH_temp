@@ -4,8 +4,14 @@
 #include <boost/scoped_ptr.hpp>
 #include <limits>
 #include "3D/r3d/Intersection3D.hpp"
+#include "3D/tessellation/utils/PolyClip.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "H5VLnative.h"
+#include "misc/universal_error.hpp"
 #include "misc/utils.hpp"
+#include "newtonian/three_dimensional/LinearGauss3D.hpp"
+#include "newtonian/three_dimensional/SpatialReconstruction3D.hpp"
+#include "newtonian/three_dimensional/conserved_3d.hpp"
 
 //#define debug_amr 1
 
@@ -257,8 +263,10 @@ namespace
 #ifdef RICH_MPI
 	void SendRecvMPIFullRemove(Tessellation3D const& tess, vector<size_t> const& toremove, vector<vector<size_t> >
 		&nghost_index, vector<vector<vector<size_t> > > &duplicated_index, vector<vector<vector<Vector3D> > > &planes,
-		vector<vector<vector<double> > > &planes_d)
+		vector<vector<vector<double>>> &planes_d, std::vector<std::vector<Vector3D>> &vof_normal, std::vector<std::vector<Vector3D>> &vof_point, SpatialReconstruction3D &interp)
 	{
+		const LinearGauss3D *linear_interp = dynamic_cast<const LinearGauss3D *>(&interp);
+		bool do_vof = linear_interp != 0 && linear_interp->vof_is_on;
 		vector<size_t> temp;
 		size_t Nprocs = tess.GetDuplicatedProcs().size();
 		nghost_index.clear();
@@ -269,6 +277,10 @@ namespace
 		planes_d.resize(Nprocs);
 		planes.clear();
 		planes.resize(Nprocs);
+		vof_normal.clear();
+		vof_normal.resize(Nprocs);
+		vof_point.clear();
+		vof_point.resize(Nprocs);
 		vector<vector<size_t> > duplicated_points = tess.GetDuplicatedPoints();
 		vector<vector<size_t> > ghost_points = tess.GetGhostIndeces();
 		vector<vector<size_t> > sort_indeces(Nprocs), sort_indecesg(Nprocs);
@@ -282,7 +294,7 @@ namespace
 
 		size_t nremove = toremove.size();
 		size_t Norg = tess.GetPointNo();
-		vector<r3d_plane> r_planes;
+		vector<Plane> r_planes;
 		for (size_t i = 0; i < nremove; ++i)
 		{
 			vector<vector<size_t> > ghosts(Nprocs);
@@ -307,13 +319,13 @@ namespace
 			}
 			if (added)
 			{
-				GetPlanes(r_planes, tess, toremove[i]);
+				CreatePolyPlanes(tess, toremove[i], r_planes);
 				size_t nplanes = r_planes.size();
 				vector<Vector3D> v_plane(nplanes);
 				vector<double> d_plane(nplanes);
 				for (size_t j = 0; j < nplanes; ++j)
 				{
-					d_plane[j] = r_planes[j].d;
+					d_plane[j] = ScalarProd(r_planes[j].normal, r_planes[j].point);
 					v_plane[j].x = r_planes[j].n.xyz[0];
 					v_plane[j].y = r_planes[j].n.xyz[1];
 					v_plane[j].z = r_planes[j].n.xyz[2];
@@ -326,6 +338,11 @@ namespace
 							duplicated_points[k].end(), toremove[i]) - duplicated_points[k].begin())]);
 						planes[k].push_back(v_plane);
 						planes_d[k].push_back(d_plane);
+						if(do_vof)
+						{
+							vof_normal[k].push_back(linear_interp->planes_[toremove[i]].normal);
+							vof_point[k].push_back(linear_interp->planes_[toremove[i]].point);
+						}
 					}
 			}
 		}
@@ -334,6 +351,11 @@ namespace
 		duplicated_index = MPI_exchange_data(tess, duplicated_index);
 		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes);
 		planes_d = MPI_exchange_data(tess, planes_d);
+		if(do_vof)
+		{
+			vof_normal = MPI_exchange_data(tess.GetDuplicatedProcs(), vof_normal);
+			vof_point = MPI_exchange_data(tess.GetDuplicatedProcs(), vof_point);
+		}
 		// convert the data
 		for (size_t i = 0; i < Nprocs; ++i)
 		{
@@ -379,12 +401,12 @@ namespace
 		changed_byouter.clear();
 		changed_byouter.resize(Nprocs);
 		size_t nsend = to_send.size();
-		vector<r3d_plane> r_planes;
+		vector<Plane> r_planes;
 		for (size_t i = 0; i < nsend; ++i)
 		{
 			r_planes.clear();
 			// Get the polyhedra of new cell
-			GetPlanes(r_planes, tess, refined_points[i]);
+			CreatePolyPlanes(tess, refined_points[i], r_planes);
 			// find indeces of neighbors
 			for (size_t k = 0; k < Nprocs; ++k)
 			{
@@ -403,10 +425,10 @@ namespace
 					size_t nplanes = r_planes.size();
 					for (size_t j = 0; j < nplanes; ++j)
 					{
-						planes[k].push_back(r_planes[j].d);
-						planes[k].push_back(r_planes[j].n.xyz[0]);
-						planes[k].push_back(r_planes[j].n.xyz[1]);
-						planes[k].push_back(r_planes[j].n.xyz[2]);
+						planes[k].push_back(ScalarProd(r_planes[j].normal, r_planes[j].point));
+						planes[k].push_back(r_planes[j].normal.x);
+						planes[k].push_back(r_planes[j].normal.y);
+						planes[k].push_back(r_planes[j].normal.z);
 					}
 					n_planes[k].push_back(nplanes);
 				}
@@ -438,60 +460,80 @@ namespace
 	{
 		std::vector<size_t> neigh,temp2;
 		point_vec temp;
-		r3d_poly poly, poly2;
 		std::vector<std::vector<int> > i_temp;
 		size_t NRemove = ToRemove.size();
 		size_t Norg = oldtess.GetPointNo();
+		std::vector<Face> poly;
+		const LinearGauss3D *linear_interp = dynamic_cast<const LinearGauss3D *>(&interp);
+		bool do_vof = linear_interp != 0 && linear_interp->vof_is_on;
+		Plane *vof = 0;
 		for (size_t i = 0; i < NRemove; ++i)
 		{
+			vof = 0;
 			oldtess.GetNeighbors(ToRemove[i], neigh);
+			double org_volume = oldtess.GetVolume(ToRemove[i]);
 			size_t Nneigh = neigh.size();
 			// Get old poly
-			if (GetPoly(oldtess, ToRemove[i], poly, temp, temp2, i_temp))
+			try
 			{
+				CreatePolyFaces(oldtess, ToRemove[i], poly);
+				if(do_vof)
+				{
+					if(abs(linear_interp->planes_[ToRemove[i]].normal) > 0.1)
+					{
+						vof = &linear_interp->planes_[ToRemove[i]];
+					}
+				}
 				for (size_t j = 0; j < Nneigh; ++j)
 				{
 					if (neigh[j] >= Norg)
 						continue;
-					// copy poly
-					poly2.nverts = poly.nverts;
-					for (int k = 0; k < poly2.nverts; ++k)
-					{
-						for (size_t l = 0; l < 3; ++l)
-						{
-							poly2.verts[k].pos.xyz[l] = poly.verts[k].pos.xyz[l];
-							poly2.verts[k].pnbrs[l] = poly.verts[k].pnbrs[l];
-						}
-					}
-
+					
 					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(), neigh[j])
 						- ToRemove.begin());
-					std::pair<bool, std::array<double,4> > dv = PolyhedraIntersection(tess, neigh[j] - index_remove, poly2);
+					auto [dv, volume_vof, clip_CM] = clipCells(tess, neigh[j] - index_remove, poly, vof);
 #ifdef RICH_DEBUG
 					try
 					{
 #endif
-						if(dv.first)
-							extensives[neigh[j] - index_remove] += eu.ConvertPrimitveToExtensive3D(cells[ToRemove[i]], eos, dv.second[0], interp.GetSlopes()[ToRemove[i]],
-								oldtess.GetCellCM(ToRemove[i]), Vector3D(dv.second[1], dv.second[2], dv.second[3]));
+						if(dv > org_volume * 1e-6)
+						{
+							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[ToRemove[i]], eos, dv, interp.GetSlopes()[ToRemove[i]],
+							oldtess.GetCellCM(ToRemove[i]), clip_CM, vof != 0, volume_vof);
+							if(cells[ToRemove[i]].ID == -1)
+							{
+								std::cout << "To add local remove" << toadd << std::endl;
+								std::cout << "volume" << dv << "volume_vof" << volume_vof << " org volume " << oldtess.GetVolume(ToRemove[i]) << std::endl;
+							}
+							extensives[neigh[j] - index_remove] += toadd;
+							if(extensives[neigh[j] - index_remove].mass < 0)
+							{
+								// todo: print message
+							}
+						}
 #ifdef RICH_DEBUG
-				}
-				catch (UniversalError &eo)
-				{
-					eo.addEntry("Error in LocalRemove", 0);
-					eo.addEntry("Volume", dv.second[0]);
-					eo.addEntry("Current remove", ToRemove[i]);
-					eo.addEntry("Current remove ID", cells[ToRemove[i]].ID);
-					eo.addEntry("New mass", extensives[neigh[j] - index_remove].mass);
-					eo.addEntry("Remove index", i);
-					eo.addEntry("neigh index",j);
-					eo.addEntry("neigh", neigh[j]);
-					eo.addEntry("index_remove", index_remove);
-					throw;
-				}
+					}
+					catch (UniversalError &eo)
+					{
+						eo.addEntry("Error in LocalRemove", 0);
+						eo.addEntry("Volume", dv.second[0]);
+						eo.addEntry("Current remove", ToRemove[i]);
+						eo.addEntry("Current remove ID", cells[ToRemove[i]].ID);
+						eo.addEntry("New mass", extensives[neigh[j] - index_remove].mass);
+						eo.addEntry("Remove index", i);
+						eo.addEntry("neigh index",j);
+						eo.addEntry("neigh", neigh[j]);
+						eo.addEntry("index_remove", index_remove);
+						throw;
+					}
 #endif
 
 				}
+			}
+			catch(UniversalError &eo)
+			{
+				eo.addEntry("ID", cells[ToRemove[i]].ID);
+				throw eo;
 			}
 		}
 	}
@@ -505,13 +547,17 @@ namespace
 		vector<vector<vector<size_t> > > duplicate_index;
 		vector<vector < vector<Vector3D> > > planes_v;
 		vector<vector < vector<double> > > planes_d;
-		vector<r3d_plane> planes;
-		r3d_poly poly, poly2;
 		std::vector<size_t>  temp2;
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
+		std::vector<std::vector<Vector3D>> vof_normal, vof_point;
 		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d);
 		size_t Nproc = nghost_index.size();
+		std::vector<Plane> planes;
+		std::vector<Face> poly;
+		const LinearGauss3D *linear_interp = dynamic_cast<const LinearGauss3D *>(&interp);
+		bool do_vof = linear_interp != 0 && linear_interp->vof_is_on;
+		Plane *vof_ptr = 0;
 		for (size_t i = 0; i < Nproc; ++i)
 		{
 			size_t NremoveMPI = duplicate_index[i].size();
@@ -520,60 +566,80 @@ namespace
 				// build planes for outer point
 				size_t Nplane = planes_v[i].at(j).size();
 				planes.resize(Nplane);
+				if(do_vof)
+				{
+					if(fastabs(vof_normal[i][j]) > 0.1)
+					{
+						vof.normal = vof_normal[i][j];
+						vof.point = vof_point[i][j];
+						vof_ptr = &vof;
+					}
+					else
+					{
+						vof_ptr = 0;
+					}
+				}
 				for (size_t k = 0; k < Nplane; ++k)
 				{
-					planes[k].d = planes_d[i][j].at(k);
-					planes[k].n.xyz[0] = planes_v[i][j].at(k).x;
-					planes[k].n.xyz[1] = planes_v[i][j][k].y;
-					planes[k].n.xyz[2] = planes_v[i][j][k].z;
+					planes[k].normal = planes_v[i][j].at(k);
+					if(std::abs(planes[k].normal.x) > 0.1)
+					{
+						planes[k].point = Vector3D(planes_d[i][j][k] / planes[k].normal.x, 0.0, 0.0);
+					}
+					else
+					{
+						if(std::abs(planes[k].normal.y) > 0.1)
+						{
+							planes[k].point = Vector3D(0.0, planes_d[i][j][k] / planes[k].normal.y, 0.0);
+						}
+						else
+						{
+							planes[k].point = Vector3D(0.0, 0.0, planes_d[i][j][k] / planes[k].normal.z);
+						}
+					}
 				}
 				size_t NChangeLocal = duplicate_index[i][j].size();
 				for (size_t k = 0; k < NChangeLocal; ++k)
 				{
 					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(),
 						duplicate_index[i][j].at(k)) - ToRemove.begin());
-					if (GetPoly(tess, duplicate_index[i][j][k] - index_remove, poly, temp, temp2, i_temp))
+					try
 					{
-						// copy poly
-						poly2.nverts = poly.nverts;
-						for (int kk = 0; kk < poly2.nverts; ++kk)
+						CreatePolyFaces(tess, duplicated_index[i][j][k] - index_remove, poly);
+						double org_volume = tess.GetVolume(duplicated_index[i][j][k] - index_remove);
 						{
-							for (size_t l = 0; l < 3; ++l)
+							auto [dv, vof_volume, clip_CM] = clipCells(poly, planes, vof_ptr);
+							try
 							{
-								poly2.verts[kk].pos.xyz[l] = poly.verts[kk].pos.xyz[l];
-								poly2.verts[kk].pnbrs[l] = poly.verts[kk].pnbrs[l];
+								if(dv > org_volume * 1e-6)
+								{
+									Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[nghost_index[i][j]], eos, dv, interp.GetSlopes()[nghost_index[i][j]], oldtess.GetCellCM(nghost_index[i][j]),
+													clip_CM, vof_ptr != 0, vof_volume);
+									extensives[duplicate_index[i][j][k] - index_remove] += toadd;
+								}
+							}
+							catch(UniversalError &eo)
+							{
+								eo.addEntry("Error in MPIRemove", 0);
+								eo.addEntry("Volume", dv.second[0]);
+								eo.addEntry("Current remove", nghost_index[i][j]);
+								eo.addEntry("Current remove ID", cells[nghost_index[i][j]].ID);
+								eo.addEntry("New mass", extensives[duplicate_index[i][j][k] - index_remove].mass);
+								eo.addEntry("Remove index i", i);
+								eo.addEntry("Remove index j", j);
+								eo.addEntry("Remove index k", k);
+								eo.addEntry("neigh index", j);
+								eo.addEntry("duplicate_index[i][j][k] - index_remove", duplicate_index[i][j][k] - index_remove);
+								eo.addEntry("index_remove", index_remove);
+								throw;
 							}
 						}
-						std::pair<bool, std::array<double,4> > dv = PolyhedraIntersection(oldtess, 0, poly2, &planes);
-#ifdef RICH_DEBUG
-						try
-						{
-#endif
-						if(dv.first)
-						{
-							extensives[duplicate_index[i][j][k] - index_remove] += eu.ConvertPrimitveToExtensive3D(
-								cells[nghost_index[i][j]], eos, dv.second[0], interp.GetSlopes()[nghost_index[i][j]],oldtess.GetCellCM(nghost_index[i][j]),
-								Vector3D(dv.second[1], dv.second[2], dv.second[3]));
-						}
-#ifdef RICH_DEBUG
 					}
-					catch (UniversalError &eo)
+					catch(UniversalError &eo)
 					{
 						eo.addEntry("Error in MPIRemove", 0);
-						eo.addEntry("Volume", dv.second[0]);
 						eo.addEntry("Current remove", nghost_index[i][j]);
 						eo.addEntry("Current remove ID", cells[nghost_index[i][j]].ID);
-						eo.addEntry("New mass", extensives[duplicate_index[i][j][k] - index_remove].mass);
-						eo.addEntry("Remove index i", i);
-						eo.addEntry("Remove index j", j);
-						eo.addEntry("Remove index k", k);
-						eo.addEntry("neigh index", j);
-						eo.addEntry("duplicate_index[i][j][k] - index_remove", duplicate_index[i][j][k] - index_remove);
-						eo.addEntry("index_remove", index_remove);
-						throw;
-					}
-#endif
-
 					}
 				}
 			}
@@ -584,86 +650,109 @@ namespace
 	void LocalRefine(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRefine,
 		std::vector<ComputationalCell3D> const& cells, EquationOfState const& eos, AMRExtensiveUpdater3D const&eu, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
 	{
+		int rank = 0;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif // RICH_MPI
 		size_t Nrefine = ToRefine.size();
 		std::vector<size_t> neigh, temp2;
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
-		r3d_poly poly, poly2;
+		// r3d_poly poly, poly2;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
 		size_t Norg = tess.GetPointNo() - ToRefine.size();
 		size_t Norg2 = oldtess.GetPointNo();
+		std::vector<Face> polyhedron;
+		const LinearGauss3D *linear_interp = dynamic_cast<const LinearGauss3D *>(&interp);
+		bool do_vof = linear_interp != 0 && linear_interp->vof_is_on;
+		Plane *vof = 0;
+		Plane *dummy_vof = 0;
+
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
+			vof = 0;
 			checked.clear();
 			double total_dv = 0;
 			// Get new cell poly
-			bool const good_poly = GetPoly(tess, Norg + i, poly, temp, temp2, i_temp);
-			if (good_poly)
+			CreatePolyFaces(tess, Norg + i, polyhedron);
+			double org_volume = tess.GetVolume(Norg + i);
+			bool print = false;
+			if(print)
 			{
-				// Get neigh to check
-				oldtess.GetNeighbors(ToRefine[i], neigh);
-				size_t Nneigh = neigh.size();
-				for (size_t j = 0; j < Nneigh; ++j)
-					tocheck.push(neigh[j]);
-				tocheck.push(ToRefine[i]);
-				while (!tocheck.empty())
+				std::cout << "New poly is " << polyhedron << std::endl;
+			}
+			double new_volume = tess.GetVolume(Norg + i);
+			double total_dv = 0, total_dv2 = 0;
+			// Get neigh to check
+			oldtess.GetNeighbors(ToRefine[i], neigh);
+			size_t Nneigh = neigh.size();
+			for (size_t j = 0; j < Nneigh; ++j)
+				tocheck.push(neigh[j]);
+			tocheck.push(ToRefine[i]);
+			while (!tocheck.empty())
+			{
+				size_t cur_check = tocheck.top();
+				tocheck.pop();
+				// did we check this cell yet?
+				if (checked.count(cur_check) == 1)
+					continue;
+				else // keep track of visted cells
+					checked.insert(cur_check);
+				if (cur_check >= Norg2)
+					continue;
+				// copy poly
+				if(do_vof)
 				{
-					size_t cur_check = tocheck.top();
-					tocheck.pop();
-					// did we check this cell yet?
-					if (checked.count(cur_check) == 1)
-						continue;
-					else // keep track of visted cells
-						checked.insert(cur_check);
-					if (cur_check >= Norg2)
-						continue;
-					// copy poly
-					poly2.nverts = poly.nverts;
-					for (int k = 0; k < poly2.nverts; ++k)
+					if(abs(linear_interp->planes_[cur_check].normal) > 0.1)
 					{
-						for (size_t l = 0; l < 3; ++l)
-						{
-							poly2.verts[k].pos.xyz[l] = poly.verts[k].pos.xyz[l];
-							poly2.verts[k].pnbrs[l] = poly.verts[k].pnbrs[l];
-						}
+						dummy_vof = &linear_interp->planes_[cur_check];
 					}
-					// Check intersectrion
-					std::pair<bool, std::array<double, 4> > dv = PolyhedraIntersection(oldtess, cur_check, poly2, nullptr, false);
-					if (dv.first)
+					else
 					{
-						total_dv += dv.second[0];
-						// Remove extensive from neigh cell and add to new cell
-#ifdef RICH_DEBUG
-						try
-						{
-#endif
-							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv.second[0], interp.GetSlopes()[cur_check],
-								oldtess.GetCellCM(cur_check), Vector3D(dv.second[1], dv.second[2], dv.second[3]));
-							extensives[cur_check] -= toadd;
-							//extensives[Norg2 + i].tracers.resize(toadd.tracers.size());
-							extensives[Norg2 + i] += toadd;
-							oldtess.GetNeighbors(cur_check, neigh);
-							Nneigh = neigh.size();
-							for (size_t j = 0; j < Nneigh; ++j)
-								tocheck.push(neigh[j]);
-#ifdef RICH_DEBUG
-						}
-						catch (UniversalError &eo)
-						{
-							eo.addEntry("Error in LocalRefine", 0);
-							eo.addEntry("Volume", dv.second[0]);
-							eo.addEntry("Current check", cur_check);
-							eo.addEntry("Current check ID",cells[cur_check].ID);
-							eo.addEntry("Old mass", extensives[cur_check].mass);
-							eo.addEntry("Old density", cells[cur_check].density);
-							eo.addEntry("New mass", extensives[Norg + i].mass);
-							eo.addEntry("Refine index", i);
-							eo.addEntry("Norg", Norg2);
-							throw;
-						}
-#endif
+						dummy_vof = 0;
 					}
+				}
+				// Check intersectrion
+				auto [dv, vof_volume, clip_CM] = clipCells(oldtess, cur_check, polyhedron, do_vof ? dummy_vof : vof, cells[cur_check].ID == -1);
+				if(cells[cur_check].ID == -1)
+				{
+					std::cout << "Clipping cell " << cur_check << " ID " << cells[cur_check].ID << " dv " << dv << " init volume " << oldtess.GetVolume(curr_check) << " refine index " << ToRefine[i] << " do_vof " << do_vof << " vof_volume " << vof_volume << std::endl;
+				}
+				if(dv > org_volume * 1e-6)
+				{
+					total_dv += dv; // todo deal with vof and make sure no slope
+					// Remove extensive from neigh cell and add to new cell
+					// Remove extensive from neigh cell and add to new cell
+#ifdef RICH_DEBUG
+					try
+					{
+#endif
+						Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv, interp.GetSlopes()[cur_check],
+							oldtess.GetCellCM(cur_check), clip_CM, dummy_vof != 0, vof_volume);
+						extensives[cur_check] -= toadd;
+						//extensives[Norg2 + i].tracers.resize(toadd.tracers.size());
+						extensives[Norg2 + i] += toadd;
+						oldtess.GetNeighbors(cur_check, neigh);
+						Nneigh = neigh.size();
+						for (size_t j = 0; j < Nneigh; ++j)
+							tocheck.push(neigh[j]);
+#ifdef RICH_DEBUG
+					}
+					catch (UniversalError &eo)
+					{
+						eo.addEntry("Error in LocalRefine", 0);
+						eo.addEntry("Volume", dv.second[0]);
+						eo.addEntry("Current check", cur_check);
+						eo.addEntry("Current check ID",cells[cur_check].ID);
+						eo.addEntry("Old mass", extensives[cur_check].mass);
+						eo.addEntry("Old density", cells[cur_check].density);
+						eo.addEntry("New mass", extensives[Norg + i].mass);
+						eo.addEntry("Refine index", i);
+						eo.addEntry("Norg", Norg2);
+						throw;
+					}
+#endif
 				}
 			}
 			if(not good_poly || total_dv < std::numeric_limits<double>::min() * 100)
@@ -710,13 +799,20 @@ namespace
 		std::vector<std::vector<size_t> > changed_byouter;
 		SendRecvMPIRefine(tess, to_send, refined_points, oldtess, neigh_index, planes, n_planes, changed_byouter);
 		// Find the intersections
-		r3d_poly poly;
-		std::vector<r3d_plane> r_planes;
+		// r3d_poly poly;
+		std::vector<Plane> r_planes;
 		std::vector<std::vector<int> > i_temp;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
 		size_t Nprocs = neigh_index.size();
 		std::vector<std::vector<Conserved3D> > extensive_tosend(Nprocs);
+		int rank = 0;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		std::vector<Face> polyhedron;
+		const LinearGauss3D *linear_interp = dynamic_cast<const LinearGauss3D *>(&interp);
+		bool do_vof = linear_interp != 0 && linear_interp->vof_is_on;
+		Plane *vof = 0;
+		Plane *dummy_vof = 0;
 		for (size_t i = 0; i < Nprocs; ++i)
 		{
 			extensive_tosend[i].resize(neigh_index[i].size());
@@ -728,10 +824,24 @@ namespace
 				r_planes.resize(n_planes[i][j]);
 				for (size_t k = 0; k < n_planes[i][j]; ++k)
 				{
-					r_planes[k].d = planes[i][counter];
-					r_planes[k].n.xyz[0] = planes[i][counter + 1];
-					r_planes[k].n.xyz[1] = planes[i][counter + 2];
-					r_planes[k].n.xyz[2] = planes[i].at(counter + 3);
+					r_planes[k].normal.x = planes[i][counter + 1];
+					r_planes[k].normal.y = planes[i][counter + 2];
+					r_planes[k].normal.z = planes[i].at(counter + 3);
+					if(std::abs(r_planes[k].normal.x) > 0.1)
+					{
+						r_planes[k].point.x = Vector3D(planes[i][counter] / r_planes[k].normal.x, 0.0, 0.0);
+					}
+					else
+					{
+						if(std::abs(r_planes[k].normal.y) > 0.1)
+						{
+							r_planes[k].point.y = Vector3D(0.0, planes[i][counter] / r_planes[k].normal.y, 0.0);
+						}
+					}
+					else
+					{
+						r_planes[k].point.z = Vector3D(0.0, 0.0, planes[i][counter] / r_planes[k].normal.z);
+					}
 					counter += 4;
 				}
 				// Check for intersections
@@ -748,18 +858,30 @@ namespace
 						checked.insert(cur_check);
 					if (cur_check >= Norg)
 						continue;
-					if (GetPoly(oldtess, cur_check, poly, ptemp, temp2, i_temp))
+					CreatePolyFaces(oldtess, cur_check, polyhedron);
+					double org_volume = oldtess.GetVolume(cur_check);
+					if(do_vof)
 					{
-						std::pair<bool, std::array<double,4> > dv = PolyhedraIntersection(oldtess, cur_check, poly, &r_planes);
-						if (dv.first)
+						if(abs(linear_interp->planes_[cur_check].normal) > 0.1)
 						{
+							vof = &linear_interp->planes_[cur_check];
+						}
+						else
+						{
+							vof = 0;
+						}
+					}
+					auto [dv, vof_volume, clip_CM] = clipCells(polyhedron, r_planes, vof);
+
+					if(dv > org_volume * 1e-6)
+					{
 							// add and remove the extensive
 #ifdef RICH_DEBUG
-							try
-							{
+						try
+						{
 #endif
 							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv.second[0], interp.GetSlopes()[cur_check],
-								oldtess.GetCellCM(cur_check), Vector3D(dv.second[1], dv.second[2], dv.second[3]));
+								oldtess.GetCellCM(cur_check), clip_CM, vof != 0, vof_volume);
 							extensives[cur_check] -= toadd;
 							extensive_tosend[i][j] += toadd;
 							oldtess.GetNeighbors(cur_check, temp);
@@ -768,26 +890,19 @@ namespace
 								tocheck.push(temp[k]);
 #ifdef RICH_DEBUG
 						}
-							catch (UniversalError &eo)
-							{
-								eo.addEntry("Error in MPIRefine", 0);
-								eo.addEntry("Volume", dv.second[0]);
-								eo.addEntry("Current check", cur_check);
-								eo.addEntry("Current check ID", cells[cur_check].ID);
-								eo.addEntry("Old mass", extensives[cur_check].mass);
-								eo.addEntry("Old density", cells[cur_check].density);
-								eo.addEntry("Refine index i", i);
-								eo.addEntry("Refine index j", j);
-								throw;
-							}
-#endif
+						catch (UniversalError &eo)
+						{
+							eo.addEntry("Error in MPIRefine", 0);
+							eo.addEntry("Volume", dv.second[0]);
+							eo.addEntry("Current check", cur_check);
+							eo.addEntry("Current check ID", cells[cur_check].ID);
+							eo.addEntry("Old mass", extensives[cur_check].mass);
+							eo.addEntry("Old density", cells[cur_check].density);
+							eo.addEntry("Refine index i", i);
+							eo.addEntry("Refine index j", j);
+							throw;
 						}
-					}
-					else
-					{
-						int rank = 0;
-						MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-						std::cout << "warning bad poly in MPIRefine in rank " <<rank<< std::endl;
+#endif
 					}
 				}
 			}
@@ -801,7 +916,6 @@ namespace
 		}
 	}
 #endif
-
 }
 
 AMRCellUpdater3D::AMRCellUpdater3D(void) = default;
