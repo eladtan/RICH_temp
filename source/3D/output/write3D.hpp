@@ -10,6 +10,7 @@
 #include "DiagnosticAppendix3D.hpp"
 #include "Snapshot3D.hpp"
 #include "MC/read_write_particles.hpp"
+#include "utils/hdf5/HDF5Writer.hpp"
 
 namespace fs = std::filesystem;
 using namespace H5;
