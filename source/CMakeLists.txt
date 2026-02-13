@@ -129,7 +129,6 @@ include_directories(${PROJECT_SOURCE_DIR})
 include_directories("${PROJECT_SOURCE_DIR}/..") # TODO: REMOVE!
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
-include_directories(${R3D_INCLUDE})
 
 # python
 if(PYTHON_INCLUDE AND PYTHON_LIB_DIRECTORY)
