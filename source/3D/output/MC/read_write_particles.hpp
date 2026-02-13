@@ -5,6 +5,8 @@
 #include <filesystem>
 #include "monte/MonteCarloParticle.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "utils/hdf5/HDF5Reader.hpp"
+#include "utils/hdf5/HDF5Writer.hpp"
 
 using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 
@@ -35,7 +37,7 @@ public:
     double initialWeight = std::numeric_limits<double>::max();
     size_t steps = 0;
     
-    static CompType CreateParticleType(void)
+    static CompType CreateHDF5CompType(void)
     {
         CompType mtype(sizeof(ParticleHDF5));
         #ifdef RICH_MPI
@@ -59,8 +61,6 @@ public:
 
 std::vector<Particle3D> ReadParticles(const Group &group);
 
-void WriteParticles(const std::vector<Particle3D> &particles, const Group &group);
-
 std::vector<Particle3D> ReadParticles(const std::string &fname
                                         #ifdef RICH_MPI
                                             , bool mpi_write = false, int fake_rank = -1
@@ -72,7 +72,7 @@ void WriteParticlesSerial(const std::string &filename, const std::vector<Particl
 #ifdef RICH_MPI
     std::vector<Particle3D> ReadParticlesParallel(const std::string &filename, int fake_rank = -1);
 
-    void WriteParticlesParallel(const std::vector<Particle3D> &particles, const std::string &filename);
+    void WriteParticlesParallel(const std::string &filename, const std::vector<Particle3D> &particles);
 #endif // RICH_MPI
 
 #endif // READ_WRITE_PARTICLES_HPP

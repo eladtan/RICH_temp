@@ -20,19 +20,13 @@ void ReadParticle(const ParticleHDF5 &hdf5Particle, Particle3D &particle)
     particle.steps = hdf5Particle.steps;
 }
 
-std::vector<Particle3D> ReadParticles(const Group &group)
+std::vector<Particle3D> ReadParticles(const HDF5Reader &reader)
 {
-    CompType ptype = ParticleHDF5::CreateParticleType();
-    DataSet dataset = group.openDataSet(PARTICLES_DATASET_NAME);
-    DataSpace space = dataset.getSpace();
 
-    hsize_t dims[1];
-    int ndims = space.getSimpleExtentDims(dims);
-    size_t N = dims[0];
+    std::vector<ParticleHDF5> particles;
+    reader.ReadElement(PARTICLES_DATASET_NAME, particles);
     
-    std::vector<ParticleHDF5> particles(N);
-    dataset.read(particles.data(), ptype);
-
+    size_t N = particles.size();
     std::vector<Particle3D> particlesToReturn(N);
     for(size_t i = 0; i < N; i++)
     {
@@ -48,12 +42,25 @@ std::vector<Particle3D> ReadParticles(const std::string &fname
     #endif // RICH_MPI
     )
 {
-    H5File file(fname, H5F_ACC_RDONLY);
-    Group read_location = file.openGroup("/");
-    bool good_found = true;
+    // HDF5Reader globalReader(fname);
+    std::shared_ptr<HDF5Reader> reader = nullptr;
+
     #ifdef RICH_MPI
+        int rank = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
         if(mpi_read)
         {
+            std::string read_directory = std::filesystem::path(fname).replace_extension("").string();
+            
+            int rank_to_read = (fake_rank >= 0)? fake_rank : rank;
+            std::string rank_file = read_directory + "/" + std::to_string(rank_to_read) + ".h5";
+            if(not std::filesystem::exists(rank_file))
+            {
+                rank_file = read_directory + "/0.h5";
+            }
+            reader = std::make_shared<HDF5Reader>(rank_file);
+
             rank_t rank;
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             std::string rank_group_name = "/rank_" + std::to_string(rank);
@@ -61,23 +68,16 @@ std::vector<Particle3D> ReadParticles(const std::string &fname
             {
                 rank = fake_rank;
             }
-            try
-            {
-                read_location = file.openGroup("/rank" + std::to_string(rank));
-            }
-            catch(const Exception &notfounderror)
-            {
-                good_found = false;
-                read_location = file.openGroup("/rank" + std::to_string(0));
-            }
-
         }
+        else
+        {
+            reader = std::make_shared<HDF5Reader>(fname);
+        }
+    #else // RICH_MPI
+        reader = std::make_shared<HDF5Reader>(fname);
     #endif // RICH_MPI
 
-    std::vector<Particle3D> res = ReadParticles(read_location);
-
-    read_location.close();
-    file.close();
+    std::vector<Particle3D> res = ReadParticles(*reader);
 
     return res;
 }
@@ -85,24 +85,6 @@ std::vector<Particle3D> ReadParticles(const std::string &fname
 #ifdef RICH_MPI
     std::vector<Particle3D> ReadParticlesParallel(const std::string &fname, int fake_rank)
     {
-        fs::path input_directory = fs::path(fname).replace_extension();
-        int rank = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        if(fake_rank >= 0)
-        {
-            rank = fake_rank;
-        }
-
-        H5File file(input_directory / std::to_string(rank) / ".h5", H5F_ACC_RDONLY);
-        Group read_location = file.openGroup("/");
-        H5File globalFile(fname, H5F_ACC_RDONLY);
-
-        std::vector<Particle3D> res = ReadParticles(read_location);
-
-        globalFile.close();
-        read_location.close();
-        file.close();
-
-        return res;
+        return ReadParticles(fname, true, fake_rank);
     }
 #endif // RICH_MPI

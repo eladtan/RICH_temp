@@ -196,7 +196,6 @@ VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, co
         }
     }
 
-
     for(size_t j = 0; j < ComputationalCell3D::tracerNames.size(); ++j)
     {
         for(size_t i = 0; i < Ncells; ++i)
@@ -366,7 +365,7 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
             if(rank > 0)
             {
                 MPI_Recv(&dummy, 1, MPI_INT, rank - 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                filewriter = std::make_shared<HDF5Writer>(filename, false);
+                filewriter = std::make_shared<HDF5Writer>(filename, false /* don't truncate */);
             }
             prefix = "/rank" + std::to_string(rank);
         }

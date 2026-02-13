@@ -1,168 +1,109 @@
 #include "write3D.hpp"
 
+namespace
+{
+void WritePointsToWriter(HDF5Writer &writer, const std::string &basePath,
+                         const std::vector<Vector3D> &points,
+                         const std::vector<std::vector<double>> &data,
+                         const std::vector<std::string> &names,
+                         int mpi_rank)
+{
+    size_t const Ncells = points.size();
+
+    std::vector<double> x(Ncells), y(Ncells), z(Ncells);
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        x[i] = points[i].x;
+        y[i] = points[i].y;
+        z[i] = points[i].z;
+    }
+
+    std::string const prefix = basePath.empty() ? "" : (basePath + "/");
+    writer.WriteElement(prefix + "X", x);
+    writer.WriteElement(prefix + "Y", y);
+    writer.WriteElement(prefix + "Z", z);
+
+    for(size_t i = 0; i < data.size(); ++i)
+    {
+        writer.WriteElement(prefix + names[i], data[i]);
+    }
+
+    std::vector<double> mpi_rank_vec(Ncells, static_cast<double>(mpi_rank));
+    writer.WriteElement(prefix + "MPI_rank", mpi_rank_vec);
+}
+} // namespace
+
 void WritePoints(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names)
 {
-  int rank = 0;
-  int ws = 0;
-  H5File file;
+    int rank = 0;
+    int ws = 0;
+    std::string basePath;
 #ifdef RICH_MPI
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &ws);
-  if(rank == 0)
-  {
-#endif // RICH_MPI
-    H5File file2(H5std_string(filename), H5F_ACC_TRUNC);
-    file2.close();
-    file.openFile(H5std_string(filename), H5F_ACC_RDWR);
-#ifdef RICH_MPI
-  }
-#endif // RICH_MPI
-  Group writegroup;
-#ifdef RICH_MPI
-  MPI_Barrier(MPI_COMM_WORLD);
-  int dummy = 0;
-  if(rank > 0)
-  {
-    MPI_Recv(&dummy, 1, MPI_INT, rank - 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    file.openFile(H5std_string(filename), H5F_ACC_RDWR);
-  }
-  file.createGroup("/rank" + std::to_string(rank));
-  writegroup = file.openGroup("/rank" + std::to_string(rank));
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &ws);
+    if(rank == 0)
+    {
+        HDF5Writer w(filename, true);
+        w.Close();
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    if(rank > 0)
+    {
+        int dummy = 0;
+        MPI_Recv(&dummy, 1, MPI_INT, rank - 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+    basePath = "/rank" + std::to_string(rank);
 #else
-  writegroup = file.openGroup("/");
+    basePath = "";
 #endif
 
-  size_t const Ncells = points.size();
-
-  vector<double> temp(Ncells);
-  for(size_t i = 0; i < Ncells; ++i)
-  {
-    temp[i] = points[i].x;
-  }
-  write_std_vector_to_hdf5(writegroup, temp, "X");
-
-  for(size_t i = 0; i < Ncells; ++i)
-  {
-    temp[i] = points[i].y;
-  }
-  write_std_vector_to_hdf5(writegroup, temp, "Y");
-
-  for(size_t i = 0; i < Ncells; ++i)
-  {
-    temp[i] = points[i].z;
-  }
-  write_std_vector_to_hdf5(writegroup, temp, "Z");
-
-  for(size_t i = 0; i < data.size(); ++i)
-  {
-    write_std_vector_to_hdf5(writegroup, data[i], names[i]);
-  }
-
-  for(size_t i = 0; i < Ncells; ++i)
-    temp[i] = rank;
-  write_std_vector_to_hdf5(writegroup, temp, "MPI_rank");
+    {
+        HDF5Writer writer(filename, rank == 0);
+        WritePointsToWriter(writer, basePath, points, data, names, rank);
+    }
 
 #ifdef RICH_MPI
-  if(rank < (ws - 1))
-  {
-    int dummy = 0;
-    writegroup.close();
-    file.close();
-    MPI_Send(&dummy, 1, MPI_INT, rank + 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD);
-  }
-  else
-  {
-    writegroup.close();
-    file.close();
-  }
-  MPI_Barrier(MPI_COMM_WORLD);
-#else
-  writegroup.close();
-  file.close();
+    if(rank < ws - 1)
+    {
+        int dummy = 0;
+        MPI_Send(&dummy, 1, MPI_INT, rank + 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
 #endif
 }
 
 #ifdef RICH_MPI
-    void WritePointsParallel(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names)
+void WritePointsParallel(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data, const std::vector<std::string> &names)
+{
+    int rank = 0;
+    int ws = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &ws);
+
+    fs::path path = fs::absolute(filename).parent_path();
+    fs::path ranks_files_path = path / fs::path(filename).filename().replace_extension();
+    if(not fs::exists(ranks_files_path))
     {
-        int rank = 0;
-        int ws = 0;
-        H5File file;
+        fs::create_directory(ranks_files_path);
+    }
+    std::string myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
 
-        fs::path path = fs::absolute(filename).parent_path();
-        std::string myFilePath;
-        fs::path ranks_files_path = path / fs::path(filename).filename().replace_extension();
-        if(not fs::exists(ranks_files_path))
+    {
+        HDF5Writer writer(myFilePath);
+        WritePointsToWriter(writer, "", points, data, names, rank);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if(rank == 0)
+    {
+        HDF5Writer globalWriter(filename);
+        for(int _rank = 0; _rank < ws; _rank++)
         {
-            fs::create_directory(ranks_files_path);
-        }
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        MPI_Comm_size(MPI_COMM_WORLD, &ws);
-        myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
-
-        // truncate my file and open it
-        H5File file2(H5std_string(myFilePath), H5F_ACC_TRUNC);
-        file2.close();
-        file.openFile(H5std_string(myFilePath), H5F_ACC_RDWR);
-
-        Group writegroup = file.openGroup("/");
-
-        size_t const Ncells = points.size();
-
-        vector<double> temp(Ncells);
-        for(size_t i = 0; i < Ncells; ++i)
-        {
-            temp[i] = points[i].x;
-        }
-        write_std_vector_to_hdf5(writegroup, temp, "X");
-
-        for(size_t i = 0; i < Ncells; ++i)
-        {
-            temp[i] = points[i].y;
-        }
-        write_std_vector_to_hdf5(writegroup, temp, "Y");
-
-        for(size_t i = 0; i < Ncells; ++i)
-        {
-            temp[i] = points[i].z;
-        }
-        write_std_vector_to_hdf5(writegroup, temp, "Z");
-
-        for(size_t i = 0; i < data.size(); ++i)
-        {
-            write_std_vector_to_hdf5(writegroup, data[i], names[i]);
-        }
-
-        for(size_t i = 0; i < Ncells; ++i)
-            temp[i] = rank;
-        write_std_vector_to_hdf5(writegroup, temp, "MPI_rank");
-
-        writegroup.close();
-        file.close();
-
-        MPI_Barrier(MPI_COMM_WORLD);
-        // only rank 0 makes the shared file
-        if(rank == 0)
-        {
-            file2 = H5File(H5std_string(filename), H5F_ACC_TRUNC);
-            file2.close();
-            hid_t shared_file_id = H5Fcreate(filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-
-            for(int _rank = 0; _rank < ws; _rank++)
-            {
-            // merge `_rank`'s file
-            std::string rankFile((ranks_files_path / std::to_string(_rank)).string() + ".h5");
-            std::string rankGroupName("/rank" + std::to_string(_rank));
-            //Group rankGroup = sharedFile.createGroup(rankGroupName);
-            H5Lcreate_external(rankFile.c_str(),
-                                "/",
-                                shared_file_id,
-                                rankGroupName.c_str(),
-                                H5P_DEFAULT,
-                                H5P_DEFAULT);
-            //rankGroup.close();
-            }
-            H5Fclose(shared_file_id);
+            std::string rankFile = (ranks_files_path / std::to_string(_rank)).string() + ".h5";
+            std::string rankGroupName = "/rank" + std::to_string(_rank);
+            globalWriter.AddExternalLink(rankFile, "/", rankGroupName);
         }
     }
+}
 #endif // RICH_MPI
