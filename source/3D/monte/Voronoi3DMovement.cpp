@@ -155,7 +155,7 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    const EnvironmentAgent *envAgent = tess.GetEnvironmentAgent();
+    const std::shared_ptr<EnvironmentAgent> &envAgent = tess.GetEnvironmentAgent();
     std::vector<Particle3D> newParticles;
     std::vector<std::vector<Particle3D>> sendValues(size);
 

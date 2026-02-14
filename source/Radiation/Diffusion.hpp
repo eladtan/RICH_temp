@@ -3,7 +3,7 @@
 
 #include "conj_grad_solve.hpp"
 #include "RadiationDriver.hpp"
-#include "source/newtonian/common/equation_of_state.hpp"
+#include "newtonian/common/equation_of_state.hpp"
 
 
 using namespace CG;

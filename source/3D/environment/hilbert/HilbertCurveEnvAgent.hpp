@@ -3,41 +3,44 @@
 
 #include "../CurveEnvAgent.hpp"
 #include "3D/hilbert/HilbertConvertor3D.hpp"
+#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 
-class HilbertCurveEnvironmentAgent : public CurveEnvironmentAgent<hilbert_index_t>
+class HilbertCurveEnvironmentAgent : public CurveEnvironmentAgent<hilbert_index_t, HilbertLoadBalancer>
 {
 public:
     using DistancesVector = std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_type>>;
 
-    inline HilbertCurveEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const MPI_Comm &comm = MPI_COMM_WORLD):
-        CurveEnvironmentAgent(ll, ur, ranges, comm), convertor(convertor)
-    {
-        this->order = this->convertor->getOrder();
-    };
+    inline HilbertCurveEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD):
+        CurveEnvironmentAgent<hilbert_index_t, HilbertLoadBalancer>(ll, ur, loadBalancer, comm)
+    {};
 
     virtual ~HilbertCurveEnvironmentAgent() = default;
 
     virtual inline int getOwner(const Vector3D &point) const override
     {
         // TODO: that's wrong
-        return this->getCellOwner(this->convertor->xyz2d(point));
+        return this->getCellOwner(this->loadBalancer->convertor->xyz2d(point));
     };
 
-    virtual void updatePoints(const std::vector<Vector3D> &newPoints) override
-    {}
+    virtual void onExchange(const std::vector<Vector3D> &newPoints) override
+    {
+        this->CurveEnvironmentAgent::onExchange(newPoints);
+    }
+
+    virtual void onRebalance(void) override
+    {
+        this->CurveEnvironmentAgent::onRebalance();
+    }
 
     virtual inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
     {
-        this->CurveEnvironmentAgent::updateBorders(newRange);
-        if(this->convertor != nullptr)
+        if(this->loadBalancer->convertor != nullptr)
         {
-            this->convertor->changeOrder(newOrder);
+            this->loadBalancer->convertor->changeOrder(newOrder);
         }
     }
 
-protected:
-    HilbertConvertor3D *convertor = nullptr;
-    int order;
+    inline int getOrder() const{return this->loadBalancer->convertor->getOrder();};
 };
 
 #endif // HILBERT_CURVE_ENVAGENT_HPP

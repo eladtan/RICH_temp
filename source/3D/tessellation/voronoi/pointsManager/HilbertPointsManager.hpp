@@ -1,6 +1,7 @@
 #ifndef HILBERT_POINTS_MANAGER_HPP
 #define HILBERT_POINTS_MANAGER_HPP
 
+#include "3D/environment/hilbert/HilbertCurveEnvAgent.hpp"
 #ifdef RICH_MPI
 
 #include <numeric>
@@ -9,41 +10,21 @@
 #include "3D/environment/kernels/Identity.hpp" // for default kernelization
 #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include "3D/environment/hilbert/HilbertCurveEnvAgent.hpp"
 #include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
 #include "3D/hilbert/ordinary/HilbertOrdinaryConvertor3D.hpp"
-#include "3D/tessellation/loadBalancing/PartitionLoadBalancer.hpp"
-#include "utils/balance/weightedBalance2.hpp"
+#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 
 #define SPACE_FACTOR 1e-5
 
 class HilbertPointsManager : public PointsManager
 {
 public:
-    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD)
-        : PointsManager(ll, ur, comm), envAgent(nullptr), convertor(nullptr)
-    {
-        if(indexing.get() == nullptr)
-        {
-            this->indexing = std::shared_ptr<const Kernelization3D::Identity>(new Kernelization3D::Identity()); // default kernel
-            this->customIndexingIsSet = false;
-        }
-        else
-        {
-            this->indexing = indexing;
-            this->customIndexingIsSet = true;
-        }
-    }
+    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD);
 
-    inline ~HilbertPointsManager() override
-    {
-        delete this->envAgent;
-        delete this->convertor;
-    };
+    inline ~HilbertPointsManager() override = default;
 
-    inline const EnvironmentAgent *getEnvironmentAgent() const override
-    {
-        return this->envAgent;
-    }
+    inline const std::shared_ptr<EnvironmentAgent> getEnvironmentAgent() const override{return this->envAgent;}
 
     HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;
 
@@ -62,10 +43,10 @@ private:
 
     PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM);
 
-    HilbertCurveEnvironmentAgent *envAgent;
-    HilbertConvertor3D *convertor;
-    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
-    std::shared_ptr<LoadBalancer> loadBalancer;
+    std::shared_ptr<HilbertLoadBalancer> loadBalancer = nullptr;
+    std::shared_ptr<HilbertCurveEnvironmentAgent> envAgent = nullptr;
+    std::shared_ptr<HilbertConvertor3D> convertor = nullptr;
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing = nullptr;
     bool customIndexingIsSet;
 };
 

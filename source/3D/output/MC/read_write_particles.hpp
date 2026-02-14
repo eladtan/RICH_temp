@@ -5,6 +5,7 @@
 #include <filesystem>
 #include "monte/MonteCarloParticle.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "utils/hdf5/HDF5Helper.hpp"
 #include "utils/hdf5/HDF5Reader.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
 
@@ -20,50 +21,51 @@ using namespace H5;
     #include "mpi/debug.h"
 #endif // RICH_MPI
 
-struct ParticleHDF5
+namespace HDF5Utils
 {
-public:
-    #ifdef RICH_MPI
-        rank_t rank;
-    #endif // RICH_MPI
-    size_t id = std::numeric_limits<size_t>::max();
-    size_t cellID = std::numeric_limits<size_t>::max();
-    double location[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
-    double velocity[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
-    size_t cellIndex = std::numeric_limits<size_t>::max();
-    double timeLeft = std::numeric_limits<double>::max();
-    double energy = std::numeric_limits<double>::max();
-    double weight = std::numeric_limits<double>::max();
-    double initialWeight = std::numeric_limits<double>::max();
-    size_t steps = 0;
-    
-    static CompType CreateHDF5CompType(void)
-    {
-        CompType mtype(sizeof(ParticleHDF5));
-        #ifdef RICH_MPI
-            mtype.insertMember("rank", HOFFSET(ParticleHDF5, rank), PredType::NATIVE_INT);
-        #endif // RICH_MPI
-        mtype.insertMember("id", HOFFSET(ParticleHDF5, id), PredType::NATIVE_ULLONG);
-        mtype.insertMember("cellID", HOFFSET(ParticleHDF5, cellID), PredType::NATIVE_ULLONG);
-        hsize_t dims[1] = {3};
-        ArrayType vecType(PredType::NATIVE_DOUBLE, 1, dims);
-        mtype.insertMember("location", HOFFSET(ParticleHDF5, location), vecType);
-        mtype.insertMember("velocity", HOFFSET(ParticleHDF5, velocity), vecType);
-        mtype.insertMember("cellIndex", HOFFSET(ParticleHDF5, cellIndex), PredType::NATIVE_ULLONG);
-        mtype.insertMember("timeLeft", HOFFSET(ParticleHDF5, timeLeft), PredType::NATIVE_DOUBLE);
-        mtype.insertMember("energy", HOFFSET(ParticleHDF5, energy), PredType::NATIVE_DOUBLE);
-        mtype.insertMember("weight", HOFFSET(ParticleHDF5, weight), PredType::NATIVE_DOUBLE);
-        mtype.insertMember("initialWeight", HOFFSET(ParticleHDF5, initialWeight), PredType::NATIVE_DOUBLE);
-        mtype.insertMember("steps", HOFFSET(ParticleHDF5, steps), PredType::NATIVE_ULLONG);
-        return mtype;
-    }
-};
+    template<>
+    struct HasCompType<Particle3D> : std::true_type {};
 
-std::vector<Particle3D> ReadParticles(const Group &group);
+    template<>
+    struct CompTypeCreator<Particle3D>
+    {
+        static H5::CompType get()
+        {
+            static H5::CompType mtype = []()
+            {
+                #pragma GCC diagnostic push
+                #pragma GCC diagnostic ignored "-Winvalid-offsetof"
+                        H5::CompType mtype(sizeof(Particle3D));
+                #ifdef RICH_MPI
+                        mtype.insertMember("rank", HOFFSET(Particle3D, rank), H5::PredType::NATIVE_INT);
+                #endif // RICH_MPI
+                        mtype.insertMember("id", HOFFSET(Particle3D, id), H5::PredType::NATIVE_ULLONG);
+                        mtype.insertMember("cellID", HOFFSET(Particle3D, cellID), H5::PredType::NATIVE_ULLONG);
+                        // Vector3D may have a vtable (RICH_MPI), but x,y,z are contiguous after it.
+                        // Point to x and use ArrayType(DOUBLE, 3) to cover x,y,z.
+                        hsize_t vec_dims[1] = {3};
+                        H5::ArrayType vecType(H5::PredType::NATIVE_DOUBLE, 1, vec_dims);
+                        mtype.insertMember("location", HOFFSET(Particle3D, location) + HOFFSET(Vector3D, x), vecType);
+                        mtype.insertMember("velocity", HOFFSET(Particle3D, velocity) + HOFFSET(Vector3D, x), vecType);
+                        mtype.insertMember("cellIndex", HOFFSET(Particle3D, cellIndex), H5::PredType::NATIVE_ULLONG);
+                        mtype.insertMember("timeLeft", HOFFSET(Particle3D, timeLeft), H5::PredType::NATIVE_DOUBLE);
+                        mtype.insertMember("energy", HOFFSET(Particle3D, energy), H5::PredType::NATIVE_DOUBLE);
+                        mtype.insertMember("weight", HOFFSET(Particle3D, weight), H5::PredType::NATIVE_DOUBLE);
+                        mtype.insertMember("initialWeight", HOFFSET(Particle3D, initialWeight), H5::PredType::NATIVE_DOUBLE);
+                        mtype.insertMember("steps", HOFFSET(Particle3D, steps), H5::PredType::NATIVE_ULLONG);
+                #pragma GCC diagnostic pop
+                return mtype;
+            }();
+            return mtype;
+        }
+    };
+} // namespace HDF5Utils
+
+std::vector<Particle3D> ReadParticles(const HDF5Reader &reader);
 
 std::vector<Particle3D> ReadParticles(const std::string &fname
                                         #ifdef RICH_MPI
-                                            , bool mpi_write = false, int fake_rank = -1
+                                            , bool mpi_read = false, int fake_rank = -1
                                         #endif // RICH_MPI
                                     );
 

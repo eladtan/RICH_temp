@@ -60,14 +60,11 @@
 #include "3D/range/finders/OctTree.hpp"
 #include "3D/range/finders/KDTree.hpp"
 #include "3D/range/finders/GroupRangeTree.hpp"
-#include "3D/range/finders/HashBruteForce.hpp"
-#include "3D/range/finders/SmartBruteForce.hpp"
 
 #ifdef RICH_MPI
   // env agents
   #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
   #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
-  #include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #endif // RICH_MPI
 
 #ifdef RICH_MPI
@@ -227,7 +224,6 @@ private:
   #ifdef RICH_MPI
     std::shared_ptr<PointsManager> pointsManager;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
-
   #endif // RICH_MPI
 
   std::shared_ptr<RangeFinder> rangeFinder;
@@ -242,7 +238,7 @@ public:
   #ifdef RICH_MPI
     const std::vector<double> &GetPointsBuildWeights() const override;
     
-    const EnvironmentAgent *GetEnvironmentAgent() const override;
+    const std::shared_ptr<EnvironmentAgent> GetEnvironmentAgent() const override;
     
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
     

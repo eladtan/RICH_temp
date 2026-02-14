@@ -1,33 +1,8 @@
 #include "read_write_particles.hpp"
 
-void WriteParticle(const Particle3D &particle, ParticleHDF5 &hdf5Particle)
-{
-    #ifdef RICH_MPI
-        hdf5Particle.rank = particle.rank;
-    #endif // RICH_MPI
-    hdf5Particle.id = particle.id;
-    hdf5Particle.cellID = particle.cellID;
-    for(int i = 0; i < 3; i++)
-    {
-        hdf5Particle.location[i] = particle.location[i];
-        hdf5Particle.velocity[i] = particle.velocity[i];
-    }
-    hdf5Particle.cellIndex = particle.cellIndex;
-    hdf5Particle.timeLeft = particle.timeLeft;
-    hdf5Particle.energy = particle.energy;
-    hdf5Particle.weight = particle.weight;
-    hdf5Particle.initialWeight = particle.initialWeight;
-    hdf5Particle.steps = particle.steps;
-}
-
 void WriteParticles(HDF5Writer &writer, const std::vector<Particle3D> &particles)
 {
-    std::vector<ParticleHDF5> particlesToWrite(particles.size());
-    for(size_t i = 0; i < particles.size(); i++)
-    {
-        WriteParticle(particles[i], particlesToWrite[i]);
-    }
-    writer.WriteElement(PARTICLES_DATASET_NAME, particlesToWrite);
+    writer.WriteElement(PARTICLES_DATASET_NAME, particles);
 }
 
 void WriteParticlesSerial(const std::string &filename, const std::vector<Particle3D> &particles)

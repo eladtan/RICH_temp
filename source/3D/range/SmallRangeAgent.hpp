@@ -128,7 +128,7 @@ private:
             template<typename K, typename V>
             using _map = boost::container::flat_map<K, V>;
 
-            SmallRangeTalkAgent(const EnvironmentAgent *envAgent,         
+            SmallRangeTalkAgent(const std::shared_ptr<EnvironmentAgent> envAgent,         
                             #ifdef RICH_MPI
                                 const MPI_Comm &comm = MPI_COMM_WORLD
                             #endif // RICH_MPI
@@ -155,7 +155,7 @@ private:
             }
 
         private:
-            const EnvironmentAgent *envAgent;
+            const std::shared_ptr<EnvironmentAgent> envAgent;
             int rank, size;
         };
     #endif // RICH_MPI
@@ -166,7 +166,7 @@ public:
     using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
-        SmallRangeAgent(const RangeFinder *rangeFinder, const EnvironmentAgent *envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
+        SmallRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     #else // RICH_MPI
         SmallRangeAgent(const RangeFinder *rangeFinder)
     #endif // RICH_MPI

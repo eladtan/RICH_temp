@@ -14,10 +14,7 @@
 #include "3D/range/finders/OctTree.hpp"
 #include "3D/range/finders/KDTree.hpp"
 #include "3D/range/finders/GroupRangeTree.hpp"
-#include "3D/range/finders/HashBruteForce.hpp"
-#include "3D/range/finders/SmartBruteForce.hpp"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 
 #include "3D/environment/kernels/Rectangle.hpp"
 #include "3D/environment/kernels/SameRectangle.hpp"
@@ -3960,7 +3957,7 @@ const std::vector<double> &Voronoi3D::GetPointsBuildWeights() const
     return this->allPointsWeights;
 }
 
-const EnvironmentAgent *Voronoi3D::GetEnvironmentAgent() const
+const std::shared_ptr<EnvironmentAgent> Voronoi3D::GetEnvironmentAgent() const
 {
     return this->pointsManager->getEnvironmentAgent();
 }
