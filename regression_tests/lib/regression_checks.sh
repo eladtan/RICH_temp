@@ -37,11 +37,26 @@ is_nonempty_and_newer() {
     local file_path="$1"
     local start_epoch="$2"
     local file_epoch
+    local attempt
 
-    [[ -s "$file_path" ]] || return 1
-    file_epoch=$(stat -c %Y "$file_path" 2>/dev/null || true)
-    [[ -n "$file_epoch" ]] || return 1
-    [[ "$file_epoch" -ge "$start_epoch" ]]
+    # Retry a few times to tolerate NFS attribute-cache staleness.
+    # On shared filesystems the head node may briefly see stale metadata
+    # for files written by SLURM compute nodes.
+    for attempt in 1 2 3; do
+        # Force NFS to re-read the parent directory and file attributes
+        ls "$(dirname "$file_path")" > /dev/null 2>&1 || true
+
+        if [[ -s "$file_path" ]]; then
+            file_epoch=$(stat -c %Y "$file_path" 2>/dev/null || true)
+            if [[ -n "$file_epoch" && "$file_epoch" -ge "$start_epoch" ]]; then
+                return 0
+            fi
+        fi
+
+        [[ "$attempt" -lt 3 ]] && sleep 2
+    done
+
+    return 1
 }
 
 last_numeric_token() {
