@@ -11,15 +11,19 @@ class HilbertTreeEnvironmentAgent : public HilbertCurveEnvironmentAgent
 public:
     using HilbertTree_Type = HilbertTree3D<DEFAULT_RANKS_IN_LEAVES>;
 
-    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD): 
+    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD): 
             HilbertCurveEnvironmentAgent(ll, ur, loadBalancer, comm)
     {
         this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
+    {};
+
+    inline std::shared_ptr<HilbertCurveEnvironmentAgent> clone(const std::shared_ptr<HilbertLoadBalancer> newLoadBalancer) const override
     {
-    };
+        return std::make_shared<HilbertTreeEnvironmentAgent>(this->ll, this->ur, newLoadBalancer, this->comm);
+    }
 
     inline EnvironmentAgent::RanksSet getIntersectingRanks(const Vector3D &center, double radius) const override
     {
@@ -34,12 +38,6 @@ public:
     inline void onRebalance(void) override
     {
         this->HilbertCurveEnvironmentAgent::onRebalance();
-        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
-    }
-    
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
-    {
-        this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
         this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
     }
     

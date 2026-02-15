@@ -1,6 +1,7 @@
 #include "HilbertPointsManager.hpp"
 #include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
+#include <memory>
 
 #ifdef RICH_MPI
 
@@ -17,6 +18,23 @@ HilbertPointsManager::HilbertPointsManager(const Vector3D &ll, const Vector3D &u
         this->indexing = indexing;
         this->customIndexingIsSet = true;
     }
+}
+
+std::shared_ptr<PointsManager> HilbertPointsManager::clone(void) const
+{
+
+    std::shared_ptr<HilbertPointsManager> clone = std::make_shared<HilbertPointsManager>(
+        this->ll, this->ur,
+        this->customIndexingIsSet ? this->indexing : std::shared_ptr<const Kernelization3D::IndexingKernel3D>(),
+        this->comm);
+    
+    // Deep-copy convertor (mutable state)
+    clone->convertor = std::dynamic_pointer_cast<HilbertConvertor3D>(this->convertor->clone());
+
+    clone->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(this->loadBalancer->clone(clone->convertor, clone->indexing));
+
+    clone->envAgent = this->envAgent->clone(clone->loadBalancer);
+    return clone;
 }
 
 PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange)
@@ -61,9 +79,9 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
     return exchangeResult;
 }
 
-void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> newLoadBalancer)
 {
-    HilbertLoadBalancer *hilbertLoadBalancer = dynamic_cast<HilbertLoadBalancer*>(loadBalancer.get());
+    HilbertLoadBalancer *hilbertLoadBalancer = dynamic_cast<HilbertLoadBalancer*>(newLoadBalancer.get());
     if(hilbertLoadBalancer == nullptr)
     {
         throw UniversalError("HilbertPointsManager::setLoadBalancer: given load balancer is not a HilbertLoadBalancer");
@@ -73,22 +91,24 @@ void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> loadBal
         std::cout << "Restoring Load Balancer" << std::endl;
     }
 
-    // copy to self load balancer
-    this->loadBalancer->boundaries = hilbertLoadBalancer->boundaries;
-    this->envAgent->onRebalance();
+    this->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(newLoadBalancer);
+    this->loadBalancer->convertor = this->convertor;
+    this->loadBalancer->indexing = this->indexing;
+    this->envAgent->setLoadBalancer(this->loadBalancer);
 }
 
 std::shared_ptr<LoadBalancer> HilbertPointsManager::getLoadBalancer(void)
 {
-    return this->loadBalancer->clone();
+    return this->loadBalancer;
 }
 
 void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights)
 {
+    this->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(this->loadBalancer->clone(this->convertor, this->indexing));
     this->loadBalancer->rebalance(points, weights);
     if(this->envAgent != nullptr)
     {
-        this->envAgent->onRebalance();
+        this->envAgent->setLoadBalancer(this->loadBalancer);
     }
 }
 
@@ -186,12 +206,12 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     // initialize environment agent
     if(this->customIndexingIsSet)
     {
-        this->envAgent = std::make_shared<DistributedOctEnvironmentAgent>(this->ll, this->ur, exchangeResult.newPoints, this->loadBalancer);
+        this->envAgent = std::make_shared<DistributedOctEnvironmentAgent>(this->ll, this->ur, exchangeResult.newPoints, this->loadBalancer, this->comm);
     }
     else
     {
         // use hilbert tree, as it is better
-        this->envAgent = std::make_shared<HilbertTreeEnvironmentAgent>(this->ll, this->ur, exchangeResult.newPoints, this->loadBalancer);
+        this->envAgent = std::make_shared<HilbertTreeEnvironmentAgent>(this->ll, this->ur, this->loadBalancer, this->comm);
     }
 
     return exchangeResult;

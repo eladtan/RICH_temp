@@ -37,10 +37,9 @@ void HilbertLoadBalancer::rebalance(const std::vector<Vector3D> &points, const s
     }
 }
 
-std::shared_ptr<LoadBalancer> HilbertLoadBalancer::clone(void) const
+std::shared_ptr<LoadBalancer> HilbertLoadBalancer::clone(const std::shared_ptr<HilbertConvertor3D> newConvertor, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> newIndexing) const
 {
-    std::shared_ptr<HilbertLoadBalancer> clone = std::make_shared<HilbertLoadBalancer>(this->convertor, this->indexing);
-    clone->boundaries = this->boundaries;
+    std::shared_ptr<HilbertLoadBalancer> clone = std::make_shared<HilbertLoadBalancer>(newConvertor, newIndexing, this->boundaries);
     return clone;
 }
 

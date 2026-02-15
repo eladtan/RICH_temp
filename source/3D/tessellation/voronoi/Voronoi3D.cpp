@@ -3567,7 +3567,7 @@ Voronoi3D::Voronoi3D(Voronoi3D const &other) : ll_(other.ll_), ur_(other.ur_), N
                                                 #endif // RICH_MPI
                                                 temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(other.box_faces_),
                                                 #ifdef RICH_MPI
-                                                    pointsManager(other.pointsManager), indexingToSave(other.indexingToSave),
+                                                    pointsManager(other.pointsManager->clone()), indexingToSave(other.indexingToSave),
                                                     rangeFinder(other.rangeFinder), radiuses(other.radiuses), allMyPoints(other.allMyPoints), allPointsWeights(other.allPointsWeights),
                                                 #endif // RICH_MPI
                                                 indicesInAllMyPoints(other.indicesInAllMyPoints)

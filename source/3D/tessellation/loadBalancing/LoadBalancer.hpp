@@ -14,8 +14,6 @@ public:
 
     virtual void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) = 0;
 
-    virtual std::shared_ptr<LoadBalancer> clone() const = 0;
-    
     virtual ~LoadBalancer() = default;
 
 protected:

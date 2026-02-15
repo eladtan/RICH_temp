@@ -20,6 +20,12 @@ public:
         
     Vector3D d2xyz(hilbert_index_t d) const override;
     
+
+    inline std::shared_ptr<HilbertConvertor3D> clone(void) const override
+    {
+        return std::make_shared<HilbertOrdinaryConvertor3D>(this->ll, this->ur, this->order);
+    }
+
 private:
     HilbertCurve3D curve;
     Vector3D length;

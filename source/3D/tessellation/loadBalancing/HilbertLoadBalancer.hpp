@@ -18,10 +18,10 @@ public:
 
     void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights) override;
 
-    std::shared_ptr<LoadBalancer> clone(void) const override;
+    std::shared_ptr<LoadBalancer> clone(const std::shared_ptr<HilbertConvertor3D> newConvertor, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> newIndexing) const;
 
-    const std::shared_ptr<HilbertConvertor3D> convertor;
-    const std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
+    std::shared_ptr<HilbertConvertor3D> convertor;
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing;
 };
 
 #endif // RICH_MPI

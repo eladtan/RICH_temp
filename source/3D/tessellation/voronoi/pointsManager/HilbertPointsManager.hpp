@@ -24,6 +24,8 @@ public:
 
     inline ~HilbertPointsManager() override = default;
 
+    std::shared_ptr<PointsManager> clone(void) const override;
+
     inline const std::shared_ptr<EnvironmentAgent> getEnvironmentAgent() const override{return this->envAgent;}
 
     HilbertPointsManager &operator=(const HilbertPointsManager &other) = delete;

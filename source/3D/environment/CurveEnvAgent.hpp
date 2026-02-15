@@ -18,6 +18,12 @@ public:
 
     virtual ~CurveEnvironmentAgent() = default;
 
+    virtual void setLoadBalancer(std::shared_ptr<LoadBalancerType> newLoadBalancer)
+    {
+        this->loadBalancer = newLoadBalancer;
+        this->onRebalance();
+    }
+
     virtual inline int getCellOwner(curve_index_t d) const
     {
         size_t index = static_cast<size_t>(std::distance(this->loadBalancer->boundaries.cbegin(), std::upper_bound(this->loadBalancer->boundaries.cbegin(), this->loadBalancer->boundaries.cend(), d)));
@@ -31,7 +37,7 @@ public:
     {}
 
 protected:
-    const std::shared_ptr<LoadBalancerType> loadBalancer;
+    std::shared_ptr<LoadBalancerType> loadBalancer;
 };
 
 #endif // CURVE_ENVIRONMENT_AGENT

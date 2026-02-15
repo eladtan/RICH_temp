@@ -63,6 +63,11 @@ public:
     hilbert_index_t xyz2d(coord_t x, coord_t y, coord_t z) const override;
     
     Vector3D d2xyz(hilbert_index_t d) const override;
+
+    inline std::shared_ptr<HilbertConvertor3D> clone(void) const override
+    {
+        return std::make_shared<HilbertRectangularConvertor3D>(this->ll, this->ur, this->order);
+    }
         
 private:
     void setRecursionArguments(const RecursionArguments &args, size_t currentDepth) const;

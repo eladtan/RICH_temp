@@ -16,6 +16,8 @@ public:
 
     virtual ~HilbertCurveEnvironmentAgent() = default;
 
+    virtual std::shared_ptr<HilbertCurveEnvironmentAgent> clone(const std::shared_ptr<HilbertLoadBalancer> newLoadBalancer) const = 0;
+
     virtual inline int getOwner(const Vector3D &point) const override
     {
         // TODO: that's wrong
@@ -30,14 +32,6 @@ public:
     virtual void onRebalance(void) override
     {
         this->CurveEnvironmentAgent::onRebalance();
-    }
-
-    virtual inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
-    {
-        if(this->loadBalancer->convertor != nullptr)
-        {
-            this->loadBalancer->convertor->changeOrder(newOrder);
-        }
     }
 
     inline int getOrder() const{return this->loadBalancer->convertor->getOrder();};
