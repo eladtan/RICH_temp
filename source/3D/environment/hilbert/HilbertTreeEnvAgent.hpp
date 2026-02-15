@@ -11,8 +11,8 @@ class HilbertTreeEnvironmentAgent : public HilbertCurveEnvironmentAgent
 public:
     using HilbertTree_Type = HilbertTree3D<DEFAULT_RANKS_IN_LEAVES>;
 
-    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const MPI_Comm &comm = MPI_COMM_WORLD): 
-            HilbertCurveEnvironmentAgent(ll, ur, ranges, convertor, comm)
+    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD): 
+            HilbertCurveEnvironmentAgent(ll, ur, loadBalancer, comm)
     {
         this->rectangularConvertor = dynamic_cast<HilbertRectangularConvertor3D*>(this->convertor);
         if(this->rectangularConvertor == nullptr)
@@ -24,9 +24,12 @@ public:
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
+    {};
+
+    inline std::shared_ptr<HilbertCurveEnvironmentAgent> clone(const std::shared_ptr<HilbertLoadBalancer> newLoadBalancer) const override
     {
-        delete this->hilbertTree;
-    };
+        return std::make_shared<HilbertTreeEnvironmentAgent>(this->ll, this->ur, newLoadBalancer, this->comm);
+    }
 
     inline EnvironmentAgent::RanksSet getIntersectingRanks(const Vector3D &center, double radius) const override
     {
@@ -37,15 +40,6 @@ public:
     {
         this->HilbertCurveEnvironmentAgent::updatePoints(newPoints);
     }
-    
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
-    {
-        this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
-        delete this->hilbertTree;
-        this->hilbertTree = new HilbertTree_Type(this->rectangularConvertor, this->range, this->comm);
-    }
-
-    inline int getOrder() const{return this->order;};
     
     template<typename U>
     inline HilbertCurveEnvironmentAgent::DistancesVector getClosestFurthestPointsByRanks(const U &point) const

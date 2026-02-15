@@ -23,6 +23,8 @@ public:
     
     virtual ~HilbertConvertor3D() = default;
     
+    virtual std::shared_ptr<HilbertConvertor3D> clone(void) const = 0;
+
     virtual void changeOrder(size_t order) = 0;
     
     virtual hilbert_index_t xyz2d(coord_t x, coord_t y, coord_t z) const = 0;

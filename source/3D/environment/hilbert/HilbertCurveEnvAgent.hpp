@@ -17,22 +17,22 @@ public:
 
     virtual ~HilbertCurveEnvironmentAgent() = default;
 
+    virtual std::shared_ptr<HilbertCurveEnvironmentAgent> clone(const std::shared_ptr<HilbertLoadBalancer> newLoadBalancer) const = 0;
+
     virtual inline int getOwner(const Vector3D &point) const override
     {
         // TODO: that's wrong
         return this->getCellOwner(this->convertor->xyz2d(point));
     };
 
-    virtual void updatePoints(const std::vector<Vector3D> &newPoints) override
-    {}
-
-    virtual inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder)
+    virtual void onExchange(const std::vector<Vector3D> &newPoints) override
     {
-        this->CurveEnvironmentAgent::updateBorders(newRange);
-        if(this->convertor != nullptr)
-        {
-            this->convertor->changeOrder(newOrder);
-        }
+        this->CurveEnvironmentAgent::onExchange(newPoints);
+    }
+
+    virtual void onRebalance(void) override
+    {
+        this->CurveEnvironmentAgent::onRebalance();
     }
 
 protected:

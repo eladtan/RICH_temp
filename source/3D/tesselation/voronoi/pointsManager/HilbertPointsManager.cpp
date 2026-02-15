@@ -1,6 +1,41 @@
 #include "HilbertPointsManager.hpp"
+#include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
+#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
+#include <memory>
 
 #ifdef RICH_MPI
+
+HilbertPointsManager::HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing, const MPI_Comm &comm)
+    : PointsManager(ll, ur, comm)
+{
+    if(indexing.get() == nullptr)
+    {
+        this->indexing = std::shared_ptr<const Kernelization3D::Identity>(new Kernelization3D::Identity()); // default kernel
+        this->customIndexingIsSet = false;
+    }
+    else
+    {
+        this->indexing = indexing;
+        this->customIndexingIsSet = true;
+    }
+}
+
+std::shared_ptr<PointsManager> HilbertPointsManager::clone(void) const
+{
+
+    std::shared_ptr<HilbertPointsManager> clone = std::make_shared<HilbertPointsManager>(
+        this->ll, this->ur,
+        this->customIndexingIsSet ? this->indexing : std::shared_ptr<const Kernelization3D::IndexingKernel3D>(),
+        this->comm);
+    
+    // Deep-copy convertor (mutable state)
+    clone->convertor = std::dynamic_pointer_cast<HilbertConvertor3D>(this->convertor->clone());
+
+    clone->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(this->loadBalancer->clone(clone->convertor, clone->indexing));
+
+    clone->envAgent = this->envAgent->clone(clone->loadBalancer);
+    return clone;
+}
 
 PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange)
 {
@@ -44,9 +79,10 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
     return exchangeResult;
 }
 
-void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> newLoadBalancer)
 {
-    if(dynamic_cast<PartitionLoadBalancer*>(loadBalancer.get()) == nullptr)
+    HilbertLoadBalancer *hilbertLoadBalancer = dynamic_cast<HilbertLoadBalancer*>(newLoadBalancer.get());
+    if(hilbertLoadBalancer == nullptr)
     {
         throw UniversalError("HilbertPointsManager::setLoadBalancer: given load balancer is not a PartitionLoadBalancer");
     }
@@ -54,11 +90,11 @@ void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> loadBal
     {
         std::cout << "Restoring Load Balancer" << std::endl;
     }
-    this->loadBalancer = loadBalancer;
-    if(this->envAgent != nullptr)
-    {
-        this->envAgent->updateBorders(dynamic_cast<const PartitionLoadBalancer*>(this->loadBalancer.get())->boundaries, this->convertor->getOrder());
-    }
+
+    this->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(newLoadBalancer);
+    this->loadBalancer->convertor = this->convertor;
+    this->loadBalancer->indexing = this->indexing;
+    this->envAgent->setLoadBalancer(this->loadBalancer);
 }
 
 std::shared_ptr<LoadBalancer> HilbertPointsManager::getLoadBalancer(void)
@@ -68,38 +104,11 @@ std::shared_ptr<LoadBalancer> HilbertPointsManager::getLoadBalancer(void)
 
 void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights)
 {
-    if(this->convertor == nullptr)
-    {
-        throw UniversalError("HilbertPointsManager::rebalance: convertor was not initialized yet");
-    }
-
-    std::vector<hilbert_index_t> indices;
-    for(const Vector3D &point : points)
-    {
-        indices.push_back(this->convertor->xyz2d((*this->indexing)(point)));
-    }
-
-    std::vector<size_t> responsibilityRange;
-    int dont_do_weights = (weights.empty() and std::all_of(weights.cbegin(), weights.cend(), [&weights](const double &x){return x == weights[0];}))? 1 : 0;
-    MPI_Allreduce(MPI_IN_PLACE, &dont_do_weights, 1, MPI_INT, MPI_MAX, this->comm);
-    if(this->rank == 0)
-    {
-        std::cout << "Running rebalancing" << std::endl;
-    }
-    if(dont_do_weights)
-    {
-        // responsibilityRange = getBorders(indices);
-        responsibilityRange = getWeightedBorders2(indices, std::vector<double>(points.size(), 1.0));
-    }
-    else
-    {
-        // responsibilityRange = getWeightedBorders(indices, weights);
-        responsibilityRange = getWeightedBorders2(indices, weights);
-    }
-    
+    this->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(this->loadBalancer->clone(this->convertor, this->indexing));
+    this->loadBalancer->rebalance(points, weights);
     if(this->envAgent != nullptr)
     {
-        this->envAgent->updateBorders(responsibilityRange, this->convertor->getOrder());
+        this->envAgent->setLoadBalancer(this->loadBalancer);
     }
     
     this->loadBalancer = std::make_shared<PartitionLoadBalancer>(responsibilityRange);
@@ -197,12 +206,12 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     // initialize environment agent
     if(this->customIndexingIsSet)
     {
-        this->envAgent = new DistributedOctEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, responsibilityRange, this->convertor, this->indexing.get());
+        this->envAgent = std::make_shared<DistributedOctEnvironmentAgent>(this->ll, this->ur, exchangeResult.newPoints, this->loadBalancer, this->comm);
     }
     else
     {
         // use hilbert tree, as it is better
-        this->envAgent = new HilbertTreeEnvironmentAgent(this->ll, this->ur, exchangeResult.newPoints, responsibilityRange, this->convertor);
+        this->envAgent = std::make_shared<HilbertTreeEnvironmentAgent>(this->ll, this->ur, this->loadBalancer, this->comm);
     }
 
     return exchangeResult;
