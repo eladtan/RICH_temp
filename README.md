@@ -152,19 +152,26 @@ You can run a local full-benchmark regression suite after code changes:
 
 The regression system is organized in its own directory:
 - `regression_tests/run_all.sh` - main runner
-- `regression_tests/tests/` - one test definition per benchmark
+- `regression_tests/tests/` - one test definition per benchmark (each tagged `serial`, `mpi`, or both)
 - `regression_tests/lib/regression_checks.sh` - shared validation logic
 - `regression_tests/cases/*/test.cpp` - dedicated benchmark entry files used by the runner
 
-The suite builds and validates three dedicated regression cases:
-- `regression_tests/cases/sod_1d` (1D Sod benchmark)
-- `regression_tests/cases/sedov_3d_mpi` (3D MPI Sedov explosion, submitted to Slurm with `--ntasks=128 --exclusive --partition=bigrun`)
-- `regression_tests/cases/till_compton` (Till Compton test, case `3`)
+The suite builds and validates these regression cases:
+
+| Test | Tags | Description |
+|------|------|-------------|
+| `sod_1d` | serial | 1D Sod benchmark |
+| `till_compton` | serial | Till Compton test (case 3) |
+| `sedov_3d_mpi` | mpi | 3D MPI Sedov explosion (Slurm, 128 tasks) |
+| `amr_random` | serial, mpi | AMR random refine/remove |
+| `voronoi_volume` | serial, mpi | Voronoi volume accuracy |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
 - **Sedov**: compare radial density/pressure/velocity profiles to the exact Sedov-Taylor ODE profile (`analytic/sedov_taylor.py`).
 - **Till**: require final gas and radiation temperatures to agree within **1%**.
+- **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
+- **Voronoi volume**: enforce `rel_error < 1e-10`.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -172,22 +179,53 @@ You can tune tolerances with environment variables:
 - `SOD_MAX_DENSITY_GOF`, `SOD_MAX_PRESSURE_GOF`
 - `SEDOV_MAX_DENSITY_REL_L1`, `SEDOV_MAX_PRESSURE_REL_L1`, `SEDOV_MAX_VELOCITY_REL_L1`
 
+### Parallel execution
+
+Tests are executed in two phases:
+1. **Build phase (sequential)**: Each test is compiled one at a time. After each successful build, the binary is copied to a test-specific artifact directory so subsequent builds don't overwrite it.
+2. **Run phase (parallel)**: All successfully built tests are launched simultaneously. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`).
+
+Progress is printed in real time, showing which test is compiling, running, and its final pass/fail status.
+
+### Running by mode (serial / MPI)
+
+Use `--mode` to run only serial or only MPI tests:
+
+```shell
+# Run all serial tests (auto-selects gnuRelease config)
+./regression_tests/run_all.sh --mode serial
+
+# Run all MPI tests (auto-selects gnuReleaseMPI config)
+./regression_tests/run_all.sh --mode mpi
+
+# Run all MPI tests with a specific config
+./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+
+# Run all tests (default, equivalent to --mode all)
+./regression_tests/run_all.sh
+```
+
+Tests tagged with both `serial` and `mpi` (e.g. `amr_random`, `voronoi_volume`) appear in both modes.
+
 ### Options
 
 ```shell
 ./regression_tests/run_all.sh \
-  --config gnuReleaseMPI \
-  --mpi-np 4 \
+  --mode serial \
+  --config gnuRelease \
   --keep-artifacts \
   --verbose
 ```
 
-- `--config <name>`: build configuration (default: `gnuReleaseMPI`).
+- `--mode <serial|mpi|all>`: filter tests by tag (default: `all`).
+  - `serial`: default config `gnuRelease`.
+  - `mpi`: default config `gnuReleaseMPI`.
+  - `all`: default config `gnuReleaseMPI`.
+- `--config <name>`: build configuration (overrides the mode default).
 - `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
 - `--clean-results`: remove `regression_results/` and exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
 - `--verbose`: stream run output to terminal while also writing logs.
-- Legacy compatibility command is still available: `./scripts/run_regression_tests.sh`.
 
 ### Run a single regression test
 
@@ -195,16 +233,16 @@ Run one benchmark with `--test`:
 
 ```shell
 # Sod only
-./regression_tests/run_all.sh --test sod_1d
+./regression_tests/run_all.sh --test sod_1d --config gnuRelease
 
 # Sedov only (set MPI ranks with --mpi-np)
 ./regression_tests/run_all.sh --test sedov_3d_mpi --mpi-np 8
 
 # Till only
-./regression_tests/run_all.sh --test till_compton
+./regression_tests/run_all.sh --test till_compton --config gnuRelease
 ```
 
-You can combine with `--config`, `--verbose`, and `--keep-artifacts`. For example:
+You can combine with `--mode`, `--config`, `--verbose`, and `--keep-artifacts`. For example:
 
 ```shell
 ./regression_tests/run_all.sh --test sod_1d --config gnuDebugMPI --verbose
@@ -214,12 +252,6 @@ Clean all saved regression logs:
 
 ```shell
 ./regression_tests/run_all.sh --clean-results
-```
-
-Convenience alias:
-
-```shell
-./scripts/clean_regression_results.sh
 ```
 
 ### Artifacts and pass/fail behavior
