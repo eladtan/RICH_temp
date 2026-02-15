@@ -60,14 +60,11 @@
 #include "3D/range/finders/OctTree.hpp"
 #include "3D/range/finders/KDTree.hpp"
 #include "3D/range/finders/GroupRangeTree.hpp"
-#include "3D/range/finders/HashBruteForce.hpp"
-#include "3D/range/finders/SmartBruteForce.hpp"
 
 #ifdef RICH_MPI
   // env agents
   #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp"
   #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
-  #include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 #endif // RICH_MPI
 
 #ifdef RICH_MPI

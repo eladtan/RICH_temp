@@ -14,13 +14,7 @@ public:
     inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD): 
             HilbertCurveEnvironmentAgent(ll, ur, loadBalancer, comm)
     {
-        this->rectangularConvertor = dynamic_cast<HilbertRectangularConvertor3D*>(this->convertor);
-        if(this->rectangularConvertor == nullptr)
-        {
-            throw UniversalError("'HilbertTreeEnvironmentAgent' should be initialized with a rectangular hilbert convertor");
-        }
-
-        this->hilbertTree = new HilbertTree_Type(this->rectangularConvertor, this->range, this->comm);
+        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
@@ -36,9 +30,15 @@ public:
         return this->hilbertTree->getIntersectingRanks(center, radius);
     };
 
-    inline void updatePoints(const std::vector<Vector3D> &newPoints) override
+    inline void onExchange(const std::vector<Vector3D> &newPoints) override
     {
-        this->HilbertCurveEnvironmentAgent::updatePoints(newPoints);
+        this->HilbertCurveEnvironmentAgent::onExchange(newPoints);
+    }
+    
+    inline void onRebalance(void) override
+    {
+        this->HilbertCurveEnvironmentAgent::onRebalance();
+        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
     }
     
     template<typename U>
@@ -47,11 +47,10 @@ public:
         return this->hilbertTree->getClosestFurthestPointsByRanks(point);
     }
 
-    inline const HilbertTree_Type *getHilbertTree() const{return this->hilbertTree;};
+    inline const std::shared_ptr<HilbertTree_Type> &getHilbertTree() const{return this->hilbertTree;};
 
 private:
-    const HilbertTree_Type *hilbertTree;
-    HilbertRectangularConvertor3D *rectangularConvertor;
+    std::shared_ptr<HilbertTree_Type> hilbertTree;
 };
 
 #endif // RICH_MPI

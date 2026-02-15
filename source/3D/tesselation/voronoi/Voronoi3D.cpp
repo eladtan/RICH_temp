@@ -15,10 +15,7 @@
 #include "3D/range/finders/OctTree.hpp"
 #include "3D/range/finders/KDTree.hpp"
 #include "3D/range/finders/GroupRangeTree.hpp"
-#include "3D/range/finders/HashBruteForce.hpp"
-#include "3D/range/finders/SmartBruteForce.hpp"
 #include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
-#include "3D/environment/hilbert/HilbertEnvAgent.hpp"
 
 #include "3D/environment/kernels/Rectangle.hpp"
 #include "3D/environment/kernels/SameRectangle.hpp"
@@ -2327,10 +2324,10 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 
         // In serial mode: envAgent is null (safe -- only used by talk agent for remote queries,
         // which never fire since sendToSelf=false and size=1).
-        const EnvironmentAgent *envAgent = serialMode ? nullptr : this->pointsManager->getEnvironmentAgent();
+        const std::shared_ptr<EnvironmentAgent> envAgent = serialMode ? nullptr : this->pointsManager->getEnvironmentAgent();
         const MPI_Comm &agentComm = serialMode ? MPI_COMM_SELF : comm;
-        BigRangeAgent bigRangeAgent(this->rangeFinder.get(), envAgent, pointsContainer, agentComm);
-        SmallRangeAgent smallRangeAgent(this->rangeFinder.get(), envAgent, pointsContainer, agentComm);
+        BigRangeAgent bigRangeAgent(this->rangeFinder.get(), envAgent.get(), pointsContainer, agentComm);
+        SmallRangeAgent smallRangeAgent(this->rangeFinder.get(), envAgent.get(), pointsContainer, agentComm);
     #else // RICH_MPI
         BigRangeAgent bigRangeAgent(this->rangeFinder.get());
         SmallRangeAgent smallRangeAgent(this->rangeFinder.get());
@@ -4002,7 +3999,7 @@ const std::vector<double> &Voronoi3D::GetPointsBuildWeights() const
 
 const EnvironmentAgent *Voronoi3D::GetEnvironmentAgent() const
 {
-    return this->pointsManager->getEnvironmentAgent();
+    return this->pointsManager->getEnvironmentAgent().get();
 }
 
 #endif // RICH_MPI

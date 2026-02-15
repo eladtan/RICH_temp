@@ -7,6 +7,7 @@
 #include "3D/elementary/Vector3D.hpp" // for Vector3D
 #include "ds/utils/geometry.hpp" // for BoundingBox<Vector3D>
 #include "hilbertTypes.h"
+#include <memory>
 
 #define MAX_HILBERT_ORDER 19
 

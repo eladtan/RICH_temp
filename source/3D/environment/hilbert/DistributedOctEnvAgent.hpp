@@ -32,7 +32,7 @@ public:
         return this->distributedOctTree->getIntersectingRanks(center, radius);
     };
 
-    inline void updatePoints(const std::vector<Vector3D> &newPoints) override
+    inline void onExchange(const std::vector<Vector3D> &newPoints) override
     {
         this->HilbertCurveEnvironmentAgent::onExchange(newPoints);
         this->points = newPoints;
@@ -42,17 +42,15 @@ public:
 
     inline int getOwner(const Vector3D &point) const override
     {
-        return this->getCellOwner(this->convertor->xyz2d((*this->indexing)(point)));
+        return this->getCellOwner(this->loadBalancer->convertor->xyz2d((*this->loadBalancer->indexing)(point)));
     };
 
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
+    inline void onRebalance(void) override
     {
-        this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
+        this->HilbertCurveEnvironmentAgent::onRebalance();
     }
 
-    const DistributedOctTree_Type *getOctTree() const{return this->distributedOctTree;};
-
-    inline int getOrder() const{return this->order;};
+    const std::shared_ptr<DistributedOctTree_Type> &getOctTree() const{return this->distributedOctTree;};
     
     template<typename U>
     inline HilbertCurveEnvironmentAgent::DistancesVector getClosestFurthestPointsByRanks(const U &point) const

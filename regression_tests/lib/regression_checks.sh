@@ -217,3 +217,128 @@ check_till_case() {
     set_check_msg "Till final Tgas and Trad agree within 1%"
     return 0
 }
+
+check_amr_random_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/amr_random_metrics.txt"
+    local mode
+    local max_drift
+    local threshold
+    local pass_flag
+    local expected_threshold
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale amr_random_metrics.txt"
+        return 1
+    fi
+
+    mode=$(awk '$1 == "mode" { print $2 }' "$metrics_file")
+    max_drift=$(awk '$1 == "max_drift" { print $2 }' "$metrics_file")
+    threshold=$(awk '$1 == "threshold" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$mode" || -z "$max_drift" || -z "$threshold" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse AMR random metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$max_drift"; then
+        set_check_msg "amr_random max_drift is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$threshold"; then
+        set_check_msg "amr_random threshold is not finite"
+        return 1
+    fi
+    if [[ "$mode" != "serial" && "$mode" != "mpi" ]]; then
+        set_check_msg "amr_random mode must be serial or mpi"
+        return 1
+    fi
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "amr_random pass flag must be 0 or 1"
+        return 1
+    fi
+
+    if [[ "$mode" == "serial" ]]; then
+        expected_threshold="${AMR_RANDOM_MAX_DRIFT_SERIAL:-1e-8}"
+    else
+        expected_threshold="${AMR_RANDOM_MAX_DRIFT_MPI:-1e-6}"
+    fi
+
+    if ! awk -v d="$max_drift" -v t="$expected_threshold" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "amr_random max_drift exceeds ${mode} threshold (${max_drift} > ${expected_threshold})"
+        return 1
+    fi
+
+    if ! awk -v d="$max_drift" -v t="$threshold" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "amr_random max_drift exceeds test-reported threshold (${max_drift} > ${threshold})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "amr_random test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "AMR random drift check passed (${mode}, max_drift=${max_drift})"
+    return 0
+}
+
+check_voronoi_volume_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/voronoi_volume_metrics.txt"
+    local rel_error
+    local pass_flag
+    local max_rel_error
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale voronoi_volume_metrics.txt"
+        return 1
+    fi
+
+    rel_error=$(awk '$1 == "rel_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$rel_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse voronoi volume metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$rel_error"; then
+        set_check_msg "voronoi_volume rel_error is not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "voronoi_volume pass flag must be 0 or 1"
+        return 1
+    fi
+
+    max_rel_error="${VORONOI_VOLUME_MAX_REL_ERROR:-1e-10}"
+
+    if ! awk -v r="$rel_error" -v t="$max_rel_error" 'BEGIN { exit !(r < t) }'; then
+        set_check_msg "voronoi_volume rel_error exceeds threshold (${rel_error} >= ${max_rel_error})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "voronoi_volume test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Voronoi volume check passed (rel_error=${rel_error})"
+    return 0
+}

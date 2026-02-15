@@ -9,7 +9,6 @@
 #include <assert.h>
 
 // #include "utils/balance/balance.hpp"
-#include "utils/balance/weightedBalance.hpp"
 #include "utils/exchange/exchange.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
@@ -92,7 +91,7 @@ public:
 
     virtual void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) = 0;
 
-    virtual const EnvironmentAgent *getEnvironmentAgent() const = 0;
+    virtual const std::shared_ptr<EnvironmentAgent> getEnvironmentAgent() const = 0;
 
     virtual void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
 
