@@ -520,7 +520,6 @@ size_t Voronoi3D::SetPointTetras(void)
     boost::container::flat_set<size_t> const &empty_tetras = this->del_.empty_tetras_;
     std::vector<size_t> &newTetras = this->del_.newTetras_;
     PointTetras_.resize(this->Norg_);
-    // static vector<tetra_vec> tmpPointTetras;
 
     #ifdef USE_VCL_VECTORIZATION
         Vec4uq _Norg(this->Norg_);
@@ -529,7 +528,16 @@ size_t Voronoi3D::SetPointTetras(void)
     size_t Ntetra = tetras.size();
     size_t bigtet(0);
     bool has_good, has_big;
-    // change empty tetras to be not relevant
+
+    #ifdef TIMING
+    size_t prof_emptySize = empty_tetras.size();
+    size_t prof_changedSize = changed_tetras.size();
+    size_t prof_newTetrasSize = newTetras.size();
+    auto prof_t0 = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
+
+    // ---- Phases 1+2: Remove stale entries from PointTetras_ ----
+    // Phase 1: invalidate empty tetras and remove from point-tetra mapping
     for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
     {
         Tetrahedron &tetra = tetras[*it];
@@ -549,6 +557,7 @@ size_t Voronoi3D::SetPointTetras(void)
         }
     }
 
+    // Phase 2: remove old entries for changed tetras
     for (const std::pair<size_t, Tetrahedron> &tetraInfo : changed_tetras)
     {
         const size_t &tetraIndex = tetraInfo.first;
@@ -569,70 +578,138 @@ size_t Voronoi3D::SetPointTetras(void)
         }
     }
 
+    #ifdef TIMING
+    auto prof_t1 = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
+
+    // ---- Phase 3: Add new tetras to PointTetras_ ----
+    // Hybrid strategy: when newTetras has heavy duplication (e.g. after initial Build()),
+    // a sequential scan over all tetras is far more cache-friendly than random access
+    // through the bloated newTetras vector (which can have 10x duplicates).
+    // For incremental updates (after BuildExtra), newTetras is small and direct
+    // iteration is faster than scanning all tetras.
     size_t counter = 0;
-
-    // std::sort(newTetras.begin(), newTetras.end());
-    // auto it = std::unique(newTetras.begin(), newTetras.end());
-    // newTetras.resize(std::distance(newTetras.begin(), it));
-    // size_t redundentNum = Ntetra - newTetras.size();
-    // #ifdef RICH_MPI
-    //     int rank;
-    //     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    //     MPI_Allreduce(MPI_IN_PLACE, &redundentNum, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
-    //     if(rank == 0)
-    //     {
-    //         std::cout << "Redundent number max: " << redundentNum << std::endl;
-    //     }
-    // #endif // RICH_MPI
-    
-    // for (size_t i = 0; i < Ntetra; ++i)
-    for(size_t i : newTetras)
+    if (newTetras.size() > Ntetra)
     {
-        Tetrahedron &tet = tetras[i];
-        this->R_[i] = RADIUS_UNINITIALIZED;
-
-        if(not tet.newTetra)
+        // Sequential scan: cache-friendly walk over contiguous tetras[] array.
+        // Avoids random jumps through 2-10x duplicated newTetras indices.
+        for (size_t i = 0; i < Ntetra; ++i)
         {
-            continue;
-        }
-        assert(tet.newTetra);
-        tet.newTetra = false;
-
-        has_good = false;
-        has_big = false;
-        counter++;
-
-        #ifdef USE_VCL_VECTORIZATION
-            Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
-            Vec4qb cmp = (_points < _Norg);
-        #endif // USE_VCL_VECTORIZATION
-        
-        for(int j = 0; j < 4; ++j)
-        {
-        #ifdef USE_VCL_VECTORIZATION
-            if(cmp[j])
-        #else // USE_VCL_VECTORIZATION
-            if(tet.points[j] < Norg)
-        #endif // USE_VCL_VECTORIZATION
+            Tetrahedron &tet = tetras[i];
+            if (not tet.newTetra)
             {
-                has_good = true;
-                PointTetras_[tet.points[j]].push_back(i);
+                continue;
             }
-            else
+            this->R_[i] = RADIUS_UNINITIALIZED;
+            tet.newTetra = false;
+
+            has_good = false;
+            has_big = false;
+            counter++;
+
+            #ifdef USE_VCL_VECTORIZATION
+                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
+                Vec4qb cmp = (_points < _Norg);
+            #endif // USE_VCL_VECTORIZATION
+            
+            for(int j = 0; j < 4; ++j)
             {
-                has_big = true;
+            #ifdef USE_VCL_VECTORIZATION
+                if(cmp[j])
+            #else // USE_VCL_VECTORIZATION
+                if(tet.points[j] < this->Norg_)
+            #endif // USE_VCL_VECTORIZATION
+                {
+                    has_good = true;
+                    PointTetras_[tet.points[j]].push_back(i);
+                }
+                else
+                {
+                    has_big = true;
+                }
             }
-        }
-        if(has_big and has_good)
-        {
-            bigtet = i;
+            if(has_big and has_good)
+            {
+                bigtet = i;
+            }
         }
     }
+    else
+    {
+        // Direct iteration: newTetras is small, iterate it directly.
+        for(size_t i : newTetras)
+        {
+            Tetrahedron &tet = tetras[i];
+            this->R_[i] = RADIUS_UNINITIALIZED;
+
+            if(not tet.newTetra)
+            {
+                continue;
+            }
+            assert(tet.newTetra);
+            tet.newTetra = false;
+
+            has_good = false;
+            has_big = false;
+            counter++;
+
+            #ifdef USE_VCL_VECTORIZATION
+                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
+                Vec4qb cmp = (_points < _Norg);
+            #endif // USE_VCL_VECTORIZATION
+            
+            for(int j = 0; j < 4; ++j)
+            {
+            #ifdef USE_VCL_VECTORIZATION
+                if(cmp[j])
+            #else // USE_VCL_VECTORIZATION
+                if(tet.points[j] < this->Norg_)
+            #endif // USE_VCL_VECTORIZATION
+                {
+                    has_good = true;
+                    PointTetras_[tet.points[j]].push_back(i);
+                }
+                else
+                {
+                    has_big = true;
+                }
+            }
+            if(has_big and has_good)
+            {
+                bigtet = i;
+            }
+        }
+    }
+
+    #ifdef TIMING
+    auto prof_t2 = std::chrono::high_resolution_clock::now();
+    {
+        double phase12_ms = std::chrono::duration<double, std::milli>(prof_t1 - prof_t0).count();
+        double phase3_ms  = std::chrono::duration<double, std::milli>(prof_t2 - prof_t1).count();
+        double total_ms   = phase12_ms + phase3_ms;
+    #ifdef RICH_MPI
+        int prof_rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &prof_rank);
+        if(prof_rank == 0 && total_ms > 1.0)
+    #else
+        if(total_ms > 1.0)
+    #endif
+        {
+            std::cout << "[SetPointTetras] total=" << total_ms << "ms"
+                      << "  phase12=" << phase12_ms << "ms  phase3=" << phase3_ms << "ms"
+                      << "  empty=" << prof_emptySize
+                      << "  changed=" << prof_changedSize
+                      << "  newTetras=" << prof_newTetrasSize
+                      << "  Ntetra=" << Ntetra
+                      << "  counter=" << counter
+                      << std::endl;
+        }
+    }
+    #endif // TIMING
 
     changed_tetras.clear();
     newTetras.clear();
 
-    // std::cout << "Tetra counter: " << counter << " / " << Ntetra << std::endl;
     return bigtet;
 }
 
