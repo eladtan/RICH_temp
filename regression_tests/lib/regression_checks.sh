@@ -409,3 +409,37 @@ check_lane_self_gravity_case() {
     set_check_msg "Lane self-gravity equilibrium check passed (final_metric=${final_metric})"
     return 0
 }
+
+check_mach2_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/mach2_profile.txt"
+    local checker_stdout="${run_dir}/mach2_check.stdout.log"
+    local checker_stderr="${run_dir}/mach2_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale mach2_profile.txt"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_mach2_profile.py" \
+        --profile "$profile_file" \
+        --rich-root "$RICH_ROOT" \
+        --time 0.01 \
+        --max-density-rel-l1 "${MACH2_MAX_DENSITY_REL_L1:-0.50}" \
+        --max-temperature-rel-l1 "${MACH2_MAX_TEMPERATURE_REL_L1:-0.50}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Mach2 radiative shock profile comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Mach2 radiative shock profile comparison passed"
+    return 0
+}
