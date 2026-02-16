@@ -165,6 +165,7 @@ The suite builds and validates these regression cases:
 | `sedov_3d_mpi` | mpi | 3D MPI Sedov explosion (Slurm, 128 tasks) |
 | `amr_random` | serial, mpi | AMR random refine/remove |
 | `voronoi_volume` | serial, mpi | Voronoi volume accuracy |
+| `lane_self_gravity` | mpi | Lane-Emden self-gravity equilibrium (Slurm, 64 tasks) |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -172,12 +173,14 @@ Acceptance checks are physics-based:
 - **Till**: require final gas and radiation temperatures to agree within **1%**.
 - **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
+- **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
 You can tune tolerances with environment variables:
 - `SOD_MAX_DENSITY_GOF`, `SOD_MAX_PRESSURE_GOF`
 - `SEDOV_MAX_DENSITY_REL_L1`, `SEDOV_MAX_PRESSURE_REL_L1`, `SEDOV_MAX_VELOCITY_REL_L1`
+- `LANE_GRAVITY_MAX_METRIC`
 
 ### Parallel execution
 
