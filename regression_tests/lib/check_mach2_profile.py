@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Compare a Mach2 radiative shock numerical profile against the LTE
-analytical solution from the radiative_shock submodule.
+analytical solution from analysis_files/radiative_shock.
 
 Usage:
     python3 check_mach2_profile.py \
@@ -49,7 +49,7 @@ def main():
     T_num = raw[:, 2]
 
     # ------------------------------------------------------------------
-    # Import the analytical solver from the radiative_shock submodule
+    # Import the analytical solver from analysis_files/radiative_shock
     # ------------------------------------------------------------------
     solver_dir = os.path.join(args.rich_root, "analysis_files", "radiative_shock")
     if not os.path.isdir(solver_dir):
