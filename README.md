@@ -166,6 +166,8 @@ The suite builds and validates these regression cases:
 | `amr_random` | serial, mpi | AMR random refine/remove |
 | `voronoi_volume` | serial, mpi | Voronoi volume accuracy |
 | `lane_self_gravity` | mpi | Lane-Emden self-gravity equilibrium (Slurm, 64 tasks) |
+| `mach2_diffusion` | mpi | Mach 2 radiative shock, single-group diffusion (Slurm, 8 tasks) |
+| `mach2_multigroup` | mpi | Mach 2 radiative shock, 32-group diffusion (Slurm, 8 tasks) |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -174,6 +176,7 @@ Acceptance checks are physics-based:
 - **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
 - **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
+- **Mach2 diffusion / multigroup**: run a Mach 2 LTE radiative shock to t=0.01, gather MPI-distributed profiles, and compare density and temperature against the analytical LTE radiative shock solution (`analysis_files/radiative_shock/lte_radiative_shock.py`). Require relative L1 error below 50% for both density and temperature.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -181,6 +184,7 @@ You can tune tolerances with environment variables:
 - `SOD_MAX_DENSITY_GOF`, `SOD_MAX_PRESSURE_GOF`
 - `SEDOV_MAX_DENSITY_REL_L1`, `SEDOV_MAX_PRESSURE_REL_L1`, `SEDOV_MAX_VELOCITY_REL_L1`
 - `LANE_GRAVITY_MAX_METRIC`
+- `MACH2_MAX_DENSITY_REL_L1`, `MACH2_MAX_TEMPERATURE_REL_L1`
 
 ### Parallel execution
 
@@ -275,6 +279,8 @@ Clean all saved regression logs:
   - `regression_results/<timestamp>/<case>/run.stdout.log`
   - `regression_tests/cases/sod_1d/sod_check.stderr.log` (Sod exact-profile check details)
   - `regression_tests/cases/sedov_3d_mpi/sedov_check.stderr.log` (Sedov exact-profile check details)
+  - `regression_tests/cases/mach2_diffusion/mach2_check.stderr.log` (Mach2 diffusion check details)
+  - `regression_tests/cases/mach2_multigroup/mach2_check.stderr.log` (Mach2 multigroup check details)
 
 
 ## Profiling
