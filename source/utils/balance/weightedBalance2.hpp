@@ -145,7 +145,10 @@ std::vector<T> getWeightedBorders2(const std::vector<T> &values, const std::vect
     {
         std::cout << "Weighted borders determined in " << iterations << " iterations." << std::endl;
     }
-    borders.push_back(borders.back() + 1);
+    if(!borders.empty())
+    {
+        borders.push_back(borders.back() + 1);
+    }
     return borders;
 }
 

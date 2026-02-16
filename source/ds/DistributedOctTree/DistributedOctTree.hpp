@@ -338,7 +338,10 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
 
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
-    nodes.push_back(this->octTree->getRoot());
+    if(this->octTree->getRoot() != nullptr)
+    {
+        nodes.push_back(this->octTree->getRoot());
+    }
 
     T closestPoint, furthestPoint;
     while(!nodes.empty())
@@ -346,15 +349,14 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         const DistributedOctTreeNode *node = nodes.back();
         nodes.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
         if(!node->isLeaf)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                nodes.push_back(node->children[i]);
+                if(node->children[i] != nullptr)
+                {
+                    nodes.push_back(node->children[i]);
+                }
             }
             continue;
         }

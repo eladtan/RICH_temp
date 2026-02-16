@@ -1457,6 +1457,7 @@ void Voronoi3D::UpdatePointsTree(const std::vector<Vector3D> &activePoints)
 
 void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange)
 {
+    SmartTimer::TimerCreator::disable = true;
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -2188,18 +2189,20 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
     start3 = std::chrono::high_resolution_clock::now();
     this->del_.BuildExtra(newPoints);
     end3 = std::chrono::high_resolution_clock::now();
-    #ifdef TIMING
+    #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
         #ifdef RICH_MPI
             rank_t rank;
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             if(rank == 0)
         #endif // RICH_MPI
             {
-                std::cout << "Time for small: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" <<
-                    ", for large: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" <<
-                    ", and Delaunay construction time: " << std::chrono::duration<double>(end3 - start3).count() << " seconds" << std::endl;
+                std::cout << "  [Self] small_range: " << std::chrono::duration<double>(end1 - start1).count()
+                    << "s, big_range: " << std::chrono::duration<double>(end2 - start2).count()
+                    << "s, BuildExtra: " << std::chrono::duration<double>(end3 - start3).count()
+                    << "s, newPts=" << newPoints.size()
+                    << ", smallQ=" << smallQueries.size() << ", bigQ=" << bigQueries.size() << std::endl;
             }
-    #endif // TIMING
+    #endif // TIMING || PROFILE_RANGE_QUERIES
 }
 
 #ifdef RICH_MPI
@@ -2241,15 +2244,16 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
             end2 = std::chrono::high_resolution_clock::now();
         }    
 
-        #ifdef TIMING
+        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
         rank_t rank;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         if(rank == 0)
         {
-            std::cout << "Time for small: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" <<
-                ", for large: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" << std::endl;
+            std::cout << "  [Remote] big_batch: " << std::chrono::duration<double>(end1 - start1).count()
+                << "s, small_batch: " << std::chrono::duration<double>(end2 - start2).count()
+                << "s, bigQ=" << bigQueries.size() << ", smallQ=" << smallQueries.size() << std::endl;
         }
-        #endif // TIMING
+        #endif // TIMING || PROFILE_RANGE_QUERIES
     }
 #endif // RICH_MPI
 
@@ -2468,12 +2472,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         mirroredPoints.insert(mirroredPoints.end(), moreMirroredPoints.begin(), moreMirroredPoints.end());
         auto end1 = std::chrono::high_resolution_clock::now();
         
-        #ifdef TIMING
+        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
         if(rank == 0)
         {
-            std::cout << "Time for creating batches and mirrors: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" << std::endl;
+            std::cout << "  [Batches] create+mirror: " << std::chrono::duration<double>(end1 - start1).count() << "s" << std::endl;
         }
-        #endif // TIMING
+        #endif // TIMING || PROFILE_RANGE_QUERIES
 
         #ifdef RICH_MPI
           if (!serialMode)
@@ -2514,12 +2518,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         this->del_.BuildExtra(newPoints);
         auto end2 = std::chrono::high_resolution_clock::now();
 
-        #ifdef TIMING
+        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
         if(rank == 0)
         {
-            std::cout << "Time for building mirrors: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" << std::endl;
+            std::cout << "  [Mirrors] build: " << std::chrono::duration<double>(end2 - start2).count() << "s" << std::endl;
         }
-        #endif // TIMING
+        #endif // TIMING || PROFILE_RANGE_QUERIES
 
         auto start3 = std::chrono::high_resolution_clock::now();
 
@@ -2530,12 +2534,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 
         auto end3 = std::chrono::high_resolution_clock::now();
         
-        #ifdef TIMING
+        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
         if(rank == 0)
         {
-            std::cout << "Time for calculating tetras: " << std::chrono::duration<double>(end3 - start3).count() << " seconds" << std::endl;
+            std::cout << "  [SPT] SetPointTetras: " << std::chrono::duration<double>(end3 - start3).count() << "s" << std::endl;
         }
-        #endif // TIMING
+        #endif // TIMING || PROFILE_RANGE_QUERIES
 
         #ifdef RICH_MPI
         size_t new_points;

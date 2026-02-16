@@ -364,22 +364,16 @@ template<typename U>
 typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per_leaf>::getIntersectingRanks(const Sphere<U> &sphere) const
 {
     RanksSet result;
+    if(this->root == nullptr || !SphereBoxIntersection(this->root->boundingBox, sphere))
+    {
+        return result;
+    }
     this->nodes_stack.push_back(this->root);
 
     while(not this->nodes_stack.empty())
     {
         const Node *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
-
-        if(node == nullptr)
-        {
-            continue;
-        }
-
-        if(not SphereBoxIntersection(node->boundingBox, sphere))
-        {
-            continue;
-        }
 
         if(node->is_leaf)
         {
@@ -393,7 +387,10 @@ typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per
         {
             for(const Node *child : node->children)
             {
-                this->nodes_stack.push_back(child); // recursively iterate
+                if(child != nullptr && SphereBoxIntersection(child->boundingBox, sphere))
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
         }
     }
@@ -426,7 +423,10 @@ std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_ty
     std::pair<Vector3D, Vector3D> initialPair = std::make_pair<Vector3D, Vector3D>(Vector3D(maxVal, maxVal, maxVal), Vector3D(minVal, minVal, minVal));
     std::vector<std::pair<coord_type, coord_type>> distances(this->size, {maxVal, minVal});
 
-    this->nodes_stack.push_back(this->root);
+    if(this->root != nullptr)
+    {
+        this->nodes_stack.push_back(this->root);
+    }
 
     Vector3D closestPoint, furthestPoint;
     while(not this->nodes_stack.empty())
@@ -434,19 +434,18 @@ std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_ty
         const Node *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
         if(!node->is_leaf)
         {
             for(const Node *child : node->children)
             {
-                this->nodes_stack.push_back(child);
+                if(child != nullptr)
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
             continue;
         }
-        // node is a value node
+        // node is a leaf
         closestPoint = node->boundingBox.closestPoint(point);
         furthestPoint = node->boundingBox.furthestPoint(point);
         coord_type closestDist = 0, furthestDist = 0;
