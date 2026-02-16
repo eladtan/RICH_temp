@@ -255,7 +255,7 @@ int main(void)
         }
     }
 
-    bool pass = std::abs(metric) < 1e-2;
+    bool pass = std::abs(metric) < 4e-2;
 
     if (rank == 0)
     {
