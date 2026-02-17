@@ -40,3 +40,4 @@ output_*
 *.so
 .cache
 .cursor/*
+runs/*/venv/
