@@ -184,8 +184,10 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionCoefficientGroup(Compu
     double const n_i = cell.density/m_p;
     double const n_e = n_i;
 
+    double g_ff = std::max(1.0, std::log(std::exp(5.960) * std::pow(cell.temperature, 1.5) / (nu_g * Z)));
+
     // return coefficient*Z*Z*n_e*n_i*(1.0 - std::exp(-h*nu_g/kT))/(std::sqrt(kT)*pow<3>(nu_g));
-    return 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(cell.temperature)*(1.-std::exp(-e/(CG::boltzmann_constant*cell.temperature)))*std::pow(e/h, -3);
+    return g_ff * 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(cell.temperature)*(1.-std::exp(-e/(CG::boltzmann_constant*cell.temperature)))*std::pow(e/h, -3);
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
