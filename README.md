@@ -336,6 +336,44 @@ python3 regression_tests/plot_results.py --results-dir regression_results/202602
 
 Requires `numpy`, `matplotlib`, and `scipy`.
 
+### Generating the test report (LaTeX/PDF)
+
+Generate a standalone PDF document that describes every regression test (physics,
+initial/boundary conditions, mesh movement, pass criteria, achieved metrics, and plots):
+
+```shell
+python3 regression_tests/generate_test_report.py
+```
+
+This will:
+1. Run `plot_results.py --all` to produce comparison plots (PNG + PDF).
+2. Write `regression_tests/test_report.tex`.
+3. Compile it to `regression_tests/test_report.pdf` via `pdflatex`.
+
+Options:
+
+```shell
+# Skip plot generation (use pre-existing plots)
+python3 regression_tests/generate_test_report.py --no-plots
+
+# Generate only the .tex file without compiling to PDF
+python3 regression_tests/generate_test_report.py --no-compile
+
+# Write output to a custom directory
+python3 regression_tests/generate_test_report.py --output-dir /tmp/report
+
+# Point to a custom plots directory
+python3 regression_tests/generate_test_report.py --plots-dir /tmp/my_plots
+```
+
+The "Achieved Results" tables in the report are populated from the metric output files
+produced by the most recent test run (e.g. `sod_check.stdout.log`,
+`lane_gravity_metrics.txt`).  If no test outputs exist yet, those sections display a
+placeholder message.
+
+Requires `pdflatex` (any TeX Live install) for PDF compilation.  The `.tex` file is
+always generated even if `pdflatex` is not available.
+
 ## Profiling
 
 To run the `gprof` profiler (for compilation configs with `Prof`), after a simulation run is finished, a `gmon.out` file will be generated in the run directory. This file contains profiling information and can be processed into a nice PDF (`gprof.pdf`) via:

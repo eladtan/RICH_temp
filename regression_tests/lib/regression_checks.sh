@@ -108,8 +108,8 @@ check_sod_case() {
     "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_sod_profile.py" \
         --profile "$profile_file" \
         --rich-root "$RICH_ROOT" \
-        --max-density-gof "${SOD_MAX_DENSITY_GOF:-0.14}" \
-        --max-pressure-gof "${SOD_MAX_PRESSURE_GOF:-0.06}" \
+        --max-density-gof "${SOD_MAX_DENSITY_GOF:-2e-2}" \
+        --max-pressure-gof "${SOD_MAX_PRESSURE_GOF:-2e-2}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Sod exact-profile comparison failed"
@@ -141,9 +141,9 @@ check_sedov_case() {
     "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_sedov_exact.py" \
         --profile "$sedov_profile" \
         --rich-root "$RICH_ROOT" \
-        --max-density-rel-l1 "${SEDOV_MAX_DENSITY_REL_L1:-0.70}" \
-        --max-pressure-rel-l1 "${SEDOV_MAX_PRESSURE_REL_L1:-0.90}" \
-        --max-velocity-rel-l1 "${SEDOV_MAX_VELOCITY_REL_L1:-0.90}" \
+        --max-density-rel-l1 "${SEDOV_MAX_DENSITY_REL_L1:-0.30}" \
+        --max-pressure-rel-l1 "${SEDOV_MAX_PRESSURE_REL_L1:-0.30}" \
+        --max-velocity-rel-l1 "${SEDOV_MAX_VELOCITY_REL_L1:-0.30}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Sedov exact-ODE comparison failed"
@@ -432,8 +432,8 @@ check_mach2_case() {
         --profile "$profile_file" \
         --rich-root "$RICH_ROOT" \
         --time 0.01 \
-        --max-density-rel-l1 "${MACH2_MAX_DENSITY_REL_L1:-0.50}" \
-        --max-temperature-rel-l1 "${MACH2_MAX_TEMPERATURE_REL_L1:-0.50}" \
+        --max-density-rel-l1 "${MACH2_MAX_DENSITY_REL_L1:-0.025}" \
+        --max-temperature-rel-l1 "${MACH2_MAX_TEMPERATURE_REL_L1:-0.025}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Mach2 radiative shock profile comparison failed"

@@ -146,11 +146,16 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
     [[ "${VERBOSE}" -eq 1 ]]       && passthrough_args+=(--verbose)
     [[ -n "${TEST_FILTER}" ]]      && passthrough_args+=(--test "${TEST_FILTER}")
 
-    serial_config="${CONFIG}"
     mpi_config="${CONFIG}"
     if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
         serial_config="gnuRelease"
         mpi_config="gnuReleaseMPI"
+    elif [[ "${CONFIG}" == *MPI* ]]; then
+        # Derive the serial config by stripping "MPI" from the config name
+        serial_config="${CONFIG//MPI/}"
+        echo "  Derived serial config: ${serial_config} (from ${CONFIG})"
+    else
+        serial_config="${CONFIG}"
     fi
 
     serial_rc=0

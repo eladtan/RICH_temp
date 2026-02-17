@@ -18,6 +18,19 @@
     #include <mpi.h>
 #endif // RICH_MPI
 
+#ifndef ALLOW_TIMING
+
+#define START_TIMER(name)
+#define START_TIMER_PREEMPTIVE(name)
+#define START_TIMER_DISTINCT(name)
+#define PRINT_TIMES()
+#define SILENCE_TIMERS()
+#define UNSILENCE_TIMERS()
+#define CLEAR_TIMES()
+#define DISABLE_TIMERS()
+
+#else // ALLOW_TIMING
+
 #define CONCAT_IMPL(a, b) a##b
 #define CONCAT(a, b) CONCAT_IMPL(a, b)
 #define UNIQUE_NAME(base) CONCAT(base, CONCAT(__LINE__, __COUNTER__))
@@ -91,5 +104,7 @@ namespace SmartTimer
 
     void PrintTimes(void);
 }
+
+#endif // ALLOW_TIMING
 
 #endif // SMART_TIMER_HPP

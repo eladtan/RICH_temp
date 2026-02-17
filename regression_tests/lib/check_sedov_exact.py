@@ -58,9 +58,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Compare Sedov 3D profile against exact Sedov-Taylor ODE profile.")
     parser.add_argument("--profile", required=True, help="Path to sedov_profile.txt")
     parser.add_argument("--rich-root", required=True, help="Repository root for analytic/sedov_taylor.py")
-    parser.add_argument("--max-density-rel-l1", type=float, default=0.70)
-    parser.add_argument("--max-pressure-rel-l1", type=float, default=0.90)
-    parser.add_argument("--max-velocity-rel-l1", type=float, default=0.90)
+    parser.add_argument("--max-density-rel-l1", type=float, default=0.30)
+    parser.add_argument("--max-pressure-rel-l1", type=float, default=0.30)
+    parser.add_argument("--max-velocity-rel-l1", type=float, default=0.30)
     args = parser.parse_args()
 
     sedov_path = os.path.join(args.rich_root, "analytic", "sedov_taylor.py")

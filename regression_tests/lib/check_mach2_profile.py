@@ -35,9 +35,9 @@ def main():
     parser.add_argument("--profile", required=True, help="Path to mach2_profile.txt")
     parser.add_argument("--rich-root", required=True, help="Repository root (for analysis_files/)")
     parser.add_argument("--time", type=float, default=0.01, help="Simulation end time [s]")
-    parser.add_argument("--max-density-rel-l1", type=float, default=0.50)
-    parser.add_argument("--max-temperature-rel-l1", type=float, default=0.50)
-    parser.add_argument("--max-trad-rel-l1", type=float, default=0.50)
+    parser.add_argument("--max-density-rel-l1", type=float, default=0.025)
+    parser.add_argument("--max-temperature-rel-l1", type=float, default=0.025)
+    parser.add_argument("--max-trad-rel-l1", type=float, default=0.025)
     args = parser.parse_args()
 
     # ------------------------------------------------------------------

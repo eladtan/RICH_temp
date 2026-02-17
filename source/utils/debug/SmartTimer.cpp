@@ -1,5 +1,6 @@
 #include "SmartTimer.hpp"
 
+#ifdef ALLOW_TIMING
 namespace SmartTimer
 {
     std::shared_ptr<Node> Node::MakeRoot(void)
@@ -291,3 +292,4 @@ namespace SmartTimer
         Node::root->PrintHelper(std::cout, {{0, ""}});
     }
 }
+#endif // ALLOW_TIMING

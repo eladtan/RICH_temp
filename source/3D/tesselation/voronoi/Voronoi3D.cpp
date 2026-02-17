@@ -2249,8 +2249,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 {
     int rank = 0, size = 1;
     #ifdef RICH_MPI
+    const bool serialMode = (this->pointsManager == nullptr);
+    if (!serialMode)
+    {
         MPI_Comm_rank(comm, &rank);
         MPI_Comm_size(comm, &size);
+    }
     #endif // RICH_MPI
 
     std::vector<Face> box;
@@ -2281,40 +2285,50 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     }
 
     #ifdef RICH_MPI
-        auto [ghostPointsFromLastBuild, alreadySentPoints1, alreadyRecvPoints1] = this->InitialGhostPointsExchange();
-        std::vector<int> alreadySentProcs, alreadyRecvProcs;
+    std::vector<int> alreadyRecvProcs;
+    std::optional<SentPointsContainer> optPointsContainer;
+    if (!serialMode)
+    {
+        auto [ghostPointsFromLastBuild, alreadySentPoints1, alreadyRecvPoints1] = this->InitialGhostPointsExchange(comm);
+        std::vector<int> alreadySentProcs;
         std::vector<std::vector<size_t>> alreadySentPoints2, alreadyRecvPoints2;
         for(rank_t _rank = 0; _rank < size; _rank++)
         {
             if(alreadySentPoints1[_rank].size() > 0)
             {
                 alreadySentProcs.push_back(_rank);
-                // move alreadySentPoints1[_rank]
                 alreadySentPoints2.emplace_back(std::move(alreadySentPoints1[_rank]));
             }
             if(alreadyRecvPoints1[_rank].size() > 0)
             {
                 alreadyRecvProcs.push_back(_rank);
-                // move alreadyRecvPoints1[_rank]
                 alreadyRecvPoints2.emplace_back(std::move(alreadyRecvPoints1[_rank]));
             }
         }
         this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints2);
         this->del_.BuildExtra(ghostPointsFromLastBuild);
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
-        // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
         this->bigtet_ = SetPointTetras();
-        SentPointsContainer pointsContainer(alreadySentProcs, alreadySentPoints2);
-    #endif // RICH_MPI
-    
-    #ifdef RICH_MPI
-        BigRangeAgent bigRangeAgent(this->rangeFinder.get(), this->pointsManager->getEnvironmentAgent(), pointsContainer, comm);
-        SmallRangeAgent smallRangeAgent(this->rangeFinder.get(), this->pointsManager->getEnvironmentAgent(), pointsContainer, comm);
-    #else // RICH_MPI
-        BigRangeAgent bigRangeAgent(this->rangeFinder.get());
-        SmallRangeAgent smallRangeAgent(this->rangeFinder.get());
-    #endif // RICH_MPI
+        optPointsContainer.emplace(alreadySentProcs, alreadySentPoints2);
+    }
+    else
+    {
+        optPointsContainer.emplace(); // empty container for serial mode
+    }
+    SentPointsContainer &pointsContainer = *optPointsContainer;
+
+    // In serial mode: envAgent is null (safe -- only used by talk agent for remote queries,
+    // which never fire since sendToSelf=false and size=1).
+    const std::shared_ptr<EnvironmentAgent> envAgent = serialMode ? nullptr : this->pointsManager->getEnvironmentAgent();
+    const MPI_Comm &agentComm = serialMode ? MPI_COMM_SELF : comm;
+    BigRangeAgent bigRangeAgent(this->rangeFinder.get(), envAgent, pointsContainer, agentComm);
+    SmallRangeAgent smallRangeAgent(this->rangeFinder.get(), envAgent, pointsContainer, agentComm);
+#else // RICH_MPI
+    BigRangeAgent bigRangeAgent(this->rangeFinder.get());
+    SmallRangeAgent smallRangeAgent(this->rangeFinder.get());
+#endif // RICH_MPI
+
 
     #ifdef RICH_MPI
         MPI_Request finishedReq;
@@ -2348,13 +2362,17 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         size_t smallPointsNum = smallPoints.size();
         size_t largePointsNum = largePoints.size();
         #ifdef RICH_MPI
+        if (!serialMode)
+        {
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &smallPointsNum, &smallPointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &largePointsNum, &largePointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
+        }
         #endif // RICH_MPI
         iterations++;
         size_t averageGP = this->del_.points_.size();
         #ifdef RICH_MPI
-        MPI_Reduce((rank == 0)? MPI_IN_PLACE : &averageGP, &averageGP, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
+        if (!serialMode)
+            MPI_Reduce((rank == 0)? MPI_IN_PLACE : &averageGP, &averageGP, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
         #endif // RICH_MPI
 
         averageGP /= size;
@@ -2378,8 +2396,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         #endif // TIMING
 
         #ifdef RICH_MPI
+        if (!serialMode)
+        {
+
             I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
             MPI_Iallreduce(&I_finished, &finished, 1, MPI_INT, MPI_SUM, comm, &finishedReq);
+        }
         #else // RICH_MPI
             finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
         #endif // RICH_MPI
@@ -2390,6 +2412,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         }
 
         #ifdef RICH_MPI
+        if (!serialMode)
             this->BringRemoteGhostPoints(bigQueries, smallQueries, bigRangeAgent, smallRangeAgent, numOfResultsForBigPoints, numOfResultsForSmallPoints);
         #endif // RICH_MPI
 
@@ -2431,13 +2454,17 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         }
         #endif // TIMING
 
+        size_t new_points = 0;
         #ifdef RICH_MPI        
-        size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
-        size_t new_points = new_points_until_now - total_new_points;
-        total_new_points = new_points_until_now;
-        MPI_Allreduce(MPI_IN_PLACE, &new_points, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+        if (!serialMode)
+        {
+            size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
+            new_points = new_points_until_now - total_new_points;
+            total_new_points = new_points_until_now;
+            MPI_Allreduce(MPI_IN_PLACE, &new_points, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+        }
         #else // RICH_MPI
-        size_t new_points = newPoints.size();
+            new_points = newPoints.size();
         #endif // RICH_MPI
 
         auto end_iter = std::chrono::high_resolution_clock::now();
@@ -2452,6 +2479,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         // #endif // RICH_MPI
 
         #ifdef RICH_MPI
+        if (!serialMode)
             MPI_Wait(&finishedReq, MPI_STATUS_IGNORE);
         #endif // RICH_MPI
 
@@ -2473,7 +2501,9 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     }
     
     START_TIMER_PREEMPTIVE("Organizing sent/recv and ghosts arrays");
-    #ifdef RICH_MPI        
+    #ifdef RICH_MPI   
+    if (!serialMode)
+    {     
         const std::vector<std::vector<size_t>> &sentPoints = pointsContainer.getSentData();
         const std::vector<int> &sentProc = pointsContainer.getSentProc();
 
@@ -2482,6 +2512,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         // remove whomever that does not appear both in my sent vector and receive vector (because if one appears in only one, it means that we either sent it a point, or received one, but has no used of it at all (otherwise it would require a symetric call))
         // this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    // todo: uncomment
         this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    
+    }
     #endif // RICH_MPI
 }
 
@@ -2681,17 +2712,18 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     {
         this->radiuses.resize(allPoints.size(), RADIUS_UNINITIALIZED);
     }
-
+    
     if(this->all_CM.size() < allPoints.size())
     {
         this->all_CM.resize(allPoints.size());
     }
-
+    
     this->allMyPoints = allPoints;
     // this->radiuses.resize(allPoints.size(), RADIUS_UNINITIALIZED);
     std::vector<Vector3D> activePoints = VectorValues(allPoints, indicesToBuild);
-
+    
     size_t pointsCounter = 0;
+    this->indicesInAllMyPoints = Tessellation3D::AllPointsMap();
     for(const size_t &pointIdx : indicesToBuild)
     {
         this->indicesInAllMyPoints[pointIdx] = pointsCounter;
