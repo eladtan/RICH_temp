@@ -20,15 +20,16 @@
 #include "CrookedPipeBoundary.hpp"
 #include "CrookedPipeOpacity.hpp"
 #include "3D/tessellation/voronoi/pointsManager/ParMETISPointManager.hpp"
+#include "3D/output/MC/read_write_particles.hpp"
 
 // #define RDMA
 
 namespace fs = std::filesystem;
 
 std::vector<ComputationalCell3D> *cellsPtr;
+std::vector<Particle3D> *particlesPtr;
 Voronoi3D *tessPtr;
 bool do_output;
-
 
 void Output(const std::string &fname)
 {
@@ -55,7 +56,14 @@ void Output(const std::string &fname)
         tracers1[i] = cells[i].tracers[1];
     }
 
-    WriteVoronoiVTKOnly(*tessPtr, fname, {temperatures, tracers0, tracers1}, {"Temperature", "Tracer0", "Tracer1"});
+    if(particlesPtr != nullptr)
+    {
+        WriteParticlesParallel(fname + "_particles.h5", *particlesPtr);
+    }
+    if(tessPtr != nullptr)
+    {
+        WriteVoronoiVTKOnly(*tessPtr, fname + ".vtu", {temperatures, tracers0, tracers1}, {"Temperature", "Tracer0", "Tracer1"});
+    }
 }
 
 vector<Vector3D> RandCylindar(std::size_t PointNum, double Rin, double Rout, double Zmin, double Zmax)
@@ -272,7 +280,8 @@ int main(int argc, char *argv[])
         fs::create_directories(path);
     }
 
-    Output(prefix + "start.vtu");
+    particlesPtr = nullptr;
+    Output(prefix + "start");
 
     {
         std::shared_ptr<MonteCarloManager3D> manager;
@@ -286,6 +295,8 @@ int main(int argc, char *argv[])
         }
 
         std::vector<MonteCarloParticle<Vector3D, Tessellation3D>> particles;
+        particlesPtr = &particles;
+
         size_t iterations = 10000;
         std::chrono::high_resolution_clock::time_point start, end1, end2;
         std::chrono::high_resolution_clock::time_point start_total, end_total;
@@ -301,7 +312,7 @@ int main(int argc, char *argv[])
         double max_step = 1e-9;// 1e-8
 
         start_total = std::chrono::high_resolution_clock::now();
-        
+
         while(time < totalTime)
         // for(int k = 0; k < 21; k++)
         {
@@ -330,7 +341,8 @@ int main(int argc, char *argv[])
             }
             if(i % 5 == 0)
             {
-                Output(prefix + std::to_string(i) + ".vtu");
+                particlesPtr = &particles;
+                Output(prefix + std::to_string(i));
             }
             i++;
             
@@ -339,7 +351,7 @@ int main(int argc, char *argv[])
 
             start = std::chrono::high_resolution_clock::now();
             if(i % 10 == 0)
-            {
+            {                
                 vtune_start();
                 try
                 {
@@ -417,7 +429,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    Output(prefix + "final.vtu");
+    Output(prefix + "final");
 
     MPI_Finalize();
 }
