@@ -224,7 +224,6 @@ private:
   #ifdef RICH_MPI
     std::shared_ptr<PointsManager> pointsManager;
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexingToSave = std::shared_ptr<const Kernelization3D::IndexingKernel3D>();
-
   #endif // RICH_MPI
 
   std::shared_ptr<RangeFinder> rangeFinder;
@@ -239,7 +238,7 @@ public:
   #ifdef RICH_MPI
     const std::vector<double> &GetPointsBuildWeights() const override;
     
-    const EnvironmentAgent *GetEnvironmentAgent() const override;
+    const std::shared_ptr<EnvironmentAgent> GetEnvironmentAgent() const override;
     
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
     

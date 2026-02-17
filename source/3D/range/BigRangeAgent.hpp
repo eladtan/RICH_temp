@@ -122,7 +122,7 @@ private:
             template<typename K, typename V>
             using _map = boost::container::flat_map<K, V>;
 
-            BigRangeTalkAgent(const EnvironmentAgent *envAgent,         
+            BigRangeTalkAgent(const std::shared_ptr<EnvironmentAgent> envAgent,         
                             #ifdef RICH_MPI
                                 const MPI_Comm &comm = MPI_COMM_WORLD
                             #endif // RICH_MPI
@@ -136,13 +136,13 @@ private:
                     this->size = 1;
                 #endif // RICH_MPI
 
-                const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
+                const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent.get());
                 if(distribuedOctEnvAgent != nullptr)
                 {
                     this->supportsFurthestClosestRanks = true;
                     this->getFurthestClosestRanks = [distribuedOctEnvAgent](const Vector3D &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
                 }
-                const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(this->envAgent);
+                const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(this->envAgent.get());
                 if(hilbertTreeEnvAgent != nullptr)
                 {
                     this->supportsFurthestClosestRanks = true;
@@ -158,7 +158,7 @@ private:
                     eo.addEntry("Query", query);
                     throw eo;
                 }
-
+                
                 // std::cout << "rank " << this->rank << " calculates the talk list of query " << query << std::endl;
                 EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
                 if(intersectingRanks.empty())
@@ -246,7 +246,7 @@ private:
             }
 
         private:
-            const EnvironmentAgent *envAgent;
+            const std::shared_ptr<EnvironmentAgent> envAgent;
             mutable _map<size_t, std::vector<std::pair<double, double>>> resultCache;
             int rank, size;
             bool supportsFurthestClosestRanks;
@@ -262,7 +262,7 @@ public:
     using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
-        BigRangeAgent(const RangeFinder *rangeFinder, const EnvironmentAgent *envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
+        BigRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     #else // RICH_MPI
         BigRangeAgent(const RangeFinder *rangeFinder)
     #endif // RICH_MPI

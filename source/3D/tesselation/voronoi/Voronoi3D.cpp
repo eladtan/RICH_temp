@@ -9,7 +9,6 @@
 
 #ifdef RICH_MPI
 
-#include <optional>
 #include "3D/range/finders/BruteForce.hpp"
 #include "3D/range/finders/RangeTree.hpp"
 #include "3D/range/finders/OctTree.hpp"
@@ -520,6 +519,7 @@ size_t Voronoi3D::SetPointTetras(void)
     boost::container::flat_set<size_t> const &empty_tetras = this->del_.empty_tetras_;
     std::vector<size_t> &newTetras = this->del_.newTetras_;
     PointTetras_.resize(this->Norg_);
+    // static vector<tetra_vec> tmpPointTetras;
 
     #ifdef USE_VCL_VECTORIZATION
         Vec4uq _Norg(this->Norg_);
@@ -528,16 +528,7 @@ size_t Voronoi3D::SetPointTetras(void)
     size_t Ntetra = tetras.size();
     size_t bigtet(0);
     bool has_good, has_big;
-
-    #ifdef TIMING
-    size_t prof_emptySize = empty_tetras.size();
-    size_t prof_changedSize = changed_tetras.size();
-    size_t prof_newTetrasSize = newTetras.size();
-    auto prof_t0 = std::chrono::high_resolution_clock::now();
-    #endif // TIMING
-
-    // ---- Phases 1+2: Remove stale entries from PointTetras_ ----
-    // Phase 1: invalidate empty tetras and remove from point-tetra mapping
+    // change empty tetras to be not relevant
     for (boost::container::flat_set<size_t>::const_iterator it = empty_tetras.begin(); it != empty_tetras.end(); ++it)
     {
         Tetrahedron &tetra = tetras[*it];
@@ -557,7 +548,6 @@ size_t Voronoi3D::SetPointTetras(void)
         }
     }
 
-    // Phase 2: remove old entries for changed tetras
     for (const std::pair<size_t, Tetrahedron> &tetraInfo : changed_tetras)
     {
         const size_t &tetraIndex = tetraInfo.first;
@@ -578,138 +568,70 @@ size_t Voronoi3D::SetPointTetras(void)
         }
     }
 
-    #ifdef TIMING
-    auto prof_t1 = std::chrono::high_resolution_clock::now();
-    #endif // TIMING
-
-    // ---- Phase 3: Add new tetras to PointTetras_ ----
-    // Hybrid strategy: when newTetras has heavy duplication (e.g. after initial Build()),
-    // a sequential scan over all tetras is far more cache-friendly than random access
-    // through the bloated newTetras vector (which can have 10x duplicates).
-    // For incremental updates (after BuildExtra), newTetras is small and direct
-    // iteration is faster than scanning all tetras.
     size_t counter = 0;
-    if (newTetras.size() > Ntetra)
+
+    // std::sort(newTetras.begin(), newTetras.end());
+    // auto it = std::unique(newTetras.begin(), newTetras.end());
+    // newTetras.resize(std::distance(newTetras.begin(), it));
+    // size_t redundentNum = Ntetra - newTetras.size();
+    // #ifdef RICH_MPI
+    //     int rank;
+    //     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    //     MPI_Allreduce(MPI_IN_PLACE, &redundentNum, 1, MPI_UNSIGNED_LONG, MPI_MAX, MPI_COMM_WORLD);
+    //     if(rank == 0)
+    //     {
+    //         std::cout << "Redundent number max: " << redundentNum << std::endl;
+    //     }
+    // #endif // RICH_MPI
+    
+    // for (size_t i = 0; i < Ntetra; ++i)
+    for(size_t i : newTetras)
     {
-        // Sequential scan: cache-friendly walk over contiguous tetras[] array.
-        // Avoids random jumps through 2-10x duplicated newTetras indices.
-        for (size_t i = 0; i < Ntetra; ++i)
+        Tetrahedron &tet = tetras[i];
+        this->R_[i] = RADIUS_UNINITIALIZED;
+
+        if(not tet.newTetra)
         {
-            Tetrahedron &tet = tetras[i];
-            if (not tet.newTetra)
-            {
-                continue;
-            }
-            this->R_[i] = RADIUS_UNINITIALIZED;
-            tet.newTetra = false;
+            continue;
+        }
+        assert(tet.newTetra);
+        tet.newTetra = false;
 
-            has_good = false;
-            has_big = false;
-            counter++;
+        has_good = false;
+        has_big = false;
+        counter++;
 
-            #ifdef USE_VCL_VECTORIZATION
-                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
-                Vec4qb cmp = (_points < _Norg);
-            #endif // USE_VCL_VECTORIZATION
-            
-            for(int j = 0; j < 4; ++j)
+        #ifdef USE_VCL_VECTORIZATION
+            Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
+            Vec4qb cmp = (_points < _Norg);
+        #endif // USE_VCL_VECTORIZATION
+        
+        for(int j = 0; j < 4; ++j)
+        {
+        #ifdef USE_VCL_VECTORIZATION
+            if(cmp[j])
+        #else // USE_VCL_VECTORIZATION
+            if(tet.points[j] < Norg)
+        #endif // USE_VCL_VECTORIZATION
             {
-            #ifdef USE_VCL_VECTORIZATION
-                if(cmp[j])
-            #else // USE_VCL_VECTORIZATION
-                if(tet.points[j] < this->Norg_)
-            #endif // USE_VCL_VECTORIZATION
-                {
-                    has_good = true;
-                    PointTetras_[tet.points[j]].push_back(i);
-                }
-                else
-                {
-                    has_big = true;
-                }
+                has_good = true;
+                PointTetras_[tet.points[j]].push_back(i);
             }
-            if(has_big and has_good)
+            else
             {
-                bigtet = i;
+                has_big = true;
             }
         }
-    }
-    else
-    {
-        // Direct iteration: newTetras is small, iterate it directly.
-        for(size_t i : newTetras)
+        if(has_big and has_good)
         {
-            Tetrahedron &tet = tetras[i];
-            this->R_[i] = RADIUS_UNINITIALIZED;
-
-            if(not tet.newTetra)
-            {
-                continue;
-            }
-            assert(tet.newTetra);
-            tet.newTetra = false;
-
-            has_good = false;
-            has_big = false;
-            counter++;
-
-            #ifdef USE_VCL_VECTORIZATION
-                Vec4uq _points(tet.points[0], tet.points[1], tet.points[2], tet.points[3]);
-                Vec4qb cmp = (_points < _Norg);
-            #endif // USE_VCL_VECTORIZATION
-            
-            for(int j = 0; j < 4; ++j)
-            {
-            #ifdef USE_VCL_VECTORIZATION
-                if(cmp[j])
-            #else // USE_VCL_VECTORIZATION
-                if(tet.points[j] < this->Norg_)
-            #endif // USE_VCL_VECTORIZATION
-                {
-                    has_good = true;
-                    PointTetras_[tet.points[j]].push_back(i);
-                }
-                else
-                {
-                    has_big = true;
-                }
-            }
-            if(has_big and has_good)
-            {
-                bigtet = i;
-            }
+            bigtet = i;
         }
     }
-
-    #ifdef TIMING
-    auto prof_t2 = std::chrono::high_resolution_clock::now();
-    {
-        double phase12_ms = std::chrono::duration<double, std::milli>(prof_t1 - prof_t0).count();
-        double phase3_ms  = std::chrono::duration<double, std::milli>(prof_t2 - prof_t1).count();
-        double total_ms   = phase12_ms + phase3_ms;
-    #ifdef RICH_MPI
-        int prof_rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &prof_rank);
-        if(prof_rank == 0 && total_ms > 1.0)
-    #else
-        if(total_ms > 1.0)
-    #endif
-        {
-            std::cout << "[SetPointTetras] total=" << total_ms << "ms"
-                      << "  phase12=" << phase12_ms << "ms  phase3=" << phase3_ms << "ms"
-                      << "  empty=" << prof_emptySize
-                      << "  changed=" << prof_changedSize
-                      << "  newTetras=" << prof_newTetrasSize
-                      << "  Ntetra=" << Ntetra
-                      << "  counter=" << counter
-                      << std::endl;
-        }
-    }
-    #endif // TIMING
 
     changed_tetras.clear();
     newTetras.clear();
 
+    // std::cout << "Tetra counter: " << counter << " / " << Ntetra << std::endl;
     return bigtet;
 }
 
@@ -1457,7 +1379,6 @@ void Voronoi3D::UpdatePointsTree(const std::vector<Vector3D> &activePoints)
 
 void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange)
 {
-    SmartTimer::TimerCreator::disable = true;
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -2189,20 +2110,18 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
     start3 = std::chrono::high_resolution_clock::now();
     this->del_.BuildExtra(newPoints);
     end3 = std::chrono::high_resolution_clock::now();
-    #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
+    #ifdef TIMING
         #ifdef RICH_MPI
             rank_t rank;
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             if(rank == 0)
         #endif // RICH_MPI
             {
-                std::cout << "  [Self] small_range: " << std::chrono::duration<double>(end1 - start1).count()
-                    << "s, big_range: " << std::chrono::duration<double>(end2 - start2).count()
-                    << "s, BuildExtra: " << std::chrono::duration<double>(end3 - start3).count()
-                    << "s, newPts=" << newPoints.size()
-                    << ", smallQ=" << smallQueries.size() << ", bigQ=" << bigQueries.size() << std::endl;
+                std::cout << "Time for small: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" <<
+                    ", for large: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" <<
+                    ", and Delaunay construction time: " << std::chrono::duration<double>(end3 - start3).count() << " seconds" << std::endl;
             }
-    #endif // TIMING || PROFILE_RANGE_QUERIES
+    #endif // TIMING
 }
 
 #ifdef RICH_MPI
@@ -2244,16 +2163,15 @@ void Voronoi3D::BringSelfGhostPoints(const std::vector<BigRangeQueryData> &bigQu
             end2 = std::chrono::high_resolution_clock::now();
         }    
 
-        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
+        #ifdef TIMING
         rank_t rank;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         if(rank == 0)
         {
-            std::cout << "  [Remote] big_batch: " << std::chrono::duration<double>(end1 - start1).count()
-                << "s, small_batch: " << std::chrono::duration<double>(end2 - start2).count()
-                << "s, bigQ=" << bigQueries.size() << ", smallQ=" << smallQueries.size() << std::endl;
+            std::cout << "Time for small: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" <<
+                ", for large: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" << std::endl;
         }
-        #endif // TIMING || PROFILE_RANGE_QUERIES
+        #endif // TIMING
     }
 #endif // RICH_MPI
 
@@ -2331,15 +2249,8 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 {
     int rank = 0, size = 1;
     #ifdef RICH_MPI
-        // Detect serial-within-MPI mode: Build() (serial) sets pointsManager to nullptr,
-        // while BuildPartiallyParallel() initializes it. When null, skip all MPI communication
-        // and use the serial code paths instead.
-        const bool serialMode = (this->pointsManager == nullptr);
-        if (!serialMode)
-        {
-            MPI_Comm_rank(comm, &rank);
-            MPI_Comm_size(comm, &size);
-        }
+        MPI_Comm_rank(comm, &rank);
+        MPI_Comm_size(comm, &size);
     #endif // RICH_MPI
 
     std::vector<Face> box;
@@ -2370,45 +2281,36 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     }
 
     #ifdef RICH_MPI
-        std::vector<int> alreadyRecvProcs;
-        std::optional<SentPointsContainer> optPointsContainer;
-        if (!serialMode)
+        auto [ghostPointsFromLastBuild, alreadySentPoints1, alreadyRecvPoints1] = this->InitialGhostPointsExchange();
+        std::vector<int> alreadySentProcs, alreadyRecvProcs;
+        std::vector<std::vector<size_t>> alreadySentPoints2, alreadyRecvPoints2;
+        for(rank_t _rank = 0; _rank < size; _rank++)
         {
-            auto [ghostPointsFromLastBuild, alreadySentPoints1, alreadyRecvPoints1] = this->InitialGhostPointsExchange(comm);
-            std::vector<int> alreadySentProcs;
-            std::vector<std::vector<size_t>> alreadySentPoints2, alreadyRecvPoints2;
-            for(rank_t _rank = 0; _rank < size; _rank++)
+            if(alreadySentPoints1[_rank].size() > 0)
             {
-                if(alreadySentPoints1[_rank].size() > 0)
-                {
-                    alreadySentProcs.push_back(_rank);
-                    alreadySentPoints2.emplace_back(std::move(alreadySentPoints1[_rank]));
-                }
-                if(alreadyRecvPoints1[_rank].size() > 0)
-                {
-                    alreadyRecvProcs.push_back(_rank);
-                    alreadyRecvPoints2.emplace_back(std::move(alreadyRecvPoints1[_rank]));
-                }
+                alreadySentProcs.push_back(_rank);
+                // move alreadySentPoints1[_rank]
+                alreadySentPoints2.emplace_back(std::move(alreadySentPoints1[_rank]));
             }
-            this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints2);
-            this->del_.BuildExtra(ghostPointsFromLastBuild);
-            this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
-            this->tetra_centers_.resize(this->R_.size());
-            this->bigtet_ = SetPointTetras();
-            optPointsContainer.emplace(alreadySentProcs, alreadySentPoints2);
+            if(alreadyRecvPoints1[_rank].size() > 0)
+            {
+                alreadyRecvProcs.push_back(_rank);
+                // move alreadyRecvPoints1[_rank]
+                alreadyRecvPoints2.emplace_back(std::move(alreadyRecvPoints1[_rank]));
+            }
         }
-        else
-        {
-            optPointsContainer.emplace(); // empty container for serial mode
-        }
-        SentPointsContainer &pointsContainer = *optPointsContainer;
-
-        // In serial mode: envAgent is null (safe -- only used by talk agent for remote queries,
-        // which never fire since sendToSelf=false and size=1).
-        const std::shared_ptr<EnvironmentAgent> envAgent = serialMode ? nullptr : this->pointsManager->getEnvironmentAgent();
-        const MPI_Comm &agentComm = serialMode ? MPI_COMM_SELF : comm;
-        BigRangeAgent bigRangeAgent(this->rangeFinder.get(), envAgent.get(), pointsContainer, agentComm);
-        SmallRangeAgent smallRangeAgent(this->rangeFinder.get(), envAgent.get(), pointsContainer, agentComm);
+        this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints2);
+        this->del_.BuildExtra(ghostPointsFromLastBuild);
+        this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
+        // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
+        this->tetra_centers_.resize(this->R_.size());
+        this->bigtet_ = SetPointTetras();
+        SentPointsContainer pointsContainer(alreadySentProcs, alreadySentPoints2);
+    #endif // RICH_MPI
+    
+    #ifdef RICH_MPI
+        BigRangeAgent bigRangeAgent(this->rangeFinder.get(), this->pointsManager->getEnvironmentAgent(), pointsContainer, comm);
+        SmallRangeAgent smallRangeAgent(this->rangeFinder.get(), this->pointsManager->getEnvironmentAgent(), pointsContainer, comm);
     #else // RICH_MPI
         BigRangeAgent bigRangeAgent(this->rangeFinder.get());
         SmallRangeAgent smallRangeAgent(this->rangeFinder.get());
@@ -2446,17 +2348,13 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         size_t smallPointsNum = smallPoints.size();
         size_t largePointsNum = largePoints.size();
         #ifdef RICH_MPI
-          if (!serialMode)
-          {
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &smallPointsNum, &smallPointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
             MPI_Reduce((rank == 0)? MPI_IN_PLACE : &largePointsNum, &largePointsNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
-          }
         #endif // RICH_MPI
         iterations++;
         size_t averageGP = this->del_.points_.size();
         #ifdef RICH_MPI
-        if (!serialMode)
-            MPI_Reduce((rank == 0)? MPI_IN_PLACE : &averageGP, &averageGP, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
+        MPI_Reduce((rank == 0)? MPI_IN_PLACE : &averageGP, &averageGP, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm);
         #endif // RICH_MPI
 
         averageGP /= size;
@@ -2472,23 +2370,16 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         mirroredPoints.insert(mirroredPoints.end(), moreMirroredPoints.begin(), moreMirroredPoints.end());
         auto end1 = std::chrono::high_resolution_clock::now();
         
-        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
+        #ifdef TIMING
         if(rank == 0)
         {
-            std::cout << "  [Batches] create+mirror: " << std::chrono::duration<double>(end1 - start1).count() << "s" << std::endl;
+            std::cout << "Time for creating batches and mirrors: " << std::chrono::duration<double>(end1 - start1).count() << " seconds" << std::endl;
         }
-        #endif // TIMING || PROFILE_RANGE_QUERIES
+        #endif // TIMING
 
         #ifdef RICH_MPI
-          if (!serialMode)
-          {
             I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
             MPI_Iallreduce(&I_finished, &finished, 1, MPI_INT, MPI_SUM, comm, &finishedReq);
-          }
-          else
-          {
-            finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
-          }
         #else // RICH_MPI
             finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
         #endif // RICH_MPI
@@ -2499,7 +2390,6 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         }
 
         #ifdef RICH_MPI
-          if (!serialMode)
             this->BringRemoteGhostPoints(bigQueries, smallQueries, bigRangeAgent, smallRangeAgent, numOfResultsForBigPoints, numOfResultsForSmallPoints);
         #endif // RICH_MPI
 
@@ -2518,12 +2408,12 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         this->del_.BuildExtra(newPoints);
         auto end2 = std::chrono::high_resolution_clock::now();
 
-        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
+        #ifdef TIMING
         if(rank == 0)
         {
-            std::cout << "  [Mirrors] build: " << std::chrono::duration<double>(end2 - start2).count() << "s" << std::endl;
+            std::cout << "Time for building mirrors: " << std::chrono::duration<double>(end2 - start2).count() << " seconds" << std::endl;
         }
-        #endif // TIMING || PROFILE_RANGE_QUERIES
+        #endif // TIMING
 
         auto start3 = std::chrono::high_resolution_clock::now();
 
@@ -2534,26 +2424,18 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 
         auto end3 = std::chrono::high_resolution_clock::now();
         
-        #if defined(TIMING) || defined(PROFILE_RANGE_QUERIES)
+        #ifdef TIMING
         if(rank == 0)
         {
-            std::cout << "  [SPT] SetPointTetras: " << std::chrono::duration<double>(end3 - start3).count() << "s" << std::endl;
+            std::cout << "Time for calculating tetras: " << std::chrono::duration<double>(end3 - start3).count() << " seconds" << std::endl;
         }
-        #endif // TIMING || PROFILE_RANGE_QUERIES
+        #endif // TIMING
 
-        #ifdef RICH_MPI
-        size_t new_points;
-        if (!serialMode)
-        {
-            size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
-            new_points = new_points_until_now - total_new_points;
-            total_new_points = new_points_until_now;
-            MPI_Allreduce(MPI_IN_PLACE, &new_points, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        }
-        else
-        {
-            new_points = newPoints.size();
-        }
+        #ifdef RICH_MPI        
+        size_t new_points_until_now = std::accumulate(this->Nghost_.cbegin(), this->Nghost_.cend(), 0, [](const size_t &a, const std::vector<size_t> &b){return a + b.size();});
+        size_t new_points = new_points_until_now - total_new_points;
+        total_new_points = new_points_until_now;
+        MPI_Allreduce(MPI_IN_PLACE, &new_points, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
         #else // RICH_MPI
         size_t new_points = newPoints.size();
         #endif // RICH_MPI
@@ -2570,7 +2452,6 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         // #endif // RICH_MPI
 
         #ifdef RICH_MPI
-          if (!serialMode)
             MPI_Wait(&finishedReq, MPI_STATUS_IGNORE);
         #endif // RICH_MPI
 
@@ -2592,16 +2473,15 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     }
     
     START_TIMER_PREEMPTIVE("Organizing sent/recv and ghosts arrays");
-    #ifdef RICH_MPI
-        if (!serialMode)
-        {
-            const std::vector<std::vector<size_t>> &sentPoints = pointsContainer.getSentData();
-            const std::vector<int> &sentProc = pointsContainer.getSentProc();
+    #ifdef RICH_MPI        
+        const std::vector<std::vector<size_t>> &sentPoints = pointsContainer.getSentData();
+        const std::vector<int> &sentProc = pointsContainer.getSentProc();
 
-            // calculate this->duplicated_points_
-            this->UpdateDuplicatedPoints(sentProc, sentPoints);
-            this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    
-        }
+        // calculate this->duplicated_points_
+        this->UpdateDuplicatedPoints(sentProc, sentPoints);
+        // remove whomever that does not appear both in my sent vector and receive vector (because if one appears in only one, it means that we either sent it a point, or received one, but has no used of it at all (otherwise it would require a symetric call))
+        // this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    // todo: uncomment
+        this->EnsureSymmetry(sentProc, {alreadyRecvProcs, smallRangeAgent.getRecvProc(), bigRangeAgent.getRecvProc()});    
     #endif // RICH_MPI
 }
 
@@ -2811,11 +2691,10 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     // this->radiuses.resize(allPoints.size(), RADIUS_UNINITIALIZED);
     std::vector<Vector3D> activePoints = VectorValues(allPoints, indicesToBuild);
 
-    this->indicesInAllMyPoints = Tessellation3D::AllPointsMap();
     size_t pointsCounter = 0;
     for(const size_t &pointIdx : indicesToBuild)
     {
-        this->indicesInAllMyPoints[pointsCounter] = pointIdx;
+        this->indicesInAllMyPoints[pointIdx] = pointsCounter;
         pointsCounter++;
     }
 
@@ -4078,9 +3957,9 @@ const std::vector<double> &Voronoi3D::GetPointsBuildWeights() const
     return this->allPointsWeights;
 }
 
-const EnvironmentAgent *Voronoi3D::GetEnvironmentAgent() const
+const std::shared_ptr<EnvironmentAgent> Voronoi3D::GetEnvironmentAgent() const
 {
-    return this->pointsManager->getEnvironmentAgent().get();
+    return this->pointsManager->getEnvironmentAgent();
 }
 
 #endif // RICH_MPI

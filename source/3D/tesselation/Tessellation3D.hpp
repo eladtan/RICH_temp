@@ -85,7 +85,7 @@ public:
 
   virtual const std::vector<double> &GetPointsBuildWeights() const = 0;
   
-  virtual const EnvironmentAgent *GetEnvironmentAgent() const = 0;
+  virtual const std::shared_ptr<EnvironmentAgent> GetEnvironmentAgent() const = 0;
 
   virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
 

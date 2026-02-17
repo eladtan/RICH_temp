@@ -249,7 +249,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
         #endif // TIMING
     }
 
-    size_t loop_iter = 0;
+    // size_t lastReceived = 0;
     while((!this->finishedMyQueries) or not finished)
     {
         if(!this->finishedMyQueries)
@@ -275,6 +275,10 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
             }
         }
         
+        // if(this->rank == 0)
+        // {
+        //     std::cout << "Finished value is " << this->finishManager->GetValue() << std::endl; 
+        // }
         this->receiveAnswers(queriesBatch);
         this->answerQueries();
         this->answersBufferManager->HandleIncomingOutcoming();
@@ -286,23 +290,11 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
             this->finishManager->Verify(ok);
         }
 
-        ++loop_iter;
-        // Fallback: if the tree-based termination detection has not converged
-        // after many iterations, use a collective allreduce to check directly.
-        if(!finished && (loop_iter % 1000000 == 0))
-        {
-            int local_done = (this->finishedMyQueries
-                              && this->receivedUntilNow >= this->shouldReceiveInTotal
-                              && this->queriesBufferManager->CountOutcoming() == 0
-                              && this->answersBufferManager->CountOutcoming() == 0
-                              && this->queriesToHandle.empty()) ? 1 : 0;
-            int all_done = 0;
-            MPI_Allreduce(&local_done, &all_done, 1, MPI_INT, MPI_LAND, this->comm);
-            if(all_done)
-            {
-                break;
-            }
-        }
+        // if(lastReceived != this->receivedUntilNow)
+        // {
+        //     lastReceived = this->receivedUntilNow;
+        //     std::cout << "Rank " << this->rank << " received " << lastReceived << " answers until now, should receive " << this->shouldReceiveInTotal << std::endl;
+        // }
         ++i;
     }
 
