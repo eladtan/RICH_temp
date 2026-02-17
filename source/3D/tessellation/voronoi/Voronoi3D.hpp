@@ -290,7 +290,11 @@ public:
 
   inline void SetPointsManager(std::shared_ptr<PointsManager> pointsManager){this->pointsManager = pointsManager;};
 
+  void MockMesh(void);
+  
   void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
+  
+  void Rebalance(const std::vector<double> &weights);
 
   inline bool ShouldRebalance(const std::vector<double> &weights) const override {return this->pointsManager->shouldRebalance(weights);}
 

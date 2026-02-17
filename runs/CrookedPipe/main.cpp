@@ -375,8 +375,7 @@ int main(int argc, char *argv[])
                         {
                             weights[j] = static_cast<double>(counters[j]);
                         }
-                        // std::cout << "Rank " << rank << ", weights " << weights << std::endl;
-                        tess.BuildParallel(points, weights);
+                        tess.Rebalance(weights);
                         points = tess.getMeshPoints();
                         points.resize(tess.GetPointNo());
                         

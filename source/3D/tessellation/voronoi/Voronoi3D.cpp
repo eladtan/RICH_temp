@@ -1615,26 +1615,11 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetRemoteIndices(c
     return whereNow;
 }
 
-void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+void Voronoi3D::MockMesh(void)
 {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-    this->pointsManager->setLoadBalancer(loadBalancer);
-
-    std::vector<Vector3D> previousPoints = this->allMyPoints;
-    std::vector<size_t> allIndices(previousPoints.size());
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    PointsExchangeResult exchangeResult = this->pointsManager->update(previousPoints, this->allPointsWeights, allIndices, this->radiuses, this->all_CM, false); // doesn't do rebalancing
-
-    this->allMyPoints = std::move(exchangeResult.newPoints);
-    this->radiuses = std::move(exchangeResult.newRadiuses);
-    this->all_CM = std::move(exchangeResult.newCMs);
-    this->sentprocs_ = std::move(exchangeResult.sentProcessors);
-    this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
-    this->self_index_ = std::move(exchangeResult.indicesToSelf);
-    this->allPointsWeights = std::move(exchangeResult.newWeights);
 
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> whereNow = GetRemoteIndices(this->self_index_, this->sentprocs_, this->sentpoints_); // previous point -> holder (rank + index)
     assert(whereNow.size() == this->Norg_);
@@ -1650,11 +1635,8 @@ void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
     size_t allPointsSize = this->allMyPoints.size();
     for(size_t pointIdx = 0; pointIdx < allPointsSize; pointIdx++)
     {
-        if(exchangeResult.participatingIndices.at(pointIdx))
-        {
-            this->indicesInAllMyPoints[new_points.size()] = pointIdx;
-            new_points.push_back(this->allMyPoints[pointIdx]);
-        }
+        this->indicesInAllMyPoints[new_points.size()] = pointIdx;
+        new_points.push_back(this->allMyPoints[pointIdx]);
     }
     
     // now find what ghosts should be sent
@@ -1836,6 +1818,58 @@ void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
     }
 
     this->UpdateCMs();
+}
+
+void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+{
+    this->pointsManager->setLoadBalancer(loadBalancer);
+
+    std::vector<Vector3D> previousPoints = this->allMyPoints;
+    std::vector<size_t> allIndices(previousPoints.size());
+    std::iota(allIndices.begin(), allIndices.end(), 0);
+    PointsExchangeResult exchangeResult = this->pointsManager->update(previousPoints, this->allPointsWeights, allIndices, this->radiuses, this->all_CM, false); // doesn't do rebalancing
+
+    this->allMyPoints = std::move(exchangeResult.newPoints);
+    this->radiuses = std::move(exchangeResult.newRadiuses);
+    this->all_CM = std::move(exchangeResult.newCMs);
+    this->sentprocs_ = std::move(exchangeResult.sentProcessors);
+    this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
+    this->self_index_ = std::move(exchangeResult.indicesToSelf);
+    this->allPointsWeights = std::move(exchangeResult.newWeights);
+
+    this->MockMesh();
+}
+
+void Voronoi3D::Rebalance(const std::vector<double> &weights)
+{
+    if(this->pointsManager == nullptr)
+    {
+        UniversalError eo("Voronoi3D::Rebalance: pointsManager is nullptr");
+        throw eo;
+    }
+
+    if(weights.size() != this->allMyPoints.size())
+    {
+        UniversalError eo("Voronoi3D::Rebalance: weights.size() != allMyPoints.size()");
+        eo.addEntry("weights.size()", weights.size());
+        eo.addEntry("allMyPoints.size()", this->allMyPoints.size());
+        throw eo;
+    }
+    
+    std::vector<Vector3D> previousPoints = this->allMyPoints;
+    std::vector<size_t> allIndices(previousPoints.size());
+    std::iota(allIndices.begin(), allIndices.end(), 0);
+    PointsExchangeResult exchangeResult = this->pointsManager->update(previousPoints, weights, allIndices, this->radiuses, this->all_CM); // allow rebalance
+
+    this->allMyPoints = std::move(exchangeResult.newPoints);
+    this->radiuses = std::move(exchangeResult.newRadiuses);
+    this->all_CM = std::move(exchangeResult.newCMs);
+    this->sentprocs_ = std::move(exchangeResult.sentProcessors);
+    this->sentpoints_ = std::move(exchangeResult.sentIndicesToProcessors);
+    this->self_index_ = std::move(exchangeResult.indicesToSelf);
+    this->allPointsWeights = std::move(exchangeResult.newWeights);
+
+    this->MockMesh();
 }
 
 #endif // RICH_MPI
