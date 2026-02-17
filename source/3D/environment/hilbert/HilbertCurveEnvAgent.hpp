@@ -5,6 +5,8 @@
 #include "3D/hilbert/HilbertConvertor3D.hpp"
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 
+#ifdef RICH_MPI
+
 class HilbertCurveEnvironmentAgent : public CurveEnvironmentAgent<hilbert_index_t, HilbertLoadBalancer>
 {
 public:
@@ -36,5 +38,7 @@ public:
 
     inline int getOrder() const{return this->loadBalancer->convertor->getOrder();};
 };
+
+#endif // RICH_MPI
 
 #endif // HILBERT_CURVE_ENVAGENT_HPP
