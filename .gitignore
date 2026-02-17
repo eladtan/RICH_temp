@@ -39,3 +39,4 @@ output_*
 *.la
 *.so
 .cache
+.cursor/*

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+TEST_ID="amr_random"
+TAGS="serial mpi"
+BUILD_TEST_NAME="regression_tests/cases/amr_random"
+RUN_DIR_REL="regression_tests/cases/amr_random"
+CHECK_FUNCTION="check_amr_random_case"
+
+if [[ "${CONFIG}" == *MPI* ]]; then
+    RUN_MODE="slurm"
+    SLURM_NTASKS="64"
+    SLURM_PARTITION="bigrun"
+    SLURM_EXCLUSIVE="1"
+    RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+else
+    RUN_MODE="direct"
+    RUN_COMMAND='"${RICH_BIN}"'
+fi

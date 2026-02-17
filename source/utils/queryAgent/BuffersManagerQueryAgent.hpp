@@ -268,7 +268,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
 
                 this->finishedMyQueries = true;
                 // if had several queries, but no communication was needed, send a finish message
-                if(this->shouldReceiveInTotal == 0)
+                if(this->shouldReceiveInTotal == this->receivedUntilNow)
                 {
                     this->sendFinish();
                 }

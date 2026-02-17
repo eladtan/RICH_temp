@@ -352,7 +352,7 @@ QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>:
 
                 this->finishedMyQueries = true;
                 // if had several queries, but no communication was needed, send a finish message
-                if(this->shouldReceiveInTotal == 0)
+                if(this->shouldReceiveInTotal == this->receivedUntilNow)
                 {
                     this->sendFinish(queriesBatch);
                 }

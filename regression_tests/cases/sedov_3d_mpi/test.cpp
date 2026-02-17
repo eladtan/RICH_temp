@@ -112,7 +112,7 @@ int main(void)
         }
     }
 
-    size_t const nbins = 300;
+    size_t const nbins = 500;
     std::vector<double> r_sum(nbins, 0.0);
     std::vector<double> density_sum(nbins, 0.0);
     std::vector<double> pressure_sum(nbins, 0.0);
@@ -120,7 +120,7 @@ int main(void)
     std::vector<double> volume_sum(nbins, 0.0);
 
     double rmax_local = 0.0;
-    for(size_t i = 0; i < sim.getCells().size(); ++i) {
+    for(size_t i = 0; i < sim.getTesselation().GetPointNo(); ++i) {
         double const r = abs(sim.getTesselation().GetCellCM(i));
         rmax_local = std::max(rmax_local, r);
     }
@@ -132,7 +132,7 @@ int main(void)
         rmax = 1.0;
     }
 
-    for(size_t i = 0; i < sim.getCells().size(); ++i) {
+    for(size_t i = 0; i < sim.getTesselation().GetPointNo(); ++i) {
         Vector3D const cm = sim.getTesselation().GetCellCM(i);
         double const r = abs(cm);
         double vr = 0.0;

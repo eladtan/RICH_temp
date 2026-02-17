@@ -5,6 +5,8 @@
 #include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
 #include "EnvironmentAgent.h"
 
+#ifdef RICH_MPI
+
 template<typename curve_index_t = size_t, typename LoadBalancerType = CurveLoadBalancer>
 class CurveEnvironmentAgent : public EnvironmentAgent
 {
@@ -39,5 +41,7 @@ public:
 protected:
     std::shared_ptr<LoadBalancerType> loadBalancer;
 };
+
+#endif // RICH_MPI
 
 #endif // CURVE_ENVIRONMENT_AGENT

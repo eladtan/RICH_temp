@@ -683,25 +683,20 @@ std::vector<T> OctTree<T>::range(const Sphere<U> &sphere, size_t N, const Filter
 {
     std::vector<T> result;
     size_t resultSize = 0;
-    this->nodes_stack.push_back(this->getRoot());
+    const OctTreeNode *root = this->getRoot();
+    if(root == nullptr || !SphereBoxIntersection(root->boundingBox, sphere))
+    {
+        return result;
+    }
+    this->nodes_stack.push_back(root);
 
     while((not this->nodes_stack.empty()) and (resultSize < N))
     {
         const OctTreeNode *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
-
         // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
         // that is because a leaf does not necessarily have to be a point (it can be a box, as in `DistributedOctTree`)
-        if(not SphereBoxIntersection(node->boundingBox, sphere))
-        {
-            continue;
-        }
-        
         if(node->isLeaf)
         {
             if(filter(node->value))
@@ -714,7 +709,11 @@ std::vector<T> OctTree<T>::range(const Sphere<U> &sphere, size_t N, const Filter
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push_back(node->children[i]); // recursively iterate
+                const OctTreeNode *child = node->children[i];
+                if(child != nullptr && SphereBoxIntersection(child->boundingBox, sphere))
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
         }
     }
@@ -728,32 +727,27 @@ template<typename T>
 template<typename U, typename FilterFunction>
 std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
 {
-    this->nodes_stack.push_back(this->getRoot());
-
     T closestPoint;
     typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+
+    const OctTreeNode *root = this->getRoot();
+    if(root == nullptr || !SphereBoxIntersection(root->boundingBox, sphere))
+    {
+        return {closestPoint, closestDistance};
+    }
+    this->nodes_stack.push_back(root);
 
     while(not this->nodes_stack.empty())
     {
         const OctTreeNode *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
-        // calculate distance squared
-        typename T::coord_type dist = node->boundingBox.distanceSquared(point);
-        if((dist >= closestDistance) or (not SphereBoxIntersection(node->boundingBox, sphere)))
-        {
-            continue;
-        }
-        // there might be a closer point in the subtrees
         if(node->isLeaf)
         {
-            if(filter(node->value))
+            // calculate distance squared from the point value (not bounding box) to the query point
+            typename T::coord_type dist = node->boundingBox.distanceSquared(point);
+            if(dist < closestDistance && filter(node->value))
             {
-                // should not be ignored
                 closestPoint = node->value;
                 closestDistance = dist;
             }
@@ -762,7 +756,13 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const S
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push_back(node->children[i]);
+                const OctTreeNode *child = node->children[i];
+                if(child == nullptr) continue;
+                typename T::coord_type dist = child->boundingBox.distanceSquared(point);
+                if(dist < closestDistance && SphereBoxIntersection(child->boundingBox, sphere))
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
         }
     }

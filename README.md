@@ -152,42 +152,101 @@ You can run a local full-benchmark regression suite after code changes:
 
 The regression system is organized in its own directory:
 - `regression_tests/run_all.sh` - main runner
-- `regression_tests/tests/` - one test definition per benchmark
+- `regression_tests/tests/` - one test definition per benchmark (each tagged `serial`, `mpi`, or both)
 - `regression_tests/lib/regression_checks.sh` - shared validation logic
 - `regression_tests/cases/*/test.cpp` - dedicated benchmark entry files used by the runner
 
-The suite builds and validates three dedicated regression cases:
-- `regression_tests/cases/sod_1d` (1D Sod benchmark)
-- `regression_tests/cases/sedov_3d_mpi` (3D MPI Sedov explosion, submitted to Slurm with `--ntasks=128 --exclusive --partition=bigrun`)
-- `regression_tests/cases/till_compton` (Till Compton test, case `3`)
+The suite builds and validates these regression cases:
+
+| Test | Tags | Description |
+|------|------|-------------|
+| `sod_1d` | serial | 1D Sod benchmark |
+| `till_compton` | serial | Till Compton test (case 3) |
+| `sedov_3d_mpi` | mpi | 3D MPI Sedov explosion (Slurm, 128 tasks) |
+| `amr_random` | serial, mpi | AMR random refine/remove |
+| `voronoi_volume` | serial, mpi | Voronoi volume accuracy |
+| `lane_self_gravity` | mpi | Lane-Emden self-gravity equilibrium (Slurm, 64 tasks) |
+| `mach2_diffusion` | mpi | Mach 2 radiative shock, single-group diffusion (Slurm, 8 tasks) |
+| `mach2_multigroup` | mpi | Mach 2 radiative shock, 32-group diffusion (Slurm, 8 tasks) |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
 - **Sedov**: compare radial density/pressure/velocity profiles to the exact Sedov-Taylor ODE profile (`analytic/sedov_taylor.py`).
 - **Till**: require final gas and radiation temperatures to agree within **1%**.
+- **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
+- **Voronoi volume**: enforce `rel_error < 1e-10`.
+- **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
+- **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 50% for density, gas temperature, and radiation temperature.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
 You can tune tolerances with environment variables:
 - `SOD_MAX_DENSITY_GOF`, `SOD_MAX_PRESSURE_GOF`
 - `SEDOV_MAX_DENSITY_REL_L1`, `SEDOV_MAX_PRESSURE_REL_L1`, `SEDOV_MAX_VELOCITY_REL_L1`
+- `LANE_GRAVITY_MAX_METRIC`
+- `MACH2_MAX_DENSITY_REL_L1`, `MACH2_MAX_TEMPERATURE_REL_L1`
+
+### Parallel execution
+
+Tests are executed in two phases:
+1. **Build phase (sequential)**: Each test is compiled one at a time. After each successful build, the binary is copied to a test-specific artifact directory so subsequent builds don't overwrite it.
+2. **Run phase (parallel)**: All successfully built tests are launched simultaneously. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`).
+
+Progress is printed in real time, showing which test is compiling, running, and its final pass/fail status.
+
+### Running by mode (serial / MPI)
+
+Use `--mode` to run only serial or only MPI tests:
+
+```shell
+# Run all serial tests (auto-selects gnuRelease config)
+./regression_tests/run_all.sh --mode serial
+
+# Run all MPI tests (auto-selects gnuReleaseMPI config)
+./regression_tests/run_all.sh --mode mpi
+
+# Run all MPI tests with a specific config
+./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+
+# Run all tests (default, equivalent to --mode all)
+./regression_tests/run_all.sh
+```
+
+Tests tagged with both `serial` and `mpi` (e.g. `amr_random`, `voronoi_volume`) appear in both modes.
+
+### Running serial then MPI (`serial_then_mpi`)
+
+Use `--mode serial_then_mpi` to run all serial-tagged tests first (with `gnuRelease`),
+then all MPI-tagged tests (with `gnuReleaseMPI`) in a single invocation:
+
+```shell
+./regression_tests/run_all.sh --mode serial_then_mpi
+```
+
+This ensures serial tests are built and checked with a non-MPI config while MPI tests
+use an MPI config. Each pass gets its own artifact directory. The overall exit code is
+`0` only if both passes succeed. You can override the config with `--config`, in which
+case the same config is used for both passes.
 
 ### Options
 
 ```shell
 ./regression_tests/run_all.sh \
-  --config gnuReleaseMPI \
-  --mpi-np 4 \
+  --mode serial \
+  --config gnuRelease \
   --keep-artifacts \
   --verbose
 ```
 
-- `--config <name>`: build configuration (default: `gnuReleaseMPI`).
+- `--mode <serial|mpi|all>`: filter tests by tag (default: `all`).
+  - `serial`: default config `gnuRelease`.
+  - `mpi`: default config `gnuReleaseMPI`.
+  - `all`: default config `gnuReleaseMPI`.
+- `--config <name>`: build configuration (overrides the mode default).
 - `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
 - `--clean-results`: remove `regression_results/` and exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
 - `--verbose`: stream run output to terminal while also writing logs.
-- Legacy compatibility command is still available: `./scripts/run_regression_tests.sh`.
 
 ### Run a single regression test
 
@@ -195,16 +254,16 @@ Run one benchmark with `--test`:
 
 ```shell
 # Sod only
-./regression_tests/run_all.sh --test sod_1d
+./regression_tests/run_all.sh --test sod_1d --config gnuRelease
 
 # Sedov only (set MPI ranks with --mpi-np)
 ./regression_tests/run_all.sh --test sedov_3d_mpi --mpi-np 8
 
 # Till only
-./regression_tests/run_all.sh --test till_compton
+./regression_tests/run_all.sh --test till_compton --config gnuRelease
 ```
 
-You can combine with `--config`, `--verbose`, and `--keep-artifacts`. For example:
+You can combine with `--mode`, `--config`, `--verbose`, and `--keep-artifacts`. For example:
 
 ```shell
 ./regression_tests/run_all.sh --test sod_1d --config gnuDebugMPI --verbose
@@ -214,12 +273,6 @@ Clean all saved regression logs:
 
 ```shell
 ./regression_tests/run_all.sh --clean-results
-```
-
-Convenience alias:
-
-```shell
-./scripts/clean_regression_results.sh
 ```
 
 ### Artifacts and pass/fail behavior
@@ -240,7 +293,86 @@ Convenience alias:
   - `regression_results/<timestamp>/<case>/run.stdout.log`
   - `regression_tests/cases/sod_1d/sod_check.stderr.log` (Sod exact-profile check details)
   - `regression_tests/cases/sedov_3d_mpi/sedov_check.stderr.log` (Sedov exact-profile check details)
+  - `regression_tests/cases/mach2_diffusion/mach2_check.stderr.log` (Mach2 diffusion check details)
+  - `regression_tests/cases/mach2_multigroup/mach2_check.stderr.log` (Mach2 multigroup check details)
 
+
+### Plotting regression results
+
+After running regression tests, generate comparison plots of numeric results against
+analytical solutions:
+
+```shell
+python3 regression_tests/plot_results.py
+```
+
+The script finds the latest `regression_results/<timestamp>` directory to determine which
+tests were run, reads profile data from the case directories, and saves PNG plots to
+`regression_tests/plots/`.
+
+Available plots:
+
+| Test | Plot contents |
+|------|---------------|
+| `sod_1d` | Density and pressure vs x, compared to exact Riemann solution |
+| `sedov_3d_mpi` | Density vs r (binned), compared to Sedov-Taylor ODE |
+| `lane_self_gravity` | Density vs r (binned), compared to initial Lane-Emden profile |
+| `till_compton` | Gas and radiation temperature vs time |
+| `mach2_diffusion` | Density, Tgas, Trad vs x, compared to NLTE analytical solution |
+| `mach2_multigroup` | Density, Tgas, Trad vs x, compared to NLTE analytical solution |
+
+Options:
+
+```shell
+# Plot all tests with available data (regardless of regression_results)
+python3 regression_tests/plot_results.py --all
+
+# Save plots to a custom directory
+python3 regression_tests/plot_results.py --output-dir /tmp/my_plots
+
+# Use a specific results directory
+python3 regression_tests/plot_results.py --results-dir regression_results/20260216_142301
+```
+
+Requires `numpy`, `matplotlib`, and `scipy`.
+
+### Generating the test report (LaTeX/PDF)
+
+Generate a standalone PDF document that describes every regression test (physics,
+initial/boundary conditions, mesh movement, pass criteria, achieved metrics, and plots):
+
+```shell
+python3 regression_tests/generate_test_report.py
+```
+
+This will:
+1. Run `plot_results.py --all` to produce comparison plots (PNG + PDF).
+2. Write `regression_tests/test_report.tex`.
+3. Compile it to `regression_tests/test_report.pdf` via `pdflatex`.
+
+Options:
+
+```shell
+# Skip plot generation (use pre-existing plots)
+python3 regression_tests/generate_test_report.py --no-plots
+
+# Generate only the .tex file without compiling to PDF
+python3 regression_tests/generate_test_report.py --no-compile
+
+# Write output to a custom directory
+python3 regression_tests/generate_test_report.py --output-dir /tmp/report
+
+# Point to a custom plots directory
+python3 regression_tests/generate_test_report.py --plots-dir /tmp/my_plots
+```
+
+The "Achieved Results" tables in the report are populated from the metric output files
+produced by the most recent test run (e.g. `sod_check.stdout.log`,
+`lane_gravity_metrics.txt`).  If no test outputs exist yet, those sections display a
+placeholder message.
+
+Requires `pdflatex` (any TeX Live install) for PDF compilation.  The `.tex` file is
+always generated even if `pdflatex` is not available.
 
 ## Profiling
 

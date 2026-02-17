@@ -551,7 +551,7 @@ namespace
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
 		std::vector<std::vector<Vector3D>> vof_normal, vof_point;
-		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d);
+		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d, vof_normal, vof_point, interp);
 		size_t Nproc = nghost_index.size();
 		std::vector<Plane> planes;
 		std::vector<Face> poly;
