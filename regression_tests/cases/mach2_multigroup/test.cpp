@@ -248,13 +248,14 @@ int main(void)
 
     // Gather profile data from all MPI ranks and write to file
     {
-        std::vector<double> local_x(Nlocal), local_rho(Nlocal), local_T(Nlocal);
+        std::vector<double> local_x(Nlocal), local_rho(Nlocal), local_T(Nlocal), local_Trad(Nlocal);
         auto const& final_cells = sim.getCells();
         for (size_t i = 0; i < Nlocal; ++i)
         {
             local_x[i] = tess.GetMeshPoint(i).x;
             local_rho[i] = final_cells[i].density;
             local_T[i] = final_cells[i].temperature;
+            local_Trad[i] = std::pow(final_cells[i].Erad * final_cells[i].density / CG::radiation_constant, 0.25);
         }
 
 #ifdef RICH_MPI
@@ -273,16 +274,18 @@ int main(void)
             }
         }
 
-        std::vector<double> all_x, all_rho, all_T;
+        std::vector<double> all_x, all_rho, all_T, all_Trad;
         if (rank == 0)
         {
             all_x.resize(total_n);
             all_rho.resize(total_n);
             all_T.resize(total_n);
+            all_Trad.resize(total_n);
         }
         MPI_Gatherv(local_x.data(), local_n, MPI_DOUBLE, all_x.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gatherv(local_rho.data(), local_n, MPI_DOUBLE, all_rho.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gatherv(local_T.data(), local_n, MPI_DOUBLE, all_T.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(local_Trad.data(), local_n, MPI_DOUBLE, all_Trad.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         if (rank == 0)
         {
@@ -294,7 +297,7 @@ int main(void)
             out << std::scientific << std::setprecision(12);
             for (int i = 0; i < total_n; ++i)
             {
-                out << all_x[idx[i]] << " " << all_rho[idx[i]] << " " << all_T[idx[i]] << "\n";
+                out << all_x[idx[i]] << " " << all_rho[idx[i]] << " " << all_T[idx[i]] << " " << all_Trad[idx[i]] << "\n";
             }
             out.close();
         }
@@ -307,10 +310,52 @@ int main(void)
         out << std::scientific << std::setprecision(12);
         for (size_t i = 0; i < Nlocal; ++i)
         {
-            out << local_x[idx[i]] << " " << local_rho[idx[i]] << " " << local_T[idx[i]] << "\n";
+            out << local_x[idx[i]] << " " << local_rho[idx[i]] << " " << local_T[idx[i]] << " " << local_Trad[idx[i]] << "\n";
         }
         out.close();
 #endif
+    }
+
+    // Write spectrum of the hottest cell for plotting
+    {
+        auto const& final_cells = sim.getCells();
+        double local_max_T = -1.0;
+        size_t local_max_idx = 0;
+        for (size_t i = 0; i < Nlocal; ++i)
+        {
+            if (final_cells[i].temperature > local_max_T)
+            {
+                local_max_T = final_cells[i].temperature;
+                local_max_idx = i;
+            }
+        }
+
+        int writer_rank = 0;
+#ifdef RICH_MPI
+        struct { double val; int rank; } local_max_info, global_max_info;
+        local_max_info.val = local_max_T;
+        local_max_info.rank = rank;
+        MPI_Allreduce(&local_max_info, &global_max_info, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+        writer_rank = global_max_info.rank;
+#endif
+
+        if (rank == writer_rank)
+        {
+            std::string spectrum_path = std::string(dirname(file_buf)) + "/mach2_spectrum.txt";
+            std::ofstream sout(spectrum_path);
+            sout << std::scientific << std::setprecision(12);
+            sout << "Tgas " << final_cells[local_max_idx].temperature << "\n";
+            sout << "density " << final_cells[local_max_idx].density << "\n";
+            sout << "num_groups " << G << "\n";
+            for (std::size_t g = 0; g < G; ++g)
+            {
+                double Eg_cgs = final_cells[local_max_idx].Eg[g] * final_cells[local_max_idx].density;
+                sout << energy_groups_boundary[g] << " "
+                     << energy_groups_boundary[g + 1] << " "
+                     << Eg_cgs << "\n";
+            }
+            sout.close();
+        }
     }
 
 #ifdef RICH_MPI

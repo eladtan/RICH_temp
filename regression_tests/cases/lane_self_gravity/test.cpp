@@ -132,8 +132,6 @@ int main(void)
 
 #ifdef RICH_MPI
     points = MPI_Spread(points, 0, MPI_COMM_WORLD);
-    std::cerr << "Finished with MPI_Spread Rank " << rank
-              << " has " << points.size() << " points" << std::endl;
 #endif
 
     points = RoundGrid3D(points, ll, ur, 10);
@@ -253,6 +251,82 @@ int main(void)
             reportError(eo);
             throw;
         }
+    }
+
+    // Radial profile output for plotting
+    {
+        size_t const nbins = 300;
+        std::vector<double> r_sum(nbins, 0.0);
+        std::vector<double> density_sum(nbins, 0.0);
+        std::vector<double> density_analytic_sum(nbins, 0.0);
+        std::vector<double> volume_sum(nbins, 0.0);
+
+        double rmax_local = 0.0;
+        size_t N_final = sim.getTesselation().GetPointNo();
+        for (size_t i = 0; i < N_final; ++i)
+        {
+            double const r = abs(sim.getTesselation().GetCellCM(i));
+            rmax_local = std::max(rmax_local, r);
+        }
+        double rmax = rmax_local;
+#ifdef RICH_MPI
+        MPI_Allreduce(&rmax_local, &rmax, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if (rmax <= 0.0)
+            rmax = 1.0;
+
+        for (size_t i = 0; i < N_final; ++i)
+        {
+            Vector3D const cm = sim.getTesselation().GetCellCM(i);
+            double const r = abs(cm);
+            size_t bin = static_cast<size_t>((r / rmax) * static_cast<double>(nbins));
+            if (bin >= nbins)
+                bin = nbins - 1;
+            double const cell_volume = sim.getTesselation().GetVolume(i);
+            r_sum[bin] += r * cell_volume;
+            density_sum[bin] += sim.getCells()[i].density * cell_volume;
+            density_analytic_sum[bin] += prof.densityAt(r, R) * cell_volume;
+            volume_sum[bin] += cell_volume;
+        }
+
+#ifdef RICH_MPI
+        std::vector<double> r_sum_g(nbins, 0.0);
+        std::vector<double> density_sum_g(nbins, 0.0);
+        std::vector<double> density_analytic_sum_g(nbins, 0.0);
+        std::vector<double> volume_sum_g(nbins, 0.0);
+        MPI_Reduce(r_sum.data(), r_sum_g.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(density_sum.data(), density_sum_g.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(density_analytic_sum.data(), density_analytic_sum_g.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(volume_sum.data(), volume_sum_g.data(), static_cast<int>(nbins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+        if (rank == 0)
+        {
+            std::ofstream prof_out("lane_profile.txt");
+            for (size_t b = 0; b < nbins; ++b)
+            {
+                if (volume_sum_g[b] <= 0.0)
+                    continue;
+                double const inv = 1.0 / volume_sum_g[b];
+                prof_out << r_sum_g[b] * inv << " "
+                         << density_sum_g[b] * inv << " "
+                         << density_analytic_sum_g[b] * inv << "\n";
+            }
+            prof_out.close();
+            std::cerr << "Wrote lane_profile.txt" << std::endl;
+        }
+#else
+        std::ofstream prof_out("lane_profile.txt");
+        for (size_t b = 0; b < nbins; ++b)
+        {
+            if (volume_sum[b] <= 0.0)
+                continue;
+            double const inv = 1.0 / volume_sum[b];
+            prof_out << r_sum[b] * inv << " "
+                     << density_sum[b] * inv << " "
+                     << density_analytic_sum[b] * inv << "\n";
+        }
+        prof_out.close();
+#endif
     }
 
     bool pass = std::abs(metric) < 4e-2;

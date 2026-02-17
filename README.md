@@ -176,7 +176,7 @@ Acceptance checks are physics-based:
 - **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
 - **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
-- **Mach2 diffusion / multigroup**: run a Mach 2 LTE radiative shock to t=0.01, gather MPI-distributed profiles, and compare density and temperature against the analytical LTE radiative shock solution (`analysis_files/radiative_shock/lte_radiative_shock.py`). Require relative L1 error below 50% for both density and temperature.
+- **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 50% for density, gas temperature, and radiation temperature.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -213,6 +213,20 @@ Use `--mode` to run only serial or only MPI tests:
 ```
 
 Tests tagged with both `serial` and `mpi` (e.g. `amr_random`, `voronoi_volume`) appear in both modes.
+
+### Running serial then MPI (`serial_then_mpi`)
+
+Use `--mode serial_then_mpi` to run all serial-tagged tests first (with `gnuRelease`),
+then all MPI-tagged tests (with `gnuReleaseMPI`) in a single invocation:
+
+```shell
+./regression_tests/run_all.sh --mode serial_then_mpi
+```
+
+This ensures serial tests are built and checked with a non-MPI config while MPI tests
+use an MPI config. Each pass gets its own artifact directory. The overall exit code is
+`0` only if both passes succeed. You can override the config with `--config`, in which
+case the same config is used for both passes.
 
 ### Options
 
@@ -282,6 +296,45 @@ Clean all saved regression logs:
   - `regression_tests/cases/mach2_diffusion/mach2_check.stderr.log` (Mach2 diffusion check details)
   - `regression_tests/cases/mach2_multigroup/mach2_check.stderr.log` (Mach2 multigroup check details)
 
+
+### Plotting regression results
+
+After running regression tests, generate comparison plots of numeric results against
+analytical solutions:
+
+```shell
+python3 regression_tests/plot_results.py
+```
+
+The script finds the latest `regression_results/<timestamp>` directory to determine which
+tests were run, reads profile data from the case directories, and saves PNG plots to
+`regression_tests/plots/`.
+
+Available plots:
+
+| Test | Plot contents |
+|------|---------------|
+| `sod_1d` | Density and pressure vs x, compared to exact Riemann solution |
+| `sedov_3d_mpi` | Density vs r (binned), compared to Sedov-Taylor ODE |
+| `lane_self_gravity` | Density vs r (binned), compared to initial Lane-Emden profile |
+| `till_compton` | Gas and radiation temperature vs time |
+| `mach2_diffusion` | Density, Tgas, Trad vs x, compared to NLTE analytical solution |
+| `mach2_multigroup` | Density, Tgas, Trad vs x, compared to NLTE analytical solution |
+
+Options:
+
+```shell
+# Plot all tests with available data (regardless of regression_results)
+python3 regression_tests/plot_results.py --all
+
+# Save plots to a custom directory
+python3 regression_tests/plot_results.py --output-dir /tmp/my_plots
+
+# Use a specific results directory
+python3 regression_tests/plot_results.py --results-dir regression_results/20260216_142301
+```
+
+Requires `numpy`, `matplotlib`, and `scipy`.
 
 ## Profiling
 

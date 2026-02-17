@@ -61,7 +61,7 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Options:
-  --mode <serial|mpi|all>  Run serial tests, MPI tests, or all (default: all)
+  --mode <mode>            Run mode (default: all). See Modes below.
   --config <name>          Build configuration (auto-derived from --mode if omitted)
   --mpi-np <N>             MPI ranks for sedov_3d test (default: ${MPI_NP})
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
@@ -71,13 +71,15 @@ Options:
   -h, --help               Show this help
 
 Modes:
-  serial   Run tests tagged "serial" (default config: gnuRelease)
-  mpi      Run tests tagged "mpi"    (default config: gnuReleaseMPI)
-  all      Run all tests             (default config: gnuReleaseMPI)
+  serial           Run tests tagged "serial" (default config: gnuRelease)
+  mpi              Run tests tagged "mpi"    (default config: gnuReleaseMPI)
+  all              Run all tests             (default config: gnuReleaseMPI)
+  serial_then_mpi  Run serial tests first (gnuRelease), then MPI tests (gnuReleaseMPI)
 
 Examples:
   ./regression_tests/run_all.sh --mode serial
   ./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+  ./regression_tests/run_all.sh --mode serial_then_mpi
   ./regression_tests/run_all.sh --test sod_1d --config gnuRelease
   ./regression_tests/run_all.sh --clean-results
 EOF
@@ -129,12 +131,48 @@ done
 
 # ==================== Validate arguments ====================
 case "${MODE}" in
-    serial|mpi|all) ;;
+    serial|mpi|all|serial_then_mpi) ;;
     *)
-        echo "--mode must be one of: serial, mpi, all" >&2
+        echo "--mode must be one of: serial, mpi, all, serial_then_mpi" >&2
         exit 2
         ;;
 esac
+
+# serial_then_mpi: re-invoke ourselves twice and merge results
+if [[ "${MODE}" == "serial_then_mpi" ]]; then
+    echo "${BOLD}=== serial_then_mpi: running serial pass ===${NC}"
+    passthrough_args=()
+    [[ "${KEEP_ARTIFACTS}" -eq 1 ]] && passthrough_args+=(--keep-artifacts)
+    [[ "${VERBOSE}" -eq 1 ]]       && passthrough_args+=(--verbose)
+    [[ -n "${TEST_FILTER}" ]]      && passthrough_args+=(--test "${TEST_FILTER}")
+
+    serial_config="${CONFIG}"
+    mpi_config="${CONFIG}"
+    if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
+        serial_config="gnuRelease"
+        mpi_config="gnuReleaseMPI"
+    fi
+
+    serial_rc=0
+    "${BASH_SOURCE[0]}" --mode serial --config "${serial_config}" \
+        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" || serial_rc=$?
+
+    echo
+    echo "${BOLD}=== serial_then_mpi: running MPI pass ===${NC}"
+
+    mpi_rc=0
+    "${BASH_SOURCE[0]}" --mode mpi --config "${mpi_config}" \
+        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" || mpi_rc=$?
+
+    echo
+    if [[ ${serial_rc} -eq 0 && ${mpi_rc} -eq 0 ]]; then
+        echo "${GREEN}serial_then_mpi: all passes succeeded.${NC}"
+        exit 0
+    else
+        echo "${RED}serial_then_mpi: failures detected (serial=${serial_rc}, mpi=${mpi_rc}).${NC}"
+        exit 1
+    fi
+fi
 
 # Auto-derive config from mode if not explicitly set
 if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then

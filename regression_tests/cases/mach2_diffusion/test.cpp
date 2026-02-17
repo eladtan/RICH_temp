@@ -203,13 +203,14 @@ int main(void)
 
     // Gather profile data from all MPI ranks and write to file
     {
-        std::vector<double> local_x(Nlocal), local_rho(Nlocal), local_T(Nlocal);
+        std::vector<double> local_x(Nlocal), local_rho(Nlocal), local_T(Nlocal), local_Trad(Nlocal);
         auto const& final_cells = sim.getCells();
         for (size_t i = 0; i < Nlocal; ++i)
         {
             local_x[i] = tess.GetMeshPoint(i).x;
             local_rho[i] = final_cells[i].density;
             local_T[i] = final_cells[i].temperature;
+            local_Trad[i] = std::pow(final_cells[i].Erad * final_cells[i].density / CG::radiation_constant, 0.25);
         }
 
 #ifdef RICH_MPI
@@ -228,20 +229,21 @@ int main(void)
             }
         }
 
-        std::vector<double> all_x, all_rho, all_T;
+        std::vector<double> all_x, all_rho, all_T, all_Trad;
         if (rank == 0)
         {
             all_x.resize(total_n);
             all_rho.resize(total_n);
             all_T.resize(total_n);
+            all_Trad.resize(total_n);
         }
         MPI_Gatherv(local_x.data(), local_n, MPI_DOUBLE, all_x.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gatherv(local_rho.data(), local_n, MPI_DOUBLE, all_rho.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Gatherv(local_T.data(), local_n, MPI_DOUBLE, all_T.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(local_Trad.data(), local_n, MPI_DOUBLE, all_Trad.data(), recv_counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         if (rank == 0)
         {
-            // Sort by x coordinate
             std::vector<size_t> idx(total_n);
             std::iota(idx.begin(), idx.end(), 0);
             std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b){ return all_x[a] < all_x[b]; });
@@ -250,7 +252,7 @@ int main(void)
             out << std::scientific << std::setprecision(12);
             for (int i = 0; i < total_n; ++i)
             {
-                out << all_x[idx[i]] << " " << all_rho[idx[i]] << " " << all_T[idx[i]] << "\n";
+                out << all_x[idx[i]] << " " << all_rho[idx[i]] << " " << all_T[idx[i]] << " " << all_Trad[idx[i]] << "\n";
             }
             out.close();
         }
@@ -263,7 +265,7 @@ int main(void)
         out << std::scientific << std::setprecision(12);
         for (size_t i = 0; i < Nlocal; ++i)
         {
-            out << local_x[idx[i]] << " " << local_rho[idx[i]] << " " << local_T[idx[i]] << "\n";
+            out << local_x[idx[i]] << " " << local_rho[idx[i]] << " " << local_T[idx[i]] << " " << local_Trad[idx[i]] << "\n";
         }
         out.close();
 #endif
