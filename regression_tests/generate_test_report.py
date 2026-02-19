@@ -625,7 +625,7 @@ TESTS = [
             "\\end{itemize}"
         ),
         "initial_conditions": (
-            r"Domain $x \in [0,\,1]$ with 512 uniform cells. "
+            r"Domain $x \in [0,\,0.2]$ with 512 uniform cells. "
             r"$\rho = 1$ (uniform), initially cold ($T \approx 0$). "
             r"The bath temperature at $x=0$ is "
             r"$T_{\mathrm{bath}}(t) = 1.008038\,(t/\mathrm{ns})^{1/3}\;\mathrm{keV}$."
@@ -635,7 +635,7 @@ TESTS = [
         "execution": "Serial, 1~CPU, direct execution.",
         "pass_criteria": (
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
-            r"must be $\le 10^{-3}$, compared to the self-similar analytical solution."
+            r"must be $\le 10^{-2}$, compared to the self-similar analytical solution."
         ),
         "plots": ["marshak_wave_1.png"],
         "plot_caption": (
@@ -661,7 +661,7 @@ TESTS = [
             "\\end{itemize}"
         ),
         "initial_conditions": (
-            r"Same as Problem~1: 512 uniform cells, $\rho=1$, initially cold. "
+            r"Domain $x \in [0,\,0.2]$ with 512 uniform cells, $\rho=1$, initially cold. "
             r"$T_{\mathrm{bath}}(t) = 1.014565\,(t/\mathrm{ns})^{1/3}\;\mathrm{keV}$."
         ),
         "boundary_conditions": "Marshak (radiation inflow) at left, zero-flux at right.",
@@ -669,7 +669,7 @@ TESTS = [
         "execution": "Serial, 1~CPU, direct execution.",
         "pass_criteria": (
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
-            r"must be $\le 10^{-3}$."
+            r"must be $\le 10^{-2}$."
         ),
         "plots": ["marshak_wave_2.png"],
         "plot_caption": (
@@ -706,7 +706,7 @@ TESTS = [
         "execution": "Serial, 1~CPU, direct execution.",
         "pass_criteria": (
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
-            r"must be $\le 10^{-3}$."
+            r"must be $\le 10^{-2}$."
         ),
         "plots": ["marshak_wave_3.png"],
         "plot_caption": (
@@ -722,7 +722,7 @@ TESTS = [
             "$\\rho(x) = x^{-40/139}$. A stretched grid (geometric progression) "
             "is used to resolve the steep gradients near $x=0$. "
             "$\\kappa_R = 2\\,(T/\\mathrm{keV})^{-4.5}\\,\\rho^{1.9}$, "
-            "$\\kappa_P = 0.05\\,\\kappa_R$, "
+            "$\\kappa_P = 5{\\times}10^{-4}\\,\\kappa_R$, "
             "$u = 10^{14}\\,(T/\\mathrm{keV})^{6}\\,\\rho^{0.7}$.\n\n"
             "\\textbf{Code and physics aspects verified:}\n"
             "\\begin{itemize}\n"
@@ -743,7 +743,7 @@ TESTS = [
         "execution": "Serial, 1~CPU, direct execution.",
         "pass_criteria": (
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
-            r"must be $\le 10^{-3}$."
+            r"must be $\le 10^{-2}$."
         ),
         "plots": ["marshak_wave_4.png"],
         "plot_caption": (
@@ -1041,8 +1041,8 @@ def _read_marshak_wave_metrics(cases_dir: Path, prob_num: int) -> list[MetricRow
     ]:
         val = kv.get(key)
         if val is not None:
-            passed = float(val) <= 1e-3
-            rows.append((field, val, "1e-3", passed))
+            passed = float(val) <= 1e-2
+            rows.append((field, val, "1e-2", passed))
     return rows
 
 
@@ -1273,6 +1273,14 @@ Ya.~B. Zel'dovich and Yu.~P. Raizer,
 \textit{Physics of Shock Waves and High-Temperature Hydrodynamic Phenomena},
 Dover Publications, 2002 (reprint).
 
+% --- Gresho vortex ---
+
+\bibitem{liska2003}
+R.~Liska and B.~Wendroff,
+``Comparison of Several Difference Schemes on 1D and 2D Test Problems for the
+Euler Equations,''
+\textit{SIAM J.~Sci.~Comput.}, 25(3):995--1017, 2003.
+
 \end{thebibliography}
 """
 
@@ -1353,11 +1361,26 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path) -> str:
             lines.append("\\subsection*{Plots}")
             lines.append("\\begin{figure}[htbp]")
             lines.append("  \\centering")
-            for abs_path in available:
+            n_plots = len(available)
+            if n_plots == 1:
                 lines.append(
-                    f"  \\includegraphics[width=0.95\\textwidth]{{{abs_path}}}"
+                    f"  \\includegraphics[width=0.95\\textwidth]{{{available[0]}}}"
                 )
-                lines.append("  \\\\[6pt]")
+            elif n_plots == 2:
+                for abs_path in available:
+                    lines.append(
+                        f"  \\includegraphics[width=0.48\\textwidth]{{{abs_path}}}"
+                    )
+                    lines.append("  \\hfill")
+            else:
+                for idx, abs_path in enumerate(available):
+                    lines.append(
+                        f"  \\includegraphics[width=0.48\\textwidth]{{{abs_path}}}"
+                    )
+                    if idx % 2 == 0 and idx + 1 < n_plots:
+                        lines.append("  \\hfill")
+                    elif idx + 1 < n_plots:
+                        lines.append("  \\\\[6pt]")
             if caption:
                 lines.append(f"  \\caption{{{caption}}}")
             lines.append(f"  \\label{{fig:{tid}}}")

@@ -24,7 +24,7 @@
 
 // Problem 4: Derei et al. (2024) Test 3
 // kappa_R = 2*(T/keV)^{-4.5} * rho^{1.9}
-// kappa_P = 0.05*kappa_R
+// kappa_P = 5e-4*kappa_R
 // u(T,rho) = 1e14*(T/keV)^6 * rho^{0.7}
 // rho(x) = x^{-40/139}, stretched grid (Eq 5.17 from paper)
 // T_bath(t) = 1.01008116*(t/ns)^{14/139} keV
@@ -80,7 +80,7 @@ int main(void)
 	// kappa_R = 2*(keV_K/T)^{4.5}*rho^{1.9}
 	// D = c/(3*2*keV_K^{4.5}*T^{-4.5}*rho^{1.9}) = c*T^{4.5}/(6*keV_K^{4.5}*rho^{1.9})
 	// => D0 = c/(6*keV_K^{4.5}), alpha = -1.9, beta = 4.5
-	// kappa_P = 0.05*2*(keV_K/T)^{4.5}*rho^{1.9} = 0.1*keV_K^{4.5}*T^{-4.5}*rho^{1.9}
+	// kappa_P = 5e-4*kappa_R = 0.001*keV_K^{4.5}*T^{-4.5}*rho^{1.9}
 	double const D0 = CG::speed_of_light / (6.0 * std::pow(keV_K, 4.5));
 	double const planck0 = 0.001 * std::pow(keV_K, 4.5);
 	PowerLawOpacity opacity(D0, -1.9, 4.5, planck0, 1.9, -4.5);

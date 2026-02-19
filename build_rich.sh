@@ -15,13 +15,14 @@ NC=$'\033[0m'
 export CCACHE_CPP2=yes
 
 # ==================== Parse Arguments ====================
-CURRENT_CMD="$0 $*"
 CONFIG="$1"
 TEST_ARG="$2"
 TEST_NAME="${TEST_ARG#--test_name=}"
 
 CMAKE_FLAGS=""
 MIXED_DEBUG_FILES=""
+BUILD_SUBDIR=""
+MAKE_JOBS="$(nproc)"
 # Parse remaining optional args
 for arg in "${@:3}"; do
     case "$arg" in
@@ -40,6 +41,12 @@ for arg in "${@:3}"; do
         --mc_debug)
             CMAKE_FLAGS+=" -DMC_DEBUG=1 "
             ;;
+        --build-subdir=*)
+            BUILD_SUBDIR="${arg#--build-subdir=}"
+            ;;
+        --jobs=*)
+            MAKE_JOBS="${arg#--jobs=}"
+            ;;
         *)
             echo -e "${RED}Unknown option: $arg${NC}"
             exit 1
@@ -47,9 +54,23 @@ for arg in "${@:3}"; do
     esac
 done
 
+# Comparable command for change detection (excludes --build-subdir and --jobs
+# since they don't affect build output and shouldn't trigger a full rebuild)
+COMPARABLE_CMD="$0"
+for arg in "$@"; do
+    case "$arg" in
+        --build-subdir=*|--jobs=*) ;;
+        *) COMPARABLE_CMD+=" $arg" ;;
+    esac
+done
+
 # ==================== Paths ====================
 ORIG_DIR="$(pwd)"
-BUILD_DIR="$ORIG_DIR/build/$CONFIG"
+if [[ -n "${BUILD_SUBDIR}" ]]; then
+    BUILD_DIR="$ORIG_DIR/build/$CONFIG/$BUILD_SUBDIR"
+else
+    BUILD_DIR="$ORIG_DIR/build/$CONFIG"
+fi
 CMD_FILE="$BUILD_DIR/.build_cmd"
 DEBUG_FILES_FILE="$BUILD_DIR/.debug_files"
 SOURCE_FILES_FILE="$BUILD_DIR/.source_files"
@@ -63,19 +84,19 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 # ==================== Validate arguments ====================
 
 if [[ $# -lt 2 || "$2" != --test_name=* ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug]${NC}"
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 
 
 # ==================== Reset Build if Test Name Changed ====================
 
-# Reset build directory if test name changed
+# Reset build directory if build-affecting arguments changed
 if [[ -f "$CMD_FILE" ]]; then
     OLD_CMD=$(<"$CMD_FILE")
-    CURRENT_CMD="$(echo "$CURRENT_CMD" | tr -s '[:space:]' ' ' | sed 's/ *$//')"
+    NORMALIZED_CMD="$(echo "$COMPARABLE_CMD" | tr -s '[:space:]' ' ' | sed 's/ *$//')"
     OLD_CMD="$(echo "$OLD_CMD" | tr -s '[:space:]' ' ' | sed 's/ *$//')"
-    if [[ "$OLD_CMD" != "$CURRENT_CMD" ]]; then
+    if [[ "$OLD_CMD" != "$NORMALIZED_CMD" ]]; then
         echo -e "${PURPLE}Build command changed. Cleaning $BUILD_DIR...${NC}"
         rm -rf "$BUILD_DIR"
     fi
@@ -87,8 +108,8 @@ mkdir -p "$BUILD_DIR" || { echo -e "${RED}Failed to create $BUILD_DIR${NC}"; exi
 # Change into build directory
 cd "$BUILD_DIR" || { echo -e "${RED}Failed to cd into $BUILD_DIR${NC}"; exit 1; }
 
-# Save command for future comparison
-echo "$CURRENT_CMD" > "$CMD_FILE"
+# Save comparable command for future change detection
+echo "$COMPARABLE_CMD" > "$CMD_FILE"
 
 # Run CMake if Makefile doesn't exist, or if "MIXED_DEBUG_FILES" is not empty, and '$BUILD_DIR/debug.txt', '$MIXED_DEBUG_FILES' are different
 if [[ $MIXED_DEBUG_FILES && -f "$DEBUG_FILES_FILE" ]]; then
@@ -235,7 +256,7 @@ progress_bar_and_filtered_output() {
 
 # ==================== Run Make with Tee & Progress ====================
 echo -e "${CYAN}Running Make...${NC}"
-stdbuf -oL make -j12 --output-sync=target 2> "$MAKE_ERR" \
+stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
     | tee >(linking_filter | progress_bar_and_filtered_output) > "$MAKE_OUT"
 
 MAKE_EXIT_CODE=${PIPESTATUS[0]}
