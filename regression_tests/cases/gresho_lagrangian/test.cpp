@@ -108,11 +108,16 @@ int main(void)
 #endif
 
     Voronoi3D tess(ll, ur);
+    try {
 #ifdef RICH_MPI
-    tess.BuildParallel(points);
+        tess.BuildParallel(points);
 #else
-    tess.Build(points);
+        tess.Build(points);
 #endif
+    } catch (UniversalError const& eo) {
+        reportError(eo);
+        throw;
+    }
 
     size_t Nlocal = tess.GetPointNo();
     std::vector<ComputationalCell3D> cells(Nlocal);

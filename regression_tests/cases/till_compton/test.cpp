@@ -177,11 +177,16 @@ int main(int argc, char* argv[]) {
   if (rank == 0) {
     points = CartesianMesh(Nx, 1, 1, ll, ur);
   }
+  try {
 #ifdef RICH_MPI
-  tess.BuildParallel(points);
+    tess.BuildParallel(points);
 #else
-  tess.Build(points);
+    tess.Build(points);
 #endif
+  } catch (UniversalError const& eo) {
+    reportError(eo);
+    throw;
+  }
   vector<ComputationalCell3D> cells(tess.GetPointNo(), init_cell);
   for (size_t i = 0; i < cells.size(); ++i) {
     if (tess.GetCellCM(i).x < 2.0) {

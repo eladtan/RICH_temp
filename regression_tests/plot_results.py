@@ -600,7 +600,7 @@ def _plot_gresho(root: Path, out_dir: Path, test_id: str, label: str) -> bool:
     plt.close(fig2)
 
     # Figure 3: Azimuthal velocity vs r (volume-averaged, binned)
-    nbins = 40
+    nbins = 30
     r_edges = np.linspace(0, 0.5, nbins + 1)
     r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
     vtheta_binned = np.zeros(nbins)

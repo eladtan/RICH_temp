@@ -102,7 +102,12 @@ int main(void)
 	std::vector<Vector3D> points;
 	for (size_t i = 0; i < Nx; ++i)
 		points.push_back(Vector3D(x_offset + cx[i], 0.5 * dy, 0.5 * dy));
-	tess.Build(points);
+	try {
+		tess.Build(points);
+	} catch (UniversalError const& eo) {
+		reportError(eo);
+		throw;
+	}
 
 	double const T_init = 1e-3 * keV_K;
 	std::vector<ComputationalCell3D> cells(tess.GetPointNo());

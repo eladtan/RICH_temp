@@ -45,11 +45,16 @@ int main(void)
     }
 
     Voronoi3D tess(ll, ur);
+    try {
 #ifdef RICH_MPI
-    tess.BuildParallel(points);
+        tess.BuildParallel(points);
 #else
-    tess.Build(points);
+        tess.Build(points);
 #endif
+    } catch (UniversalError const& eo) {
+        reportError(eo);
+        throw;
+    }
 
     IdealGas eos(5. / 3.);
     size_t const Nlocal = tess.GetPointNo();

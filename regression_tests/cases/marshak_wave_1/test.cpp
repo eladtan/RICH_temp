@@ -52,7 +52,12 @@ int main(void)
 	Voronoi3D tess(ll, ur);
 
 	std::vector<Vector3D> points = CartesianMesh(Nx, 1, 1, ll, ur);
-	tess.Build(points);
+	try {
+		tess.Build(points);
+	} catch (UniversalError const& eo) {
+		reportError(eo);
+		throw;
+	}
 
 	double const T_init = 1e-3 * keV_K;
 	ComputationalCell3D init_cell;

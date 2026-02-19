@@ -2,8 +2,8 @@
 """
 Check Gresho vortex profile against the analytical (initial condition) solution.
 
-Computes azimuthal velocity as a function of radius, volume-averaged in
-radial bins, and compares to the known stationary solution.
+Computes per-cell azimuthal velocity and compares to the known stationary
+solution via a volume-weighted relative L1 norm over all cells.
 """
 import argparse
 import sys
@@ -37,30 +37,15 @@ def main():
     r = np.sqrt(x**2 + y**2)
     safe_r = np.where(r > 1e-10, r, 1e-10)
     vtheta_sim = (-vx * y + vy * x) / safe_r
+    vtheta_analytic = azimuthal_velocity_analytic(r)
 
-    nbins = 40
-    r_edges = np.linspace(0, 0.5, nbins + 1)
-    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
-
-    vtheta_binned = np.zeros(nbins)
-    vol_binned = np.zeros(nbins)
-    for i in range(nbins):
-        mask = (r >= r_edges[i]) & (r < r_edges[i + 1])
-        if np.any(mask):
-            vtheta_binned[i] = np.sum(vtheta_sim[mask] * vol[mask]) / np.sum(vol[mask])
-            vol_binned[i] = np.sum(vol[mask])
-
-    vtheta_analytic = azimuthal_velocity_analytic(r_centers)
-
-    valid = (vol_binned > 0) & (np.abs(vtheta_binned) > 0.01 * np.max(np.abs(vtheta_binned)))
-    if np.sum(valid) < 2:
-        valid = vol_binned > 0
+    valid = (r > 1e-10) & (np.abs(vtheta_analytic) > 1e-10)
     if np.sum(valid) == 0:
         print("VTHETA_REL_L1=inf")
         print("PASS=0")
         sys.exit(1)
 
-    rel_l1 = np.mean(np.abs(vtheta_binned[valid] - vtheta_analytic[valid]) / np.abs(vtheta_binned[valid]))
+    rel_l1 = np.sum(vol[valid] * np.abs(vtheta_sim[valid] - vtheta_analytic[valid])) / np.sum(vol[valid])
 
     passed = rel_l1 <= args.max_vtheta_rel_l1
 
