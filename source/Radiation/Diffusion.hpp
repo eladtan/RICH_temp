@@ -97,6 +97,8 @@ class DiffusionSideBoundary : public DiffusionBoundaryCalculator
     */
     DiffusionSideBoundary(double const T): T_(T){}
 
+    void SetTemperature(double T) { T_ = T; }
+
     void SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
         std::vector<ComputationalCell3D> const& cells, double const Area, double& A, double &b, size_t const face_index)const override;
 
@@ -108,7 +110,7 @@ class DiffusionSideBoundary : public DiffusionBoundaryCalculator
         double const fleck_factor, double const flux_limiter, double const D, double const sigma_planck)const override;
 
     private:
-        double const T_;
+        double T_;
 };
 
 //! \brief Class with constant blackbody temperature on the left x side and zero flux on other sides

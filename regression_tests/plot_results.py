@@ -372,7 +372,7 @@ def plot_mach2_diffusion(root: Path, out_dir: Path) -> bool:
 
 def _plot_mach2_spectrum(root: Path, out_dir: Path) -> bool:
     """Mach2 multigroup: radiation spectrum of hottest cell vs Planck at Tgas."""
-    spectrum_file = root / "regression_tests" / "cases" / "mach2_multigroup" / "mach2_spectrum.txt"
+    spectrum_file = root / "regression_tests" / "cases" / "mach2_spectrum.txt"
     if not spectrum_file.exists():
         print(f"  [mach2_multigroup] spectrum file not found: {spectrum_file}")
         return False
@@ -451,6 +451,7 @@ def _plot_mach2_spectrum(root: Path, out_dir: Path) -> bool:
             linestyle="--", label=f"Planck at $T_{{\\mathrm{{gas}}}}$ = {tgas:.1f} K")
     ax.set_xscale("log")
     ax.set_yscale("log")
+    ax.set_ylim(bottom=1e3, top=2e8)
     ax.set_xlabel("$E / k_B$ [K]")
     ax.set_ylabel("Energy density per unit energy [erg cm$^{-3}$ erg$^{-1}$]")
     ax.set_title("Mach2 Multigroup -- Spectrum at Hottest Cell")
@@ -470,6 +471,170 @@ def plot_mach2_multigroup(root: Path, out_dir: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Marshak wave plotters (Problems 1-4)
+# --------------------------------------------------------------------------- #
+
+
+def _plot_marshak_wave(root: Path, out_dir: Path, prob_num: int) -> bool:
+    """Plot Marshak wave profile: RICH Tgas, Trad vs analytical."""
+    case_dir = root / "regression_tests" / "cases" / f"marshak_wave_{prob_num}"
+    profile = case_dir / "marshak_profile.txt"
+    if not profile.exists():
+        print(f"  [marshak_wave_{prob_num}] profile not found: {profile}")
+        return False
+
+    raw = np.loadtxt(str(profile))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    x_sim = raw[:, 0]
+    tgas_sim = raw[:, 1]
+    trad_sim = raw[:, 2]
+
+    keV_K = 1.602176634e-9 / 1.380649e-16
+
+    # Compute analytical solution using the checker module
+    checker_path = root / "regression_tests" / "lib" / "check_marshak_wave.py"
+    checker = SourceFileLoader("check_marshak_wave", str(checker_path)).load_module()
+    try:
+        x_ref, tgas_ref, trad_ref = checker.solve_marshak(prob_num)
+    except Exception as exc:
+        print(f"  [marshak_wave_{prob_num}] analytical solver failed: {exc}")
+        x_ref, tgas_ref, trad_ref = None, None, None
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x_sim, tgas_sim / keV_K, "bs", markersize=3, fillstyle="none", linewidth=0, label="$T_{\\mathrm{gas}}$ RICH")
+    ax.plot(x_sim, trad_sim / keV_K, "rs", markersize=3, fillstyle="none", linewidth=0, label="$T_{\\mathrm{rad}}$ RICH")
+    if x_ref is not None:
+        ax.plot(x_ref, tgas_ref / keV_K, "b--", linewidth=1.5, label="$T_{\\mathrm{gas}}$ Analytic")
+        ax.plot(x_ref, trad_ref / keV_K, "r--", linewidth=1.5, label="$T_{\\mathrm{rad}}$ Analytic")
+    x_max_map = {1: 0.2, 2: 0.2, 3: 1.0, 4: 1.0}
+    ax.set_xlim(0, x_max_map[prob_num])
+    ax.set_xlabel("x [cm]")
+    ax.set_ylabel("T [keV]")
+    ax.set_title(f"Marshak Wave Problem {prob_num}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, f"marshak_wave_{prob_num}")
+    plt.close(fig)
+    print(f"  [marshak_wave_{prob_num}] saved marshak_wave_{prob_num}.png/pdf")
+    return True
+
+
+def plot_marshak_wave_1(root: Path, out_dir: Path) -> bool:
+    return _plot_marshak_wave(root, out_dir, 1)
+
+def plot_marshak_wave_2(root: Path, out_dir: Path) -> bool:
+    return _plot_marshak_wave(root, out_dir, 2)
+
+def plot_marshak_wave_3(root: Path, out_dir: Path) -> bool:
+    return _plot_marshak_wave(root, out_dir, 3)
+
+def plot_marshak_wave_4(root: Path, out_dir: Path) -> bool:
+    return _plot_marshak_wave(root, out_dir, 4)
+
+
+# --------------------------------------------------------------------------- #
+# Gresho vortex plotters
+# --------------------------------------------------------------------------- #
+
+
+def _azimuthal_velocity_analytic(r):
+    r = np.asarray(r, dtype=float)
+    vtheta = np.zeros_like(r)
+    mask1 = r < 0.2
+    mask2 = (r >= 0.2) & (r <= 0.4)
+    vtheta[mask1] = 5.0 * r[mask1]
+    vtheta[mask2] = 2.0 - 5.0 * r[mask2]
+    return vtheta
+
+
+def _plot_gresho(root: Path, out_dir: Path, test_id: str, label: str) -> bool:
+    case_dir = root / "regression_tests" / "cases" / test_id
+    profile = case_dir / "gresho_profile.txt"
+    if not profile.exists():
+        print(f"  [{test_id}] profile not found: {profile}")
+        return False
+
+    raw = np.loadtxt(str(profile))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    x = raw[:, 0]
+    y = raw[:, 1]
+    vol = raw[:, 2]
+    pressure = raw[:, 3]
+    vx = raw[:, 4]
+    vy = raw[:, 5]
+
+    r = np.sqrt(x**2 + y**2)
+    safe_r = np.where(r > 1e-10, r, 1e-10)
+    vtheta = (-vx * y + vy * x) / safe_r
+
+    plt = _get_plt()
+    from matplotlib.tri import Triangulation
+
+    # Figure 1: Pressure in xy plane
+    fig1, ax1 = plt.subplots(figsize=(6, 5))
+    tri = Triangulation(x, y)
+    tc1 = ax1.tripcolor(tri, pressure, shading="flat", cmap="viridis")
+    fig1.colorbar(tc1, ax=ax1, label="Pressure")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title(f"Gresho {label} -- Pressure")
+    ax1.set_aspect("equal")
+    fig1.tight_layout()
+    _save_fig(fig1, out_dir, f"{test_id}_pressure")
+    plt.close(fig1)
+
+    # Figure 2: Azimuthal velocity in xy plane
+    fig2, ax2 = plt.subplots(figsize=(6, 5))
+    tc2 = ax2.tripcolor(tri, vtheta, shading="flat", cmap="RdBu_r")
+    fig2.colorbar(tc2, ax=ax2, label="$v_\\theta$")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_title(f"Gresho {label} -- Azimuthal Velocity")
+    ax2.set_aspect("equal")
+    fig2.tight_layout()
+    _save_fig(fig2, out_dir, f"{test_id}_vtheta_2d")
+    plt.close(fig2)
+
+    # Figure 3: Azimuthal velocity vs r (volume-averaged, binned)
+    nbins = 40
+    r_edges = np.linspace(0, 0.5, nbins + 1)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    vtheta_binned = np.zeros(nbins)
+    for i in range(nbins):
+        mask = (r >= r_edges[i]) & (r < r_edges[i + 1])
+        if np.any(mask):
+            vtheta_binned[i] = np.sum(vtheta[mask] * vol[mask]) / np.sum(vol[mask])
+
+    vtheta_analytic = _azimuthal_velocity_analytic(r_centers)
+
+    fig3, ax3 = plt.subplots(figsize=(8, 5))
+    ax3.plot(r_centers, vtheta_binned, "ko-", markersize=4, label=f"RICH t=5 ({label})")
+    ax3.plot(r_centers, vtheta_analytic, "r-", linewidth=2, label="Initial condition")
+    ax3.set_xlabel("r")
+    ax3.set_ylabel("$v_\\theta$")
+    ax3.set_title(f"Gresho {label} -- Azimuthal Velocity Profile")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    fig3.tight_layout()
+    _save_fig(fig3, out_dir, f"{test_id}_vtheta_r")
+    plt.close(fig3)
+
+    print(f"  [{test_id}] saved {test_id}_pressure/vtheta_2d/vtheta_r .png/.pdf")
+    return True
+
+
+def plot_gresho_euler(root: Path, out_dir: Path) -> bool:
+    return _plot_gresho(root, out_dir, "gresho_euler", "Euler")
+
+def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
+    return _plot_gresho(root, out_dir, "gresho_lagrangian", "Lagrangian")
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -480,6 +645,12 @@ ALL_PLOTTERS = {
     "till_compton": plot_till,
     "mach2_diffusion": plot_mach2_diffusion,
     "mach2_multigroup": plot_mach2_multigroup,
+    "marshak_wave_1": plot_marshak_wave_1,
+    "marshak_wave_2": plot_marshak_wave_2,
+    "marshak_wave_3": plot_marshak_wave_3,
+    "marshak_wave_4": plot_marshak_wave_4,
+    "gresho_euler": plot_gresho_euler,
+    "gresho_lagrangian": plot_gresho_lagrangian,
 }
 
 

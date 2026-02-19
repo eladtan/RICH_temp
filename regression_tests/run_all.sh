@@ -221,6 +221,20 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
     else
         echo "No results directory to clean (${ARTIFACT_ROOT})"
     fi
+    # Also clean run-generated data from regression_tests/cases/
+    local_cases_dir="${REGRESSION_ROOT}/cases"
+    if [[ -d "${local_cases_dir}" ]]; then
+        cleaned=0
+        while IFS= read -r -d '' f; do
+            rm -f "$f"
+            cleaned=$((cleaned + 1))
+        done < <(find "${local_cases_dir}" -maxdepth 2 \
+            \( -name "*.log" -o -name "*.txt" -o -name "*.h5" -o -name "rich" \) \
+            ! -name "test.cpp" -print0)
+        if [[ ${cleaned} -gt 0 ]]; then
+            echo "Cleaned ${cleaned} run-generated files from ${local_cases_dir}"
+        fi
+    fi
     exit 0
 fi
 
@@ -495,6 +509,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
                 bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}"
             fi
         fi
+        date +%s > "${case_dir}/run_end_epoch.txt"
     ) &
     RUN_PIDS["${test_id}"]=$!
 done
@@ -522,7 +537,13 @@ for test_id in "${!RUN_PIDS[@]}"; do
 
     wait "${pid}"
     cmd_exit=$?
-    elapsed=$(( $(date +%s) - run_wall_start ))
+    run_end_file="${case_dir}/run_end_epoch.txt"
+    if [[ -f "${run_end_file}" ]]; then
+        run_wall_end="$(cat "${run_end_file}")"
+    else
+        run_wall_end="$(date +%s)"
+    fi
+    elapsed=$(( run_wall_end - run_wall_start ))
 
     if [[ ${cmd_exit} -ne 0 ]]; then
         print_status "RUN" "${test_id}" "FAIL after ${elapsed}s (exit code ${cmd_exit})" "${RED}"

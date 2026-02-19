@@ -137,7 +137,7 @@ int main(int argc, char* argv[]) {
 
   double constexpr m_p = 1.6726231e-24;
   double constexpr cv = 3.0 * CG::boltzmann_constant / m_p;
-  IdealGas eos(/*gamma=*/1.4, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
+  IdealGas eos(5.0 / 3.0, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
 
   const double width = 1 / lscale;
   size_t const Nx = 1;
@@ -252,9 +252,10 @@ int main(int argc, char* argv[]) {
   double old_time = sim.getTime();
 
   double new_dt = force_time_step ? *force_time_step : init_dt;
-  std::vector<double> Tgas, Trad, time;
+  std::vector<double> Tgas, Trad, Etotal, time;
   Tgas.push_back(init_cell.temperature);
   Trad.push_back(std::pow(init_cell.Erad / CG::radiation_constant, 0.25));
+  Etotal.push_back(init_cell.internal_energy + init_cell.Erad);
   time.push_back(0.0);
   while (sim.getTime() < tf) {
     try {
@@ -268,8 +269,10 @@ int main(int argc, char* argv[]) {
       }
       old_time = elapsed_time;
 
-      Tgas.push_back(sim.getCells()[0].temperature);
-      Trad.push_back(std::pow(sim.getCells()[0].Erad * sim.getCells()[0].density / CG::radiation_constant, 0.25));
+      auto const& cell = sim.getCells()[0];
+      Tgas.push_back(cell.temperature);
+      Trad.push_back(std::pow(cell.Erad * cell.density / CG::radiation_constant, 0.25));
+      Etotal.push_back(cell.internal_energy + cell.Erad);
       time.push_back(sim.getTime());
 
       if (force_time_step) {
@@ -287,6 +290,7 @@ int main(int argc, char* argv[]) {
   write_vector(time, "time.txt");
   write_vector(Tgas, "Tgas.txt");
   write_vector(Trad, "Trad.txt");
+  write_vector(Etotal, "Etotal.txt");
   std::cout << "Done" << std::endl;
 #ifdef RICH_MPI
   MPI_Finalize();

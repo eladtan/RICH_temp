@@ -21,11 +21,11 @@ import numpy as np
 
 
 def rel_l1_error(numeric, analytic):
-    """Relative L1 error: mean(|num - ana|) / mean(|ana|)."""
-    denom = float(np.mean(np.abs(analytic)))
-    if denom < 1e-30:
-        denom = 1e-30
-    return float(np.mean(np.abs(numeric - analytic)) / denom)
+    """Per-cell relative L1 error: mean(|num - ana| / |num|)."""
+    mask = np.abs(numeric) > 0.01 * np.max(np.abs(numeric))
+    if np.sum(mask) < 2:
+        mask = np.ones(len(numeric), dtype=bool)
+    return float(np.mean(np.abs(numeric[mask] - analytic[mask]) / np.abs(numeric[mask])))
 
 
 def main():
