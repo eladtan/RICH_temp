@@ -1245,6 +1245,8 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     MPI_Allreduce(MPI_IN_PLACE, &canDoExchange, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
     bool allowExchange = (canDoExchange == 1);
 
+    if(suppressExchange)
+        this->allPointsWeights.resize(allPoints.size(), 1.0);
     PointsExchangeResult exchangeResult = this->pointsManager->update(allPoints, allowExchange? allWeights : this->allPointsWeights, indicesToBuild, this->radiuses, this->all_CM, allowRebalance, allowExchange); // does rebalancing (if necessary) and exchanging
 
     this->allMyPoints = std::move(exchangeResult.newPoints);

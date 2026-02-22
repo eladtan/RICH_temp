@@ -80,7 +80,11 @@ struct MonteCarloParticle
 
     inline bool operator==(const MonteCarloParticle &other) const
     {
-        return this->id == other.id and this->rank == other.rank;
+        #ifdef RICH_MPI
+            return this->id == other.id and this->rank == other.rank;
+        #else
+            return this->id == other.id;
+        #endif
     }
 
     #ifdef RICH_MPI

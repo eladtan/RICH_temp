@@ -237,6 +237,7 @@ namespace
 					return std::string("divV");
 					break;
 			}
+			return std::string("Unknown");
 		}
 	};
 

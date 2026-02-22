@@ -229,7 +229,40 @@ check_till_case() {
         return 1
     fi
 
-    set_check_msg "Till final Tgas and Trad agree within 1%"
+    # Energy conservation check: |E_final - E_initial| / E_initial < 1e-8
+    local etotal_file="${run_dir}/Etotal.txt"
+    if is_nonempty_and_newer "$etotal_file" "$run_start_epoch"; then
+        local e_initial
+        local e_final
+        local energy_rel_err
+        e_initial=$(head -n 1 "$etotal_file" | tr -d '[:space:]') || {
+            set_check_msg "could not parse initial Etotal"
+            return 1
+        }
+        e_final=$(last_numeric_token "$etotal_file") || {
+            set_check_msg "could not parse final Etotal"
+            return 1
+        }
+        if ! is_finite_number "$e_initial" || ! is_finite_number "$e_final"; then
+            set_check_msg "Etotal contains non-finite values"
+            return 1
+        fi
+        energy_rel_err=$(
+            awk -v ei="$e_initial" -v ef="$e_final" '
+                BEGIN {
+                    if (ei <= 0) ei = 1e-99;
+                    val = (ef > ei ? ef - ei : ei - ef) / ei;
+                    printf "%.12e", val;
+                }'
+        )
+        if ! awk -v r="$energy_rel_err" 'BEGIN { exit !(r < 1e-8) }'; then
+            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= 1e-8"
+            return 1
+        fi
+        set_check_msg "Till passed: Tgas/Trad agree within 1%, energy conserved (rel err ${energy_rel_err})"
+    else
+        set_check_msg "Till final Tgas and Trad agree within 1% (Etotal.txt not found, energy check skipped)"
+    fi
     return 0
 }
 
@@ -441,5 +474,91 @@ check_mach2_case() {
     fi
 
     set_check_msg "Mach2 radiative shock profile comparison passed"
+    return 0
+}
+
+check_marshak_wave_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/marshak_profile.txt"
+    local problem_file="${run_dir}/problem_number.txt"
+    local checker_stdout="${run_dir}/marshak_check.stdout.log"
+    local checker_stderr="${run_dir}/marshak_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale marshak_profile.txt"
+        return 1
+    fi
+
+    if [[ ! -f "$problem_file" ]]; then
+        set_check_msg "missing problem_number.txt"
+        return 1
+    fi
+
+    local prob_num
+    prob_num=$(cat "$problem_file" | tr -d '[:space:]')
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_marshak_wave.py" \
+        --problem "$prob_num" \
+        --profile "$profile_file" \
+        --max-tgas-rel-l1 "${MARSHAK_MAX_TGAS_REL_L1:-1e-2}" \
+        --max-trad-rel-l1 "${MARSHAK_MAX_TRAD_REL_L1:-1e-2}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Marshak wave problem ${prob_num} profile comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Marshak wave problem ${prob_num} profile comparison passed"
+    return 0
+}
+
+check_gresho_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/gresho_profile.txt"
+    local test_type_file="${run_dir}/test_type.txt"
+    local checker_stdout="${run_dir}/gresho_check.stdout.log"
+    local checker_stderr="${run_dir}/gresho_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale gresho_profile.txt"
+        return 1
+    fi
+
+    local test_type="euler"
+    if [[ -f "$test_type_file" ]]; then
+        test_type=$(cat "$test_type_file" | tr -d '[:space:]')
+    fi
+
+    local max_l1
+    if [[ "$test_type" == "lagrangian" ]]; then
+        max_l1="${GRESHO_LAGRANGIAN_MAX_L1:-0.05}"
+    else
+        max_l1="${GRESHO_EULER_MAX_L1:-0.1}"
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_gresho_profile.py" \
+        --profile "$profile_file" \
+        --max-vtheta-rel-l1 "$max_l1" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Gresho vortex (${test_type}) profile comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Gresho vortex (${test_type}) profile comparison passed"
     return 0
 }

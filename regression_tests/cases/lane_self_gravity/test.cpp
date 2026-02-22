@@ -136,11 +136,16 @@ int main(void)
 
     points = RoundGrid3D(points, ll, ur, 10);
 
+    try {
 #ifdef RICH_MPI
-    tess.BuildParallel(points);
+        tess.BuildParallel(points);
 #else
-    tess.Build(points);
+        tess.Build(points);
 #endif
+    } catch (UniversalError const& eo) {
+        reportError(eo);
+        throw;
+    }
 
     if (rank == 0)
         std::cerr << "Finished build" << std::endl;

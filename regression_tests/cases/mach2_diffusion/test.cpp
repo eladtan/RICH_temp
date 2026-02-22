@@ -82,11 +82,16 @@ int main(void)
 #endif
 
     Voronoi3D tess(ll, ur);
+    try {
 #ifdef RICH_MPI
-    tess.BuildParallel(points);
+        tess.BuildParallel(points);
 #else
-    tess.Build(points);
+        tess.Build(points);
 #endif
+    } catch (UniversalError const& eo) {
+        reportError(eo);
+        throw;
+    }
 
     IdealGas eos(5./3., CG::boltzmann_constant / (1.67e-24 * (5.0 / 3.0 - 1)), 1, 0);
 

@@ -33,6 +33,7 @@ VERBOSE=0
 TEST_FILTER=""
 CLEAN_RESULTS=0
 MODE="all"
+NPROC_OVERRIDE=""
 
 ARTIFACT_ROOT="${ROOT_DIR}/regression_results"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -66,6 +67,7 @@ Options:
   --mpi-np <N>             MPI ranks for sedov_3d test (default: ${MPI_NP})
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
   --clean-results          Delete regression_results directory and exit
+  --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
   --verbose                Stream run output to terminal as well
   -h, --help               Show this help
@@ -109,6 +111,10 @@ while [[ $# -gt 0 ]]; do
             CLEAN_RESULTS=1
             shift
             ;;
+        --nproc)
+            NPROC_OVERRIDE="${2:-}"
+            shift 2
+            ;;
         --keep-artifacts)
             KEEP_ARTIFACTS=1
             shift
@@ -145,6 +151,7 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
     [[ "${KEEP_ARTIFACTS}" -eq 1 ]] && passthrough_args+=(--keep-artifacts)
     [[ "${VERBOSE}" -eq 1 ]]       && passthrough_args+=(--verbose)
     [[ -n "${TEST_FILTER}" ]]      && passthrough_args+=(--test "${TEST_FILTER}")
+    [[ -n "${NPROC_OVERRIDE}" ]]   && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
 
     mpi_config="${CONFIG}"
     if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
@@ -207,6 +214,11 @@ if ! [[ "${MPI_NP}" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
+if [[ -n "${NPROC_OVERRIDE}" ]] && ! [[ "${NPROC_OVERRIDE}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--nproc must be a positive integer" >&2
+    exit 2
+fi
+
 if [[ -n "${TEST_FILTER}" ]]; then
     if ! echo "${TEST_FILTER}" | grep -qE "^(${VALID_TEST_IDS})$"; then
         echo "--test must be one of: ${VALID_TEST_IDS//|/, }" >&2
@@ -220,6 +232,20 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
         echo "Removed ${ARTIFACT_ROOT}"
     else
         echo "No results directory to clean (${ARTIFACT_ROOT})"
+    fi
+    # Also clean run-generated data from regression_tests/cases/
+    local_cases_dir="${REGRESSION_ROOT}/cases"
+    if [[ -d "${local_cases_dir}" ]]; then
+        cleaned=0
+        while IFS= read -r -d '' f; do
+            rm -f "$f"
+            cleaned=$((cleaned + 1))
+        done < <(find "${local_cases_dir}" -maxdepth 2 \
+            \( -name "*.log" -o -name "*.txt" -o -name "*.h5" -o -name "rich" \) \
+            ! -name "test.cpp" -print0)
+        if [[ ${cleaned} -gt 0 ]]; then
+            echo "Cleaned ${cleaned} run-generated files from ${local_cases_dir}"
+        fi
     fi
     exit 0
 fi
@@ -349,95 +375,43 @@ echo "  Tests:     ${ALL_TEST_IDS[*]}"
 if [[ "${MODE}" != "serial" ]]; then
     echo "  MPI ranks: ${MPI_NP}"
 fi
+echo "  Cores:     ${NPROC_OVERRIDE:-$(nproc)} (override with --nproc)"
 echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
 echo
 
-# ==================== Track which tests built successfully ====================
-declare -a BUILD_OK=()  # 1=success, 0=failure for each index
-
-# Record epoch before any compilation starts.  Used later by check functions
+# Record epoch before any work starts.  Used later by check functions
 # to verify output files are fresh (is_nonempty_and_newer).  We use this early
 # timestamp rather than a per-test one so that SLURM clock skew between the
 # head node and compute nodes does not cause false "stale" failures.
 SUITE_START_EPOCH="$(date +%s)"
 
+# ==================== Parallel build configuration ====================
+MAX_PARALLEL_BUILDS=4
+TOTAL_CORES="${NPROC_OVERRIDE:-$(nproc)}"
+JOBS_PER_BUILD=$(( TOTAL_CORES / MAX_PARALLEL_BUILDS ))
+(( JOBS_PER_BUILD < 1 )) && JOBS_PER_BUILD=1
+
+# FIFO-based semaphore to cap concurrent builds
+BUILD_FIFO="$(mktemp -u)"
+mkfifo "${BUILD_FIFO}"
+exec 7<>"${BUILD_FIFO}"
+rm "${BUILD_FIFO}"
+for (( s=0; s<MAX_PARALLEL_BUILDS; s++ )); do
+    echo >&7
+done
+
 # ==========================================================================
-#  PHASE 1: BUILD (sequential)
+#  PHASE 1: BUILD & RUN (pipelined, max ${MAX_PARALLEL_BUILDS} concurrent builds)
 # ==========================================================================
-echo "${BOLD}=== BUILD PHASE ===${NC}"
+echo "${BOLD}=== BUILD & RUN PHASE (max ${MAX_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each) ===${NC}"
+
+declare -A JOB_PIDS=()    # test_id -> PID
+declare -A JOB_INDICES=()  # test_id -> index into ALL_* arrays
 
 for i in "${!ALL_TEST_IDS[@]}"; do
     test_id="${ALL_TEST_IDS[$i]}"
     build_test_name="${ALL_BUILD_TEST_NAMES[$i]}"
     build_args="${ALL_BUILD_ARGS[$i]}"
-    case_dir="${ALL_CASE_DIRS[$i]}"
-
-    mkdir -p "${case_dir}"
-
-    local_build_stdout="${case_dir}/build.stdout.log"
-    local_build_stderr="${case_dir}/build.stderr.log"
-
-    extra_info=""
-    if [[ -n "${build_args}" ]]; then
-        extra_info=" (${build_args})"
-    fi
-    print_status "BUILD" "${test_id}" "compiling${extra_info}..." "${CYAN}"
-
-    # Assemble build command
-    build_cmd=("${ROOT_DIR}/build_rich.sh" "${CONFIG}" "--test_name=${build_test_name}")
-    if [[ -n "${build_args}" ]]; then
-        declare -a extra_args=()
-        read -r -a extra_args <<< "${build_args}"
-        build_cmd+=("${extra_args[@]}")
-    fi
-
-    # Run the build
-    if ! "${build_cmd[@]}" >"${local_build_stdout}" 2>"${local_build_stderr}"; then
-        print_status "BUILD" "${test_id}" "FAIL (build failed, see build.stderr.log)" "${RED}"
-        RESULT_NAMES+=("${test_id}")
-        RESULT_STATUS+=("FAIL")
-        RESULT_DETAILS+=("build failed (see build.stderr.log)")
-        RESULT_LOG_PATH+=("${case_dir}")
-        BUILD_OK+=("0")
-        continue
-    fi
-
-    # Verify binary exists
-    if [[ ! -x "${ROOT_DIR}/build/${CONFIG}/rich" && ! -L "${ROOT_DIR}/build/${CONFIG}/rich" ]]; then
-        print_status "BUILD" "${test_id}" "FAIL (binary not found at build/${CONFIG}/rich)" "${RED}"
-        RESULT_NAMES+=("${test_id}")
-        RESULT_STATUS+=("FAIL")
-        RESULT_DETAILS+=("binary not found at build/${CONFIG}/rich")
-        RESULT_LOG_PATH+=("${case_dir}")
-        BUILD_OK+=("0")
-        continue
-    fi
-
-    # Copy the binary (dereference symlink) so the next build doesn't overwrite it
-    cp -L "${ROOT_DIR}/build/${CONFIG}/rich" "${case_dir}/rich"
-    chmod +x "${case_dir}/rich"
-
-    print_status "BUILD" "${test_id}" "OK (binary copied)" "${GREEN}"
-    BUILD_OK+=("1")
-done
-
-echo
-
-# ==========================================================================
-#  PHASE 2: RUN (parallel)
-# ==========================================================================
-echo "${BOLD}=== RUN PHASE (parallel) ===${NC}"
-
-declare -A RUN_PIDS=()         # test_id -> PID
-declare -A RUN_START_EPOCHS=() # test_id -> epoch seconds (wall clock, for elapsed display)
-declare -A RUN_INDICES=()      # test_id -> index into ALL_* arrays
-
-for i in "${!ALL_TEST_IDS[@]}"; do
-    if [[ "${BUILD_OK[$i]}" != "1" ]]; then
-        continue
-    fi
-
-    test_id="${ALL_TEST_IDS[$i]}"
     run_dir_rel="${ALL_RUN_DIR_RELS[$i]}"
     run_cmd="${ALL_RUN_COMMANDS[$i]}"
     run_mode="${ALL_RUN_MODES[$i]}"
@@ -446,31 +420,72 @@ for i in "${!ALL_TEST_IDS[@]}"; do
     slurm_exclusive="${ALL_SLURM_EXCLUSIVES[$i]}"
     case_dir="${ALL_CASE_DIRS[$i]}"
 
-    run_dir_abs="${ROOT_DIR}/${run_dir_rel}"
-    run_stdout="${case_dir}/run.stdout.log"
-    run_stderr="${case_dir}/run.stderr.log"
-    rich_bin="${case_dir}/rich"
+    mkdir -p "${case_dir}"
+    JOB_INDICES["${test_id}"]="${i}"
 
-    if [[ ! -d "${run_dir_abs}" ]]; then
-        print_status "RUN" "${test_id}" "FAIL (run directory missing: ${run_dir_rel})" "${RED}"
-        RESULT_NAMES+=("${test_id}")
-        RESULT_STATUS+=("FAIL")
-        RESULT_DETAILS+=("run directory does not exist: ${run_dir_rel}")
-        RESULT_LOG_PATH+=("${case_dir}")
-        continue
-    fi
-
-    print_status "RUN" "${test_id}" "started" "${CYAN}"
-    RUN_START_EPOCHS["${test_id}"]="$(date +%s)"
-    RUN_INDICES["${test_id}"]="${i}"
-
-    # Launch the test in the background
+    # Launch a background subshell that builds then immediately runs the test
     (
-        cd "${run_dir_abs}" || exit 1
+        # ---- BUILD ----
+        read -u 7  # acquire build slot (blocks until a slot is free)
 
+        local_build_stdout="${case_dir}/build.stdout.log"
+        local_build_stderr="${case_dir}/build.stderr.log"
+
+        extra_info=""
+        if [[ -n "${build_args}" ]]; then
+            extra_info=" (${build_args})"
+        fi
+        print_status "BUILD" "${test_id}" "compiling${extra_info}..." "${CYAN}"
+
+        build_cmd=("${ROOT_DIR}/build_rich.sh" "${CONFIG}" "--test_name=${build_test_name}" "--build-subdir=${test_id}" "--jobs=${JOBS_PER_BUILD}")
+        if [[ -n "${build_args}" ]]; then
+            read -r -a extra_build_args <<< "${build_args}"
+            build_cmd+=("${extra_build_args[@]}")
+        fi
+
+        if ! "${build_cmd[@]}" >"${local_build_stdout}" 2>"${local_build_stderr}"; then
+            print_status "BUILD" "${test_id}" "FAIL (build failed, see build.stderr.log)" "${RED}"
+            echo "1" > "${case_dir}/build_status.txt"
+            echo "build failed (see build.stderr.log)" > "${case_dir}/build_detail.txt"
+            echo >&7  # release build slot
+            exit 1
+        fi
+
+        build_bin="${ROOT_DIR}/build/${CONFIG}/${test_id}/rich"
+        if [[ ! -x "${build_bin}" && ! -L "${build_bin}" ]]; then
+            print_status "BUILD" "${test_id}" "FAIL (binary not found)" "${RED}"
+            echo "1" > "${case_dir}/build_status.txt"
+            echo "binary not found at build/${CONFIG}/${test_id}/rich" > "${case_dir}/build_detail.txt"
+            echo >&7  # release build slot
+            exit 1
+        fi
+
+        cp -L "${build_bin}" "${case_dir}/rich"
+        chmod +x "${case_dir}/rich"
+        echo "0" > "${case_dir}/build_status.txt"
+        print_status "BUILD" "${test_id}" "OK" "${GREEN}"
+
+        echo >&7  # release build slot
+
+        # ---- RUN ----
+        run_dir_abs="${ROOT_DIR}/${run_dir_rel}"
+        run_stdout="${case_dir}/run.stdout.log"
+        run_stderr="${case_dir}/run.stderr.log"
+        rich_bin="${case_dir}/rich"
+
+        if [[ ! -d "${run_dir_abs}" ]]; then
+            echo "run directory does not exist: ${run_dir_rel}" > "${case_dir}/run_detail.txt"
+            exit 1
+        fi
+
+        date +%s > "${case_dir}/run_start_epoch.txt"
+        print_status "RUN" "${test_id}" "started" "${CYAN}"
+
+        cd "${run_dir_abs}" || exit 1
         export ROOT_DIR CONFIG MPI_NP SLURM_NTASKS="${slurm_ntasks}"
         export RICH_BIN="${rich_bin}"
 
+        run_rc=0
         if [[ "${run_mode}" == "slurm" ]]; then
             local_escaped_run_cmd="${run_cmd//\'/\'\\\'\'}"
             sbatch_wrap_cmd="ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
@@ -487,48 +502,107 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             if [[ "${slurm_exclusive}" == "1" ]]; then
                 sbatch_args+=(--exclusive)
             fi
-            "${sbatch_args[@]}"
+            "${sbatch_args[@]}" || run_rc=$?
         else
             if [[ "${VERBOSE}" -eq 1 ]]; then
-                bash -c "${run_cmd}" > >(tee "${run_stdout}") 2> >(tee "${run_stderr}" >&2)
+                bash -c "${run_cmd}" > >(tee "${run_stdout}") 2> >(tee "${run_stderr}" >&2) || run_rc=$?
             else
-                bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}"
+                bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}" || run_rc=$?
             fi
         fi
+
+        echo "${run_rc}" > "${case_dir}/run_exit_code.txt"
+        date +%s > "${case_dir}/run_end_epoch.txt"
+        exit "${run_rc}"
     ) &
-    RUN_PIDS["${test_id}"]=$!
+    JOB_PIDS["${test_id}"]=$!
 done
 
 echo
 
 # ==========================================================================
-#  PHASE 3: WAIT & CHECK
+#  PHASE 2: WAIT & CHECK
 # ==========================================================================
 echo "${BOLD}=== RESULTS ===${NC}"
 
 TOTAL_FAILURES=0
 
-# Wait for each running test and check results
-for test_id in "${!RUN_PIDS[@]}"; do
-    pid="${RUN_PIDS[${test_id}]}"
-    idx="${RUN_INDICES[${test_id}]}"
+for test_id in "${!JOB_PIDS[@]}"; do
+    pid="${JOB_PIDS[${test_id}]}"
+    idx="${JOB_INDICES[${test_id}]}"
     case_dir="${ALL_CASE_DIRS[$idx]}"
     run_dir_rel="${ALL_RUN_DIR_RELS[$idx]}"
     run_dir_abs="${ROOT_DIR}/${run_dir_rel}"
     check_fn="${ALL_CHECK_FUNCTIONS[$idx]}"
     run_stdout="${case_dir}/run.stdout.log"
     run_stderr="${case_dir}/run.stderr.log"
-    run_wall_start="${RUN_START_EPOCHS[${test_id}]}"
 
     wait "${pid}"
-    cmd_exit=$?
-    elapsed=$(( $(date +%s) - run_wall_start ))
 
-    if [[ ${cmd_exit} -ne 0 ]]; then
-        print_status "RUN" "${test_id}" "FAIL after ${elapsed}s (exit code ${cmd_exit})" "${RED}"
+    # --- Check build status ---
+    build_status_file="${case_dir}/build_status.txt"
+    if [[ ! -f "${build_status_file}" ]]; then
+        print_status "BUILD" "${test_id}" "FAIL (build status unknown)" "${RED}"
         RESULT_NAMES+=("${test_id}")
         RESULT_STATUS+=("FAIL")
-        RESULT_DETAILS+=("run failed with exit code ${cmd_exit}")
+        RESULT_DETAILS+=("build status unknown (no marker file)")
+        RESULT_LOG_PATH+=("${case_dir}")
+        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
+        continue
+    fi
+    if [[ "$(< "${build_status_file}")" != "0" ]]; then
+        build_detail="build failed"
+        if [[ -f "${case_dir}/build_detail.txt" ]]; then
+            build_detail="$(< "${case_dir}/build_detail.txt")"
+        fi
+        RESULT_NAMES+=("${test_id}")
+        RESULT_STATUS+=("FAIL")
+        RESULT_DETAILS+=("${build_detail}")
+        RESULT_LOG_PATH+=("${case_dir}")
+        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
+        continue
+    fi
+
+    # --- Check for pre-run failures (e.g. missing run directory) ---
+    if [[ -f "${case_dir}/run_detail.txt" ]]; then
+        run_detail="$(< "${case_dir}/run_detail.txt")"
+        print_status "RUN" "${test_id}" "FAIL (${run_detail})" "${RED}"
+        RESULT_NAMES+=("${test_id}")
+        RESULT_STATUS+=("FAIL")
+        RESULT_DETAILS+=("${run_detail}")
+        RESULT_LOG_PATH+=("${case_dir}")
+        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
+        continue
+    fi
+
+    # --- Check run exit code ---
+    run_start_file="${case_dir}/run_start_epoch.txt"
+    run_end_file="${case_dir}/run_end_epoch.txt"
+    run_exit_file="${case_dir}/run_exit_code.txt"
+
+    if [[ -f "${run_start_file}" ]]; then
+        run_wall_start="$(< "${run_start_file}")"
+    else
+        run_wall_start="$(date +%s)"
+    fi
+    if [[ -f "${run_end_file}" ]]; then
+        run_wall_end="$(< "${run_end_file}")"
+    else
+        run_wall_end="$(date +%s)"
+    fi
+    elapsed=$(( run_wall_end - run_wall_start ))
+
+    if [[ -f "${run_exit_file}" ]]; then
+        run_exit="$(< "${run_exit_file}")"
+    else
+        run_exit="1"
+    fi
+
+    if [[ "${run_exit}" != "0" ]]; then
+        print_status "RUN" "${test_id}" "FAIL after ${elapsed}s (exit code ${run_exit})" "${RED}"
+        RESULT_NAMES+=("${test_id}")
+        RESULT_STATUS+=("FAIL")
+        RESULT_DETAILS+=("run failed with exit code ${run_exit}")
         RESULT_LOG_PATH+=("${case_dir}")
         TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
         continue
@@ -537,9 +611,7 @@ for test_id in "${!RUN_PIDS[@]}"; do
     print_status "RUN" "${test_id}" "finished (${elapsed}s)" "${GREEN}"
 
     # For SLURM runs, invalidate the NFS attribute cache so the head node
-    # sees output files freshly created by compute nodes.  Without this,
-    # stat may return stale metadata and is_nonempty_and_newer can
-    # incorrectly report files as missing or old.
+    # sees output files freshly created by compute nodes.
     if [[ "${ALL_RUN_MODES[$idx]}" == "slurm" ]]; then
         sync
         stat "${run_dir_abs}"/* > /dev/null 2>&1 || true
@@ -564,15 +636,11 @@ for test_id in "${!RUN_PIDS[@]}"; do
     fi
 done
 
-# Count build failures too
-for i in "${!BUILD_OK[@]}"; do
-    if [[ "${BUILD_OK[$i]}" == "0" ]]; then
-        TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
-    fi
-done
+# Close the FIFO semaphore file descriptor
+exec 7>&-
 
 # ==========================================================================
-#  PHASE 4: SUMMARY
+#  PHASE 3: SUMMARY
 # ==========================================================================
 echo
 echo "${BOLD}=== SUMMARY ===${NC}"

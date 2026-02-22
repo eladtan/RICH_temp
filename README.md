@@ -1,7 +1,36 @@
-# huji-rich
-RICH is an compressible hydrodynamic simulation on a moving mesh written in c++.
-We've recently published papers explaining the [serial](http://iopscience.iop.org/0067-0049/216/2/35/) and 
-[parallel](http://adsabs.harvard.edu/abs/2015ApJS..216...14S) versions of the code.
+# RICH -- Compressible Hydrodynamics on a Moving Mesh
+
+RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh, written in C++17 with optional MPI parallelism. It supports radiation transport (grey and multigroup diffusion, Monte Carlo), self-gravity, adaptive mesh refinement, and multiple equations of state.
+
+**Publications:**
+- Serial version: Yalinewich, Steinberg & Sari (2015), [ApJS 216, 35](http://iopscience.iop.org/0067-0049/216/2/35/)
+- Parallel version: Steinberg, Yalinewich & Sari (2015), [ApJS 216, 14](http://adsabs.harvard.edu/abs/2015ApJS..216...14S)
+
+## Documentation
+
+Comprehensive documentation is available in two forms:
+
+- **In-repo docs:** See the [`docs/`](docs/README.md) directory for the full user guide, architecture reference, regression test documentation, and examples.
+- **GitLab Wiki:** The [`wiki/`](wiki/) directory contains GitLab-wiki-ready Markdown pages. To set up the wiki, clone your project's wiki repository and copy these files into it:
+  ```bash
+  git clone https://gitlab.com/eladtan/RICH.wiki.git
+  cp wiki/*.md RICH.wiki/
+  cd RICH.wiki && git add . && git commit -m "Initialize wiki" && git push
+  ```
+
+### Quick Links
+
+| Topic | docs/ | Wiki |
+|-------|-------|------|
+| Getting Started | [docs/getting-started.md](docs/getting-started.md) | [Getting-Started](wiki/Getting-Started.md) |
+| Build System | [docs/build-system.md](docs/build-system.md) | [Build-System](wiki/Build-System.md) |
+| Running Simulations | [docs/running-simulations.md](docs/running-simulations.md) | [Running-Simulations](wiki/Running-Simulations.md) |
+| Simulation Setup | [docs/user-guide/simulation-setup.md](docs/user-guide/simulation-setup.md) | [Simulation-Setup](wiki/Simulation-Setup.md) |
+| Regression Tests | [docs/regression-tests/overview.md](docs/regression-tests/overview.md) | [Regression-Tests-Overview](wiki/Regression-Tests-Overview.md) |
+| Test Catalog | [docs/regression-tests/test-catalog.md](docs/regression-tests/test-catalog.md) | [Regression-Test-Catalog](wiki/Regression-Test-Catalog.md) |
+| Code Architecture | [docs/architecture/overview.md](docs/architecture/overview.md) | [Code-Architecture](wiki/Code-Architecture.md) |
+| FAQ | [docs/faq.md](docs/faq.md) | [FAQ](wiki/FAQ.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) | [Troubleshooting](wiki/Troubleshooting.md) |
 
 # Prerequisites
 - A C++ compiler - GNU or Intel (Supporting C++ 17)
@@ -108,12 +137,15 @@ where `sedov2d_test` represents the subdirectory `runs/sedov2d_test` which conta
   - `--energy_groups_num=<N>` - Override `ENERGY_GROUPS_NUM`.
   - `--mc_debug` - Enable Monte-Carlo debug build flag.
   - `--debug_files=<path>` - Provide a mixed-debug file list for `DEBUG_FILES`.
+  - `--build-subdir=<name>` - Build into `build/<config>/<name>/` instead of `build/<config>/`. Useful for keeping multiple test executables side by side without overwriting.
+  - `--jobs=<N>` - Number of parallel make jobs (default: auto-detected via `nproc`).
 
 ### What the script does
 
-- Builds into `build/<config>/`.
+- Builds into `build/<config>/` (or `build/<config>/<subdir>/` when `--build-subdir` is used).
 - Stores command/config tracking files in that directory and rebuilds cleanly when command arguments change.
 - Re-runs CMake when source files are added/removed or when `CMakeLists.txt` / `.cmake` files change.
+- Runs `make -j<N>` where `<N>` defaults to `$(nproc)` (all available cores) or the value from `--jobs`.
 - Writes logs to:
   - `build/<config>/<config>_cmake.out`
   - `build/<config>/<config>_cmake.err`
@@ -168,6 +200,12 @@ The suite builds and validates these regression cases:
 | `lane_self_gravity` | mpi | Lane-Emden self-gravity equilibrium (Slurm, 64 tasks) |
 | `mach2_diffusion` | mpi | Mach 2 radiative shock, single-group diffusion (Slurm, 8 tasks) |
 | `mach2_multigroup` | mpi | Mach 2 radiative shock, 32-group diffusion (Slurm, 8 tasks) |
+| `marshak_wave_1` | serial | Marshak wave Problem 1 — non-equilibrium, uniform density, T^{-3} opacity |
+| `marshak_wave_2` | serial | Marshak wave Problem 2 — equilibrium limit (kappa_P = kappa_R) |
+| `marshak_wave_3` | serial | Marshak wave Problem 3 — non-uniform density rho=x^{20/19}, rho-dependent opacity |
+| `marshak_wave_4` | serial | Marshak wave Problem 4 — divergent density rho=x^{-40/139}, stretched grid |
+| `gresho_euler` | serial | Gresho vortex with Eulerian (fixed) mesh, t_end=5 |
+| `gresho_lagrangian` | mpi | Gresho vortex with Lagrangian + RoundCells mesh, t_end=5 (Slurm, 8 tasks) |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -177,6 +215,8 @@ Acceptance checks are physics-based:
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
 - **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
 - **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 50% for density, gas temperature, and radiation temperature.
+- **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
+- **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -185,12 +225,18 @@ You can tune tolerances with environment variables:
 - `SEDOV_MAX_DENSITY_REL_L1`, `SEDOV_MAX_PRESSURE_REL_L1`, `SEDOV_MAX_VELOCITY_REL_L1`
 - `LANE_GRAVITY_MAX_METRIC`
 - `MACH2_MAX_DENSITY_REL_L1`, `MACH2_MAX_TEMPERATURE_REL_L1`
+- `MARSHAK_MAX_TGAS_REL_L1`, `MARSHAK_MAX_TRAD_REL_L1`
+- `GRESHO_EULER_MAX_L1`, `GRESHO_LAGRANGIAN_MAX_L1`
 
 ### Parallel execution
 
-Tests are executed in two phases:
-1. **Build phase (sequential)**: Each test is compiled one at a time. After each successful build, the binary is copied to a test-specific artifact directory so subsequent builds don't overwrite it.
-2. **Run phase (parallel)**: All successfully built tests are launched simultaneously. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`).
+Tests are built and run in a **pipelined** fashion:
+
+1. Up to **4 tests build concurrently**, each in its own build subdirectory (`build/<config>/<test_id>/`) so executables don't overwrite each other. Available CPU cores are split evenly across concurrent builds (e.g. on a 64-core machine, each build gets `make -j16`).
+2. As soon as a test finishes building, it **immediately starts running** while remaining tests continue to build. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`).
+3. After all tests finish, results are checked and a summary table is printed.
+
+Use `--nproc <N>` to override the auto-detected core count (e.g. to limit resource usage on a shared machine).
 
 Progress is printed in real time, showing which test is compiling, running, and its final pass/fail status.
 
@@ -244,6 +290,7 @@ case the same config is used for both passes.
   - `all`: default config `gnuReleaseMPI`.
 - `--config <name>`: build configuration (overrides the mode default).
 - `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
+- `--nproc <N>`: override auto-detected core count for parallel builds (default: `$(nproc)`).
 - `--clean-results`: remove `regression_results/` and exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
 - `--verbose`: stream run output to terminal while also writing logs.
@@ -295,6 +342,9 @@ Clean all saved regression logs:
   - `regression_tests/cases/sedov_3d_mpi/sedov_check.stderr.log` (Sedov exact-profile check details)
   - `regression_tests/cases/mach2_diffusion/mach2_check.stderr.log` (Mach2 diffusion check details)
   - `regression_tests/cases/mach2_multigroup/mach2_check.stderr.log` (Mach2 multigroup check details)
+  - `regression_tests/cases/marshak_wave_*/marshak_check.stderr.log` (Marshak wave check details)
+  - `regression_tests/cases/gresho_euler/gresho_check.stderr.log` (Gresho Euler check details)
+  - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
 
 
 ### Plotting regression results
@@ -320,6 +370,12 @@ Available plots:
 | `till_compton` | Gas and radiation temperature vs time |
 | `mach2_diffusion` | Density, Tgas, Trad vs x, compared to NLTE analytical solution |
 | `mach2_multigroup` | Density, Tgas, Trad vs x, compared to NLTE analytical solution |
+| `marshak_wave_1` | Tgas and Trad vs x, compared to self-similar analytical solution |
+| `marshak_wave_2` | Tgas and Trad vs x (equilibrium limit) |
+| `marshak_wave_3` | Tgas and Trad vs x (non-uniform density) |
+| `marshak_wave_4` | Tgas and Trad vs x (divergent density, stretched grid) |
+| `gresho_euler` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
+| `gresho_lagrangian` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
 
 Options:
 

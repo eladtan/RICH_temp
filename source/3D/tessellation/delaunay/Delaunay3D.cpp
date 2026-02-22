@@ -2,6 +2,7 @@
 #include "../utils/Predicates3D.hpp"
 #include <limits>
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include "../../hilbert/HilbertOrder3D.hpp"
 #include <boost/foreach.hpp>
@@ -591,14 +592,27 @@ void Delaunay3D::Build(vector<Vector3D> const& points, Vector3D const& maxv, Vec
     points_.clear();
     points_.reserve(Norg + static_cast<std::size_t>(std::pow(Norg, 0.6666) * 14));
     points_.assign(points.begin(), points.end());
-    // Create large tetra points
-    double factor = 5000;
-    double const max_scale = std::max(std::max(std::max(std::abs(maxv.x), std::abs(minv.x)), std::max(std::abs(maxv.y), std::abs(minv.y))), std::max(std::abs(maxv.z), std::abs(minv.z)));
-    double dx = std::max(1e-14, std::max(max_scale * 1e-2, std::max(std::max(maxv.x - minv.x, maxv.y - minv.y), maxv.z - minv.z)));
-    points_.push_back(Vector3D(minv.x - 1.01 * factor * dx, minv.y - factor * dx, minv.z - factor * dx));
-    points_.push_back(Vector3D(0.5 * (minv.x + maxv.x), maxv.y + 1.02 * factor * dx, minv.z - factor * dx));
-    points_.push_back(Vector3D(maxv.x + 0.99 * factor * dx, minv.y - factor * dx, minv.z - factor * dx));
-    points_.push_back(Vector3D(0.5 * (minv.x + maxv.x), 0.5 * (minv.y + maxv.y), maxv.z + factor * dx));
+    // Create bounding tetrahedron: equilateral-triangle base at z_base, apex above
+    double const cx = 0.5 * (minv.x + maxv.x);
+    double const cy = 0.5 * (minv.y + maxv.y);
+    double hx = 0.5 * (maxv.x - minv.x);
+    double hy = 0.5 * (maxv.y - minv.y);
+    double hz = 0.5 * (maxv.z - minv.z);
+    double const scale = std::max({hx, hy, hz, 1e-14});
+    hx = std::max(hx, 1e-2 * scale);
+    hy = std::max(hy, 1e-2 * scale);
+    hz = std::max(hz, 1e-2 * scale);
+    double const m = 60.0;
+    double const padding = 50.0;
+    double const R_min = std::max(2.0 * hy, std::sqrt(3.0) * hx + hy);
+    double const R_base = padding * R_min * 2.0 * (1.0 + m) / m;
+    double const z_base = minv.z - m * hz;
+    double const z_top  = maxv.z + m * hz;
+    double const sqrt3_half = std::sqrt(3.0) / 2.0;
+    points_.push_back(Vector3D(cx,                        cy + R_base,       z_base));
+    points_.push_back(Vector3D(cx + R_base * sqrt3_half,  cy - R_base / 2.0, z_base));
+    points_.push_back(Vector3D(cx - R_base * sqrt3_half,  cy - R_base / 2.0, z_base));
+    points_.push_back(Vector3D(cx, cy, z_top));
     // Create large tetra
     outside_neighbor_ = std::numeric_limits<std::size_t>::max();
     Tetrahedron tetra;
@@ -818,6 +832,26 @@ void Delaunay3D::FindFlip(std::size_t tetra0, std::size_t tetra1, std::size_t p,
 
 void Delaunay3D::InsertPoint(std::size_t index)
 {
+    if (!InsideBigTetra(points_[index], points_, Norg_)) {
+        UniversalError eo("Point is outside the bounding tetrahedron");
+        eo.addEntry("point index", index);
+        eo.addEntry("x", points_[index].x);
+        eo.addEntry("y", points_[index].y);
+        eo.addEntry("z", points_[index].z);
+        eo.addEntry("big tetra v0 x", points_[Norg_].x);
+        eo.addEntry("big tetra v0 y", points_[Norg_].y);
+        eo.addEntry("big tetra v0 z", points_[Norg_].z);
+        eo.addEntry("big tetra v1 x", points_[Norg_ + 1].x);
+        eo.addEntry("big tetra v1 y", points_[Norg_ + 1].y);
+        eo.addEntry("big tetra v1 z", points_[Norg_ + 1].z);
+        eo.addEntry("big tetra v2 x", points_[Norg_ + 2].x);
+        eo.addEntry("big tetra v2 y", points_[Norg_ + 2].y);
+        eo.addEntry("big tetra v2 z", points_[Norg_ + 2].z);
+        eo.addEntry("big tetra v3 x", points_[Norg_ + 3].x);
+        eo.addEntry("big tetra v3 y", points_[Norg_ + 3].y);
+        eo.addEntry("big tetra v3 z", points_[Norg_ + 3].z);
+        throw eo;
+    }
     std::size_t to_split = Walk(index, last_checked_);
     last_checked_ = to_split;
     flip14(index, to_split);
@@ -877,6 +911,8 @@ std::size_t Delaunay3D::Walk(std::size_t point, std::size_t first_guess)
             }
         }
         assert(counter < 100000);
+        if (counter % 1000 == 0)
+            std::cout << "[Walk] point=" << point << " steps=" << counter << std::endl;
     }
     return cur_facet;
 }

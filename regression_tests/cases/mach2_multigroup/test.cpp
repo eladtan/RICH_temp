@@ -87,11 +87,16 @@ int main(void)
 #endif
 
     Voronoi3D tess(ll, ur);
+    try {
 #ifdef RICH_MPI
-    tess.BuildParallel(points);
+        tess.BuildParallel(points);
 #else
-    tess.Build(points);
+        tess.Build(points);
 #endif
+    } catch (UniversalError const& eo) {
+        reportError(eo);
+        throw;
+    }
 
     std::size_t const G = ENERGY_GROUPS_NUM;
     std::vector<double> energy_groups_center(G);
