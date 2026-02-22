@@ -1,7 +1,36 @@
-# huji-rich
-RICH is an compressible hydrodynamic simulation on a moving mesh written in c++.
-We've recently published papers explaining the [serial](http://iopscience.iop.org/0067-0049/216/2/35/) and 
-[parallel](http://adsabs.harvard.edu/abs/2015ApJS..216...14S) versions of the code.
+# RICH -- Compressible Hydrodynamics on a Moving Mesh
+
+RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh, written in C++17 with optional MPI parallelism. It supports radiation transport (grey and multigroup diffusion, Monte Carlo), self-gravity, adaptive mesh refinement, and multiple equations of state.
+
+**Publications:**
+- Serial version: Yalinewich, Steinberg & Sari (2015), [ApJS 216, 35](http://iopscience.iop.org/0067-0049/216/2/35/)
+- Parallel version: Steinberg, Yalinewich & Sari (2015), [ApJS 216, 14](http://adsabs.harvard.edu/abs/2015ApJS..216...14S)
+
+## Documentation
+
+Comprehensive documentation is available in two forms:
+
+- **In-repo docs:** See the [`docs/`](docs/README.md) directory for the full user guide, architecture reference, regression test documentation, and examples.
+- **GitLab Wiki:** The [`wiki/`](wiki/) directory contains GitLab-wiki-ready Markdown pages. To set up the wiki, clone your project's wiki repository and copy these files into it:
+  ```bash
+  git clone https://gitlab.com/eladtan/RICH.wiki.git
+  cp wiki/*.md RICH.wiki/
+  cd RICH.wiki && git add . && git commit -m "Initialize wiki" && git push
+  ```
+
+### Quick Links
+
+| Topic | docs/ | Wiki |
+|-------|-------|------|
+| Getting Started | [docs/getting-started.md](docs/getting-started.md) | [Getting-Started](wiki/Getting-Started.md) |
+| Build System | [docs/build-system.md](docs/build-system.md) | [Build-System](wiki/Build-System.md) |
+| Running Simulations | [docs/running-simulations.md](docs/running-simulations.md) | [Running-Simulations](wiki/Running-Simulations.md) |
+| Simulation Setup | [docs/user-guide/simulation-setup.md](docs/user-guide/simulation-setup.md) | [Simulation-Setup](wiki/Simulation-Setup.md) |
+| Regression Tests | [docs/regression-tests/overview.md](docs/regression-tests/overview.md) | [Regression-Tests-Overview](wiki/Regression-Tests-Overview.md) |
+| Test Catalog | [docs/regression-tests/test-catalog.md](docs/regression-tests/test-catalog.md) | [Regression-Test-Catalog](wiki/Regression-Test-Catalog.md) |
+| Code Architecture | [docs/architecture/overview.md](docs/architecture/overview.md) | [Code-Architecture](wiki/Code-Architecture.md) |
+| FAQ | [docs/faq.md](docs/faq.md) | [FAQ](wiki/FAQ.md) |
+| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) | [Troubleshooting](wiki/Troubleshooting.md) |
 
 # Prerequisites
 - A C++ compiler - GNU or Intel (Supporting C++ 17)
