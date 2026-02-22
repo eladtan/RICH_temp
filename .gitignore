@@ -40,3 +40,8 @@ output_*
 *.so
 .cache
 .cursor/*
+runs/clemon*
+runs/**/*.txt 
+/regression_results
+*.png
+*.pdf
