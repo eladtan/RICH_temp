@@ -188,10 +188,14 @@ fi
 # ==================== Run CMake if needed ====================
 if [[ ! -f Makefile || $RERUN_CMAKE -eq 1 ]]; then
     echo -e "${ORANGE}Running CMake...${NC}"
-    cmake -S "$ORIG_DIR/source" -DCONFIG="$CONFIG" -DTEST_DIR="$TEST_NAME" $CMAKE_FLAGS > "$CMAKE_OUT" 2> "$CMAKE_ERR"
+    cmake -S "$ORIG_DIR/source" -DCONFIG="$CONFIG" -DTEST_DIR="$TEST_NAME" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $CMAKE_FLAGS > "$CMAKE_OUT" 2> "$CMAKE_ERR"
     if [[ $? -ne 0 ]]; then
         echo -e "${RED}CMake failed. See $CMAKE_ERR${NC}"
         exit 1
+    fi
+    # Symlink compile_commands.json to project root for clangd / IntelliSense
+    if [[ -f "$BUILD_DIR/compile_commands.json" ]]; then
+        ln -sf "$BUILD_DIR/compile_commands.json" "$ORIG_DIR/compile_commands.json"
     fi
     # Save current source files list and cmake mtimes after successful cmake
     echo "$CURRENT_SOURCE_FILES" > "$SOURCE_FILES_FILE"

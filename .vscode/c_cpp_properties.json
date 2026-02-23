@@ -20,7 +20,8 @@
             "cStandard": "c11",
             "cppStandard": "c++17",
             "intelliSenseMode": "gcc-x64",
-            "compilerPath": "/software/x86_64/5.14.0/gcc/15.1.0/bin/g++"
+            "compilerPath": "/software/x86_64/5.14.0/gcc/15.1.0/bin/g++",
+            "compileCommands": "${workspaceFolder}/compile_commands.json"
         }
     ],
     "version": 4
