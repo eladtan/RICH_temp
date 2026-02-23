@@ -1,3 +1,4 @@
+#include "misc/universal_error.hpp"
 #include "read3D.hpp"
 
 Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &globalfile, bool const good_open)
@@ -10,8 +11,20 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
     res.ur.Set(box[3], box[4], box[5]);
     // Misc
     {
-        globalfile.ReadElement("/Time", res.time);
-        globalfile.ReadElement("/Cycle", res.cycle);
+        try
+        {
+            globalfile.ReadElement("/Time", res.time);
+            globalfile.ReadElement("/Cycle", res.cycle);
+        }
+        catch(...)
+        {
+            std::vector<double> time;
+            std::vector<int> cycle;
+            globalfile.ReadElement("/Time", time);
+            globalfile.ReadElement("/Cycle", cycle);
+            res.time = time[0];
+            res.cycle = cycle[0];
+        }
 
         if(reader.Exists("/tracers"))
         {

@@ -9,6 +9,7 @@
 #include "misc/utils.hpp"
 #include "newtonian/three_dimensional/SpatialReconstruction3D.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
+#include "3D/tessellation/Neighbors.hpp"
 
 //#define debug_amr 1
 
@@ -352,87 +353,83 @@ namespace
 		}
 	}
 
-	void SendRecvMPIRefine(Tessellation3D const& tess, std::vector<std::vector<size_t> > const& to_send,
-		std::vector<size_t> const& refined_points, Tessellation3D const& oldtess,
+	void SendRecvMPIRefine(Tessellation3D const& tess,
+		std::vector<size_t> const& refined_points,
+		std::vector<size_t> const& ToRefine_for_send,
+		Tessellation3D const& oldtess,
+		PointsToNeighborsMap const& k2_neighbors,
 		std::vector<std::vector<std::vector<size_t> > > &neigh_index, std::vector<std::vector<double> > &planes,
-		std::vector < std::vector<size_t> > &n_planes, std::vector<std::vector<size_t> > &changed_byouter)
+		std::vector<std::vector<size_t> > &n_planes, std::vector<std::vector<size_t> > &changed_byouter)
 	{
-		// to_send is the list of outer neighbors for each refine point
 		// refined_points is the index of the refined points in new tess
-		assert(refined_points.size() == to_send.size());
-		vector<vector<size_t> > duplicated_points = oldtess.GetDuplicatedPoints();
-		size_t Nprocs = duplicated_points.size();
-		vector<vector<size_t> > ghost_points = oldtess.GetGhostIndeces();
-		vector<vector<size_t> > sort_indeces(Nprocs), sort_indecesg(Nprocs);
-		// sort the indeces
-		for (size_t i = 0; i < Nprocs; ++i)
-		{
-			sort_index(duplicated_points[i], sort_indeces[i]);
-			sort(duplicated_points[i].begin(), duplicated_points[i].end());
-			sort_index(ghost_points[i], sort_indecesg[i]);
-			sort(ghost_points[i].begin(), ghost_points[i].end());
-		}
-		// Create send data
+		// ToRefine_for_send is the corresponding old tess index for each refined point
+		// k2_neighbors maps old cell index -> set of RemotePoint (k<=2 neighbors)
+		int myrank = 0, world_size = 1;
+		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		size_t ws = static_cast<size_t>(world_size);
+
+		assert(refined_points.size() == ToRefine_for_send.size());
+
+		// Initialize world-rank-indexed structures (indexed by MPI rank, not duplicatedprocs index)
 		neigh_index.clear();
-		neigh_index.resize(Nprocs);
+		neigh_index.resize(ws);
 		planes.clear();
-		planes.resize(Nprocs);
+		planes.resize(ws);
 		n_planes.clear();
-		n_planes.resize(Nprocs);
+		n_planes.resize(ws);
 		changed_byouter.clear();
-		changed_byouter.resize(Nprocs);
-		size_t nsend = to_send.size();
+		changed_byouter.resize(ws);
+
 		vector<Plane> r_planes;
-		for (size_t i = 0; i < nsend; ++i)
+
+		for (size_t i = 0; i < refined_points.size(); ++i)
 		{
+			size_t old_cell = ToRefine_for_send[i];
+			auto it = k2_neighbors.find(old_cell);
+			if (it == k2_neighbors.end())
+				continue;
+
+			// Get the polyhedra planes of the new refined cell
 			r_planes.clear();
-			// Get the polyhedra of new cell
 			CreatePolyPlanes(tess, refined_points[i], r_planes);
-			// find indeces of neighbors
-			for (size_t k = 0; k < Nprocs; ++k)
+			
+
+			// Group remote k=2 neighbors by rank
+			boost::container::flat_map<int, std::vector<size_t> > rank_to_indices;
+			for (const RemotePoint& rp : it->second)
 			{
-				std::vector<size_t> indeces_toadd;
-				for (size_t j = 0; j < to_send[i].size(); ++j)
+				if (rp.rank != myrank)
+					rank_to_indices[rp.rank].push_back(rp.indexOnRank);
+			}
+
+			// Pack data for each remote rank
+			for (auto& kv : rank_to_indices)
+			{
+				int target_rank = kv.first;
+				auto& indices = kv.second;
+				size_t tr = static_cast<size_t>(target_rank);
+
+				changed_byouter[tr].push_back(refined_points[i]);
+				neigh_index[tr].push_back(indices);
+				size_t nplanes = r_planes.size();
+				for (size_t j = 0; j < nplanes; ++j)
 				{
-					vector<size_t>::const_iterator it = binary_find(ghost_points[k].begin(),
-						ghost_points[k].end(), to_send[i][j]);
-					if (it != ghost_points[k].end())
-						indeces_toadd.push_back(sort_indecesg[k][static_cast<size_t>(it - ghost_points[k].begin())]);
+					planes[tr].push_back(ScalarProd(r_planes[j].normal, r_planes[j].point));
+					planes[tr].push_back(r_planes[j].normal.x);
+					planes[tr].push_back(r_planes[j].normal.y);
+					planes[tr].push_back(r_planes[j].normal.z);
 				}
-				if (!indeces_toadd.empty())
-				{
-					changed_byouter[k].push_back(refined_points[i]);
-					neigh_index[k].push_back(indeces_toadd);
-					size_t nplanes = r_planes.size();
-					for (size_t j = 0; j < nplanes; ++j)
-					{
-						planes[k].push_back(ScalarProd(r_planes[j].normal, r_planes[j].point));
-						planes[k].push_back(r_planes[j].normal.x);
-						planes[k].push_back(r_planes[j].normal.y);
-						planes[k].push_back(r_planes[j].normal.z);
-					}
-					n_planes[k].push_back(nplanes);
-				}
+				n_planes[tr].push_back(nplanes);
 			}
 		}
-		// send/recv the data
-		neigh_index = MPI_exchange_data(oldtess, neigh_index);
-		planes = MPI_exchange_data(oldtess.GetDuplicatedProcs(), planes);
-		n_planes = MPI_exchange_data(oldtess.GetDuplicatedProcs(), n_planes);
-		// convert the data
-		for (size_t i = 0; i < Nprocs; ++i)
-		{
-			size_t size = neigh_index[i].size();
-			for (size_t j = 0; j < size; ++j)
-			{
-				size_t size2 = neigh_index[i][j].size();
-				for (size_t k = 0; k < size2; ++k)
-				{
-					neigh_index[i][j][k] = oldtess.GetDuplicatedPoints()[i].at(neigh_index[i][j][k]);
-				}
-			}
-		}
-	}
+		// Exchange using MPI_Exchange_all_to_all (communicates with all ranks, not just duplicatedprocs)
+		neigh_index = MPI_Exchange_all_to_all(neigh_index, MPI_COMM_WORLD);
+		planes = MPI_Exchange_all_to_all(planes, MPI_COMM_WORLD);
+		n_planes = MPI_Exchange_all_to_all(n_planes, MPI_COMM_WORLD);
+		// No post-exchange index conversion needed: indices from GetKOrderNeighbors
+		// are already local cell indices on the receiving rank
+	}	
 #endif
 
 	void LocalRemove(Tessellation3D const& oldtess, std::vector<size_t> const& ToRemove, AMRExtensiveUpdater3D const& eu,
@@ -466,7 +463,7 @@ namespace
 					try
 					{
 #endif
-						if(dv > org_volume * 1e-6)
+						if(dv > org_volume * 1e-8)
 						{
                             Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[ToRemove[i]], eos, dv, interp.GetSlopes()[ToRemove[i]],
                             oldtess.GetCellCM(ToRemove[i]), clip_CM);
@@ -564,7 +561,7 @@ namespace
 							auto [dv, clip_vol, clip_CM] = clipCells(poly, planes);
 							try
 							{
-								if(dv > org_volume * 1e-6)
+								if(dv > org_volume * 1e-8)
 								{
                                     Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[nghost_index[i][j]], eos, dv, interp.GetSlopes()[nghost_index[i][j]], oldtess.GetCellCM(nghost_index[i][j]),
                                                     clip_CM);
@@ -653,7 +650,7 @@ namespace
 				{
 					std::cout << "Clipping cell " << cur_check << " ID " << cells[cur_check].ID << " dv " << dv << " init volume " << oldtess.GetVolume(cur_check) << " refine index " << ToRefine[i] << std::endl;
 				}
-				if(dv > org_volume * 1e-6)
+				if(dv > org_volume * 1e-8)
 				{
 					total_dv += dv;
 					// Remove extensive from neigh cell and add to new cell
@@ -704,46 +701,100 @@ namespace
 		AMRExtensiveUpdater3D const& eu, EquationOfState const& eos, 
 		std::vector<ComputationalCell3D> const& cells, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
 	{
+		int myrank = 0, world_size = 1;
+		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		size_t ws = static_cast<size_t>(world_size);
+
 		std::vector<size_t> temp, temp2;
 		point_vec ptemp;
 		size_t Norg = oldtess.GetPointNo();
-		// Get outer refine points
 		size_t Nrefine = ToRefine.size();
-		std::vector<std::vector<size_t> >  to_send;
-		std::vector<size_t> refined_points;
+
+		// Step 1: Identify boundary-sensitive refine cells
+		// These are cells to refine whose neighbors or neighbor-of-neighbors is a ghost cell
+		std::vector<size_t> boundary_refine_indices; // indices into ToRefine
+		std::vector<size_t> neigh_neigh;
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
 			oldtess.GetNeighbors(ToRefine[i], temp);
-			temp2.clear();
+			bool has_ghost_k2 = false;
 			for (size_t j = 0; j < temp.size(); ++j)
 			{
 				if (temp[j] >= Norg && !oldtess.IsPointOutsideBox(temp[j]))
-					temp2.push_back(temp[j]);
+				{
+					has_ghost_k2 = true;
+					break;
+				}
+				if (temp[j] < Norg)
+				{
+					oldtess.GetNeighbors(temp[j], neigh_neigh);
+					for (size_t k = 0; k < neigh_neigh.size(); ++k)
+					{
+						if (neigh_neigh[k] >= Norg && !oldtess.IsPointOutsideBox(neigh_neigh[k]))
+						{
+							has_ghost_k2 = true;
+							break;
+						}
+					}
+					if (has_ghost_k2) break;
+				}
 			}
-			if (!temp2.empty())
+			if (has_ghost_k2)
+				boundary_refine_indices.push_back(i);
+		}
+
+		// Step 2: Get k=2 neighbors for boundary-sensitive cells using GetKOrderNeighbors
+		std::vector<size_t> boundary_cells;
+		boundary_cells.reserve(boundary_refine_indices.size());
+		for (size_t idx : boundary_refine_indices)
+			boundary_cells.push_back(ToRefine[idx]);
+
+		PointsToNeighborsMap k2_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 2, true, MPI_COMM_WORLD);
+
+		// Build refined_points and ToRefine_for_send for cells with remote k=2 neighbors
+		std::vector<size_t> refined_points;
+		std::vector<size_t> ToRefine_for_send;
+		for (size_t idx : boundary_refine_indices)
+		{
+			auto it = k2_neighbors.find(ToRefine[idx]);
+			if (it != k2_neighbors.end())
 			{
-				refined_points.push_back(tess.GetPointNo() - Nrefine + i);
-				to_send.push_back(temp2);
+				bool has_remote = false;
+				for (const RemotePoint& rp : it->second)
+				{
+					if (rp.rank != myrank)
+					{
+						has_remote = true;
+						break;
+					}
+				}
+				if (has_remote)
+				{
+					refined_points.push_back(tess.GetPointNo() - Nrefine + idx);
+					ToRefine_for_send.push_back(ToRefine[idx]);
+				}
 			}
 		}
-		// send / recv data
+
+		// Step 3-4: Send/recv planes and neighbor info with all relevant ranks
 		std::vector<std::vector<size_t> > n_planes;
 		std::vector<std::vector<std::vector<size_t> > > neigh_index;
 		std::vector < std::vector<double> > planes;
 		std::vector<std::vector<size_t> > changed_byouter;
-		SendRecvMPIRefine(tess, to_send, refined_points, oldtess, neigh_index, planes, n_planes, changed_byouter);
-		// Find the intersections
-		// r3d_poly poly;
+		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k2_neighbors,
+			neigh_index, planes, n_planes, changed_byouter);
+
+		// Step 5: Find the intersections
 		std::vector<Plane> r_planes;
 		std::vector<std::vector<int> > i_temp;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
-		size_t Nprocs = neigh_index.size();
-		std::vector<std::vector<Conserved3D> > extensive_tosend(Nprocs);
+		std::vector<std::vector<Conserved3D> > extensive_tosend(ws);
 		int rank = 0;
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		std::vector<Face> polyhedron;
-		for (size_t i = 0; i < Nprocs; ++i)
+		for (size_t i = 0; i < ws; ++i)
 		{
 			extensive_tosend[i].resize(neigh_index[i].size());
 			size_t counter = 0;
@@ -792,7 +843,7 @@ namespace
 					double org_volume = oldtess.GetVolume(cur_check);
 					auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, r_planes);
 
-					if(dv > org_volume * 1e-6)
+					if(dv > org_volume * 1e-8)
 					{
 							// add and remove the extensive
 #ifdef RICH_DEBUG
@@ -826,9 +877,9 @@ namespace
 				}
 			}
 		}
-		extensive_tosend = MPI_exchange_data(oldtess.GetDuplicatedProcs(), extensive_tosend);
+		extensive_tosend = MPI_Exchange_all_to_all(extensive_tosend, MPI_COMM_WORLD);
 		size_t Nremove = oldtess.GetPointNo() + Nrefine - tess.GetPointNo();
-		for (size_t i = 0; i < Nprocs; ++i)
+		for (size_t i = 0; i < ws; ++i)
 		{
 			for (size_t j = 0; j < extensive_tosend[i].size(); ++j)
 				extensives[changed_byouter[i][j] + Nremove] += extensive_tosend[i][j];
