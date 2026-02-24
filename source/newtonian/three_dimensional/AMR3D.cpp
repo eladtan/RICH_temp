@@ -463,7 +463,7 @@ namespace
 					try
 					{
 #endif
-						if(dv > org_volume * 1e-8)
+						if(dv > org_volume * 1e-10)
 						{
                             Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[ToRemove[i]], eos, dv, interp.GetSlopes()[ToRemove[i]],
                             oldtess.GetCellCM(ToRemove[i]), clip_CM);
@@ -561,7 +561,7 @@ namespace
 							auto [dv, clip_vol, clip_CM] = clipCells(poly, planes);
 							try
 							{
-								if(dv > org_volume * 1e-8)
+								if(dv > org_volume * 1e-10)
 								{
                                     Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[nghost_index[i][j]], eos, dv, interp.GetSlopes()[nghost_index[i][j]], oldtess.GetCellCM(nghost_index[i][j]),
                                                     clip_CM);
@@ -650,7 +650,7 @@ namespace
 				{
 					std::cout << "Clipping cell " << cur_check << " ID " << cells[cur_check].ID << " dv " << dv << " init volume " << oldtess.GetVolume(cur_check) << " refine index " << ToRefine[i] << std::endl;
 				}
-				if(dv > org_volume * 1e-8)
+				if(dv > org_volume * 1e-10)
 				{
 					total_dv += dv;
 					// Remove extensive from neigh cell and add to new cell
@@ -843,7 +843,7 @@ namespace
 					double org_volume = oldtess.GetVolume(cur_check);
 					auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, r_planes);
 
-					if(dv > org_volume * 1e-8)
+					if(dv > org_volume * 1e-10)
 					{
 							// add and remove the extensive
 #ifdef RICH_DEBUG
