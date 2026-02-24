@@ -2438,6 +2438,10 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
             I_finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
             MPI_Iallreduce(&I_finished, &finished, 1, MPI_INT, MPI_SUM, comm, &finishedReq);
         }
+        else
+        {
+            finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
+        }
         #else // RICH_MPI
             finished = (smallQueries.empty() and bigQueries.empty())? 1 : 0;
         #endif // RICH_MPI
