@@ -65,7 +65,7 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print 
 
 Face ConvexHullFace(const Face &face);
 
-double comptueVolume(const std::vector<Face> &faces);
+double computeVolume(const std::vector<Face> &faces);
 
 double polygonArea(const Face &face);
 

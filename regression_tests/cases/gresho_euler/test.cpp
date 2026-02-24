@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"

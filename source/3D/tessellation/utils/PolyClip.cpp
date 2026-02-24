@@ -67,13 +67,12 @@ std::pair<double, Vector3D> computeCM(const std::vector<Face> &faces)
         }
     }
 
-    CM *= 1.0 / volume;
+    CM *= 1.0 / (volume + std::numeric_limits<double>::min() * 1e10);
     return std::make_pair(volume, CM);
 }
 
 std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
 {
-    double const eps = 1e-6;
     Face out, clip_points;
     int n = face.vertices.size();
     double old_d = plane.signedDistance(face.vertices[0]);
@@ -99,7 +98,7 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
         bool in2 = d2 >= -maxR * 1e-12;
         if(print)
         {
-            std::cout << "i=" << i << " d1 = " << d1 << " d2 = " << d2 << " in1 = " << in1 << " in2 = " << in2 << " maxR = " << maxR << " R" << R << std::endl;
+            std::cout << "i=" << i << " d1 = " << d1 << " d2 = " << d2 << " in1 = " << in1 << " in2 = " << in2 << " maxR = " << maxR << " R " << R << std::endl;
         }
         if(in1)
         {
@@ -151,11 +150,16 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
 
 Face ConvexHullFace(const Face &face)
 {
+    Face result;
+    if(face.vertices.size() < 3)
+    {
+        return result;
+    }
     Vector3D center = faceCenter(face);
     Vector3D X = face.vertices[0] - center;
     double size = abs(X);
     X *= 1.0 / size;
-    Vector3D N = fastabs(face.vertices[1] - face.vertices[0]) > 1e-10 ? normalize(CrossProduct(X, face.vertices[1] - face.vertices[0])) : 
+    Vector3D N = fastabs(face.vertices[1] - face.vertices[0]) > 1e-10 * size ? normalize(CrossProduct(X, face.vertices[1] - face.vertices[0])) : 
                                                                             normalize(CrossProduct(X, face.vertices[2] - face.vertices[0]));
     Vector3D Y = CrossProduct(N, X);
 
@@ -165,7 +169,6 @@ Face ConvexHullFace(const Face &face)
         Vector3D original;
     };
 
-    Face result;
     std::vector<projected> projected_points;
 
     for(const Vector3D &p : face.vertices)
@@ -193,19 +196,37 @@ Face ConvexHullFace(const Face &face)
 Face CleanFace(const Face &face)
 {
     size_t Nvert = face.vertices.size();
-    double maxR = 0;
+    Face result;
+    if(Nvert < 3)
+    {
+        return result;
+    }
+    double maxR = std::numeric_limits<double>::epsilon();
+    double close_eps  = 0;
     for(size_t i = 0; i < Nvert; i++)
     {
         maxR = std::max(maxR, fastabs(face.vertices[(i + 1) % Nvert] - face.vertices[i]));
+        double R = fastabs(face.vertices[i]);
+        close_eps = std::max(close_eps, 100 * std::abs(std::nextafter(R,  std::numeric_limits<double>::infinity()) - R));
     }
-    Face result;
+    close_eps = std::max(close_eps, 1e-12 * maxR);
+   
     result.vertices.push_back(face.vertices[0]);
-    for(size_t i = 1; i < Nvert; i++)
+    for(size_t i = 0; i < Nvert - 2; i++)
     {
-        if(fastabs(face.vertices[i] - result.vertices.back()) > maxR * 1e-12)
+        if(fastabs(face.vertices[i + 1] - face.vertices[i]) > close_eps)
         {
-            result.vertices.push_back(face.vertices[i]);
+            result.vertices.push_back(face.vertices[i + 1]);
         }
+    }
+    if(fastabs(face.vertices.back() - face.vertices[Nvert - 2]) > close_eps && fastabs(face.vertices.back() - face.vertices[0]) > close_eps)
+    {
+        result.vertices.push_back(face.vertices.back());
+    }
+    if(result.vertices.size() < 3)
+    {
+        result.vertices.clear();
+        return result;
     }
     return ConvexHullFace(result);
 }
@@ -282,7 +303,6 @@ double computeVolume(const std::vector<Face> &faces)
         {
             Vector3D a = face.vertices[i] - ref;
             Vector3D b = face.vertices[i + 1] - ref;
-            // volume += std::abs(ScalarProd(ref - center, CrossProduct(a, b)));
             volume_face += (ScalarProd(ref - center, CrossProduct(b, a)));
         }
         volume += std::abs(volume_face);

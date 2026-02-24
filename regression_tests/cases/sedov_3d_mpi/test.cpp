@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <fstream>
 #include <vector>
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/misc/mesh_generator3D.hpp"
