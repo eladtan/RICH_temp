@@ -18,7 +18,7 @@
 template<class T>
 void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or_sent, const T *example_cell = nullptr)
 {
-	if(example_cell == nullptr and cells.empty())
+	if(ghost_or_sent == true and example_cell == nullptr and cells.empty())
 	{
 		throw UniversalError("Empty cell vector in MPI_exchange_data");
 	}

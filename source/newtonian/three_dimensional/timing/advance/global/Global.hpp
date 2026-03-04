@@ -11,12 +11,12 @@
 class GlobalTimeStep: public TimeStep
 {
 public:    
-    GlobalTimeStep(HydroTimeAdvance &hydroAdvance, const PointMotion3D &pm, dt_t currentTime, const TimeStepFunction3D &tsf);
+    GlobalTimeStep(HydroTimeAdvance &hydroAdvance, const PointMotion3D &pm, dt_t currentTime, TimeStepFunction3D &tsf);
     
     dt_t apply() override;
     
 private:
-    const TimeStepFunction3D &tsf;
+    TimeStepFunction3D &tsf;
     mutable std::vector<size_t> allPointsHelperVector;
 };
 

@@ -1426,11 +1426,14 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
             bounding_box.second.z = std::max(bounding_box.second.z, point.z);
         }
 
-        if(activePoints.size() == 1)
-        {
-            bounding_box.second = this->ur_;
-            bounding_box.first = this->ll_;
-        }
+        // Ensure bounding box covers at least the domain box to prevent
+        // degenerate big tets for collinear/coplanar point sets
+        bounding_box.first.x = std::min(bounding_box.first.x, this->ll_.x);
+        bounding_box.first.y = std::min(bounding_box.first.y, this->ll_.y);
+        bounding_box.first.z = std::min(bounding_box.first.z, this->ll_.z);
+        bounding_box.second.x = std::max(bounding_box.second.x, this->ur_.x);
+        bounding_box.second.y = std::max(bounding_box.second.y, this->ur_.y);
+        bounding_box.second.z = std::max(bounding_box.second.z, this->ur_.z);
 
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;
@@ -1622,7 +1625,7 @@ void Voronoi3D::MockMesh(void)
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-
+    
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> whereNow = GetRemoteIndices(this->self_index_, this->sentprocs_, this->sentpoints_); // previous point -> holder (rank + index)
     assert(whereNow.size() == this->Norg_);
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghostsInfo = GetGhostInfo(this->duplicatedprocs_, this->duplicated_points_, this->Nghost_, whereNow); // previous ghost -> holder (rank + index)
@@ -1700,11 +1703,13 @@ void Voronoi3D::MockMesh(void)
             bounding_box.second.z = std::max(bounding_box.second.z, point.z);
         }
         
-        if(new_points.size() == 1)
-        {
-            bounding_box.second = this->ur_;
-            bounding_box.first = this->ll_;
-        }
+        bounding_box.first.x = std::min(bounding_box.first.x, this->ll_.x);
+        bounding_box.first.y = std::min(bounding_box.first.y, this->ll_.y);
+        bounding_box.first.z = std::min(bounding_box.first.z, this->ll_.z);
+        bounding_box.second.x = std::max(bounding_box.second.x, this->ur_.x);
+        bounding_box.second.y = std::max(bounding_box.second.y, this->ur_.y);
+        bounding_box.second.z = std::max(bounding_box.second.z, this->ur_.z);
+
         this->del_.Build(new_points, bounding_box.second, bounding_box.first, order);
     }
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
@@ -2806,11 +2811,13 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
             bounding_box.first.z = std::min(bounding_box.first.z, point.z);
             bounding_box.second.z = std::max(bounding_box.second.z, point.z);
         }
-        if(activePoints.size() == 1)
-        {
-            bounding_box.second = this->ur_;
-            bounding_box.first = this->ll_;
-        }
+
+        bounding_box.first.x = std::min(bounding_box.first.x, this->ll_.x);
+        bounding_box.first.y = std::min(bounding_box.first.y, this->ll_.y);
+        bounding_box.first.z = std::min(bounding_box.first.z, this->ll_.z);
+        bounding_box.second.x = std::max(bounding_box.second.x, this->ur_.x);
+        bounding_box.second.y = std::max(bounding_box.second.y, this->ur_.y);
+        bounding_box.second.z = std::max(bounding_box.second.z, this->ur_.z);
         
         // performs internal tesselation:
         // std::cout << "checking duplications..." << std::endl;

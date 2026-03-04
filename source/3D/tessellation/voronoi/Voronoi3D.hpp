@@ -294,7 +294,7 @@ public:
   
   void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
   
-  void Rebalance(const std::vector<double> &weights);
+  void Rebalance(const std::vector<double> &weights) override;
 
   inline bool ShouldRebalance(const std::vector<double> &weights) const override {return this->pointsManager->shouldRebalance(weights);}
 

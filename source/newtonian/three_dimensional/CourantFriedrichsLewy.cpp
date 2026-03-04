@@ -14,7 +14,7 @@ CourantFriedrichsLewy::CourantFriedrichsLewy(double cfl, double SourceCFL, Sourc
 }
 
 double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
-	const EquationOfState& eos, const vector<Vector3D>& face_velocities, const double time) const
+	const EquationOfState& eos, const vector<Vector3D>& face_velocities, const double time)
 {
 	double res = 0.001 * std::numeric_limits<double>::max();
 	size_t const N = tess.GetPointNo();
@@ -71,6 +71,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	res *= cfl_;
 	double old_res = res;
 	res = 1.0 / std::max(source_.SuggestInverseTimeStep() / sourcecfl_, 1.0 / res);
+	double hydro_res = res;
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 #endif
@@ -120,11 +121,25 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 			}
 		}
 	}
+
+	this->last_time_ = time;
+	this->dt_ = res;
+	this->dt_suggest_ = hydro_res;
 	return res;
+}
+
+double CourantFriedrichsLewy::GetTimeStep(void) const
+{
+	return this->first_try_ ? this->dt_first_ : this->dt_;
 }
 
 void CourantFriedrichsLewy::SetTimeStep(double dt)
 {
 	dt_first_ = dt;
 	first_try_ = true;
+}
+
+double CourantFriedrichsLewy::SuggestTimeStep(void) const
+{
+	return this->dt_suggest_;
 }

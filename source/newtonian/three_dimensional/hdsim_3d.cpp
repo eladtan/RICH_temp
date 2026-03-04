@@ -28,7 +28,7 @@ namespace
 	}
 }
 
-Tessellation3D& HDSim3D::getTesselation(void)
+Tessellation3D& HDSim3D::getTessellation(void)
 {
 	return tess_;
 }
@@ -48,47 +48,29 @@ const vector<Conserved3D>& HDSim3D::getExtensives(void) const
 	return extensive_;
 }
 
-HDSim3D::ProgressTracker::ProgressTracker(void) :
-	time(0), cycle(0) {}
-
-void HDSim3D::ProgressTracker::updateTime(double dt)
-{
-	time += dt;
-}
-
-void HDSim3D::ProgressTracker::updateCycle()
-{
-	++cycle;
-}
-
-double HDSim3D::ProgressTracker::getTime(void) const
-{
-	return time;
-}
-
-size_t HDSim3D::ProgressTracker::getCycle(void) const
-{
-	return cycle;
-}
-
 HDSim3D::HDSim3D(Tessellation3D& tess,
-	const vector<ComputationalCell3D>& cells,
+	vector<ComputationalCell3D>& cells,
+	vector<Conserved3D>& extensives,
 	const EquationOfState& eos,
+	ProgressTracker &pt,
 	const PointMotion3D& pm,
-	const TimeStepFunction3D& tsc,
+	TimeStepFunction3D& tsc,
 	const FluxCalculator3D& fc,
 	const CellUpdater3D& cu,
 	const ExtensiveUpdater3D& eu,
 	const SourceTerm3D& source,
 	const pair<vector<string>, vector<string> >& tsn,
 	bool SR, 
-	bool new_start) :
-	tess_(tess),
-	eos_(eos), cells_(cells), extensive_(), pm_(pm), tsc_(tsc), fc_(fc), cu_(cu), eu_(eu), source_(source), pt_()
-	, Max_ID_(0)
-	, dt_(0)
+	bool new_start
 	#ifdef RICH_MPI
-	, exchange_chain_(MPI_COMM_WORLD)
+	, std::shared_ptr<CostCalculator3D> cost_calc
+	#endif // RICH_MPI
+	) :
+	tess_(tess),
+	eos_(eos), cells_(cells), extensive_(extensives), pm_(pm), tsc_(tsc), fc_(fc), cu_(cu), eu_(eu), source_(source), pt_(pt)
+	, Max_ID_(0)
+	#ifdef RICH_MPI
+	, cost_calc_(cost_calc), exchange_chain_(MPI_COMM_WORLD)
 	#endif // RICH_MPI
 {
 #ifdef RICH_MPI
@@ -253,7 +235,6 @@ void HDSim3D::timeAdvance2(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
-	dt_ = dt;
 	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), dt);
@@ -306,7 +287,6 @@ MPI_exchange_data(tess_, cells_, true);
 #endif
 
 pt_.updateTime(dt);
-pt_.updateCycle();
 CalcFaceVelocities(tess_, point_vel, face_vel);
 face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt);
 t1 = get_time();
@@ -335,7 +315,6 @@ void HDSim3D::timeAdvance(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	const double dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
-	dt_ = dt;
 	pm_.ApplyFix(tess_, cells_, pt_.getTime(), dt, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -365,7 +344,6 @@ void HDSim3D::timeAdvance(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	pt_.updateTime(dt);
-	pt_.updateCycle();
 }
 
 
@@ -389,7 +367,6 @@ void HDSim3D::timeAdvance3(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
-	dt_ = dt;
 	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), 0.5 * dt);
@@ -466,7 +443,6 @@ void HDSim3D::timeAdvance3(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	pt_.updateTime(0.5 * dt);
-	pt_.updateCycle();
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt / 6);
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt / 6,  mid_extensives);
@@ -498,7 +474,6 @@ void HDSim3D::timeAdvance33(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
-	dt_ = dt;
 	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), dt);
@@ -570,7 +545,6 @@ void HDSim3D::timeAdvance33(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	pt_.updateTime(-0.5 * dt);
-	pt_.updateCycle();
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt);
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
@@ -615,7 +589,6 @@ void HDSim3D::timeAdvance32(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
-	dt_ = dt;
 	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values =
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), 0.5 * dt);
@@ -668,7 +641,6 @@ void HDSim3D::timeAdvance32(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
-	pt_.updateCycle();
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt);
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, mid_extensives);
@@ -701,7 +673,6 @@ void HDSim3D::timeAdvance4(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, pt_.getTime());
-	dt_ = dt;
 	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values =
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), 0.5 * dt);
@@ -789,7 +760,6 @@ void HDSim3D::timeAdvance4(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	pt_.updateTime(0.5 * dt);
-	pt_.updateCycle();
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, pt_.getTime(), dt / 6);
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt / 6,  mid_extensives);
@@ -802,7 +772,7 @@ void HDSim3D::timeAdvance4(void)
 #endif
 }
 
-const Tessellation3D& HDSim3D::getTesselation(void) const
+const Tessellation3D& HDSim3D::getTessellation(void) const
 {
 	return tess_;
 }
@@ -835,77 +805,4 @@ void HDSim3D::SetTime(double t)
 size_t& HDSim3D::GetMaxID(void)
 {
 	return Max_ID_;
-}
-
-double HDSim3D::RadiationTimeStep(double const dt, RadiationDriver const& matrix_builder, bool const no_hydro)
-{
-	int total_iters = 0;
-	double const CG_eps = 1e-11;
-	size_t const N = tess_.GetPointNo();
-
-#ifdef DEBUG
-	if(N == 0) std::cout<<"Zero cells in RadiationTimeStep"<<std::endl;
-#endif
-
-	int rank = 0;
-#ifdef RICH_MPI
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
-
-	double total_elapsed_time = 0;
-	double dt_try = dt;
-	size_t reduce_counter = 0;
-	int max_iter_done = 0;
-
-
-	matrix_builder.prestep(tess_, cells_);
-	while(total_elapsed_time < dt * 0.9999999)
-	{
-		dt_try = std::min(dt_try, dt - total_elapsed_time);
-
-		bool step_success = matrix_builder.step(CG_eps, total_iters, tess_, cells_, extensive_, dt_try, pt_.getTime());
-
-		max_iter_done = std::max(max_iter_done, total_iters);
-		
-		if(not step_success)
-		{
-			reduce_counter++;
-			dt_try *= 0.5;
-			if(rank == 0)
-				std::cout<<"Reducing dt, new dt "<<dt_try<<std::endl;
-			
-			if(dt_try < 0.001 * dt)
-				throw UniversalError("too small dt in RadiationTimeStep");
-		}
-		else {
-			total_elapsed_time += dt_try;
-		}
-	}
-
-	double new_dt = matrix_builder.calculate_dt(dt, tess_, cells_);
-
-	matrix_builder.poststep();
-
-#ifdef RICH_MPI
-	MPI_exchange_data(tess_, cells_, true);
-#endif
-	
-	
-	if(no_hydro)
-	{
-		pt_.updateTime(dt);
-		pt_.updateCycle();
-	}
-	// double grow_factor = 1.25;
-	// if(max_iter_done > 200)
-	// 	grow_factor = 1.02;
-	// else
-	// 	if(max_iter_done > 125)
-	// 		grow_factor = 1.05;
-
-	// new_dt = std::min(new_dt, dt*grow_factor) * std::pow(0.5, std::max(static_cast<double>(reduce_counter), 0.0));
-	// if(max_iter_done > 300)
-	// 	new_dt = dt * 0.9;
-	// return this->radiation_dt_;
-	return new_dt;
 }

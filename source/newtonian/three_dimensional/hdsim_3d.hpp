@@ -15,9 +15,8 @@
 #include "cell_updater_3d.hpp"
 #include "extensive_updater3d.hpp"
 #include "SourceTerm3D.hpp"
-#include "Radiation/conj_grad_solve.hpp"
-#include "Radiation/RadiationDriver.hpp"
-#include "Radiation/Diffusion.hpp"
+#include "ProgressTracker.hpp"
+#include "CostCalculator3D.hpp"
 
 #ifdef RICH_MPI
   #include <mpi.h>
@@ -29,40 +28,6 @@
 class HDSim3D
 {
 public:
-
-  //! \brief Tracks the progress of a simulation
-  class ProgressTracker
-  {
-  public:
-
-    //! \brief Class constructor
-    ProgressTracker(void);
-
-    /*! \brief Update the progress tracker
-      \param dt Time step
-     */
-    void updateTime(double dt);
-
-    /*! \brief Updates the cycle number
-     */
-    void updateCycle();
-
-    /*! \brief Returns the current time of the simulation
-      \return Time of the simulation
-     */
-    double getTime(void) const;
-
-    /*! \brief Returns the number of times time advance was called
-      \return Cycle number
-     */
-    size_t getCycle(void) const;
-
-    //! \brief Simulation time
-    double time;
-    //! \brief Tracks the number of times time advance was called
-    size_t cycle;
-  };
-
   /*! \brief Class constructor
     \param tess Tessellation
     \param cells Initial computational cells
@@ -80,10 +45,12 @@ public:
     \param maxload parallel directive
   */
   HDSim3D(Tessellation3D& tess,
-	  const vector<ComputationalCell3D>& cells,
+	  vector<ComputationalCell3D>& cells,
+    vector<Conserved3D>& extensives,
 	  const EquationOfState& eos,
+    ProgressTracker &pt,
 	  const PointMotion3D& pm,
-	  const TimeStepFunction3D& tsc,
+	  TimeStepFunction3D& tsc,
 	  const FluxCalculator3D& fc,
 	  const CellUpdater3D& cu,
 	  const ExtensiveUpdater3D& eu,
@@ -91,6 +58,9 @@ public:
 	  const pair<vector<string>, vector<string> >& tsn,
 	  bool SR=false,
 	  bool new_start = true
+    #ifdef RICH_MPI
+      , std::shared_ptr<CostCalculator3D> cost_calc = std::make_shared<CostCalculator3D>()
+    #endif // RICH_MPI  
   );
 
   //! \brief Advances the simulation in time (first order)
@@ -117,7 +87,7 @@ public:
   /*! \brief Access to tessellation
     \return Tessellation
    */
-  const Tessellation3D& getTesselation(void) const;
+  const Tessellation3D& getTessellation(void) const;
 
   /*! \brief Access to computational cells
     \return Computational cells
@@ -130,7 +100,7 @@ public:
   /*! \brief Access to tessellation
   \return Tessellation
   */
-  Tessellation3D& getTesselation(void);
+  Tessellation3D& getTessellation(void);
 
   /*! \brief Access to computational cells
   \return Computational cells
@@ -163,28 +133,33 @@ public:
   */
   size_t & GetMaxID(void);
 
-  double RadiationTimeStep(double const dt, RadiationDriver const& matrix_builder, bool const nohydro = false);
+  double getTimeStep(void) const {return this->tsc_.GetTimeStep();}
 
-  double getTimeStep(void) const {return dt_;}
+  double suggestTimeStep(void) const {return this->tsc_.SuggestTimeStep();}
+
+  void SetTimeStep(double dt) {this->tsc_.SetTimeStep(dt);}
 
   #ifdef RICH_MPI
     const ExchangeChain &GetExchangeChain(void) const {return this->exchange_chain_;}
   #endif // RICH_MPI
 
+  #ifdef RICH_MPI
+    std::shared_ptr<CostCalculator3D> cost_calc_;
+  #endif // RICH_MPI
+  
 private:
   Tessellation3D& tess_;
   const EquationOfState& eos_;
   vector<ComputationalCell3D> cells_;
   vector<Conserved3D> extensive_;
   const PointMotion3D& pm_;
-  const TimeStepFunction3D& tsc_;
+  TimeStepFunction3D& tsc_;
   const FluxCalculator3D& fc_;
   const CellUpdater3D& cu_;
   const ExtensiveUpdater3D& eu_;
   const	SourceTerm3D &source_;
-  ProgressTracker pt_;
+  ProgressTracker &pt_;
   size_t Max_ID_;
-  double dt_;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI

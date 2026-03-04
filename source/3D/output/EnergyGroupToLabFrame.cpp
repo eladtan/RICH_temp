@@ -21,7 +21,7 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
 
     auto const energy_per_volume_scale = mass_scale / (length_scale * pow<2>(time_scale));
 
-    Tessellation3D const& tess = sim.getTesselation();
+    Tessellation3D const& tess = sim.getTessellation();
     std::vector<ComputationalCell3D> const& cells = sim.getCells();
 
     std::size_t const N = tess.GetPointNo();

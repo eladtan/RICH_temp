@@ -1,6 +1,6 @@
 #include "Global.hpp"
 
-GlobalTimeStep::GlobalTimeStep(HydroTimeAdvance &hydroAdvance, const PointMotion3D &pm, dt_t currentTime, const TimeStepFunction3D &tsf):
+GlobalTimeStep::GlobalTimeStep(HydroTimeAdvance &hydroAdvance, const PointMotion3D &pm, dt_t currentTime, TimeStepFunction3D &tsf):
     TimeStep(hydroAdvance, pm, currentTime), tsf(tsf)
 {}
 

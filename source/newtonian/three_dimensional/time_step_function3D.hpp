@@ -26,10 +26,16 @@ public:
 	  \return Time step
 	 */
 	virtual double operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
-		const EquationOfState& eos, const vector<Vector3D>& face_velocities, const double time) const = 0;
+		const EquationOfState& eos, const vector<Vector3D>& face_velocities, const double time) = 0;
 
 	//! \brief Class destructor
 	virtual ~TimeStepFunction3D(void);
+
+	virtual void SetTimeStep(double dt) = 0;
+
+	virtual double GetTimeStep(void) const = 0;
+
+	virtual double SuggestTimeStep(void) const = 0;
 };
 
 #endif  // TIME_STEP_FUNCTION3D_HPP

@@ -24,9 +24,11 @@
 class Simulation
 {
 public:
-    Simulation(Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells, EquationOfState &eos, TimeStepFunction3D &tsc);
+    Simulation(Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells, EquationOfState &eos);
 
     inline ProgressTracker &getTracker(void){return this->tracker;};
+
+    inline void SetTimeStepFunction(std::shared_ptr<TimeStepFunction3D> tsc){this->tsc = tsc;};
 
     inline Tessellation3D &getTessellation(void){return this->tess;};
 
@@ -38,9 +40,9 @@ public:
 
     inline const std::vector<Conserved3D> &getExtensives(void) const{return this->extensives;};
 
-    inline void SetTimeStep(double dt){this->tsc.SetTimeStep(dt);};
+    void SetTimeStep(double dt);
 
-    inline double GetTimeStep(void) const{return this->tsc.GetTimeStep();};
+    double GetTimeStep(void) const;
 
     void step(void);
 
@@ -74,7 +76,7 @@ private:
     std::vector<Conserved3D> extensives;
     ProgressTracker tracker;
     EquationOfState &eos;
-    TimeStepFunction3D &tsc;
+    std::shared_ptr<TimeStepFunction3D> tsc; // todo: why?
 
 #ifdef RICH_MPI
     std::shared_ptr<LoadBalancer> currentLoad;

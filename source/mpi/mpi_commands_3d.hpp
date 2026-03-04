@@ -15,8 +15,17 @@
 \param ghost_or_sent True for ghost cells false for sent cells.
 */
 template<class T>
-inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells, bool ghost_or_sent, const size_t &extent = 1)
+inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells, bool ghost_or_sent, const size_t extent = 1, const T *example_cell = nullptr)
 {
+	if(ghost_or_sent == true and example_cell == nullptr and cells.empty())
+	{
+		throw UniversalError("Empty cell vector in MPI_exchange_data");
+	}
+	if(example_cell == nullptr)
+	{
+		example_cell = &cells[0];
+	}
+
 	const std::vector<rank_t> &correspondents = (ghost_or_sent)? tess.GetDuplicatedProcs() : tess.GetSentProcs();
 	const std::vector<std::vector<size_t>> &indices = (ghost_or_sent)? tess.GetDuplicatedPoints() : tess.GetSentPoints();
 	std::vector<MPI_Request> req(correspondents.size());
@@ -25,7 +34,7 @@ inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells,
 	const std::vector<std::vector<size_t>> &ghost_indices = tess.GetGhostIndeces();
 	if(ghost_or_sent)
 	{
-		cells.resize(tess.GetTotalPointNumber() * extent);
+		cells.resize(tess.GetTotalPointNumber() * extent, *example_cell);
 	}
 	else
 	{

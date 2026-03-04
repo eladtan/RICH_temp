@@ -1090,7 +1090,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
-	Tessellation3D &tess = sim.getTesselation();
+	Tessellation3D &tess = sim.getTessellation();
 	std::vector<ComputationalCell3D> &cells = sim.getCells();
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
 	EquationOfState const& eos = eos_;
