@@ -2,6 +2,7 @@
 #define RANDOM_ON_FACE_HPP
 
 #include <random>
+#include <array>
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/elementary/Face.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
