@@ -12,6 +12,7 @@
 #include "tools/DistributedMutex.hpp"
 #include "tools/ConditionVariable.hpp"
 #include "ReallocationAgent.hpp"
+#include "utils/rma/RMAFactory.hpp"
 
 #define BUFFER_REALLOCATION_FACTOR 3 // 1.618033 // golden ratio
 #define MINIMAL_BUFF_SIZE 50
@@ -25,15 +26,13 @@ public:
     using index_t = uint32_t;
     using MCParticle = MonteCarloParticle<T, Grid>;
 
-    RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent);
+    RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type = RDMA_Type::MPI_RMA);
     
     ~RankHandler();
     
     void TransferParticles(const std::vector<MCParticle> &particles);
 
     void RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num);
-
-    void Sync(void);
 
     void Reset(void);
 
@@ -77,13 +76,14 @@ public:
     size_t reallocationsTotal;
 
 private:
-    MPI_Win particles_win;
-    MPI_Win av_win;
-    MPI_Win th_win;
-    MPI_Win av_length_win;
-    MPI_Win th_length_win;
+    std::unique_ptr<RemoteMemoryAgent<MCParticle>> particles_agent;
+    std::unique_ptr<RemoteMemoryAgent<index_t>> av_agent;
+    std::unique_ptr<RemoteMemoryAgent<index_t>> th_agent;
+    std::unique_ptr<RemoteMemoryAgent<int>> av_length_agent;
+    std::unique_ptr<RemoteMemoryAgent<int>> th_length_agent;
     std::shared_ptr<DistributedMutex> localTHMutex;
     std::shared_ptr<DistributedMutex> remoteTHMutex;
+    RDMA_Type rdma_type;
     bool destroyed;
     double requestedFactor;
     MPI_Group group_world, group_internal;
@@ -91,15 +91,14 @@ private:
     #ifdef ADVANCED_MONTECARLO_DEBUG
     void ValidateArraysContents(void) const;
 
-    void ValidateRemoteArraysContents(void) const;
+    void ValidateRemoteArraysContents(void);
     #endif // ADVANCED_MONTECARLO_DEBUG
 };
 
 template<typename T, typename Grid>
-RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent):
-    comm_world(comm_world), comm(private_comm), buffsize(buffsize), particles_win(MPI_WIN_NULL),
-    av_win(MPI_WIN_NULL), th_win(MPI_WIN_NULL), av_length_win(MPI_WIN_NULL), th_length_win(MPI_WIN_NULL),
-    destroyed(false), reallocationAgent(reallocationAgent), reallocationsTotal(0)
+RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type):
+    comm_world(comm_world), comm(private_comm), buffsize(buffsize),
+    rdma_type(rdma_type), destroyed(false), reallocationAgent(reallocationAgent), reallocationsTotal(0)
 {
     assert(private_comm != MPI_COMM_NULL);
 
@@ -117,60 +116,21 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
     {
         this->other_rank = 1 - this->rank_internal;
 
-        MPI_Info info;
-        MPI_Info_create(&info);
-        MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
-        MPI_Info_set(info, "accumulate_ops", "same_op");
-        MPI_Info_set(info, "same_disp_unit", "true");    
-        // initialize windows
+        this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
+        this->av_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
+        this->th_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
+        this->av_length_agent = RMAFactory::Create<int>(this->rdma_type, 1, this->comm);
+        this->th_length_agent = RMAFactory::Create<int>(this->rdma_type, 1, this->comm);
 
-        auto reportErrorAndExit = [](const std::string &str, int err)
-        {
-            if(err == MPI_SUCCESS)
-            {
-                return;
-            }
-            char error_string[MPI_MAX_ERROR_STRING];
-            int length_of_error_string;
-            MPI_Error_string(err, error_string, &length_of_error_string);
-            std::cerr << "Error: " << str << ": " << error_string << std::endl;
-            exit(1);
-        };
-
-        int retval;
-        retval = MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &this->particles, &this->particles_win);
-        reportErrorAndExit("MPI_Win_allocate for particles", retval);
-        assert(this->particles != nullptr);
-        retval = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->av, &this->av_win);
-        reportErrorAndExit("MPI_Win_allocate for av", retval);
-        assert(this->av != nullptr);
-        retval = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &this->th, &this->th_win);
-        reportErrorAndExit("MPI_Win_allocate for th", retval);
-        assert(this->th != nullptr);
-        retval = MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->av_length), &this->av_length_win);
-        reportErrorAndExit("MPI_Win_allocate for av length", retval);
-        assert(this->av_length != nullptr);
-        retval = MPI_Win_allocate(sizeof(int), sizeof(int), info, this->comm, static_cast<void*>(&this->th_length), &this->th_length_win);
-        reportErrorAndExit("MPI_Win_allocate for th length", retval);
-        assert(this->th_length != nullptr);
-        MPI_Info_free(&info);
-
-        MPI_Win windows[5] = {this->particles_win, this->av_win, this->th_win, this->av_length_win, this->th_length_win};
-        for(int i = 0; i < 5; i++)
-        {
-            MPI_Win_set_errhandler(windows[i], MPI_ERRORS_RETURN);
-            int *model, flag;
-            MPI_Win_get_attr(windows[i], MPI_WIN_MODEL, &model, &flag);
-            if(*model == MPI_WIN_SEPARATE)
-            {
-                std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
-                exit(1);
-            }
-        }
+        this->particles = this->particles_agent->GetLocalPointer();
+        this->av = this->av_agent->GetLocalPointer();
+        this->th = this->th_agent->GetLocalPointer();
+        this->av_length = const_cast<volatile int*>(this->av_length_agent->GetLocalPointer());
+        this->th_length = const_cast<volatile int*>(this->th_length_agent->GetLocalPointer());
         
         // initialize mutexes
-        std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0);
-        std::shared_ptr<DistributedMutex> rank1Mutex = std::make_shared<DistributedMutex>(comm, 1);
+        std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0, this->rdma_type);
+        std::shared_ptr<DistributedMutex> rank1Mutex = std::make_shared<DistributedMutex>(comm, 1, this->rdma_type);
         this->localTHMutex = (this->rank_internal == 0)? rank0Mutex : rank1Mutex;
         this->remoteTHMutex = (this->rank_internal == 0)? rank1Mutex : rank0Mutex;
 
@@ -225,33 +185,6 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
 }
 
 template<typename T, typename Grid>
-void RankHandler<T, Grid>::Sync(void)
-{
-    if(this->size_internal == 1)
-    {
-        return;
-    }
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->particles_win);
-    MPI_Win_sync(this->particles_win);
-    MPI_Win_unlock(this->rank_internal,this->particles_win);
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->av_win);
-    MPI_Win_sync(this->av_win);
-    MPI_Win_unlock(this->rank_internal,this->av_win);
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->th_win);
-    MPI_Win_sync(this->th_win);
-    MPI_Win_unlock(this->rank_internal,this->th_win);
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->av_length_win);
-    MPI_Win_sync(this->av_length_win);
-    MPI_Win_unlock(this->rank_internal,this->av_length_win);
-    MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->th_length_win);
-    MPI_Win_sync(this->th_length_win);
-    MPI_Win_unlock(this->rank_internal,this->th_length_win);
-    // sync distributed mutex
-    this->localTHMutex->Sync();
-    this->remoteTHMutex->Sync();
-}
-
-template<typename T, typename Grid>
 void RankHandler<T, Grid>::Reset(void)
 {
     *this->av_length = static_cast<int>(this->buffsize);
@@ -271,11 +204,11 @@ void RankHandler<T, Grid>::Destroy(void)
     #ifdef RICH_MPI
     if(this->size_internal > 1)
     {
-        MPI_Win_free(&this->particles_win);
-        MPI_Win_free(&this->av_win);
-        MPI_Win_free(&this->th_win);
-        MPI_Win_free(&this->av_length_win);
-        MPI_Win_free(&this->th_length_win);
+        this->particles_agent->Free();
+        this->av_agent->Free();
+        this->th_agent->Free();
+        this->av_length_agent->Free();
+        this->th_length_agent->Free();
         MPI_Group_free(&this->group_world);
         MPI_Group_free(&this->group_internal);
         DistributedMutex *mutex1 = (this->rank_internal == 0)? this->localTHMutex.get() : this->remoteTHMutex.get();
@@ -402,43 +335,28 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
 }
 
 template<typename T, typename Grid>
-void RankHandler<T, Grid>::ValidateRemoteArraysContents(void) const
+void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
 {
     static std::vector<index_t> remoteAV;
     static std::vector<index_t> remoteTH;
 
     int av_length;
-    MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_length_win);
-    int retval = MPI_Get(&av_length, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, this->av_length_win);
-    assert(retval == MPI_SUCCESS);
-    MPI_Win_unlock(this->other_rank, this->av_length_win);
+    this->av_length_agent->Get(&av_length, 1, this->other_rank, 0);
 
-    if(remoteAV.size() < av_length)
+    if(remoteAV.size() < static_cast<size_t>(av_length))
     {
         remoteAV.resize(av_length);
     }
-    // get AV
-    MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_win);
-    retval = MPI_Get(remoteAV.data(), av_length, MPI_INDEX_T, this->other_rank, 0, av_length, MPI_INDEX_T, this->av_win);
-    assert(retval == MPI_SUCCESS);
-    MPI_Win_unlock(this->other_rank, this->av_win);
+    this->av_agent->Get(remoteAV.data(), av_length, this->other_rank, 0);
 
     int th_length;
-    MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
-    retval = MPI_Get(&th_length, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, this->th_length_win);
-    assert(retval == MPI_SUCCESS);
-    MPI_Win_unlock(this->other_rank, this->th_length_win);
+    this->th_length_agent->Get(&th_length, 1, this->other_rank, 0);
 
-    if(remoteTH.size() < th_length)
+    if(remoteTH.size() < static_cast<size_t>(th_length))
     {
         remoteTH.resize(th_length);
     }
-
-    // get TH
-    MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_win);
-    retval = MPI_Get(remoteTH.data(), th_length, MPI_INDEX_T, this->other_rank, 0, th_length, MPI_INDEX_T, this->th_win);
-    assert(retval == MPI_SUCCESS);
-    MPI_Win_unlock(this->other_rank, this->th_win); 
+    this->th_agent->Get(remoteTH.data(), th_length, this->other_rank, 0);
 
     // get AV and TH
     boost::container::flat_map<index_t, size_t> avMap;
@@ -520,7 +438,6 @@ template<typename T, typename Grid>
 void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num)
 {
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
-    static constexpr int minus_one = -1;
 
     if(indicesInToHandle.empty())
     {
@@ -535,10 +452,6 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     // std::cout << "Rank " << this->rank_world << " removes particles " << indicesInToHandle << " from rank " << this->peer_rank_world << "'s buffer" << std::endl;
     volatile int &th_length = *this->th_length;
     volatile int &av_length = *this->av_length;
-
-    int startThLength = th_length;
-    
-    this->Sync();
     
     #ifdef ADVANCED_MONTECARLO_DEBUG
     try
@@ -594,8 +507,6 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
         assert(th_length >= 0);
     }   
 
-    this->Sync();
-
     #ifdef ADVANCED_MONTECARLO_DEBUG
     try
     {
@@ -620,7 +531,6 @@ template<typename T, typename Grid>
 void RankHandler<T, Grid>::Reallocate(double factor)
 {
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
-    // std::cout << "Rank " << this->rank_world << " reallocates (with rank " << this->peer_rank_world << ", factor " << factor << ", current size " << this->buffsize << ")" << std::endl;
     
     this->reallocationsThisStep++;
     this->reallocationsTotal++;
@@ -628,14 +538,8 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     double requestedFactorSelf;
     MPI_Sendrecv(&this->requestedFactor, 1, MPI_DOUBLE, this->other_rank, 0, &requestedFactorSelf, 1, MPI_DOUBLE, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
     factor = std::max(factor, requestedFactorSelf);
-
-    // if(this->rank_world <= this->peer_rank_world)
-    // {
-    //     std::cout << "Ranks " << this->rank_world << " and " << this->peer_rank_world << " have reallocation, for " << this->reallocationsThisStep << " times this step and " << this->reallocationsTotal << " times in total. ";
-    //     std::cout << "Increasing sizes to " << (this->buffsize * factor) << " (current: " << this->buffsize << ")" << std::endl;
-    // }
     
-    size_t newBuffSize = std::ceil(this->buffsize * factor); // ceil is necessary to avoid 0
+    size_t newBuffSize = std::ceil(this->buffsize * factor);
     size_t oldBuffSize = this->buffsize;
     if(oldBuffSize > newBuffSize)
     {
@@ -651,132 +555,41 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         return;
     }
 
-    // start reallocation
     this->buffsize = newBuffSize;
 
     if(this->size_internal > 1)
     {
         assert(this->size_internal == 2);
-        
-        MPI_Info info;
-        MPI_Info_create(&info);
-        MPI_Info_set(info, "accumulate_ordering", "none"); // No strict ordering
-        MPI_Info_set(info, "accumulate_ops", "same_op");
-        MPI_Info_set(info, "same_disp_unit", "true");    
-        // initialize windows
 
-        auto reportErrorAndExit = [](const std::string &str, int err)
-        {
-            if(err == MPI_SUCCESS)
-            {
-                return;
-            }
-            char error_string[MPI_MAX_ERROR_STRING];
-            int length_of_error_string;
-            MPI_Error_string(err, error_string, &length_of_error_string);
-            std::cerr << "Error: " << str << ": " << error_string << std::endl;
-            exit(1);
-        };
+        this->particles_agent->Resize(this->buffsize);
+        this->av_agent->Resize(this->buffsize);
+        this->th_agent->Resize(this->buffsize);
 
-        // std::cout << "Allocating size " << this->buffsize << std::endl;
-        
-        MPI_Win new_particles_win;
-        MCParticle *new_particles;
-        int err = MPI_Win_allocate(this->buffsize * sizeof(MCParticle), sizeof(MCParticle), info, this->comm, &new_particles, &new_particles_win);
-        reportErrorAndExit("MPI_Win_allocate new_particles with buffsize = " + std::to_string(this->buffsize), err);
-        if(new_particles == nullptr)
-        {
-            UniversalError eo("Allocation in MPI_Win_allocate (new_particles) returned null");
-            eo.addEntry("Buffersize", this->buffsize);
-            throw eo;
-        }
-
-        MPI_Win new_av_win;
-        index_t *new_av;
-        err = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &new_av, &new_av_win);
-        reportErrorAndExit("MPI_Win_allocate new_av with buffsize = " + std::to_string(this->buffsize), err);
-        if(new_av == nullptr)
-        {
-            UniversalError eo("Allocation in MPI_Win_allocate (new_av) returned null");
-            eo.addEntry("Buffersize", this->buffsize);
-            throw eo;
-        }
-
-        MPI_Win new_th_win;
-        index_t *new_th;
-        err = MPI_Win_allocate(this->buffsize * sizeof(index_t), sizeof(index_t), info, this->comm, &new_th, &new_th_win);
-        reportErrorAndExit("MPI_Win_allocate new_th with buffsize = " + std::to_string(this->buffsize), err);
-        if(new_th == nullptr)
-        {
-            UniversalError eo("Allocation in MPI_Win_allocate (new_th) returned null");
-            eo.addEntry("Buffersize", this->buffsize);
-            throw eo;
-        }
-        MPI_Info_free(&info);
+        this->particles = this->particles_agent->GetLocalPointer();
+        this->av = this->av_agent->GetLocalPointer();
+        this->th = this->th_agent->GetLocalPointer();
 
         if(this->buffsize >= oldBuffSize)
         {
-            std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
-            std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
             size_t difference = this->buffsize - oldBuffSize;
-            std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
-            std::iota(new_av, new_av + difference, oldBuffSize);
+            std::memmove(this->av + difference, this->av, oldBuffSize * sizeof(index_t));
+            std::iota(this->av, this->av + difference, static_cast<index_t>(oldBuffSize));
+
+            std::fill(this->th + oldBuffSize, this->th + this->buffsize, inf);
+
+            int difference_int = static_cast<int>(difference);
+            *this->av_length += difference_int;
         }
         else
         {
-            std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
-            std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
-            std::iota(new_av, new_av + this->buffsize, 0);
+            std::iota(this->av, this->av + this->buffsize, 0);
             *this->av_length = static_cast<int>(this->buffsize);
         }
-        std::fill(new_th + *this->th_length, new_th + this->buffsize, inf);
-
-        err = MPI_Win_free(&this->particles_win);
-        reportErrorAndExit("MPI_Win_free particles_win", err);
-        err = MPI_Win_free(&this->av_win);
-        reportErrorAndExit("MPI_Win_free av_win", err);
-        err = MPI_Win_free(&this->th_win);
-        reportErrorAndExit("MPI_Win_free th_win", err);
-
-        this->particles_win = new_particles_win;
-        this->av_win = new_av_win;
-        this->th_win = new_th_win;
-
-        MPI_Win windows[3] = {this->particles_win, this->av_win, this->th_win};
-        for(int i = 0; i < 3; i++)
-        {
-            // MPI_Win_set_errhandler(windows[i], MPI_ERRORS_RETURN);
-            int *model, flag;
-            err = MPI_Win_get_attr(windows[i], MPI_WIN_MODEL, &model, &flag);
-            reportErrorAndExit("MPI_Win_get_attr for " + std::to_string(i), err);
-            if(*model == MPI_WIN_SEPARATE)
-            {
-                std::cout << "MPI is using WIN_SEPARATE (" << MPI_WIN_SEPARATE << "). Can not continue" << std::endl;
-                exit(1);
-            }
-        }
-
-        // std::cout << "Rank " << this->rank_world << " reallocated " << oldBuffSize << " to " << this->buffsize << std::endl;
-        this->particles = new_particles;
-        this->av = new_av;
-        this->th = new_th;
-
-        if(this->buffsize >= oldBuffSize)
-        {
-            int difference_int = static_cast<int>(this->buffsize - oldBuffSize);            
-            MPI_Win_lock(MPI_LOCK_SHARED, this->rank_internal, MPI_MODE_NOCHECK, this->av_length_win);
-            MPI_Accumulate(&difference_int, 1, MPI_INT, this->rank_internal, 0, 1, MPI_INT, MPI_SUM, this->av_length_win);
-            MPI_Win_unlock(this->rank_internal, this->av_length_win);
-        }
-        
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
             this->ValidateArraysContents();
         #endif // ADVANCED_MONTECARLO_DEBUG
-        // std::cout << "Rank " << this->rank_world << " AV old window: " << oldwin << ", new window: " << new_av_win << " (peer size: " << this->peer_buffsize << ")" << std::endl;
-        
-        MPI_Barrier(this->comm); // unnecessary because of the sendrecv above
     }
     else
     {        
@@ -823,11 +636,7 @@ void RankHandler<T, Grid>::Reallocate(double factor)
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &particles)
 {
-    // static int minus_one = -1;
-    // static int plus_one = 1;
     size_t Np = particles.size();
-    int decrement = -static_cast<int>(Np);
-    int increment = static_cast<int>(Np);
     if(particles.empty())
     {
         return;
@@ -835,7 +644,6 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
 
     if(this->size_internal > 1)
     {
-        // acquire remote mutex
         this->remoteTHMutex->Lock();
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
@@ -854,143 +662,91 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         auto getAvailableLength = [&](void)
         {
             int availLength;
-            MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_length_win);
-            // todo: get to fetch_and_op
-            int retval = MPI_Fetch_and_op(&decrement, &availLength, MPI_INT, this->other_rank, 0, MPI_SUM, this->av_length_win);
-            assert(retval == MPI_SUCCESS);
-            MPI_Win_flush(this->other_rank, this->av_length_win);
-            assert(availLength <= this->peer_buffsize);
-            if(availLength < Np)
+            this->av_length_agent->Get(&availLength, 1, this->other_rank, 0);
+            assert(availLength <= static_cast<int>(this->peer_buffsize));
+            if(availLength >= static_cast<int>(Np))
             {
-                // increment back, a request to reallocate will be made
-                int availLength2;
-                retval = MPI_Fetch_and_op(&increment, &availLength2, MPI_INT, this->other_rank, 0, MPI_SUM, this->av_length_win);
-                MPI_Win_flush(this->other_rank, this->av_length_win);
-                #ifdef MONTECARLO_DEBUG
-                if(availLength2 != (availLength + decrement))
-                {
-                    UniversalError eo("RankHandler<T, Grid>::TransferParticles: Reallocation: Fetch and op returned unexpected value");
-                    eo.addEntry("Expected", availLength + decrement);
-                    eo.addEntry("Got", availLength2);
-                    eo.addEntry("Rank", this->rank_world);
-                    eo.addEntry("Peer Rank", this->peer_rank_world);
-                    throw eo;
-                }
-                #endif // MONTECARLO_DEBUG
+                int newAvail = availLength - static_cast<int>(Np);
+                this->av_length_agent->Put(&newAvail, 1, this->other_rank, 0, false);
+            }
+            else
+            {
                 reallocationsCounter++;
             }
-            MPI_Win_unlock(this->other_rank, this->av_length_win);
             assert(availLength >= 0);
             return availLength;
         };
 
         int availLength = getAvailableLength();
         auto start = std::chrono::high_resolution_clock::now();
-        size_t requestReallocationTimes = 0;
         while(availLength < Np)
         {
-            this->requestedFactor = static_cast<double>((Np + availLength)) / this->peer_buffsize * 1.5; // request 50% more than needed
+            size_t peerUsed = this->peer_buffsize - static_cast<size_t>(availLength);
+            this->requestedFactor = static_cast<double>(peerUsed + Np) /
+                                    static_cast<double>(this->peer_buffsize) * 1.5;
+
             this->remoteTHMutex->Unlock();
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
             this->remoteTHMutex->Lock();
             availLength = getAvailableLength();
-            requestReallocationTimes++;
         }
         assert(availLength >= Np);
         auto end = std::chrono::high_resolution_clock::now();
         this->reallocationTime += std::chrono::duration<double>(end - start).count();
 
-        // if(requestReallocationTimes > 1)
-        // {
-        //     std::cout << "Rank " << this->rank_world << " and " << this->peer_rank_world << ", requested allocations " << requestReallocationTimes << " times before being able to transfer " << Np << " particles" << std::endl;
-        // }
-        // get particle empty index from avail list
         std::vector<index_t> availIndices(Np);
-
-        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->av_win);
-        int retval = MPI_Get(availIndices.data(), Np, MPI_INDEX_T, this->other_rank, availLength - Np, Np, MPI_INDEX_T, this->av_win);
-        assert(retval == MPI_SUCCESS);
-        MPI_Win_unlock(this->other_rank, this->av_win);
-
-        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->particles_win);
+        this->av_agent->Get(availIndices.data(), Np, this->other_rank, availLength - Np);
 
         #ifdef MONTECARLO_DEBUG
             boost::container::flat_map<index_t, size_t> availIndicesMap;
+            for(size_t i = 0; i < Np; i++)
+            {
+                index_t availIndex = availIndices[i];
+                if(availIndicesMap.find(availIndex) != availIndicesMap.end())
+                {
+                    UniversalError eo("RankHandler<T, Grid>::TransferParticles: duplication in available Index");
+                    eo.addEntry("Available Index", availIndex);
+                    eo.addEntry("Already in Index", availIndicesMap[availIndex]);
+                    eo.addEntry("Index", i);
+                    eo.addEntry("Rank", this->rank_world);
+                    eo.addEntry("Peer Rank", this->peer_rank_world);
+                    throw eo;
+                }
+                availIndicesMap.insert({availIndex, i});
+                assert(availIndex < this->peer_buffsize);
+                if(particles[i].nextRank != this->peer_rank_world)
+                {
+                    UniversalError eo("RankHandler<T, Grid>::TransferParticles: Particle will not be sent to the expected rank");
+                    eo.addEntry("Particle", particles[i]);
+                    eo.addEntry("Origin", this->rank_world);
+                    eo.addEntry("Expected Rank", particles[i].nextRank);
+                    eo.addEntry("Next Rank", this->peer_rank_world);
+                    throw eo;
+                }
+            }
         #endif // MONTECARLO_DEBUG
 
-        for(size_t i = 0; i < Np; i++)
-        {
-            index_t availIndex = availIndices[i];
-            #ifdef MONTECARLO_DEBUG
-            if(availIndicesMap.find(availIndex) != availIndicesMap.end())
-            {
-                UniversalError eo("RankHandler<T, Grid>::TransferParticles: duplication in available Index");
-                eo.addEntry("Available Index", availIndex);
-                eo.addEntry("Already in Index", availIndicesMap[availIndex]);
-                eo.addEntry("Index", i);
-                eo.addEntry("Rank", this->rank_world);
-                eo.addEntry("Peer Rank", this->peer_rank_world);
-                throw eo;
-            }
-            availIndicesMap.insert({availIndex, i});
-            #endif // MONTECARLO_DEBUG
-            assert(availIndex < this->peer_buffsize);
-            assert(i < Np);
-            const MCParticle *particle = &particles[i];
+        assert(this->other_rank != this->rank_internal);
+        this->particles_agent->PutScatter(particles.data(), availIndices.data(), Np, this->other_rank);
 
-            #ifdef MONTECARLO_DEBUG
-            if(particle->nextRank != this->peer_rank_world)
-            {
-                UniversalError eo("RankHandler<T, Grid>::TransferParticles: Particle will not be sent to the expected rank");
-                eo.addEntry("Particle", *particle);
-                eo.addEntry("Origin", this->rank_world);
-                eo.addEntry("Expected Rank", particle->nextRank);
-                eo.addEntry("Next Rank", this->peer_rank_world);
-                throw eo;
-            }
-            #endif // MONTECARLO_DEBUG
-            /* put particle itself */
-            // std::cout << "Rank " << this->rank_world << " transferrs particle " << particle->id << " of rank " << particle->rank << " to rank " << this->peer_rank_world << std::endl;
-            
-            assert(this->other_rank != this->rank_internal);
-            retval = MPI_Put(particle, sizeof(MCParticle), MPI_BYTE, this->other_rank, availIndex, sizeof(MCParticle), MPI_BYTE, this->particles_win);
-            #ifdef MONTECARLO_DEBUG
-            if(retval != MPI_SUCCESS or particle->nextRank != this->peer_rank_world)
-            {
-                UniversalError eo("Put failed");
-                eo.addEntry("Particle", *particle);
-                eo.addEntry("Origin", this->rank_world);
-                eo.addEntry("Expected Rank", particle->nextRank);
-                eo.addEntry("Next Rank", this->peer_rank_world);
-                eo.addEntry("Put Return Value", retval);
-                throw eo;
-            }
-            #endif // MONTECARLO_DEBUG
-            assert(retval == MPI_SUCCESS);
-        }
-        MPI_Win_flush(this->other_rank, this->particles_win);
-        MPI_Win_sync(this->particles_win);
-        MPI_Win_unlock(this->other_rank, this->particles_win);
-
-        /* put in to handle list */
-
-        // get length of to handle list
-        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
         int toHandleLength;
-        retval = MPI_Get(&toHandleLength, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, this->th_length_win);
-        assert(retval == MPI_SUCCESS);
-        MPI_Win_unlock(this->other_rank, this->th_length_win);
+        this->th_length_agent->Get(&toHandleLength, 1, this->other_rank, 0);
         assert(toHandleLength >= 0);
-        assert(toHandleLength < this->peer_buffsize);
+        assert(toHandleLength < static_cast<int>(this->peer_buffsize));
 
-        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_win);
-        MPI_Put(availIndices.data(), Np, MPI_INDEX_T, this->other_rank, toHandleLength, Np, MPI_INDEX_T, this->th_win);
-        MPI_Win_unlock(this->other_rank, this->th_win);
+        this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, false);
 
-        // add 1 to to handle index
-        MPI_Win_lock(MPI_LOCK_SHARED, this->other_rank, MPI_MODE_NOCHECK, this->th_length_win);
-        MPI_Accumulate(&increment, 1, MPI_INT, this->other_rank, 0, 1, MPI_INT, MPI_SUM, this->th_length_win);
-        MPI_Win_unlock(this->other_rank, this->th_length_win);
+        int newThLength = toHandleLength + static_cast<int>(Np);
+        this->th_length_agent->Put(&newThLength, 1, this->other_rank, 0, false);
+
+        // Explicit flush points:
+        // 1) commit available-length reservation
+        // 2) commit TH payload
+        // 3) publish new TH length
+        // Keep these before validation/unlock so remote state is consistent.
+        this->av_length_agent->Flush(this->other_rank);
+        this->th_agent->Flush(this->other_rank);
+        this->th_length_agent->Flush(this->other_rank);
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
             try
@@ -1011,8 +767,6 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
 
             // release remote mutex
         this->remoteTHMutex->Unlock();
-
-        // std::cout << "In sending of from rank " << this->rank_world << " to rank " << this->peer_rank_world << ", avail length of peer is " << availLength << ", and to handle " << toHandleLength << std::endl;
 
     }
     else

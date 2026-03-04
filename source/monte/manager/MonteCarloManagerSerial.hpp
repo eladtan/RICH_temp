@@ -32,7 +32,7 @@ public:
                     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition);
 
-    ~MonteCarloManagerSerial();
+    virtual ~MonteCarloManagerSerial();
 
     std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, dt_t fullDt);
     
@@ -55,6 +55,8 @@ public:
 
     inline void resetTracker(void){this->tracker.Reset();};
 
+    inline const std::vector<size_t> &GetCellsStepsCounters(void) const{return this->cellsStepsCounters;};
+
 private:
     const Grid &grid;
     size_t Ncells;
@@ -65,6 +67,7 @@ private:
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
     Tracker tracker;
     size_t myIDCounter;
+    std::vector<size_t> cellsStepsCounters;
 
     struct
     {
@@ -296,7 +299,6 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
     };
 
     int length = this->particlesData.th_length;
-    distance_t scatteringLength = abs(this->ur - this->ll) / 10;
 
     for(int i = 0; i < length; i++)
     {
@@ -304,59 +306,63 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
         size_t particleIndex = this->particlesData.th[i];
         assert(particleIndex < this->particlesData.buffsize);
         MCParticle &particle = this->particlesData.particles[particleIndex];
-        if(particle.on_track)
+        while(true)
         {
-            this->tracker.ReportParticle(particle);
-        }
-        particle.steps++;
-
-        T prevLoc = particle.location;
-        MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
-
-        if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
-        {
-            size_t nextCellIndex = functionality.nextCellIndex;
-
-            assert(nextCellIndex != particle.cellIndex);
-            assert(particle.timeLeft >= 0);
-
-            if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+            if(particle.on_track)
             {
-                // local neighbor
-                particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                particle.cellIndex = nextCellIndex;
+                this->tracker.ReportParticle(particle);
             }
-            else
+            particle.steps++;
+            this->cellsStepsCounters[particle.cellIndex]++;
+    
+            MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
+    
+            if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
             {
-                // leaving domain
-                MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
-                if(status == MonteCarloParticleStatus::REFLECT)
-                {}
-                else if(status == MonteCarloParticleStatus::REMOVE)
+                size_t nextCellIndex = functionality.nextCellIndex;
+    
+                assert(nextCellIndex != particle.cellIndex);
+                assert(particle.timeLeft >= 0);
+    
+                if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                 {
-                    // std::cout << "Particle " << particle << "(" << &particle << ")" << " is leaving the domain" << std::endl;
-                    stepData.leaving.push_back(particle);
-                    removeParticle(i);
+                    // local neighbor
+                    particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                    particle.cellIndex = nextCellIndex;
                 }
                 else
                 {
-                    std::cerr << "Unknown boundary condition for particle " << particle << std::endl;
-                    exit(1);
+                    // leaving domain
+                    MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                    if(status == MonteCarloParticleStatus::REFLECT)
+                    {}
+                    else if(status == MonteCarloParticleStatus::REMOVE)
+                    {
+                        // std::cout << "Particle " << particle << "(" << &particle << ")" << " is leaving the domain" << std::endl;
+                        stepData.leaving.push_back(particle);
+                        removeParticle(i);
+                        break;
+                    }
+                    else
+                    {
+                        std::cerr << "Unknown boundary condition for particle " << particle << std::endl;
+                        exit(1);
+                    }
+                    continue;
                 }
-                continue;
             }
-        }
-        else if(functionality.change == MonteCarloParticleStatus::REMOVE)
-        {
-            removeParticle(i);
-            continue;
-        }
-        else if(functionality.change == MonteCarloParticleStatus::DONE)
-        {
-            stepData.remaining.push_back(particle);
-            // remove particle from current list
-            removeParticle(i);
-            continue;
+            else if(functionality.change == MonteCarloParticleStatus::REMOVE)
+            {
+                removeParticle(i);
+                break;
+            }
+            else if(functionality.change == MonteCarloParticleStatus::DONE)
+            {
+                stepData.remaining.push_back(particle);
+                // remove particle from current list
+                removeParticle(i);
+                break;
+            }
         }
     }
 
@@ -376,8 +382,10 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     
     this->resetTracker();
 
-    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt, particlesListCpy);
     this->PutSelfParticles(particlesListCpy);
+
+    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+    this->AddParticles(newParticles1);
 
     int length = this->particlesData.th_length;
     for(int i = 0; i < length; i++)
@@ -390,11 +398,11 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     }
     this->AddParticles(newParticles1);
     
-    size_t numParticles = this->particlesData.th_length;
-    
+    this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
+
     MonteCarloStepFinalData data;
     // measure time
-    vtune_start();
+    // vtune_start();
     auto start = std::chrono::high_resolution_clock::now();
 
     try

@@ -22,13 +22,6 @@ public:
     
     void MarkDone(void);
 
-    inline void Sync(void)
-    {
-        MPI_Win_lock(MPI_LOCK_SHARED, this->rank, MPI_MODE_NOCHECK, this->is_done_win);
-        MPI_Win_sync(this->is_done_win);
-        MPI_Win_unlock(this->rank, this->is_done_win);
-    };
-
     int GetValue(void) const{return this->counter->GetValue();};
     
     volatile int *is_done;

@@ -1,15 +1,13 @@
 #include "RadiationIMC.hpp"
 
-#include "mpi/Synchronize.h" // todo remove
-
 // #define MONTECARLO_EPS 1e-7
 
 #define INTERSECTION 0
 #define SCATTERING 1
 #define TIMELEFT 2
 
-RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell, bool withHydro)
-    : MonteCarloPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(withHydro), newPhotonsPerCell(newPhotonsPerCell)
+RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(withHydro), newPhotonsPerCell(newPhotonsPerCell)
 {}
 
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
@@ -28,13 +26,13 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     // todo: change opacity with doppler shift in cast of frequency dependance
     double dopplerShift = (this->withHydro) ? DopplerShift(particle, cell.velocity) : 1.0;
 
-    double scatteringLength = 1.0 / (opacity.getScatteringOpacity(cell) + (1 - this->factorFleck[cellIndex]) * this->planckOpacities[cellIndex]);
+    double scatteringLength = 1.0 / (opacity->getScatteringOpacity(cell) + (1 - this->factorFleck[cellIndex]) * this->planckOpacities[cellIndex]);
     double _log1p = -std::log1p(this->dist(this->re) - 1); 
     distance_t scatteringDistance = scatteringLength * _log1p / dopplerShift; 
     if(scatteringDistance < 0)
     {
         UniversalError eo("Negative scattering distance in RadiationIMC::step");
-        eo.addEntry("Cell scattering distance", opacity.getScatteringOpacity(cell));
+        eo.addEntry("Cell scattering distance", opacity->getScatteringOpacity(cell));
         eo.addEntry("Factor fleck", this->factorFleck[cellIndex]);
         eo.addEntry("Planck opacity", this->planckOpacities[cellIndex]);
         eo.addEntry("log(1-randm)", _log1p);
@@ -92,7 +90,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     else if(min.first == SCATTERING)
     {
         Vector3D oldVelocity = particle.velocity;
-        particle.velocity = opacity.getNewScatterVelocity(cell, particle);
+        particle.velocity = opacity->getNewScatterVelocity(cell, particle);
         if(this->withHydro)
         {
             double weightBefore = particle.weight; // to restore after lorentz transformation
@@ -139,7 +137,7 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
             this->conserved[i].energy = this->conserved[i].internal_energy + 0.5 * ScalarProd(this->conserved[i].momentum, this->conserved[i].momentum) / this->conserved[i].mass; // TODO: material strength
         }
         this->conserved[i].Erad = 0;
-        cell.temperature = this->eos.de2T(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
+        cell.temperature = this->eos->de2T(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
     }
     for(const MCParticle &particle : particles)
     {
@@ -178,7 +176,7 @@ std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(d
             eo.addEntry("Full dt", fullDt);
             eo.addEntry("Factor fleck", this->factorFleck[i]);
             eo.addEntry("Gamma", gamma);
-            eo.addEntry("cv", this->eos.dT2cv(cell.density, cell.temperature, cell.tracers, cell.tracerNames));
+            eo.addEntry("cv", this->eos->dT2cv(cell.density, cell.temperature, cell.tracers, cell.tracerNames));
             throw eo;
         }
         this->conserved[i].energy -= energyToCreate * gamma;
@@ -210,10 +208,10 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     for(size_t i = 0; i < Ncells; i++)
     {
         const ComputationalCell3D &cell = this->cells[i];
-        this->planckOpacities[i] = this->opacity.getPlanckOpacity(this->cells[i]);
+        this->planckOpacities[i] = this->opacity->getPlanckOpacity(this->cells[i]);
         double gamma = (this->withHydro)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
 
-        double cv = this->eos.dT2cv(this->cells[i].density, this->cells[i].temperature, this->cells[i].tracers, this->cells[i].tracerNames);
+        double cv = this->eos->dT2cv(this->cells[i].density, this->cells[i].temperature, this->cells[i].tracers, this->cells[i].tracerNames);
         this->factorFleck[i] = 1 / (1 + (4 * units::arad * boost::math::pow<3>(this->cells[i].temperature) * this->planckOpacities[i] * units::clight * fullDt * gamma) / cv);
         if(this->factorFleck[i] < 0 or this->factorFleck[i] > 1)
         {
@@ -256,7 +254,7 @@ typename RadiationIMC::Particle RadiationIMC::generateSingleParticle(size_t cell
     particle.timeLeft = 0;
     assert(this->grid.IsPointInCell(particle.location, cellIndex));
     assert(not this->grid.IsPointOutsideBox(particle.location));
-    particle.velocity = this->opacity.getRandomVelocity(cell);
+    particle.velocity = this->opacity->getRandomVelocity(cell);
     if(this->withHydro)
     {
         LorentzTransformation(particle, -1 * cell.velocity);

@@ -32,6 +32,8 @@ public:
 
     inline const counter_t &GetValue(void) const{return this->globalNum;};
 
+    inline counter_t GetPendingValue(void) const{return this->tempNum;};
+    
 private:
     void AskChildrenVerify(void);
     

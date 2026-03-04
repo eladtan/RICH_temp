@@ -3,14 +3,14 @@
 
 #include "MonteCarloPhysics3D.hpp"
 
-class RadiationIMC : public MonteCarloPhysics3D
+class RadiationIMC : public MonteCarloRadiationPhysics3D
 {
 public:
     using Particle = MonteCarloParticle<Vector3D, Tessellation3D>;
     using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity, size_t newPhotonsPerCell, bool withHydro = false);
+    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro = false);
 
     std::vector<Particle> preStep(double fullDt) override;
 

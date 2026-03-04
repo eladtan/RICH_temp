@@ -2,9 +2,10 @@
 #define MONTECARLO_MANAGER_3D_HPP
 
 #ifdef RICH_MPI
-
 #include "monte/manager/MonteCarloManager.hpp"
 #include "monte/two_sided_manager/TwoSidedMonteCarloManager.hpp"
+#endif // RICH_MPI
+#include "monte/manager/MonteCarloManagerSerial.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 class MonteCarloManager3D
@@ -19,6 +20,22 @@ public:
     virtual std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
 };
 
+class MonteCarloManagerSerial3D : public MonteCarloManagerSerial<Vector3D, Tessellation3D>, public MonteCarloManager3D
+{
+    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+
+public:
+    MonteCarloManagerSerial3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
+                        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
+                        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition);
+
+    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+
+    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
+};
+
+#ifdef RICH_MPI
+
 class RDMAMonteCarloManager3D : public MonteCarloManager<Vector3D, Tessellation3D>, public MonteCarloManager3D
 {
     using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
@@ -28,7 +45,8 @@ public:
                         const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
                         const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
                         size_t bufferSizes = DEFAULT_BUFFER_SIZE,
-                        const MPI_Comm &comm = MPI_COMM_WORLD);
+                        const MPI_Comm &comm = MPI_COMM_WORLD,
+                        RDMA_Type rdma_type = RDMA_Type::MPI_RMA);
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 

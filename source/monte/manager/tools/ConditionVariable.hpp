@@ -26,8 +26,6 @@ private:
     MPI_Win win;
     int *value;
     bool destroyed;
-
-    void Sync(void);
 };
 
 #endif // RICH_MPI

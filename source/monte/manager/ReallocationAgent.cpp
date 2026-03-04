@@ -131,31 +131,19 @@ void ReallocationAgent::RequestReallocation(rank_t fromRank)
 
     while(true)
     {
-        double elapsed_time = MPI_Wtime() - time;
         int flag;
         MPI_Test(&request1, &flag, MPI_STATUS_IGNORE);
         if(flag)
         {
             // finally!
             MPI_Wait(&request2, MPI_STATUS_IGNORE);
-            // if(elapsed_time > 2)
-            // {
-            //     std::cout << "Warning: rank " << this->rank << " waited " << elapsed_time << " seconds for reallocation from rank " << fromRank << ", meanwhile did " << this->reallocationsWhileWaiting << " reallocations, already joined: " << alreadyJoinedWithPeer << " (since " << (alreadyJoinedWithPeer? std::to_string((MPI_Wtime() - alreadyJoinedTime)) : "-") << ")" << std::endl;
-            // }
-            
-            this->reallocationFunction(fromRank); // join to peer with reallocation
+            this->reallocationFunction(fromRank);
             this->waitingFor = NO_RANK;
             return;
         }
         else
         {
-            // make progress
-            rank_t handled = this->HandleWaitingReallocations();
-            // if(handled == this->waitingFor)
-            // {
-            //     alreadyJoinedTime = MPI_Wtime();
-            //     alreadyJoinedWithPeer = true;
-            // }
+            this->HandleWaitingReallocations();
         }
     }
 }

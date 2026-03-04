@@ -22,6 +22,7 @@ void AssertLocations(const Tessellation3D &tess, const std::vector<Particle3D> &
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs);
 
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<ComputationalCell3D> &cells);
+
 #ifdef RICH_MPI
 void UpdateNewCellsAfterExchange(const Tessellation3D &tess, std::vector<Particle3D> &particles, const ExchangeChain &chain);
 

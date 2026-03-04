@@ -56,21 +56,16 @@ void ConditionVariable::Destroy(void)
     this->destroyed = true;
 }
 
-void ConditionVariable::Sync(void)
-{
-    MPI_Win_lock(MPI_LOCK_SHARED, this->internal_rank, MPI_MODE_NOCHECK, this->win);
-    MPI_Win_sync(this->win);
-    MPI_Win_unlock(this->internal_rank, this->win);
-}
-
 void ConditionVariable::Wait(DistributedMutex &mutex, const std::function<void(void)> &work_function)
 {
     mutex.Unlock();
     int &value = *this->value;
     while(value == 0)
     {
-        work_function(); // do work, then try again
-        this->Sync();
+        work_function();
+        MPI_Win_lock(MPI_LOCK_SHARED, this->internal_rank, MPI_MODE_NOCHECK, this->win);
+        MPI_Win_sync(this->win);
+        MPI_Win_unlock(this->internal_rank, this->win);
     }
     // out! reset value
     value = 0;

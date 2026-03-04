@@ -6,8 +6,8 @@
 #include "monte/MonteCarloParticle.hpp"
 #include "monte/physics/MonteCarloPhysics.hpp"
 #include "monte/population/PopulationControl.hpp"
-// #include "tools/ProgressCounter.hpp"
 #include "tools/ParticleAmountManager.hpp"
+#include "tools/ParticleAmountManager2.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "monte/utils/GhostMap.hpp"
 #include "monte/utils/RankSync.hpp"
@@ -68,7 +68,7 @@ public:
                     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
                     size_t bufferSizes = DEFAULT_BUFFER_SIZE,
-                    const MPI_Comm &comm = MPI_COMM_WORLD);
+                    const MPI_Comm &comm = MPI_COMM_WORLD, RDMA_Type rdma_type = RDMA_Type::MPI_RMA);
 
     ~MonteCarloManager();
 
@@ -116,7 +116,7 @@ private:
     rank_t rank_world, size_world;
     size_t Ncells;
     // std::shared_ptr<ProgressCounter> progress;
-    int localDecrementAmount;
+    typename ParticleAmountManager2::counter_t localDecrementAmount;
     std::vector<MPI_Comm> communicators;
     std::vector<rank_t> ranksOrder;
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
@@ -125,7 +125,6 @@ private:
     std::shared_ptr<MonteCarloPhysics<T, Grid>> physics;
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
     std::shared_ptr<BoundaryCondition<T, Grid>> boundaryCondition;
-    std::shared_ptr<ParticleAmountManager> amountManager;
     Tracker tracker;
     std::shared_ptr<ReallocationAgent> reallocationAgent;
     size_t myIDCounter;
@@ -138,6 +137,7 @@ private:
     size_t dynamicallyAdded;
     size_t maxConsecutiveSteps;
     double maxConsecutiveStepsTime;
+    RDMA_Type rdma_type;
     
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -156,20 +156,20 @@ private:
 
 template<typename T, typename Grid>
 MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl, 
-                                            const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, size_t bufferSizes, const MPI_Comm &comm):
-    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm)
+                                            const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, size_t bufferSizes, const MPI_Comm &comm, RDMA_Type rdma_type):
+    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm), rdma_type(rdma_type)
 {
     this->myIDCounter = 0;
     this->currentStep = 0;
     // this->progress = std::make_shared<ProgressCounter>(comm);
     this->SetCommunicator(comm);
     this->InitializeHandlers(bufferSizes);
-    this->amountManager = std::make_shared<ParticleAmountManager>(this->comm_world, true /* use RDMA */);
 
     if(this->rank_world == 0)
     {
         std::cout << "Done initializing MonteCarloManager" << std::endl;
     }
+    this->cellsStepsCounters = std::vector<size_t>(this->grid.GetPointNo(), 0);
 }
 
 template<typename T, typename Grid>
@@ -179,7 +179,7 @@ void MonteCarloManager<T, Grid>::InitializeHandlers(size_t bufferSizes)
 
     auto createHandler = [&](rank_t _rank)
     {
-        this->rankHandlers[_rank] = new RankHandler(bufferSizes, this->comm_world, this->communicators[_rank], this->reallocationAgent);
+        this->rankHandlers[_rank] = new RankHandler(bufferSizes, this->comm_world, this->communicators[_rank], this->reallocationAgent, this->rdma_type);
         if(this->rankHandlers[_rank]->peer_rank_world != _rank)
         {
             UniversalError eo("Peer rank world does not match");
@@ -363,7 +363,7 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
         #endif // MONTECARLO_DEBUG
     }
 
-    this->localDecrementAmount -= static_cast<int>(particlesNum);
+    this->localDecrementAmount -= static_cast<typename ParticleAmountManager2::counter_t>(particlesNum);
     // std::cout << "Done add particles" << std::endl;
 }
 
@@ -600,8 +600,8 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t fro
             }
         }
         #endif // MONTECARLO_DEBUG
-        // std::cout << "Migrating particle " << *particle << ", from rankbuff " << rankBuffer << " to rank " << toRank << std::endl;
         remoteHandler->TransferParticles(particles);
+        this->reallocationAgent->HandleAllWaitingReallocations();
     }
 }
 
@@ -746,7 +746,6 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
             }
         }
         #endif // MONTECARLO_DEBUG
-        // std::cout << "Migrating particle " << *particle << ", from rankbuff " << rankBuffer << " to rank " << toRank << std::endl;
         remoteHandler->TransferParticles(particles);
     }
 }
@@ -778,15 +777,15 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             {
                 rank_t future_rank = this->neighbors[i + PREFETCH_DISTANCE];
 
-                // Prefetch the RankHandler* object (heap-allocated, likely scattered)
-                RankHandler* future_handler = this->rankHandlers[future_rank];
+                // Prefetch the RankHandler *object (heap-allocated, likely scattered)
+                RankHandler *future_handler = this->rankHandlers[future_rank];
                 __builtin_prefetch(future_handler, 0, 1);                  // bring RankHandler into cache
                 __builtin_prefetch((const void*) (future_handler->th_length), 0, 1);       // bring th_length target into cache
             }
 
             // Access current handler
             rank_t _rank = this->neighbors[i];
-            RankHandler* handler = this->rankHandlers[_rank];
+            RankHandler *handler = this->rankHandlers[_rank];
 
             // Cache the dereferenced value to avoid repeated indirection
             int len = *handler->th_length;
@@ -799,9 +798,6 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         }
         {
             RankHandler *handler = this->rankHandlers[this->rank_world];
-            // std::cout << "Running sync on window of rank " << std::get<0>(buffer) << std::endl;
-            // handler->Sync(); // todo: what about that?
-            // std::cout << "Done!" << std::endl;
             if(*handler->th_length > 0)
             {
                 active_ranks.push_back(this->rank_world);
@@ -883,10 +879,6 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             while(true)
             {
                 consecutiveSteps++;
-                // debug = debug or (particle.id == 6480574 and particle.rank == 21);
-                // debug = debug or (particle.id == 6531002 and particle.rank == 9);
-                // debug = debug or (particle.id == 6531241 and particle.rank == 27);
-                // debug = debug or (particle.id == 6582636 and particle.rank == 10);
 
                 // TODO: shouldn't be, there's a bug
                 // if(particle.sent)
@@ -1180,6 +1172,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     break;
                 }
             }
+            this->reallocationAgent->HandleAllWaitingReallocations();
         }
         
         if(length > 0)
@@ -1283,7 +1276,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     // this->neighbors = this->grid.GetDuplicatedProcs();    
     this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
     this->transfersCounter = 0;
-    MPI_Barrier(this->comm_world);
     
     size_t totalParticles = 0;
     for(RankHandler *handler : this->rankHandlers)
@@ -1343,7 +1335,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     if(this->rank_world == 0)
     {
-        // std::cout << "Prestep average time: " << preStepSeconds / this->size_world << " seconds, max is " << maxPreStepData.seconds << " on rank " << maxPreStepData.rank << std::endl;
+        std::cout << "Prestep time: avg=" << preStepSeconds / this->size_world << "s, max=" << maxPreStepData.seconds << "s (rank " << maxPreStepData.rank << ")" << std::endl;
     }
     // MPI_Barrier(MPI_COMM_WORLD);
 
@@ -1359,77 +1351,39 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
 
     this->localDecrementAmount = 0;
-    this->amountManager->Initialize(startingParticleNum);
+
+    ParticleAmountManager2 amountManager(this->comm_world);
+    amountManager.Initialize(startingParticleNum);
 
     MonteCarloStepFinalData data;
-    // measure time
-    // vtune_start();
     size_t numOfCounterDecrementations = 0;
     auto start = std::chrono::high_resolution_clock::now();
     size_t lastLocalDecrementAmount;
     size_t decrementTryCounter = 0;
 
-    volatile int &verify = *this->amountManager->shouldVerify;
-    volatile int &done = *this->amountManager->done;
+    const bool &verify = amountManager.GetVerifyRef();
+    const bool &done = amountManager.GetDoneRef();
 
     START_TIMER_PREEMPTIVE("Main Loop");
     try
     {
         while(not done)
         {
-            lastLocalDecrementAmount = this->localDecrementAmount;
-
             this->reallocationAgent->HandleAllWaitingReallocations();
+            this->HandleAll(data);
 
-            bool isEmpty = this->HandleAll(data);
-    
-            if(isEmpty and (this->localDecrementAmount != 0) and (this->localDecrementAmount == lastLocalDecrementAmount))
-            {
-                decrementTryCounter++;
-            }
-            if(decrementTryCounter == 30)
-            {
-                numOfCounterDecrementations++;
-                this->amountManager->Decrease(this->localDecrementAmount);
-                this->localDecrementAmount = 0;
-                decrementTryCounter = 0;
-            }
+            amountManager.Decrease(this->localDecrementAmount);
+            this->localDecrementAmount = 0;
+
+            amountManager.Progress();
             
-            if(this->rank_world == 0 and this->iteration % 20 == 0)
-            {
-                this->amountManager->CheckToFinish();
-            }
             if(verify)
             {
-                // std::cout << "Rank " << this->rank_world << " should verify" << std::endl;
-                bool ok = true;
-                for(RankHandler *handler : this->rankHandlers)
-                {
-                    if(handler == nullptr)
-                    {
-                        continue;
-                    }
-                    if(*handler->th_length != 0)
-                    {
-                        ok = false;
-                        break;
-                    }
-                }
-                this->amountManager->Verify(ok);
-                if(this->rank_world == 0)
-                {
-                    this->amountManager->ReceiveVerifies();
-                }
+                this->reallocationAgent->HandleAllWaitingReallocations();
+                bool ok = amountManager.GetPendingValue() == 0;
+                amountManager.Verify(ok);
             }
 
-            // if(this->rank_world == 0)
-            // {
-            //     double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - start).count();
-            //     // if(elapsed > 5)
-            //     // {
-            //     //     std::cout << "Elapsed " << elapsed << " seconds, currently " << this->amountManager->GetCounter() << std::endl;
-            //     // }
-            // }
             this->iteration++;
         }
     }
@@ -1438,6 +1392,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         reportError(eo);
         throw;
     }
+
+    MPI_Barrier(this->comm_world);
     auto end = std::chrono::high_resolution_clock::now();
     
     START_TIMER_PREEMPTIVE("Boundary Condition");
@@ -1478,6 +1434,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MPI_Reduce(&myTransfers, &maxTransfers, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
 
     double reallocationTime = 0, maxReallocationTime = 0;
+    size_t totalReallocations = 0;
     for(RankHandler *handler : this->rankHandlers)
     {
         if(handler == nullptr)
@@ -1485,7 +1442,9 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             continue;
         }
         reallocationTime += handler->reallocationTime;
+        totalReallocations += handler->reallocationsThisStep;
     }
+
     // std::cout << "leavingNumber = " << leavingNumber << " and newParticlesNum = " << newParticlesNum << std::endl; 
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &initialParticlesNum, &initialParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepParticlesNum, &preStepParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
@@ -1502,16 +1461,17 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     
     if(this->rank_world == 0)
     {
-        // double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-        // std::cout << "Elapsed: " << elapsed << " seconds, max " << maxReallocationTime << " in reallocation (average: " << reallocationTime / this->size_world << ")" << std::endl;
-        // std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
-        // std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
-        // std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
-        // // std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
-        // // std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
-        // std::cout << "Max consecutive steps: " << this->maxConsecutiveSteps << ", time " << this->maxConsecutiveStepsTime << std::endl;
+        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+        std::cout << "Elapsed: " << elapsed << " seconds, max " << maxReallocationTime << " in reallocation (average: " << reallocationTime / this->size_world << ")" << std::endl;
+        std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
+        std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
+        std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
+        // std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
+        // std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
+        std::cout << "Max consecutive steps: " << this->maxConsecutiveSteps << ", time " << this->maxConsecutiveStepsTime << std::endl;
     }
     MPI_Barrier(this->comm_world);
+
     // vtune_stop();
     // return data.finalData;
 

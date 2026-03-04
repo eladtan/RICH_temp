@@ -4,12 +4,14 @@
 #ifdef RICH_MPI
 
 #include <mpi.h>
+#include <memory>
 #include "mpi/mpi_commands.hpp"
+#include "utils/rma/RMAFactory.hpp"
 
 class DistributedMutex
 {
 public:
-    DistributedMutex(const MPI_Comm &comm, rank_t rank);
+    DistributedMutex(const MPI_Comm &comm, rank_t rank, RDMA_Type rdma_type);
     
     ~DistributedMutex();
 
@@ -19,13 +21,10 @@ public:
 
     void Destroy(void);
 
-    void Sync(void);
-
 private:
-    const MPI_Comm &comm;
+    MPI_Comm comm;
     rank_t rank;
-    int *value;
-    MPI_Win win;
+    std::unique_ptr<RemoteMemoryAgent<int>> agent;
     bool destroyed;
 };
 

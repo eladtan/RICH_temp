@@ -1,0 +1,98 @@
+#ifndef RADIATION_MC_STEP_HPP
+#define RADIATION_MC_STEP_HPP
+
+#include "PhysicsStep.hpp"
+#include "newtonian/three_dimensional/CostCalculator3D.hpp"
+#include "3D/radiation/MonteCarloPhysics3D.hpp"
+#include "3D/monte/Voronoi3DMovement.hpp"
+#include "3D/monte/MonteCarloManager3D.hpp"
+
+#ifdef RICH_MPI
+    #include <mpi.h>
+    #include "mpi/mpi_commands.hpp"
+    #include "utils/rma/RMAFactory.hpp"
+#endif // RICH_MPI
+
+class RadiationMCStep : public PhysicsStep
+{
+public:
+    #ifdef RICH_MPI
+    enum ManagerType
+    {
+        MPI_RMA,
+        IBV_RDMA,
+        P2P
+    };
+    #endif // RICH_MPI
+
+    RadiationMCStep(const Tessellation3D &tess,
+                    std::vector<ComputationalCell3D> &cells,
+                    std::vector<Conserved3D> &extensives,
+                    std::shared_ptr<MonteCarloRadiationPhysics3D> physics,
+                    std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl,
+                    std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond,
+                    const std::vector<Particle3D> &particles = std::vector<Particle3D>(),
+                    bool withHydro = false
+                    #ifdef RICH_MPI
+                        , ManagerType managerType = ManagerType::MPI_RMA
+                        , std::shared_ptr<CostCalculator3D> cost = nullptr
+                    #endif // RICH_MPI
+                );
+
+    void step(double dt) override;
+
+    double suggestTimeStep(void) const override;
+
+    std::string getName(void) const override;
+
+    std::vector<Particle3D> &getParticles(void);
+
+    inline const Tessellation3D &getTessellation(void) const{return this->tess;};
+
+    inline const std::vector<ComputationalCell3D> &getCells(void) const{return this->cells;};
+
+    inline const std::vector<Conserved3D> &getExtensives(void) const{return this->extensives;};
+
+    const std::vector<Particle3D> &getParticles(void) const;
+
+    inline std::shared_ptr<MonteCarloManager3D> getManager(void) const{return this->manager;};
+
+    #ifdef RICH_MPI
+        inline void setCost(std::shared_ptr<CostCalculator3D> newCost){this->cost = newCost;};
+
+        inline std::shared_ptr<CostCalculator3D> getCost(void) const{return this->cost;};
+    
+        ExchangeChain GetExchangeChain(void) override;
+
+        bool allowRebalance(void) override;
+
+        std::string getRequiredLB(void) const override;
+
+        std::vector<double> getLoadBalanceWeights(void) override;
+
+        void uponLBChange(void) override;
+
+        void beforeLB(void) override;
+
+        void afterLB(void) override;
+    #endif // RICH_MPI
+
+private:
+    const Tessellation3D &tess;
+    std::vector<ComputationalCell3D> &cells;
+    std::vector<Conserved3D> &extensives;
+    std::vector<Particle3D> particles;
+    std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl;
+    std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond;
+    std::shared_ptr<MonteCarloRadiationPhysics3D> physics;
+    std::shared_ptr<MonteCarloManager3D> manager;
+    bool withHydro;
+    size_t stepCounter;
+    #ifdef RICH_MPI
+        ManagerType managerType;
+        std::shared_ptr<CostCalculator3D> cost;
+    #endif // RICH_MPI
+};
+
+
+#endif // RADIATION_MC_STEP_HPP

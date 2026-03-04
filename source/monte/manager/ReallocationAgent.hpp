@@ -3,6 +3,7 @@
 
 #ifdef RICH_MPI
 
+#include <vector>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
 
@@ -22,7 +23,7 @@ public:
 private:
     MPI_Comm comm;
     rank_t rank;
-    rank_t size; // todo: unnecessary
+    rank_t size;
     rank_t waitingFor;
     size_t reallocationsWhileWaiting;
     std::vector<std::pair<rank_t, double>> incoming;

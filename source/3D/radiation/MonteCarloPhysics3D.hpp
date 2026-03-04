@@ -14,24 +14,24 @@
 #include "RadiationOpacity.hpp"
 #include "LorentzTransformation.hpp"
 
-class MonteCarloPhysics3D : public MonteCarloPhysics<Vector3D, Tessellation3D>
+class MonteCarloRadiationPhysics3D : public MonteCarloPhysics<Vector3D, Tessellation3D>
 {
 public:
     using Particle = MonteCarloParticle<Vector3D, Tessellation3D>;
     using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    MonteCarloPhysics3D(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, const EquationOfState &eos, const RadiationOpacity &opacity);
+    MonteCarloRadiationPhysics3D(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity);
     
-    virtual MCParticle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const = 0;
+    virtual Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const = 0;
 
 protected:    
-    std::vector<MCParticle> generateParticles(double fullDt);
+    std::vector<Particle> generateParticles(double fullDt);
 
     std::vector<ComputationalCell3D> &cells;
     std::vector<Conserved3D> &conserved;
-    const EquationOfState &eos;
-    const RadiationOpacity &opacity;
+    std::shared_ptr<EquationOfState> eos;
+    std::shared_ptr<RadiationOpacity> opacity;
     std::uniform_real_distribution<double> dist;
     std::mt19937_64 re;
 };

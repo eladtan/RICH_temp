@@ -27,7 +27,7 @@ public:
 
 protected:
     const Grid &grid;
-    const std::shared_ptr<BoundaryCondition<T, Grid>> &boundary;
+    std::shared_ptr<BoundaryCondition<T, Grid>> boundary;
 
     std::tuple<size_t, dt_t, size_t> getIntersectionDetails(MCParticle &particle);
 

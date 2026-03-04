@@ -114,6 +114,7 @@ TwoSidedMonteCarloManager<T, Grid>::TwoSidedMonteCarloManager(const Grid &grid, 
 
     this->myIDCounter = 0;
     this->currentStep = 0;
+    this->cellsStepsCounters = std::vector<size_t>(this->grid.GetPointNo(), 0);
 }
 
 template<typename T, typename Grid>
@@ -725,7 +726,6 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
             std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
             assert(sent == recv);
         }
-
 
         assert(this->particles.empty());
         MPI_Barrier(this->comm_world);
