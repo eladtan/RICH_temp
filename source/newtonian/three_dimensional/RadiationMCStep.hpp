@@ -21,7 +21,8 @@ public:
     {
         MPI_RMA,
         IBV_RDMA,
-        P2P
+        P2P,
+        AUTO_RDMA
     };
     #endif // RICH_MPI
 
@@ -34,7 +35,7 @@ public:
                     const std::vector<Particle3D> &particles = std::vector<Particle3D>(),
                     bool withHydro = false
                     #ifdef RICH_MPI
-                        , ManagerType managerType = ManagerType::MPI_RMA
+                        , ManagerType managerType = ManagerType::AUTO_RDMA
                         , std::shared_ptr<CostCalculator3D> cost = nullptr
                     #endif // RICH_MPI
                 );

@@ -25,8 +25,15 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
         {
             case ManagerType::MPI_RMA:
             case ManagerType::IBV_RDMA:
+            case ManagerType::AUTO_RDMA:
             {
-                RDMA_Type type = (managerType == ManagerType::IBV_RDMA)? RDMA_Type::IBV_RDMA : RDMA_Type::MPI_RMA;
+                RDMA_Type type;
+                if(managerType == ManagerType::IBV_RDMA)
+                    type = RDMA_Type::IBV_RDMA;
+                else if(managerType == ManagerType::MPI_RMA)
+                    type = RDMA_Type::MPI_RMA;
+                else
+                    type = RDMA_Type::AUTO_RDMA;
                 this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, DEFAULT_BUFFER_SIZE, MPI_COMM_WORLD, type);
                 break;
             }

@@ -15,7 +15,8 @@
 enum class RDMA_Type
 {
     MPI_RMA,
-    IBV_RDMA
+    IBV_RDMA,
+    AUTO_RDMA
 };
 
 class RMAFactory
@@ -23,9 +24,25 @@ class RMAFactory
 public:
     RMAFactory() = delete;
 
+    static RDMA_Type ResolveAutoRDMA()
+    {
+#ifdef OPEN_MPI
+        return RDMA_Type::MPI_RMA;
+#elif defined(RICH_IBV)
+        return RDMA_Type::IBV_RDMA;
+#else
+        return RDMA_Type::MPI_RMA;
+#endif
+    }
+
     template<typename T>
     static std::unique_ptr<RemoteMemoryAgent<T>> Create(RDMA_Type type, size_t count, MPI_Comm comm)
     {
+        if(type == RDMA_Type::AUTO_RDMA)
+        {
+            type = ResolveAutoRDMA();
+        }
+
         switch(type)
         {
             case RDMA_Type::MPI_RMA:
@@ -36,6 +53,8 @@ public:
 #else
                 throw std::runtime_error("RMAFactory: IBV_RDMA selected but RICH_IBV is not enabled");
 #endif
+            default:
+                break;
         }
         throw std::runtime_error("RMAFactory: unknown RDMA type");
     }

@@ -46,7 +46,7 @@ public:
                         const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
                         size_t bufferSizes = DEFAULT_BUFFER_SIZE,
                         const MPI_Comm &comm = MPI_COMM_WORLD,
-                        RDMA_Type rdma_type = RDMA_Type::MPI_RMA);
+                        RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
