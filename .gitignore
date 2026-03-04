@@ -45,3 +45,4 @@ runs/**/*.txt
 /regression_results
 *.png
 *.pdf
+runs/*/venv/

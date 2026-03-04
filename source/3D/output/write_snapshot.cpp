@@ -12,12 +12,12 @@ void writeVTU(const std::string &filename, const HDSim3D &sim, const VTU_Output 
 {
     std::filesystem::path vtu_name(filename);
     vtu_name.replace_extension("vtu");
-    write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, sim.getTime(), sim.getCycle(), sim.getTesselation());
+    write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, sim.getTime(), sim.getCycle(), sim.getTessellation());
 }
 
-VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, const std::string &filename, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
+VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
 {
-    Tessellation3D const &tess = sim.getTesselation();
+    Tessellation3D const &tess = sim.getTessellation();
     vector<ComputationalCell3D> const &cells = sim.getCells();
     
     VTU_Output vtu;
@@ -269,7 +269,7 @@ VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, co
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &ws);
         std::string myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
-        Tessellation3D const &tess = sim.getTesselation();
+        Tessellation3D const &tess = sim.getTessellation();
 
         HDF5Writer filewriter(myFilePath);
         std::shared_ptr<HDF5Writer> globalFileWriter = (rank == 0) ? std::make_shared<HDF5Writer>(filename) : nullptr;
@@ -286,8 +286,7 @@ VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, co
             globalFileWriter->WriteElement("/Box", box);
         }
 
-
-        VTU_Output vtu = WriteSnapshot3DHelper(filewriter, "", filename, sim, appendices, write_vtu);
+        VTU_Output vtu = WriteSnapshot3DHelper(filewriter, "", sim, appendices, write_vtu);
 
         if(rank == 0)
         {
@@ -337,7 +336,7 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
         }
     #endif // RICH_MPI
 
-    Tessellation3D const &tess = sim.getTesselation();
+    Tessellation3D const &tess = sim.getTessellation();
 
     #ifdef RICH_MPI
         if(rank == 0)
@@ -377,7 +376,7 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
         prefix = "";
     #endif
 
-    VTU_Output vtu = WriteSnapshot3DHelper(*filewriter, prefix, filename, sim, appendices, write_vtu);
+    VTU_Output vtu = WriteSnapshot3DHelper(*filewriter, prefix, sim, appendices, write_vtu);
 
     #ifdef RICH_MPI
         if(rank == 0)

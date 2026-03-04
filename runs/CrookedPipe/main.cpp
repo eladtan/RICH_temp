@@ -56,6 +56,10 @@ void Output(const std::string &fname)
         tracers1[i] = cells[i].tracers[1];
     }
 
+    if(tessPtr != nullptr and cellsPtr != nullptr)
+    {
+        WriteSnapshot3DParallel_AOS(*tessPtr, *cellsPtr, fname + "_aos.h5");
+    }
     if(particlesPtr != nullptr)
     {
         WriteParticlesParallel(fname + "_particles.h5", *particlesPtr);

@@ -29,6 +29,8 @@
 
 #ifdef RICH_MPI
   Snapshot3D ReadSnapshot3DParallel(const string &fname, int fake_rank = -1);
+
+  Snapshot3D ReadSnapshot3DParallel_AOS(const string &fname, int fake_rank = -1);
 #endif
 
 std::vector<Vector3D> ReadVoronoiPoints(const std::string &filename);

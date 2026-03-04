@@ -4,21 +4,20 @@
 #include <H5Cpp.h>
 #include <filesystem>
 #include "monte/MonteCarloParticle.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "utils/hdf5/HDF5Helper.hpp"
 #include "utils/hdf5/HDF5Reader.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
+#include "../vectorData.hpp"
 
 using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 
 #define PARTICLES_DATASET_NAME "particles"
 
-namespace fs = std::filesystem;
 using namespace H5;
+namespace fs = std::filesystem;
 
 #ifdef RICH_MPI
     #include <mpi.h>
-    #include "mpi/debug.h"
 #endif // RICH_MPI
 
 namespace HDF5Utils
@@ -43,10 +42,12 @@ namespace HDF5Utils
                         mtype.insertMember("cellID", HOFFSET(Particle3D, cellID), H5::PredType::NATIVE_ULLONG);
                         // Vector3D may have a vtable (RICH_MPI), but x,y,z are contiguous after it.
                         // Point to x and use ArrayType(DOUBLE, 3) to cover x,y,z.
-                        hsize_t vec_dims[1] = {3};
-                        H5::ArrayType vecType(H5::PredType::NATIVE_DOUBLE, 1, vec_dims);
-                        mtype.insertMember("location", HOFFSET(Particle3D, location) + HOFFSET(Vector3D, x), vecType);
-                        mtype.insertMember("velocity", HOFFSET(Particle3D, velocity) + HOFFSET(Vector3D, x), vecType);
+                        H5::CompType vecType = HDF5Utils::CompTypeCreator<Vector3D>::get();
+                        Particle3D dummy;
+                        const size_t location_offset = reinterpret_cast<const char*>(&dummy.location) - reinterpret_cast<const char*>(&dummy);
+                        const size_t velocity_offset = reinterpret_cast<const char*>(&dummy.velocity) - reinterpret_cast<const char*>(&dummy);
+                        mtype.insertMember("location", location_offset, vecType);
+                        mtype.insertMember("velocity", velocity_offset, vecType);
                         mtype.insertMember("cellIndex", HOFFSET(Particle3D, cellIndex), H5::PredType::NATIVE_ULLONG);
                         mtype.insertMember("timeLeft", HOFFSET(Particle3D, timeLeft), H5::PredType::NATIVE_DOUBLE);
                         mtype.insertMember("energy", HOFFSET(Particle3D, energy), H5::PredType::NATIVE_DOUBLE);
@@ -61,7 +62,7 @@ namespace HDF5Utils
     };
 } // namespace HDF5Utils
 
-std::vector<Particle3D> ReadParticles(const HDF5Reader &reader);
+void WriteParticles(const std::vector<Particle3D> &particles, const Group &group);
 
 std::vector<Particle3D> ReadParticles(const std::string &fname
                                         #ifdef RICH_MPI

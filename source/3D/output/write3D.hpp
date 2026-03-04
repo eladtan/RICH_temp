@@ -11,6 +11,7 @@
 #include "Snapshot3D.hpp"
 #include "MC/read_write_particles.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
+#include "cellData.hpp"
 
 namespace fs = std::filesystem;
 using namespace H5;
@@ -89,6 +90,11 @@ void WriteSnapshot3D(HDSim3D const& sim, std::string const& filename,
   \param write_vtu Determines whether to write vtu file as well
  */
 void WriteSnapshot3DParallel(HDSim3D const& sim, std::string const& filename, const vector<DiagnosticAppendix3D*>& appendices = vector<DiagnosticAppendix3D*>(), bool write_vtu = true);
+
+void WriteSnapshot3DParallel_AOS(const Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells, std::string const& filename);
+
+void WriteSnapshot3DParallel_AOS(HDSim3D const &sim, std::string const& filename);
+
 #endif // RICH_MPI
 
 void WritePoints(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
@@ -96,5 +102,6 @@ void WritePoints(const std::vector<Vector3D> &points, const std::string &filenam
 #ifdef RICH_MPI  
   void WritePointsParallel(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
 #endif // RICH_MPI
+
 
 #endif // OUTPUT_WRITE_3D_HPP
