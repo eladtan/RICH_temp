@@ -221,6 +221,7 @@ progress_bar_and_filtered_output() {
     local width=50
     local linking_printed=0
     local progress_done=0
+    local max_percent=0
 
     while IFS= read -r line; do
         # Detect linking
@@ -230,6 +231,9 @@ progress_bar_and_filtered_output() {
             progress_done=1
         elif [[ "$line" =~ \[\ *([0-9]{1,3})%\] && $progress_done -eq 0 ]]; then
             percent=${BASH_REMATCH[1]}
+            # With parallel make, percentages arrive out of order; only advance forward
+            (( percent <= max_percent )) && continue
+            max_percent=$percent
         else
             continue
         fi
