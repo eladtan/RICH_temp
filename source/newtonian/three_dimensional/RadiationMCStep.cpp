@@ -1,6 +1,7 @@
 #include "RadiationMCStep.hpp"
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "utils/rma/RMAFactory.hpp"
+#include <algorithm>
 
 RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                 std::vector<ComputationalCell3D> &cells,
@@ -20,6 +21,7 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                 #endif // RICH_MPI
 {
     this->stepCounter = 0;
+    this->suggested_dt = std::numeric_limits<double>::max();
     #ifdef RICH_MPI
         switch(this->managerType)
         {
@@ -58,7 +60,7 @@ const std::vector<Particle3D> &RadiationMCStep::getParticles(void) const
 
 double RadiationMCStep::suggestTimeStep(void) const
 {
-    return std::numeric_limits<double>::max(); // TODO: implement
+    return suggested_dt;
 }
 
 std::string RadiationMCStep::getName(void) const
@@ -68,13 +70,78 @@ std::string RadiationMCStep::getName(void) const
 
 void RadiationMCStep::step(double dt)
 {
+    this->stepCounter++;
+
+    size_t N = tess.GetPointNo();
+
+    std::vector<double> old_Erad(N), old_temperature(N);
+    for(size_t i = 0; i < N; ++i)
+    {
+        old_Erad[i] = cells[i].Erad * cells[i].density;
+        old_temperature[i] = cells[i].temperature;
+    }
+
     if(this->withHydro)
     {
         // cells location might have changed because of hydro movements
         UpdateNewCells(this->tess, this->particles, this->cells);
     }
-    this->stepCounter++;
     this->particles = this->manager->step(this->particles, this->cells, dt);
+
+    int rank = 0;
+    #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    #endif
+
+    double max_Erad = *std::max_element(old_Erad.begin(), old_Erad.end());
+    double max_temperature = *std::max_element(old_temperature.begin(), old_temperature.end());
+    #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &max_Erad, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &max_temperature, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    #endif
+
+    double max_Erad_diff = std::numeric_limits<double>::min() * 100;
+    double max_temperature_diff = std::numeric_limits<double>::min() * 100;
+    int max_Erad_loc = 0, max_temperature_loc = 0;
+    for(size_t i = 0; i < N; ++i)
+    {
+        double Erad_diff = std::abs(cells[i].Erad * cells[i].density - old_Erad[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Erad);
+        double temperature_diff = std::abs(cells[i].temperature - old_temperature[i]) / (cells[i].temperature + 0.02 * max_temperature);
+        if(Erad_diff > max_Erad_diff)
+        {
+            max_Erad_diff = Erad_diff;
+            max_Erad_loc = i;
+        }
+        if(temperature_diff > max_temperature_diff)
+        {
+            max_temperature_diff = temperature_diff;
+            max_temperature_loc = i;
+        }
+    }
+    max_Erad_diff *= 0.5;
+
+    double max_diff = max_temperature_diff ; // TODO: change later
+    // double max_diff = std::max(max_Erad_diff, max_temperature_diff);
+    rank_t max_diff_rank = rank;
+    #ifdef RICH_MPI
+        std::tie(max_diff_rank, max_diff) = MPI_Max_loc(max_diff, MPI_COMM_WORLD);
+    #endif // RICH_MPI
+
+    if(rank == max_diff_rank)
+    {
+        size_t max_loc = max_temperature_loc; // TODO: (max_Erad_diff > max_temperature_diff) ? max_Erad_loc : max_temperature_loc;
+        std::cout << "MC Radiation time step ID " << cells[max_loc].ID
+            << " old temperature " << old_temperature[max_loc] << " new temperature " << cells[max_loc].temperature
+            << " old Erad " << old_Erad[max_loc] << " new Erad " << cells[max_loc].Erad * cells[max_loc].density
+            << " diff " << max_diff << " Tgas " << cells[max_loc].temperature
+            << " max_Erad " << max_Erad << " max_temperature " << max_temperature << " rank " << rank
+            << " density " << cells[max_loc].density
+            << " width " << tess.GetWidth(max_loc)
+            << " location " << tess.GetMeshPoint(max_loc) << std::endl;
+        std::cout << "Next MC time step is " << dt * std::min(1.25, 0.15 / max_diff) << std::endl;
+    }
+
+    this->suggested_dt = dt * std::min(1.25, 0.15 / max_diff);
 }
 
 #ifdef RICH_MPI

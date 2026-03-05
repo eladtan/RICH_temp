@@ -89,6 +89,7 @@ private:
     std::shared_ptr<MonteCarloManager3D> manager;
     bool withHydro;
     size_t stepCounter;
+    double suggested_dt;
     #ifdef RICH_MPI
         ManagerType managerType;
         std::shared_ptr<CostCalculator3D> cost;
