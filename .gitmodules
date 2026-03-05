@@ -7,3 +7,6 @@
 [submodule "source/utils/hdf5"]
 	path = source/utils/hdf5
 	url = git@github.com:maormizrachi/EasyHDF5.git
+[submodule "source/utils/rma"]
+	path = source/utils/rma
+	url = git@github.com:maormizrachi/EasyRMA.git
