@@ -2,7 +2,8 @@ set(CMAKE_CXX_STANDARD 17)
 
 if(DEFINED MPI)
     add_definitions("-DRICH_MPI")
-    message(STATUS "Defined 'RICH_MPI'")
+    add_definitions("-D__WITH_MPI")
+    message(STATUS "Defined 'RICH_MPI' and '__WITH_MPI'")
 endif()
 
 set(CMAKE_CXX_FLAGS "")
