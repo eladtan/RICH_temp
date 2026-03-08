@@ -272,7 +272,7 @@ namespace CG
         MPI_Comm_size (MPI_COMM_WORLD, &nprocs);
         MPI_Comm_rank (MPI_COMM_WORLD, &rank);
     #endif
-        int const max_iter = 1000;
+        int const max_iter = 10000;
 
         mat A;
         size_t_mat A_indeces;
@@ -405,7 +405,7 @@ namespace CG
             // recall that we can't have a 'break' within an openmp parallel region, so end it here then all threads are merged, and the convergence is checked
             // Convergence test
             if (sub_r_sqrd < delta_init * tolerance//std::sqrt(sub_r_sqrd_convergence / Ntotal) < tolerance * maxA [1]
-                && max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
+                && max_data[1].val < 1e-5 && max_data[0].val < 1e-5 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                 if(rank == 0)
                     std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
                 if(rank == max_data[0].mpi_id)
@@ -509,7 +509,7 @@ namespace CG
         MPI_Comm_size (MPI_COMM_WORLD, &nprocs);
         MPI_Comm_rank (MPI_COMM_WORLD, &rank);
     #endif
-        int const max_iter = 1000;
+        int const max_iter = 10000;
 
         mat A;
         size_t_mat A_indeces;
@@ -704,7 +704,7 @@ namespace CG
 #ifdef RICH_MPI
                 MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif       
-                if((max_data[1].val < 1e-6 && max_data[0].val < 1e-6 && ((i > 25 && max_data[1].val < 1e-10) || max_data[2].val < 0.5)) || error < 1e-100) 
+                if((max_data[1].val < 1e-5 && max_data[0].val < 1e-5 && ((i > 25 && max_data[1].val < 1e-10) || max_data[2].val < 0.5)) || error < 1e-100) 
                 { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                     finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
                         max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
