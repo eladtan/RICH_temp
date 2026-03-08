@@ -32,13 +32,15 @@ public:
 	\param calc_tracers Names of tracers for which to calc the slope
 	\param skip_key The sticker name to skip cells for slope limit
 	\param pressure_calc Determine whether the pressure should be recalculated
+	\param apply_principal_limit Enable principal-frame velocity limiting
 	*/
 	SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
 		Vector3D const& origin = Vector3D(),
 		bool slf = true, double delta_v = 0.2,
 		double theta = 0.5, double delta_P = 0.7, bool SR = false,
 		const vector<string>& calc_tracers = vector<string>(),
-		const string& skip_key = string(), bool pressure_calc = true);
+		const string& skip_key = string(), bool pressure_calc = true,
+		bool apply_principal_limit = false);
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
@@ -89,6 +91,7 @@ private:
 	const vector<string> calc_tracers_;
 	const string skip_key_;
 	const bool pressure_calc_;
+	const bool apply_principal_limit_;
 	mutable std::vector<bool> is_pole_cell_;
 
 	SphericalLinearGauss3D(const SphericalLinearGauss3D& origin);

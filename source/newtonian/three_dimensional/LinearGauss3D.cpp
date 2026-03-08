@@ -234,7 +234,7 @@ namespace
 		double t_div = std::max(0.0, std::min(1.0, -div_v / (shock_ratio * cs)));
 		double w_div = t_div;
 		double p_ratio = PressureRatio(cell, neighbor_list);
-		double t_pres = std::max(0.0, std::min(1.0, (p_ratio - 0.5 * pressure_ratio) / (0.5 * pressure_ratio)));
+		double t_pres = std::max(0.0, std::min(1.0, (pressure_ratio - 0.8 * p_ratio) / (0.4 * pressure_ratio)));
 		double w_pres = t_pres;
 		return std::max(w_div, w_pres);
 	}
@@ -325,7 +325,7 @@ namespace
 		double diffusecoeff, double shock_w,
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces, EquationOfState const& eos,
-		vector<Vector3D> const& face_cms_cache)
+		vector<Vector3D> const& face_cms_cache, bool apply_principal_limit_flag)
 	{
 		ReplaceComputationalCell(cmax, cell);
 		ReplaceComputationalCell(cmin, cell);
@@ -333,7 +333,8 @@ namespace
 		size_t ntracer = ComputationalCell3D::tracerNames.size();
 
 		Vector3D e1, e2, e3;
-		bool has_frame = build_principal_frame(cell.velocity, e1, e2, e3);
+		bool has_frame = apply_principal_limit_flag &&
+			build_principal_frame(cell.velocity, e1, e2, e3);
 		double cell_v1 = has_frame ? ScalarProd(cell.velocity, e1) : 0.0;
 		double cell_v2 = has_frame ? ScalarProd(cell.velocity, e2) : 0.0;
 		double cell_v3 = has_frame ? ScalarProd(cell.velocity, e3) : 0.0;
@@ -613,15 +614,21 @@ namespace
 		slope.xderivative.pressure *= psi[1];
 		slope.yderivative.pressure *= psi[1];
 		slope.zderivative.pressure *= psi[1];
-		if (has_frame)
-		{
-			double psi_vt = std::min(psi_v2, psi_v3);
-			apply_principal_limit(slope.xderivative.velocity, e1, e2, e3, psi_v1, psi_vt, psi_vt);
-			apply_principal_limit(slope.yderivative.velocity, e1, e2, e3, psi_v1, psi_vt, psi_vt);
-			apply_principal_limit(slope.zderivative.velocity, e1, e2, e3, psi_v1, psi_vt, psi_vt);
+		if (has_frame && apply_principal_limit_flag)
+		{			
+			apply_principal_limit(slope.xderivative.velocity, e1, e2, e3, psi_v1, psi_v2, psi_v3);
+			apply_principal_limit(slope.yderivative.velocity, e1, e2, e3, psi_v1, psi_v2, psi_v3);
+			apply_principal_limit(slope.zderivative.velocity, e1, e2, e3, psi_v1, psi_v2, psi_v3);
 		}
 		else
 		{
+			if (has_frame)
+			{
+				// Fallback when principal-frame limiting is disabled: use a single
+				// conservative limiter for Cartesian components.
+				double psi_v_unified = std::min({psi_v1, psi_v2, psi_v3});
+				psi[2] = psi[3] = psi[4] = psi_v_unified;
+			}
 			slope.xderivative.velocity.x *= psi[2];
 			slope.yderivative.velocity.x *= psi[2];
 			slope.zderivative.velocity.x *= psi[2];
@@ -677,7 +684,7 @@ namespace
 		vector<Vector3D> &neighbor_cm_list,
  string const& skip_key,
 		const std::vector<Vector3D> &c_ij, vector<ComputationalCell3D> &neighbor_list,
-		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache)
+		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache, bool apply_principal_limit_flag)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
 		GetNeighborMesh(tess, cell_index, neighbor_mesh_list, faces);
@@ -741,7 +748,7 @@ namespace
 						neighbor_list, pressure_ratio,
 						eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames));
 					blended_slope_limit(cell, tess.GetCellCM(cell_index), neighbor_list, res, temp2, temp3, temp4, temp5,
-						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache);
+						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache, apply_principal_limit_flag);
 				}
 				if(!std::isfinite( res.xderivative.density))
 				{
@@ -794,9 +801,11 @@ void LinearGauss3D::Interp(ComputationalCell3D &res, ComputationalCell3D const& 
 }
 
 LinearGauss3D::LinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost, bool slf, double delta_v, double theta,
-	double delta_P, bool SR, const vector<string>& calc_tracers, const string& skip_key,bool pressure_calc) : eos_(eos), ghost_(ghost), rslopes_(),
+	double delta_P, bool SR, const vector<string>& calc_tracers, const string& skip_key,
+	bool pressure_calc, bool apply_principal_limit) : eos_(eos), ghost_(ghost), rslopes_(),
 	naive_rslopes_(), slf_(slf), shockratio_(delta_v), diffusecoeff_(theta), pressure_ratio_(delta_P), SR_(SR),
-	calc_tracers_(calc_tracers), skip_key_(skip_key), to_skip_(),pressure_calc_(pressure_calc) {}
+	calc_tracers_(calc_tracers), skip_key_(skip_key), to_skip_(), pressure_calc_(pressure_calc),
+	apply_principal_limit_(apply_principal_limit) {}
 
 void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double time) 
 {
@@ -838,7 +847,7 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 		calc_slope(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache);
+			face_cms_cache, face_areas_cache, apply_principal_limit_);
 	}
 #ifdef RICH_MPI
 	// communicate ghost slopes
@@ -903,7 +912,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 		calc_slope(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache);
+			face_cms_cache, face_areas_cache, apply_principal_limit_);
 		face_vec const& faces = tess.GetCellFaces(i);
 		const size_t nloop = faces.size();
 		// Use pre-computed cell CM - avoid repeated lookups

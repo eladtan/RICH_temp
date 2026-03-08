@@ -310,7 +310,7 @@ namespace
 		double diffusecoeff, double shock_w,
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces, EquationOfState const& eos,
-		vector<Vector3D> const& face_cms_cache)
+		vector<Vector3D> const& face_cms_cache, bool apply_principal_limit_flag)
 	{
 		ReplaceComputationalCell(cmax, cell);
 		ReplaceComputationalCell(cmin, cell);
@@ -318,7 +318,8 @@ namespace
 		size_t ntracer = ComputationalCell3D::tracerNames.size();
 
 		Vector3D e1, e2, e3;
-		bool has_frame = cart_build_principal_frame(cell.velocity, e1, e2, e3);
+		bool has_frame = apply_principal_limit_flag &&
+			cart_build_principal_frame(cell.velocity, e1, e2, e3);
 		double cell_v1 = has_frame ? ScalarProd(cell.velocity, e1) : 0.0;
 		double cell_v2 = has_frame ? ScalarProd(cell.velocity, e2) : 0.0;
 		double cell_v3 = has_frame ? ScalarProd(cell.velocity, e3) : 0.0;
@@ -584,7 +585,7 @@ namespace
 		slope.xderivative.pressure *= psi[1];
 		slope.yderivative.pressure *= psi[1];
 		slope.zderivative.pressure *= psi[1];
-		if (has_frame)
+		if (has_frame && apply_principal_limit_flag)
 		{
 			double psi_vt = std::min(psi_v2, psi_v3);
 			cart_apply_principal_limit(slope.xderivative.velocity, e1, e2, e3, psi_v1, psi_vt, psi_vt);
@@ -593,6 +594,11 @@ namespace
 		}
 		else
 		{
+			if (has_frame)
+			{
+				double psi_v_unified = std::min({psi_v1, psi_v2, psi_v3});
+				psi[2] = psi[3] = psi[4] = psi_v_unified;
+			}
 			slope.xderivative.velocity.x *= psi[2];
 			slope.yderivative.velocity.x *= psi[2];
 			slope.zderivative.velocity.x *= psi[2];
@@ -1127,7 +1133,8 @@ namespace
 		string const& skip_key,
 		vector<ComputationalCell3D> &neighbor_list,
 		std::vector<Vector3D> &c_ij,
-		vector<Vector3D>& face_cart_cache, vector<double>& face_areas_cache)
+		vector<Vector3D>& face_cart_cache, vector<double>& face_areas_cache,
+		bool apply_principal_limit_flag)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
 		cart_GetNeighborMesh(tess, cell_index, neighbor_mesh_list, faces);
@@ -1162,7 +1169,8 @@ namespace
 				eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames));
 			cart_blended_slope_limit(cell, cell_cm, neighbor_list, res,
 				temp2, temp3, temp4, temp5,
-				diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cart_cache);
+				diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cart_cache,
+				apply_principal_limit_flag);
 		}
 	}
 
@@ -1302,11 +1310,12 @@ namespace
 SphericalLinearGauss3D::SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
 	Vector3D const& origin, bool slf, double delta_v, double theta,
 	double delta_P, bool SR, const vector<string>& calc_tracers,
-	const string& skip_key, bool pressure_calc)
+	const string& skip_key, bool pressure_calc, bool apply_principal_limit)
 	: eos_(eos), ghost_(ghost), origin_(origin), rslopes_(), naive_rslopes_(),
 	er_(), etheta_(), ephi_(),
 	slf_(slf), shockratio_(delta_v), diffusecoeff_(theta), pressure_ratio_(delta_P), SR_(SR),
-	calc_tracers_(calc_tracers), skip_key_(skip_key), pressure_calc_(pressure_calc) {}
+	calc_tracers_(calc_tracers), skip_key_(skip_key), pressure_calc_(pressure_calc),
+	apply_principal_limit_(apply_principal_limit) {}
 
 void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 	std::vector<ComputationalCell3D> const& cells, double time)
@@ -1363,7 +1372,7 @@ void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 				eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
 				naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 				neighbor_mesh_list, neighbor_cm_list, skip_key_, neighbor_list,
-				c_ij, face_cart_cache, face_areas_cache);
+				c_ij, face_cart_cache, face_areas_cache, apply_principal_limit_);
 		}
 		else
 		{
@@ -1499,7 +1508,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 				eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
 				naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 				neighbor_mesh_list, neighbor_cm_list, skip_key_, neighbor_list,
-				c_ij, face_cart_cache, face_areas_cache);
+				c_ij, face_cart_cache, face_areas_cache, apply_principal_limit_);
 
 			face_vec const& faces = tess.GetCellFaces(i);
 			const size_t nloop = faces.size();
