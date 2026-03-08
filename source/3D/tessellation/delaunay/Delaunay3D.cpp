@@ -911,8 +911,6 @@ std::size_t Delaunay3D::Walk(std::size_t point, std::size_t first_guess)
             }
         }
         assert(counter < 100000);
-        if (counter % 1000 == 0)
-            std::cout << "[Walk] point=" << point << " steps=" << counter << std::endl;
     }
     return cur_facet;
 }
