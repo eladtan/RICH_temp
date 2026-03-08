@@ -62,14 +62,14 @@ int main(void)
     ComputationalCell3D inner_cell, outer_cell;
     inner_cell.velocity = Vector3D(0, 0, 0);
     inner_cell.density = 1;
-    inner_cell.internal_energy = 1e5;
+    inner_cell.internal_energy = 8e5;
     inner_cell.pressure = eos.de2p(inner_cell.density, inner_cell.internal_energy, inner_cell.tracers, ComputationalCell3D::tracerNames);
     outer_cell.velocity = Vector3D(0, 0, 0);
     outer_cell.density = 1;
     outer_cell.internal_energy = 0.1;
     outer_cell.pressure = eos.de2p(outer_cell.density, outer_cell.internal_energy, outer_cell.tracers, ComputationalCell3D::tracerNames);
     for(size_t i = 0; i < Nlocal; ++i) {
-        if(abs(tess.GetMeshPoint(i)) < 0.2) {
+        if(abs(tess.GetMeshPoint(i)) < 0.1) {
             cells[i] = inner_cell;
         }
         else {

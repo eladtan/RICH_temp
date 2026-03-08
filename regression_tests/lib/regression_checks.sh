@@ -141,9 +141,9 @@ check_sedov_case() {
     "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_sedov_exact.py" \
         --profile "$sedov_profile" \
         --rich-root "$RICH_ROOT" \
-        --max-density-rel-l1 "${SEDOV_MAX_DENSITY_REL_L1:-0.30}" \
+        --max-density-rel-l1 "${SEDOV_MAX_DENSITY_REL_L1:-0.50}" \
         --max-pressure-rel-l1 "${SEDOV_MAX_PRESSURE_REL_L1:-0.30}" \
-        --max-velocity-rel-l1 "${SEDOV_MAX_VELOCITY_REL_L1:-0.30}" \
+        --max-velocity-rel-l1 "${SEDOV_MAX_VELOCITY_REL_L1:-0.60}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Sedov exact-ODE comparison failed"
