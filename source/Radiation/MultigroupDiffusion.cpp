@@ -869,6 +869,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
 
         // momentum term
         if (hydro_on_) {
+            size_t print_id = -1;
             Vector3D dP;
             for (size_t group = 0; group < ENERGY_GROUPS_NUM; ++group) {
                 Vector3D gradEg, gradEg_new;
@@ -893,11 +894,15 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
                 gradEg *= 1.0 / volume;
                 double const D = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
                 double const flux_limit = CG::CalcSingleFluxLimiter(gradEg, D, Eg_i);
+                if(cells[i].ID == print_id)
+                    std::cout<<"Group "<<group<<" flux_limit "<<flux_limit<<" sigma rossland "<<units::clight / (3 * D)<<" Eg_i "<<Eg_i<<" gradEg "<<gradEg<<std::endl;
                 dP += (flux_limit / 3) * gradEg_new;
             }
             dP *= dt_cgs * time_scale_ / (length_scale_ * mass_scale_);
             double mass_i = extensives[i].mass;
             double old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / mass_i;
+            if(cells[i].ID == print_id)
+                std::cout<<"dP "<<dP<<" cell momentum "<<extensives[i].momentum<<std::endl;
             extensives[i].momentum += dP;
 
             double const new_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / mass_i;
