@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+TEST_ID="cartesian_gauss_linear"
+TAGS="serial"
+BUILD_TEST_NAME="regression_tests/cases/cartesian_gauss_linear"
+RUN_DIR_REL="regression_tests/cases/cartesian_gauss_linear"
+RUN_COMMAND='"${RICH_BIN}"'
+CHECK_FUNCTION="check_cartesian_gauss_linear_case"

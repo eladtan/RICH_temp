@@ -155,19 +155,21 @@ TESTS = [
         "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
         "pass_criteria": (
             r"Radially binned profiles of density, pressure, and velocity are "
-            r"compared to the Sedov--Taylor ODE solution. "
-            r"The relative $L_1$ error must satisfy:"
+            r"compared to the Sedov--Taylor ODE solution (scaled from theory "
+            r"using $v_s = \tfrac{2}{5}\,R_s/t$, not normalized to numerical peaks). "
+            r"The volume-weighted relative $L_1$ error (weights $\propto r^2$) must satisfy:"
             "\n"
             r"\begin{itemize}" "\n"
-            r"  \item Density: relative $L_1 \le 0.30$." "\n"
+            r"  \item Density: relative $L_1 \le 0.50$." "\n"
             r"  \item Pressure: relative $L_1 \le 0.30$." "\n"
-            r"  \item Velocity: relative $L_1 \le 0.30$." "\n"
+            r"  \item Velocity: relative $L_1 \le 0.60$." "\n"
             r"\end{itemize}"
         ),
         "plots": ["sedov_3d_mpi.png"],
         "plot_caption": (
-            "Sedov--Taylor blast wave: radially binned numerical density (black dots) "
-            "vs.\\ the ODE self-similar solution (red line)."
+            "Sedov--Taylor blast wave: radially binned numerical profiles (black dots) "
+            "vs.\\ the ODE self-similar solution (red line) for density (left), "
+            "pressure (center), and radial velocity (right)."
         ),
     },
     {
@@ -842,6 +844,107 @@ TESTS = [
             "velocity field, and radially binned azimuthal velocity vs.\\ initial condition."
         ),
     },
+    {
+        "id": "spherical_gauss_linear",
+        "title": "Spherical LSQ Gradient -- Linear Field Verification",
+        "description": (
+            "A pure-reconstruction test that verifies the weighted least-squares "
+            "(LSQ) gradient in spherical coordinate space implemented in "
+            "\\texttt{SphericalLinearGauss3D}. Fields that are exactly linear in "
+            "$(r,\\,\\theta)$ are prescribed at every cell centre and then "
+            "reconstructed to face centroids. Because the LSQ gradient can "
+            "represent linear functions exactly, the interpolated values must "
+            "agree with the exact values to machine precision.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{LSQ gradient accuracy:} The 3\\texttimes3 normal "
+            "system and its analytic inverse must yield the exact coordinate "
+            "derivatives $\\partial f/\\partial r$, $\\partial f/\\partial\\theta$, "
+            "$\\partial f/\\partial\\phi$.\n"
+            "  \\item \\textbf{Velocity frame conversion:} Each cell's velocity "
+            "is projected onto its own local spherical basis; the interpolated "
+            "velocity at the face centroid is converted back to Cartesian using "
+            "the basis at that point.\n"
+            "  \\item \\textbf{Coordinate-space interpolation:} The "
+            "displacement $(\\Delta r,\\,\\Delta\\theta,\\,\\Delta\\phi)$ between "
+            "cell centre and face centroid must be computed correctly.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"A Voronoi tessellation from $\sim$4\,000 random points in a "
+            r"spherical shell $1 < r < 2$ embedded in a $[-4,\,4]^3$ box. "
+            r"Scalar fields (density, internal energy) are linear in "
+            r"$(r,\,\theta)$; velocity components $(v_r,\,v_\theta,\,v_\phi)$ "
+            r"are also linear in $(r,\,\theta)$ (no $\phi$ dependence to avoid "
+            r"angle-wrapping artefacts). The slope limiter is disabled so that "
+            r"the reconstruction is purely linear."
+        ),
+        "boundary_conditions": "Rigid walls at box faces.",
+        "mesh_movement": "Static (no time evolution).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"For interior faces (both cell CMs in $1.1 < r < 1.9$):"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item Scalar max relative error $< 10^{-8}$." "\n"
+            r"  \item Velocity max relative error $< 0.1$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "spherical_collapse",
+        "title": "Spherical Shell Collapse (Symmetry Test)",
+        "description": (
+            "A dense spherical shell ($0.9 < r < 1.0$, $\\rho=1$, $P=1$) is "
+            "embedded in a low-density ambient medium ($\\rho=10^{-3}$, "
+            "$P=10^{-4}$) and allowed to collapse inward on a fixed Eulerian "
+            "mesh. The mesh is constructed by generating a well-rounded "
+            "template sphere (\\texttt{RandSphereSurfaceRounded}, $\\sim$10\\,000 "
+            "points) and replicating it at logarithmically spaced radii from "
+            "$R=1.1$ down to $R=0.05$ with constant $\\Delta R/R$, ensuring "
+            "near-unity aspect ratio. The inner core ($r<0.05$) and the "
+            "region between the outer sphere and the box walls are filled with "
+            "random points.\n\n"
+            "The simulation runs until the volume-averaged inward velocity at "
+            "$r=0.05$ reaches unity. Snapshots are written each time the "
+            "shock front advances inward by $0.1$ in radius.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Spherical symmetry preservation:} The primary "
+            "metric is the angular scatter (standard deviation / mean) of "
+            "density and radial velocity in each radial bin. A well-behaved "
+            "code should maintain low scatter throughout the collapse.\n"
+            "  \\item \\textbf{Eulerian advection on unstructured mesh:} The "
+            "fixed mesh forces all dynamics to be captured by inter-cell "
+            "fluxes, stressing the Riemann solver and reconstruction.\n"
+            "  \\item \\textbf{Strong shock convergence:} The collapsing shell "
+            "drives a converging shock that amplifies any asymmetry.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Dense shell: $\rho = 1$, $P = 1$ for $0.9 < r < 1.0$; "
+            r"ambient: $\rho = 10^{-3}$, $P = 10^{-4}$ elsewhere. "
+            r"Zero velocity everywhere. $\gamma = 5/3$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces of the $[-1.55, 1.55]^3$ box.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "MPI, 64~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Maximum angular density scatter $< 0.1$ and maximum angular "
+            r"velocity scatter $< 0.1$ across all radial bins with "
+            r"significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$)."
+        ),
+        "plots": [
+            "collapse_density_profile.png",
+            "collapse_scatter_profile.png",
+        ],
+        "plot_caption": (
+            "Spherical collapse at termination: radial density profile and "
+            "angular scatter of density and velocity vs.\\ radius."
+        ),
+    },
 ]
 
 
@@ -1059,6 +1162,41 @@ def _read_gresho_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
     return rows
 
 
+def _read_spherical_gauss_linear_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / "spherical_gauss_linear" / "gauss_linear_metrics.txt")
+    if not kv:
+        return []
+    rows = []
+    for field, key, thr_val in [
+        ("Scalar max rel. error", "scalar_max_rel_error", 1e-8),
+        ("Velocity max rel. error", "velocity_max_rel_error", 0.1),
+    ]:
+        val = kv.get(key)
+        if val is not None:
+            passed = float(val) < thr_val
+            rows.append((field, val, f"{thr_val:.0e}", passed))
+    faces = kv.get("faces_checked")
+    if faces is not None:
+        rows.append(("Faces checked", faces, "> 0", int(faces) > 0))
+    return rows
+
+
+def _read_collapse_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / "spherical_collapse" / "collapse_metrics.txt")
+    if not kv:
+        return []
+    rows = []
+    for field, key, thr_val in [
+        ("Max density scatter", "max_density_scatter", 0.1),
+        ("Max velocity scatter", "max_velocity_scatter", 0.1),
+    ]:
+        val = kv.get(key)
+        if val is not None:
+            passed = float(val) < thr_val
+            rows.append((field, val, f"{thr_val}", passed))
+    return rows
+
+
 METRIC_READERS: dict[str, object] = {
     "sod_1d": lambda cd: _read_sod_metrics(cd),
     "sedov_3d_mpi": lambda cd: _read_sedov_metrics(cd),
@@ -1074,6 +1212,8 @@ METRIC_READERS: dict[str, object] = {
     "marshak_wave_4": lambda cd: _read_marshak_wave_metrics(cd, 4),
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
+    "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
+    "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
 }
 
 

@@ -492,6 +492,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             sbatch_args=(
                 sbatch
                 --wait
+                --job-name="${test_id}"
                 --ntasks="${slurm_ntasks}"
                 --partition="${slurm_partition}"
                 --output="${run_stdout}"

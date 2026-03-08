@@ -519,6 +519,70 @@ check_marshak_wave_case() {
     return 0
 }
 
+check_spherical_collapse_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/collapse_metrics.txt"
+    local max_density_scatter
+    local max_velocity_scatter
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale collapse_metrics.txt"
+        return 1
+    fi
+
+    max_density_scatter=$(awk '$1 == "max_density_scatter" { print $2 }' "$metrics_file")
+    max_velocity_scatter=$(awk '$1 == "max_velocity_scatter" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse spherical collapse metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$max_density_scatter"; then
+        set_check_msg "spherical_collapse max_density_scatter is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$max_velocity_scatter"; then
+        set_check_msg "spherical_collapse max_velocity_scatter is not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical_collapse pass flag must be 0 or 1"
+        return 1
+    fi
+
+    local max_scatter="${COLLAPSE_MAX_DENSITY_SCATTER:-0.1}"
+
+    if ! awk -v d="$max_density_scatter" -v t="$max_scatter" 'BEGIN { exit !(d < t) }'; then
+        set_check_msg "spherical_collapse max_density_scatter exceeds threshold (${max_density_scatter} >= ${max_scatter})"
+        return 1
+    fi
+
+    local max_vel_scatter="${COLLAPSE_MAX_VELOCITY_SCATTER:-0.1}"
+
+    if ! awk -v v="$max_velocity_scatter" -v t="$max_vel_scatter" 'BEGIN { exit !(v < t) }'; then
+        set_check_msg "spherical_collapse max_velocity_scatter exceeds threshold (${max_velocity_scatter} >= ${max_vel_scatter})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical_collapse test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter})"
+    return 0
+}
+
 check_gresho_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -560,5 +624,177 @@ check_gresho_case() {
     fi
 
     set_check_msg "Gresho vortex (${test_type}) profile comparison passed"
+    return 0
+}
+
+check_spherical_gauss_linear_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/gauss_linear_metrics.txt"
+    local scalar_err
+    local vel_err
+    local faces_checked
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale gauss_linear_metrics.txt"
+        return 1
+    fi
+
+    scalar_err=$(awk '$1 == "scalar_max_rel_error" { print $2 }' "$metrics_file")
+    vel_err=$(awk '$1 == "velocity_max_rel_error" { print $2 }' "$metrics_file")
+    faces_checked=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+
+    if [[ -z "$scalar_err" || -z "$vel_err" || -z "$faces_checked" ]]; then
+        set_check_msg "failed to parse spherical gauss linear metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$scalar_err"; then
+        set_check_msg "scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$vel_err"; then
+        set_check_msg "velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    local max_scalar="${GAUSS_LINEAR_MAX_SCALAR_REL:-1e-8}"
+    local max_vel="${GAUSS_LINEAR_MAX_VEL_REL:-0.1}"
+
+    if ! awk -v e="$scalar_err" -v t="$max_scalar" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "scalar_max_rel_error exceeds threshold (${scalar_err} >= ${max_scalar})"
+        return 1
+    fi
+
+    if ! awk -v e="$vel_err" -v t="$max_vel" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "velocity_max_rel_error exceeds threshold (${vel_err} >= ${max_vel})"
+        return 1
+    fi
+
+    if ! awk -v n="$faces_checked" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "no faces were checked"
+        return 1
+    fi
+
+    local cart_scalar_err
+    local cart_vel_err
+    cart_scalar_err=$(awk '$1 == "cart_scalar_max_rel_error" { print $2 }' "$metrics_file")
+    cart_vel_err=$(awk '$1 == "cart_velocity_max_rel_error" { print $2 }' "$metrics_file")
+
+    if [[ -z "$cart_scalar_err" || -z "$cart_vel_err" ]]; then
+        set_check_msg "failed to parse Cartesian gauss linear metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$cart_scalar_err"; then
+        set_check_msg "cart_scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$cart_vel_err"; then
+        set_check_msg "cart_velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    if ! awk -v s="$scalar_err" -v c="$cart_scalar_err" 'BEGIN { exit !(s < c) }'; then
+        set_check_msg "spherical scalar error not less than Cartesian (${scalar_err} >= ${cart_scalar_err})"
+        return 1
+    fi
+
+    set_check_msg "Spherical Gauss linear test passed (sph_scalar_rel=${scalar_err}, cart_scalar_rel=${cart_scalar_err}, sph_vel_rel=${vel_err}, cart_vel_rel=${cart_vel_err}, faces=${faces_checked})"
+    return 0
+}
+
+check_cartesian_gauss_linear_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/cart_gauss_linear_metrics.txt"
+    local cart_scalar_err
+    local cart_vel_err
+    local faces_checked
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale cart_gauss_linear_metrics.txt"
+        return 1
+    fi
+
+    cart_scalar_err=$(awk '$1 == "cart_scalar_max_rel_error" { print $2 }' "$metrics_file")
+    cart_vel_err=$(awk '$1 == "cart_velocity_max_rel_error" { print $2 }' "$metrics_file")
+    faces_checked=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+
+    if [[ -z "$cart_scalar_err" || -z "$cart_vel_err" || -z "$faces_checked" ]]; then
+        set_check_msg "failed to parse Cartesian gauss linear metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$cart_scalar_err"; then
+        set_check_msg "cart_scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$cart_vel_err"; then
+        set_check_msg "cart_velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    local max_scalar="${CART_GAUSS_LINEAR_MAX_SCALAR_REL:-1e-6}"
+    local max_vel="${CART_GAUSS_LINEAR_MAX_VEL_REL:-0.1}"
+
+    if ! awk -v e="$cart_scalar_err" -v t="$max_scalar" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "cart_scalar_max_rel_error exceeds threshold (${cart_scalar_err} >= ${max_scalar})"
+        return 1
+    fi
+
+    if ! awk -v e="$cart_vel_err" -v t="$max_vel" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "cart_velocity_max_rel_error exceeds threshold (${cart_vel_err} >= ${max_vel})"
+        return 1
+    fi
+
+    if ! awk -v n="$faces_checked" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "no faces were checked"
+        return 1
+    fi
+
+    local sph_scalar_err
+    local sph_vel_err
+    sph_scalar_err=$(awk '$1 == "sph_scalar_max_rel_error" { print $2 }' "$metrics_file")
+    sph_vel_err=$(awk '$1 == "sph_velocity_max_rel_error" { print $2 }' "$metrics_file")
+
+    if [[ -z "$sph_scalar_err" || -z "$sph_vel_err" ]]; then
+        set_check_msg "failed to parse spherical gauss linear metrics from Cartesian test"
+        return 1
+    fi
+
+    if ! is_finite_number "$sph_scalar_err"; then
+        set_check_msg "sph_scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$sph_vel_err"; then
+        set_check_msg "sph_velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    if ! awk -v c="$cart_scalar_err" -v s="$sph_scalar_err" 'BEGIN { exit !(c < s) }'; then
+        set_check_msg "Cartesian scalar error not less than spherical (${cart_scalar_err} >= ${sph_scalar_err})"
+        return 1
+    fi
+
+    local max_sph_vel="${CART_GAUSS_LINEAR_MAX_SPH_VEL_REL:-0.5}"
+    if ! awk -v e="$sph_vel_err" -v t="$max_sph_vel" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "sph_velocity_max_rel_error exceeds threshold (${sph_vel_err} >= ${max_sph_vel})"
+        return 1
+    fi
+
+    set_check_msg "Cartesian Gauss linear test passed (cart_scalar_rel=${cart_scalar_err}, sph_scalar_rel=${sph_scalar_err}, cart_vel_rel=${cart_vel_err}, sph_vel_rel=${sph_vel_err}, faces=${faces_checked})"
     return 0
 }

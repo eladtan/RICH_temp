@@ -118,7 +118,7 @@ def plot_sod(root: Path, out_dir: Path) -> bool:
 
 
 def plot_sedov(root: Path, out_dir: Path) -> bool:
-    """Sedov 3D: density vs r compared to Sedov-Taylor ODE solution."""
+    """Sedov 3D: density, pressure, and velocity vs r compared to Sedov-Taylor ODE."""
     profile = root / "regression_tests" / "cases" / "sedov_3d_mpi" / "sedov_profile.txt"
     if not profile.exists():
         print(f"  [sedov_3d_mpi] profile not found: {profile}")
@@ -138,58 +138,74 @@ def plot_sedov(root: Path, out_dir: Path) -> bool:
     gamma = 5.0 / 3.0
     w = 0.0
     n = 3
+    sim_time = 0.0075
 
-    # Find shock front at max pressure
     idx_shock = int(np.argmax(pressure))
-    shock_front = {
-        "radius": float(r[idx_shock]),
-        "density": float(density[idx_shock]),
-        "pressure": float(pressure[idx_shock]),
-        "velocity": float(velocity[idx_shock]),
-    }
+    shock_radius = float(r[idx_shock])
 
-    # Upstream state from far field
     far_mask = r > 0.8 * float(np.max(r))
     if not np.any(far_mask):
         far_mask = r > np.median(r)
-    upstream = {
-        "density": float(np.median(density[far_mask])),
-        "pressure": float(np.median(pressure[far_mask])),
-        "velocity": float(np.median(velocity[far_mask])),
-    }
+    rho_0 = float(np.median(density[far_mask]))
+    p_upstream = float(np.median(pressure[far_mask]))
+    v_upstream = float(np.median(velocity[far_mask]))
 
-    # Build Sedov-Taylor profiles via ODE integration tables
+    v_s = (2.0 / 5.0) * shock_radius / sim_time
+
     nip = 3000
     ssv = np.linspace(1e-6 + 1.0 / gamma, 2.0 / (gamma + 1.0), num=nip)
-    shock_radius = shock_front["radius"]
-
-    # Use theoretical strong-shock density at the front:
-    # rho_shock = (gamma+1)/(gamma-1) * rho_upstream
-    compression = (gamma + 1.0) / (gamma - 1.0)
-    shock_density_theory = upstream["density"] * compression
 
     radius_table = np.array([shock_radius * sedov.vtoz(v, w, gamma, n) for v in ssv])
     density_table = np.array([
-        shock_density_theory * sedov.vtod(v, w, gamma, n) / compression
-        for v in ssv
+        rho_0 * sedov.vtod(v, w, gamma, n) for v in ssv
+    ])
+    pressure_table = np.array([
+        rho_0 * v_s ** 2 * sedov.vtop(v, w, gamma, n) for v in ssv
+    ])
+    velocity_table = np.array([
+        v_s * sedov.vtoz(v, w, gamma, n) * v for v in ssv
     ])
 
     r_fine = np.linspace(0, float(r.max()), 500)
-    density_analytic = np.array([
-        float(np.interp(ri, radius_table, density_table)) if ri <= shock_radius
-        else upstream["density"]
-        for ri in r_fine
-    ])
+
+    def _interp_field(table, upstream_val):
+        return np.array([
+            float(np.interp(ri, radius_table, table)) if ri <= shock_radius
+            else upstream_val
+            for ri in r_fine
+        ])
+
+    density_analytic = _interp_field(density_table, rho_0)
+    pressure_analytic = _interp_field(pressure_table, p_upstream)
+    velocity_analytic = _interp_field(velocity_table, v_upstream)
 
     plt = _get_plt()
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(r, density, "k.", markersize=2, label="Numeric (binned)")
-    ax.plot(r_fine, density_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
-    ax.set_xlabel("r")
-    ax.set_ylabel("Density")
-    ax.set_title("Sedov 3D -- Density")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+
+    ax1.plot(r, density, "k.", markersize=2, label="Numeric (binned)")
+    ax1.plot(r_fine, density_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
+    ax1.set_xlabel("r")
+    ax1.set_ylabel("Density")
+    ax1.set_title("Sedov 3D -- Density")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(r, pressure, "k.", markersize=2, label="Numeric (binned)")
+    ax2.plot(r_fine, pressure_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
+    ax2.set_xlabel("r")
+    ax2.set_ylabel("Pressure")
+    ax2.set_title("Sedov 3D -- Pressure")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    ax3.plot(r, velocity, "k.", markersize=2, label="Numeric (binned)")
+    ax3.plot(r_fine, velocity_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
+    ax3.set_xlabel("r")
+    ax3.set_ylabel("Radial Velocity")
+    ax3.set_title("Sedov 3D -- Velocity")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
     fig.tight_layout()
     _save_fig(fig, out_dir, "sedov_3d_mpi")
     plt.close(fig)
