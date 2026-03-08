@@ -158,9 +158,30 @@ Face ConvexHullFace(const Face &face)
     Vector3D center = faceCenter(face);
     Vector3D X = face.vertices[0] - center;
     double size = abs(X);
+    if(!(std::isfinite(size)) || size <= std::numeric_limits<double>::min())
+        return result;
     X *= 1.0 / size;
-    Vector3D N = fastabs(face.vertices[1] - face.vertices[0]) > 1e-10 * size ? normalize(CrossProduct(X, face.vertices[1] - face.vertices[0])) : 
-                                                                            normalize(CrossProduct(X, face.vertices[2] - face.vertices[0]));
+    Vector3D edge;
+    Vector3D raw_normal;
+    const double edge_eps = 1e-10 * size;
+    for(size_t i = 1; i < face.vertices.size(); ++i)
+    {
+        Vector3D candidate = face.vertices[i] - face.vertices[0];
+        if(fastabs(candidate) <= edge_eps)
+            continue;
+        Vector3D candidate_normal = CrossProduct(X, candidate);
+        if(abs(candidate_normal) <= std::numeric_limits<double>::min())
+            continue;
+        edge = candidate;
+        raw_normal = candidate_normal;
+        break;
+    }
+    double normal_size = abs(raw_normal);
+    if(!(std::isfinite(normal_size)) || normal_size <= std::numeric_limits<double>::min())
+    {
+        return result;
+    }
+    Vector3D N = normalize(raw_normal);
     Vector3D Y = CrossProduct(N, X);
 
     struct projected
@@ -353,7 +374,8 @@ void CreatePolyPlanes(const Tessellation3D &tess, size_t cell_index, std::vector
         face.vertices.clear();
         faces[i].point = face_CM;
         size_t otherIndex = tess.GetFaceNeighbors(face_indeces[i]).first == cell_index ? tess.GetFaceNeighbors(face_indeces[i]).second : tess.GetFaceNeighbors(face_indeces[i]).first;
-        faces[i].normal = normalize(tess.GetMeshPoint(cell_index) - tess.GetMeshPoint(otherIndex));
+        Vector3D delta = tess.GetMeshPoint(cell_index) - tess.GetMeshPoint(otherIndex);
+        faces[i].normal = normalize(delta);
     }
 }
 
