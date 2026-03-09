@@ -487,7 +487,21 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(gradE[i])));
         if(grad_magnitude < 0.5 * max_neighbor_R[i])
             gradE[i] *= 0.5 * max_neighbor_R[i] / grad_magnitude;
-        double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(gradE[i], Dcell, Er_for_limit[i]) : 1;
+        Vector3D grad_for_limiter = gradE[i];
+        if(flux_limiter_)
+        {
+            double const cell_width = std::max(tess.GetWidth(i) * length_scale_, 1e-200);
+            double const min_grad = std::abs(Er_for_limit[i]) / (1000.0 * cell_width);
+            double const grad_abs = std::abs(fastabs(grad_for_limiter));
+            if(grad_abs < min_grad)
+            {
+                if(grad_abs > 0)
+                    grad_for_limiter *= min_grad / grad_abs;
+                else
+                    grad_for_limiter = Vector3D(min_grad, 0, 0);
+            }
+        }
+        double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(grad_for_limiter, Dcell, Er_for_limit[i]) : 1;
         cell_flux_limiter[i] = flux_limiter;
         Vector3D const CM = tess.GetCellCM(i);
         double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));

@@ -663,47 +663,54 @@ namespace CG
             error = sub_r_sqrd / scale_b;
             if(print)
                 std::cout<<"iter "<<i<<" error "<<error<<std::endl;
+            max_data[0].val = 0;
+            max_data[1].val = 0;
+            max_data[2].val = 0;
+            max_data[0].mpi_id = rank;
+            max_data[1].mpi_id = rank;
+            max_data[2].mpi_id = rank;
+            max_sub_x = 0;
+            for(std::size_t j = 0; j < Nlocal; ++j)
+                max_sub_x = std::max(max_sub_x, std::abs(sub_x[j]));
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+            for(size_t j = 0; j < Nlocal; ++j)
+            {
+                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5))))
+                {
+                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5)));
+                    max_loc1 = j;
+                }
+                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
+                {
+                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
+                    max_loc0 = j;
+                }
+                if(sub_x[j] < -max_sub_x * 1e-10)
+                {
+                    max_loc2 = j;
+                    max_data[2].val = 1;
+                }
+            }
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+#endif
+            if(i >= 10 && error < 1e-2 && max_data[1].val < 1e-6 && max_data[0].val < 1e-6)
+            {
+                if(rank == 0)
+                    std::cout << "Exited BiCGSTAB: max0 and max1 below 1e-6, max0 "
+                              << max_data[0].val << " max1 " << max_data[1].val << std::endl;
+                finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val,
+                    max_data[1].val, max_data[2].val, max_data[0].mpi_id, max_data[1].mpi_id, sub_x, sub_x_solution,
+                    cells, tess, total_iters, A_row_ptr, A_col_idx, A_values, b, Nlocal, matrix_builder.GetLengthScale(),
+                    sub_a_times_p, sub_r);
+                good_end = true;
+                break;
+            }
             // Convergence test
             if (error < tolerance)
             {
-                double max_sub_x = 0.0;
-                for(std::size_t j=0; j < Nlocal; ++j){
-                    max_sub_x = std::max(max_sub_x, sub_x[j]);
-                }
-
-#ifdef RICH_MPI
-                MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#endif
-                max_data[0].val = 0;
-                max_data[1].val = 0;
-                max_data[2].val = 0;
-                for(size_t j = 0; j < Nlocal; ++j)
-                    max_sub_x = std::max(max_sub_x, std::abs(sub_x[j]));
-#ifdef RICH_MPI
-                MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#endif
-                for(size_t j = 0; j < Nlocal; ++j)
-                {
-                    double const local_scale = std::abs(b[j]);
-                    if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5))))
-                    {
-                        max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5)));
-                        max_loc1 = j;
-                    }
-                    // if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
-                    // {
-                    //     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
-                    //     max_loc0 = j;
-                    // }
-                    if(sub_x[j] < -max_sub_x * 1e-10)
-                    {
-                        max_loc2 = j;
-                        max_data[2].val = 1;
-                    }
-                }
-#ifdef RICH_MPI
-                MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-#endif       
                 if((max_data[1].val < 1e-5 && max_data[0].val < 1e-5 && ((i > 25 && max_data[1].val < 1e-10) || max_data[2].val < 0.5)) || error < 1e-100) 
                 { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                     finalize_conjugate_gradient(slice, max_loc0, max_loc1, rank, i, error, max_data[0].val, 
