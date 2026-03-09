@@ -33,6 +33,7 @@ public:
 	\param skip_key The sticker name to skip cells for slope limit
 	\param pressure_calc Determine whether the pressure should be recalculated
 	\param apply_principal_limit Enable principal-frame velocity limiting
+	\param velocity_radial_extrapolation When true, velocity is extrapolated to the average radius between generators rather than face CM radius, improving spherical symmetry preservation
 	*/
 	SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
 		Vector3D const& origin = Vector3D(),
@@ -40,7 +41,8 @@ public:
 		double theta = 0.5, double delta_P = 0.7, bool SR = false,
 		const vector<string>& calc_tracers = vector<string>(),
 		const string& skip_key = string(), bool pressure_calc = true,
-		bool apply_principal_limit = false);
+		bool apply_principal_limit = false,
+		bool velocity_radial_extrapolation = false);
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
@@ -92,6 +94,7 @@ private:
 	const string skip_key_;
 	const bool pressure_calc_;
 	const bool apply_principal_limit_;
+	const bool velocity_radial_extrapolation_;
 	mutable std::vector<bool> is_pole_cell_;
 
 	SphericalLinearGauss3D(const SphericalLinearGauss3D& origin);

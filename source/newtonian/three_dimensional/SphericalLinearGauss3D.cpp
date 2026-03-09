@@ -3,6 +3,8 @@
 #include <array>
 #include <iostream>
 #include <cstring>
+#include <fstream>
+#include <cmath>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
@@ -835,7 +837,8 @@ namespace
 		double diffusecoeff, double shock_w,
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces,
-		vector<Vector3D> const& face_sph_cache)
+		vector<Vector3D> const& face_sph_cache,
+		vector<double> const& face_vel_dr_correction)
 	{
 		ReplaceComputationalCell(cmax, cell);
 		ReplaceComputationalCell(cmin, cell);
@@ -1188,7 +1191,8 @@ namespace
 		vector<Vector3D> &neighbor_cm_list,
 		string const& skip_key,
 		vector<ComputationalCell3D> &neighbor_list,
-		vector<Vector3D>& face_sph_cache, vector<double>& face_areas_cache)
+		vector<Vector3D>& face_sph_cache, vector<double>& face_areas_cache,
+		bool velocity_radial_extrapolation, vector<double>& face_vel_dr_correction)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
 		GetNeighborCM(tess, cell_index, neighbor_cm_list, faces);
@@ -1229,6 +1233,21 @@ namespace
 		naive_slope_ = res;
 		zero_radiation_fields(res, calc_tracers);
 
+		// Compute velocity radial correction for each face
+		face_vel_dr_correction.resize(faces.size(), 0.0);
+		if (velocity_radial_extrapolation)
+		{
+			double r_gen_cell = abs(tess.GetMeshPoint(cell_index) - origin);
+			for (size_t fi = 0; fi < faces.size(); ++fi)
+			{
+				auto neigh = tess.GetFaceNeighbors(faces[fi]);
+				size_t other = (neigh.first == cell_index) ? neigh.second : neigh.first;
+				double r_gen_other = abs(tess.GetMeshPoint(other) - origin);
+				double r_avg = 0.5 * (r_gen_cell + r_gen_other);
+				face_vel_dr_correction[fi] = r_avg - face_sph_cache[fi].x;
+			}
+		}
+
 		if (slf)
 		{
 		for (size_t i = 0; i < neighbor_list.size(); ++i)
@@ -1249,7 +1268,8 @@ namespace
 				cell_coords.x, cell_coords.y);
 			spherical_blended_slope_limit(cell_sph, cell_coords, neighbor_list, res,
 				temp2, temp3, temp4, temp5,
-				diffusecoeff, sw, skip_key, tess, cell_index, faces, face_sph_cache);
+				diffusecoeff, sw, skip_key, tess, cell_index, faces, face_sph_cache,
+				face_vel_dr_correction);
 		}
 	}
 
@@ -1310,12 +1330,14 @@ namespace
 SphericalLinearGauss3D::SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
 	Vector3D const& origin, bool slf, double delta_v, double theta,
 	double delta_P, bool SR, const vector<string>& calc_tracers,
-	const string& skip_key, bool pressure_calc, bool apply_principal_limit)
+	const string& skip_key, bool pressure_calc, bool apply_principal_limit,
+	bool velocity_radial_extrapolation)
 	: eos_(eos), ghost_(ghost), origin_(origin), rslopes_(), naive_rslopes_(),
 	er_(), etheta_(), ephi_(),
 	slf_(slf), shockratio_(delta_v), diffusecoeff_(theta), pressure_ratio_(delta_P), SR_(SR),
 	calc_tracers_(calc_tracers), skip_key_(skip_key), pressure_calc_(pressure_calc),
-	apply_principal_limit_(apply_principal_limit) {}
+	apply_principal_limit_(apply_principal_limit),
+	velocity_radial_extrapolation_(velocity_radial_extrapolation) {}
 
 void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 	std::vector<ComputationalCell3D> const& cells, double time)
@@ -1356,6 +1378,7 @@ void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 	vector<Vector3D> face_sph_cache;
 	vector<Vector3D> face_cart_cache;
 	vector<double> face_areas_cache;
+	vector<double> face_vel_dr_correction;
 	std::vector<Vector3D> c_ij;
 	Vector3D cell_coords;
 
@@ -1380,7 +1403,8 @@ void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 				eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
 				naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 				neigh_sph_buf, neighbor_cm_list, skip_key_, neighbor_list,
-				face_sph_cache, face_areas_cache);
+				face_sph_cache, face_areas_cache,
+				velocity_radial_extrapolation_, face_vel_dr_correction);
 		}
 	}
 
@@ -1481,6 +1505,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 	vector<Vector3D> face_sph_cache;
 	vector<Vector3D> face_cart_cache;
 	vector<double> face_areas_cache;
+	vector<double> face_vel_dr_correction;
 	std::vector<Vector3D> c_ij;
 
 	res.resize(tess.GetTotalFacesNumber(), pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]));
@@ -1550,7 +1575,8 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 				eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
 				naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 				neigh_sph_buf, neighbor_cm_list, skip_key_, neighbor_list,
-				face_sph_cache, face_areas_cache);
+				face_sph_cache, face_areas_cache,
+				velocity_radial_extrapolation_, face_vel_dr_correction);
 
 			face_vec const& faces = tess.GetCellFaces(i);
 			const size_t nloop = faces.size();
@@ -1578,6 +1604,14 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 						interp_coord_eos(*cell_ref, rslopes_[i], dr, dtheta, dphi_val, eos_, false);
 						if (energy_fix)
 							cell_ref->tracers[energy_index] = cell_ref->internal_energy;
+					}
+
+					if (!face_vel_dr_correction.empty())
+					{
+						double vel_dr_extra = face_vel_dr_correction[j];
+						cell_ref->velocity.x += rslopes_[i].xderivative.velocity.x * vel_dr_extra;
+						cell_ref->velocity.y += rslopes_[i].xderivative.velocity.y * vel_dr_extra;
+						cell_ref->velocity.z += rslopes_[i].xderivative.velocity.z * vel_dr_extra;
 					}
 
 					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, er_[i], etheta_[i], ephi_[i]);
@@ -1666,6 +1700,17 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 					interp_coord_eos(*cell_ref, ghost_slope, dr, dtheta, dphi_val, eos_, false);
 					if (energy_fix)
 						cell_ref->tracers[energy_index] = cell_ref->internal_energy;
+				}
+
+				if (velocity_radial_extrapolation_)
+				{
+					auto bneigh = tess.GetFaceNeighbors(boundaryedges[i]);
+					double r_avg = 0.5 * (abs(tess.GetMeshPoint(bneigh.first) - origin_)
+						+ abs(tess.GetMeshPoint(bneigh.second) - origin_));
+					double dr_correction = r_avg - face_sc.x;
+					cell_ref->velocity.x += ghost_slope.xderivative.velocity.x * dr_correction;
+					cell_ref->velocity.y += ghost_slope.xderivative.velocity.y * dr_correction;
+					cell_ref->velocity.z += ghost_slope.xderivative.velocity.z * dr_correction;
 				}
 
 				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, g_er, g_et, g_ep);
