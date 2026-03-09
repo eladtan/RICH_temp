@@ -209,7 +209,7 @@ std::vector<Vector3D> RoundGridSphere3D(std::vector<Vector3D> const& points, Vec
 #endif
 	}
 
-	size_t const extraIt = std::max(static_cast<size_t>(10), NumberIt / 2);
+	size_t const extraIt = std::max(static_cast<size_t>(2), NumberIt / 2);
 	{
 		size_t N = tess->GetPointNo();
 #ifdef RICH_MPI
