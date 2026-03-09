@@ -30,7 +30,11 @@ namespace {
 
 double const R_OUTER = 1.1;
 double const R_INNER = 0.05;
+#ifdef HIGH_RES
+size_t const N_CUBE_EDGE = 82;
+#else
 size_t const N_CUBE_EDGE = 41;
+#endif
 
 std::vector<double> build_bin_edges()
 {
@@ -270,7 +274,7 @@ int main(void)
                     cells[i].velocity = cm * (-1.0 / r_cm);
             } else {
                 cells[i].density = 0.001;
-                cells[i].pressure = 1e-4;
+                cells[i].pressure = 1e-5;
                 cells[i].velocity = Vector3D(0, 0, 0);
             }
             cells[i].internal_energy = eos.dp2e(cells[i].density, cells[i].pressure,
@@ -280,7 +284,7 @@ int main(void)
 
     Hllc3D rs;
     RigidWallGenerator3D ghost;
-    SphericalLinearGauss3D interp(eos, ghost);
+    SphericalLinearGauss3D interp(eos, ghost, Vector3D(0, 0, 0), true, 0.2, 0.5, 0.7, false, {}, "", true, false, false);
     Eulerian3D pm;
     ZeroForce3D force;
     DefaultCellUpdater cu;

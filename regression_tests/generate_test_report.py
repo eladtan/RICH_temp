@@ -945,6 +945,61 @@ TESTS = [
             "angular scatter of density and velocity vs.\\ radius."
         ),
     },
+    {
+        "id": "rayleigh_taylor_mpi",
+        "title": "Rayleigh--Taylor Instability (3D, MPI)",
+        "description": (
+            "The Rayleigh--Taylor instability \\cite{rayleigh1883,taylor1950} "
+            "develops when a heavy fluid is supported against gravity above a "
+            "lighter fluid. A small sinusoidal perturbation at the interface "
+            "grows exponentially in the linear regime with a growth rate "
+            "determined by the Atwood number, gravitational acceleration, and "
+            "perturbation wavenumber \\cite{chandrasekhar1961}.\n\n"
+            "The initial condition places $\\rho_{\\mathrm{heavy}}=2$ above "
+            "$\\rho_{\\mathrm{light}}=1$ in a $[0,1]^2 \\times [0,2]$ box with "
+            "a two-mode cosine perturbation (one peak in $x$, one in $y$) of "
+            "amplitude $\\delta=0.01$ at the interface $z=1$. Pressure is set "
+            "in hydrostatic equilibrium and constant downward gravity "
+            "$g=0.5$ is applied.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Source term coupling:} The conservative gravity "
+            "source term (\\texttt{ConservativeForce3D}) must correctly inject "
+            "momentum and energy to maintain hydrostatic equilibrium and drive "
+            "the instability.\n"
+            "  \\item \\textbf{Lagrangian mesh motion with RoundCells:} The "
+            "moving mesh must track the developing interface while keeping "
+            "cells well-shaped.\n"
+            "  \\item \\textbf{MPI scalability:} The test runs on 128~MPI tasks "
+            "with $\\sim$10$^6$ cells, exercising the parallel domain "
+            "decomposition and communication.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"$\rho_{\mathrm{light}}=1$ for $z < z_{\mathrm{int}}$, "
+            r"$\rho_{\mathrm{heavy}}=2$ for $z \geq z_{\mathrm{int}}$, where "
+            r"$z_{\mathrm{int}} = 1 + 0.01\,[\cos(2\pi x) + \cos(2\pi y)]$. "
+            r"Hydrostatic pressure with $P_0=10$, $g=0.5$. $\gamma=5/3$. "
+            r"Zero initial velocity."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces of the $[0,1]^2 \\times [0,2]$ box.",
+        "mesh_movement": "Lagrangian + RoundCells (\\texttt{Lagrangian3D} wrapped in \\texttt{RoundCells3D}).",
+        "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Fitted linear growth rate $\sigma_{\mathrm{fit}}$ within 25\% "
+            r"of analytical $\sigma = \sqrt{A\,g\,k}$ where $A=1/3$, $g=0.5$, "
+            r"$k=2\pi$."
+        ),
+        "plots": [
+            "rayleigh_taylor_mpi_ekz.png",
+            "rayleigh_taylor_mpi_slice.png",
+        ],
+        "plot_caption": (
+            "Rayleigh--Taylor instability: vertical kinetic energy $E_{k,z}(t)$ "
+            "with best-fit exponential growth rate (left), and density slice in "
+            "the $xz$-plane at $y=0.5$ at $t=3$ (right)."
+        ),
+    },
 ]
 
 
@@ -1197,6 +1252,23 @@ def _read_collapse_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
+def _read_rt_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "rayleigh_taylor_mpi" / "rt_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    sigma_fit = kv.get("RT_SIGMA_FIT")
+    sigma_ana = kv.get("RT_SIGMA_ANALYTICAL")
+    rel_err = kv.get("RT_GROWTH_RATE_REL_ERROR")
+    thr = kv.get("RT_MAX_GROWTH_RATE_REL_ERROR", "0.25")
+    if rel_err is not None:
+        passed = float(rel_err) <= float(thr)
+        rows.append(("Growth rate rel. error", rel_err, thr, passed))
+    if sigma_fit is not None and sigma_ana is not None:
+        rows.append(("Fitted $\\sigma$", sigma_fit, f"(analytical: {sigma_ana})", True))
+    return rows
+
+
 METRIC_READERS: dict[str, object] = {
     "sod_1d": lambda cd: _read_sod_metrics(cd),
     "sedov_3d_mpi": lambda cd: _read_sedov_metrics(cd),
@@ -1214,6 +1286,7 @@ METRIC_READERS: dict[str, object] = {
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
     "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
+    "rayleigh_taylor_mpi": lambda cd: _read_rt_metrics(cd),
 }
 
 
@@ -1420,6 +1493,25 @@ R.~Liska and B.~Wendroff,
 ``Comparison of Several Difference Schemes on 1D and 2D Test Problems for the
 Euler Equations,''
 \textit{SIAM J.~Sci.~Comput.}, 25(3):995--1017, 2003.
+
+% --- Rayleigh--Taylor instability ---
+
+\bibitem{rayleigh1883}
+Lord Rayleigh,
+``Investigation of the Character of the Equilibrium of an Incompressible Heavy
+Fluid of Variable Density,''
+\textit{Proc.~London Math.~Soc.}, s1-14(1):170--177, 1883.
+
+\bibitem{taylor1950}
+G.~I.~Taylor,
+``The Instability of Liquid Surfaces when Accelerated in a Direction
+Perpendicular to their Planes.~I,''
+\textit{Proc.~R.~Soc.~Lond.~A}, 201(1065):192--196, 1950.
+
+\bibitem{chandrasekhar1961}
+S.~Chandrasekhar,
+\textit{Hydrodynamic and Hydromagnetic Stability},
+Oxford University Press, 1961.
 
 \end{thebibliography}
 """

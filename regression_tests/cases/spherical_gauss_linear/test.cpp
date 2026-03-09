@@ -153,7 +153,8 @@ int main(void)
 	SphericalLinearGauss3D interp(eos, ghost, origin,
 	    /*slf=*/false, /*delta_v=*/0.2, /*theta=*/0.5,
 	    /*delta_P=*/0.7, /*SR=*/false, /*calc_tracers=*/{},
-	    /*skip_key=*/"", /*pressure_calc=*/false);
+	    /*skip_key=*/"", /*pressure_calc=*/false,
+	    /*apply_principal_limit=*/false, /*velocity_radial_extrapolation=*/true);
 
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D>> face_values;
 	try {

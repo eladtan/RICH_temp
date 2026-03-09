@@ -798,3 +798,43 @@ check_cartesian_gauss_linear_case() {
     set_check_msg "Cartesian Gauss linear test passed (cart_scalar_rel=${cart_scalar_err}, sph_scalar_rel=${sph_scalar_err}, cart_vel_rel=${cart_vel_err}, sph_vel_rel=${sph_vel_err}, faces=${faces_checked})"
     return 0
 }
+
+check_rayleigh_taylor_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local ek_file="${run_dir}/rt_kinetic_energy.txt"
+    local slice_file="${run_dir}/rt_density_slice.txt"
+    local checker_stdout="${run_dir}/rt_check.stdout.log"
+    local checker_stderr="${run_dir}/rt_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$ek_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale rt_kinetic_energy.txt"
+        return 1
+    fi
+
+    local plot_dir="${run_dir}"
+    local slice_arg=""
+    if [[ -s "$slice_file" ]]; then
+        slice_arg="--slice ${slice_file}"
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_rayleigh_taylor.py" \
+        --profile "$ek_file" \
+        ${slice_arg} \
+        --max-growth-rate-rel-error "${RT_MAX_GROWTH_RATE_REL_ERROR:-0.25}" \
+        --plot-dir "$plot_dir" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Rayleigh-Taylor growth rate comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Rayleigh-Taylor growth rate comparison passed"
+    return 0
+}
