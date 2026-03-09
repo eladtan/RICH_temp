@@ -651,6 +651,104 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Rayleigh-Taylor plotter
+# --------------------------------------------------------------------------- #
+
+
+def plot_rayleigh_taylor(root: Path, out_dir: Path) -> bool:
+    """Rayleigh-Taylor: Ek_z(t) with fitted growth rate, and density slice."""
+    case_dir = root / "regression_tests" / "cases" / "rayleigh_taylor_mpi"
+    ek_file = case_dir / "rt_kinetic_energy.txt"
+    slice_file = case_dir / "rt_density_slice.txt"
+
+    if not ek_file.exists():
+        print(f"  [rayleigh_taylor_mpi] kinetic energy file not found: {ek_file}")
+        return False
+
+    checker_path = root / "regression_tests" / "lib" / "check_rayleigh_taylor.py"
+    checker = SourceFileLoader("check_rayleigh_taylor", str(checker_path)).load_module()
+
+    raw = np.loadtxt(str(ek_file))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    time = raw[:, 0]
+    ekz = raw[:, 1]
+
+    positive = ekz > 0
+    time = time[positive]
+    ekz = ekz[positive]
+
+    sigma_analytical = checker.analytical_growth_rate()
+    sigma_fit, log_C, mask = checker.fit_growth_rate(time, ekz)
+
+    checker.make_plots(time, ekz, sigma_fit, log_C, mask,
+                       sigma_analytical,
+                       str(slice_file) if slice_file.exists() else None,
+                       str(out_dir))
+
+    print(f"  [rayleigh_taylor_mpi] saved rayleigh_taylor_mpi_ekz/slice .png/.pdf")
+    return True
+
+
+def plot_eulerian_diffusion_freefree_1d(root: Path, out_dir: Path) -> bool:
+    """1D free-free diffusion test: plot gas temperature versus x."""
+    profile = root / "regression_tests" / "cases" / "eulerian_diffusion_freefree_1d" / "temperature_profile.txt"
+    if not profile.exists():
+        print(f"  [eulerian_diffusion_freefree_1d] profile not found: {profile}")
+        return False
+
+    raw = np.loadtxt(str(profile))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    if raw.shape[1] < 4:
+        print("  [eulerian_diffusion_freefree_1d] expected columns: x density Tgas Trad")
+        return False
+
+    x = raw[:, 0]
+    tgas = raw[:, 2]
+    trad = raw[:, 3]
+    tgas_kev = tgas * 8.617333262145e-8
+    trad_kev = trad * 8.617333262145e-8
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(tgas_kev)) or not np.all(np.isfinite(trad_kev)):
+        print("  [eulerian_diffusion_freefree_1d] non-finite x/Tgas/Trad values")
+        return False
+
+    order = np.argsort(x)
+    x = x[order]
+    tgas_kev = tgas_kev[order]
+    trad_kev = trad_kev[order]
+
+    if np.any(tgas_kev <= 0) or np.any(trad_kev <= 0):
+        print("  [eulerian_diffusion_freefree_1d] Tgas/Trad must be positive for log plots")
+        return False
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(x, tgas_kev, color="tab:red", linewidth=1.2)
+    ax.set_xlabel("x [cm]")
+    ax.set_ylabel("Gas temperature [keV]")
+    ax.set_title("1D Eulerian diffusion (free-free): Tgas vs x")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "eulerian_diffusion_freefree_1d")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(x, trad_kev, color="tab:blue", linewidth=1.2)
+    ax.set_xlabel("x [cm]")
+    ax.set_ylabel("Radiation temperature [keV]")
+    ax.set_title("1D Eulerian diffusion (free-free): Trad vs x")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "eulerian_diffusion_freefree_1d_trad")
+    plt.close(fig)
+    print("  [eulerian_diffusion_freefree_1d] saved eulerian_diffusion_freefree_1d(.png/.pdf) and _trad(.png/.pdf)")
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -667,6 +765,8 @@ ALL_PLOTTERS = {
     "marshak_wave_4": plot_marshak_wave_4,
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
+    "rayleigh_taylor_mpi": plot_rayleigh_taylor,
+    "eulerian_diffusion_freefree_1d": plot_eulerian_diffusion_freefree_1d,
 }
 
 

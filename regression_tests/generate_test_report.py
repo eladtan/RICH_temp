@@ -1000,6 +1000,48 @@ TESTS = [
             "the $xz$-plane at $y=0.5$ at $t=3$ (right)."
         ),
     },
+    {
+        "id": "eulerian_diffusion_freefree_1d",
+        "title": "1D Eulerian Diffusion (Gray Free--Free)",
+        "description": (
+            "A 1D Eulerian radiation-hydrodynamics test with gray diffusion and "
+            "free--free absorption opacity (no scattering). A left inflow drives "
+            "a shock into initially static material and the run stops when the "
+            "shock reaches $x=0.8\\times10^{13}\\,\\mathrm{cm}$.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Eulerian radiation-hydrodynamics coupling:} "
+            "tests coupled hydro + gray diffusion in a shock-forming inflow setup.\n"
+            "  \\item \\textbf{Free--free opacity path:} validates gray free--free "
+            "absorption evaluation without scattering.\n"
+            "  \\item \\textbf{Open radiation boundary condition:} all boundaries "
+            "use open diffusion boundaries.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Domain $x \in [0,\,10^{13}]\,\mathrm{cm}$ with 1024 uniform cells. "
+            r"Uniform gas state: $\rho = 10^{-14}\,\mathrm{g\,cm^{-3}}$, "
+            r"$T = 10^4\,\mathrm{K}$. "
+            r"Velocity is $v_x=10^8\,\mathrm{cm\,s^{-1}}$ for the left third of "
+            r"the domain and $v_x=0$ elsewhere."
+        ),
+        "boundary_conditions": (
+            "Hydrodynamics uses left/right inflow-style ghost states; "
+            "radiation uses open boundaries on all sides."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Run completes without fatal markers, writes "
+            r"\texttt{temperature\_profile.txt}, and generates "
+            r"\texttt{temperature\_vs\_x.png} from the checker."
+        ),
+        "plots": ["eulerian_diffusion_freefree_1d.png"],
+        "plot_caption": (
+            "1D Eulerian free--free diffusion regression: gas temperature profile "
+            "$T_{\\mathrm{gas}}(x)$ at the end of the run."
+        ),
+    },
 ]
 
 
@@ -1269,6 +1311,23 @@ def _read_rt_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
+def _read_freefree_1d_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "eulerian_diffusion_freefree_1d" / "freefree_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    points = kv.get("FREEFREE_PROFILE_POINTS")
+    tmin = kv.get("FREEFREE_TGAS_MIN")
+    tmax = kv.get("FREEFREE_TGAS_MAX")
+    if points is not None:
+        rows.append(("Profile points", points, ">= 2", int(float(points)) >= 2))
+    if tmin is not None:
+        rows.append(("Minimum $T_{\\mathrm{gas}}$", tmin, "finite", True))
+    if tmax is not None:
+        rows.append(("Maximum $T_{\\mathrm{gas}}$", tmax, "finite", True))
+    return rows
+
+
 METRIC_READERS: dict[str, object] = {
     "sod_1d": lambda cd: _read_sod_metrics(cd),
     "sedov_3d_mpi": lambda cd: _read_sedov_metrics(cd),
@@ -1287,6 +1346,7 @@ METRIC_READERS: dict[str, object] = {
     "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
     "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
     "rayleigh_taylor_mpi": lambda cd: _read_rt_metrics(cd),
+    "eulerian_diffusion_freefree_1d": lambda cd: _read_freefree_1d_metrics(cd),
 }
 
 
@@ -1666,6 +1726,7 @@ def _summary_table() -> str:
         ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
         ("Mach 2 Gray", "MPI", "8", "Eulerian", "Yes"),
         ("Mach 2 Multigroup", "MPI", "8", "Eulerian", "Yes"),
+        ("1D Free--Free Diffusion", "MPI", "8", "Eulerian", "Yes"),
     ]
     for row in rows:
         lines.append(" & ".join(row) + " \\\\")

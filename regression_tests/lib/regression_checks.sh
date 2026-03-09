@@ -477,6 +477,76 @@ check_mach2_case() {
     return 0
 }
 
+check_eulerian_diffusion_freefree_case_common() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local figure_suffix="$5"
+    local profile_file="${run_dir}/temperature_profile.txt"
+    local shock_file="${run_dir}/shock_position.txt"
+    local checker_stdout="${run_dir}/freefree_check.stdout.log"
+    local checker_stderr="${run_dir}/freefree_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale temperature_profile.txt"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$shock_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale shock_position.txt"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_eulerian_diffusion_freefree_1d.py" \
+        --profile "$profile_file" \
+        --output-dir "$run_dir" \
+        --figure-suffix "$figure_suffix" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "free-free 1D profile validation/plot generation failed"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "${run_dir}/temperature_vs_x${figure_suffix}.png" "$run_start_epoch"; then
+        set_check_msg "temperature_vs_x${figure_suffix}.png missing or stale after checker"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "${run_dir}/trad_vs_x${figure_suffix}.png" "$run_start_epoch"; then
+        set_check_msg "trad_vs_x${figure_suffix}.png missing or stale after checker"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "${run_dir}/velocity_vs_x${figure_suffix}.png" "$run_start_epoch"; then
+        set_check_msg "velocity_vs_x${figure_suffix}.png missing or stale after checker"
+        return 1
+    fi
+
+    set_check_msg "free-free 1D profile valid and temperature/trad/velocity plots generated (${figure_suffix:-default})"
+    return 0
+}
+
+check_eulerian_diffusion_freefree_1d_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" ""
+}
+
+check_eulerian_diffusion_freefree_1d_32_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" "_32"
+}
+
 check_marshak_wave_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
