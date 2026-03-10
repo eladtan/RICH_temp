@@ -215,6 +215,9 @@ int main(void)
 #ifndef FREEFREE_NP
 #define FREEFREE_NP 256
 #endif
+#ifndef FREEFREE_COOLING_LIMITER_ON
+#define FREEFREE_COOLING_LIMITER_ON false
+#endif
     const size_t Np = FREEFREE_NP;
     const double domain_length = 2e12;
     const double dx = domain_length / static_cast<double>(Np);
@@ -301,7 +304,7 @@ int main(void)
  
     GrayFreeFreeOpacity opacity(1.0);
     DiffusionXOpenYZClosedBoundary diffusion_boundary;
-    Diffusion diffusion(opacity, diffusion_boundary, eos);
+    Diffusion diffusion(opacity, diffusion_boundary, eos, std::vector<std::string>(), true, true, false, FREEFREE_COOLING_LIMITER_ON);
     DefaultCellUpdater cu(false, 0, true, 0, &diffusion);
     DiffusionForce force(diffusion, eos);
  
