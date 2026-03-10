@@ -209,7 +209,7 @@ The suite builds and validates these regression cases:
 | `spherical_collapse` | mpi | Spherical shell collapse symmetry test, Eulerian mesh (Slurm, 64 tasks) |
 | `spherical_gauss_linear` | serial | SphericalLinearGauss3D LSQ gradient verification (linear field, machine precision) |
 | `rayleigh_taylor_mpi` | mpi | 3D Rayleigh-Taylor instability, Lagrangian+RoundCells mesh (Slurm, 128 tasks) |
-| `eulerian_diffusion_freefree_1d` | mpi | 1D Eulerian gray diffusion with free-free opacity, inflow-driven shock, open radiation boundaries (Slurm, 8 tasks) |
+| `eulerian_diffusion_freefree_suite` | mpi | 1D Eulerian gray free-free diffusion suite: 256, 256-limited, 32, and 32-limited runs with 4-way comparison figures |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -224,7 +224,7 @@ Acceptance checks are physics-based:
 - **Spherical collapse**: collapse a dense shell (0.9 < r < 1.0) on an Eulerian mesh built from replicated rounded sphere templates. Run until inward velocity at r=0.05 reaches 1. Require max angular scatter (std-dev/mean) of density and velocity across radial bins below 0.1.
 - **Spherical Gauss linear**: fill cells with fields linear in spherical coordinates (r, theta) and verify that the LSQ gradient in `SphericalLinearGauss3D` recovers them to machine precision. Scalar max relative error < 1e-8, velocity max relative error < 0.1.
 - **Rayleigh-Taylor**: 3D RT instability with ~1e6 cells, heavy-over-light density stratification with constant gravity. Two-mode cosine perturbation at the interface. Fit the exponential growth rate of vertical kinetic energy and require it to be within 25% of the analytical value sigma = sqrt(A*g*k).
-- **Eulerian free-free diffusion 1D**: run a 1024-cell Eulerian gray-diffusion case (`rho=1e-14`, `T=1e4 K`, left inflow `v=1e8 cm/s`) until the shock reaches `x=0.8e13 cm`; require fresh `temperature_profile.txt` and generated `temperature_vs_x.png`.
+- **Eulerian free-free diffusion suite**: run all four configured variants (`256`, `256-limited`, `32`, `32-limited`) and require fresh `temperature_profile.txt` outputs for each plus 4-way comparison figures (`Tgas`, `Trad`, `density`, `vx`) in `regression_tests/cases/eulerian_diffusion_freefree_compare/`.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -301,7 +301,7 @@ case the same config is used for both passes.
 - `--config <name>`: build configuration (overrides the mode default).
 - `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
 - `--nproc <N>`: override auto-detected core count for parallel builds (default: `$(nproc)`).
-- `--clean-results`: remove `regression_results/` and exit.
+- `--clean-results`: remove `regression_results/` and generated figure files under `regression_tests/`, then exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
 - `--verbose`: stream run output to terminal while also writing logs.
 
@@ -326,7 +326,7 @@ You can combine with `--mode`, `--config`, `--verbose`, and `--keep-artifacts`. 
 ./regression_tests/run_all.sh --test sod_1d --config gnuDebugMPI --verbose
 ```
 
-Clean all saved regression logs:
+Clean all saved regression logs and generated figures:
 
 ```shell
 ./regression_tests/run_all.sh --clean-results
@@ -357,7 +357,7 @@ Clean all saved regression logs:
   - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
   - `regression_tests/cases/spherical_collapse/collapse_metrics.txt` (Spherical collapse symmetry metrics)
   - `regression_tests/cases/rayleigh_taylor_mpi/rt_check.stderr.log` (Rayleigh-Taylor growth rate check details)
-  - `regression_tests/cases/eulerian_diffusion_freefree_1d/freefree_check.stderr.log` (1D free-free diffusion checker/plot errors)
+  - `regression_tests/cases/eulerian_diffusion_freefree_compare/run.stderr.log` (free-free suite runner errors)
 
 
 ### Plotting regression results
@@ -391,7 +391,7 @@ Available plots:
 | `gresho_lagrangian` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
 | `spherical_collapse` | Radial density profile and angular scatter vs r |
 | `rayleigh_taylor_mpi` | Vertical kinetic energy vs time (log scale) with fitted growth rate; density slice in xz plane |
-| `eulerian_diffusion_freefree_1d` | Gas temperature `Tgas` vs x |
+| `eulerian_diffusion_freefree_suite` | 4-way overlays for `Tgas`, `Trad`, density, and `vx` (256 / 256-limited / 32 / 32-limited) |
 
 Options:
 
