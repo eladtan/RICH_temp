@@ -66,7 +66,7 @@ Options:
   --config <name>          Build configuration (auto-derived from --mode if omitted)
   --mpi-np <N>             MPI ranks for sedov_3d test (default: ${MPI_NP})
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
-  --clean-results          Delete regression_results directory and exit
+  --clean-results          Delete regression_results and generated regression figures, then exit
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
   --verbose                Stream run output to terminal as well
@@ -233,8 +233,9 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
     else
         echo "No results directory to clean (${ARTIFACT_ROOT})"
     fi
-    # Also clean run-generated data from regression_tests/cases/
-    local_cases_dir="${REGRESSION_ROOT}/cases"
+    # Also clean run-generated data and figures from regression_tests/.
+    local_regression_dir="${ROOT_DIR}/regression_tests"
+    local_cases_dir="${local_regression_dir}/cases"
     if [[ -d "${local_cases_dir}" ]]; then
         cleaned=0
         while IFS= read -r -d '' f; do
@@ -245,6 +246,18 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
             ! -name "test.cpp" -print0)
         if [[ ${cleaned} -gt 0 ]]; then
             echo "Cleaned ${cleaned} run-generated files from ${local_cases_dir}"
+        fi
+    fi
+
+    if [[ -d "${local_regression_dir}" ]]; then
+        cleaned_figures=0
+        while IFS= read -r -d '' f; do
+            rm -f "$f"
+            cleaned_figures=$((cleaned_figures + 1))
+        done < <(find "${local_regression_dir}" -type f \
+            \( -name "*.png" -o -name "*.pdf" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.svg" \) -print0)
+        if [[ ${cleaned_figures} -gt 0 ]]; then
+            echo "Cleaned ${cleaned_figures} figure file(s) from ${local_regression_dir}"
         fi
     fi
     exit 0
