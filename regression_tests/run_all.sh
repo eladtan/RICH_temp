@@ -456,7 +456,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             build_cmd+=("${extra_build_args[@]}")
         fi
 
-        if ! "${build_cmd[@]}" >"${local_build_stdout}" 2>"${local_build_stderr}"; then
+        if ! VERBOSE=1 "${build_cmd[@]}" >"${local_build_stdout}" 2>"${local_build_stderr}"; then
             print_status "BUILD" "${test_id}" "FAIL (build failed, see build.stderr.log)" "${RED}"
             echo "1" > "${case_dir}/build_status.txt"
             echo "build failed (see build.stderr.log)" > "${case_dir}/build_detail.txt"

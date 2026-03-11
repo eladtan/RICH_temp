@@ -261,12 +261,19 @@ progress_bar_and_filtered_output() {
     done
 }
 
-# ==================== Run Make with Tee & Progress ====================
+# ==================== Run Make ====================
 echo -e "${CYAN}Running Make...${NC}"
-stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
-    | tee >(linking_filter | progress_bar_and_filtered_output) > "$MAKE_OUT"
-
-MAKE_EXIT_CODE=${PIPESTATUS[0]}
+if [[ "${VERBOSE:-0}" == "1" ]]; then
+    # Verbose mode: stream raw make output (including compile commands).
+    stdbuf -oL make VERBOSE=1 -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
+        | tee "$MAKE_OUT"
+    MAKE_EXIT_CODE=${PIPESTATUS[0]}
+else
+    # Default mode: compact progress + linking indicator.
+    stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
+        | tee >(linking_filter | progress_bar_and_filtered_output) > "$MAKE_OUT"
+    MAKE_EXIT_CODE=${PIPESTATUS[0]}
+fi
 
 # ==================== Final Status ====================
 
