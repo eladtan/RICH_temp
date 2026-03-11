@@ -213,7 +213,7 @@ namespace
 int main(void)
 {
 #ifndef FREEFREE_NP
-#define FREEFREE_NP 256
+#define FREEFREE_NP 512
 #endif
 #ifndef FREEFREE_COOLING_LIMITER_ON
 #define FREEFREE_COOLING_LIMITER_ON false

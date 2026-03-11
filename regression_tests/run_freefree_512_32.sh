@@ -9,7 +9,8 @@ COMPARE_PLOTTER="${REGRESSION_DIR}/lib/plot_eulerian_diffusion_freefree_compare.
 
 CONFIG="${1:-intelReleaseMPI}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-SLURM_NTASKS="${SLURM_NTASKS:-8}"
+SLURM_NTASKS_512="${SLURM_NTASKS_512:-16}"
+SLURM_NTASKS_32="${SLURM_NTASKS_32:-4}"
 SLURM_PARTITION="${SLURM_PARTITION:-bigrun}"
 SLURM_EXCLUSIVE="${SLURM_EXCLUSIVE:-1}"
 
@@ -37,7 +38,7 @@ ml openmpi/4.1.6/Intel/OneApi/2024.2.1
 
 declare -a CASES=(
     "eulerian_diffusion_freefree_1d"
-    "eulerian_diffusion_freefree_1d_256_limited"
+    "eulerian_diffusion_freefree_1d_512_limited"
     "eulerian_diffusion_freefree_1d_32"
     "eulerian_diffusion_freefree_1d_32_limited"
 )
@@ -51,6 +52,7 @@ run_case() {
     local run_stdout="${case_dir}/run.stdout.log"
     local run_stderr="${case_dir}/run.stderr.log"
     local rich_bin="${ROOT_DIR}/build/${CONFIG}/${case_id}/rich"
+    local case_ntasks="${SLURM_NTASKS_512}"
 
     if [[ ! -d "${case_dir}" ]]; then
         echo "Missing regression case directory: ${case_dir}" >&2
@@ -64,10 +66,12 @@ run_case() {
         "${case_dir}/velocity_vs_x"*.png "${case_dir}/velocity_vs_x"*.pdf
 
     echo "[BUILD] ${case_id}"
-    "${BUILD_SCRIPT}" "${CONFIG}" \
-        "--test_name=${case_rel}" \
-        "--build-subdir=${case_id}" \
-        >"${build_stdout}" 2>"${build_stderr}"
+    (
+        cd "${ROOT_DIR}"
+        "${BUILD_SCRIPT}" "${CONFIG}" \
+            "--test_name=${case_rel}" \
+            "--build-subdir=${case_id}"
+    ) >"${build_stdout}" 2>"${build_stderr}"
 
     if [[ ! -x "${rich_bin}" && ! -L "${rich_bin}" ]]; then
         echo "Expected built binary missing: ${rich_bin}" >&2
@@ -75,16 +79,19 @@ run_case() {
     fi
 
     echo "[RUN] ${case_id}"
+    if [[ "${case_id}" == *"_32"* ]]; then
+        case_ntasks="${SLURM_NTASKS_32}"
+    fi
     sbatch_args=(
         sbatch
         --wait
         --job-name="${case_id}"
-        --ntasks="${SLURM_NTASKS}"
+        --ntasks="${case_ntasks}"
         --partition="${SLURM_PARTITION}"
         --output="${run_stdout}"
         --error="${run_stderr}"
         --chdir="${case_dir}"
-        --wrap "mpirun -np ${SLURM_NTASKS} \"${rich_bin}\""
+        --wrap "mpirun -np ${case_ntasks} \"${rich_bin}\""
     )
     if [[ "${SLURM_EXCLUSIVE}" == "1" ]]; then
         sbatch_args+=(--exclusive)
@@ -105,19 +112,19 @@ for case_id in "${CASES[@]}"; do
     run_case "${case_id}"
 done
 
-PROFILE_256="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_1d/temperature_profile.txt"
-PROFILE_256_LIMITED="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_1d_256_limited/temperature_profile.txt"
+PROFILE_512="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_1d/temperature_profile.txt"
+PROFILE_512_LIMITED="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_1d_512_limited/temperature_profile.txt"
 PROFILE_32="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_1d_32/temperature_profile.txt"
 PROFILE_32_LIMITED="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_1d_32_limited/temperature_profile.txt"
 OUTPUT_DIR="${REGRESSION_DIR}/cases/eulerian_diffusion_freefree_compare"
 
-if [[ ! -s "${PROFILE_256}" ]]; then
-    echo "Missing profile output for 256-cell case: ${PROFILE_256}" >&2
+if [[ ! -s "${PROFILE_512}" ]]; then
+    echo "Missing profile output for 512-cell case: ${PROFILE_512}" >&2
     exit 1
 fi
 
-if [[ ! -s "${PROFILE_256_LIMITED}" ]]; then
-    echo "Missing profile output for 256-cell limited case: ${PROFILE_256_LIMITED}" >&2
+if [[ ! -s "${PROFILE_512_LIMITED}" ]]; then
+    echo "Missing profile output for 512-cell limited case: ${PROFILE_512_LIMITED}" >&2
     exit 1
 fi
 
@@ -132,8 +139,8 @@ if [[ ! -s "${PROFILE_32_LIMITED}" ]]; then
 fi
 
 "${PYTHON_BIN}" "${COMPARE_PLOTTER}" \
-    --profile-256 "${PROFILE_256}" \
-    --profile-256-limited "${PROFILE_256_LIMITED}" \
+    --profile-512 "${PROFILE_512}" \
+    --profile-512-limited "${PROFILE_512_LIMITED}" \
     --profile-32 "${PROFILE_32}" \
     --profile-32-limited "${PROFILE_32_LIMITED}" \
     --output-dir "${OUTPUT_DIR}"

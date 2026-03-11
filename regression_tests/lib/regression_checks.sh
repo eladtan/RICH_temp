@@ -564,23 +564,23 @@ check_eulerian_diffusion_freefree_suite_case() {
     local compare_dir="${run_dir}"
     local cases_root="${REGRESSION_ROOT}/cases"
 
-    local profile_256="${cases_root}/eulerian_diffusion_freefree_1d/temperature_profile.txt"
-    local profile_256_limited="${cases_root}/eulerian_diffusion_freefree_1d_256_limited/temperature_profile.txt"
+    local profile_512="${cases_root}/eulerian_diffusion_freefree_1d/temperature_profile.txt"
+    local profile_512_limited="${cases_root}/eulerian_diffusion_freefree_1d_512_limited/temperature_profile.txt"
     local profile_32="${cases_root}/eulerian_diffusion_freefree_1d_32/temperature_profile.txt"
     local profile_32_limited="${cases_root}/eulerian_diffusion_freefree_1d_32_limited/temperature_profile.txt"
 
-    local compare_tgas="${compare_dir}/temperature_vs_x_compare_256_256_limited_32_32_limited.png"
-    local compare_trad="${compare_dir}/trad_vs_x_compare_256_256_limited_32_32_limited.png"
-    local compare_density="${compare_dir}/density_vs_x_compare_256_256_limited_32_32_limited.png"
-    local compare_velocity="${compare_dir}/velocity_vs_x_compare_256_256_limited_32_32_limited.png"
+    local compare_tgas="${compare_dir}/temperature_vs_x_compare_512_512_limited_32_32_limited.png"
+    local compare_trad="${compare_dir}/trad_vs_x_compare_512_512_limited_32_32_limited.png"
+    local compare_density="${compare_dir}/density_vs_x_compare_512_512_limited_32_32_limited.png"
+    local compare_velocity="${compare_dir}/velocity_vs_x_compare_512_512_limited_32_32_limited.png"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
     fi
 
     for f in \
-        "$profile_256" \
-        "$profile_256_limited" \
+        "$profile_512" \
+        "$profile_512_limited" \
         "$profile_32" \
         "$profile_32_limited" \
         "$compare_tgas" \
@@ -594,6 +594,48 @@ check_eulerian_diffusion_freefree_suite_case() {
     done
 
     set_check_msg "free-free suite ran 4 cases and generated 4-way comparison figures"
+    return 0
+}
+
+check_eulerian_diffusion_freefree_multigroup_suite_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    local compare_dir="${REGRESSION_ROOT}/cases/eulerian_diffusion_freefree_multigroup_compare"
+    local cases_root="${REGRESSION_ROOT}/cases"
+
+    local profile_512="${cases_root}/eulerian_diffusion_freefree_multigroup_1d/temperature_profile.txt"
+    local profile_512_limited="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_512_limited/temperature_profile.txt"
+    local profile_32="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_32/temperature_profile.txt"
+    local profile_32_limited="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_32_limited/temperature_profile.txt"
+
+    local compare_tgas="${compare_dir}/temperature_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+    local compare_trad="${compare_dir}/trad_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+    local compare_density="${compare_dir}/density_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+    local compare_velocity="${compare_dir}/velocity_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    for f in \
+        "$profile_512" \
+        "$profile_512_limited" \
+        "$profile_32" \
+        "$profile_32_limited" \
+        "$compare_tgas" \
+        "$compare_trad" \
+        "$compare_density" \
+        "$compare_velocity"; do
+        if ! is_nonempty_and_newer "$f" "$run_start_epoch"; then
+            set_check_msg "missing or stale output: ${f}"
+            return 1
+        fi
+    done
+
+    set_check_msg "multigroup free-free suite ran 4 cases and generated 4-way comparison figures"
     return 0
 }
 
