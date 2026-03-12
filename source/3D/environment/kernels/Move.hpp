@@ -8,15 +8,14 @@ namespace Kernelization3D
     class Move : public IndexingKernel3D
     {
     public:
-        inline Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr): moveVec(vector), beforeIndexing(beforeIndexing){};
+        Move(const Vector3D &vector = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            return vec - moveVec;
-        };
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class MoveIOHandler;
         Vector3D moveVec;
         const IndexingKernel3D *beforeIndexing;
     };

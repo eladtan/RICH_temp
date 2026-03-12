@@ -24,33 +24,25 @@ namespace Kernelization3D
     public:
         Frustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing = nullptr, const IndexingKernel3D *afterIndexing = nullptr);
         
-        inline ~Frustrum(){delete this->beforeIndexing; delete this->afterIndexing;};
+        ~Frustrum();
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = this->beforeTransformation(vector);
-            Vector3D result = (this->afterIndexing == nullptr)? vec : (*this->afterIndexing)(vec);
-            return result;
-        }
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class FrustrumIOHandler;
+        Frustrum(const Mat44<double> &P)
+            : P(P), beforeIndexing(nullptr), afterIndexing(nullptr)
+        {
+        }
         Mat44<double> P;
         const IndexingKernel3D *beforeIndexing;
         const IndexingKernel3D *afterIndexing;
 
         Vector3D find_S(const std::vector<Face> &faces) const;
 
-        inline Vector3D beforeTransformation(const Vector3D &vector) const
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            // matrix multiplication
-            Vector3D almostResult;
-            almostResult.x = (this->P(0, 0) * vec[0]) + (this->P(0, 1) * vec[1]) + (this->P(0, 2) * vec[2]) + this->P(0, 3);
-            almostResult.y = (this->P(1, 0) * vec[0]) + (this->P(1, 1) * vec[1]) + (this->P(1, 2) * vec[2]) + this->P(1, 3);
-            almostResult.z = (this->P(2, 0) * vec[0]) + (this->P(2, 1) * vec[1]) + (this->P(2, 2) * vec[2]) + this->P(2, 3);
-            double factor = 1/((this->P(3, 0) * vec[0]) + (this->P(3, 1) * vec[1]) + (this->P(3, 2) * vec[2]) + this->P(3, 3));
-            return (almostResult * factor);
-        }
+        Vector3D beforeTransformation(const Vector3D &vector) const;
     };
 }
 

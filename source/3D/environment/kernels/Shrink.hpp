@@ -8,20 +8,16 @@ namespace Kernelization3D
     class Shrink : public IndexingKernel3D
     {
     public:
-        inline Shrink(const Vector3D &scale = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing)
-        {
-            this->scale = 1 / std::max(scale[0], std::max(scale[1], scale[2]));
-        };
+        Shrink(const Vector3D &scale = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Shrink(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *beforeIndexing = nullptr): Shrink(ur - ll, beforeIndexing){};
+        Shrink(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            return (vec * this->scale);
-        };
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class ShrinkIOHandler;
         double scale;
         const IndexingKernel3D *beforeIndexing;
     };

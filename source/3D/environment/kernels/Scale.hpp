@@ -8,17 +8,16 @@ namespace Kernelization3D
     class Scale : public IndexingKernel3D
     {
     public:
-        inline Scale(const Vector3D &scale = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr): scale(scale), beforeIndexing(beforeIndexing){};
+        Scale(const Vector3D &scale = Vector3D(), const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Scale(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *beforeIndexing = nullptr): Scale(ur - ll, beforeIndexing){};
+        Scale(const Vector3D &ll, const Vector3D &ur, const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            return Vector3D(vec.x / this->scale.x, vec.y / this->scale.y, vec.z / this->scale.z);
-        };
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class ScaleIOHandler;
         Vector3D scale;
         const IndexingKernel3D *beforeIndexing;
     };

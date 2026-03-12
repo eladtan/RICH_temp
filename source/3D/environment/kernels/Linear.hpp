@@ -9,15 +9,14 @@ namespace Kernelization3D
     class Linear : public IndexingKernel3D
     {
     public:
-        inline Linear(const Mat33<double> &transformation = Mat33<double>(), const IndexingKernel3D *beforeIndexing = nullptr): transformation(transformation), beforeIndexing(beforeIndexing){};
+        Linear(const Mat33<double> &transformation = Mat33<double>(), const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            return this->transformation * vec;
-        };
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class LinearIOHandler;
         Mat33<double> transformation;
         const IndexingKernel3D *beforeIndexing;
     };

@@ -17,22 +17,18 @@ namespace Kernelization3D
     class Parallelepiped : public IndexingKernel3D
     {
     public:
-        inline Parallelepiped(const Vector3D &u, const Vector3D &v, const Vector3D &w, const IndexingKernel3D *beforeIndexing = nullptr): beforeIndexing(beforeIndexing)
-        {
-            this->calculateTransformation(u, v, w);
-        }
+        Parallelepiped(const Vector3D &u, const Vector3D &v, const Vector3D &w, const IndexingKernel3D *beforeIndexing = nullptr);
         
-        inline ~Parallelepiped(){delete this->beforeIndexing;};
+        ~Parallelepiped();
 
         Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            return this->transformation * vec;
-        };
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class ParallelepipedIOHandler;
         void calculateTransformation(const Vector3D &u, const Vector3D &v, const Vector3D &w);
 
         Mat33<typename Vector3D::coord_type> transformation;

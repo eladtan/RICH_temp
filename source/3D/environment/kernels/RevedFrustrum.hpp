@@ -23,15 +23,18 @@ namespace Kernelization3D
     public:
         RevedFrustrum(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing = nullptr, const IndexingKernel3D *afterIndexing = nullptr);
         
-        inline ~RevedFrustrum(){delete this->beforeIndexing; delete this->afterIndexing;};
+        ~RevedFrustrum();
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = this->beforeTransformation(vector);
-            return (this->afterIndexing == nullptr)? vec : (*this->afterIndexing)(vec);
-        }
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class RevedFrustrumIOHandler;
+        RevedFrustrum(const Vector3D &S, double h, double ratio)
+            : S(S), h(h), beforeIndexing(nullptr), afterIndexing(nullptr), ratio(ratio)
+        {
+        }
         Vector3D S;
         double h;
         const IndexingKernel3D *beforeIndexing;
@@ -40,16 +43,7 @@ namespace Kernelization3D
 
         Vector3D find_S(const std::vector<Face> &faces) const;
 
-        inline Vector3D beforeTransformation(const Vector3D &vector) const
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            double slope = this->h / (vec.z - this->S.z);
-            double new_x = this->S.x + slope * (vec.x - this->S.x);
-            double new_y = this->S.y + slope * (vec.y - this->S.y);
-            //double new_z = std::pow((vec.z - this->S.z), 8);
-            double new_z = vec.z * this->ratio; // 0.5 * 1e-3/* * 0.01 */; // TODO: should be the ratio of the bases
-            return Vector3D(new_x, new_y, new_z);
-        }
+        Vector3D beforeTransformation(const Vector3D &vector) const;
     };
 }
 

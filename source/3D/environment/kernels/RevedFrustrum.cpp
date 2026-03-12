@@ -1,5 +1,27 @@
 #include "RevedFrustrum.hpp"
 
+Kernelization3D::RevedFrustrum::~RevedFrustrum()
+{
+    delete this->beforeIndexing;
+    delete this->afterIndexing;
+}
+
+Vector3D Kernelization3D::RevedFrustrum::operator()(const Vector3D &vector) const
+{
+    Vector3D vec = this->beforeTransformation(vector);
+    return (this->afterIndexing == nullptr) ? vec : (*this->afterIndexing)(vec);
+}
+
+Vector3D Kernelization3D::RevedFrustrum::beforeTransformation(const Vector3D &vector) const
+{
+    Vector3D vec = (this->beforeIndexing == nullptr) ? vector : (*this->beforeIndexing)(vector);
+    double slope = this->h / (vec.z - this->S.z);
+    double new_x = this->S.x + slope * (vec.x - this->S.x);
+    double new_y = this->S.y + slope * (vec.y - this->S.y);
+    double new_z = vec.z * this->ratio;
+    return Vector3D(new_x, new_y, new_z);
+}
+
 inline Vector3D GetNormal(const Face &face)
 {
     return normalize(CrossProduct(face.vertices[1] - face.vertices[0], face.vertices[2] - face.vertices[1]));
@@ -154,3 +176,4 @@ Kernelization3D::RevedFrustrum::RevedFrustrum(const std::vector<Face> &faces, co
     this->afterIndexing = nullptr;
 }
 
+std::string Kernelization3D::RevedFrustrum::getTypeName() const { return "RevedFrustrum"; }

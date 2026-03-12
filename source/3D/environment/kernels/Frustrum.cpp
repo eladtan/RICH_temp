@@ -1,5 +1,29 @@
 #include "Frustrum.hpp"
 
+Kernelization3D::Frustrum::~Frustrum()
+{
+    delete this->beforeIndexing;
+    delete this->afterIndexing;
+}
+
+Vector3D Kernelization3D::Frustrum::operator()(const Vector3D &vector) const
+{
+    Vector3D vec = this->beforeTransformation(vector);
+    Vector3D result = (this->afterIndexing == nullptr) ? vec : (*this->afterIndexing)(vec);
+    return result;
+}
+
+Vector3D Kernelization3D::Frustrum::beforeTransformation(const Vector3D &vector) const
+{
+    Vector3D vec = (this->beforeIndexing == nullptr) ? vector : (*this->beforeIndexing)(vector);
+    Vector3D almostResult;
+    almostResult.x = (this->P(0, 0) * vec[0]) + (this->P(0, 1) * vec[1]) + (this->P(0, 2) * vec[2]) + this->P(0, 3);
+    almostResult.y = (this->P(1, 0) * vec[0]) + (this->P(1, 1) * vec[1]) + (this->P(1, 2) * vec[2]) + this->P(1, 3);
+    almostResult.z = (this->P(2, 0) * vec[0]) + (this->P(2, 1) * vec[1]) + (this->P(2, 2) * vec[2]) + this->P(2, 3);
+    double factor = 1 / ((this->P(3, 0) * vec[0]) + (this->P(3, 1) * vec[1]) + (this->P(3, 2) * vec[2]) + this->P(3, 3));
+    return (almostResult * factor);
+}
+
 namespace
 {
     inline Vector3D GetNormal(const Face &face)
@@ -145,3 +169,4 @@ Kernelization3D::Frustrum::Frustrum(const std::vector<Face> &faces, const Indexi
     this->afterIndexing = afterIndexing;
 }
 
+std::string Kernelization3D::Frustrum::getTypeName() const { return "Frustrum"; }

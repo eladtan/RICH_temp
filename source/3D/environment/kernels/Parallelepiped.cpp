@@ -1,5 +1,22 @@
 #include "Parallelepiped.hpp"
 
+Kernelization3D::Parallelepiped::Parallelepiped(const Vector3D &u, const Vector3D &v, const Vector3D &w, const IndexingKernel3D *beforeIndexing)
+    : beforeIndexing(beforeIndexing)
+{
+    this->calculateTransformation(u, v, w);
+}
+
+Kernelization3D::Parallelepiped::~Parallelepiped()
+{
+    delete this->beforeIndexing;
+}
+
+Vector3D Kernelization3D::Parallelepiped::operator()(const Vector3D &vector) const
+{
+    Vector3D vec = (this->beforeIndexing == nullptr) ? vector : (*this->beforeIndexing)(vector);
+    return this->transformation * vec;
+}
+
 Kernelization3D::Parallelepiped::Parallelepiped(const std::vector<Face> &faces, const IndexingKernel3D *beforeIndexing)
 {
     this->beforeIndexing = beforeIndexing;

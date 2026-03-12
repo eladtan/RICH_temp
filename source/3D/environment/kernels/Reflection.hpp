@@ -9,16 +9,14 @@ namespace Kernelization3D
     class Reflection : public IndexingKernel3D
     {
     public:
-        inline Reflection(const Vector3D &reflectionVector, const IndexingKernel3D *beforeIndexing = nullptr): reflectionVector(reflectionVector), factoredVec(reflectionVector * (2 / abs(reflectionVector))), beforeIndexing(beforeIndexing){};
+        Reflection(const Vector3D &reflectionVector, const IndexingKernel3D *beforeIndexing = nullptr);
 
-        inline Vector3D operator()(const Vector3D &vector) const override
-        {
-            Vector3D vec = (this->beforeIndexing == nullptr)? vector : (*this->beforeIndexing)(vector);
-            Vector3D result = vec - (ScalarProd(vec, reflectionVector)) * this->factoredVec;
-            return result;
-        };
+        Vector3D operator()(const Vector3D &vector) const override;
+
+        std::string getTypeName() const override;
 
     private:
+        friend class ReflectionIOHandler;
         Vector3D reflectionVector;
         Vector3D factoredVec;
         const IndexingKernel3D *beforeIndexing;
