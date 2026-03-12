@@ -854,193 +854,133 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             size_t particleIndex = handler->th[i];
             assert(particleIndex < handler->buffsize);
             MCParticle &particle = handler->particles[particleIndex];
-            bool debug = false;
+            bool debug = false; // (particle.rank == 5 and particle.id == 518987);
 
-            #ifdef MONTECARLO_DEBUG
-            if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
+            try
             {
-                UniversalError eo("Particle was already handled in this iteration");
-                eo.addEntry("My Rank", this->rank_world);
-                eo.addEntry("Particle", particle);
-                eo.addEntry("Iteration", this->iteration);
-                eo.addEntry("In Rank Buffer (1)", particle.lastSeenRankBuf);
-                eo.addEntry("In TH Index (1)", particle.lastSeenIndex);
-                eo.addEntry("In Rank Buffer (2)", _rank);
-                eo.addEntry("In TH Index (2)", i);
-                throw eo;
-            }
-            particle.lastSeen = this->iteration;
-            particle.lastSeenRankBuf = _rank;
-            particle.lastSeenRank = this->rank_world;
-            particle.lastSeenIndex = i;
-            #endif // MONTECARLO_DEBUG
-
-            isEmpty = false;
-            while(true)
-            {
-                consecutiveSteps++;
-
-                // TODO: shouldn't be, there's a bug
-                // if(particle.sent)
-                // {
-                //     continue;
-                // }
-                
-                // std::cout << "Rank " << this->rank_world << " handles TH = " << i << ", which is index " << particleIndex << ", particle: " << particle << std::endl;
-
-                if(particle.on_track)
-                {
-                    this->tracker.ReportParticle(particle);
-                }
-                particle.steps++;
-                this->cellsStepsCounters[particle.cellIndex]++;
-                
-                // std::cout << "Rank " << this->rank_world << " handles particle " << particle.id << " of rank " << particle.rank << ", step " << particle.steps << std::endl;
-
                 #ifdef MONTECARLO_DEBUG
-                if(particle.cellIndex >= this->Ncells)
+                if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
                 {
-                    UniversalError eo("Particle has invalid cell index (ghost)");
+                    UniversalError eo("Particle was already handled in this iteration");
+                    eo.addEntry("My Rank", this->rank_world);
                     eo.addEntry("Particle", particle);
-                    eo.addEntry("Cell Index", particle.cellIndex);
-                    eo.addEntry("Rank", this->rank_world);
-                    eo.addEntry("Buffer of Rank", _rank);
+                    eo.addEntry("Iteration", this->iteration);
+                    eo.addEntry("In Rank Buffer (1)", particle.lastSeenRankBuf);
+                    eo.addEntry("In TH Index (1)", particle.lastSeenIndex);
+                    eo.addEntry("In Rank Buffer (2)", _rank);
+                    eo.addEntry("In TH Index (2)", i);
                     throw eo;
                 }
-                if(particle.removedFromRank)
+                particle.lastSeen = this->iteration;
+                particle.lastSeenRankBuf = _rank;
+                particle.lastSeenRank = this->rank_world;
+                particle.lastSeenIndex = i;
+                #endif // MONTECARLO_DEBUG
+    
+                isEmpty = false;
+                while(true)
                 {
-                    continue; 
-                    UniversalError eo("Particle was removed from rank, but still in the list");
-                    eo.addEntry("Particle", particle);
-                    eo.addEntry("Rank", this->rank_world);
-                    eo.addEntry("Buffer of Rank", _rank);
-                    throw eo;
-                }
-                if(not particle.checkedHere)
-                {
-                    if(particle.nextRank != this->rank_world)
+                    consecutiveSteps++;
+    
+                    // TODO: shouldn't be, there's a bug
+                    // if(particle.sent)
+                    // {
+                    //     continue;
+                    // }
+                    
+                    // std::cout << "Rank " << this->rank_world << " handles TH = " << i << ", which is index " << particleIndex << ", particle: " << particle << std::endl;
+    
+                    if(particle.on_track)
                     {
-                        // particle is in the right cell, but not in the right place
-                        UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                        this->tracker.ReportParticle(particle);
+                    }
+                    particle.steps++;
+                    this->cellsStepsCounters[particle.cellIndex]++;
+                    
+                    // std::cout << "Rank " << this->rank_world << " handles particle " << particle.id << " of rank " << particle.rank << ", step " << particle.steps << std::endl;
+    
+                    #ifdef MONTECARLO_DEBUG
+                    if(particle.cellIndex >= this->Ncells)
+                    {
+                        UniversalError eo("Particle has invalid cell index (ghost)");
                         eo.addEntry("Particle", particle);
-                        eo.addEntry("Origin", particle.sentByRank);
-                        eo.addEntry("Particle Previous Location", particle.previousLocation);
-                        eo.addEntry("Cell Index In Origin (Before Movement)", particle.cellIndexInPrevRank);
-                        eo.addEntry("Expected", particle.nextRank);
-                        eo.addEntry("Got (me)", this->rank_world);
-                        eo.addEntry("The Particle Index In Last Rank", particle.particleIndexInLastRank);
-                        eo.addEntry("Particle Index In This Rank", particleIndex);
-                        eo.addEntry("The Particle TH In Last Rank", particle.particleTHInLastRank);
-                        eo.addEntry("Particle TH In This Rank", i);
-                        eo.addEntry("New Cell Index Should Be", particle.cellIndex); 
-                        eo.addEntry("New Cell Value Should Be", particle.newCellValue); 
+                        eo.addEntry("Cell Index", particle.cellIndex);
+                        eo.addEntry("Rank", this->rank_world);
+                        eo.addEntry("Buffer of Rank", _rank);
                         throw eo;
                     }
-                    particle.checkedHere = true;
-                    particle.nextRank = std::numeric_limits<rank_t>::max();
-                    particle.removedFromRank = false;
-                    particle.sentByRank = std::numeric_limits<rank_t>::max();
-                }
-                if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
-                {
-                    const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
-                    size_t containingIdx = this->grid.GetContainingCell(particle.location);
-                    const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                    if(containingIdx != particle.cellIndex)
+                    if(particle.removedFromRank)
                     {
-                        if(not this->grid.IsPointInCell(particle.location, containingIdx))
+                        continue; 
+                        UniversalError eo("Particle was removed from rank, but still in the list");
+                        eo.addEntry("Particle", particle);
+                        eo.addEntry("Rank", this->rank_world);
+                        eo.addEntry("Buffer of Rank", _rank);
+                        throw eo;
+                    }
+                    if(not particle.checkedHere)
+                    {
+                        if(particle.nextRank != this->rank_world)
                         {
                             // particle is in the right cell, but not in the right place
                             UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                            eo.addEntry("Particle", particle);
+                            eo.addEntry("Origin", particle.sentByRank);
+                            eo.addEntry("Particle Previous Location", particle.previousLocation);
+                            eo.addEntry("Cell Index In Origin (Before Movement)", particle.cellIndexInPrevRank);
+                            eo.addEntry("Expected", particle.nextRank);
+                            eo.addEntry("Got (me)", this->rank_world);
+                            eo.addEntry("The Particle Index In Last Rank", particle.particleIndexInLastRank);
+                            eo.addEntry("Particle Index In This Rank", particleIndex);
+                            eo.addEntry("The Particle TH In Last Rank", particle.particleTHInLastRank);
+                            eo.addEntry("Particle TH In This Rank", i);
+                            eo.addEntry("New Cell Index Should Be", particle.cellIndex); 
+                            eo.addEntry("New Cell Value Should Be", particle.newCellValue); 
+                            throw eo;
+                        }
+                        particle.checkedHere = true;
+                        particle.nextRank = std::numeric_limits<rank_t>::max();
+                        particle.removedFromRank = false;
+                        particle.sentByRank = std::numeric_limits<rank_t>::max();
+                    }
+                    if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
+                    {
+                        const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                        size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                        const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                        if(containingIdx != particle.cellIndex)
+                        {
+                            if(not this->grid.IsPointInCell(particle.location, containingIdx))
+                            {
+                                // particle is in the right cell, but not in the right place
+                                UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                                eo.addEntry("My Rank", this->rank_world);
+                                eo.addEntry("Transferred From Rank", _rank);
+                                eo.addEntry("Particle", particle);
+                                eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
+                                eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
+                                eo.addEntry("New Cell Value Should Be", particle.newCellValue); 
+                                eo.addEntry("Declared Cell Index", particle.cellIndex);
+                                eo.addEntry("Declared Cell", declaredCell);
+                                eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
+                                eo.addEntry("Real Containing Cell Index", containingIdx);
+                                eo.addEntry("Real Containing Cell", containingCell);
+                                eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
+                                eo.addEntry("Particle Previous Location", particle.previousLocation);
+                                eo.addEntry("Particle Previous Cell Index", particle.cellIndexInPrevRank);
+                                throw eo;
+                            }
+                        }
+                        if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
+                        {
+                            UniversalError eo("Particle is in Wrong Location After Transfer");
                             eo.addEntry("My Rank", this->rank_world);
                             eo.addEntry("Transferred From Rank", _rank);
                             eo.addEntry("Particle", particle);
                             eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
-                            eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
-                            eo.addEntry("New Cell Value Should Be", particle.newCellValue); 
-                            eo.addEntry("Declared Cell Index", particle.cellIndex);
-                            eo.addEntry("Declared Cell", declaredCell);
-                            eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
-                            eo.addEntry("Real Containing Cell Index", containingIdx);
-                            eo.addEntry("Real Containing Cell", containingCell);
-                            eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
                             eo.addEntry("Particle Previous Location", particle.previousLocation);
-                            eo.addEntry("Particle Previous Cell Index", particle.cellIndexInPrevRank);
-                            throw eo;
-                        }
-                    }
-                    if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
-                    {
-                        UniversalError eo("Particle is in Wrong Location After Transfer");
-                        eo.addEntry("My Rank", this->rank_world);
-                        eo.addEntry("Transferred From Rank", _rank);
-                        eo.addEntry("Particle", particle);
-                        eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
-                        eo.addEntry("Particle Previous Location", particle.previousLocation);
-                        eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
-                        eo.addEntry("New Cell Value Should Be", particle.newCellValue);                        
-                        eo.addEntry("Declared Cell Index", particle.cellIndex);
-                        eo.addEntry("Declared Cell", declaredCell);
-                        eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
-                        eo.addEntry("Real Containing Cell Index", containingIdx);
-                        eo.addEntry("Real Containing Cell", containingCell);
-                        eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
-                        for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
-                        {
-                            eo.addEntry("Face Index", faceIdx);
-                            eo.addEntry("Face normal", this->grid.Normal(faceIdx));
-                            eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
-                            eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
-                        }
-                        throw eo;
-                    }
-                }
-                #endif // MONTECARLO_DEBUG
-                T prevLoc = particle.location;
-                #ifdef MONTECARLO_DEBUG
-                    particle.previousLocation = particle.location;
-                #endif // MONTECARLO_DEBUG
-                MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
-
-                // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
-                if(debug)
-                {
-                    std::cout << "Particle " << particle << ", functionality is " << functionality.change << std::endl;
-                }
-
-                if(not functionality.particlesToAdd.empty())
-                {
-                    particlesToAdd.insert(particlesToAdd.end(), functionality.particlesToAdd.cbegin(), functionality.particlesToAdd.cend());
-                }
-                if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
-                {
-                    size_t nextCellIndex = functionality.nextCellIndex;
-
-                    assert(nextCellIndex != particle.cellIndex);
-                    assert(particle.timeLeft >= 0);
-
-                    rank_t rank;
-                    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-                    if(BOOST_LIKELY(nextCellIndex < this->Ncells))
-                    {
-                        // local neighbor
-                        size_t previousCell = particle.cellIndex;
-                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                        particle.cellIndex = nextCellIndex;
-                        #ifdef MONTECARLO_DEBUG
-                        if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
-                        {
-                            const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
-                            size_t containingIdx = this->grid.GetContainingCell(particle.location);
-                            const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                            UniversalError eo("Particle is in Wrong Location");
-                            eo.addEntry("rank", this->rank_world);
-                            eo.addEntry("Particle", particle);
-                            eo.addEntry("Previous Cell Index", previousCell);
-                            eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
-                            eo.addEntry("Previous Location", prevLoc);
-                            eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
+                            eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
+                            eo.addEntry("New Cell Value Should Be", particle.newCellValue);                        
                             eo.addEntry("Declared Cell Index", particle.cellIndex);
                             eo.addEntry("Declared Cell", declaredCell);
                             eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
@@ -1056,121 +996,196 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             }
                             throw eo;
                         }
-                        #endif // MONTECARLO_DEBUG
                     }
-                    else
+                    #endif // MONTECARLO_DEBUG
+                    T prevLoc = particle.location;
+                    #ifdef MONTECARLO_DEBUG
+                        particle.previousLocation = particle.location;
+                    #endif // MONTECARLO_DEBUG
+
+                    if(debug)
                     {
-                        // a ghost point, check rank and index in rank
-                        auto it = ranks_ghost_map.find(nextCellIndex);
-                        if(it == ranks_ghost_map.end())
-                        {
-                            // leaving domain
-                            MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
-                            if(debug)
-                            {
-                                std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;
-                            }
-                            if(status == MonteCarloParticleStatus::REFLECT)
-                            {}
-                            else if(status == MonteCarloParticleStatus::REMOVE)
-                            {
-                                stepData.leaving.push_back(particle);
-                                this->allStepsCounter += particle.steps;
-                                // remove particle from current list
-                                removeParticle(index, i);
-                            }
-                            else
-                            {
-                                std::cout << "Unknown boundary condition for particle " << particle << std::endl;
-                                exit(1);
-                            }
-                            break;    
-                        }
+                        std::cout << "Before running particle step, particle is " << particle << std::endl;
+                    }
 
-                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                        auto [otherRank, neighborIndexInRank] = it->second;
-                        #ifdef MONTECARLO_DEBUG
-                        particle.checkedHere = false; // reset checked here flag
-                        if(particle.nextRank != std::numeric_limits<rank_t>::max())
+                    MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
+    
+                    // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
+                    if(debug)
+                    {
+                        std::cout << "Particle " << particle << ", functionality is " << functionality.change << std::endl;
+                    }
+    
+                    if(not functionality.particlesToAdd.empty())
+                    {
+                        particlesToAdd.insert(particlesToAdd.end(), functionality.particlesToAdd.cbegin(), functionality.particlesToAdd.cend());
+                    }
+                    if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
+                    {
+                        size_t nextCellIndex = functionality.nextCellIndex;
+    
+                        assert(nextCellIndex != particle.cellIndex);
+                        assert(particle.timeLeft >= 0);
+    
+                        rank_t rank;
+                        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    
+                        if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                         {
-                            UniversalError eo("Particle was already sent, and not sent again");
-                            eo.addEntry("Particle", particle);
-                            eo.addEntry("Already Transferred To Rank", particle.nextRank);
-                            eo.addEntry("Being Transferred To Rank", otherRank);
-                            eo.addEntry("Being Transferred To Index In Rank", neighborIndexInRank);
-                            throw eo;
-                        }
-                        const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
-                        if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
-                        {
-                            UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
-                            eo.addEntry("Particle", particle);
-                            eo.addEntry("My Rank", this->rank_world);
-                            eo.addEntry("Next Rank", otherRank);
-                            eo.addEntry("Index In Remote Rank", neighborIndexInRank);
-                            throw eo;
-                        }
-                        particle.cellIndexInPrevRank = particle.cellIndex;
-                        particle.sentByRank = this->rank_world;
-                        particle.ghostIndex = nextCellIndex;
-                        particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
-                        particle.particleIndexInLastRank = particleIndex;
-                        particle.particleTHInLastRank = i;
-                        particle.nextRank = otherRank;
-                        particle.sent = true;
-                        
-                        if(particle.nextRank == this->rank_world)
-                        {
-                            UniversalError eo("Particle is going to be sent to the same rank");
-                            eo.addEntry("Particle", particle);
-                            eo.addEntry("My Rank", this->rank_world);
-                            eo.addEntry("Next Rank", otherRank);
-                            eo.addEntry("Index In Remote Rank", neighborIndexInRank);
-                            throw eo;
-                        }
-                        #endif // MONTECARLO_DEBUG
-                        particle.cellIndex = neighborIndexInRank;
-
-                        #ifdef MONTECARLO_DEBUG
-                        if(not TransferParticlesVecOfRank.empty())
-                        {
-                            size_t lastTHIndex = TransferParticlesVecOfRank.back();
-                            size_t lastParticleIndex = handler->th[lastTHIndex];
-                            const MCParticle &lastParticle = handler->particles[lastParticleIndex];
-                            if(lastParticle == particle)
+                            // local neighbor
+                            size_t previousCell = particle.cellIndex;
+                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                            particle.cellIndex = nextCellIndex;
+                            #ifdef MONTECARLO_DEBUG
+                            if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
                             {
-                                UniversalError eo("Particle is already in the transfer list");
-                                eo.addEntry("Iteration", this->iteration);
+                                const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                                size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                                const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                                UniversalError eo("Particle is in Wrong Location");
+                                eo.addEntry("rank", this->rank_world);
                                 eo.addEntry("Particle", particle);
-                                eo.addEntry("My Rank", this->rank_world);
-                                eo.addEntry("TH Index 1", lastTHIndex);
-                                eo.addEntry("TH Index 2", i);
-                                eo.addEntry("Length of Transfer List", TransferParticlesVecOfRank.size());
-                                eo.addEntry("In Rank Buffer", _rank);
-                                eo.addEntry("Sent to Rank", otherRank);
+                                eo.addEntry("Previous Cell Index", previousCell);
+                                eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
+                                eo.addEntry("Previous Location", prevLoc);
+                                eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
+                                eo.addEntry("Declared Cell Index", particle.cellIndex);
+                                eo.addEntry("Declared Cell", declaredCell);
+                                eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
+                                eo.addEntry("Real Containing Cell Index", containingIdx);
+                                eo.addEntry("Real Containing Cell", containingCell);
+                                eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
+                                for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
+                                {
+                                    eo.addEntry("Face Index", faceIdx);
+                                    eo.addEntry("Face normal", this->grid.Normal(faceIdx));
+                                    eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
+                                    eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
+                                }
                                 throw eo;
                             }
+                            #endif // MONTECARLO_DEBUG
                         }
-                        #endif // MONTECARLO_DEBUG
-
-                        transferParticle(index, i, otherRank);
-                        break; // TODO:
+                        else
+                        {
+                            // a ghost point, check rank and index in rank
+                            auto it = ranks_ghost_map.find(nextCellIndex);
+                            if(it == ranks_ghost_map.end())
+                            {
+                                // leaving domain
+                                MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                                if(debug)
+                                {
+                                    std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;
+                                }
+                                if(status == MonteCarloParticleStatus::REFLECT)
+                                {}
+                                else if(status == MonteCarloParticleStatus::REMOVE)
+                                {
+                                    stepData.leaving.push_back(particle);
+                                    this->allStepsCounter += particle.steps;
+                                    // remove particle from current list
+                                    removeParticle(index, i);
+                                }
+                                else
+                                {
+                                    std::cout << "Unknown boundary condition for particle " << particle << std::endl;
+                                    exit(1);
+                                }
+                                break;    
+                            }
+    
+                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                            auto [otherRank, neighborIndexInRank] = it->second;
+                            #ifdef MONTECARLO_DEBUG
+                            particle.checkedHere = false; // reset checked here flag
+                            if(particle.nextRank != std::numeric_limits<rank_t>::max())
+                            {
+                                UniversalError eo("Particle was already sent, and not sent again");
+                                eo.addEntry("Particle", particle);
+                                eo.addEntry("Already Transferred To Rank", particle.nextRank);
+                                eo.addEntry("Being Transferred To Rank", otherRank);
+                                eo.addEntry("Being Transferred To Index In Rank", neighborIndexInRank);
+                                throw eo;
+                            }
+                            const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
+                            if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
+                            {
+                                UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
+                                eo.addEntry("Particle", particle);
+                                eo.addEntry("My Rank", this->rank_world);
+                                eo.addEntry("Next Rank", otherRank);
+                                eo.addEntry("Index In Remote Rank", neighborIndexInRank);
+                                throw eo;
+                            }
+                            particle.cellIndexInPrevRank = particle.cellIndex;
+                            particle.sentByRank = this->rank_world;
+                            particle.ghostIndex = nextCellIndex;
+                            particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
+                            particle.particleIndexInLastRank = particleIndex;
+                            particle.particleTHInLastRank = i;
+                            particle.nextRank = otherRank;
+                            particle.sent = true;
+                            
+                            if(particle.nextRank == this->rank_world)
+                            {
+                                UniversalError eo("Particle is going to be sent to the same rank");
+                                eo.addEntry("Particle", particle);
+                                eo.addEntry("My Rank", this->rank_world);
+                                eo.addEntry("Next Rank", otherRank);
+                                eo.addEntry("Index In Remote Rank", neighborIndexInRank);
+                                throw eo;
+                            }
+                            #endif // MONTECARLO_DEBUG
+                            particle.cellIndex = neighborIndexInRank;
+    
+                            #ifdef MONTECARLO_DEBUG
+                            if(not TransferParticlesVecOfRank.empty())
+                            {
+                                size_t lastTHIndex = TransferParticlesVecOfRank.back();
+                                size_t lastParticleIndex = handler->th[lastTHIndex];
+                                const MCParticle &lastParticle = handler->particles[lastParticleIndex];
+                                if(lastParticle == particle)
+                                {
+                                    UniversalError eo("Particle is already in the transfer list");
+                                    eo.addEntry("Iteration", this->iteration);
+                                    eo.addEntry("Particle", particle);
+                                    eo.addEntry("My Rank", this->rank_world);
+                                    eo.addEntry("TH Index 1", lastTHIndex);
+                                    eo.addEntry("TH Index 2", i);
+                                    eo.addEntry("Length of Transfer List", TransferParticlesVecOfRank.size());
+                                    eo.addEntry("In Rank Buffer", _rank);
+                                    eo.addEntry("Sent to Rank", otherRank);
+                                    throw eo;
+                                }
+                            }
+                            #endif // MONTECARLO_DEBUG
+    
+                            transferParticle(index, i, otherRank);
+                            break; // TODO:
+                        }
+                    }
+                    else if(functionality.change == MonteCarloParticleStatus::REMOVE)
+                    {
+                        this->allStepsCounter += particle.steps;
+                        removeParticle(index, i);
+                        break;
+                    }
+                    else if(functionality.change == MonteCarloParticleStatus::DONE)
+                    {
+                        stepData.remaining.push_back(particle);
+                        this->allStepsCounter += particle.steps;
+                        // remove particle from current list
+                        removeParticle(index, i);
+                        break;
                     }
                 }
-                else if(functionality.change == MonteCarloParticleStatus::REMOVE)
-                {
-                    this->allStepsCounter += particle.steps;
-                    removeParticle(index, i);
-                    break;
-                }
-                else if(functionality.change == MonteCarloParticleStatus::DONE)
-                {
-                    stepData.remaining.push_back(particle);
-                    this->allStepsCounter += particle.steps;
-                    // remove particle from current list
-                    removeParticle(index, i);
-                    break;
-                }
+            }
+            catch(UniversalError &eo)
+            {
+                eo.addEntry("Particle TH index", i);
+                eo.addEntry("Particle index", particleIndex);
+                throw eo;
             }
             this->reallocationAgent->HandleAllWaitingReallocations();
         }
