@@ -1,27 +1,41 @@
 #include <mpi.h>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <vector>
 #include <string>
 #include <cmath>
+#include <boost/random/mersenne_twister.hpp>
+#include <boost/random/uniform_real_distribution.hpp>
 #include "mpi/mpi_commands.hpp"
+#include "misc/mesh_generator3D.hpp"
+#include "3D/GeometryCommon/RoundGrid3D.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/common/MixedEos.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
-#include "newtonian/three_dimensional/Simulation.hpp"
+#include "newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "newtonian/three_dimensional/ManualTimeStep.hpp"
 #include "3D/output/write3D.hpp"
+#include "3D/output/read3D.hpp"
+#include "3D/output/MC/read_write_particles.hpp"
+#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
+#include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
+#include "utils/hdf5/HDF5Writer.hpp"
+#include "utils/hdf5/HDF5Reader.hpp"
 
 #include "3D/radiation/RadiationIMC.hpp"
 #include "monte/population/Comb.hpp"
-#include "newtonian/three_dimensional/RadiationMCStep.hpp"
+#include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 
+#include "3D/monte/Voronoi3DMovement.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
+
+namespace fs = std::filesystem;
 
 /*
  * 2D Cylindrical Hohlraum benchmark from:
@@ -48,6 +62,28 @@
  * Init:       T = 300 K
  * Timestep:   dt = 1e-11 s,  run until t = 10 ns  (1000 steps)
  */
+
+static vector<Vector3D> RandCylindar(std::size_t PointNum, double Rin, double Rout, double Xmin, double Xmax)
+{
+    typedef boost::mt19937_64 base_generator_type;
+    double ran[3];
+    std::vector<Vector3D> res;
+    Vector3D point;
+    base_generator_type generator;
+    boost::random::uniform_real_distribution<> dist;
+    for(size_t i = 0; i < PointNum; ++i)
+    {
+        ran[0] = dist(generator);
+        ran[1] = dist(generator);
+        ran[2] = dist(generator);
+        double r = ran[0] * (Rout - Rin) + Rin;
+        point.z = r * std::sin(2 * M_PI * ran[1]);
+        point.y = r * std::cos(2 * M_PI * ran[1]);
+        point.x = ran[2] * (Xmax - Xmin) + Xmin;
+        res.push_back(point);
+    }
+    return res;
+}
 
 static bool isMaterial(double x, double r)
 {
@@ -81,7 +117,7 @@ int main(int argc, char *argv[])
     if(rank == 0 && argc < 2)
     {
         std::cerr << "Usage: " << argv[0]
-                  << " <delta_cm> [output_prefix] [new_per_cell] [max_per_cell] [--2d]"
+                  << " <delta_cm> [new_per_cell] [max_per_cell] [--2d] [--resume <dump_number>]"
                   << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
@@ -89,13 +125,43 @@ int main(int argc, char *argv[])
   try
   {
     double delta = std::stod(argv[1]);
-    std::string prefix = (argc >= 3) ? argv[2] : "hohlraum";
-    size_t newPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 50;
-    size_t maxPhotonsPerCell = (argc >= 5) ? std::stoul(argv[4]) : 200;
-
+    size_t newPhotonsPerCell = 50;
+    size_t maxPhotonsPerCell = 20;
     bool mode2d = false;
-    for(int a = 1; a < argc; a++)
-        if(std::string(argv[a]) == "--2d") mode2d = true;
+    int resumeDump = -1;
+
+    bool resumeAuto = false;
+    std::vector<std::string> positionalArgs;
+    for(int a = 2; a < argc; a++)
+    {
+        std::string arg(argv[a]);
+        if(arg == "--2d")
+            mode2d = true;
+        else if(arg == "--resume")
+        {
+            if(a + 1 < argc && argv[a + 1][0] != '-')
+            {
+                resumeDump = std::stoi(argv[++a]);
+            }
+            else
+                resumeAuto = true;
+        }
+        else
+            positionalArgs.push_back(arg);
+    }
+    if(positionalArgs.size() >= 1)
+        newPhotonsPerCell = std::stoul(positionalArgs[0]);
+    if(positionalArgs.size() >= 2)
+        maxPhotonsPerCell = std::stoul(positionalArgs[1]);
+
+    const std::string outputDir = "/home/maorm/shared/Hohlraum2";
+    char prefixBuf[256];
+    std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_%d_", argv[1], ws);
+    const std::string prefix = outputDir + "/" + prefixBuf;
+
+    if(rank == 0)
+        fs::create_directories(outputDir);
+    MPI_Barrier(MPI_COMM_WORLD);
 
     // --- Physical parameters (Section 4.2) ---
     const double T_boundary_keV = 1.0;
@@ -105,79 +171,136 @@ int main(int argc, char *argv[])
     const double t_final        = 10e-9;                                 // 10 ns
     const size_t iterations     = static_cast<size_t>(t_final / dt + 0.5);
     constexpr size_t boundaryPhotonsPerCell = 100;
+    constexpr size_t dumpInterval = 10;
 
     // Domain: 3D revolves around x-axis; 2D is a thin slab at z=1
+    // Pad the domain beyond the material boundaries so that no material
+    // interface coincides with the domain boundary (avoids particles
+    // landing exactly on a boundary face with zero distance to all faces).
     const double Lx = 1.4, Ly = 0.65;
     const double Lz = mode2d ? 1.0 : 0.65;
-    Vector3D ll(0, -Ly, mode2d ? 0.0 : -Lz);
-    Vector3D ur(Lx, Ly, mode2d ? 2.0 : Lz);
-
-    // --- Generate grid points on rank 0, spread to all ranks ---
-    size_t Nx = static_cast<size_t>(std::ceil(Lx / delta));
-    size_t Ny = static_cast<size_t>(std::ceil(2 * Ly / delta));
-    size_t Nz = mode2d ? 1 : static_cast<size_t>(std::ceil(2 * Lz / delta));
-
-    std::vector<Vector3D> points;
-    if(rank == 0)
-    {
-        double dx = Lx / Nx;
-        double dy = 2 * Ly / Ny;
-        double dz = 2 * Lz / Nz;
-        for(size_t i = 0; i < Nx; i++)
-            for(size_t j = 0; j < Ny; j++)
-                for(size_t k = 0; k < Nz; k++)
-                    points.emplace_back(ll.x + (i + 0.5) * dx,
-                                        ll.y + (j + 0.5) * dy,
-                                        ll.z + (k + 0.5) * dz);
-        std::cout << "Generated " << points.size() << " points ("
-                  << Nx << " x " << Ny << " x " << Nz
-                  << "), delta=" << delta << " cm" << std::endl;
-        if(static_cast<rank_t>(points.size()) < ws)
-        {
-            std::cerr << "ERROR: only " << points.size() << " cells for " << ws
-                      << " MPI ranks. Reduce delta." << std::endl;
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-    }
-
-    points = MPI_Spread(points, 0, MPI_COMM_WORLD);
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    Voronoi3D tess(ll, ur);
-    tess.BuildParallel(points);
+    const double pad = 2 * delta;
+    Vector3D ll(0, -(Ly + pad), mode2d ? 0.0 : -(Lz + pad));
+    Vector3D ur(Lx + pad, Ly + pad, mode2d ? 2.0 : (Lz + pad));
 
     // --- Equations of State ---
-    // Material: Cv = 3e15 erg/keV/cm^3  =>  f = 3e15 / kev_kelvin (erg/K/cm^3)
-    // Vacuum:   negligible Cv
     IdealGas eosMaterial(1.5, 3e15 / units::kev_kelvin, 1, 0);
     IdealGas eosVacuum(1.5, 1e5 / units::kev_kelvin, 1, 0);
     std::vector<EquationOfState *> eosList = {&eosMaterial, &eosVacuum};
     MixedEOS eos(eosList);
 
-    // --- Initial conditions ---
+    if(resumeAuto)
+    {
+        int found = 0;
+        if(rank == 0)
+        {
+            std::string simFile = prefix + "latest_sim.h5";
+            if(fs::exists(simFile))
+            {
+                found = 1;
+                std::cout << "Auto-detected simulation file: " << simFile << std::endl;
+            }
+            else
+                std::cout << "No simulation file found, starting fresh" << std::endl;
+        }
+        MPI_Bcast(&found, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if(found)
+            resumeDump = 0;
+    }
+
+    Voronoi3D tess(ll, ur);
+    std::vector<ComputationalCell3D> initialCells;
+    size_t startCycle = 0;
+    double simTime = 0;
+    size_t dumpCount = 0;
+
     ComputationalCell3D::tracerNames = {"Material", "Vacuum"};
 
-    ComputationalCell3D templateCell;
-    templateCell.density = 1.0;
-    templateCell.temperature = T_init;
-    templateCell.velocity = Vector3D(0, 0, 0);
-
-    size_t N = tess.GetPointNo();
-    std::vector<ComputationalCell3D> initialCells(N, templateCell);
-
-    for(size_t i = 0; i < N; i++)
+    if(resumeDump < 0)
     {
-        Vector3D p = tess.GetCellCM(i);
-        double r = mode2d ? std::abs(p.y) : std::sqrt(p.y * p.y + p.z * p.z);
-        if(isMaterial(p.x, r))
-            initialCells[i].tracers[0] = 1.0;
-        else
-            initialCells[i].tracers[1] = 1.0;
+        // --- Fresh start: generate ring mesh ---
+        double domainVol = (ur.x - ll.x) * (ur.y - ll.y) * (ur.z - ll.z);
+        size_t N_base = static_cast<size_t>(domainVol / (delta * delta * delta));
 
-        initialCells[i].internal_energy = eos.dT2e(
-            initialCells[i].density, initialCells[i].temperature,
-            initialCells[i].tracers, ComputationalCell3D::tracerNames);
-        initialCells[i].Erad = units::arad * std::pow(T_init, 4) / initialCells[i].density;
+        std::vector<Vector3D> points;
+        if(rank == 0)
+        {
+            points = RandRectangular(N_base, ll, ur);
+
+            if(!mode2d)
+            {
+                double dx = 0.01;
+                size_t gridFactor = 4;
+                size_t Np = N_base * gridFactor;
+
+                auto pts = RandCylindar(Np, 0.45, 0.45 + dx, 0.10, 0.15);
+                points.insert(points.end(), pts.begin(), pts.end());
+                pts = RandCylindar(Np, 0.45, 0.45 + dx, 0.55, 0.95);
+                points.insert(points.end(), pts.begin(), pts.end());
+
+                pts = RandCylindar(Np, 0.60, 0.60 + dx, 0.10, 1.40);
+                points.insert(points.end(), pts.begin(), pts.end());
+
+                pts = RandCylindar(Np, 0.65, 0.65 + dx, 0.10, 1.40);
+                points.insert(points.end(), pts.begin(), pts.end());
+
+                pts = RandCylindar(Np, 0, 0.65, 0.10, 0.10 + dx);
+                points.insert(points.end(), pts.begin(), pts.end());
+                pts = RandCylindar(Np, 0, 0.45, 0.15, 0.15 + dx);
+                points.insert(points.end(), pts.begin(), pts.end());
+                pts = RandCylindar(Np, 0, 0.45, 0.55, 0.55 + dx);
+                points.insert(points.end(), pts.begin(), pts.end());
+                pts = RandCylindar(Np, 0, 0.45, 0.95, 0.95 + dx);
+                points.insert(points.end(), pts.begin(), pts.end());
+                pts = RandCylindar(Np, 0, 0.65, 1.35, 1.35 + dx);
+                points.insert(points.end(), pts.begin(), pts.end());
+                pts = RandCylindar(Np, 0, 0.65, 1.40, 1.40 + dx);
+                points.insert(points.end(), pts.begin(), pts.end());
+            }
+
+            std::cout << "Generated " << points.size() << " points"
+                      << " (N_base=" << N_base << "), delta=" << delta << " cm"
+                      << std::endl;
+            if(static_cast<rank_t>(points.size()) < ws)
+            {
+                std::cerr << "ERROR: only " << points.size() << " cells for " << ws
+                          << " MPI ranks. Reduce delta." << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+        }
+
+        points = MPI_Spread(points, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        points = RoundGrid3D(points, ll, ur, 5);
+
+        tess.BuildParallel(points);
+        points = tess.getMeshPoints();
+        points.resize(tess.GetPointNo());
+
+        // --- Initial conditions ---
+        ComputationalCell3D templateCell;
+        templateCell.density = 1.0;
+        templateCell.temperature = T_init;
+        templateCell.velocity = Vector3D(0, 0, 0);
+
+        size_t N = tess.GetPointNo();
+        initialCells.assign(N, templateCell);
+
+        for(size_t i = 0; i < N; i++)
+        {
+            Vector3D p = tess.GetCellCM(i);
+            double r = mode2d ? std::abs(p.y) : std::sqrt(p.y * p.y + p.z * p.z);
+            if(isMaterial(p.x, r))
+                initialCells[i].tracers[0] = 1.0;
+            else
+                initialCells[i].tracers[1] = 1.0;
+
+            initialCells[i].internal_energy = eos.dT2e(
+                initialCells[i].density, initialCells[i].temperature,
+                initialCells[i].tracers, ComputationalCell3D::tracerNames);
+            initialCells[i].Erad = units::arad * std::pow(T_init, 4) / initialCells[i].density;
+        }
     }
 
     // --- Simulation ---
@@ -187,9 +310,6 @@ int main(int argc, char *argv[])
 
     std::vector<ComputationalCell3D> &cells = sim.getCells();
     std::vector<Conserved3D> &extensives = sim.getExtensives();
-    extensives.resize(cells.size());
-    for(size_t i = 0; i < cells.size(); i++)
-        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
 
     // --- MC radiation transport ---
     constexpr bool withHydro = false;
@@ -205,31 +325,49 @@ int main(int argc, char *argv[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, newPhotonsPerCell, withHydro);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell);
+        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
 
     std::vector<Particle3D> initialParticles;
-    bool withRDMA = true;
     auto mcStep = std::make_shared<RadiationMCStep>(
         tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, withHydro
         #ifdef RICH_MPI
-            , withRDMA
+            , RadiationMCStep::ManagerType::AUTO_RDMA
         #endif
     );
     sim.addPhysics(mcStep);
 
     sim.SetTimeStep(dt);
 
+    if(resumeDump >= 0)
+    {
+        ReadSimulation(prefix + "latest_sim.h5", sim);
+        startCycle = sim.GetCycle();
+        simTime = sim.GetTime();
+        dumpCount = startCycle / dumpInterval;
+
+        if(rank == 0)
+            std::cout << "Resumed from " << prefix << "latest_sim.h5: cycle=" << startCycle
+                      << ", t=" << simTime * 1e9 << " ns"
+                      << ", dumpCount=" << dumpCount << std::endl;
+    }
+
+    extensives.resize(cells.size());
+    for(size_t i = 0; i < cells.size(); i++)
+    {
+        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+    }
+
+    size_t N = tess.GetPointNo();
     if(rank == 0)
     {
         size_t nMaterial = 0, nVacuum = 0;
         for(size_t i = 0; i < N; i++)
         {
-            if(initialCells[i].tracers[0] > 0.5) nMaterial++;
+            if(cells[i].tracers[0] > 0.5) nMaterial++;
             else nVacuum++;
         }
         std::cout << "Hohlraum (" << (mode2d ? "2D" : "3D") << "): delta=" << delta
-                  << " cm, cells=" << Nx << "x" << Ny << "x" << Nz
-                  << " (" << Nx * Ny * Nz << ")"
+                  << " cm, cells=" << N
                   << ", material=" << nMaterial
                   << ", vacuum=" << nVacuum
                   << ", dt=" << dt << " s"
@@ -237,6 +375,8 @@ int main(int argc, char *argv[])
                   << ", iterations=" << iterations
                   << ", new/cell=" << newPhotonsPerCell
                   << ", max/cell=" << maxPhotonsPerCell
+                  << ", output=" << prefix
+                  << (resumeDump >= 0 ? ", resumed from dump " + std::to_string(resumeDump) : "")
                   << std::endl;
     }
 
@@ -304,29 +444,30 @@ int main(int argc, char *argv[])
     auto writeVTK = [&](const std::string &filename)
     {
         size_t nPts = tess.GetPointNo();
-        std::vector<double> temps(nPts), tKeV(nPts), tr0(nPts), tr1(nPts);
+        std::vector<double> temps(nPts), tKeV(nPts), tr0(nPts), tr1(nPts), erads(nPts);
         for(size_t i = 0; i < nPts; i++)
         {
             temps[i] = cells[i].temperature;
             tKeV[i]  = cells[i].temperature / units::kev_kelvin;
             tr0[i]   = cells[i].tracers[0];
             tr1[i]   = cells[i].tracers[1];
+            erads[i] = cells[i].Erad;
         }
         WriteVoronoiVTKOnly(tess, filename,
-                            {temps, tKeV, tr0, tr1},
-                            {"Temperature_K", "Temperature_keV", "Material", "Vacuum"});
+                            {temps, tKeV, tr0, tr1, erads, physics->getEradTimeAvg()},
+                            {"Temperature_K", "Temperature_keV", "Material", "Vacuum", "Erad", "Erad_time_avg"});
     };
 
-    writeVTK(prefix + "_t0.vtu");
-
-    constexpr size_t dumpInterval = 20;
-    size_t dumpCount = 0;
-
+    if(resumeDump < 0)
+    {
+        WriteSimulation(sim, prefix + "latest_sim.h5");
+        writeVTK(prefix + "init.vtu");
+    }
+    
     // --- Main time-stepping loop ---
-    double simTime = 0;
     auto startWall = std::chrono::high_resolution_clock::now();
 
-    for(size_t i = 0; i < iterations; i++)
+    for(size_t i = startCycle; i < iterations; i++)
     {
         auto stepStart = std::chrono::high_resolution_clock::now();
 
@@ -357,12 +498,17 @@ int main(int argc, char *argv[])
 
         if((i + 1) % dumpInterval == 0)
         {
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), "%s_%05zu.pvtu", prefix.c_str(), dumpCount);
+            char buf[512];
+
+            std::snprintf(buf, sizeof(buf), "%s%05zu.pvtu", prefix.c_str(), dumpCount);
             writeVTK(buf);
 
+            WriteSimulation(sim, prefix + "latest_sim.h5");
+            if(rank == 0)
+                std::cout << "Wrote simulation: " << prefix << "latest_sim.h5" << std::endl;
+
             double t_ns = simTime * 1e9;
-            std::snprintf(buf, sizeof(buf), "%s_%05zu.txt", prefix.c_str(), dumpCount);
+            std::snprintf(buf, sizeof(buf), "%s%05zu.txt", prefix.c_str(), dumpCount);
             writeProfile(buf, t_ns);
 
             dumpCount++;
@@ -375,20 +521,22 @@ int main(int argc, char *argv[])
         std::cout << "Total wall time: " << wallSec << "s" << std::endl;
 
     // --- Final output ---
-    writeProfile(prefix + "_final.txt", simTime * 1e9);
-    writeVTK(prefix + "_final.vtu");
-
+    writeProfile(prefix + "final.txt", simTime * 1e9);
+    writeVTK(prefix + "final.vtu");
+    WriteSimulation(sim, prefix + "latest_sim.h5");
   }
   catch(const UniversalError &e)
   {
       std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
       reportError(e);
-      MPI_Abort(MPI_COMM_WORLD, 1);
+      throw e;
+    //   MPI_Abort(MPI_COMM_WORLD, 1);
   }
   catch(const std::exception &e)
   {
       std::cerr << "=== std::exception on rank " << rank << ": " << e.what() << " ===" << std::endl;
-      MPI_Abort(MPI_COMM_WORLD, 1);
+      throw e;
+    //   MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
     MPI_Finalize();
