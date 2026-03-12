@@ -20,21 +20,18 @@ def analytical_growth_rate(rho_heavy=2.0, rho_light=1.0, g=0.5, k=2.0 * np.pi):
     return np.sqrt(atwood * g * k)
 
 
-def fit_growth_rate(time, ekz):
-    """Fit log(Ek_z) = a + 2*sigma*t in the linear regime.
+FIT_T_MIN = 2.0
+FIT_T_MAX = 3.0
 
-    The linear regime is identified as the portion where Ek_z is between
-    1e-3 and 0.3 of its peak value (avoiding initial transients and
-    nonlinear saturation).
+
+def fit_growth_rate(time, ekz, t_min=FIT_T_MIN, t_max=FIT_T_MAX):
+    """Fit log(Ek_z) = a + 2*sigma*t in a fixed time window.
 
     Returns (sigma_fit, log_C_fit, mask) where mask marks the fitting window.
     """
-    peak = np.max(ekz)
-    mask = (ekz > 1e-3 * peak) & (ekz < 0.3 * peak)
-    if np.sum(mask) < 5:
-        mask = (ekz > 1e-4 * peak) & (ekz < 0.5 * peak)
+    mask = (time >= t_min) & (time <= t_max) & (ekz > 0)
     if np.sum(mask) < 3:
-        mask = np.ones(len(ekz), dtype=bool)
+        mask = ekz > 0
 
     log_ek = np.log(ekz[mask])
     t_fit = time[mask]
@@ -58,7 +55,7 @@ def make_plots(time, ekz, sigma_fit, log_C, mask, sigma_analytical,
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.semilogy(time, ekz, "k-", linewidth=1.2, label="$E_{k,z}$ (RICH)")
 
-    t_line = np.linspace(time[mask][0], time[mask][-1], 200)
+    t_line = np.linspace(FIT_T_MIN, FIT_T_MAX, 200)
     ek_fit = np.exp(log_C + 2.0 * sigma_fit * t_line)
     ax.semilogy(t_line, ek_fit, "r--", linewidth=2,
                 label=(f"Best fit: $\\sigma$ = {sigma_fit:.4f}"))

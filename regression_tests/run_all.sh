@@ -66,7 +66,7 @@ Options:
   --config <name>          Build configuration (auto-derived from --mode if omitted)
   --mpi-np <N>             MPI ranks for sedov_3d test (default: ${MPI_NP})
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
-  --clean-results          Delete regression_results and generated regression figures, then exit
+  --clean-results          Delete regression_results, generated figures, and run artifacts from cases, then exit
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
   --verbose                Stream run output to terminal as well
@@ -242,10 +242,27 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
             rm -f "$f"
             cleaned=$((cleaned + 1))
         done < <(find "${local_cases_dir}" -maxdepth 2 \
-            \( -name "*.log" -o -name "*.txt" -o -name "*.h5" -o -name "rich" \) \
+            \( -name "*.log" -o -name "*.txt" -o -name "*.h5" -o -name "*.vtu" -o -name "rich" \) \
             ! -name "test.cpp" -print0)
         if [[ ${cleaned} -gt 0 ]]; then
             echo "Cleaned ${cleaned} run-generated files from ${local_cases_dir}"
+        fi
+
+        # Remove run-generated subdirectories inside case dirs:
+        #   snap_*  - HDF5/VTU snapshot directories
+        #   build/  - stale in-case build artifacts
+        #   regression_tests/ - accidental nested run artifacts
+        #   rt_final/ and similar VTU output dirs from WriteSnapshot3D
+        cleaned_dirs=0
+        while IFS= read -r -d '' d; do
+            rm -rf "$d"
+            cleaned_dirs=$((cleaned_dirs + 1))
+        done < <(find "${local_cases_dir}" -mindepth 2 -maxdepth 2 -type d \
+            \( -name "snap_*" -o -name "build" -o -name "regression_tests" \
+               -o -name "regression_results" -o -name "rt_final" \
+               -o -name "__pycache__" \) -print0)
+        if [[ ${cleaned_dirs} -gt 0 ]]; then
+            echo "Cleaned ${cleaned_dirs} run-generated directories from ${local_cases_dir}"
         fi
     fi
 
@@ -259,6 +276,15 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
         if [[ ${cleaned_figures} -gt 0 ]]; then
             echo "Cleaned ${cleaned_figures} figure file(s) from ${local_regression_dir}"
         fi
+
+        # Remove top-level generated directories
+        for d in "${local_regression_dir}/plots" \
+                 "${local_regression_dir}/__pycache__"; do
+            if [[ -d "$d" ]]; then
+                rm -rf "$d"
+                echo "Removed ${d}"
+            fi
+        done
     fi
     exit 0
 fi

@@ -154,7 +154,7 @@ int main(void)
 	    /*slf=*/false, /*delta_v=*/0.2, /*theta=*/0.5,
 	    /*delta_P=*/0.7, /*SR=*/false, /*calc_tracers=*/{},
 	    /*skip_key=*/"", /*pressure_calc=*/false,
-	    /*apply_principal_limit=*/false, /*velocity_radial_extrapolation=*/true);
+	    /*apply_principal_limit=*/false, /*velocity_radial_extrapolation=*/false);
 
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D>> face_values;
 	try {
@@ -323,103 +323,6 @@ int main(void)
 		mf << "cart_vz_max_abs " << cart_vz_err.max_abs << "\n";
 		mf << "cart_faces_checked " << cart_rho_err.count << "\n";
 	}
-
-	// #region agent log
-	// H1 diagnostic: check if using face basis instead of cell basis fixes the velocity error
-	{
-		std::ofstream dbg("/home/elads/RICH/.cursor/debug-df7821.log", std::ios::app);
-		FieldErrors corr_vx_err, corr_vy_err, corr_vz_err;
-		size_t face_log_count = 0;
-
-		for (size_t f = 0; f < tess.GetTotalFacesNumber(); ++f) {
-			auto const& neigh = tess.GetFaceNeighbors(f);
-			if (neigh.first >= Nlocal || neigh.second >= Nlocal) continue;
-			Vector3D cm1 = tess.GetCellCM(neigh.first);
-			Vector3D cm2 = tess.GetCellCM(neigh.second);
-			double r1 = abs(cm1), r2 = abs(cm2);
-			if (r1 < 1.1 || r1 > 1.9 || r2 < 1.1 || r2 > 1.9) continue;
-
-			Vector3D face_cm = tess.FaceCM(f);
-			SphCoords fs = cart_to_sph(face_cm);
-			Vector3D fer, fet, fep;
-			sph_basis(fs.theta, fs.phi, fer, fet, fep);
-
-			double exact_vr_val = vr_c.eval(fs), exact_vt_val = vt_c.eval(fs), exact_vp_val = vp_c.eval(fs);
-			Vector3D exact_vel = sph_vel_to_cart(exact_vr_val, exact_vt_val, exact_vp_val, fer, fet, fep);
-
-			for (int side = 0; side < 2; ++side) {
-				size_t src_idx = static_cast<size_t>((side == 0) ? neigh.first : neigh.second);
-				ComputationalCell3D const& sv = (side == 0) ? face_values[f].first : face_values[f].second;
-
-				SphCoords cell_sc = cart_to_sph(tess.GetCellCM(src_idx));
-				Vector3D cer, cet, cep;
-				sph_basis(cell_sc.theta, cell_sc.phi, cer, cet, cep);
-
-				// Decompose interpolated Cartesian vel using cell's basis (undo what the code did)
-				double interp_vr_sph = sv.velocity.x * cer.x + sv.velocity.y * cer.y + sv.velocity.z * cer.z;
-				double interp_vt_sph = sv.velocity.x * cet.x + sv.velocity.y * cet.y + sv.velocity.z * cet.z;
-				double interp_vp_sph = sv.velocity.x * cep.x + sv.velocity.y * cep.y + sv.velocity.z * cep.z;
-
-				// Re-convert using FACE's basis (the corrected way)
-				Vector3D corrected_vel = fer * interp_vr_sph + fet * interp_vt_sph + fep * interp_vp_sph;
-
-				corr_vx_err.update(corrected_vel.x, exact_vel.x, face_cm, src_idx, cells[src_idx].ID);
-				corr_vy_err.update(corrected_vel.y, exact_vel.y, face_cm, src_idx, cells[src_idx].ID);
-				corr_vz_err.update(corrected_vel.z, exact_vel.z, face_cm, src_idx, cells[src_idx].ID);
-
-				double vx_abs = std::abs(sv.velocity.x - exact_vel.x);
-				double vy_abs = std::abs(sv.velocity.y - exact_vel.y);
-				double vz_abs = std::abs(sv.velocity.z - exact_vel.z);
-
-				if ((vx_abs > 0.05 || vy_abs > 0.05 || vz_abs > 0.05) && face_log_count < 15) {
-					double corr_vx_e = std::abs(corrected_vel.x - exact_vel.x);
-					double corr_vy_e = std::abs(corrected_vel.y - exact_vel.y);
-					double corr_vz_e = std::abs(corrected_vel.z - exact_vel.z);
-					double cell_face_angle = std::acos(std::max(-1.0, std::min(1.0,
-						cer.x*fer.x + cer.y*fer.y + cer.z*fer.z)));
-
-					dbg << "{\"sessionId\":\"df7821\",\"hypothesisId\":\"H1\""
-					    << ",\"location\":\"test.cpp:diag\",\"message\":\"basis_mismatch\""
-					    << ",\"data\":{\"face\":" << f << ",\"cell\":" << src_idx
-					    << ",\"cell_theta\":" << cell_sc.theta << ",\"cell_phi\":" << cell_sc.phi
-					    << ",\"face_theta\":" << fs.theta << ",\"face_phi\":" << fs.phi
-					    << ",\"er_angle_deg\":" << (cell_face_angle * 180.0 / M_PI)
-					    << ",\"orig_vx_err\":" << vx_abs << ",\"orig_vy_err\":" << vy_abs
-					    << ",\"orig_vz_err\":" << vz_abs
-					    << ",\"corr_vx_err\":" << corr_vx_e << ",\"corr_vy_err\":" << corr_vy_e
-					    << ",\"corr_vz_err\":" << corr_vz_e
-					    << ",\"interp_vr_sph\":" << interp_vr_sph << ",\"interp_vt_sph\":" << interp_vt_sph
-					    << ",\"interp_vp_sph\":" << interp_vp_sph
-					    << "}}\n";
-					++face_log_count;
-				}
-			}
-		}
-
-		double corr_vel_max_rel = std::max(corr_vx_err.max_rel,
-			std::max(corr_vy_err.max_rel, corr_vz_err.max_rel));
-		double corr_vel_max_abs = std::max(corr_vx_err.max_abs,
-			std::max(corr_vy_err.max_abs, corr_vz_err.max_abs));
-
-		dbg << "{\"sessionId\":\"df7821\",\"hypothesisId\":\"H1\""
-		    << ",\"location\":\"test.cpp:summary\",\"message\":\"corrected_velocity_errors\""
-		    << ",\"data\":{\"orig_vel_max_rel\":" << vel_max_rel
-		    << ",\"corr_vel_max_rel\":" << corr_vel_max_rel
-		    << ",\"orig_vx_max_abs\":" << vx_err.max_abs
-		    << ",\"corr_vx_max_abs\":" << corr_vx_err.max_abs
-		    << ",\"orig_vy_max_abs\":" << vy_err.max_abs
-		    << ",\"corr_vy_max_abs\":" << corr_vy_err.max_abs
-		    << ",\"orig_vz_max_abs\":" << vz_err.max_abs
-		    << ",\"corr_vz_max_abs\":" << corr_vz_err.max_abs
-		    << "}}\n";
-
-		std::cout << "\n--- H1 corrected (face-basis) velocity errors ---\n";
-		std::cout << "corr_vx: max_abs=" << corr_vx_err.max_abs << "  max_rel=" << corr_vx_err.max_rel << "\n";
-		std::cout << "corr_vy: max_abs=" << corr_vy_err.max_abs << "  max_rel=" << corr_vy_err.max_rel << "\n";
-		std::cout << "corr_vz: max_abs=" << corr_vz_err.max_abs << "  max_rel=" << corr_vz_err.max_rel << "\n";
-		std::cout << "corr vel_max_rel=" << corr_vel_max_rel << "  corr vel_max_abs=" << corr_vel_max_abs << "\n";
-	}
-	// #endregion
 
 	double scalar_tol = 1e-8;
 	double vel_tol = 0.1;

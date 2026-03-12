@@ -336,7 +336,7 @@ int main(void)
             aborted_early = true;
             if (rank == 0)
                 std::cerr << "Stopping run after runtime error; writing diagnostics from current state.\n";
-            break;
+            throw;
         }
     }
 

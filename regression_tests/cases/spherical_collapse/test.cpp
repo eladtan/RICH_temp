@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -333,6 +334,8 @@ int main(void)
     }
 
     double next_snapshot_r = R_OUTER - 0.1;
+    double max_rho_scatter = 0.0;
+    double max_vr_scatter = 0.0;
 
     while (true) {
         try {
@@ -343,6 +346,8 @@ int main(void)
         }
 
         DiagResult diag = compute_diagnostics(sim, bin_edges);
+        max_rho_scatter = std::max(max_rho_scatter, diag.rho_scatter);
+        max_vr_scatter = std::max(max_vr_scatter, diag.vr_scatter);
 
         if (rank == 0) {
             std::cout << "Cycle " << sim.getCycle()
@@ -369,6 +374,20 @@ int main(void)
     WriteSnapshot3D(sim, "snap_final.h5");
     if (rank == 0)
         std::cout << "Wrote snap_final.h5" << std::endl;
+
+    if (rank == 0) {
+        int pass = (max_rho_scatter < 0.1 && max_vr_scatter < 0.1) ? 1 : 0;
+        std::ofstream mf("collapse_metrics.txt");
+        mf << std::scientific << std::setprecision(12);
+        mf << "max_density_scatter " << max_rho_scatter << "\n";
+        mf << "max_velocity_scatter " << max_vr_scatter << "\n";
+        mf << "pass " << pass << "\n";
+        mf.close();
+        std::cout << "Wrote collapse_metrics.txt"
+                  << " (max_density_scatter=" << max_rho_scatter
+                  << ", max_velocity_scatter=" << max_vr_scatter
+                  << ", pass=" << pass << ")" << std::endl;
+    }
 
 #ifdef RICH_MPI
     MPI_Finalize();

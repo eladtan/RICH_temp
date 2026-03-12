@@ -26,7 +26,7 @@ static const double RHO_HEAVY = 2.0;
 static const double GRAVITY = 0.5;
 static const double Z_MID = 1.0;
 static const double P0 = 10.0;
-static const double PERTURBATION_AMP = 0.01;
+static const double PERTURBATION_AMP = 0.03;
 static const double T_END = 3.0;
 static const int LOG_INTERVAL = 10;
 
@@ -83,7 +83,7 @@ int main(void)
 
         double vz_pert = PERTURBATION_AMP
             * (std::cos(2.0 * M_PI * x) + std::cos(2.0 * M_PI * y))
-            * std::exp(-((z - Z_MID) * (z - Z_MID)) / 0.01);
+            * std::exp(-((z - Z_MID) * (z - Z_MID)) / 0.04);
 
         cells[i].density = rho;
         cells[i].pressure = pressure;
@@ -149,10 +149,11 @@ int main(void)
                 }
             }
 
-            if (rank == 0 && sim.getCycle() % 100 == 0) {
+            if (rank == 0) {
                 std::cout << "Cycle " << sim.getCycle()
                           << " dt " << sim.getTime() - old_time
-                          << " time " << sim.getTime() << std::endl;
+                          << " time " << sim.getTime()
+                          << " T_end " << T_END << "\n" << std::endl;
             }
             old_time = sim.getTime();
             sim.timeAdvance2();
@@ -167,7 +168,7 @@ int main(void)
     }
 
     // Density slice: cells near y = 0.5
-    double const slice_half_width = 0.5 * (ur.y - ll.y) / 80.0;
+    double const slice_half_width = 0.8 * (ur.y - ll.y) / 80.0;
     size_t const Nfinal = sim.getTesselation().GetPointNo();
     std::vector<double> local_x, local_z, local_rho;
     for (size_t i = 0; i < Nfinal; ++i) {

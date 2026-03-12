@@ -957,10 +957,10 @@ TESTS = [
             "perturbation wavenumber \\cite{chandrasekhar1961}.\n\n"
             "The initial condition places $\\rho_{\\mathrm{heavy}}=2$ above "
             "$\\rho_{\\mathrm{light}}=1$ in a $[0,1]^2 \\times [0,2]$ box with "
-            "a two-mode cosine perturbation (one peak in $x$, one in $y$) of "
-            "amplitude $\\delta=0.01$ at the interface $z=1$. Pressure is set "
-            "in hydrostatic equilibrium and constant downward gravity "
-            "$g=0.5$ is applied.\n\n"
+            "a flat interface at $z=1$ in exact hydrostatic equilibrium. "
+            "A two-mode cosine velocity perturbation in $v_z$ (amplitude "
+            "$0.03$, Gaussian-localised near the interface) seeds the "
+            "instability. Constant downward gravity $g=0.5$ is applied.\n\n"
             "\\textbf{Code and physics aspects verified:}\n"
             "\\begin{itemize}\n"
             "  \\item \\textbf{Source term coupling:} The conservative gravity "
@@ -976,19 +976,20 @@ TESTS = [
             "\\end{itemize}"
         ),
         "initial_conditions": (
-            r"$\rho_{\mathrm{light}}=1$ for $z < z_{\mathrm{int}}$, "
-            r"$\rho_{\mathrm{heavy}}=2$ for $z \geq z_{\mathrm{int}}$, where "
-            r"$z_{\mathrm{int}} = 1 + 0.01\,[\cos(2\pi x) + \cos(2\pi y)]$. "
+            r"$\rho_{\mathrm{light}}=1$ for $z < 1$, "
+            r"$\rho_{\mathrm{heavy}}=2$ for $z \geq 1$ (flat interface). "
             r"Hydrostatic pressure with $P_0=10$, $g=0.5$. $\gamma=5/3$. "
-            r"Zero initial velocity."
+            r"Velocity perturbation: "
+            r"$v_z = 0.03\,[\cos(2\pi x) + \cos(2\pi y)]\,"
+            r"\exp[-(z-1)^2/0.04]$."
         ),
         "boundary_conditions": "Rigid (reflective) walls on all faces of the $[0,1]^2 \\times [0,2]$ box.",
         "mesh_movement": "Lagrangian + RoundCells (\\texttt{Lagrangian3D} wrapped in \\texttt{RoundCells3D}).",
         "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
         "pass_criteria": (
-            r"Fitted linear growth rate $\sigma_{\mathrm{fit}}$ within 25\% "
-            r"of analytical $\sigma = \sqrt{A\,g\,k}$ where $A=1/3$, $g=0.5$, "
-            r"$k=2\pi$."
+            r"Fitted linear growth rate $\sigma_{\mathrm{fit}}$ (from $t=2$ "
+            r"to $t=3$) within 25\% of analytical "
+            r"$\sigma = \sqrt{A\,g\,k}$ where $A=1/3$, $g=0.5$, $k=2\pi$."
         ),
         "plots": [
             "rayleigh_taylor_mpi_ekz.png",
