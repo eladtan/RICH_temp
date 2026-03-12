@@ -1,3 +1,11 @@
-# TODO: replace when needed
+if(NOT DEFINED PYBIND11_DIRECTORY)
+    if(DEFINED ENV{EBROOTPYBIND11})
+        set(PYBIND11_DIRECTORY "$ENV{EBROOTPYBIND11}/share/cmake/pybind11")
+    elseif(DEFINED ENV{pybind11_DIR})
+        set(PYBIND11_DIRECTORY "$ENV{pybind11_DIR}")
+    endif()
+endif()
 
-set(PYBIND11_DIRECTORY "/software/x86_64/5.14.0/pybind11/2.11.1/share/cmake/pybind11")
+if(NOT PYBIND11_DIRECTORY)
+    message(STATUS "No pybind11 directory found; pybind11 support will be disabled")
+endif()
