@@ -221,6 +221,38 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
             eo.addEntry("Rank", rank);
         #endif // RICH_MPI
         eo.addEntry("Particle", *this);
+        eo.addEntry("Cell Index", this->cellIndex);
+        eo.addEntry("Cell Point", grid.GetMeshPoint(this->cellIndex));
+        for(size_t i = 0; i < Nfaces; ++i)
+        {
+            const size_t &faceIdx = faces[i];
+            const T &normal = grid.Normal(faceIdx);
+            const T &faceCM = grid.FaceCM(faceIdx);
+            const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
+            T midpoint = (grid.GetMeshPoint(sides.first) + grid.GetMeshPoint(sides.second)) * 0.5;
+            const T &pointOnFace = pointsOnFaces[i];
+            const T &normalUsed = normalsOfCell[i];
+            double normalVelDot = ScalarProd(normalUsed, this->velocity);
+            double alphaFaceCM = ScalarProd((faceCM - this->location), normalUsed) / normalVelDot;
+            double alphaMidpoint = ScalarProd((midpoint - this->location), normalUsed) / normalVelDot;
+            double alphaUsed = ScalarProd((pointOnFace - this->location), normalUsed) / normalVelDot;
+            double distFaceCM = std::abs(ScalarProd(normal, faceCM - this->location)) / abs(normal);
+            double distMidpoint = std::abs(ScalarProd(normal, midpoint - this->location)) / abs(normal);
+            std::string prefix = "Face " + std::to_string(i) + " (idx " + std::to_string(faceIdx) + ") ";
+            eo.addEntry(prefix + "FaceCM", faceCM);
+            eo.addEntry(prefix + "Midpoint", midpoint);
+            eo.addEntry(prefix + "pointOnFace (used)", pointOnFace);
+            eo.addEntry(prefix + "Normal (raw)", normal);
+            eo.addEntry(prefix + "Normal (used)", normalUsed);
+            eo.addEntry(prefix + "normalVelDot", normalVelDot);
+            eo.addEntry(prefix + "alpha(FaceCM)", alphaFaceCM);
+            eo.addEntry(prefix + "alpha(Midpoint)", alphaMidpoint);
+            eo.addEntry(prefix + "alpha(used)", alphaUsed);
+            eo.addEntry(prefix + "dist(FaceCM)", distFaceCM);
+            eo.addEntry(prefix + "dist(Midpoint)", distMidpoint);
+            eo.addEntry(prefix + "neighbor1", sides.first);
+            eo.addEntry(prefix + "neighbor2", sides.second);
+        }
         throw eo;
     }
     // assert the point is inside this cell

@@ -1,5 +1,6 @@
 #include "write_vtu_3d.hpp"
 #include <set>
+#include "misc/universal_error.hpp"
 
 namespace write_vtu3d
 {
@@ -90,7 +91,7 @@ namespace write_vtu3d
         std::sort(point_array_in_cell.begin(), point_array_in_cell.end());
         point_array_in_cell = unique(point_array_in_cell);
         vtkIdType* ptIds = &point_array_in_cell[0];
-        ugrid->InsertNextCell(VTK_POLYHEDRON, point_array_in_cell.size(), ptIds, Nfaces, faces->GetPointer(0));
+	ugrid->InsertNextCell(VTK_POLYHEDRON, point_array_in_cell.size(), ptIds, Nfaces, faces->GetPointer(0));
 	}
 
 	Vector3D mid_vertice = 0.5 * (tess.GetBoxCoordinates().first + tess.GetBoxCoordinates().second);
@@ -102,18 +103,21 @@ namespace write_vtu3d
 	}
     ugrid->SetPoints(points);
 
-	// ------------cell centered data
-	// see here:
-	// https://paraview.paraview.narkive.com/GUqqKIK1/assign-scalars-vectors-to-mesh-points-in-vtkrectilineargrid-c
-
 		// cell scalars data
 		for(std::size_t var_index=0; var_index<cell_variable_names.size(); ++var_index){
+			auto const& var = cell_variables[var_index];
+			if(var.size() < num_cells)
+			{
+				UniversalError eo("write_vtu_3d: cell variable size mismatch");
+				eo.addEntry("variable name", cell_variable_names[var_index]);
+				eo.addEntry("variable size", var.size());
+				eo.addEntry("expected (num_cells)", num_cells);
+				throw eo;
+			}
 			vtkNew<vtkDoubleArray> var_data;
 			var_data->SetName(cell_variable_names[var_index].c_str());
 			var_data->SetNumberOfComponents(1);
 			var_data->SetNumberOfValues(num_cells);
-			auto const& var = cell_variables[var_index];
-			assert(var.size() == num_cells);
 			for(std::size_t cell=0; cell<num_cells; ++cell){
 				var_data->SetValue(cell, var[cell]);
 			}
@@ -206,6 +210,7 @@ namespace write_vtu3d
 		//printf("%d/%d writing vtu file '%s'\n", mpi_rank+1, mpi_size, file_pvtu.c_str());
 		pwriter->SetFileName(pname.c_str());
 		pwriter->SetInputData(ugrid);
+		usleep(50000 * mpi_rank);
 		pwriter->Write();
 	#else
 		// ------------ write the vtu file to disk
@@ -369,6 +374,7 @@ void write_vtu_3d_points(std::filesystem::path const& file_name,
 		//printf("%d/%d writing vtu file '%s'\n", mpi_rank+1, mpi_size, file_pvtu.c_str());
 		pwriter->SetFileName(pname.c_str());
 		pwriter->SetInputData(ugrid);
+		usleep(50000 * mpi_rank);
 		pwriter->Write();
 	#else
 		// ------------ write the vtu file to disk

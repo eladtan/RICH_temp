@@ -53,13 +53,22 @@ void InternalMovements(const Tessellation3D &tess, std::vector<Particle3D> &part
 void AssertLocations(const Tessellation3D &tess, const std::vector<Particle3D> &particles)
 {
     START_TIMER("Assert Locations");
+    size_t N = tess.GetPointNo();
     size_t Nparticles = particles.size();
     // check if the particles are inside the cells by checking the scalar products
     for(size_t i = 0; i < Nparticles; i++)
     {
         const Particle3D &particle = particles[i];
         size_t cellIndex = particle.cellIndex; 
-        assert(cellIndex < tess.GetPointNo());
+        if(cellIndex >= tess.GetPointNo())
+        {
+            UniversalError eo("AssertLocations: Particle cell index is out of range");
+            eo.addEntry("Particle", particle);
+            eo.addEntry("Particle Index", i);
+            eo.addEntry("Cell Index", cellIndex);
+            eo.addEntry("N", N);
+            throw eo;
+        }
         if(not tess.IsPointInCell(particle.location, cellIndex))
         {
             UniversalError eo("AssertLocations: Particle is not in its cell");
