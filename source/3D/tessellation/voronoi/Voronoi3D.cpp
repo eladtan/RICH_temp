@@ -677,6 +677,8 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               indicesInAllMyPoints()
 {
     this->box_faces_ = BuildBox(this->ll_, this->ur_);
+    // initialize points manager
+    this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
 }
 
 Voronoi3D::Voronoi3D() : Voronoi3D(Vector3D(), Vector3D())
@@ -1220,14 +1222,12 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     }
     
     std::chrono::high_resolution_clock::time_point start, end;
-    start = std::chrono::high_resolution_clock::now();
-
+    
     if(this->pointsManager.get() == nullptr)
     {
         // initialize points manager
         this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
     }
-    end = std::chrono::high_resolution_clock::now();
 
     rank_t rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -1829,6 +1829,11 @@ void Voronoi3D::MockMesh(void)
 
 void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
 {
+    if(this->pointsManager.get() == nullptr)
+    {
+        UniversalError eo("Voronoi3D::SetLoadBalancer: pointsManager is nullptr");
+        throw eo;
+    }
     this->pointsManager->setLoadBalancer(loadBalancer);
 
     std::vector<Vector3D> previousPoints = this->allMyPoints;
@@ -1845,6 +1850,15 @@ void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
     this->allPointsWeights = std::move(exchangeResult.newWeights);
 
     this->MockMesh();
+}
+
+void Voronoi3D::PresetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
+{
+    if(this->pointsManager.get() == nullptr)
+    {
+        this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
+    }
+    this->pointsManager->setLoadBalancer(loadBalancer);
 }
 
 void Voronoi3D::Rebalance(const std::vector<double> &weights)
@@ -4002,7 +4016,7 @@ void Voronoi3D::SetKernel(const std::shared_ptr<const Kernelization3D::IndexingK
 {
     MPI_Barrier(MPI_COMM_WORLD); // everyone should set the kernel
     this->indexingToSave = indexing;
-    HilbertPointsManager *hilbertPointsManager = dynamic_cast<HilbertPointsManager*>(this->pointsManager.get());
+    HilbertPointsManager *hilbertPointsManager = dynamic_cast<HilbertPointsManager *>(this->pointsManager.get());
     if(hilbertPointsManager == nullptr)
     {
         // points manager is not a 'HilbertPointsManager', or was not initialized yet
@@ -4010,6 +4024,11 @@ void Voronoi3D::SetKernel(const std::shared_ptr<const Kernelization3D::IndexingK
     }
     // reset points manager, next build it will be re-initialized, with the kernel
     this->pointsManager = std::shared_ptr<PointsManager>();
+}
+
+std::shared_ptr<const Kernelization3D::IndexingKernel3D> Voronoi3D::GetKernel() const
+{
+    return this->indexingToSave;
 }
 #endif // RICH_MPI
 

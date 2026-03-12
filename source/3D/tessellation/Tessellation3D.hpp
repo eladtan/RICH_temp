@@ -58,6 +58,8 @@ public:
 
   virtual void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
 
+  virtual void PresetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
+
   virtual void Rebalance(const std::vector<double> &weights) = 0;
 
   virtual bool ShouldRebalance(const std::vector<double> &weights) const = 0;

@@ -242,7 +242,8 @@ public:
     
     void SetKernel(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>());
     
-    inline void SetKernel(const Kernelization3D::IndexingKernel3D *indexing){this->SetKernel(std::shared_ptr<const Kernelization3D::IndexingKernel3D>(indexing));};
+
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> GetKernel() const;
     
     void SetBox(Vector3D const &ll, Vector3D const &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &newIndexing);
   #endif // RICH_MPI
@@ -293,6 +294,8 @@ public:
   void MockMesh(void);
   
   void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
+
+  void PresetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
   
   void Rebalance(const std::vector<double> &weights) override;
 
