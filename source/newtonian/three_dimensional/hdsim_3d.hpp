@@ -15,7 +15,7 @@
 #include "cell_updater_3d.hpp"
 #include "extensive_updater3d.hpp"
 #include "SourceTerm3D.hpp"
-#include "ProgressTracker.hpp"
+#include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
 #include "CostCalculator3D.hpp"
 
 #ifdef RICH_MPI
@@ -110,23 +110,10 @@ public:
   \return Extensive cells
   */
   vector<Conserved3D>& getExtensives(void);
-  /*! \brief Get the time of the simulation
-  \return The current time of the simulation
-  */
-  double getTime(void)const;
 
-  /*! \brief Get the cycle number of the simulation
-  \return The current cycle of the simulation
-  */
-  size_t getCycle(void)const;
-  /*! \brief Change the cycle of the simulation
-  \param cycle The new cycle of the simulation
-  */
-  void SetCycle(size_t cycle);
-  /*! \brief Change the time of the simulation
-  \param t The new time of the simulation
-  */
-  void SetTime(double t);
+  double getTime(void) const;
+
+  size_t getCycle(void) const;
 
   /*! \brief Change/get the max ID of the sim
   \return t The maximum ID number ofr all cells
@@ -158,7 +145,7 @@ private:
   const CellUpdater3D& cu_;
   const ExtensiveUpdater3D& eu_;
   const	SourceTerm3D &source_;
-  ProgressTracker &pt_;
+  const ProgressTracker &pt_;
   size_t Max_ID_;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
