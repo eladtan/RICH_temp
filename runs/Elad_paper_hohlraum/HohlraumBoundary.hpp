@@ -64,7 +64,7 @@ std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewB
             {
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                 // Emit only from the x=Lx face (normal pointing in +x direction)
-                if(normal.x > 0.99)
+                if(normal.x < -0.99 && std::sqrt(point.y * point.y + point.z * point.z) < 0.65)
                 {
                     double energyToProduce = units::sigma_sb * T4 * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     for(size_t j = 0; j < this->Npercell; j++)
@@ -74,7 +74,7 @@ std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewB
                         newParticle.location = RandomPointOnFace(this->grid, faceIdx);
                         double mu = std::sqrt(unif(re));
                         // Lambert emission into -x direction (into the hohlraum)
-                        newParticle.velocity.x = -mu;
+                        newParticle.velocity.x = mu;
                         double _1mmu = std::sqrt(1 - mu * mu);
                         double theta = 2 * M_PI * unif(re);
                         newParticle.velocity.y = _1mmu * std::cos(theta);
