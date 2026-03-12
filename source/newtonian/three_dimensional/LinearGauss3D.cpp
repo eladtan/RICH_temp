@@ -581,8 +581,6 @@ namespace
 					}
 					psi[4] = std::min(psi[4], blend_psi(psi_bj, psi_sh));
 				}
-				double psi_v_unified = std::min({psi[2], psi[3], psi[4]});
-				psi[2] = psi[3] = psi[4] = psi_v_unified;
 			}
 			// tracers
 			for (size_t j = 0; j < ntracer; ++j)
@@ -608,13 +606,27 @@ namespace
 		}
 		psi[1] = std::min(psi[1], psi[5]);
 		psi[5] = psi[1];
+		if (shock_w > 0.85)
+		{
+			double psi_scalar_min = std::min(psi[1], psi[5]);
+			psi[0] = std::min(psi[0], psi_scalar_min);
+			psi[2] = std::min(psi[2], psi_scalar_min);
+			psi[3] = std::min(psi[3], psi_scalar_min);
+			psi[4] = std::min(psi[4], psi_scalar_min);
+			if (has_frame)
+			{
+				psi_v1 = std::min(psi_v1, psi_scalar_min);
+				psi_v2 = std::min(psi_v2, psi_scalar_min);
+				psi_v3 = std::min(psi_v3, psi_scalar_min);
+			}
+		}
 		slope.xderivative.density *= psi[0];
 		slope.yderivative.density *= psi[0];
 		slope.zderivative.density *= psi[0];
 		slope.xderivative.pressure *= psi[1];
 		slope.yderivative.pressure *= psi[1];
 		slope.zderivative.pressure *= psi[1];
-		if (has_frame && apply_principal_limit_flag)
+		if (has_frame)
 		{			
 			apply_principal_limit(slope.xderivative.velocity, e1, e2, e3, psi_v1, psi_v2, psi_v3);
 			apply_principal_limit(slope.yderivative.velocity, e1, e2, e3, psi_v1, psi_v2, psi_v3);
@@ -622,13 +634,6 @@ namespace
 		}
 		else
 		{
-			if (has_frame)
-			{
-				// Fallback when principal-frame limiting is disabled: use a single
-				// conservative limiter for Cartesian components.
-				double psi_v_unified = std::min({psi_v1, psi_v2, psi_v3});
-				psi[2] = psi[3] = psi[4] = psi_v_unified;
-			}
 			slope.xderivative.velocity.x *= psi[2];
 			slope.yderivative.velocity.x *= psi[2];
 			slope.zderivative.velocity.x *= psi[2];

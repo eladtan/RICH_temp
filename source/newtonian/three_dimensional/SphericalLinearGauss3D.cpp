@@ -581,6 +581,20 @@ namespace
 		}
 		psi[1] = std::min(psi[1], psi[5]);
 		psi[5] = psi[1];
+		if (shock_w > 0.85)
+		{
+			double psi_scalar_min = std::min(psi[1], psi[5]);
+			psi[0] = std::min(psi[0], psi_scalar_min);
+			psi[2] = std::min(psi[2], psi_scalar_min);
+			psi[3] = std::min(psi[3], psi_scalar_min);
+			psi[4] = std::min(psi[4], psi_scalar_min);
+			if (has_frame)
+			{
+				psi_v1 = std::min(psi_v1, psi_scalar_min);
+				psi_v2 = std::min(psi_v2, psi_scalar_min);
+				psi_v3 = std::min(psi_v3, psi_scalar_min);
+			}
+		}
 		slope.xderivative.density *= psi[0];
 		slope.yderivative.density *= psi[0];
 		slope.zderivative.density *= psi[0];
@@ -1038,6 +1052,14 @@ namespace
 
 		psi[1] = std::min(psi[1], psi[5]);
 		psi[5] = psi[1];
+		if (shock_w > 0.85)
+		{
+			double psi_scalar_min = std::min(psi[1], psi[5]);
+			psi[0] = std::min(psi[0], psi_scalar_min);
+			psi_vr = std::min(psi_vr, psi_scalar_min);
+			psi_vt = std::min(psi_vt, psi_scalar_min);
+			psi_vp = std::min(psi_vp, psi_scalar_min);
+		}
 
 		const double psi_floor = 0.01;
 		for (auto& p : psi)
@@ -1614,7 +1636,9 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 						cell_ref->velocity.z += rslopes_[i].xderivative.velocity.z * vel_dr_extra;
 					}
 
-					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, er_[i], etheta_[i], ephi_[i]);
+					Vector3D face_er, face_et, face_ep;
+					sph_basis_at(face_sph_cache[j].y, face_sph_cache[j].z, face_er, face_et, face_ep);
+					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, face_er, etheta_[i], ephi_[i]);
 					CheckCell(*cell_ref);
 				}
 				catch (UniversalError &eo)
@@ -1713,7 +1737,9 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 					cell_ref->velocity.z += ghost_slope.xderivative.velocity.z * dr_correction;
 				}
 
-				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, g_er, g_et, g_ep);
+				Vector3D bface_er, bface_et, bface_ep;
+				sph_basis_at(face_sc.y, face_sc.z, bface_er, bface_et, bface_ep);
+				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, bface_er, g_et, g_ep);
 			}
 			else
 			{
