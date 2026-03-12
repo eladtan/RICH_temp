@@ -9,18 +9,19 @@ template<typename T, typename Grid>
 class CombPopulationControl : public PopulationControl<T, Grid>
 {
 public:
-    CombPopulationControl(const Grid &grid, size_t n);
+    CombPopulationControl(const Grid &grid, size_t Nmin = 20, double totalParticlesFactor = 2.0);
 
     std::vector<MonteCarloParticle<T, Grid>> activate(const std::vector<MonteCarloParticle<T, Grid>> &particles) override;
 
 private:
-    size_t n;
+    size_t Nmin;
+    double totalParticlesFactor;
     boost::random::mt19937_64 gen;
 };
 
 template<typename T, typename Grid>
-CombPopulationControl<T, Grid>::CombPopulationControl(const Grid &grid, size_t n)
-    : PopulationControl<T, Grid>(grid), n(n)
+CombPopulationControl<T, Grid>::CombPopulationControl(const Grid &grid, size_t Nmin, double totalParticlesFactor)
+    : PopulationControl<T, Grid>(grid), Nmin(Nmin), totalParticlesFactor(totalParticlesFactor)
 {}
 
 template<typename T, typename Grid>
@@ -39,6 +40,10 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
     std::vector<MCParticle> result;
 
     size_t Ncells = this->grid.GetPointNo();
+    size_t Ntotal = Ncells;
+    #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    #endif // RICH_MPI
     std::vector<double> weights(Ncells, 0);
     std::vector<std::vector<const MCParticle*>> particlesInCells(Ncells);
 
@@ -68,31 +73,64 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
     }
     #endif // MONTECARLO_DEBUG
 
+    double totalWeight = 0.0;
     for(const MCParticle &particle : particles)
     {
         assert(particle.cellIndex < Ncells);
         weights[particle.cellIndex] += particle.weight;
+        totalWeight += particle.weight;
         particlesInCells[particle.cellIndex].push_back(&particle);
     }
+
+    #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    #endif // RICH_MPI
+
+    Ntotal = static_cast<size_t>(Ntotal * this->Nmin * this->totalParticlesFactor);
 
     std::uniform_real_distribution<double> dist(0, 1);
 
     for(size_t i = 0; i < Ncells; i++)
     {
-        if(particlesInCells[i].size() <= this->n)
+        size_t NinCell = std::min(this->Nmin * 20, std::max(this->Nmin, static_cast<size_t>(Ntotal * weights[i] / totalWeight)));
+        if(particlesInCells[i].size() <= NinCell)
         {
+            double weight_ideal = weights[i] / NinCell;
             for(const MCParticle *particle : particlesInCells[i])
-            {
-                result.push_back(*particle);
+            {   
+                if(particle->weight > 2 * weight_ideal)
+                {
+                    MCParticle particleCpy = *particle;
+                    size_t Nsplit = static_cast<size_t>(std::ceil(particle->weight / weight_ideal));
+                    double weight_split = particle->weight / Nsplit;
+                    particleCpy.weight = weight_split;
+                    particleCpy.id = std::numeric_limits<size_t>::max(); // reset id, it will be set later
+                    #ifdef RICH_MPI
+                        particleCpy.rank = std::numeric_limits<rank_t>::max(); // reset rank, it will be set later
+                    #endif // RICH_MPI
+                    // add Nsplit copies
+                    for(size_t j = 0; j < Nsplit; j++)
+                    {
+                        result.push_back(particleCpy);
+                    }
+                }
+                else
+                {
+                    result.push_back(*particle);
+                }
             }
             continue;
         }
 
-        std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return p1->rank < p2->rank or (p1->rank == p2->rank and p1->id < p2->id);});
+        #ifdef RICH_MPI
+            std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return p1->rank < p2->rank or (p1->rank == p2->rank and p1->id < p2->id);});
+        #else // RICH_MPI
+            std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return p1->id < p2->id;});
+        #endif // RICH_MPI
 
         std::shuffle(particlesInCells[i].begin(), particlesInCells[i].end(), gen);
     
-        double new_energy = weights[i] / this->n;
+        double new_energy = weights[i] / NinCell;
 
         double r = dist(gen);
         size_t comb_index = 0;
