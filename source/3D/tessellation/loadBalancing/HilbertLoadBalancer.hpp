@@ -12,9 +12,13 @@
 class HilbertLoadBalancer : public CurveLoadBalancer
 {
 public:
+    static constexpr const char *type_name = "hilbert";
+
     HilbertLoadBalancer(const std::shared_ptr<HilbertConvertor3D> convertor, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing, const std::vector<curve_index_t> &boundaries = std::vector<curve_index_t>());
 
     ~HilbertLoadBalancer() override = default;
+
+    std::string getTypeName() const override { return type_name; }
 
     void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights) override;
 

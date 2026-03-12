@@ -1,11 +1,11 @@
 #ifndef PARTITION_LOAD_BALANCER_HPP
 #define PARTITION_LOAD_BALANCER_HPP
 
+#ifdef RICH_MPI
+
 #include <cstddef>
 
 using curve_index_t = size_t;
-
-#ifdef RICH_MPI
 
 #include <vector>
 #include "LoadBalancer.hpp"
