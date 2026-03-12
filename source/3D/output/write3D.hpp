@@ -11,6 +11,7 @@
 #include "Snapshot3D.hpp"
 #include "MC/read_write_particles.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
+#include "newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "cellData.hpp"
 
 namespace fs = std::filesystem;
@@ -103,5 +104,11 @@ void WritePoints(const std::vector<Vector3D> &points, const std::string &filenam
   void WritePointsParallel(const std::vector<Vector3D> &points, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>());
 #endif // RICH_MPI
 
+void WriteSimulation(const Simulation &sim,
+                     const std::string &filename
+                     #ifdef RICH_MPI
+                         , bool parallel = true
+                     #endif
+                     );
 
 #endif // OUTPUT_WRITE_3D_HPP
