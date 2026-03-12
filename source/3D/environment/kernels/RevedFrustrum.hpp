@@ -8,6 +8,8 @@
 #include "3D/elementary/Mat33.hpp"
 #include "Identity.hpp"
 
+class RevedFrustrumIOHandler;
+
 #define NUM_FACES 6
 #define FACE_EDGES_NUMBER 4
 #define VERTICES_NUMBER 4
@@ -30,7 +32,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class RevedFrustrumIOHandler;
+        friend class ::RevedFrustrumIOHandler;
         RevedFrustrum(const Vector3D &S, double h, double ratio)
             : S(S), h(h), beforeIndexing(nullptr), afterIndexing(nullptr), ratio(ratio)
         {

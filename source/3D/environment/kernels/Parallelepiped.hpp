@@ -9,6 +9,8 @@
 #include "Move.hpp" // move kernel
 #include "IndexingKernel3D.hpp"
 
+class ParallelepipedIOHandler;
+
 #define NUM_FACES 6 // a parallelepiped has 6 faces
 #define FACE_VERTICES_NUM 4 // each face should have 4 vertices
 
@@ -28,7 +30,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class ParallelepipedIOHandler;
+        friend class ::ParallelepipedIOHandler;
         void calculateTransformation(const Vector3D &u, const Vector3D &v, const Vector3D &w);
 
         Mat33<typename Vector3D::coord_type> transformation;

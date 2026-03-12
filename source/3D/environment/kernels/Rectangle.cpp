@@ -33,3 +33,5 @@ Vector3D Kernelization3D::Rectangle::operator()(const Vector3D &vector) const
     Vector3D vec = (this->beforeIndexing == nullptr) ? vector : (*this->beforeIndexing)(vector);
     return this->scaleIndexing(this->moveIndexing(vec));
 }
+
+std::string Kernelization3D::Rectangle::getTypeName() const { return "Rectangle"; }

@@ -4,6 +4,8 @@
 #include "IndexingKernel3D.hpp"
 #include "3D/elementary/Mat33.hpp"
 
+class RotationIOHandler;
+
 namespace Kernelization3D
 {
     class Rotation : public IndexingKernel3D
@@ -24,7 +26,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class RotationIOHandler;
+        friend class ::RotationIOHandler;
         Mat33<double> mat;
         const IndexingKernel3D *beforeIndexing;
 

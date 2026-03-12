@@ -8,6 +8,8 @@
 #include "Scale.hpp"
 #include "IndexingKernel3D.hpp"
 
+class RectangleIOHandler;
+
 namespace Kernelization3D
 {
     class Rectangle : public IndexingKernel3D
@@ -22,7 +24,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class RectangleIOHandler;
+        friend class ::RectangleIOHandler;
         const IndexingKernel3D *beforeIndexing;
         Move moveIndexing;
         Scale scaleIndexing;

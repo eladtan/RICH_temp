@@ -31,3 +31,5 @@ Vector3D Kernelization3D::RectangleShrink::operator()(const Vector3D &vector) co
     Vector3D vec = (this->beforeIndexing == nullptr) ? vector : (*this->beforeIndexing)(vector);
     return this->shrinkIndexing(this->moveIndexing(vec));
 }
+
+std::string Kernelization3D::RectangleShrink::getTypeName() const { return "RectangleShrink"; }

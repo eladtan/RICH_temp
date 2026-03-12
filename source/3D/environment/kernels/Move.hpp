@@ -3,6 +3,8 @@
 
 #include "IndexingKernel3D.hpp"
 
+class MoveIOHandler;
+
 namespace Kernelization3D
 {
     class Move : public IndexingKernel3D
@@ -15,7 +17,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class MoveIOHandler;
+        friend class ::MoveIOHandler;
         Vector3D moveVec;
         const IndexingKernel3D *beforeIndexing;
     };

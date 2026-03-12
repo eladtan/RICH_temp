@@ -2,7 +2,7 @@
 #define SAMERECTANGLE_IO_HANDLER_HPP
 
 #include "3D/environment/kernels/SameRectangle.hpp"
-#include "3D/output/sim/KernelIOHandlerFactory.hpp"
+#include "KernelIOHandlerFactory.hpp"
 #include "KernelIOHandler.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
 #include "utils/hdf5/HDF5Reader.hpp"

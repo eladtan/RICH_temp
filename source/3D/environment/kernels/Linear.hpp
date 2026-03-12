@@ -4,6 +4,8 @@
 #include "3D/elementary/Mat33.hpp"
 #include "IndexingKernel3D.hpp"
 
+class LinearIOHandler;
+
 namespace Kernelization3D
 {
     class Linear : public IndexingKernel3D
@@ -16,7 +18,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class LinearIOHandler;
+        friend class ::LinearIOHandler;
         Mat33<double> transformation;
         const IndexingKernel3D *beforeIndexing;
     };

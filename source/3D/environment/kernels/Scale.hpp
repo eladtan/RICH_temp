@@ -3,6 +3,8 @@
 
 #include "IndexingKernel3D.hpp"
 
+class ScaleIOHandler;
+
 namespace Kernelization3D
 {
     class Scale : public IndexingKernel3D
@@ -17,7 +19,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class ScaleIOHandler;
+        friend class ::ScaleIOHandler;
         Vector3D scale;
         const IndexingKernel3D *beforeIndexing;
     };

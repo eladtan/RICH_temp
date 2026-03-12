@@ -8,6 +8,8 @@
 #include "Shrink.hpp"
 #include "IndexingKernel3D.hpp"
 
+class RectangleShrinkIOHandler;
+
 namespace Kernelization3D
 {
     class RectangleShrink : public IndexingKernel3D
@@ -22,7 +24,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class RectangleShrinkIOHandler;
+        friend class ::RectangleShrinkIOHandler;
         const IndexingKernel3D *beforeIndexing;
         Move moveIndexing;
         Shrink shrinkIndexing;

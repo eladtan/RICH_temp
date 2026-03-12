@@ -13,3 +13,5 @@ Vector3D Kernelization3D::Sphere::operator()(const Vector3D &vector) const
     double denominator = std::max(std::abs(vec.x), std::max(std::abs(vec.y), std::abs(vec.z)));
     return (numerator / denominator) * vec;
 }
+
+std::string Kernelization3D::Sphere::getTypeName() const { return "Sphere"; }

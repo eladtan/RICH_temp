@@ -3,6 +3,8 @@
 
 #include "IndexingKernel3D.hpp"
 
+class ShrinkIOHandler;
+
 namespace Kernelization3D
 {
     class Shrink : public IndexingKernel3D
@@ -17,7 +19,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class ShrinkIOHandler;
+        friend class ::ShrinkIOHandler;
         double scale;
         const IndexingKernel3D *beforeIndexing;
     };

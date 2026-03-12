@@ -11,6 +11,8 @@
 #include "RectangleShrink.hpp"
 #include "IndexingKernel3D.hpp"
 
+class FrustrumIOHandler;
+
 #define NUM_FACES 6
 #define FACE_EDGES_NUMBER 4
 #define VERTICES_NUMBER 4
@@ -31,7 +33,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class FrustrumIOHandler;
+        friend class ::FrustrumIOHandler;
         Frustrum(const Mat44<double> &P)
             : P(P), beforeIndexing(nullptr), afterIndexing(nullptr)
         {

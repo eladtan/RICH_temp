@@ -4,6 +4,8 @@
 #include "Linear.hpp"
 #include "Move.hpp"
 
+class AffineIOHandler;
+
 namespace Kernelization3D
 {
     class Affine : public IndexingKernel3D
@@ -18,7 +20,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class AffineIOHandler;
+        friend class ::AffineIOHandler;
         Linear linear;
         Move move;
         const IndexingKernel3D *beforeIndexing;

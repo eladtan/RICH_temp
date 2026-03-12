@@ -7,6 +7,8 @@
 #include "Move.hpp"
 #include "IndexingKernel3D.hpp"
 
+class SphereIOHandler;
+
 namespace Kernelization3D
 {
     class Sphere : public IndexingKernel3D
@@ -19,7 +21,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class SphereIOHandler;
+        friend class ::SphereIOHandler;
         const IndexingKernel3D *beforeIndexing;
         Move moveIndexing;
     };

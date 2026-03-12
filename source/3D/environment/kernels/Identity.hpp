@@ -3,6 +3,8 @@
 
 #include "IndexingKernel3D.hpp"
 
+class IdentityIOHandler;
+
 namespace Kernelization3D
 {
     class Identity : public IndexingKernel3D
@@ -15,7 +17,7 @@ namespace Kernelization3D
         std::string getTypeName() const override;
 
     private:
-        friend class IdentityIOHandler;
+        friend class ::IdentityIOHandler;
         const IndexingKernel3D *beforeIndexing;
     };
 }

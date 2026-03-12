@@ -33,3 +33,5 @@ Vector3D SameRectangle::operator()(const Vector3D &vector) const
     Vector3D vec = (this->indexing == nullptr) ? vector : (*this->indexing)(vector);
     return this->scaleIndexing(this->moveIndexing(vec));
 }
+
+std::string SameRectangle::getTypeName() const { return "SameRectangle"; }

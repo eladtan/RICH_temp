@@ -112,3 +112,5 @@ void Kernelization3D::Parallelepiped::calculateTransformation(const Vector3D &u,
     }
     this->transformation = inverseTransformation.inverse();
 }
+
+std::string Kernelization3D::Parallelepiped::getTypeName() const { return "Parallelepiped"; }
