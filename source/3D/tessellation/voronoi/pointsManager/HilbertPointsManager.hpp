@@ -43,7 +43,7 @@ public:
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);
 
-    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM);
+    PointsExchangeResult initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange);
 
     std::shared_ptr<HilbertLoadBalancer> loadBalancer = nullptr;
     std::shared_ptr<HilbertCurveEnvironmentAgent> envAgent = nullptr;

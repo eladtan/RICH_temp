@@ -1,6 +1,7 @@
 #include "HilbertPointsManager.hpp"
 #include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
+#include "misc/universal_error.hpp"
 #include <memory>
 
 #ifdef RICH_MPI
@@ -73,7 +74,7 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
             eo.addEntry("indicesToWorkWith.size()", indicesToWorkWith.size());
             throw eo;
         }
-        exchangeResult = this->initialize(allPoints, allWeights, radiuses, previous_CM);
+        exchangeResult = this->initialize(allPoints, allWeights, radiuses, previous_CM, noExchange);
     }
 
     return exchangeResult;
@@ -94,7 +95,10 @@ void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> newLoad
     this->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(newLoadBalancer);
     this->loadBalancer->convertor = this->convertor;
     this->loadBalancer->indexing = this->indexing;
-    this->envAgent->setLoadBalancer(this->loadBalancer);
+    if(this->envAgent != nullptr)
+    {
+        this->envAgent->setLoadBalancer(this->loadBalancer);
+    }
 }
 
 std::shared_ptr<LoadBalancer> HilbertPointsManager::getLoadBalancer(void)
@@ -174,7 +178,7 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     // this->convertor = new HilbertOrdinaryConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
 }
 
-PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM)
+PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange)
 {
     // if(this->rank == 0)
     // {
@@ -188,20 +192,38 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
 
     this->initializeHilbertParameters(points); // also initializes the convertor
     
-    this->loadBalancer = std::make_shared<HilbertLoadBalancer>(this->convertor, this->indexing);
-
-    this->rebalance(points, weights); // determines initial borders
-
-    const std::vector<curve_index_t> &responsibilityRange = this->loadBalancer->boundaries;
+    if(not noExchange)
+    {
+        this->loadBalancer = std::make_shared<HilbertLoadBalancer>(this->convertor, this->indexing);
+        this->rebalance(points, weights); // determines initial borders
+    }
+    else if(this->loadBalancer != nullptr)
+    {
+        this->loadBalancer->convertor = this->convertor;
+        this->loadBalancer->indexing = this->indexing;
+    }
 
     // making exchange according to these borders
-    PointsExchangeResult exchangeResult = this->pointsExchange([this, &responsibilityRange](const PointData &_point)
+    PointsExchangeResult exchangeResult;
+    if(noExchange)
     {
-        curve_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point));
-        size_t index = std::distance(responsibilityRange.cbegin(), std::upper_bound(responsibilityRange.cbegin(), responsibilityRange.cend(), d));
-        return std::min<size_t>(index, (this->size - 1));
-    },
-    points, weights, allIndices, radiuses, previous_CM); // exchange
+        exchangeResult = this->pointsExchange([this](const PointData &_point)
+        {
+            return this->rank;
+        },
+        points, weights, allIndices, radiuses, previous_CM);
+    }
+    else
+    {
+        const std::vector<curve_index_t> &responsibilityRange = this->loadBalancer->boundaries;
+        exchangeResult = this->pointsExchange([this, &responsibilityRange](const PointData &_point)
+        {
+            curve_index_t d = this->convertor->xyz2d((*this->indexing)(_point.point));
+            size_t index = std::distance(responsibilityRange.cbegin(), std::upper_bound(responsibilityRange.cbegin(), responsibilityRange.cend(), d));
+            return std::min<size_t>(index, (this->size - 1));
+        },
+        points, weights, allIndices, radiuses, previous_CM);
+    }    
         
     // initialize environment agent
     if(this->customIndexingIsSet)
