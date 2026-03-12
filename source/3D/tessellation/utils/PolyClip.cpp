@@ -53,6 +53,10 @@ Vector3D computeCenter(const std::vector<Face> &faces)
 
 std::pair<double, Vector3D> computeCM(const std::vector<Face> &faces)
 {
+    if(faces.empty())
+    {
+        return {0, Vector3D(0, 0, 0)};
+    }
     Vector3D reference = computeCenter(faces);
     double volume = 0;
     Vector3D CM;
