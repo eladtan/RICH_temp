@@ -168,6 +168,10 @@ void Simulation::storeLoadBalance(const std::string &name, std::shared_ptr<LoadB
 
 void Simulation::setCurrentLoadBalance(const std::string &name)
 {
+    if(name.empty())
+    {
+        return;
+    }
     auto it = this->loads.find(name);
     if(it == this->loads.end())
         throw UniversalError("setCurrentLoadBalance: unknown load balance \"" + name + "\"");

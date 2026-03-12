@@ -5,6 +5,8 @@
 #include "newtonian/three_dimensional/simulation/steps/io/RadiationMCStepIOHandler.hpp"
 #include "newtonian/three_dimensional/simulation/steps/io/PhysicsStepIOHandlerFactory.hpp"
 #include <filesystem>
+#include <thread>
+#include <chrono>
 #include "misc/universal_error.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
@@ -20,6 +22,26 @@ namespace fs = std::filesystem;
 
 namespace
 {
+    HDF5Writer openWriter(const std::string &filename)
+    {
+        for(int attempt = 1; attempt <= 50; ++attempt)
+        {
+            try
+            {
+                return HDF5Writer(filename);
+            }
+            catch(const H5::FileIException &)
+            {
+                if(attempt == 50)
+                {
+                    throw UniversalError("Failed to create HDF5 file after 50 attempts: " + filename);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+        throw UniversalError("Unreachable: openWriter");
+    }
+
     void writeGeneralInfo(HDF5Writer &writer, const Simulation &sim)
     {
         const Tessellation3D &tess = sim.getTessellation();
@@ -121,7 +143,7 @@ void WriteSimulation(const Simulation &sim, const std::string &filename
 
         std::string myFile = (ranks_dir / std::to_string(rank)).string() + ".h5";
         {
-            HDF5Writer rankWriter(myFile);
+            HDF5Writer rankWriter = openWriter(myFile);
             writePrivateInfo(rankWriter, "", sim);
             writeTessellation(rankWriter, "/tess", sim);
             writePhysicsGroups(rankWriter, "", sim);
@@ -131,7 +153,7 @@ void WriteSimulation(const Simulation &sim, const std::string &filename
 
         if(rank == 0)
         {
-            HDF5Writer globalWriter(filename);
+            HDF5Writer globalWriter = openWriter(filename);
             writeGeneralInfo(globalWriter, sim);
             writeLoadBalancers(globalWriter, sim);
             for(int r = 0; r < ws; ++r)
@@ -144,7 +166,7 @@ void WriteSimulation(const Simulation &sim, const std::string &filename
     else
     #endif
     {
-        HDF5Writer writer(filename);
+        HDF5Writer writer = openWriter(filename);
         writeGeneralInfo(writer, sim);
         writePrivateInfo(writer, "", sim);
         writeTessellation(writer, "/tess", sim);
