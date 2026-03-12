@@ -446,7 +446,7 @@ namespace
 				T = T_.back();
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 				double const scattering = CalcScatteringCoefficientGroup(cell, group);
 				double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
@@ -454,7 +454,7 @@ namespace
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
@@ -502,12 +502,12 @@ namespace
 			double d_ratio = 1;
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			if(T < T_[0])
@@ -586,6 +586,8 @@ namespace
 						first_refine = true;
 				}
 				if ((r_dist < (1.5 * Rt) || r_dist > 3 * apocenter) && (not first_refine))
+					continue;
+				if (r_dist < (1.25 * Rt))
 					continue;
 
 				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 4.5)) ? MaxMass : MaxMass * 30;
@@ -701,7 +703,7 @@ namespace
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double w = tess.GetWidth(i);
 				double Vol = tess.GetVolume(i);
-				if(w < 0.6 * min_cell_size || (w < min_cell_size && r_org < 0.58 * Rt))
+				if(w < 0.6 * min_cell_size || (w < min_cell_size && r_org < 0.7 * Rt))
 				{
 					res.push_back(i);
 					merits.push_back(1.0 / Vol);
@@ -1136,7 +1138,8 @@ int main(void)
 	bool const doppler_on = true;
 	bool const mixed_frame_on = false;
 	bool const protection_on = true;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on);
+	bool const cooling_time_limiter_on = true;
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on, cooling_time_limiter_on);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -1298,7 +1301,7 @@ int main(void)
 			if(rank == 0)
 				std::cout << "Radiation step time: " << rad_end_time - rad_start_time << std::endl;
 #endif
-			new_dt = std::max(2.01e-4, new_dt);
+			new_dt = std::min(5e-3, std::max(2.01e-4, new_dt));
 			// Prevent small time step
 			if(new_dt < 0.5 * old_dt)
 			    new_dt = 0.5 * old_dt;
