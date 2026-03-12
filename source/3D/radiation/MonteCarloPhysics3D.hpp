@@ -25,10 +25,15 @@ public:
     
     virtual Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const = 0;
 
+    inline const std::vector<double> &getEradTimeAvg(void) const{return this->Erad_time_avg;}
+    
+    inline std::vector<double> &getEradTimeAvg(void){return this->Erad_time_avg;}
+
 protected:    
     std::vector<Particle> generateParticles(double fullDt);
 
     std::vector<ComputationalCell3D> &cells;
+    std::vector<double> Erad_time_avg;
     std::vector<Conserved3D> &conserved;
     std::shared_ptr<EquationOfState> eos;
     std::shared_ptr<RadiationOpacity> opacity;

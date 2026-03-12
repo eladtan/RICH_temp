@@ -64,7 +64,8 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
         throw eo;
     }
     particle.timeLeft -= dt;
-    double tmp = -dt * this->planckOpacities[cellIndex] * this->factorFleck[cellIndex] * units::clight;
+    double tmp2 = this->planckOpacities[cellIndex] * this->factorFleck[cellIndex] * units::clight;
+    double tmp = -dt * tmp2;
     double expFactor1 = std::expm1(tmp * dopplerShift);
     double expFactor2 = std::expm1(tmp);
     particle.location += particle.velocity * dt;
@@ -73,6 +74,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     {
         this->conserved[cellIndex].momentum += -expFactor1 * particle.weight * particle.velocity * units::inv_clight2;
     }
+    this->Erad_time_avg[cellIndex] += particle.weight * expFactor2 * (-1/tmp2);
     particle.weight *= 1 + expFactor1;
 
     if(particle.weight < particle.initialWeight * 1e-2)
@@ -119,6 +121,7 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
     {
+        this->Erad_time_avg[i] /= (fullDt * this->grid.GetVolume(i));
         ComputationalCell3D &cell = this->cells[i];
         cell.internal_energy = this->conserved[i].internal_energy / this->conserved[i].mass;
         if(cell.internal_energy < 0)
@@ -204,7 +207,8 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     size_t Ncells = this->grid.GetPointNo();
     this->factorFleck = std::vector<double>(Ncells);
     this->planckOpacities = std::vector<double>(Ncells);
-    
+    this->Erad_time_avg = std::vector<double>(Ncells, 0);
+
     for(size_t i = 0; i < Ncells; i++)
     {
         const ComputationalCell3D &cell = this->cells[i];

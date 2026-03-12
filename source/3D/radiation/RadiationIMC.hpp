@@ -20,9 +20,9 @@ public:
 
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
 
-    const std::vector<double> &getFactorFleck(void) const { return this->factorFleck; }
+    inline const std::vector<double> &getFactorFleck(void) const{return this->factorFleck;}
 
-    const std::vector<double> &getPlanckOpacities(void) const { return this->planckOpacities; }
+    inline const std::vector<double> &getPlanckOpacities(void) const {return this->planckOpacities;}
 
 private:    
     std::vector<MCParticle> generateParticles(double fullDt);
