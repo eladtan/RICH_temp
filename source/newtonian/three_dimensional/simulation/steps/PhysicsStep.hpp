@@ -29,9 +29,6 @@ public:
     virtual void afterLB(void)
     {}
 
-    virtual void uponLBChange(void)
-    {}
-
     // a physics is required to exchange points, as long it loggs the changes in an 'ExchangeChain'
     virtual ExchangeChain GetExchangeChain(void)
     {

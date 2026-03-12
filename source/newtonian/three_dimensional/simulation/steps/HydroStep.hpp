@@ -2,12 +2,14 @@
 #define HYDRO_STEP_HPP
 
 #include "PhysicsStep.hpp"
-#include "hdsim_3d.hpp"
-#include "CostCalculator3D.hpp"
+#include "newtonian/three_dimensional/hdsim_3d.hpp"
+#include "newtonian/three_dimensional/CostCalculator3D.hpp"
 
 class HydroStep : public PhysicsStep
 {
 public:
+    static constexpr const char *step_name = "hydro";
+
     enum StepType
     {
         TIMEADVANCE_2
@@ -19,7 +21,13 @@ public:
 
     double suggestTimeStep(void) const override;
 
-    std::string getName (void) const override;
+    std::string getName(void) const override { return step_name; }
+
+    inline const Tessellation3D &getTessellation(void) const{return sim.getTessellation();};
+    inline Tessellation3D &getTessellation(void){return sim.getTessellation();};
+    inline const std::vector<ComputationalCell3D> &getCells(void) const{return sim.getCells();};
+    
+    inline std::vector<ComputationalCell3D> &getCells(void){return sim.getCells();};
 
     #ifdef RICH_MPI
         bool allowRebalance(void) override;

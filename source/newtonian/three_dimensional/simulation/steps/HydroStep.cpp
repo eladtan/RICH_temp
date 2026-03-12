@@ -20,11 +20,6 @@ double HydroStep::suggestTimeStep(void) const
     return this->sim.suggestTimeStep();
 }
 
-std::string HydroStep::getName(void) const
-{
-    return "hydro";
-}
-
 #ifdef RICH_MPI
     bool HydroStep::allowRebalance(void)
     {

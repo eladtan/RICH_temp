@@ -1,4 +1,5 @@
 #include "Simulation.hpp"
+#include "misc/universal_error.hpp"
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_) : tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_)
 {
@@ -82,38 +83,20 @@ void Simulation::step(void)
             if(this->currentLB != LB)
             {
                 if(this->rank == 0) std::cout << "Changing load balance to " << LB << " (from " << this->currentLB << ")" << std::endl;
-                std::shared_ptr<LoadBalancer> load;
                 auto it = this->loads.find(LB);
                 if(it != this->loads.cend())
                 {
                     if(this->rank == 0) std::cout << "Load balance restored" << std::endl;
-                    // load found, restore
-                    load = it->second;
-                    std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
-                    this->tess.SetLoadBalancer(load);
-                    std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
-                    if(this->rank == 0)
-                    {
-                        std::cout << "Restoring lb time: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << std::endl;
-                    }
+                    this->setCurrentLoadBalance(LB);
                 }
                 else
                 {
                     if(this->rank == 0) std::cout << "Load balance generated for first time" << std::endl;
-                    // Tessellation3D already has a load balance, use it
                     std::vector<double> weights = physics->getLoadBalanceWeights();
                     std::vector<Vector3D> points = this->tess.getMeshPoints();
                     points.resize(this->tess.GetPointNo());
                     this->tess.BuildParallel(points, weights, true /* don't allow rebalance */);
-                }
-                this->buildDataTransfer();
-
-                std::vector<Vector3D> points = this->tess.getMeshPoints();
-                points.resize(this->tess.GetPointNo());
-
-                if(this->currentLoad != nullptr)
-                {
-                    physics->uponLBChange();
+                    this->buildDataTransfer();
                 }
             }
 
@@ -150,9 +133,8 @@ void Simulation::step(void)
             this->currentLB = LB;
         #endif // RICH_MPI
 
-        // if(std::numeric_limits<double>::max())
         double dt = this->tsc->GetTimeStep();
-        if(this->rank == 0) std::cout << "Running physics: " << name << "with dt " << dt << std::endl;
+        if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
 
         physics->step(dt);
 
@@ -171,9 +153,43 @@ void Simulation::step(void)
         }
     }
     
+    this->tracker.updateCycle();
+    this->tracker.updateTime(this->tsc->GetTimeStep());
 
     this->tsc->SetTimeStep(next_time_step);
     // if(this->rank == 0) std::cout << "Time step will be " << this->tsc.GetTimeStep() << std::endl;
-
-    this->tracker.updateCycle();
 }
+
+#ifdef RICH_MPI
+void Simulation::storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer> lb)
+{
+    this->loads[name] = lb;
+}
+
+void Simulation::setCurrentLoadBalance(const std::string &name)
+{
+    auto it = this->loads.find(name);
+    if(it == this->loads.end())
+        throw UniversalError("setCurrentLoadBalance: unknown load balance \"" + name + "\"");
+
+    if(this->tess.GetPointNo() > 0)
+    {
+        this->tess.SetLoadBalancer(it->second);
+        this->buildDataTransfer();
+    }
+    else
+    {
+        this->tess.PresetLoadBalancer(it->second);
+    }
+
+    std::shared_ptr<LoadBalancer> load = this->tess.GetLoadBalancer();
+    this->loads[name] = load;
+    this->currentLoad = load;
+    this->currentLB = name;
+}
+
+std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>> Simulation::GetLoads(void) const
+{
+    return std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>>(this->loads.begin(), this->loads.end());
+}
+#endif // RICH_MPI

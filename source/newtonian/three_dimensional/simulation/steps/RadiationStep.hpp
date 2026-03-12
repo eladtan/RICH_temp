@@ -5,8 +5,8 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "Radiation/RadiationDriver.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
-#include "ProgressTracker.hpp"
-#include "CostCalculator3D.hpp"
+#include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
+#include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "PhysicsStep.hpp"
 #ifdef RICH_MPI
     #include <mpi.h>

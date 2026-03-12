@@ -63,11 +63,6 @@ double RadiationMCStep::suggestTimeStep(void) const
     return suggested_dt;
 }
 
-std::string RadiationMCStep::getName(void) const
-{
-    return "radiation-mc";
-}
-
 void RadiationMCStep::step(double dt)
 {
     this->stepCounter++;
@@ -127,6 +122,7 @@ void RadiationMCStep::step(double dt)
         std::tie(max_diff_rank, max_diff) = MPI_Max_loc(max_diff, MPI_COMM_WORLD);
     #endif // RICH_MPI
 
+    MPI_Barrier(MPI_COMM_WORLD);
     if(rank == max_diff_rank)
     {
         size_t max_loc = max_temperature_loc; // TODO: (max_Erad_diff > max_temperature_diff) ? max_Erad_loc : max_temperature_loc;
@@ -140,6 +136,7 @@ void RadiationMCStep::step(double dt)
             << " location " << tess.GetMeshPoint(max_loc) << std::endl;
         std::cout << "Next MC time step is " << dt * std::min(1.25, 0.15 / max_diff) << std::endl;
     }
+    MPI_Barrier(MPI_COMM_WORLD);
 
     this->suggested_dt = dt * std::min(1.25, 0.15 / max_diff);
 }
@@ -164,9 +161,6 @@ void RadiationMCStep::step(double dt)
     {
         return (this->cost)? this->cost->CalculateCost(this->tess, this->cells) : std::vector<double>(this->tess.GetPointNo(), 1.0);
     }
-
-    void RadiationMCStep::uponLBChange(void)
-    {}
 
     void RadiationMCStep::beforeLB(void)
     {

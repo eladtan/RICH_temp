@@ -11,7 +11,7 @@
 #include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
-#include "PhysicsStep.hpp"
+#include "newtonian/three_dimensional/simulation/steps/PhysicsStep.hpp"
 #include "newtonian/three_dimensional/time_step_function3D.hpp"
 
 #ifdef RICH_MPI
@@ -32,6 +32,8 @@ public:
 
     inline Tessellation3D &getTessellation(void){return this->tess;};
 
+    inline const Tessellation3D &getTessellation(void) const{return this->tess;};
+
     inline std::vector<ComputationalCell3D> &getCells(void){return this->cells;};
 
     inline std::vector<Conserved3D> &getExtensives(void){return this->extensives;};
@@ -39,6 +41,10 @@ public:
     inline const std::vector<ComputationalCell3D> &getCells(void) const{return this->cells;};
 
     inline const std::vector<Conserved3D> &getExtensives(void) const{return this->extensives;};
+
+    inline const std::vector<std::shared_ptr<PhysicsStep>> &getPhysicsSteps(void) const{return this->physics;};
+    
+    inline std::vector<std::shared_ptr<PhysicsStep>> &getPhysicsSteps(void){return this->physics;};
 
     void SetTimeStep(double dt);
 
@@ -66,6 +72,14 @@ public:
          */
         template<typename T>
         void addMigrationBuffer(std::vector<T> &buffer);
+
+        void storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer> lb);
+
+        void setCurrentLoadBalance(const std::string &name);
+
+        std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>> GetLoads(void) const;
+
+        inline const std::string &getCurrentLB() const{return this->currentLB;};
     #endif // RICH_MPI
 
 private:

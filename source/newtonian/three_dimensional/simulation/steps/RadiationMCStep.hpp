@@ -16,6 +16,7 @@
 class RadiationMCStep : public PhysicsStep
 {
 public:
+    static constexpr const char *step_name = "radiation-mc";
     #ifdef RICH_MPI
     enum ManagerType
     {
@@ -44,7 +45,7 @@ public:
 
     double suggestTimeStep(void) const override;
 
-    std::string getName(void) const override;
+    std::string getName(void) const override { return step_name; }
 
     std::vector<Particle3D> &getParticles(void);
 
@@ -57,6 +58,10 @@ public:
     const std::vector<Particle3D> &getParticles(void) const;
 
     inline std::shared_ptr<MonteCarloManager3D> getManager(void) const{return this->manager;};
+
+    inline const std::vector<double> &getEradTimeAvg(void) const{return this->physics->getEradTimeAvg();};
+    
+    inline std::vector<double> &getEradTimeAvg(void){return this->physics->getEradTimeAvg();};
 
     #ifdef RICH_MPI
         inline void setCost(std::shared_ptr<CostCalculator3D> newCost){this->cost = newCost;};
@@ -71,7 +76,6 @@ public:
 
         std::vector<double> getLoadBalanceWeights(void) override;
 
-        void uponLBChange(void) override;
 
         void beforeLB(void) override;
 
