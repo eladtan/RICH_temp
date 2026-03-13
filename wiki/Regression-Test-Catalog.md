@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 14 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 20 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -495,6 +495,182 @@ Same as `gresho_euler`.
 
 ---
 
+## 15. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+
+**Tags:** `serial`
+
+### Physics
+
+Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D Voronoi mesh is initialized with fields that are linear in Cartesian coordinates (density, pressure, internal energy, velocity). The test compares face-interpolated values from Cartesian vs spherical `LinearGauss3D` modes against exact values in an annular region (1.1 < r < 1.9).
+
+**Source:** `regression_tests/cases/cartesian_gauss_linear/test.cpp`
+
+### Output
+
+`cart_gauss_linear_metrics.txt` -- scalar/velocity max relative errors for Cartesian and spherical modes, and number of faces checked.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Cartesian scalar max rel error | < 1e-6 | `CART_GAUSS_LINEAR_MAX_SCALAR_REL` |
+| Cartesian velocity max rel error | < 0.1 | `CART_GAUSS_LINEAR_MAX_VEL_REL` |
+| Cartesian scalar error < spherical scalar error | Required | -- |
+| faces_checked | > 0 | -- |
+
+---
+
+## 16. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+
+**Tags:** `serial`
+
+### Physics
+
+Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mode. Fields are linear in spherical coordinates (r, theta, phi). Spherical interpolation should outperform Cartesian for these fields.
+
+**Source:** `regression_tests/cases/spherical_gauss_linear/test.cpp`
+
+### Output
+
+`gauss_linear_metrics.txt` -- scalar/velocity max relative errors for spherical and Cartesian modes.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Spherical scalar max rel error | < 1e-8 | `GAUSS_LINEAR_MAX_SCALAR_REL` |
+| Spherical velocity max rel error | < 0.1 | `GAUSS_LINEAR_MAX_VEL_REL` |
+| Spherical scalar error < Cartesian scalar error | Required | -- |
+
+---
+
+## 17. spherical_collapse -- Spherical Collapse Symmetry
+
+**Tags:** `mpi`
+
+### Physics
+
+A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Tests that the collapse remains spherically symmetric by measuring density and radial-velocity scatter in radial bins. Uses Eulerian hydro with HLLC, `SphericalLinearGauss`, and rigid walls.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Mesh motion | Eulerian (fixed) |
+| Solver | HLLC, SphericalLinearGauss |
+| SLURM | 64 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/spherical_collapse/test.cpp`
+
+### Output
+
+`collapse_metrics.txt` -- fields: `max_density_scatter`, `max_velocity_scatter`, `pass`
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| max_density_scatter | < 0.1 | `COLLAPSE_MAX_DENSITY_SCATTER` |
+| max_velocity_scatter | < 0.1 | `COLLAPSE_MAX_VELOCITY_SCATTER` |
+| `pass` field | Must be `1` | -- |
+
+---
+
+## 18. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+
+**Tags:** `mpi`
+
+### Physics
+
+The Rayleigh-Taylor instability: a heavy fluid (rho=2) sits above a light fluid (rho=1) in a gravitational field with a perturbed interface. The instability growth rate is compared against reference values. Uses Lagrangian hydro with HLLC, LinearGauss3D, and RoundCells.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Mesh motion | Lagrangian + RoundCells |
+| Solver | HLLC, LinearGauss3D |
+| End time | t = 3 |
+| SLURM | 128 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/rayleigh_taylor_mpi/test.cpp`
+
+### Output
+
+- `rt_kinetic_energy.txt` -- time vs z-kinetic energy
+- `rt_density_slice.txt` -- x, z, rho for cells near y=0.5
+- `rt_final.h5` -- final HDF5 snapshot
+
+### Validation
+
+The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the growth rate against a reference value.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Growth rate relative error | <= 0.25 | `RT_MAX_GROWTH_RATE_REL_ERROR` |
+
+---
+
+## 19. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+
+**Tags:** `mpi`
+
+### Physics
+
+A suite of four grey radiation-diffusion tests with free-free opacity and Thomson scattering. Two colliding flows create a radiative shock. Tests are run at different resolutions (512 and 32 cells) with and without flux limiting, and the results are compared across configurations.
+
+### Variants
+
+| Case | Cells | Flux Limiter |
+|------|-------|-------------|
+| `eulerian_diffusion_freefree_1d` | 512 | No |
+| `eulerian_diffusion_freefree_1d_512_limited` | 512 | Yes |
+| `eulerian_diffusion_freefree_1d_32` | 32 | No |
+| `eulerian_diffusion_freefree_1d_32_limited` | 32 | Yes |
+
+**Source:** `regression_tests/cases/eulerian_diffusion_freefree_1d/test.cpp`
+
+### Output
+
+Per case: `temperature_profile.txt` (x, rho, T, Trad, vx), `shock_position.txt`
+
+### Validation
+
+Checks that all four temperature profiles and comparison plots are generated without fatal errors.
+
+---
+
+## 20. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+
+**Tags:** `mpi`
+
+### Physics
+
+Same setup as `eulerian_diffusion_freefree_suite` but with 32-group multigroup radiation diffusion instead of grey. Validates that the multigroup solver produces consistent results across resolutions and flux-limiter settings.
+
+### Configuration
+
+Same as grey suite plus:
+
+| Parameter | Value |
+|-----------|-------|
+| Energy groups | 32 |
+| Build args | `--energy_groups_num=32` |
+
+**Source:** `regression_tests/cases/eulerian_diffusion_freefree_multigroup_1d/test.cpp`
+
+### Output
+
+Per case: `temperature_profile.txt` (x, rho, T, Trad, vx), `shock_position.txt`
+
+### Validation
+
+Checks that all four temperature profiles and comparison plots are generated without fatal errors.
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -513,3 +689,9 @@ Same as `gresho_euler`.
 | `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `cartesian_gauss_linear` | serial | Cartesian interpolation | Exact face values | scalar error < 1e-6 |
+| `spherical_gauss_linear` | serial | Spherical interpolation | Exact face values | scalar error < 1e-8 |
+| `spherical_collapse` | mpi | Spherical symmetry | Scatter in radial bins | scatter < 0.1 |
+| `rayleigh_taylor_mpi` | mpi | RT instability | Growth rate | rel error <= 0.25 |
+| `eulerian_diffusion_freefree_suite` | mpi | Grey free-free diffusion | Profile comparison | All outputs valid |
+| `eulerian_diffusion_freefree_multigroup_suite` | mpi | MG free-free diffusion | Profile comparison | All outputs valid |

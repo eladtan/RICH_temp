@@ -18,7 +18,7 @@ RICH constructs the Voronoi tessellation via the dual Delaunay triangulation:
 The main tessellation class:
 
 ```cpp
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 
 Vector3D ll(-1, -1, -1), ur(1, 1, 1);  // domain box
 Voronoi3D tess(ll, ur);
@@ -42,15 +42,15 @@ All tessellation operations go through the abstract `Tessellation3D` interface:
 | `GetCellCM(i)` | Center of mass of cell i |
 | `GetFaceNeighbors(face)` | Pair of cells sharing a face |
 | `GetTotalFacesNumber()` | Number of faces |
-| `GetFaceArea(face)` | Area of a face |
+| `GetArea(face)` | Area of a face |
 
 ## Delaunay Triangulation
 
 The 3D Delaunay triangulation (`Delaunay3D`) underlies the Voronoi construction. It uses exact geometric predicates (`Predicates3D`) for robustness.
 
 ```
-source/3D/tesselation/delaunay/Delaunay3D.hpp
-source/3D/tesselation/utils/Predicates3D.hpp
+source/3D/tessellation/delaunay/Delaunay3D.hpp
+source/3D/tessellation/utils/Predicates3D.hpp
 ```
 
 ## Point Motion Strategies
@@ -102,8 +102,8 @@ RICH provides several point generation functions:
 | Function | Header | Description |
 |----------|--------|-------------|
 | `RandRectangular(N, ll, ur)` | `mesh_generator3D.hpp` | Random points in a box |
-| `RandSphereR(center, Rmin, Rmax, N)` | `mesh_generator3D.hpp` | Random in spherical shell |
-| `RandSphereR2(center, Rmin, Rmax, N)` | `mesh_generator3D.hpp` | r^2-biased spherical distribution |
+| `RandSphereR(N, ll, ur, Rmin, Rmax, center)` | `mesh_generator3D.hpp` | Random in spherical shell |
+| `RandSphereR2(N, ll, ur, Rmin, Rmax, center)` | `mesh_generator3D.hpp` | r^2-biased spherical distribution |
 | `linspace(xmin, xmax, N)` | `mesh_generator.hpp` | Uniform 1D grid |
 
 ### Mesh Smoothing: RoundGrid3D
@@ -154,7 +154,7 @@ The default approach. Points are ordered along a space-filling Hilbert curve and
 
 ```
 source/3D/hilbert/
-source/3D/tesselation/loadBalancing/HilbertLoadBalancer.hpp
+source/3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp
 ```
 
 ### ParMETIS
@@ -162,7 +162,7 @@ source/3D/tesselation/loadBalancing/HilbertLoadBalancer.hpp
 Graph-based partitioning using the ParMETIS library (optional):
 
 ```
-source/3D/tesselation/loadBalancing/ParMetisLoadBalancer.hpp
+source/3D/tessellation/loadBalancing/ParMetisLoadBalancer.hpp
 ```
 
 ParMETIS can produce better partitions for irregular geometries but adds a library dependency.

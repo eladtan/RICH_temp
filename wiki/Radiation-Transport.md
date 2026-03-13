@@ -99,20 +99,6 @@ The number of energy groups is set at compile time:
 
 The radiation energy per group is stored in `ComputationalCell3D::Eg[i]` for each cell.
 
-### Opacity Data
-
-Multigroup opacities are loaded from data files under `data/STA/MG/`:
-
-| File | Content |
-|------|---------|
-| `frequency_edges.txt` | Group boundary frequencies |
-| `sigma_rossland_*.txt` | Rosseland mean opacity per group |
-| `sigma_absorption_rossland_*.txt` | Absorption Rosseland opacity per group |
-| `sigma_scattering_planck_*.txt` | Scattering Planck opacity per group |
-| `sigma_planck.txt` | Planck mean opacity |
-| `rho.txt` | Density grid |
-| `T.txt` | Temperature grid |
-
 ### Grey Opacity Data
 
 For grey diffusion, opacity tables are in `data/STA/`:
@@ -216,7 +202,7 @@ Radiation is coupled to hydrodynamics through source terms. The radiation pressu
 ### DiffusionForce
 
 ```cpp
-#include "source/newtonian/three_dimensional/DiffusionForce.hpp"
+#include "source/Radiation/DiffusionForce.hpp"
 
 DiffusionForce rad_force(/* ... */);
 ```

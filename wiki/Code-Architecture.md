@@ -126,8 +126,10 @@ Each cell stores primitive (physically intuitive) variables:
 | `ID` | `size_t` | Unique cell identifier |
 | `dt` | `double` | Per-cell time step |
 | `cs` | `double` | Sound speed |
-| `Erad` | `double` | Total radiation energy density |
-| `Eg` | `small_vector<double, ENERGY_GROUPS_NUM>` | Per-group radiation energy |
+| `Erad` | `double` | Radiation energy per unit mass |
+| `Eg` | `small_vector<double, ENERGY_GROUPS_NUM>` | Per-group radiation energy per unit mass |
+| `Erad_dt` | `double` | Time-derivative of radiation energy per unit mass |
+| `Erad_dt_dt` | `double` | Second time-derivative of radiation energy per unit mass |
 | `tracers` | `array<double, MAX_TRACERS>` | Passive scalar tracers |
 | `stickers` | `array<bool, MAX_STICKERS>` | Boolean cell labels |
 
@@ -153,7 +155,7 @@ The relationship is: `Conserved = Primitive * Volume`. The simulation evolves co
 
 ### Slope3D (Spatial Gradients)
 
-**Source:** `source/newtonian/three_dimensional/SpatialReconstruction3D.hpp`
+**Source:** `source/newtonian/three_dimensional/computational_cell.hpp`
 
 ```cpp
 class Slope3D {
@@ -240,7 +242,7 @@ Each interface is described in detail below.
 
 ### 1. Tessellation3D -- The Mesh
 
-**Source:** `source/3D/tesselation/Tessellation3D.hpp`
+**Source:** `source/3D/tessellation/Tessellation3D.hpp`
 
 **Purpose:** Represents the computational mesh. Provides geometric queries (cell volumes, face areas, neighbors, etc.) and handles mesh construction and reconstruction after point motion.
 
@@ -901,7 +903,7 @@ amr(sim);
 source/
 ├── 3D/                           # 3D geometry, mesh, and output
 │   ├── elementary/               # Vector3D, Face, Tetrahedron
-│   ├── tesselation/              # Voronoi, Delaunay, load balancing
+│   ├── tessellation/             # Voronoi, Delaunay, load balancing
 │   │   ├── voronoi/              # Voronoi3D
 │   │   ├── delaunay/             # Delaunay3D
 │   │   ├── loadBalancing/        # Hilbert curve, ParMETIS

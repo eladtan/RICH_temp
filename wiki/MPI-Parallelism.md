@@ -46,8 +46,8 @@ Points are ordered along a 3D Hilbert space-filling curve, which maps the 3D dom
 
 ```
 source/3D/hilbert/HilbertOrder.hpp
-source/3D/tesselation/loadBalancing/HilbertLoadBalancer.hpp
-source/3D/tesselation/voronoi/HilbertPointsManager.hpp
+source/3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp
+source/3D/tessellation/voronoi/HilbertPointsManager.hpp
 ```
 
 Advantages:
@@ -60,7 +60,7 @@ Advantages:
 Graph-based partitioning using the ParMETIS library. Constructs a graph from the cell adjacency structure and partitions it to minimize communication while balancing load.
 
 ```
-source/3D/tesselation/loadBalancing/ParMetisLoadBalancer.hpp
+source/3D/tessellation/loadBalancing/ParMetisLoadBalancer.hpp
 ```
 
 Advantages:
