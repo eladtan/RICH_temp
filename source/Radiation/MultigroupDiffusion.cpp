@@ -1045,7 +1045,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
     }
 #endif
 
-    if (good_end = 0) {
+    if (good_end == 0) {
         throw UniversalError("Negative energy in PostCG");
     }
 
