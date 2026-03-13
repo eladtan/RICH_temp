@@ -16,7 +16,6 @@ Usage:
 """
 
 import argparse
-import math
 import os
 import re
 import shutil
@@ -106,7 +105,7 @@ TESTS = [
         "description": (
             "The Sedov--Taylor blast wave \\cite{sedov1959,taylor1950} is a "
             "point-explosion problem with a self-similar analytical solution "
-            "obtained by integrating an ODE \\cite{kamm2000}. It is a standard "
+            "obtained by integrating an ODE \\cite{kamm2007}. It is a standard "
             "verification problem for multi-dimensional Lagrangian and ALE "
             "hydrodynamics.\n\n"
             "\\textbf{Code and physics aspects verified:}\n"
@@ -949,7 +948,7 @@ TESTS = [
         "id": "rayleigh_taylor_mpi",
         "title": "Rayleigh--Taylor Instability (3D, MPI)",
         "description": (
-            "The Rayleigh--Taylor instability \\cite{rayleigh1883,taylor1950} "
+            "The Rayleigh--Taylor instability \\cite{rayleigh1883,taylor1950rt} "
             "develops when a heavy fluid is supported against gravity above a "
             "lighter fluid. A small sinusoidal perturbation at the interface "
             "grows exponentially in the linear regime with a growth rate "
@@ -1002,45 +1001,226 @@ TESTS = [
         ),
     },
     {
-        "id": "eulerian_diffusion_freefree_1d",
-        "title": "1D Eulerian Diffusion (Gray Free--Free)",
+        "id": "eulerian_diffusion_freefree_suite",
+        "title": "1D Eulerian Diffusion Suite (Gray Free--Free, Cooling Limiter)",
         "description": (
-            "A 1D Eulerian radiation-hydrodynamics test with gray diffusion and "
-            "free--free absorption opacity (no scattering). A left inflow drives "
-            "a shock into initially static material and the run stops when the "
-            "shock reaches $x=0.8\\times10^{13}\\,\\mathrm{cm}$.\n\n"
+            "A four-case resolution and cooling-limiter study for 1D Eulerian "
+            "radiation-hydrodynamics with gray flux-limited diffusion, free--free "
+            "(bremsstrahlung) absorption opacity, and Thomson scattering. "
+            "Two counter-propagating streams ($v_x = \\pm 10^8\\,\\mathrm{cm\\,s^{-1}}$) "
+            "collide at the domain midpoint, driving a radiative shock. "
+            "The suite runs the same physics at two resolutions "
+            "(512 and 32~cells) and with the cooling-time opacity limiter toggled "
+            "on and off, producing a four-way comparison.\n\n"
+            "\\textbf{The cooling-time opacity limiter.}\\enspace "
+            "When the post-shock cooling length is under-resolved, the "
+            "finite-volume scheme cannot capture the thin radiative relaxation "
+            "layer behind the shock. Because energy is radiated away over fewer "
+            "cells than the physics requires, the post-shock temperature in an "
+            "under-resolved run is artificially elevated: the gas cools too "
+            "fast relative to the compression time, violating the "
+            "resolution-independent structure of the shock.\n\n"
+            "The limiter addresses this by comparing two time scales in every "
+            "cell that is undergoing compression:\n"
+            "\\begin{enumerate}\n"
+            "  \\item \\textbf{Hydrodynamic heating time:} "
+            "$t_{\\mathrm{hydro}} = 1/\\max(-\\nabla\\!\\cdot\\!\\mathbf{v},\\,\\epsilon)$, "
+            "measuring how fast compression is depositing energy.\n"
+            "  \\item \\textbf{Radiative cooling time:} "
+            "$t_{\\mathrm{cool}} = \\rho\\,e / (P_{\\mathrm{Planck}} + P_{\\mathrm{Compton}})$, "
+            "where $P_{\\mathrm{Planck}} = c\\,\\sigma_P\\,(aT^4 - E_r)$ and "
+            "$P_{\\mathrm{Compton}}$ is the Compton exchange rate (if Compton "
+            "scattering is enabled).\n"
+            "\\end{enumerate}\n"
+            "The limiter activates only in cells where the compression speed "
+            "exceeds a fraction of the bulk velocity "
+            "($(-\\nabla\\!\\cdot\\!\\mathbf{v})\\,\\Delta x > 0.25\\,|\\mathbf{v}|$). "
+            "If $t_{\\mathrm{cool}} < 2\\,t_{\\mathrm{hydro}}$, both the Planck "
+            "absorption and scattering opacities are scaled down by a common "
+            "factor so that the effective cooling time equals "
+            "$2\\,t_{\\mathrm{hydro}}$. This preserves the relative weighting "
+            "of absorption and scattering while preventing the cooling rate "
+            "from exceeding what the grid can resolve.\n\n"
             "\\textbf{Code and physics aspects verified:}\n"
             "\\begin{itemize}\n"
             "  \\item \\textbf{Eulerian radiation-hydrodynamics coupling:} "
-            "tests coupled hydro + gray diffusion in a shock-forming inflow setup.\n"
-            "  \\item \\textbf{Free--free opacity path:} validates gray free--free "
-            "absorption evaluation without scattering.\n"
-            "  \\item \\textbf{Open radiation boundary condition:} all boundaries "
-            "use open diffusion boundaries.\n"
-            "\\end{itemize}"
+            "Tests the full hydro + gray diffusion pipeline in a "
+            "shock-forming setup with counter-propagating inflows.\n"
+            "  \\item \\textbf{Free--free opacity + Thomson scattering:} "
+            "Validates the gray Kramers free--free absorption and constant "
+            "Thomson scattering opacity paths.\n"
+            "  \\item \\textbf{Resolution convergence:} Comparing 512 vs.\\ "
+            "32~cells reveals the sensitivity of the post-shock structure to "
+            "resolution. The high-resolution run serves as a reference.\n"
+            "  \\item \\textbf{Cooling-limiter effectiveness:} With the limiter "
+            "enabled, the 32-cell $T_{\\mathrm{gas}}$ peak should be closer to "
+            "the 512-cell result, demonstrating that the limiter successfully "
+            "prevents resolution-dependent over-cooling.\n"
+            "  \\item \\textbf{Mixed radiation boundary conditions:} The "
+            "radiation boundary is open on the $x$-faces and closed on $y/z$, "
+            "testing a directional boundary implementation.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Under-resolved cooling layers are one of the "
+            "most common failure modes in production radiation-hydrodynamics "
+            "simulations. This suite directly tests the optional limiter that "
+            "mitigates this problem and quantifies its effect across an "
+            "order-of-magnitude resolution difference."
         ),
         "initial_conditions": (
-            r"Domain $x \in [0,\,10^{13}]\,\mathrm{cm}$ with 1024 uniform cells. "
-            r"Uniform gas state: $\rho = 10^{-14}\,\mathrm{g\,cm^{-3}}$, "
-            r"$T = 10^4\,\mathrm{K}$. "
-            r"Velocity is $v_x=10^8\,\mathrm{cm\,s^{-1}}$ for the left third of "
-            r"the domain and $v_x=0$ elsewhere."
+            r"Domain $x \in [0,\,2\times10^{12}]\,\mathrm{cm}$ with uniform cells. "
+            r"The gas is initialised with $\rho = 2\times10^{-13}\,\mathrm{g\,cm^{-3}}$, "
+            r"$T = 2\times10^{5}\,\mathrm{K}$. "
+            r"The left half has $v_x = +10^8\,\mathrm{cm\,s^{-1}}$ and the right half "
+            r"$v_x = -10^8\,\mathrm{cm\,s^{-1}}$, forming a symmetric collision. "
+            r"The adiabatic index is $\gamma = 5/3$." "\n\n"
+            r"The four runs are:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item 512 cells, limiter \textbf{off} (reference)." "\n"
+            r"  \item 512 cells, limiter \textbf{on}." "\n"
+            r"  \item 32 cells, limiter \textbf{off}." "\n"
+            r"  \item 32 cells, limiter \textbf{on}." "\n"
+            r"\end{itemize}" "\n"
+            r"The run terminates when the shock front (maximum $x$ with "
+            r"$\rho > 2\rho_0$) reaches $0.75\,L$, or when $t = 9\times10^4\,\mathrm{s}$."
         ),
         "boundary_conditions": (
-            "Hydrodynamics uses left/right inflow-style ghost states; "
-            "radiation uses open boundaries on all sides."
+            "Hydrodynamics: left/right inflow ghost states matching the "
+            "respective initial half-domain states; rigid walls on $y/z$ faces. "
+            "Radiation: open (streaming) on the two $x$-boundary faces, closed "
+            "on $y/z$."
         ),
         "mesh_movement": "Eulerian (fixed mesh).",
-        "execution": "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
-        "pass_criteria": (
-            r"Run completes without fatal markers, writes "
-            r"\texttt{temperature\_profile.txt}, and generates "
-            r"\texttt{temperature\_vs\_x.png} from the checker."
+        "execution": (
+            "MPI, 16~CPUs for 512-cell runs, 4~CPUs for 32-cell runs, "
+            "submitted via SLURM (partition \\texttt{bigrun}, exclusive)."
         ),
-        "plots": ["eulerian_diffusion_freefree_1d.png"],
+        "pass_criteria": (
+            r"Each of the four sub-runs must complete without fatal errors and "
+            r"produce a valid \texttt{temperature\_profile.txt} with at least two "
+            r"data points. The suite then generates four-way comparison plots "
+            r"(gas temperature, radiation temperature, density, and velocity "
+            r"vs.\ $x$) which are inspected visually. Quantitative acceptance:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item All profile files contain finite, positive temperatures." "\n"
+            r"  \item The 32-cell limited peak $T_{\mathrm{gas}}$ is closer to "
+            r"the 512-cell reference than the 32-cell unlimited peak." "\n"
+            r"\end{itemize}"
+        ),
+        "plot_dir": "eulerian_diffusion_freefree_compare",
+        "plots": [
+            "temperature_vs_x_compare_512_512_limited_32_32_limited.png",
+            "trad_vs_x_compare_512_512_limited_32_32_limited.png",
+            "density_vs_x_compare_512_512_limited_32_32_limited.png",
+            "velocity_vs_x_compare_512_512_limited_32_32_limited.png",
+        ],
         "plot_caption": (
-            "1D Eulerian free--free diffusion regression: gas temperature profile "
-            "$T_{\\mathrm{gas}}(x)$ at the end of the run."
+            "Gray free--free diffusion suite: four-way comparison of 512-cell "
+            "(solid), 512-limited (dash-dot), 32-cell (dashed), and 32-limited "
+            "(dotted) runs. Top row: gas temperature (left) and radiation "
+            "temperature (right). Bottom row: density (left) and $x$-velocity "
+            "(right). The cooling limiter brings the low-resolution peak "
+            "$T_{\\mathrm{gas}}$ closer to the high-resolution reference."
+        ),
+    },
+    {
+        "id": "eulerian_diffusion_freefree_multigroup_suite",
+        "title": "1D Eulerian Diffusion Suite (Multigroup Free--Free, Cooling Limiter)",
+        "description": (
+            "The multigroup counterpart of the gray free--free suite. The same "
+            "symmetric collision problem is run with 32 logarithmically spaced "
+            "energy groups, frequency-dependent free--free absorption, and "
+            "Compton scattering. The same four-variant pattern is used "
+            "(512/32~cells $\\times$ limiter on/off) and a four-way comparison "
+            "of profiles is produced.\n\n"
+            "\\textbf{The multigroup cooling limiter.}\\enspace "
+            "In multigroup mode the cooling-time estimate sums over all energy "
+            "groups: the Planck exchange is accumulated group-by-group as "
+            "$c\\,\\sigma_{P,g}\\,(B_g(T) - E_g)$ and the Compton exchange is "
+            "computed from the full Compton transfer matrix $S_{g,g'}$ rather "
+            "than a gray approximation. When the net cooling time is shorter "
+            "than $2\\,t_{\\mathrm{hydro}}$, all group-level absorption "
+            "opacities are scaled by a common factor and the Compton coupling "
+            "matrix entries ($S$ and $\\mathrm{d}S/\\mathrm{d}U_m$) are "
+            "multiplied by a stored per-cell scale factor, ensuring that the "
+            "full multigroup exchange is consistently limited.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Multigroup diffusion with frequency-dependent "
+            "opacities:} Each of the 32 energy groups evolves with its own "
+            "absorption coefficient, testing the group-by-group solver.\n"
+            "  \\item \\textbf{Compton scattering matrix:} The full "
+            "Kompaneets-based Compton transfer matrix is exercised in a "
+            "dynamic (non-static) setting with strong temperature gradients.\n"
+            "  \\item \\textbf{Multigroup cooling limiter:} Verifies that "
+            "the per-cell Compton-limiter scale factor is correctly stored, "
+            "applied to the $S$ and $\\mathrm{d}S/\\mathrm{d}U_m$ matrices, "
+            "and produces the same qualitative resolution-convergence "
+            "improvement seen in the gray case.\n"
+            "  \\item \\textbf{Consistency with gray results:} The spatial "
+            "profiles should be qualitatively similar to the gray suite, "
+            "with frequency-dependent effects introducing only modest "
+            "quantitative differences.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Production simulations typically use "
+            "multigroup transport and Compton scattering. This suite ensures "
+            "that the cooling limiter---originally developed for the gray "
+            "solver---extends correctly to the frequency-dependent case "
+            "including the Compton coupling terms."
+        ),
+        "initial_conditions": (
+            r"Identical domain and gas state to the gray suite "
+            r"($L = 2\times10^{12}\,\mathrm{cm}$, "
+            r"$\rho = 2\times10^{-13}\,\mathrm{g\,cm^{-3}}$, "
+            r"$T = 2\times10^{5}\,\mathrm{K}$, symmetric $\pm 10^8\,\mathrm{cm\,s^{-1}}$). "
+            r"Radiation transport uses 32 logarithmically spaced energy groups "
+            r"with free--free opacity (frequency-dependent Kramers formula) "
+            r"and Compton scattering." "\n\n"
+            r"The four runs are:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item 512 cells, limiter \textbf{off} (reference)." "\n"
+            r"  \item 512 cells, limiter \textbf{on}." "\n"
+            r"  \item 32 cells, limiter \textbf{off}." "\n"
+            r"  \item 32 cells, limiter \textbf{on}." "\n"
+            r"\end{itemize}"
+        ),
+        "boundary_conditions": (
+            "Same as the gray suite: inflow on $x$, rigid on $y/z$; "
+            "radiation open on $x$, closed on $y/z$."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": (
+            "MPI, 16~CPUs for 512-cell runs, 4~CPUs for 32-cell runs, "
+            "submitted via SLURM (partition \\texttt{bigrun}, exclusive). "
+            "Built with \\texttt{--energy\\_groups\\_num=32}."
+        ),
+        "pass_criteria": (
+            r"Same structural criteria as the gray suite: all four sub-runs "
+            r"must complete and produce valid profiles. Additionally:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item All profile files contain finite, positive temperatures." "\n"
+            r"  \item The 32-cell limited peak $T_{\mathrm{gas}}$ is closer to "
+            r"the 512-cell reference than the 32-cell unlimited peak." "\n"
+            r"\end{itemize}"
+        ),
+        "plot_dir": "eulerian_diffusion_freefree_multigroup_compare",
+        "plots": [
+            "temperature_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+            "trad_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+            "density_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+            "velocity_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+        ],
+        "plot_caption": (
+            "Multigroup free--free diffusion suite (32~energy groups): "
+            "four-way comparison analogous to the gray suite. "
+            "Top row: gas temperature (left) and radiation temperature (right). "
+            "Bottom row: density (left) and $x$-velocity (right). "
+            "The cooling limiter reduces the low-resolution temperature excess "
+            "as in the gray case, while the multigroup Compton coupling "
+            "introduces modest quantitative differences."
         ),
     },
 ]
@@ -1312,21 +1492,48 @@ def _read_rt_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
-def _read_freefree_1d_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_equals(cases_dir / "eulerian_diffusion_freefree_1d" / "freefree_check.stdout.log")
-    if not kv:
-        return []
-    rows = []
-    points = kv.get("FREEFREE_PROFILE_POINTS")
-    tmin = kv.get("FREEFREE_TGAS_MIN")
-    tmax = kv.get("FREEFREE_TGAS_MAX")
-    if points is not None:
-        rows.append(("Profile points", points, ">= 2", int(float(points)) >= 2))
-    if tmin is not None:
-        rows.append(("Minimum $T_{\\mathrm{gas}}$", tmin, "finite", True))
-    if tmax is not None:
-        rows.append(("Maximum $T_{\\mathrm{gas}}$", tmax, "finite", True))
+def _read_freefree_suite_metrics(cases_dir: Path,
+                                  case_prefix: str) -> list[MetricRow]:
+    """Read metrics for a 4-run free-free suite (gray or multigroup)."""
+    rows: list[MetricRow] = []
+    variants = [
+        ("512", f"{case_prefix}_1d"),
+        ("512 limited", f"{case_prefix}_1d_512_limited"),
+        ("32", f"{case_prefix}_1d_32"),
+        ("32 limited", f"{case_prefix}_1d_32_limited"),
+    ]
+    for label, case_name in variants:
+        profile = cases_dir / case_name / "temperature_profile.txt"
+        if profile.is_file():
+            try:
+                import numpy as np
+                raw = np.loadtxt(str(profile))
+                if raw.ndim == 1:
+                    raw = np.expand_dims(raw, axis=0)
+                n_points = raw.shape[0]
+                tgas_col = raw[:, 2] if raw.shape[1] >= 3 else np.array([])
+                tgas_max = float(np.max(tgas_col)) if len(tgas_col) > 0 else 0.0
+                kev = 8.617333262145e-8
+                rows.append((f"{label}: points", str(n_points), "$\\ge 2$",
+                             n_points >= 2))
+                rows.append((f"{label}: peak $T_{{\\mathrm{{gas}}}}$",
+                             f"{tgas_max * kev:.4f} keV", "finite",
+                             np.isfinite(tgas_max) and tgas_max > 0))
+            except Exception:
+                rows.append((f"{label}", "error reading profile", "---", False))
+        else:
+            rows.append((f"{label}", "profile not found", "---", False))
     return rows
+
+
+def _read_freefree_gray_suite_metrics(cases_dir: Path) -> list[MetricRow]:
+    return _read_freefree_suite_metrics(
+        cases_dir, "eulerian_diffusion_freefree")
+
+
+def _read_freefree_mg_suite_metrics(cases_dir: Path) -> list[MetricRow]:
+    return _read_freefree_suite_metrics(
+        cases_dir, "eulerian_diffusion_freefree_multigroup")
 
 
 METRIC_READERS: dict[str, object] = {
@@ -1347,7 +1554,8 @@ METRIC_READERS: dict[str, object] = {
     "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
     "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
     "rayleigh_taylor_mpi": lambda cd: _read_rt_metrics(cd),
-    "eulerian_diffusion_freefree_1d": lambda cd: _read_freefree_1d_metrics(cd),
+    "eulerian_diffusion_freefree_suite": lambda cd: _read_freefree_gray_suite_metrics(cd),
+    "eulerian_diffusion_freefree_multigroup_suite": lambda cd: _read_freefree_mg_suite_metrics(cd),
 }
 
 
@@ -1425,7 +1633,6 @@ PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 """
 
 BIBLIOGRAPHY = r"""
-\newpage
 \begin{thebibliography}{99}
 
 % --- V&V methodology ---
@@ -1494,7 +1701,7 @@ G.~I. Taylor,
 Discussion,''
 \textit{Proc. R. Soc. London, Ser.~A}, 201(1065):159--174, 1950.
 
-\bibitem{kamm2000}
+\bibitem{kamm2007}
 J.~R. Kamm and F.~X. Timmes,
 ``On Efficient Generation of Numerically Robust Sedov Solutions,''
 Los Alamos Report LA-UR-07-2849, 2007.
@@ -1563,7 +1770,7 @@ Lord Rayleigh,
 Fluid of Variable Density,''
 \textit{Proc.~London Math.~Soc.}, s1-14(1):170--177, 1883.
 
-\bibitem{taylor1950}
+\bibitem{taylor1950rt}
 G.~I.~Taylor,
 ``The Instability of Liquid Surfaces when Accelerated in a Direction
 Perpendicular to their Planes.~I,''
@@ -1582,7 +1789,8 @@ POSTAMBLE = r"""
 """
 
 
-def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path) -> str:
+def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
+                      out_dir: Optional[Path] = None) -> str:
     """Return the LaTeX source for one test section."""
     lines = []
     tid = test["id"]
@@ -1638,18 +1846,35 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path) -> str:
             lines.append("")
 
     # Plots -- prefer PDF (vector), fall back to PNG (raster)
+    # Search in plots_dir first, then in an optional per-test plot_dir under cases_dir.
     plot_files = test.get("plots", [])
     caption = test.get("plot_caption", "")
+    extra_plot_dir = test.get("plot_dir")
     if plot_files:
         available = []
+        search_dirs = [plots_dir]
+        if extra_plot_dir:
+            search_dirs.append(cases_dir / extra_plot_dir)
         for pf in plot_files:
             stem = Path(pf).stem
-            pdf_path = plots_dir / f"{stem}.pdf"
-            png_path = plots_dir / pf
-            if pdf_path.is_file():
-                available.append(pdf_path.resolve())
-            elif png_path.is_file():
-                available.append(png_path.resolve())
+            found = False
+            for sd in search_dirs:
+                pdf_path = sd / f"{stem}.pdf"
+                png_path = sd / pf
+                if pdf_path.is_file():
+                    if out_dir is not None:
+                        available.append(Path(os.path.relpath(pdf_path.resolve(), out_dir.resolve())))
+                    else:
+                        available.append(pdf_path.resolve())
+                    found = True
+                    break
+                elif png_path.is_file():
+                    if out_dir is not None:
+                        available.append(Path(os.path.relpath(png_path.resolve(), out_dir.resolve())))
+                    else:
+                        available.append(png_path.resolve())
+                    found = True
+                    break
         if available:
             lines.append("\\subsection*{Plots}")
             lines.append("\\begin{figure}[htbp]")
@@ -1727,7 +1952,17 @@ def _summary_table() -> str:
         ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
         ("Mach 2 Gray", "MPI", "8", "Eulerian", "Yes"),
         ("Mach 2 Multigroup", "MPI", "8", "Eulerian", "Yes"),
-        ("1D Free--Free Diffusion", "MPI", "8", "Eulerian", "Yes"),
+        ("Marshak Wave 1", "Serial", "1", "Eulerian", "Yes"),
+        ("Marshak Wave 2", "Serial", "1", "Eulerian", "Yes"),
+        ("Marshak Wave 3", "Serial", "1", "Eulerian", "Yes"),
+        ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
+        ("Gresho Vortex (Euler)", "Serial", "1", "Eulerian", "Yes"),
+        ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
+        ("Spherical LSQ Gradient", "Serial", "1", "Static", "No"),
+        ("Spherical Collapse", "MPI", "64", "Eulerian", "Yes"),
+        ("Rayleigh--Taylor", "MPI", "128", "Lagrangian", "Yes"),
+        ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
+        ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     ]
     for row in rows:
         lines.append(" & ".join(row) + " \\\\")
@@ -1859,11 +2094,12 @@ based.
 """
 
 
-def generate_tex(plots_dir: Path, cases_dir: Path) -> str:
+def generate_tex(plots_dir: Path, cases_dir: Path,
+                  out_dir: Optional[Path] = None) -> str:
     """Return the full LaTeX document as a string."""
     parts = [PREAMBLE, VV_INTRODUCTION, _summary_table()]
     for test in TESTS:
-        parts.append(_section_for_test(test, plots_dir, cases_dir))
+        parts.append(_section_for_test(test, plots_dir, cases_dir, out_dir))
     parts.append(BIBLIOGRAPHY)
     parts.append(POSTAMBLE)
     return "\n".join(parts)
@@ -1950,7 +2186,7 @@ def main() -> int:
     # Step 2: generate .tex
     cases_dir = regression_dir / "cases"
     tex_path = out_dir / "test_report.tex"
-    tex_content = generate_tex(plots_dir, cases_dir)
+    tex_content = generate_tex(plots_dir, cases_dir, out_dir)
     tex_path.write_text(tex_content, encoding="utf-8")
     print(f"Wrote {tex_path}")
 

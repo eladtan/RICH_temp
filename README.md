@@ -86,7 +86,7 @@ and then reload it on a new shell via:
 ml restore rich
 ```
 
-Saved `module` configurations can be find in:
+Saved `module` configurations can be found in:
 
 ```shell
 ls ~/.lmod.d
@@ -218,8 +218,8 @@ Acceptance checks are physics-based:
 - **Till**: require final gas and radiation temperatures to agree within **1%**.
 - **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
-- **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
-- **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 50% for density, gas temperature, and radiation temperature.
+- **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 4e-2`.
+- **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 2.5% for density, gas temperature, and radiation temperature.
 - **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
 - **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
 - **Spherical collapse**: collapse a dense shell (0.9 < r < 1.0) on an Eulerian mesh built from replicated rounded sphere templates. Run until inward velocity at r=0.05 reaches 1. Require max angular scatter (std-dev/mean) of density and velocity across radial bins below 0.1.
@@ -296,12 +296,13 @@ case the same config is used for both passes.
   --verbose
 ```
 
-- `--mode <serial|mpi|all>`: filter tests by tag (default: `all`).
+- `--mode <serial|mpi|all|serial_then_mpi>`: filter tests by tag (default: `all`).
   - `serial`: default config `gnuRelease`.
   - `mpi`: default config `gnuReleaseMPI`.
   - `all`: default config `gnuReleaseMPI`.
+  - `serial_then_mpi`: runs serial tests first (`gnuRelease`), then MPI tests (`gnuReleaseMPI`).
 - `--config <name>`: build configuration (overrides the mode default).
-- `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
+- `--mpi-np <N>`: MPI ranks for MPI tests (default: `4`; individual tests may override).
 - `--nproc <N>`: override auto-detected core count for parallel builds (default: `$(nproc)`).
 - `--clean-results`: remove `regression_results/` and generated figure files under `regression_tests/`, then exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
