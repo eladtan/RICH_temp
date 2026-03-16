@@ -677,8 +677,10 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               indicesInAllMyPoints()
 {
     this->box_faces_ = BuildBox(this->ll_, this->ur_);
-    // initialize points manager
-    this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_));
+    #ifdef RICH_MPI
+        // initialize points manager
+        this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_));
+    #endif // RICH_MPI
 }
 
 Voronoi3D::Voronoi3D() : Voronoi3D(Vector3D(), Vector3D())

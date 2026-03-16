@@ -117,14 +117,16 @@ void RadiationMCStep::step(double dt)
 
     double max_diff = max_temperature_diff ; // TODO: change later
     // double max_diff = std::max(max_Erad_diff, max_temperature_diff);
-    rank_t max_diff_rank = rank;
     #ifdef RICH_MPI
+        rank_t max_diff_rank = rank;
         std::tie(max_diff_rank, max_diff) = MPI_Max_loc(max_diff, MPI_COMM_WORLD);
     #endif // RICH_MPI
 
     std::cout.flush();
-    MPI_Barrier(MPI_COMM_WORLD);
-    if(rank == max_diff_rank and N > 0)
+    #ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+        if(rank == max_diff_rank and N > 0)
+    #endif // RICH_MPI
     {
         size_t max_loc = max_temperature_loc; // TODO: (max_Erad_diff > max_temperature_diff) ? max_Erad_loc : max_temperature_loc;
         std::cout << "MC Radiation time step ID " << cells[max_loc].ID
@@ -138,7 +140,9 @@ void RadiationMCStep::step(double dt)
         std::cout << "Next MC time step is " << dt * std::min(1.25, 0.15 / max_diff) << std::endl;
     }
     std::cout.flush();
-    MPI_Barrier(MPI_COMM_WORLD);
+    #ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+    #endif // RICH_MPI
 
     this->suggested_dt = dt * std::min(1.25, 0.15 / max_diff);
 }

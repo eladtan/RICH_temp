@@ -4,7 +4,6 @@
 #ifdef RICH_MPI
 
 #include <cstddef>
-
 using curve_index_t = size_t;
 
 #include <vector>

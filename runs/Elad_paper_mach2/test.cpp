@@ -111,7 +111,10 @@ namespace
     };
 #endif
 
-    struct ProfilePoint : public Serializable
+    struct ProfilePoint
+        #ifdef RICH_MPI
+            : public Serializable
+        #endif // RICH_MPI
     {
         double x, density, temperature, Erad, velocity;
 
@@ -119,36 +122,40 @@ namespace
         ProfilePoint(double x_, double rho_, double T_, double Er_, double v_)
             : x(x_), density(rho_), temperature(T_), Erad(Er_), velocity(v_) {}
 
-        size_t dump(Serializer *ser) const override
-        {
-            size_t off = 0;
-            off += ser->insert(x);
-            off += ser->insert(density);
-            off += ser->insert(temperature);
-            off += ser->insert(Erad);
-            off += ser->insert(velocity);
-            return off;
-        }
+        #ifdef RICH_MPI
+            size_t dump(Serializer *ser) const override
+            {
+                size_t off = 0;
+                off += ser->insert(x);
+                off += ser->insert(density);
+                off += ser->insert(temperature);
+                off += ser->insert(Erad);
+                off += ser->insert(velocity);
+                return off;
+            }
 
-        size_t load(const Serializer *ser, std::size_t offset)
-        {
-            size_t rd = 0;
-            rd += ser->extract(x, offset);
-            rd += ser->extract(density, offset + rd);
-            rd += ser->extract(temperature, offset + rd);
-            rd += ser->extract(Erad, offset + rd);
-            rd += ser->extract(velocity, offset + rd);
-            return rd;
-        }
-
+            size_t load(const Serializer *ser, std::size_t offset)
+            {
+                size_t rd = 0;
+                rd += ser->extract(x, offset);
+                rd += ser->extract(density, offset + rd);
+                rd += ser->extract(temperature, offset + rd);
+                rd += ser->extract(Erad, offset + rd);
+                rd += ser->extract(velocity, offset + rd);
+                return rd;
+            }
+        #endif // RICH_MPI
+        
         bool operator<(const ProfilePoint &o) const { return x < o.x; }
     };
 
     void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells,
                       const std::string &filename, double time_ns, size_t Np)
     {
-        int rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int rank = 0;
+        #ifdef RICH_MPI
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        #endif // RICH_MPI
 
         size_t N = tess.GetPointNo();
         std::vector<ProfilePoint> data;
@@ -160,7 +167,9 @@ namespace
                               cells[i].Erad, cells[i].velocity.x);
         }
 
-        data = MPI_Gatherv_serializable(data, 0, MPI_COMM_WORLD);
+        #ifdef RICH_MPI
+            data = MPI_Gatherv_serializable(data, 0, MPI_COMM_WORLD);
+        #endif // RICH_MPI
         if(rank == 0)
         {
             std::sort(data.begin(), data.end());
@@ -207,8 +216,10 @@ int main(int argc, char *argv[])
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
 
     int rank = 0, ws = 1;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &ws);
+    #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &ws);
+    #endif // RICH_MPI
 
   try
   {
@@ -242,7 +253,7 @@ int main(int argc, char *argv[])
 
     constexpr double rho_up = 1.0;     // g/cc
     constexpr double rho_dn = 2.29;    // g/cc
-    constexpr double v_dn = 1.5116e+07;   // cm/s (moving left)
+    constexpr double v_dn = -1.95e7;   // cm/s (lab frame, moving left)
 
     constexpr double t_final = 5e-9;   // 5 ns
     constexpr double xmin = -0.21, xmax = 0.7;
@@ -272,7 +283,9 @@ int main(int argc, char *argv[])
             else
                 std::cout << "No checkpoint found at " << simFile << ", starting fresh" << std::endl;
         }
-        MPI_Bcast(&found, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        #ifdef RICH_MPI
+            MPI_Bcast(&found, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        #endif // RICH_MPI
         if(!found)
             doResume = false;
     }
@@ -318,14 +331,16 @@ int main(int argc, char *argv[])
         std::vector<Vector3D> points;
         if(rank == 0)
             points = CartesianMesh(Np, 1, 1, ll, ur);
-        points = MPI_Spread(points, 0, MPI_COMM_WORLD);
-        MPI_Barrier(MPI_COMM_WORLD);
+        #ifdef RICH_MPI
+            points = MPI_Spread(points, 0, MPI_COMM_WORLD);
+            MPI_Barrier(MPI_COMM_WORLD);
+        #endif // RICH_MPI
 
-#ifdef RICH_MPI
-        tess.BuildParallel(points);
-#else
-        tess.Build(points);
-#endif
+        #ifdef RICH_MPI
+            tess.BuildParallel(points);
+        #else 
+            tess.Build(points);
+        #endif // RICH_MPI
 
         size_t Nlocal = tess.GetPointNo();
         initialCells.resize(Nlocal);
