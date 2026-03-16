@@ -18,13 +18,13 @@
 template<class T>
 void MPI_exchange_data(const Tessellation& tess, vector<T>& cells, bool ghost_or_sent, const T *example_cell = nullptr)
 {
-	if(ghost_or_sent == true and example_cell == nullptr and cells.empty())
-	{
-		throw UniversalError("Empty cell vector in MPI_exchange_data");
-	}
+	T default_cell_storage{};
 	if(example_cell == nullptr)
 	{
-		example_cell = &cells[0];
+		if(!cells.empty())
+			example_cell = &cells[0];
+		else
+			example_cell = &default_cell_storage;
 	}
 
 	const std::vector<rank_t> &correspondents = (ghost_or_sent)? tess.GetDuplicatedProcs() : tess.GetSentProcs();
