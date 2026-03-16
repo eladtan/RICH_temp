@@ -3,6 +3,8 @@
 void LorentzTransformation(Particle3D &particle, const Vector3D &velocity)
 {
     double v2 = ScalarProd(velocity, velocity);
+    if(v2 < 1e-30)
+        return;
     double gamma = 1.0 / std::sqrt(1 - units::inv_clight2 * v2);
     double dopplerShift = DopplerShift(particle, velocity);
     particle.energy *= dopplerShift;
