@@ -253,7 +253,7 @@ int main(int argc, char *argv[])
 
     constexpr double rho_up = 1.0;     // g/cc
     constexpr double rho_dn = 2.29;    // g/cc
-    constexpr double v_dn = -1.95e7;   // cm/s (lab frame, moving left)
+    constexpr double v_dn = 1.5116e+07;   // cm/s (moving left)
 
     constexpr double t_final = 5e-9;   // 5 ns
     constexpr double xmin = -0.21, xmax = 0.7;
@@ -427,6 +427,9 @@ int main(int argc, char *argv[])
         mcStep->setCost(std::make_shared<MCStepCostCalculator>(mcStep->getManager()));
     #endif
     sim.addPhysics(mcStep);
+    #ifdef RICH_MPI
+        sim.addMigrationBuffer(physics->getEradTimeAvgGrad());
+    #endif // RICH_MPI
 
     sim.SetTimeStep(dt);
 

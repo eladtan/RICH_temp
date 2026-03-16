@@ -12,8 +12,6 @@ using rank_t = int;
 #include "misc/utils.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
-#include "stdint.h"
-
 #define MPI_TIMED_BARRIER_TAG 110503
 #define MPI_EXCHANGE_TAG 5
 

@@ -10,4 +10,5 @@ MonteCarloRadiationPhysics3D::MonteCarloRadiationPhysics3D(Tessellation3D &grid,
     #endif // RICH_MPI
     this->re = std::mt19937_64(rank);
     this->Erad_time_avg.resize(this->grid.GetPointNo(), 0);
+    this->Erad_time_avg_grad.resize(this->grid.GetPointNo(), 0);
 }

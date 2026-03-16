@@ -29,11 +29,16 @@ public:
     
     inline std::vector<double> &getEradTimeAvg(void){return this->Erad_time_avg;}
 
+    inline const std::vector<double> &getEradTimeAvgGrad(void) const{return this->Erad_time_avg_grad;}
+
+    inline std::vector<double> &getEradTimeAvgGrad(void){return this->Erad_time_avg_grad;}
+    
 protected:    
     std::vector<Particle> generateParticles(double fullDt);
 
     std::vector<ComputationalCell3D> &cells;
     std::vector<double> Erad_time_avg;
+    std::vector<double> Erad_time_avg_grad;
     std::vector<Conserved3D> &conserved;
     std::shared_ptr<EquationOfState> eos;
     std::shared_ptr<RadiationOpacity> opacity;

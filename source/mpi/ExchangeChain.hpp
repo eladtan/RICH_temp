@@ -40,6 +40,31 @@ private:
     void UpdateTransferMap(const std::vector<rank_t> &ranks, const std::vector<std::vector<size_t>> &indices, const std::vector<size_t> &localIndices);
 };
 
+template<typename T, typename Index_T = size_t>
+void MPI_exchange_data(const ExchangeChain &chain, std::vector<T> &data)
+{
+    const ExchangeChain::RankTransferMap &translationMap = chain.GetTranslationMap();
+    std::vector<rank_t> correspondents;
+	std::vector<std::vector<Index_T>> indices;
+    for(const auto &[index, target] : translationMap)
+    {
+		rank_t otherRank = target.first;
+		size_t rankIdx = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), otherRank));
+		if(rankIdx >= correspondents.size())
+		{
+			correspondents.push_back(otherRank);
+			indices.emplace_back();
+		}
+		indices[rankIdx].push_back(index);
+    }
+    std::vector<std::vector<T>> dataByRanks = MPI_exchange_data_indexed(correspondents, data, indices);
+    data.clear();
+    for(const std::vector<T> &dataByRank : dataByRanks)
+    {
+        data.insert(data.end(), dataByRank.cbegin(), dataByRank.cend());
+    }
+}
+
 #endif // RICH_MPI
 
 #endif // EXCHANGE_CHAIN_HPP
