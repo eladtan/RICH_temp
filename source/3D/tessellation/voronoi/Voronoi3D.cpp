@@ -671,14 +671,14 @@ Voronoi3D::Voronoi3D(Vector3D const &ll, Vector3D const &ur) : ll_(ll), ur_(ur),
                                                               #endif // RICH_MPI
                                                               temp_points_(std::array<Vector3D, 4>()), temp_points2_(std::array<Vector3D, 5>()), box_faces_(std::vector<Face>()),
                                                               #ifdef RICH_MPI
-                                                                pointsManager(std::shared_ptr<PointsManager>()),
+                                                                pointsManager(nullptr),
                                                                 allMyPoints(), 
                                                               #endif // RICH_MPI
                                                               indicesInAllMyPoints()
 {
     this->box_faces_ = BuildBox(this->ll_, this->ur_);
     // initialize points manager
-    this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
+    this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_));
 }
 
 Voronoi3D::Voronoi3D() : Voronoi3D(Vector3D(), Vector3D())
@@ -1223,20 +1223,11 @@ std::vector<Vector3D> Voronoi3D::PrepareToBuildParallel(const std::vector<Vector
     
     std::chrono::high_resolution_clock::time_point start, end;
     
-    if(this->pointsManager.get() == nullptr)
-    {
-        // initialize points manager
-        this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
-    }
+    assert(this->pointsManager != nullptr);
 
     rank_t rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     
-    if(rank == 0)
-    {
-        std::cout << "Time for pointsManager initialization: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
-    }
-
     int canDoRebalance = ((not suppressRebalancing) and (indicesToBuild.size() == allPoints.size()))? 1 : 0;
     MPI_Allreduce(MPI_IN_PLACE, &canDoRebalance, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
     bool allowRebalance = (canDoRebalance == 1);
@@ -1686,7 +1677,7 @@ void Voronoi3D::MockMesh(void)
     }
 
     // mirrorsToSend = std::vector<std::vector<Vector3D>>(size, allMirrors); // todo: remove
-
+    
     this->BuildInitialize(new_points.size());
     std::vector<size_t> order;
     if(not new_points.empty())
@@ -1829,16 +1820,13 @@ void Voronoi3D::MockMesh(void)
 
 void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
 {
-    if(this->pointsManager.get() == nullptr)
-    {
-        UniversalError eo("Voronoi3D::SetLoadBalancer: pointsManager is nullptr");
-        throw eo;
-    }
+    assert(this->pointsManager != nullptr);
     this->pointsManager->setLoadBalancer(loadBalancer);
 
     std::vector<Vector3D> previousPoints = this->allMyPoints;
     std::vector<size_t> allIndices(previousPoints.size());
     std::iota(allIndices.begin(), allIndices.end(), 0);
+
     PointsExchangeResult exchangeResult = this->pointsManager->update(previousPoints, this->allPointsWeights, allIndices, this->radiuses, this->all_CM, false); // doesn't do rebalancing
 
     this->allMyPoints = std::move(exchangeResult.newPoints);
@@ -1854,10 +1842,7 @@ void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
 
 void Voronoi3D::PresetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
 {
-    if(this->pointsManager.get() == nullptr)
-    {
-        this->pointsManager = std::shared_ptr<HilbertPointsManager>(new HilbertPointsManager(this->ll_, this->ur_, this->indexingToSave));
-    }
+    assert(this->pointsManager != nullptr);
     this->pointsManager->setLoadBalancer(loadBalancer);
 }
 
@@ -2304,7 +2289,7 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
 {
     int rank = 0, size = 1;
     #ifdef RICH_MPI
-    const bool serialMode = (this->pointsManager == nullptr);
+    const bool serialMode = (this->pointsManager == nullptr); // TODO: fix - wrong!
     if (!serialMode)
     {
         MPI_Comm_rank(comm, &rank);
@@ -2999,6 +2984,14 @@ void Voronoi3D::BuildVoronoi(std::vector<size_t> const &order)
                         if (point_other >= Norg_ && point_other < (Norg_ + 4))
                         {
                             UniversalError eo("Neighboring big tet point");
+                            eo.addEntry("point", point);
+                            eo.addEntry("point_other", point_other);
+                            eo.addEntry("Norg", Norg_);
+                            eo.addEntry("Bounding Box", std::make_pair(this->ll_, this->ur_));
+                            eo.addEntry("bigtet v0", this->del_.points_[Norg_]);
+                            eo.addEntry("bigtet v1", this->del_.points_[Norg_ + 1]);
+                            eo.addEntry("bigtet v2", this->del_.points_[Norg_ + 2]);
+                            eo.addEntry("bigtet v3", this->del_.points_[Norg_ + 3]);
                             throw eo;
                         }
                         // Make faces right handed
@@ -4022,8 +4015,7 @@ void Voronoi3D::SetKernel(const std::shared_ptr<const Kernelization3D::IndexingK
         // points manager is not a 'HilbertPointsManager', or was not initialized yet
         return;
     }
-    // reset points manager, next build it will be re-initialized, with the kernel
-    this->pointsManager = std::shared_ptr<PointsManager>();
+    hilbertPointsManager->setIndexing(indexing);
 }
 
 std::shared_ptr<const Kernelization3D::IndexingKernel3D> Voronoi3D::GetKernel() const
@@ -4038,7 +4030,7 @@ void Voronoi3D::SetBox(const Vector3D &ll, const Vector3D &ur)
     this->ur_ = ur;
     this->box_faces_ = BuildBox(this->ll_, this->ur_);
     #ifdef RICH_MPI
-        this->pointsManager = std::shared_ptr<PointsManager>();
+        this->pointsManager = std::make_shared<HilbertPointsManager>(this->ll_, this->ur_, MPI_COMM_WORLD);
         // this->radiuses.clear();
     #endif // RICH_MPI
 }

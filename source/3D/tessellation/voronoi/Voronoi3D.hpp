@@ -184,7 +184,7 @@ private:
                                       BigRangeAgent &bigRangeAgent, SmallRangeAgent &smallRangeAgent,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForBigPoints,
                                       boost::container::flat_map<size_t, size_t> &numOfResultsForSmallPoints);
-    #endif // RICH_MPI
+  #endif // RICH_MPI
 
   Delaunay3D del_;
   //vector<vector<std::size_t> > PointTetras_; // The tetras containing each point
@@ -290,6 +290,8 @@ public:
   void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) override;
 
   inline void SetPointsManager(std::shared_ptr<PointsManager> pointsManager){this->pointsManager = pointsManager;};
+
+  inline std::shared_ptr<PointsManager> GetPointsManager() const{return this->pointsManager;};
 
   void MockMesh(void);
   
