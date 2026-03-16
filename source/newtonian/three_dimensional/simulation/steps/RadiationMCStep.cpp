@@ -88,8 +88,8 @@ void RadiationMCStep::step(double dt)
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif
 
-    double max_Erad = *std::max_element(old_Erad.begin(), old_Erad.end());
-    double max_temperature = *std::max_element(old_temperature.begin(), old_temperature.end());
+    double max_Erad = N > 0 ? *std::max_element(old_Erad.begin(), old_Erad.end()) : std::numeric_limits<double>::lowest();
+    double max_temperature = N > 0 ? *std::max_element(old_temperature.begin(), old_temperature.end()) : std::numeric_limits<double>::lowest();
     #ifdef RICH_MPI
         MPI_Allreduce(MPI_IN_PLACE, &max_Erad, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, &max_temperature, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -122,8 +122,9 @@ void RadiationMCStep::step(double dt)
         std::tie(max_diff_rank, max_diff) = MPI_Max_loc(max_diff, MPI_COMM_WORLD);
     #endif // RICH_MPI
 
+    std::cout.flush();
     MPI_Barrier(MPI_COMM_WORLD);
-    if(rank == max_diff_rank)
+    if(rank == max_diff_rank and N > 0)
     {
         size_t max_loc = max_temperature_loc; // TODO: (max_Erad_diff > max_temperature_diff) ? max_Erad_loc : max_temperature_loc;
         std::cout << "MC Radiation time step ID " << cells[max_loc].ID
@@ -136,6 +137,7 @@ void RadiationMCStep::step(double dt)
             << " location " << tess.GetMeshPoint(max_loc) << std::endl;
         std::cout << "Next MC time step is " << dt * std::min(1.25, 0.15 / max_diff) << std::endl;
     }
+    std::cout.flush();
     MPI_Barrier(MPI_COMM_WORLD);
 
     this->suggested_dt = dt * std::min(1.25, 0.15 / max_diff);
