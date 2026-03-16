@@ -1,0 +1,550 @@
+#include <mpi.h>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <algorithm>
+#include "mpi/mpi_commands.hpp"
+#include "misc/mesh_generator3D.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "Radiation/CMMC/src/units/units.hpp"
+#include "newtonian/common/ideal_gas.hpp"
+#include "newtonian/three_dimensional/computational_cell.hpp"
+#include "newtonian/three_dimensional/conserved_3d.hpp"
+#include "newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "newtonian/three_dimensional/ManualTimeStep.hpp"
+
+#include "newtonian/three_dimensional/hdsim_3d.hpp"
+#include "newtonian/three_dimensional/eulerian_3d.hpp"
+#include "newtonian/three_dimensional/Hllc3D.hpp"
+#include "newtonian/three_dimensional/LinearGauss3D.hpp"
+#include "newtonian/three_dimensional/ConditionActionFlux1.hpp"
+#include "newtonian/three_dimensional/ConditionExtensiveUpdater3D.hpp"
+#include "newtonian/three_dimensional/default_cell_updater.hpp"
+#include "newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
+
+#include "3D/output/write3D.hpp"
+#include "3D/output/read3D.hpp"
+
+#include "3D/radiation/RadiationIMC.hpp"
+#include "3D/radiation/PowerLawOpacity.hpp"
+#include "monte/population/Comb.hpp"
+#include "monte/boundary/TwoSidesTemperature.hpp"
+#include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
+#include "newtonian/three_dimensional/CostCalculator3D.hpp"
+
+/*
+ * Mach 2 Radiative Shock benchmark from:
+ *   Steinberg & Heizler (2021), arXiv:2108.13453, Section 5.1.
+ *   Original problem: Lowrie & Edwards (2008).
+ *
+ * This implementation uses Hydro (HydroStep) + Monte Carlo (RadiationMCStep)
+ * via the Simulation class, in an operator-split scheme.
+ *
+ * Gas:         ideal, gamma = 5/3, Cv = 1.91e8 erg/(g K)
+ * Absorption:  sigma_a = 0.362 rho (T/keV)^{-3.5} cm^{-1}, sigma_s = 0
+ * Upstream:    rho = 1 g/cc,    v = 0,            T = 0.122 keV
+ * Downstream:  rho = 2.29 g/cc, v = -1.95e7 cm/s, T = 0.253 keV
+ * Domain:      x in [-0.21, 0.7] cm, 1024 cells (default)
+ * Runtime:     5 ns
+ *
+ * Usage: mpirun -np N ./test [Np] [prefix] [new/cell] [max/cell] [--resume]
+ */
+
+namespace fs = std::filesystem;
+
+namespace
+{
+    class IsPointLeftRightBox3D : public ConditionActionFlux1::Condition3D
+    {
+    public:
+        pair<bool, bool> operator()(size_t face_index, const Tessellation3D &tess,
+                                    const vector<ComputationalCell3D> &) const override
+        {
+            if(!tess.BoundaryFace(face_index))
+                return {false, false};
+            auto const &box = tess.GetBoxCoordinates();
+            Vector3D const &p1 = tess.GetMeshPoint(tess.GetFaceNeighbors(face_index).first);
+            Vector3D const &p2 = tess.GetMeshPoint(tess.GetFaceNeighbors(face_index).second);
+            bool left = p1.x < box.first.x || p1.x > box.second.x;
+            bool right = p2.x < box.first.x || p2.x > box.second.x;
+            return {left || right, right};
+        }
+    };
+
+    class GhostChooser : public SeveralGhostGenerator3D::GhostCriteria3D
+    {
+    public:
+        size_t GhostChoose(Tessellation3D const &tess, size_t index) const
+        {
+            auto const &box = tess.GetBoxCoordinates();
+            Vector3D const &p = tess.GetMeshPoint(index);
+            if(p.x < box.first.x) return 0;  // left x-boundary
+            if(p.x > box.second.x) return 1; // right x-boundary
+            return 2;                          // y/z boundaries
+        }
+    };
+
+#ifdef RICH_MPI
+    class MCStepCostCalculator : public CostCalculator3D
+    {
+    public:
+        MCStepCostCalculator(const std::shared_ptr<MonteCarloManager3D> &manager) : manager(manager)
+        {}
+
+        std::vector<double> CalculateCost(const Tessellation3D &tess, const vector<ComputationalCell3D> &) const override
+        {
+            size_t N = tess.GetPointNo();
+            const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
+            std::vector<double> weights(N, 0.01);
+            for(size_t j = 0; j < std::min(N, counters.size()); j++)
+                weights[j] = std::max(0.01, static_cast<double>(counters[j]));
+            return weights;
+        }
+
+    private:
+        const std::shared_ptr<MonteCarloManager3D> manager;
+    };
+#endif
+
+    struct ProfilePoint : public Serializable
+    {
+        double x, density, temperature, Erad, velocity;
+
+        ProfilePoint() : x(0), density(0), temperature(0), Erad(0), velocity(0) {}
+        ProfilePoint(double x_, double rho_, double T_, double Er_, double v_)
+            : x(x_), density(rho_), temperature(T_), Erad(Er_), velocity(v_) {}
+
+        size_t dump(Serializer *ser) const override
+        {
+            size_t off = 0;
+            off += ser->insert(x);
+            off += ser->insert(density);
+            off += ser->insert(temperature);
+            off += ser->insert(Erad);
+            off += ser->insert(velocity);
+            return off;
+        }
+
+        size_t load(const Serializer *ser, std::size_t offset)
+        {
+            size_t rd = 0;
+            rd += ser->extract(x, offset);
+            rd += ser->extract(density, offset + rd);
+            rd += ser->extract(temperature, offset + rd);
+            rd += ser->extract(Erad, offset + rd);
+            rd += ser->extract(velocity, offset + rd);
+            return rd;
+        }
+
+        bool operator<(const ProfilePoint &o) const { return x < o.x; }
+    };
+
+    void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells,
+                      const std::string &filename, double time_ns, size_t Np)
+    {
+        int rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+        size_t N = tess.GetPointNo();
+        std::vector<ProfilePoint> data;
+        data.reserve(N);
+        for(size_t i = 0; i < N; i++)
+        {
+            const Vector3D &p = tess.GetMeshPoint(i);
+            data.emplace_back(p.x, cells[i].density, cells[i].temperature,
+                              cells[i].Erad, cells[i].velocity.x);
+        }
+
+        data = MPI_Gatherv_serializable(data, 0, MPI_COMM_WORLD);
+        if(rank == 0)
+        {
+            std::sort(data.begin(), data.end());
+            std::ofstream out(filename);
+            out << "# Mach2 MC+Hydro  t_ns=" << time_ns << "  Np=" << Np << "\n";
+            out << "# x(cm), rho(g/cc), T_gas(keV), T_rad(keV), v_x(cm/s)\n";
+            for(const auto &pt : data)
+            {
+                double T_gas_keV = pt.temperature / units::kev_kelvin;
+                double T_rad_keV = std::pow(pt.Erad * pt.density / units::arad, 0.25) / units::kev_kelvin;
+                out << pt.x << ", " << pt.density << ", " << T_gas_keV << ", "
+                    << T_rad_keV << ", " << pt.velocity << "\n";
+            }
+            out.close();
+            std::cout << "Wrote " << filename << " (" << data.size() << " cells)" << std::endl;
+        }
+    }
+
+    void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells,
+                  const std::string &filename)
+    {
+        size_t N = tess.GetPointNo();
+        std::vector<double> t_keV(N), dens(N), vel_x(N), erad(N), pressure(N);
+        for(size_t i = 0; i < N; i++)
+        {
+            t_keV[i] = cells[i].temperature / units::kev_kelvin;
+            dens[i] = cells[i].density;
+            vel_x[i] = cells[i].velocity.x;
+            erad[i] = cells[i].Erad;
+            pressure[i] = cells[i].pressure;
+        }
+        WriteVoronoiVTKOnly(tess, filename,
+                            {t_keV, dens, vel_x, erad, pressure},
+                            {"T_gas_keV", "density", "velocity_x", "Erad", "pressure"});
+    }
+}
+
+int main(int argc, char *argv[])
+{
+    vtune_stop();
+    DISABLE_TIMERS();
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
+
+    int rank = 0, ws = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &ws);
+
+  try
+  {
+    size_t Np = 1024;
+    std::string prefix = "mach2_mc";
+    size_t newPhotonsPerCell = 100;
+    size_t maxPhotonsPerCell = 200;
+    bool doResume = false;
+
+    std::vector<std::string> positionalArgs;
+    for(int a = 1; a < argc; a++)
+    {
+        std::string arg(argv[a]);
+        if(arg == "--resume")
+            doResume = true;
+        else
+            positionalArgs.push_back(arg);
+    }
+    if(positionalArgs.size() >= 1) Np = std::stoul(positionalArgs[0]);
+    if(positionalArgs.size() >= 2) prefix = positionalArgs[1];
+    if(positionalArgs.size() >= 3) newPhotonsPerCell = std::stoul(positionalArgs[2]);
+    if(positionalArgs.size() >= 4) maxPhotonsPerCell = std::stoul(positionalArgs[3]);
+
+    // --- Physical parameters (arXiv:2108.13453, Section 5.1) ---
+    constexpr double gamma_gas = 5.0 / 3.0;
+    constexpr double Cv = 1.91e8;  // erg/(g K)
+
+    constexpr double T_up_keV = 0.122, T_dn_keV = 0.253;
+    const double T_up = T_up_keV * units::kev_kelvin;
+    const double T_dn = T_dn_keV * units::kev_kelvin;
+
+    constexpr double rho_up = 1.0;     // g/cc
+    constexpr double rho_dn = 2.29;    // g/cc
+    constexpr double v_dn = 1.5116e+07;   // cm/s (moving left)
+
+    constexpr double t_final = 5e-9;   // 5 ns
+    constexpr double xmin = -0.21, xmax = 0.7;
+
+    // CFL-based constant time step: dx / (|v_dn| + cs_dn) * CFL
+    const double dx = (xmax - xmin) / Np;
+    const double cs_dn = std::sqrt(gamma_gas * (gamma_gas - 1) * Cv * T_dn);
+    const double dt = 0.3 * dx / (std::abs(v_dn) + cs_dn);
+
+    constexpr size_t boundaryPhotonsPerCell = 50;
+    constexpr bool withHydro = true;
+    constexpr size_t dumpInterval = 10;
+    constexpr size_t vtkInterval = 25;
+
+    const std::string simFile = prefix + "_checkpoint.h5";
+
+    if(doResume)
+    {
+        int found = 0;
+        if(rank == 0)
+        {
+            if(fs::exists(simFile))
+            {
+                found = 1;
+                std::cout << "Found checkpoint: " << simFile << std::endl;
+            }
+            else
+                std::cout << "No checkpoint found at " << simFile << ", starting fresh" << std::endl;
+        }
+        MPI_Bcast(&found, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if(!found)
+            doResume = false;
+    }
+
+    // 1 cell in y and z.
+    double domainLength = xmax - xmin;
+    double dy = domainLength / 2.0;
+    Vector3D ll(xmin, -dy, -dy), ur(xmax, dy, dy);
+
+    // --- Equation of State: e = Cv * T ---
+    IdealGas eos(gamma_gas, Cv, 1, 0);
+
+    // --- Ghost cell templates (needed for hydro BCs and fresh init) ---
+    ComputationalCell3D left_cell, right_cell;
+
+    left_cell.density = rho_dn;
+    left_cell.temperature = T_dn;
+    left_cell.velocity = Vector3D(v_dn, 0, 0);
+    left_cell.internal_energy = eos.dT2e(left_cell.density, left_cell.temperature,
+                                         left_cell.tracers, ComputationalCell3D::tracerNames);
+    left_cell.pressure = eos.de2p(left_cell.density, left_cell.internal_energy,
+                                  left_cell.tracers, ComputationalCell3D::tracerNames);
+    left_cell.Erad = units::arad * std::pow(T_dn, 4) / left_cell.density;
+
+    right_cell.density = rho_up;
+    right_cell.temperature = T_up;
+    right_cell.velocity = Vector3D(3.4616e+07, 0, 0);
+    right_cell.internal_energy = eos.dT2e(right_cell.density, right_cell.temperature,
+                                          right_cell.tracers, ComputationalCell3D::tracerNames);
+    right_cell.pressure = eos.de2p(right_cell.density, right_cell.internal_energy,
+                                   right_cell.tracers, ComputationalCell3D::tracerNames);
+    right_cell.Erad = units::arad * std::pow(T_up, 4) / right_cell.density;
+
+    // --- Generate mesh & initial conditions (skipped on resume) ---
+    Voronoi3D tess(ll, ur);
+    std::vector<ComputationalCell3D> initialCells;
+    size_t startCycle = 0;
+    double simTime = 0;
+    size_t dumpCount = 0;
+
+    if(!doResume)
+    {
+        std::vector<Vector3D> points;
+        if(rank == 0)
+            points = CartesianMesh(Np, 1, 1, ll, ur);
+        points = MPI_Spread(points, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+
+#ifdef RICH_MPI
+        tess.BuildParallel(points);
+#else
+        tess.Build(points);
+#endif
+
+        size_t Nlocal = tess.GetPointNo();
+        initialCells.resize(Nlocal);
+
+        if(rank == 0)
+            std::cout << "Using step-function IC" << std::endl;
+        for(size_t i = 0; i < Nlocal; ++i)
+            initialCells[i] = (tess.GetMeshPoint(i).x < 0) ? left_cell : right_cell;
+    }
+
+    // ===== Simulation =====
+    Simulation sim(tess, initialCells, eos);
+    auto tsc = std::make_shared<ManualTimeStep>();
+    sim.SetTimeStepFunction(tsc);
+
+    std::vector<ComputationalCell3D> &cells = sim.getCells();
+    std::vector<Conserved3D> &extensives = sim.getExtensives();
+
+    // ===== Hydro setup =====
+    Hllc3D rs;
+
+    RigidWallGenerator3D rigid_ghost;
+    ConstantPrimitiveGenerator3D left_ghost(left_cell), right_ghost(right_cell);
+    std::vector<Ghost3D *> ghost_list = {&left_ghost, &right_ghost, &rigid_ghost};
+    GhostChooser ghost_chooser;
+    SeveralGhostGenerator3D ghost(ghost_list, ghost_chooser);
+
+    LinearGauss3D interp(eos, ghost);
+
+    IsBulkFace3D isbulk;
+    IsPointLeftRightBox3D is_side;
+    IsBoundaryFace3D isboundary;
+    RegularFlux3D normal_flux(rs);
+    RigidWallFlux3D rigid_flux(rs);
+
+    std::vector<pair<const ConditionActionFlux1::Condition3D *,
+                     const ConditionActionFlux1::Action3D *>> flux_seq;
+    flux_seq.push_back({&is_side, &normal_flux});
+    flux_seq.push_back({&isboundary, &rigid_flux});
+    flux_seq.push_back({&isbulk, &normal_flux});
+    ConditionActionFlux1 flux(flux_seq, interp);
+
+    DefaultCellUpdater cu(false, 0, true);
+
+    std::vector<std::pair<const ConditionExtensiveUpdater3D::Condition3D *,
+                          const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
+    ConditionExtensiveUpdater3D eu(eu_sequence);
+
+    ZeroForce3D force;
+    Eulerian3D pm;
+
+    // HDSim3D is initialized from Simulation's cells, extensives, and tracker
+    HDSim3D hdsim(tess, cells, extensives, eos, sim.getTracker(), pm, *tsc, flux, cu, eu, force,
+                  std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+
+    auto hydroStep = std::make_shared<HydroStep>(hdsim, HydroStep::TIMEADVANCE_2);
+    sim.addPhysics(hydroStep);
+
+    // ===== MC radiation setup =====
+    // sigma_a = 0.362 * rho * (T/keV)^{-3.5}
+    //         = 0.362 * kev_kelvin^{3.5} * rho^1 * T_K^{-3.5}
+    auto eosPtr = std::make_shared<IdealGas>(eos);
+    double sigmaA0 = 0.362 * std::pow(units::kev_kelvin, 3.5);
+    auto opacityPtr = std::make_shared<MCPowerLawOpacity>(sigmaA0, 0, 1, -3.5, 0, 0);
+
+    std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
+        std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
+            tess, cells, T_dn, T_up, boundaryPhotonsPerCell, withHydro);
+
+    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
+        tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, newPhotonsPerCell, withHydro);
+
+    std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
+        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell);
+
+    std::vector<Particle3D> initialParticles;
+    auto mcStep = std::make_shared<RadiationMCStep>(
+        tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, withHydro
+        #ifdef RICH_MPI
+            , RadiationMCStep::ManagerType::AUTO_RDMA
+        #endif
+    );
+    #ifdef RICH_MPI
+        mcStep->setCost(std::make_shared<MCStepCostCalculator>(mcStep->getManager()));
+    #endif
+    sim.addPhysics(mcStep);
+
+    sim.SetTimeStep(dt);
+
+    // ===== Resume from checkpoint =====
+    if(doResume)
+    {
+        ReadSimulation(simFile, sim);
+        startCycle = sim.GetCycle();
+        simTime = sim.GetTime();
+        dumpCount = startCycle / dumpInterval;
+
+        if(rank == 0)
+            std::cout << "Resumed from " << simFile
+                      << ": cycle=" << startCycle
+                      << ", t=" << simTime * 1e9 << " ns"
+                      << ", dumpCount=" << dumpCount << std::endl;
+        
+        std::cout << "Outside of read, rank has " << tess.GetPointNo() << " points" << std::endl;
+    }
+
+    extensives.resize(cells.size());
+    for(size_t i = 0; i < cells.size(); i++)
+        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+    // --- Print setup info ---
+    if(rank == 0)
+    {
+        std::cout << "Mach 2 Radiative Shock (Hydro + MC)"
+                  << "\n  Np=" << Np
+                  << ", new/cell=" << newPhotonsPerCell
+                  << ", max/cell=" << maxPhotonsPerCell
+                  << "\n  T_upstream=" << T_up_keV << " keV"
+                  << ", T_downstream=" << T_dn_keV << " keV"
+                  << "\n  rho_upstream=" << rho_up
+                  << ", rho_downstream=" << rho_dn
+                  << ", v_downstream=" << v_dn << " cm/s"
+                  << "\n  domain=[" << xmin << ", " << xmax << "] cm"
+                  << ", dt=" << dt << " s"
+                  << ", t_final=" << t_final * 1e9 << " ns"
+                  << ", prefix=" << prefix
+                  << (doResume ? ", RESUMED" : "")
+                  << std::endl;
+    }
+
+    if(!doResume)
+    {
+        WriteProfile(tess, cells, prefix + "_init.txt", 0, Np);
+        WriteVTK(tess, cells, prefix + "_init.vtu");
+    }
+
+    // ===== Main time-stepping loop =====
+    size_t cycle = startCycle;
+    size_t stepsSinceLastDump = (doResume) ? (startCycle % dumpInterval) : 0;
+
+    auto startWall = std::chrono::high_resolution_clock::now();
+
+    while(simTime < t_final)
+    {
+        auto stepStart = std::chrono::high_resolution_clock::now();
+
+        sim.step();
+        cycle++;
+        stepsSinceLastDump++;
+
+        simTime = sim.GetTime();
+        sim.SetTimeStep(dt);
+
+        auto stepEnd = std::chrono::high_resolution_clock::now();
+        double stepSec = std::chrono::duration<double>(stepEnd - stepStart).count();
+        double elapsedWall = std::chrono::duration<double>(stepEnd - startWall).count();
+
+        double fraction = simTime / t_final;
+        double eta = (fraction > 0) ? elapsedWall * (1.0 - fraction) / fraction : 0;
+
+        if(rank == 0 && (cycle % 50 == 0 || cycle <= 5))
+        {
+            int pct = static_cast<int>(fraction * 100);
+            int etaMin = static_cast<int>(eta) / 60;
+            int etaSec = static_cast<int>(eta) % 60;
+            std::cout << "Cycle " << cycle
+                      << "  t=" << simTime * 1e9 << " ns"
+                      << " (" << pct << "%)"
+                      << "  dt=" << dt
+                      << "  step=" << stepSec << "s"
+                      << "  ETA=" << etaMin << "m" << etaSec << "s"
+                      << std::endl;
+        }
+
+        if(stepsSinceLastDump >= dumpInterval)
+        {
+            stepsSinceLastDump = 0;
+            dumpCount++;
+
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), "%s_%05zu.txt", prefix.c_str(), dumpCount);
+            WriteProfile(tess, cells, buf, simTime * 1e9, Np);
+        }
+
+        if(cycle % vtkInterval == 0)
+        {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), "%s_%05zu.vtu", prefix.c_str(), cycle / vtkInterval);
+            WriteVTK(tess, cells, buf);
+
+            WriteSimulation(sim, simFile);
+            if(rank == 0)
+                std::cout << "Checkpoint written: " << simFile << std::endl;
+        }
+    }
+
+    auto endWall = std::chrono::high_resolution_clock::now();
+    double wallSec = std::chrono::duration<double>(endWall - startWall).count();
+    if(rank == 0)
+        std::cout << "Completed " << cycle << " cycles in " << wallSec << "s" << std::endl;
+
+    // --- Final output ---
+    WriteProfile(tess, cells, prefix + "_final.txt", simTime * 1e9, Np);
+    WriteVTK(tess, cells, prefix + "_final.vtu");
+    WriteSimulation(sim, simFile);
+
+  }
+  catch(const UniversalError &e)
+  {
+      std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
+      reportError(e);
+      MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  catch(const std::exception &e)
+  {
+      std::cerr << "=== std::exception on rank " << rank << ": " << e.what() << " ===" << std::endl;
+      MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+
+    MPI_Finalize();
+    return 0;
+}
