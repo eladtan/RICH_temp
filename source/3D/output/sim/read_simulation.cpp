@@ -13,8 +13,11 @@
     #include <mpi.h>
     #include "3D/tessellation/loadBalancing/io/HilbertLoadBalancerIOHandler.hpp"
     #include "3D/tessellation/loadBalancing/io/LoadBalancerIOHandlerFactory.hpp"
-    #include "3D/environment/kernels/io/KernelIOHandlerFactory.hpp"
     #include "3D/tessellation/voronoi/Voronoi3D.hpp"
+    #include "3D/tessellation/voronoi/pointsManager/io/HilbertPointsManagerIOHandler.hpp"
+    #include "3D/tessellation/voronoi/pointsManager/io/PointsManagerIOHandlerFactory.hpp"
+    #include "3D/hilbert/io/RectangularConvertorIOHandler.hpp"
+    #include "3D/hilbert/io/ConvertorIOHandlerFactory.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -101,40 +104,51 @@ namespace
     {
         Tessellation3D &tess = sim.getTessellation();
 
-        if(reader.Exists(prefix + "/mesh_points"))
-        {
-            std::vector<Vector3D> points;
-            reader.ReadElement(prefix + "/mesh_points", points);
-            #ifdef RICH_MPI
-                tess.BuildParallel(points, true, true);
-            #else
-                tess.Build(points);
-            #endif
-        }
+
         if(reader.Exists(prefix + "/volumes"))
         {
             std::vector<double> vols;
             reader.ReadElement(prefix + "/volumes", vols);
-            tess.GetAllVolumes() = std::move(vols);
+            // tess.GetAllVolumes() = std::move(vols);
         }
         if(reader.Exists(prefix + "/CM"))
         {
             std::vector<Vector3D> cm;
             reader.ReadElement(prefix + "/CM", cm);
-            tess.GetAllCM() = std::move(cm);
+            // tess.GetAllCM() = std::move(cm);
         }
 
 #ifdef RICH_MPI
-        if(reader.Exists(prefix + "/kernel/type"))
+        if(reader.Exists(prefix + "/points_manager/type"))
         {
-            auto kernel = KernelIO::readKernel(reader, prefix + "/kernel");
             Voronoi3D *voronoi = dynamic_cast<Voronoi3D *>(&tess);
             if(voronoi)
             {
-                voronoi->SetKernel(kernel);
+                auto coords = tess.GetBoxCoordinates();
+                auto pm = PointsManagerIO::readPointsManager(reader, prefix + "/points_manager", coords.first, coords.second);
+                voronoi->SetPointsManager(pm);
             }
         }
 #endif
+
+        int rank = 0;
+        #ifdef RICH_MPI
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        #endif // RICH_MPI
+
+        if(reader.Exists(prefix + "/mesh_points"))
+        {
+            std::vector<Vector3D> points;
+            reader.ReadElement(prefix + "/mesh_points", points);
+            #ifdef RICH_MPI
+                std::cout << "Rank " << rank << " has " << points.size() << " points read." << std::endl;
+                tess.BuildParallel(points, true, true);
+            #else
+                tess.Build(points);
+            #endif
+        }
+
+        std::cout << "After first build, rank " << rank << " has " <<  tess.GetPointNo() << " points" << std::endl;
     }
 
     void readPhysicsGroups(const HDF5Reader &reader, const std::string &prefix, Simulation &sim)

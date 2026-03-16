@@ -14,8 +14,11 @@
     #include <mpi.h>
     #include "3D/tessellation/loadBalancing/io/HilbertLoadBalancerIOHandler.hpp"
     #include "3D/tessellation/loadBalancing/io/LoadBalancerIOHandlerFactory.hpp"
-    #include "3D/environment/kernels/io/KernelIOHandlerFactory.hpp"
     #include "3D/tessellation/voronoi/Voronoi3D.hpp"
+    #include "3D/tessellation/voronoi/pointsManager/io/HilbertPointsManagerIOHandler.hpp"
+    #include "3D/tessellation/voronoi/pointsManager/io/PointsManagerIOHandlerFactory.hpp"
+    #include "3D/hilbert/io/RectangularConvertorIOHandler.hpp"
+    #include "3D/hilbert/io/ConvertorIOHandlerFactory.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -89,10 +92,10 @@ namespace
         const Voronoi3D *voronoi = dynamic_cast<const Voronoi3D*>(&tess);
         if(voronoi)
         {
-            auto kernel = voronoi->GetKernel();
-            if(kernel)
+            auto pm = voronoi->GetPointsManager();
+            if(pm)
             {
-                KernelIO::writeKernel(writer, prefix + "/kernel", *kernel);
+                PointsManagerIO::writePointsManager(writer, prefix + "/points_manager", *pm);
             }
         }
 #endif

@@ -71,6 +71,12 @@ void Simulation::step(void)
 {
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
+    #ifdef RICH_MPI
+        if(this->rank == 0)
+    #endif // RICH_MPI
+    {
+        std::cout << "Cycle " << this->tracker.getCycle() << " at time " << this->tracker.getTime() << std::endl;
+    }
 
     for(std::shared_ptr<PhysicsStep> physics : this->physics)
     {
@@ -79,6 +85,7 @@ void Simulation::step(void)
 
         #ifdef RICH_MPI
             std::string LB = physics->getRequiredLB();
+            bool firstTime = false;
 
             if(this->currentLB != LB)
             {
@@ -95,7 +102,8 @@ void Simulation::step(void)
                     std::vector<double> weights = physics->getLoadBalanceWeights();
                     std::vector<Vector3D> points = this->tess.getMeshPoints();
                     points.resize(this->tess.GetPointNo());
-                    this->tess.BuildParallel(points, weights, true /* don't allow rebalance */);
+                    this->tess.BuildParallel(points, weights, true);
+                    firstTime = true;
                     this->buildDataTransfer();
                 }
             }
@@ -135,16 +143,24 @@ void Simulation::step(void)
 
         double dt = this->tsc->GetTimeStep();
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
+        std::cout.flush();
 
         physics->step(dt);
-
-        #ifdef RICH_MPI
-            this->buildDataTransfer(physics->GetExchangeChain());
-        #endif // RICH_MPI
 
         double dt_suggest = physics->suggestTimeStep();
         next_time_step = std::min(next_time_step, dt_suggest);
         // if(this->rank == 0) std::cout << "Suggested " << next_time_step << ", dt_suggest " << dt_suggest << std::endl;
+        
+        #ifdef RICH_MPI
+            this->buildDataTransfer(physics->GetExchangeChain());
+            
+            if(firstTime)
+            {
+                std::vector<double> weights = physics->getLoadBalanceWeights();
+                this->tess.Rebalance(weights);
+                this->buildDataTransfer();
+            }
+        #endif // RICH_MPI
 
         if(this->rank == 0)
         {
@@ -174,16 +190,25 @@ void Simulation::setCurrentLoadBalance(const std::string &name)
     }
     auto it = this->loads.find(name);
     if(it == this->loads.end())
-        throw UniversalError("setCurrentLoadBalance: unknown load balance \"" + name + "\"");
-
-    if(this->tess.GetPointNo() > 0)
     {
-        this->tess.SetLoadBalancer(it->second);
-        this->buildDataTransfer();
+        UniversalError eo("setCurrentLoadBalance: unknown load balance");
+        eo.addEntry("Name", name);
+        throw eo;
+    }
+
+    size_t Ntotal = this->tess.GetPointNo();
+    #ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &Ntotal, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    #endif // RICH_MPI
+
+    if(Ntotal == 0)
+    {
+        this->tess.PresetLoadBalancer(it->second);
     }
     else
     {
-        this->tess.PresetLoadBalancer(it->second);
+        this->tess.SetLoadBalancer(it->second);
+        this->buildDataTransfer();
     }
 
     std::shared_ptr<LoadBalancer> load = this->tess.GetLoadBalancer();
