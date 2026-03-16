@@ -72,6 +72,7 @@ PointsExchangeResult PointsManager::update(const std::vector<Vector3D> &allPoint
 
     start = std::chrono::high_resolution_clock::now();
     PointsExchangeResult result = this->exchange(allPoints, allWeights, indicesToWorkWith, radiuses, previous_CM, not doExchange);
+    
     this->totalWeight = std::accumulate(result.newWeights.cbegin(), result.newWeights.cend(), 0.0);
     end = std::chrono::high_resolution_clock::now();
     if(this->rank == 0)

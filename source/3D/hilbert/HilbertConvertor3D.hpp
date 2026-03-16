@@ -8,6 +8,7 @@
 #include "ds/utils/geometry.hpp" // for BoundingBox<Vector3D>
 #include "hilbertTypes.h"
 #include <memory>
+#include <string>
 
 #define MAX_HILBERT_ORDER 19
 
@@ -26,6 +27,8 @@ public:
     
     virtual std::shared_ptr<HilbertConvertor3D> clone(void) const = 0;
 
+    virtual std::string getTypeName() const = 0;
+
     virtual void changeOrder(size_t order) = 0;
     
     virtual hilbert_index_t xyz2d(coord_t x, coord_t y, coord_t z) const = 0;
@@ -35,6 +38,8 @@ public:
     virtual Vector3D d2xyz(hilbert_index_t d) const = 0;
     
     inline size_t getOrder() const{return this->order;};
+    inline const Vector3D &getLL() const{return this->ll;};
+    inline const Vector3D &getUR() const{return this->ur;};
 };
 
 inline HilbertConvertor3D::HilbertConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order)

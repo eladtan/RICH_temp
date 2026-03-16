@@ -85,6 +85,8 @@ public:
 
     virtual std::shared_ptr<PointsManager> clone(void) const = 0;
 
+    virtual std::string getTypeName() const = 0;
+
     PointsManager &operator=(const PointsManager &other) = delete;
 
     virtual PointsExchangeResult exchange(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToWorkWith, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange) = 0;

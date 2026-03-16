@@ -6,28 +6,17 @@
 
 #ifdef RICH_MPI
 
-HilbertPointsManager::HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing, const MPI_Comm &comm)
+HilbertPointsManager::HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm)
     : PointsManager(ll, ur, comm)
 {
-    if(indexing.get() == nullptr)
-    {
-        this->indexing = std::shared_ptr<const Kernelization3D::Identity>(new Kernelization3D::Identity()); // default kernel
-        this->customIndexingIsSet = false;
-    }
-    else
-    {
-        this->indexing = indexing;
-        this->customIndexingIsSet = true;
-    }
+    this->indexing = std::make_shared<const Kernelization3D::Identity>(); // default kernel
+    this->customIndexingIsSet = false;
 }
 
 std::shared_ptr<PointsManager> HilbertPointsManager::clone(void) const
 {
 
-    std::shared_ptr<HilbertPointsManager> clone = std::make_shared<HilbertPointsManager>(
-        this->ll, this->ur,
-        this->customIndexingIsSet ? this->indexing : std::shared_ptr<const Kernelization3D::IndexingKernel3D>(),
-        this->comm);
+    std::shared_ptr<HilbertPointsManager> clone = std::make_shared<HilbertPointsManager>(this->ll, this->ur,  this->comm);
     
     // Deep-copy convertor (mutable state)
     clone->convertor = std::dynamic_pointer_cast<HilbertConvertor3D>(this->convertor->clone());
@@ -47,7 +36,7 @@ PointsExchangeResult HilbertPointsManager::exchange(const std::vector<Vector3D> 
     {
         if(noExchange)
         {
-            exchangeResult = this->pointsExchange([this, &responsibilityRange](const PointData &_point)
+            exchangeResult = this->pointsExchange([this](const PointData &_point)
             {
                 return this->rank;
             },
@@ -103,17 +92,42 @@ void HilbertPointsManager::setLoadBalancer(std::shared_ptr<LoadBalancer> newLoad
 
 std::shared_ptr<LoadBalancer> HilbertPointsManager::getLoadBalancer(void)
 {
-    return this->loadBalancer;
+    return this->loadBalancer->clone(this->convertor, this->indexing);
 }
 
 void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights)
 {
-    this->loadBalancer = std::dynamic_pointer_cast<HilbertLoadBalancer>(this->loadBalancer->clone(this->convertor, this->indexing));
     this->loadBalancer->rebalance(points, weights);
     if(this->envAgent != nullptr)
     {
         this->envAgent->setLoadBalancer(this->loadBalancer);
     }
+}
+
+void HilbertPointsManager::setIndexing(std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing)
+{
+    this->customIndexingIsSet = true;
+    this->indexing = indexing;
+     // we'll result an initialization next step, to recalculate convertor and env agent
+    this->envAgent = nullptr;
+    this->convertor = nullptr;
+}
+
+void HilbertPointsManager::setConvertor(std::shared_ptr<HilbertConvertor3D> conv)
+{
+    this->convertor = conv;
+    if(this->loadBalancer != nullptr)
+    {
+        this->loadBalancer->convertor = this->convertor;
+    }
+}
+
+void HilbertPointsManager::initializeHilbertConvertor(const Vector3D &ll, const Vector3D &ur, size_t hilbertOrder)
+{
+    MPI_Allreduce(MPI_IN_PLACE, &hilbertOrder, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
+    hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, hilbertOrder);
+    this->convertor = std::make_shared<HilbertRectangularConvertor3D>(ll, ur, hilbertOrder);
+    // this->convertor = new HilbertOrdinaryConvertor3D(ll, ur, hilbertOrder);
 }
 
 /*
@@ -153,10 +167,6 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     }
     OctTree<Vector3D> tree(kerneledLL, kerneledUR, kerneledVectors);
 
-    int depth = tree.getDepth(); // my own depth
-    int hilbertOrder;
-    MPI_Allreduce(&depth, &hilbertOrder, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); // calculates maximal depth
-
     MPI_Allreduce(MPI_IN_PLACE, &kerneledLL.x, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &kerneledLL.y, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &kerneledLL.z, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
@@ -173,9 +183,7 @@ void HilbertPointsManager::initializeHilbertParameters(const std::vector<Vector3
     kerneledUR.y += std::abs(SPACE_FACTOR * y_length);
     kerneledUR.z += std::abs(SPACE_FACTOR * z_length);
     
-    hilbertOrder = std::min<size_t>(MAX_HILBERT_ORDER, hilbertOrder);
-    this->convertor = std::make_shared<HilbertRectangularConvertor3D>(kerneledLL, kerneledUR, hilbertOrder);
-    // this->convertor = new HilbertOrdinaryConvertor3D(kerneledLL, kerneledUR, hilbertOrder);
+    this->initializeHilbertConvertor(kerneledLL, kerneledUR, tree.getDepth());
 }
 
 PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D> &points, const std::vector<double> &weights, const std::vector<double> &radiuses, const std::vector<Vector3D> &previous_CM, bool noExchange)
@@ -190,7 +198,10 @@ PointsExchangeResult HilbertPointsManager::initialize(const std::vector<Vector3D
     std::vector<size_t> allIndices(points.size());
     std::iota(allIndices.begin(), allIndices.end(), 0);
 
-    this->initializeHilbertParameters(points); // also initializes the convertor
+    if(this->convertor == nullptr)
+    {
+        this->initializeHilbertParameters(points); // also initializes the convertor
+    }
     
     if(not noExchange)
     {

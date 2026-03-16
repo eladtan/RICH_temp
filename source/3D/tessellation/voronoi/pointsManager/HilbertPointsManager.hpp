@@ -20,9 +20,13 @@
 class HilbertPointsManager : public PointsManager
 {
 public:
-    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> &indexing = std::shared_ptr<const Kernelization3D::IndexingKernel3D>(), const MPI_Comm &comm = MPI_COMM_WORLD);
+    static constexpr const char *type_name = "hilbert";
+    
+    HilbertPointsManager(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD);
 
     inline ~HilbertPointsManager() override = default;
+
+    std::string getTypeName() const override { return type_name; }
 
     std::shared_ptr<PointsManager> clone(void) const override;
 
@@ -35,10 +39,20 @@ public:
     void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) override;
 
     const Kernelization3D::IndexingKernel3D *getIndexingKernel() const{return this->indexing.get();};
+
+    void setIndexing(std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing);
+
+    std::shared_ptr<const Kernelization3D::IndexingKernel3D> getIndexing() const{return this->indexing;};
+
+    void setConvertor(std::shared_ptr<HilbertConvertor3D> conv);
+
+    std::shared_ptr<HilbertConvertor3D> getConvertor() const{return this->convertor;};
     
     void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
 
     std::shared_ptr<LoadBalancer> getLoadBalancer(void) override;
+
+    void initializeHilbertConvertor(const Vector3D &ll, const Vector3D &ur, size_t hilbertOrder);
 
 private:
     void initializeHilbertParameters(const std::vector<Vector3D> &points);

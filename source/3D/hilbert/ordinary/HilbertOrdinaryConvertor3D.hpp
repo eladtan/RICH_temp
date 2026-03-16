@@ -10,6 +10,10 @@ public:
     explicit HilbertOrdinaryConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
     ~HilbertOrdinaryConvertor3D() override = default;
+
+    static constexpr const char *type_name = "ordinary";
+
+    std::string getTypeName() const override { return type_name; }
     
     void changeOrder(size_t order) override
     {

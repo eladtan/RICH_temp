@@ -55,6 +55,10 @@ public:
     explicit HilbertRectangularConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
     ~HilbertRectangularConvertor3D() override = default;
+
+    static constexpr const char *type_name = "rectangular";
+
+    std::string getTypeName() const override { return type_name; }
     
     inline hilbert_index_t getHilbertSize() const{return this->total_points_num;};
     
