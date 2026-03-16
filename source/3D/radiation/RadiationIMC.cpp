@@ -141,6 +141,7 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
         }
         this->conserved[i].Erad = 0;
         cell.temperature = this->eos->de2T(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
+        cell.pressure = this->eos->de2p(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
     }
     for(const MCParticle &particle : particles)
     {
