@@ -137,8 +137,8 @@ public:
 private:
   Tessellation3D& tess_;
   const EquationOfState& eos_;
-  vector<ComputationalCell3D> cells_;
-  vector<Conserved3D> extensive_;
+  vector<ComputationalCell3D> &cells_;
+  vector<Conserved3D> &extensive_;
   const PointMotion3D& pm_;
   TimeStepFunction3D& tsc_;
   const FluxCalculator3D& fc_;
