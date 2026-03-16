@@ -1485,6 +1485,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         // std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
         std::cout << "Max consecutive steps: " << this->maxConsecutiveSteps << ", time " << this->maxConsecutiveStepsTime << std::endl;
     }
+    std::cout.flush();
     MPI_Barrier(this->comm_world);
 
     // vtune_stop();

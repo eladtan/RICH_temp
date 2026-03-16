@@ -108,6 +108,7 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
                     #ifdef RICH_MPI
                         particleCpy.rank = std::numeric_limits<rank_t>::max(); // reset rank, it will be set later
                     #endif // RICH_MPI
+                    particleCpy.steps = 0;
                     // add Nsplit copies
                     for(size_t j = 0; j < Nsplit; j++)
                     {
