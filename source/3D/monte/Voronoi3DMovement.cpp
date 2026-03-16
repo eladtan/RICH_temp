@@ -368,9 +368,14 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         for(size_t i = 0; i < shouldExchangeParticles.size(); i++)
         {
             Particle3D &p = shouldExchangeParticles[i];
-            size_t closestCell = octTree.closestPoint(p.location).getIndex();
 
-            if(tess.IsPointInCell(p.location, closestCell))
+            size_t closestCell = std::numeric_limits<size_t>::max();
+            if(N > 0)
+            {
+                closestCell = octTree.closestPoint(p.location).getIndex();
+            }
+
+            if(closestCell < N and tess.IsPointInCell(p.location, closestCell))
             {
                 p.cellIndex = closestCell;
                 newParticles.push_back(p);
