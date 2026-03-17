@@ -49,6 +49,7 @@ namespace
 		EquationOfState const& eos, double beta)
 	{
 		double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333) / beta;
+		double const Vt = std::sqrt(2 * MBH / Rt);
 		double Rsmooth = std::max(Rt * 0.4, std::min(Rt - Rstar * 15, Rt * smooth_factor));
 		std::vector<Conserved3D> &extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
@@ -67,8 +68,12 @@ namespace
 				cells[i].density = new_density;
 				cells[i].tracers[2] /= new_density;
 				cells[i].temperature = new_T;
-				if(fastabs(cells[i].velocity) > 320)
+				double cell_v = fastabs(cells[i].velocity);
+				if(cell_v > Vt * 2)
 					cells[i].velocity *= 0.9;
+				else
+					if(R < Rsmooth * 0.95 && cell_v * Rsmooth > Vt * R * 0.8)
+						cells[i].velocity *=  R / (0.95 * Rsmooth);
 				cells[i].internal_energy = eos.dT2e(new_density, new_T, cells[i].tracers, ComputationalCell3D::tracerNames);
 				cells[i].pressure = eos.de2p(new_density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
 				cells[i].tracers[0] = eos.dp2s(new_density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
@@ -702,12 +707,16 @@ namespace
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double w = tess.GetWidth(i);
 				double Vol = tess.GetVolume(i);
-				if(w < 0.6 * min_cell_size || (w < min_cell_size && r_org < 0.7 * Rt))
+				if(cells[i].ID == 77958597)
+					std::cout<<"In AMR remove w = "<<w<<" min_cell_size = "<<min_cell_size<<" r_org = "<<r_org<<" Rt = "<<Rt<<std::endl;
+				if(w < 0.6 * min_cell_size || (w < 1.5 * min_cell_size && r_org < 0.7 * Rt))
 				{
 					res.push_back(i);
 					merits.push_back(1.0 / Vol);
 					continue;
 				}
+				if(cells[i].ID == 77958597)
+					std::cout<<"In AMR remove, not removed w = "<<w<<" min_cell_size = "<<min_cell_size<<" r_org = "<<r_org<<" Rt = "<<Rt<<std::endl;
 				if(r_org < 1.75 * Rt && r_org > 0.6 * Rt)
 					continue;
 				// if(r_org < 3 * Rt && cells[i].temperature < 1e7 && cells[i].velocity.x < -10)
@@ -1311,7 +1320,7 @@ int main(void)
 			sim->timeAdvance2();
 			if (rank == 0)
 				std::cout << "Finished hydro step" << std::endl;
-			if (full_gravity && sim->getCycle() % 10 == 0)
+			if (full_gravity && sim->getCycle() % 5 == 0)
 			{
 				if(rank == 0)
 					std::cout<<"Doing AMR"<<std::endl;
