@@ -3,6 +3,8 @@
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
 #include <limits>
+#include <unordered_set>
+#include <unordered_map>
 #include "3D/tessellation/utils/PolyClip.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "misc/universal_error.hpp"
@@ -48,57 +50,20 @@ namespace
 		refine_direction = new_direction;
 	}
 
-	std::pair<vector<size_t>, vector<double> > RemoveNeighbors(vector<double> const& merits, vector<size_t> const& candidates,
+	std::pair<vector<size_t>, vector<double> > GreedyRemoveCandidates(
+		vector<double> const& merits, vector<size_t> const& candidates,
 		Tessellation3D const& tess)
 	{
-		vector<size_t> result_names;
-		vector<double> result_merits;
 		if (merits.size() != candidates.size())
-			throw UniversalError("Merits and Candidates don't have same size in RemoveNeighbors");
-		// Make sure there are no neighbors
-		vector<size_t> bad_neigh;
-		vector<size_t> neigh;
-		for (size_t i = 0; i < merits.size(); ++i)
-		{
-			bool good = true;
-			tess.GetNeighbors(candidates[i], neigh);
-			size_t nneigh = neigh.size();
-			if (find(bad_neigh.begin(), bad_neigh.end(), candidates[i]) != bad_neigh.end())
-				good = false;
-			else
-			{
-				for (size_t j = 0; j < nneigh; ++j)
-				{
-					if (binary_search(candidates.begin(), candidates.end(), neigh[j]))
-					{
-						if (merits[i] < merits[static_cast<size_t>(lower_bound(candidates.begin(), candidates.end(),
-							neigh[j]) - candidates.begin())])
-						{
-							good = false;
-							break;
-						}
-						if (fabs(merits[i] - merits[static_cast<size_t>(lower_bound(candidates.begin(), candidates.end(),
-							neigh[j]) - candidates.begin())]) < 1e-9)
-						{
-							if (find(bad_neigh.begin(), bad_neigh.end(), neigh[j]) == bad_neigh.end())
-								bad_neigh.push_back(neigh[j]);
-						}
-					}
-				}
-			}
-			if (good)
-			{
-				result_names.push_back(candidates[i]);
-				result_merits.push_back(merits[i]);
-			}
-		}
-		return std::pair<vector<size_t>, vector<double> >(result_names, result_merits);
-	}
+			throw UniversalError("Merits and Candidates don't have same size in GreedyRemoveCandidates");
+		size_t N = candidates.size();
+
+		vector<size_t> all_candidates = candidates;
+		vector<double> all_merits = merits;
 
 #ifdef RICH_MPI
-	std::pair<vector<size_t>, vector<double> > RemoveMPINeighbors(vector<double> const& merits, vector<size_t> const& candidates,
-		Tessellation3D const& tess)
-	{
+		size_t Norg = tess.GetPointNo();
+		// Exchange candidate info with MPI neighbor ranks
 		vector<vector<size_t> > duplicated_indeces = tess.GetDuplicatedPoints();
 		vector<vector<size_t> > sort_indeces(duplicated_indeces.size());
 		for (size_t i = 0; i < duplicated_indeces.size(); ++i)
@@ -109,80 +74,122 @@ namespace
 		size_t nproc = duplicated_indeces.size();
 		vector<vector<size_t> > indeces(nproc);
 		vector<vector<double> > merit_send(nproc);
-		vector<size_t> neigh;
-		size_t Norg = tess.GetPointNo();
-		size_t Nreomve = merits.size();
-		// Send/recv data
-		for (size_t i = 0; i < Nreomve; ++i)
+		vector<size_t> neigh_tmp;
+		for (size_t i = 0; i < N; ++i)
 		{
-			tess.GetNeighbors(candidates[i], neigh);
-			size_t Nneigh = neigh.size();
-			for (size_t j = 0; j < Nneigh; ++j)
+			tess.GetNeighbors(candidates[i], neigh_tmp);
+			bool has_ghost = false;
+			for (size_t j = 0; j < neigh_tmp.size(); ++j)
 			{
-				if (neigh[j] >= Norg)
+				if (neigh_tmp[j] >= Norg)
 				{
-					for (size_t k = 0; k < nproc; ++k)
+					has_ghost = true;
+					break;
+				}
+			}
+			if (has_ghost)
+			{
+				for (size_t k = 0; k < nproc; ++k)
+				{
+					vector<size_t>::const_iterator it = binary_find(duplicated_indeces[k].begin(),
+						duplicated_indeces[k].end(), candidates[i]);
+					if (it != duplicated_indeces[k].end())
 					{
-						vector<size_t>::const_iterator it = binary_find(duplicated_indeces[k].begin(),
-							duplicated_indeces[k].end(), candidates[i]);
-						if (it != duplicated_indeces[k].end())
-						{
-							indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
-							merit_send[k].push_back(merits[i]);
-						}
+						indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
+						merit_send[k].push_back(merits[i]);
 					}
 				}
 			}
 		}
 		indeces = MPI_exchange_data(tess.GetDuplicatedProcs(), indeces);
 		merit_send = MPI_exchange_data(tess.GetDuplicatedProcs(), merit_send);
-		vector<size_t> all_indeces, temp;
-		vector<double> all_merits;
 		for (size_t i = 0; i < nproc; ++i)
 		{
 			if (!indeces[i].empty())
 			{
 				indeces[i] = VectorValues(tess.GetGhostIndeces()[i], indeces[i]);
-				all_indeces.insert(all_indeces.end(), indeces[i].begin(), indeces[i].end());
+				all_candidates.insert(all_candidates.end(), indeces[i].begin(), indeces[i].end());
 				all_merits.insert(all_merits.end(), merit_send[i].begin(), merit_send[i].end());
 			}
 		}
-		sort_index(all_indeces, temp);
-		std::sort(all_indeces.begin(), all_indeces.end());
-		all_merits = VectorValues(all_merits, temp);
-		// remove neighbors
-		std::pair<vector<size_t>, vector<double> > res;
-		res.first.reserve(Nreomve);
-		res.second.reserve(Nreomve);
-		for (size_t i = 0; i < Nreomve; ++i)
+#endif // RICH_MPI
+
+		// Build candidate lookup set and adjacency map
+		size_t Nall = all_candidates.size();
+		std::unordered_set<size_t> candidate_set(all_candidates.begin(), all_candidates.end());
+
+		// Pre-build adjacency between candidates using GetNeighbors on local cells only
+		// (ghost cells don't support GetNeighbors; the symmetric relationship is captured
+		// from the local side since if L neighbors G, then G neighbors L)
+		std::unordered_map<size_t, vector<size_t> > candidate_adj;
+		vector<size_t> neigh;
+		for (size_t k = 0; k < Nall; ++k)
 		{
-			bool good = true;
-			tess.GetNeighbors(candidates[i], neigh);
-			size_t Nneigh = neigh.size();
-			for (size_t j = 0; j < Nneigh; ++j)
+			size_t cell = all_candidates[k];
+#ifdef RICH_MPI
+			if (cell >= Norg)
+				continue;
+#endif
+			tess.GetNeighbors(cell, neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
 			{
-				if (neigh[j] >= Norg)
+				if (candidate_set.count(neigh[j]))
 				{
-					vector<size_t>::const_iterator it = binary_find(all_indeces.begin(), all_indeces.end(), neigh[j]);
-					if (it != all_indeces.end())
-					{
-						if (all_merits[static_cast<size_t>(it - all_indeces.begin())] > merits[i])
-						{
-							good = false;
-							break;
-						}
-					}
+					candidate_adj[cell].push_back(neigh[j]);
+					if (neigh[j] != cell)
+						candidate_adj[neigh[j]].push_back(cell);
 				}
 			}
-			if (good)
+		}
+
+		// Sort by merit descending; break ties by cell index ascending
+		vector<size_t> order(Nall);
+		for (size_t i = 0; i < Nall; ++i)
+			order[i] = i;
+		std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
+		{
+			if (all_merits[a] != all_merits[b])
+				return all_merits[a] > all_merits[b];
+			return all_candidates[a] < all_candidates[b];
+		});
+
+		// Greedy: accept highest-merit candidate, exclude its candidate-neighbors
+		std::unordered_set<size_t> excluded;
+		vector<size_t> result_names;
+		vector<double> result_merits;
+		result_names.reserve(N);
+		result_merits.reserve(N);
+		for (size_t k = 0; k < Nall; ++k)
+		{
+			size_t idx = order[k];
+			size_t cell = all_candidates[idx];
+			if (excluded.count(cell))
+				continue;
+			// Accept this candidate (only add local cells to result)
+#ifdef RICH_MPI
+			if (cell < Norg)
 			{
-				res.first.push_back(candidates[i]);
-				res.second.push_back(merits[i]);
+#endif
+				result_names.push_back(cell);
+				result_merits.push_back(all_merits[idx]);
+#ifdef RICH_MPI
+			}
+#endif
+			// Exclude all its candidate-neighbors
+			std::unordered_map<size_t, vector<size_t> >::const_iterator adj_it = candidate_adj.find(cell);
+			if (adj_it != candidate_adj.end())
+			{
+				for (size_t j = 0; j < adj_it->second.size(); ++j)
+					excluded.insert(adj_it->second[j]);
 			}
 		}
-		return res;
+
+		// Sort results by cell index for downstream compatibility
+		vector<size_t> sort_idx = sort_index(result_names);
+		result_names = VectorValues(result_names, sort_idx);
+		result_merits = VectorValues(result_merits, sort_idx);
+		return std::pair<vector<size_t>, vector<double> >(result_names, result_merits);
 	}
-#endif //RICH_MPI
 
 	std::vector<Vector3D> GetNewPoints(Tessellation3D const& tess, std::pair<vector<size_t>,
 		vector<Vector3D> > &ToRefine)
@@ -1101,11 +1108,8 @@ void AMR3D::operator() (HDSim3D &sim)
 	vector<size_t> indeces = sort_index(ToRemove.first);
 	ToRemove.second = VectorValues(ToRemove.second, indeces);
 	ToRemove.first = VectorValues(ToRemove.first, indeces);
-	// remove neighboring remove points
-	ToRemove = RemoveNeighbors(ToRemove.second, ToRemove.first, tess);
-#ifdef RICH_MPI
-	ToRemove = RemoveMPINeighbors(ToRemove.second, ToRemove.first, tess);
-#endif
+	// Remove neighboring candidates via greedy independent set
+	ToRemove = GreedyRemoveCandidates(ToRemove.second, ToRemove.first, tess);
 	// Get points to refine
 	std::pair<vector<size_t>, std::vector<Vector3D> > ToRefine = refine_.ToRefine(tess, cells, time);
 	sort_index(ToRefine.first, indeces);
