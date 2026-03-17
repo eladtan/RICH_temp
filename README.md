@@ -206,6 +206,8 @@ The suite builds and validates these regression cases:
 | `marshak_wave_4` | serial | Marshak wave Problem 4 — divergent density rho=x^{-40/139}, stretched grid |
 | `gresho_euler` | serial | Gresho vortex with Eulerian (fixed) mesh, t_end=5 |
 | `gresho_lagrangian` | mpi | Gresho vortex with Lagrangian + RoundCells mesh, t_end=5 (Slurm, 8 tasks) |
+| `yee_vortex_64` | mpi | Yee isentropic vortex 64x64, Lagrangian + RoundCells, t_end=10 (Slurm, 8 tasks) |
+| `yee_vortex_128` | mpi | Yee isentropic vortex 128x128, Lagrangian + RoundCells, t_end=10 (Slurm, 16 tasks) |
 | `spherical_collapse` | mpi | Spherical shell collapse symmetry test, Eulerian mesh (Slurm, 64 tasks) |
 | `spherical_gauss_linear` | serial | SphericalLinearGauss3D LSQ gradient verification (linear field, machine precision) |
 | `rayleigh_taylor_mpi` | mpi | 3D Rayleigh-Taylor instability, Lagrangian+RoundCells mesh (Slurm, 128 tasks) |
@@ -222,6 +224,7 @@ Acceptance checks are physics-based:
 - **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 2.5% for density, gas temperature, and radiation temperature.
 - **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
 - **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
+- **Yee isentropic vortex (64 / 128)**: stationary isentropic vortex (Yee et al. 1999) with beta=5, gamma=1.4, domain [-5,5]^2. Lagrangian + RoundCells mesh, run to t=10. Volume-weighted L1 density error vs analytical IC must be <= 0.05. Run at 64x64 and 128x128 to verify second-order convergence.
 - **Spherical collapse**: collapse a dense shell (0.9 < r < 1.0) on an Eulerian mesh built from replicated rounded sphere templates. Run until inward velocity at r=0.05 reaches 1. Require max angular scatter (std-dev/mean) of density and velocity across radial bins below 0.1.
 - **Spherical Gauss linear**: fill cells with fields linear in spherical coordinates (r, theta) and verify that the LSQ gradient in `SphericalLinearGauss3D` recovers them to machine precision. Scalar max relative error < 1e-8, velocity max relative error < 0.1.
 - **Rayleigh-Taylor**: 3D RT instability with ~1e6 cells, heavy-over-light density stratification with constant gravity. Flat interface with velocity perturbation in vz (amplitude 0.03, Gaussian-localised). Fit the exponential growth rate of vertical kinetic energy in the t=2 to t=3 window and require it to be within 25% of the analytical value sigma = sqrt(A*g*k).
@@ -237,6 +240,7 @@ You can tune tolerances with environment variables:
 - `MACH2_MAX_DENSITY_REL_L1`, `MACH2_MAX_TEMPERATURE_REL_L1`
 - `MARSHAK_MAX_TGAS_REL_L1`, `MARSHAK_MAX_TRAD_REL_L1`
 - `GRESHO_EULER_MAX_L1`, `GRESHO_LAGRANGIAN_MAX_L1`
+- `YEE_VORTEX_MAX_DENSITY_L1`
 - `COLLAPSE_MAX_DENSITY_SCATTER`, `COLLAPSE_MAX_VELOCITY_SCATTER`
 - `RT_MAX_GROWTH_RATE_REL_ERROR`
 
@@ -358,6 +362,8 @@ Clean all saved regression logs and generated figures:
   - `regression_tests/cases/marshak_wave_*/marshak_check.stderr.log` (Marshak wave check details)
   - `regression_tests/cases/gresho_euler/gresho_check.stderr.log` (Gresho Euler check details)
   - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
+  - `regression_tests/cases/yee_vortex_64/vortex_check.stderr.log` (Yee vortex 64x64 check details)
+  - `regression_tests/cases/yee_vortex_128/vortex_check.stderr.log` (Yee vortex 128x128 check details)
   - `regression_tests/cases/spherical_collapse/collapse_metrics.txt` (Spherical collapse symmetry metrics)
   - `regression_tests/cases/rayleigh_taylor_mpi/rt_check.stderr.log` (Rayleigh-Taylor growth rate check details)
   - `regression_tests/cases/eulerian_diffusion_freefree_compare/run.stderr.log` (free-free suite runner errors)
@@ -393,6 +399,7 @@ Available plots:
 | `marshak_wave_4` | Tgas and Trad vs x (divergent density, stretched grid) |
 | `gresho_euler` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
 | `gresho_lagrangian` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
+| `yee_vortex_64` / `yee_vortex_128` | Density field, pressure field, density vs r (both resolutions), L1 convergence log-log |
 | `spherical_collapse` | Radial density profile and angular scatter vs r |
 | `rayleigh_taylor_mpi` | Vertical kinetic energy vs time (log scale) with fitted growth rate; density slice in xz plane |
 | `eulerian_diffusion_freefree_suite` | 4-way overlays for `Tgas`, `Trad`, density, and `vx` (512 / 512-limited / 32 / 32-limited) |

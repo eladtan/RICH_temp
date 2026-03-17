@@ -651,6 +651,163 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Yee isentropic vortex plotters
+# --------------------------------------------------------------------------- #
+
+
+def _yee_density_analytic(x, y):
+    gamma = 1.4
+    beta = 5.0
+    r2 = x**2 + y**2
+    T = 1.0 - (gamma - 1.0) * beta**2 / (8.0 * gamma * np.pi**2) * np.exp(1.0 - r2)
+    return T ** (1.0 / (gamma - 1.0))
+
+
+def _parse_density_l1(check_log: Path) -> float | None:
+    """Extract DENSITY_L1 value from a vortex_check.stdout.log file."""
+    if not check_log.exists():
+        return None
+    with open(str(check_log)) as f:
+        for line in f:
+            if line.startswith("DENSITY_L1="):
+                try:
+                    return float(line.split("=", 1)[1].strip())
+                except ValueError:
+                    return None
+    return None
+
+
+def plot_yee_isentropic_vortex(root: Path, out_dir: Path) -> bool:
+    """Yee isentropic vortex: density/pressure 2D, density vs r, L1 convergence."""
+    cases = root / "regression_tests" / "cases"
+    profile_64 = cases / "yee_vortex_64" / "vortex_profile.txt"
+    profile_128 = cases / "yee_vortex_128" / "vortex_profile.txt"
+
+    if not profile_128.exists():
+        print(f"  [yee_vortex] 128x128 profile not found: {profile_128}")
+        return False
+
+    plt = _get_plt()
+    from matplotlib.tri import Triangulation
+
+    any_ok = False
+
+    # Load 128 data for 2D plots
+    raw128 = np.loadtxt(str(profile_128))
+    if raw128.ndim == 1:
+        raw128 = np.expand_dims(raw128, axis=0)
+    x128 = raw128[:, 0]
+    y128 = raw128[:, 1]
+    vol128 = raw128[:, 2]
+    rho128 = raw128[:, 3]
+    p128 = raw128[:, 4]
+
+    tri128 = Triangulation(x128, y128)
+
+    # Figure 1: Density in xy-plane (128x128)
+    fig1, ax1 = plt.subplots(figsize=(6, 5))
+    tc1 = ax1.tripcolor(tri128, rho128, shading="flat", cmap="viridis")
+    fig1.colorbar(tc1, ax=ax1, label="Density")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title("Yee Vortex 128$\\times$128 -- Density")
+    ax1.set_aspect("equal")
+    fig1.tight_layout()
+    _save_fig(fig1, out_dir, "yee_vortex_density_2d")
+    plt.close(fig1)
+    any_ok = True
+
+    # Figure 2: Pressure in xy-plane (128x128)
+    fig2, ax2 = plt.subplots(figsize=(6, 5))
+    tc2 = ax2.tripcolor(tri128, p128, shading="flat", cmap="viridis")
+    fig2.colorbar(tc2, ax=ax2, label="Pressure")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_title("Yee Vortex 128$\\times$128 -- Pressure")
+    ax2.set_aspect("equal")
+    fig2.tight_layout()
+    _save_fig(fig2, out_dir, "yee_vortex_pressure_2d")
+    plt.close(fig2)
+
+    # Figure 3: Density vs r (radially binned, both resolutions)
+    r128 = np.sqrt(x128**2 + y128**2)
+    rho_exact_128 = _yee_density_analytic(x128, y128)
+
+    nbins = 40
+    r_max = 5.0
+    r_edges = np.linspace(0, r_max, nbins + 1)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+
+    def _radial_bin(r, rho, vol):
+        binned = np.zeros(nbins)
+        for i in range(nbins):
+            mask = (r >= r_edges[i]) & (r < r_edges[i + 1])
+            if np.any(mask):
+                binned[i] = np.sum(rho[mask] * vol[mask]) / np.sum(vol[mask])
+        return binned
+
+    rho_binned_128 = _radial_bin(r128, rho128, vol128)
+    rho_exact_binned = _radial_bin(r128, rho_exact_128, vol128)
+
+    fig3, ax3 = plt.subplots(figsize=(8, 5))
+    ax3.plot(r_centers, rho_exact_binned, "r-", linewidth=2, label="Analytical IC")
+
+    if profile_64.exists():
+        raw64 = np.loadtxt(str(profile_64))
+        if raw64.ndim == 1:
+            raw64 = np.expand_dims(raw64, axis=0)
+        x64 = raw64[:, 0]
+        y64 = raw64[:, 1]
+        vol64 = raw64[:, 2]
+        rho64 = raw64[:, 3]
+        r64 = np.sqrt(x64**2 + y64**2)
+        rho_binned_64 = _radial_bin(r64, rho64, vol64)
+        ax3.plot(r_centers, rho_binned_64, "bs-", markersize=3,
+                 linewidth=1, label="RICH 64$\\times$64")
+
+    ax3.plot(r_centers, rho_binned_128, "ko-", markersize=3,
+             linewidth=1, label="RICH 128$\\times$128")
+    ax3.set_xlabel("r")
+    ax3.set_ylabel("Density")
+    ax3.set_title("Yee Isentropic Vortex -- Density Profile")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    fig3.tight_layout()
+    _save_fig(fig3, out_dir, "yee_vortex_density_r")
+    plt.close(fig3)
+
+    # Figure 4: L1 convergence log-log plot
+    l1_64 = _parse_density_l1(cases / "yee_vortex_64" / "vortex_check.stdout.log")
+    l1_128 = _parse_density_l1(cases / "yee_vortex_128" / "vortex_check.stdout.log")
+
+    if l1_64 is not None and l1_128 is not None and l1_64 > 0 and l1_128 > 0:
+        Ns = np.array([64, 128])
+        L1s = np.array([l1_64, l1_128])
+
+        fig4, ax4 = plt.subplots(figsize=(7, 5))
+        ax4.loglog(Ns, L1s, "ko-", markersize=8, linewidth=2, label="RICH")
+
+        N_ref = np.array([48, 192])
+        L1_ref = L1s[0] * (Ns[0] / N_ref) ** 2
+        ax4.loglog(N_ref, L1_ref, "r--", linewidth=1.5, label="2nd order")
+
+        ax4.set_xlabel("N (cells per side)")
+        ax4.set_ylabel("$L_1$ density error")
+        ax4.set_title("Yee Isentropic Vortex -- Convergence")
+        ax4.legend()
+        ax4.grid(True, alpha=0.3, which="both")
+        fig4.tight_layout()
+        _save_fig(fig4, out_dir, "yee_vortex_convergence")
+        plt.close(fig4)
+        print(f"  [yee_vortex] saved convergence plot (L1_64={l1_64:.3e}, L1_128={l1_128:.3e})")
+    else:
+        print(f"  [yee_vortex] skipped convergence plot (L1 values not available)")
+
+    print(f"  [yee_vortex] saved yee_vortex_density_2d/pressure_2d/density_r .png/.pdf")
+    return any_ok
+
+
+# --------------------------------------------------------------------------- #
 # Rayleigh-Taylor plotter
 # --------------------------------------------------------------------------- #
 
@@ -765,6 +922,8 @@ ALL_PLOTTERS = {
     "marshak_wave_4": plot_marshak_wave_4,
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
+    "yee_vortex_64": plot_yee_isentropic_vortex,
+    "yee_vortex_128": plot_yee_isentropic_vortex,
     "rayleigh_taylor_mpi": plot_rayleigh_taylor,
     "eulerian_diffusion_freefree_1d": plot_eulerian_diffusion_freefree_1d,
 }

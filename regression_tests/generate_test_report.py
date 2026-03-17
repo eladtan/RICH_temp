@@ -844,6 +844,80 @@ TESTS = [
         ),
     },
     {
+        "id": "yee_vortex_64",
+        "title": "Yee Isentropic Vortex (64$\\times$64, Lagrangian)",
+        "description": (
+            "Stationary isentropic vortex (Yee et al.\\ 1999) on a Lagrangian mesh "
+            "with RoundCells correction. The vortex is an exact steady-state solution "
+            "of the compressible Euler equations: a smooth velocity field with matching "
+            "isentropic density and pressure perturbations.\n\n"
+            "The analytical solution at any time $t$ equals the initial condition, so "
+            "the $L_1$ density error at $t=10$ measures numerical dissipation and mesh "
+            "deformation artifacts. This is the lower-resolution run of the convergence "
+            "pair (see also \\texttt{yee\\_vortex\\_128}).\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Lagrangian mesh motion:} Verifies that the moving "
+            "mesh tracks a smooth rotational flow over many revolutions.\n"
+            "  \\item \\textbf{Isentropic flow preservation:} Tests the scheme's "
+            "ability to maintain entropy in a smooth, vortex-dominated flow.\n"
+            "  \\item \\textbf{Density convergence:} Paired with the 128$\\times$128 "
+            "run to verify second-order spatial convergence.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"$64\times64\times1$ Cartesian mesh on $[-5,\,5]^2$, $\gamma = 1.4$. "
+            r"Vortex strength $\beta = 5$, centred at the origin. "
+            r"$T = 1 - \frac{(\gamma-1)\beta^2}{8\gamma\pi^2} e^{1-r^2}$, "
+            r"$\rho = T^{1/(\gamma-1)}$, $p = T^{\gamma/(\gamma-1)}$, "
+            r"$v_x = -\frac{\beta}{2\pi} y\, e^{(1-r^2)/2}$, "
+            r"$v_y = \frac{\beta}{2\pi} x\, e^{(1-r^2)/2}$. "
+            r"$t_{\mathrm{end}} = 10$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Lagrangian + RoundCells (restricted to $xy$-plane).",
+        "execution": "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Volume-weighted $L_1$ density error at $t=10$ compared to the "
+            r"analytical initial condition must be $\le 0.05$."
+        ),
+        "plots": [
+            "yee_vortex_density_2d.png",
+            "yee_vortex_pressure_2d.png",
+            "yee_vortex_density_r.png",
+            "yee_vortex_convergence.png",
+        ],
+        "plot_caption": (
+            "Yee isentropic vortex at $t=10$: density field (top left), pressure "
+            "field (top right), radially binned density profile vs.\\ analytical "
+            "IC for both resolutions (bottom left), and $L_1$ density error "
+            "convergence with second-order reference (bottom right)."
+        ),
+    },
+    {
+        "id": "yee_vortex_128",
+        "title": "Yee Isentropic Vortex (128$\\times$128, Lagrangian)",
+        "description": (
+            "Higher-resolution companion to \\texttt{yee\\_vortex\\_64}. "
+            "Same isentropic vortex problem on a $128\\times128\\times1$ mesh. "
+            "Together with the 64$\\times$64 run, this establishes the spatial "
+            "convergence rate of the Lagrangian scheme for smooth flows."
+        ),
+        "initial_conditions": (
+            r"$128\times128\times1$ Cartesian mesh on $[-5,\,5]^2$, same "
+            r"$\gamma$, $\beta$, velocity and thermodynamic profiles as the "
+            r"64$\times$64 case. $t_{\mathrm{end}} = 10$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Lagrangian + RoundCells (restricted to $xy$-plane).",
+        "execution": "MPI, 16~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Volume-weighted $L_1$ density error at $t=10$ must be $\le 0.05$."
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
         "id": "spherical_gauss_linear",
         "title": "Spherical LSQ Gradient -- Linear Field Verification",
         "description": (
@@ -1440,6 +1514,19 @@ def _read_gresho_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
     return rows
 
 
+def _read_yee_vortex_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / test_id / "vortex_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("DENSITY_L1")
+    if val is not None:
+        thr = "0.05"
+        passed = float(val) <= float(thr)
+        rows.append(("Density $L_1$", val, thr, passed))
+    return rows
+
+
 def _read_spherical_gauss_linear_metrics(cases_dir: Path) -> list[MetricRow]:
     kv = _parse_kv_space(cases_dir / "spherical_gauss_linear" / "gauss_linear_metrics.txt")
     if not kv:
@@ -1551,6 +1638,8 @@ METRIC_READERS: dict[str, object] = {
     "marshak_wave_4": lambda cd: _read_marshak_wave_metrics(cd, 4),
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
+    "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
+    "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
     "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
     "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
     "rayleigh_taylor_mpi": lambda cd: _read_rt_metrics(cd),
