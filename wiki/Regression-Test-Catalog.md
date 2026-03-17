@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 20 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 22 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -495,7 +495,91 @@ Same as `gresho_euler`.
 
 ---
 
-## 15. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+## 15. yee_vortex_64 -- Yee Isentropic Vortex (64x64, Lagrangian)
+
+**Tags:** `mpi`
+
+### Physics
+
+Stationary isentropic vortex (Yee et al. 1999) -- an exact steady-state solution of the compressible Euler equations. A smooth rotational velocity field is in exact pressure-gradient balance with isentropic density and pressure perturbations. The analytical solution at any time equals the initial condition.
+
+This is the lower-resolution run of a convergence pair (see also `yee_vortex_128`).
+
+**Governing equations:** 2D Euler equations (simulated in 3D with 1 cell in z).
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Domain | [-5, 5]^2 x [0, dz] |
+| Grid | 64 x 64 x 1 Cartesian |
+| EOS | Ideal gas, gamma = 1.4 |
+| Vortex strength | beta = 5 |
+| Vortex center | (0, 0) |
+| Mesh motion | Lagrangian + RoundCells (xy-plane) |
+| Solver | HLLC, LinearGauss3D |
+| Boundary | Rigid wall |
+| End time | t = 10 |
+| SLURM | 8 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/yee_vortex_64/test.cpp`
+
+### Output
+
+`vortex_profile.txt` -- columns: x, y, volume, density, pressure, vx, vy
+
+### Validation
+
+The Python checker `regression_tests/lib/check_yee_vortex.py` computes the volume-weighted L1 density error against the analytical initial condition.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Density L1 | <= 0.05 | `YEE_VORTEX_MAX_DENSITY_L1` |
+
+### References
+
+- Yee, H-C., Sandham, N. & Djomehri, M. (1999). "Low dissipative high order shock-capturing methods using characteristic-based filters." *JCP* 150, 199-238.
+
+---
+
+## 16. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
+
+**Tags:** `mpi`
+
+### Physics
+
+Higher-resolution companion to `yee_vortex_64`. Same isentropic vortex problem on a 128x128x1 mesh. Together with the 64x64 run, this establishes the spatial convergence rate of the Lagrangian scheme for smooth flows.
+
+### Configuration
+
+Same as `yee_vortex_64` except:
+
+| Parameter | Value |
+|-----------|-------|
+| Grid | 128 x 128 x 1 Cartesian |
+| SLURM | 16 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/yee_vortex_128/test.cpp`
+
+### Output
+
+`vortex_profile.txt` -- same format as 64x64 case
+
+### Validation
+
+Same as `yee_vortex_64`.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Density L1 | <= 0.05 | `YEE_VORTEX_MAX_DENSITY_L1` |
+
+---
+
+## 17. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -520,7 +604,7 @@ Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D 
 
 ---
 
-## 16. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+## 18. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -544,7 +628,7 @@ Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mo
 
 ---
 
-## 17. spherical_collapse -- Spherical Collapse Symmetry
+## 19. spherical_collapse -- Spherical Collapse Symmetry
 
 **Tags:** `mpi`
 
@@ -576,7 +660,7 @@ A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Te
 
 ---
 
-## 18. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+## 20. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
 
 **Tags:** `mpi`
 
@@ -613,7 +697,7 @@ The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the
 
 ---
 
-## 19. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+## 21. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -642,7 +726,7 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 20. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+## 22. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -689,6 +773,8 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
+| `yee_vortex_128` | mpi | Isentropic vortex (128x128) | IC density comparison | L1 <= 0.05 |
 | `cartesian_gauss_linear` | serial | Cartesian interpolation | Exact face values | scalar error < 1e-6 |
 | `spherical_gauss_linear` | serial | Spherical interpolation | Exact face values | scalar error < 1e-8 |
 | `spherical_collapse` | mpi | Spherical symmetry | Scatter in radial bins | scatter < 0.1 |
