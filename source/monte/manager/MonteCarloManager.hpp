@@ -1009,6 +1009,10 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     }
 
                     MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
+
+                    #ifdef MC_TRACING_HISTORY
+                        particle.recordHistory(particle.cellIndex, static_cast<int>(this->rank_world), static_cast<int>(functionality.change));
+                    #endif // MC_TRACING_HISTORY
     
                     // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
                     if(debug)
@@ -1073,13 +1077,21 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             if(it == ranks_ghost_map.end())
                             {
                                 // leaving domain
+                                #ifdef MC_TRACING_HISTORY
+                                    T preReflectLoc = particle.location;
+                                    T preReflectVel = particle.velocity;
+                                #endif // MC_TRACING_HISTORY
                                 MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
                                 if(debug)
                                 {
                                     std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;
                                 }
                                 if(status == MonteCarloParticleStatus::REFLECT)
-                                {}
+                                {
+                                    #ifdef MC_TRACING_HISTORY
+                                        particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
+                                    #endif // MC_TRACING_HISTORY
+                                }
                                 else if(status == MonteCarloParticleStatus::REMOVE)
                                 {
                                     stepData.leaving.push_back(particle);
@@ -1162,7 +1174,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             #endif // MONTECARLO_DEBUG
     
                             transferParticle(index, i, otherRank);
-                            break; // TODO:
+                            break; 
                         }
                     }
                     else if(functionality.change == MonteCarloParticleStatus::REMOVE)
@@ -1221,13 +1233,15 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     }
     active_ranks.swap(next_active_ranks);
 
+    bool toReturn = isEmpty and particlesToAdd.empty();
     if(not particlesToAdd.empty())
     {
         this->dynamicallyAdded += particlesToAdd.size();
         this->AddParticles(particlesToAdd);
+        particlesToAdd.clear();
     }
 
-    return isEmpty and particlesToAdd.empty();
+    return toReturn;
 }
 
 template<typename T, typename Grid>
@@ -1314,6 +1328,10 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             p.sentByRank = std::numeric_limits<rank_t>::max();
             p.lastSeen = 0;
             #endif // MONTECARLO_DEBUG
+            #ifdef MC_TRACING_HISTORY
+            p.tracingHistoryIndex = 0;
+            p.tracingHistoryCount = 0;
+            #endif // MC_TRACING_HISTORY
             p.timeLeft = fullDt;
             p.initialWeight = p.weight;
             p.steps = 0;

@@ -1,6 +1,7 @@
 #ifndef MONTE_CARLO_PARTICLE_HPP
 #define MONTE_CARLO_PARTICLE_HPP
 
+#include <sstream>
 #include <vector>
 #include <limits>
 #ifdef RICH_MPI
@@ -10,11 +11,29 @@
     #include "misc/serializable.hpp"
 #endif // RICH_MPI
 #include "misc/universal_error.hpp"
+#include "monte/MonteCarloParticleStatus.hpp"
 
 #define EPSILON 1e-12
 
 using dt_t = double;
 using distance_t = double;
+
+#ifdef MC_TRACING_HISTORY
+
+template<typename T>
+struct ParticleHistory
+{
+    size_t cellIndex = 0;
+    int rank = -1;
+    int operation = 0;
+    size_t step = 0;
+    bool reflected = false;
+    T location = T();
+    T velocity = T();
+    T preReflectLocation = T();
+    T preReflectVelocity = T();
+};
+#endif // MC_TRACING_HISTORY
 
 template<typename T, typename Grid>
 struct MonteCarloParticle
@@ -53,6 +72,60 @@ struct MonteCarloParticle
     size_t steps = 0;
     bool on_track = false;
     bool sent = false;
+
+    #ifdef MC_TRACING_HISTORY
+        ParticleHistory<T> tracingHistory[MC_TRACING_HISTORY] = {};
+        size_t tracingHistoryIndex = 0;
+        size_t tracingHistoryCount = 0;
+
+        inline void recordHistory(size_t cell, int rnk, int op)
+        {
+            ParticleHistory<T> &entry = this->tracingHistory[this->tracingHistoryIndex];
+            entry.cellIndex = cell;
+            entry.rank = rnk;
+            entry.operation = op;
+            entry.step = this->steps;
+            entry.reflected = false;
+            entry.location = this->location;
+            entry.velocity = this->velocity;
+            this->tracingHistoryIndex = (this->tracingHistoryIndex + 1) % MC_TRACING_HISTORY;
+            if(this->tracingHistoryCount < MC_TRACING_HISTORY)
+                this->tracingHistoryCount++;
+        }
+
+        inline void markLastHistoryReflected(const T &locBeforeReflect, const T &velBeforeReflect)
+        {
+            if(this->tracingHistoryCount == 0)
+                return;
+            size_t lastIdx = (this->tracingHistoryIndex + MC_TRACING_HISTORY - 1) % MC_TRACING_HISTORY;
+            this->tracingHistory[lastIdx].reflected = true;
+            this->tracingHistory[lastIdx].preReflectLocation = locBeforeReflect;
+            this->tracingHistory[lastIdx].preReflectVelocity = velBeforeReflect;
+        }
+
+        inline void addTracingHistoryToError(UniversalError &eo) const
+        {
+            eo.addEntry("Tracing History Count", this->tracingHistoryCount);
+            for(size_t h = 0; h < this->tracingHistoryCount; h++)
+            {
+                size_t idx = (this->tracingHistoryIndex - this->tracingHistoryCount + h + MC_TRACING_HISTORY) % MC_TRACING_HISTORY;
+                const ParticleHistory<T> &hist = this->tracingHistory[idx];
+                std::string prefix = "History[" + std::to_string(h) + "] ";
+                eo.addEntry(prefix + "Cell", hist.cellIndex);
+                eo.addEntry(prefix + "Rank", hist.rank);
+                eo.addEntry(prefix + "Op", MonteCarloParticleStatusToString(hist.operation));
+                eo.addEntry(prefix + "Step", hist.step);
+                eo.addEntry(prefix + "Location", hist.location);
+                eo.addEntry(prefix + "Velocity", hist.velocity);
+                if(hist.reflected)
+                {
+                    eo.addEntry(prefix + "REFLECTED", true);
+                    eo.addEntry(prefix + "Pre-Reflect Location", hist.preReflectLocation);
+                    eo.addEntry(prefix + "Pre-Reflect Velocity", hist.preReflectVelocity);
+                }
+            }
+        }
+    #endif // MC_TRACING_HISTORY
 
     explicit MonteCarloParticle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(std::numeric_limits<double>::max()), const T &velocity_ = T(std::numeric_limits<double>::max()), dt_t timeLeft_ = dt_t(std::numeric_limits<double>::max())):
         id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), energy(0), weight(0), initialWeight(0), steps(0), on_track(false)
@@ -253,6 +326,9 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
             eo.addEntry(prefix + "neighbor1", sides.first);
             eo.addEntry(prefix + "neighbor2", sides.second);
         }
+        #ifdef MC_TRACING_HISTORY
+            this->addTracingHistoryToError(eo);
+        #endif // MC_TRACING_HISTORY
         throw eo;
     }
     // assert the point is inside this cell
@@ -271,7 +347,7 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
         {
             const size_t &faceIdx = faces[i];
             const T &normal = grid.Normal(faceIdx);
-            const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
+            // const std::pair<size_t, size_t> &sides = grid.GetFaceNeighbors(faceIdx);
             // size_t otherNeighbor = (sides.first == this->cellIndex)? sides.second : sides.first; // todo remove
             double distanceFromFace = std::abs(ScalarProd(normal, grid.FaceCM(faceIdx) - this->location)) / abs(normal);
             eo.addEntry("Face " + std::to_string(i) + " index", faceIdx);
@@ -279,6 +355,9 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
         }
         eo.addEntry("Norg", grid.GetPointNo());
         eo.addEntry("Particle", (*this));
+        #ifdef MC_TRACING_HISTORY
+            this->addTracingHistoryToError(eo);
+        #endif // MC_TRACING_HISTORY
         throw eo;
     }
 
@@ -302,10 +381,18 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
         double normalVelocityScalarProd = ScalarProd(normal, this->velocity);
         dt_t alpha = ScalarProd((pointOnFace - this->location), normal) / normalVelocityScalarProd;
         // if(verbose) std::cout << "For ID " << this->id << " of cell " << cellIndex << ", face " << faceIdx << " with neighbor " << otherNeighbor << ", distance is " << alpha << " (current min: " << min_alpha << ") and point will be " << this->location + alpha * this->velocity << std::endl;
-        eo.addEntry("Face " + std::to_string(faceIdx) + " distance to face", alpha);
+        eo.addEntry("Face " + std::to_string(faceIdx) + " distance to face", ScalarProd((pointOnFace - this->location), normal));
+        eo.addEntry("Face " + std::to_string(faceIdx) + " alpha", alpha);
         const T &pointOtherSide = grid.GetMeshPoint(otherNeighbor);
         eo.addEntry("Face " + std::to_string(faceIdx) + " distance from other neighbor", abs(pointOnFace - pointOtherSide));
+        std::ostringstream ss;
+        ss << grid.GetMeshPoint(sides.first) << " (point " << sides.first << "), and " << grid.GetMeshPoint(sides.second) << " (point " << sides.second << ")";
+        eo.addEntry("Face " + std::to_string(faceIdx) + " points", ss.str());
+        eo.addEntry("Face " + std::to_string(faceIdx) + " considered?", BOOST_UNLIKELY(normalVelocityScalarProd >= -velocityAbs)? "No" : "Yes");
     }
+    #ifdef MC_TRACING_HISTORY
+        this->addTracingHistoryToError(eo);
+    #endif // MC_TRACING_HISTORY
     throw eo;
 }
 
@@ -339,6 +426,22 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->lastSeenRankBuf);
     bytes += serializer->insert(this->lastSeenIndex);
     #endif // MONTECARLO_DEBUG
+    #ifdef MC_TRACING_HISTORY
+    for(size_t h = 0; h < MC_TRACING_HISTORY; h++)
+    {
+        bytes += serializer->insert(this->tracingHistory[h].cellIndex);
+        bytes += serializer->insert(this->tracingHistory[h].rank);
+        bytes += serializer->insert(this->tracingHistory[h].operation);
+        bytes += serializer->insert(this->tracingHistory[h].step);
+        bytes += serializer->insert(this->tracingHistory[h].reflected);
+        bytes += serializer->insert(this->tracingHistory[h].location);
+        bytes += serializer->insert(this->tracingHistory[h].velocity);
+        bytes += serializer->insert(this->tracingHistory[h].preReflectLocation);
+        bytes += serializer->insert(this->tracingHistory[h].preReflectVelocity);
+    }
+    bytes += serializer->insert(this->tracingHistoryIndex);
+    bytes += serializer->insert(this->tracingHistoryCount);
+    #endif // MC_TRACING_HISTORY
     return bytes;
 }
 
@@ -371,6 +474,22 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->lastSeenRankBuf, byteOffset + bytes);
     bytes += serializer->extract(this->lastSeenIndex, byteOffset + bytes);
     #endif // MONTECARLO_DEBUG
+    #ifdef MC_TRACING_HISTORY
+    for(size_t h = 0; h < MC_TRACING_HISTORY; h++)
+    {
+        bytes += serializer->extract(this->tracingHistory[h].cellIndex, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].rank, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].operation, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].step, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].reflected, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].location, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].velocity, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].preReflectLocation, byteOffset + bytes);
+        bytes += serializer->extract(this->tracingHistory[h].preReflectVelocity, byteOffset + bytes);
+    }
+    bytes += serializer->extract(this->tracingHistoryIndex, byteOffset + bytes);
+    bytes += serializer->extract(this->tracingHistoryCount, byteOffset + bytes);
+    #endif // MC_TRACING_HISTORY
     return bytes;
 }
 #endif // RICH_MPI

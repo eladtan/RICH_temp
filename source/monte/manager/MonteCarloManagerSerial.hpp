@@ -316,6 +316,10 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
             this->cellsStepsCounters[particle.cellIndex]++;
     
             MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
+
+            #ifdef MC_TRACING_HISTORY
+                particle.recordHistory(particle.cellIndex, 0, static_cast<int>(functionality.change));
+            #endif // MC_TRACING_HISTORY
     
             if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
             {
@@ -333,9 +337,17 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
                 else
                 {
                     // leaving domain
+                    #ifdef MC_TRACING_HISTORY
+                        T preReflectLoc = particle.location;
+                        T preReflectVel = particle.velocity;
+                    #endif // MC_TRACING_HISTORY
                     MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
                     if(status == MonteCarloParticleStatus::REFLECT)
-                    {}
+                    {
+                        #ifdef MC_TRACING_HISTORY
+                            particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
+                        #endif // MC_TRACING_HISTORY
+                    }
                     else if(status == MonteCarloParticleStatus::REMOVE)
                     {
                         // std::cout << "Particle " << particle << "(" << &particle << ")" << " is leaving the domain" << std::endl;
@@ -384,18 +396,21 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
 
     this->PutSelfParticles(particlesListCpy);
 
-    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
-    this->AddParticles(newParticles1);
-
     int length = this->particlesData.th_length;
     for(int i = 0; i < length; i++)
     {
         size_t particleIndex = this->particlesData.th[i];
         MCParticle &p = this->particlesData.particles[particleIndex];
+        #ifdef MC_TRACING_HISTORY
+        p.tracingHistoryIndex = 0;
+        p.tracingHistoryCount = 0;
+        #endif // MC_TRACING_HISTORY
         p.timeLeft = fullDt;
         p.initialWeight = p.weight;
         p.steps = 0;
     }
+
+    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
     
     this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
