@@ -5,6 +5,7 @@
 #include "BoundaryCondition.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "3D/tessellation/utils/RandomOnFace.hpp"
+#include "misc/universal_error.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 template<typename T, typename Grid>
@@ -34,7 +35,7 @@ template<typename T, typename Grid>
 MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
-    MonteCarloParticleStatus status;
+    size_t reflectsHad = 0;
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     for(const typename Grid::Face_T &face : faces)
     {
@@ -51,16 +52,27 @@ MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<
             {
                 return MonteCarloParticleStatus::REMOVE;
             }
+            reflectsHad++;
             // Reflect the particle
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
-            status = MonteCarloParticleStatus::REFLECT;
-            return status;
         }
     }
 
+    if(reflectsHad >= 2)
+    {
+        const T &center = this->grid.GetMeshPoint(particle.cellIndex);
+        constexpr double nudge = 1e-6;
+        particle.location = particle.location + nudge * (center - particle.location);
+    }
+    if(reflectsHad > 0)
+    {
+        return MonteCarloParticleStatus::REFLECT;    
+    }
+
     // should not reach here
-    std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
-    exit(1);
+    UniversalError eo("Particle is not on any boundary");
+    eo.addEntry("Particle", particle);
+    throw eo;
 }
 
 template<typename T, typename Grid>
@@ -112,6 +124,7 @@ std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateN
                         newParticle.velocity.x = (normal.x > 0)? -mu : mu;
                         double _1mmu = std::sqrt(1 - mu * mu);
                         double theta = 2 * M_PI * unif(re);
+                        newParticle.steps = 0;
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
                         newParticle.velocity *= units::clight;
@@ -120,6 +133,17 @@ std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateN
                         newParticle.initialWeight = newParticle.weight;
                         newParticle.timeLeft = fullDt * unif(re);
                         newParticle.cellIndex = i;
+                        if(this->grid.IsPointOutsideBox(newParticle.location))
+                        {
+                            T original = newParticle.location;
+                            T direction = point - original;
+                            double t = 1e-6;
+                            while(this->grid.IsPointOutsideBox(newParticle.location) && t < 1.0)
+                            {
+                                newParticle.location = original + t * direction;
+                                t *= 2;
+                            }
+                        }
                     }
                 }
             }

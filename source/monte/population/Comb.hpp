@@ -154,6 +154,22 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
             cum_sum_w += particle->weight;
         }
     }
+
+    for(auto &p : result)
+    {
+        if(this->grid.IsPointOutsideBox(p.location))
+        {
+            const Vector3D original = p.location;
+            const Vector3D direction = this->grid.GetMeshPoint(p.cellIndex) - original;
+            double t = 1e-6;
+            while(this->grid.IsPointOutsideBox(p.location) && t < 1.0)
+            {
+                p.location = original + t * direction;
+                t *= 2;
+            }
+        }
+    }
+
     return result;
 }
 

@@ -65,7 +65,7 @@ void MonteCarloPhysics<T, Grid>::updateGridData(void)
                 // we need to reverse it
                 normalTowardsCenterOfCell *= -1;
             }
-            normals.push_back(normalTowardsCenterOfCell);
+            normals.push_back(normalize(normalTowardsCenterOfCell));
             onFaces.push_back(this->grid.FaceCM(faceIdx));
         }
     }
