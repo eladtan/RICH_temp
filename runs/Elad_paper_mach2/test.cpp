@@ -8,6 +8,7 @@
 #include <string>
 #include <cmath>
 #include <algorithm>
+#include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
@@ -150,12 +151,15 @@ namespace
     };
 
     void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells,
+                        const std::shared_ptr<MonteCarloRadiationPhysics3D> physics,
                       const std::string &filename, double time_ns, size_t Np)
     {
         int rank = 0;
         #ifdef RICH_MPI
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         #endif // RICH_MPI
+
+        const std::vector<double> &Erad_time_avg = physics->getEradTimeAvg();
 
         size_t N = tess.GetPointNo();
         std::vector<ProfilePoint> data;
@@ -164,7 +168,7 @@ namespace
         {
             const Vector3D &p = tess.GetMeshPoint(i);
             data.emplace_back(p.x, cells[i].density, cells[i].temperature,
-                              cells[i].Erad, cells[i].velocity.x);
+                              Erad_time_avg[i], cells[i].velocity.x);
         }
 
         #ifdef RICH_MPI
@@ -189,6 +193,7 @@ namespace
     }
 
     void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells,
+                    const std::shared_ptr<MonteCarloRadiationPhysics3D> physics,
                   const std::string &filename)
     {
         size_t N = tess.GetPointNo();
@@ -202,8 +207,8 @@ namespace
             pressure[i] = cells[i].pressure;
         }
         WriteVoronoiVTKOnly(tess, filename,
-                            {t_keV, dens, vel_x, erad, pressure},
-                            {"T_gas_keV", "density", "velocity_x", "Erad", "pressure"});
+                            {t_keV, dens, vel_x, erad, physics->getEradTimeAvg(), pressure},
+                            {"T_gas_keV", "density", "velocity_x", "Erad", "Erad_time_avg", "pressure"});
     }
 }
 
@@ -225,8 +230,8 @@ int main(int argc, char *argv[])
   {
     size_t Np = 1024;
     std::string prefix = "mach2_mc";
-    size_t newPhotonsPerCell = 100;
-    size_t maxPhotonsPerCell = 200;
+    size_t newPhotonsPerCell = 25;
+    size_t maxPhotonsPerCell = 100;
     bool doResume = false;
 
     std::vector<std::string> positionalArgs;
@@ -256,7 +261,7 @@ int main(int argc, char *argv[])
     constexpr double v_dn = 1.5116e+07;   // cm/s (moving left)
 
     constexpr double t_final = 5e-9;   // 5 ns
-    constexpr double xmin = -0.21, xmax = 0.7;
+    constexpr double xmin = -0.21, xmax = 0.25;
 
     // CFL-based constant time step: dx / (|v_dn| + cs_dn) * CFL
     const double dx = (xmax - xmin) / Np;
@@ -265,6 +270,7 @@ int main(int argc, char *argv[])
 
     constexpr size_t boundaryPhotonsPerCell = 50;
     constexpr bool withHydro = true;
+    constexpr bool diffusionPressureGradient = false;
     constexpr size_t dumpInterval = 10;
     constexpr size_t vtkInterval = 25;
 
@@ -301,23 +307,23 @@ int main(int argc, char *argv[])
     // --- Ghost cell templates (needed for hydro BCs and fresh init) ---
     ComputationalCell3D left_cell, right_cell;
 
-    left_cell.density = rho_dn;
-    left_cell.temperature = T_dn;
-    left_cell.velocity = Vector3D(v_dn, 0, 0);
-    left_cell.internal_energy = eos.dT2e(left_cell.density, left_cell.temperature,
-                                         left_cell.tracers, ComputationalCell3D::tracerNames);
-    left_cell.pressure = eos.de2p(left_cell.density, left_cell.internal_energy,
-                                  left_cell.tracers, ComputationalCell3D::tracerNames);
-    left_cell.Erad = units::arad * std::pow(T_dn, 4) / left_cell.density;
-
-    right_cell.density = rho_up;
-    right_cell.temperature = T_up;
-    right_cell.velocity = Vector3D(3.4616e+07, 0, 0);
+    right_cell.density = rho_dn;
+    right_cell.temperature = T_dn;
+    right_cell.velocity = Vector3D(v_dn, 0, 0);
     right_cell.internal_energy = eos.dT2e(right_cell.density, right_cell.temperature,
-                                          right_cell.tracers, ComputationalCell3D::tracerNames);
-    right_cell.pressure = eos.de2p(right_cell.density, right_cell.internal_energy,
-                                   right_cell.tracers, ComputationalCell3D::tracerNames);
-    right_cell.Erad = units::arad * std::pow(T_up, 4) / right_cell.density;
+        right_cell.tracers, ComputationalCell3D::tracerNames);
+        right_cell.pressure = eos.de2p(right_cell.density, right_cell.internal_energy,
+        right_cell.tracers, ComputationalCell3D::tracerNames);
+        right_cell.Erad = units::arad * std::pow(T_dn, 4) / right_cell.density;
+
+    left_cell.density = rho_up;
+    left_cell.temperature = T_up;
+    left_cell.velocity = Vector3D(3.4616e+07, 0, 0);
+    left_cell.internal_energy = eos.dT2e(left_cell.density, left_cell.temperature,
+        left_cell.tracers, ComputationalCell3D::tracerNames);
+    left_cell.pressure = eos.de2p(left_cell.density, left_cell.internal_energy,
+        left_cell.tracers, ComputationalCell3D::tracerNames);
+    left_cell.Erad = units::arad * std::pow(T_up, 4) / left_cell.density;
 
     // --- Generate mesh & initial conditions (skipped on resume) ---
     Voronoi3D tess(ll, ur);
@@ -408,13 +414,13 @@ int main(int argc, char *argv[])
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
         std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
-            tess, cells, T_dn, T_up, boundaryPhotonsPerCell, withHydro);
+            tess, cells, T_up, T_dn, boundaryPhotonsPerCell, withHydro);
 
     std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
-        tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, newPhotonsPerCell, withHydro);
+        tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, newPhotonsPerCell, withHydro, diffusionPressureGradient);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell);
+        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
 
     std::vector<Particle3D> initialParticles;
     auto mcStep = std::make_shared<RadiationMCStep>(
@@ -427,9 +433,6 @@ int main(int argc, char *argv[])
         mcStep->setCost(std::make_shared<MCStepCostCalculator>(mcStep->getManager()));
     #endif
     sim.addPhysics(mcStep);
-    #ifdef RICH_MPI
-        sim.addMigrationBuffer(physics->getEradTimeAvgGrad());
-    #endif // RICH_MPI
 
     sim.SetTimeStep(dt);
 
@@ -476,8 +479,8 @@ int main(int argc, char *argv[])
 
     if(!doResume)
     {
-        WriteProfile(tess, cells, prefix + "_init.txt", 0, Np);
-        WriteVTK(tess, cells, prefix + "_init.vtu");
+        WriteProfile(tess, cells, physics, prefix + "_init.txt", 0, Np);
+        WriteVTK(tess, cells, physics, prefix + "_init.vtu");
     }
 
     // ===== Main time-stepping loop =====
@@ -525,14 +528,14 @@ int main(int argc, char *argv[])
 
             char buf[512];
             std::snprintf(buf, sizeof(buf), "%s_%05zu.txt", prefix.c_str(), dumpCount);
-            WriteProfile(tess, cells, buf, simTime * 1e9, Np);
+            WriteProfile(tess, cells, physics, buf, simTime * 1e9, Np);
         }
 
         if(cycle % vtkInterval == 0)
         {
             char buf[512];
             std::snprintf(buf, sizeof(buf), "%s_%05zu.vtu", prefix.c_str(), cycle / vtkInterval);
-            WriteVTK(tess, cells, buf);
+            WriteVTK(tess, cells, physics, buf);
 
             WriteSimulation(sim, simFile);
             if(rank == 0)
@@ -546,8 +549,8 @@ int main(int argc, char *argv[])
         std::cout << "Completed " << cycle << " cycles in " << wallSec << "s" << std::endl;
 
     // --- Final output ---
-    WriteProfile(tess, cells, prefix + "_final.txt", simTime * 1e9, Np);
-    WriteVTK(tess, cells, prefix + "_final.vtu");
+    WriteProfile(tess, cells, physics, prefix + "_final.txt", simTime * 1e9, Np);
+    WriteVTK(tess, cells, physics, prefix + "_final.vtu");
     WriteSimulation(sim, simFile);
 
   }
