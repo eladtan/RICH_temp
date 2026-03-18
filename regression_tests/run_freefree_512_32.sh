@@ -13,6 +13,7 @@ SLURM_NTASKS_512="${SLURM_NTASKS_512:-16}"
 SLURM_NTASKS_32="${SLURM_NTASKS_32:-4}"
 SLURM_PARTITION="${SLURM_PARTITION:-bigrun}"
 SLURM_EXCLUSIVE="${SLURM_EXCLUSIVE:-1}"
+RUN_LOCAL="${RUN_LOCAL:-0}"
 
 if [[ ! -x "${BUILD_SCRIPT}" ]]; then
     echo "Missing executable build helper: ${BUILD_SCRIPT}" >&2
@@ -29,8 +30,8 @@ if ! command -v ml >/dev/null 2>&1; then
     exit 2
 fi
 
-if ! command -v sbatch >/dev/null 2>&1; then
-    echo "The 'sbatch' command is required for free-free MPI regression runs" >&2
+if [[ "${RUN_LOCAL}" -ne 1 ]] && ! command -v sbatch >/dev/null 2>&1; then
+    echo "The 'sbatch' command is required for free-free MPI regression runs (use --local to bypass)" >&2
     exit 2
 fi
 
@@ -82,21 +83,26 @@ run_case() {
     if [[ "${case_id}" == *"_32"* ]]; then
         case_ntasks="${SLURM_NTASKS_32}"
     fi
-    sbatch_args=(
-        sbatch
-        --wait
-        --job-name="${case_id}"
-        --ntasks="${case_ntasks}"
-        --partition="${SLURM_PARTITION}"
-        --output="${run_stdout}"
-        --error="${run_stderr}"
-        --chdir="${case_dir}"
-        --wrap "mpirun -np ${case_ntasks} \"${rich_bin}\""
-    )
-    if [[ "${SLURM_EXCLUSIVE}" == "1" ]]; then
-        sbatch_args+=(--exclusive)
+    if [[ "${RUN_LOCAL}" -eq 1 ]]; then
+        (cd "${case_dir}" && mpirun -np "${case_ntasks}" "${rich_bin}") \
+            >"${run_stdout}" 2>"${run_stderr}"
+    else
+        sbatch_args=(
+            sbatch
+            --wait
+            --job-name="${case_id}"
+            --ntasks="${case_ntasks}"
+            --partition="${SLURM_PARTITION}"
+            --output="${run_stdout}"
+            --error="${run_stderr}"
+            --chdir="${case_dir}"
+            --wrap "mpirun -np ${case_ntasks} \"${rich_bin}\""
+        )
+        if [[ "${SLURM_EXCLUSIVE}" == "1" ]]; then
+            sbatch_args+=(--exclusive)
+        fi
+        "${sbatch_args[@]}"
     fi
-    "${sbatch_args[@]}"
 
     if [[ ! -s "${case_dir}/temperature_profile.txt" ]]; then
         echo "Missing profile output for ${case_id}: ${case_dir}/temperature_profile.txt" >&2

@@ -13,6 +13,7 @@ SLURM_NTASKS="${SLURM_NTASKS:-8}"
 SLURM_PARTITION="${SLURM_PARTITION:-bigrun}"
 SLURM_EXCLUSIVE="${SLURM_EXCLUSIVE:-1}"
 ENERGY_GROUPS_NUM="${ENERGY_GROUPS_NUM:-32}"
+RUN_LOCAL="${RUN_LOCAL:-0}"
 
 if [[ ! -x "${BUILD_SCRIPT}" ]]; then
     echo "Missing executable build helper: ${BUILD_SCRIPT}" >&2
@@ -29,8 +30,8 @@ if ! command -v ml >/dev/null 2>&1; then
     exit 2
 fi
 
-if ! command -v sbatch >/dev/null 2>&1; then
-    echo "The 'sbatch' command is required for multigroup free-free MPI regression runs" >&2
+if [[ "${RUN_LOCAL}" -ne 1 ]] && ! command -v sbatch >/dev/null 2>&1; then
+    echo "The 'sbatch' command is required for multigroup free-free MPI regression runs (use --local to bypass)" >&2
     exit 2
 fi
 
@@ -104,42 +105,52 @@ run_case() {
     : > "${run_stderr}"
     run_start_epoch="$(date +%s)"
 
-    sbatch_args=(
-        sbatch
-        --wait
-        --job-name="${case_id}"
-        --ntasks="${case_ntasks}"
-        --partition="${SLURM_PARTITION}"
-        --output="${run_stdout}"
-        --error="${run_stderr}"
-        --chdir="${case_dir}"
-        --wrap "mpirun -np ${case_ntasks} \"${rich_bin}\""
-    )
-    if [[ "${SLURM_EXCLUSIVE}" == "1" ]]; then
-        sbatch_args+=(--exclusive)
-    fi
-
-    # Stream full case stdout/stderr into this suite log in real time.
-    tail -n +1 -f "${run_stdout}" &
-    tail_stdout_pid=$!
-    tail -n +1 -f "${run_stderr}" >&2 &
-    tail_stderr_pid=$!
-
-    submit_line=""
     run_rc=0
-    submit_line="$("${sbatch_args[@]}" 2>>"${run_stderr}")" || run_rc=$?
-    submit_line="$(tr -d '\r' <<< "${submit_line}")"
-    [[ -n "${submit_line}" ]] && echo "${submit_line}"
-    job_id="$(awk '/Submitted batch job/ {print $4}' <<< "${submit_line}")"
-    if [[ -z "${job_id}" ]]; then
-        job_id="unknown"
-    fi
-    kill "${tail_stdout_pid}" "${tail_stderr_pid}" >/dev/null 2>&1 || true
-    wait "${tail_stdout_pid}" "${tail_stderr_pid}" >/dev/null 2>&1 || true
+    if [[ "${RUN_LOCAL}" -eq 1 ]]; then
+        (cd "${case_dir}" && mpirun -np "${case_ntasks}" "${rich_bin}") \
+            >"${run_stdout}" 2>"${run_stderr}" || run_rc=$?
 
-    if [[ "${run_rc}" -ne 0 ]]; then
-        echo "SLURM run failed for ${case_id} (job ${job_id}, exit code ${run_rc})" >&2
-        exit "${run_rc}"
+        if [[ "${run_rc}" -ne 0 ]]; then
+            echo "Local mpirun failed for ${case_id} (exit code ${run_rc})" >&2
+            exit "${run_rc}"
+        fi
+    else
+        sbatch_args=(
+            sbatch
+            --wait
+            --job-name="${case_id}"
+            --ntasks="${case_ntasks}"
+            --partition="${SLURM_PARTITION}"
+            --output="${run_stdout}"
+            --error="${run_stderr}"
+            --chdir="${case_dir}"
+            --wrap "mpirun -np ${case_ntasks} \"${rich_bin}\""
+        )
+        if [[ "${SLURM_EXCLUSIVE}" == "1" ]]; then
+            sbatch_args+=(--exclusive)
+        fi
+
+        # Stream full case stdout/stderr into this suite log in real time.
+        tail -n +1 -f "${run_stdout}" &
+        tail_stdout_pid=$!
+        tail -n +1 -f "${run_stderr}" >&2 &
+        tail_stderr_pid=$!
+
+        submit_line=""
+        submit_line="$("${sbatch_args[@]}" 2>>"${run_stderr}")" || run_rc=$?
+        submit_line="$(tr -d '\r' <<< "${submit_line}")"
+        [[ -n "${submit_line}" ]] && echo "${submit_line}"
+        job_id="$(awk '/Submitted batch job/ {print $4}' <<< "${submit_line}")"
+        if [[ -z "${job_id}" ]]; then
+            job_id="unknown"
+        fi
+        kill "${tail_stdout_pid}" "${tail_stderr_pid}" >/dev/null 2>&1 || true
+        wait "${tail_stdout_pid}" "${tail_stderr_pid}" >/dev/null 2>&1 || true
+
+        if [[ "${run_rc}" -ne 0 ]]; then
+            echo "SLURM run failed for ${case_id} (job ${job_id}, exit code ${run_rc})" >&2
+            exit "${run_rc}"
+        fi
     fi
 
     if ! is_nonempty_and_newer "${case_dir}/temperature_profile.txt" "${run_start_epoch}"; then

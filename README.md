@@ -249,10 +249,11 @@ You can tune tolerances with environment variables:
 Tests are built and run in a **pipelined** fashion:
 
 1. Up to **4 tests build concurrently**, each in its own build subdirectory (`build/<config>/<test_id>/`) so executables don't overwrite each other. Available CPU cores are split evenly across concurrent builds (e.g. on a 64-core machine, each build gets `make -j16`).
-2. As soon as a test finishes building, it **immediately starts running** while remaining tests continue to build. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`).
+2. As soon as a test finishes building, it **immediately starts running** while remaining tests continue to build. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`) by default, or run locally via `mpirun` when `--local` is passed.
 3. After all tests finish, results are checked and a summary table is printed.
 
 Use `--nproc <N>` to override the auto-detected core count (e.g. to limit resource usage on a shared machine).
+Use `--partition <name>` to override the SLURM partition for all MPI tests, or `--local` to bypass SLURM entirely and run MPI tests via direct `mpirun`.
 
 Progress is printed in real time, showing which test is compiling, running, and its final pass/fail status.
 
@@ -269,6 +270,12 @@ Use `--mode` to run only serial or only MPI tests:
 
 # Run all MPI tests with a specific config
 ./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+
+# Run MPI tests on a different SLURM partition
+./regression_tests/run_all.sh --mode mpi --partition short
+
+# Run MPI tests locally (no SLURM)
+./regression_tests/run_all.sh --mode mpi --local
 
 # Run all tests (default, equivalent to --mode all)
 ./regression_tests/run_all.sh
@@ -307,6 +314,8 @@ case the same config is used for both passes.
   - `serial_then_mpi`: runs serial tests first (`gnuRelease`), then MPI tests (`gnuReleaseMPI`).
 - `--config <name>`: build configuration (overrides the mode default).
 - `--mpi-np <N>`: MPI ranks for MPI tests (default: `4`; individual tests may override).
+- `--partition <name>`: override the SLURM partition for all MPI tests (default per-test, usually `bigrun`).
+- `--local`: run MPI tests locally via `mpirun` instead of submitting through SLURM. Useful for machines without a SLURM scheduler or for quick local debugging.
 - `--nproc <N>`: override auto-detected core count for parallel builds (default: `$(nproc)`).
 - `--clean-results`: remove `regression_results/` and generated figure files under `regression_tests/`, then exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.

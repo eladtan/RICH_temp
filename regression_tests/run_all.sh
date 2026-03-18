@@ -34,6 +34,8 @@ TEST_FILTER=""
 CLEAN_RESULTS=0
 MODE="all"
 NPROC_OVERRIDE=""
+SLURM_PARTITION_OVERRIDE=""
+RUN_LOCAL=0
 
 ARTIFACT_ROOT="${ROOT_DIR}/regression_results"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -66,6 +68,8 @@ Options:
   --config <name>          Build configuration (auto-derived from --mode if omitted)
   --mpi-np <N>             MPI ranks for sedov_3d test (default: ${MPI_NP})
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
+  --partition <name>       Override SLURM partition for all MPI tests (default per-test, usually bigrun)
+  --local                  Run MPI tests locally via mpirun instead of submitting through SLURM
   --clean-results          Delete regression_results, generated figures, and run artifacts from cases, then exit
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
@@ -81,6 +85,8 @@ Modes:
 Examples:
   ./regression_tests/run_all.sh --mode serial
   ./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+  ./regression_tests/run_all.sh --mode mpi --partition short
+  ./regression_tests/run_all.sh --mode mpi --local
   ./regression_tests/run_all.sh --mode serial_then_mpi
   ./regression_tests/run_all.sh --test sod_1d --config gnuRelease
   ./regression_tests/run_all.sh --clean-results
@@ -109,6 +115,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean-results)
             CLEAN_RESULTS=1
+            shift
+            ;;
+        --partition)
+            SLURM_PARTITION_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+        --local)
+            RUN_LOCAL=1
             shift
             ;;
         --nproc)
@@ -148,10 +162,12 @@ esac
 if [[ "${MODE}" == "serial_then_mpi" ]]; then
     echo "${BOLD}=== serial_then_mpi: running serial pass ===${NC}"
     passthrough_args=()
-    [[ "${KEEP_ARTIFACTS}" -eq 1 ]] && passthrough_args+=(--keep-artifacts)
-    [[ "${VERBOSE}" -eq 1 ]]       && passthrough_args+=(--verbose)
-    [[ -n "${TEST_FILTER}" ]]      && passthrough_args+=(--test "${TEST_FILTER}")
-    [[ -n "${NPROC_OVERRIDE}" ]]   && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
+    [[ "${KEEP_ARTIFACTS}" -eq 1 ]]            && passthrough_args+=(--keep-artifacts)
+    [[ "${VERBOSE}" -eq 1 ]]                   && passthrough_args+=(--verbose)
+    [[ -n "${TEST_FILTER}" ]]                  && passthrough_args+=(--test "${TEST_FILTER}")
+    [[ -n "${NPROC_OVERRIDE}" ]]               && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
+    [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]     && passthrough_args+=(--partition "${SLURM_PARTITION_OVERRIDE}")
+    [[ "${RUN_LOCAL}" -eq 1 ]]                 && passthrough_args+=(--local)
 
     mpi_config="${CONFIG}"
     if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
@@ -212,6 +228,10 @@ fi
 if ! [[ "${MPI_NP}" =~ ^[1-9][0-9]*$ ]]; then
     echo "--mpi-np must be a positive integer" >&2
     exit 2
+fi
+
+if [[ -n "${SLURM_PARTITION_OVERRIDE}" && "${RUN_LOCAL}" -eq 1 ]]; then
+    echo "${ORANGE}Warning: --partition is ignored when --local is set${NC}" >&2
 fi
 
 if [[ -n "${NPROC_OVERRIDE}" ]] && ! [[ "${NPROC_OVERRIDE}" =~ ^[1-9][0-9]*$ ]]; then
@@ -404,6 +424,20 @@ if [[ ${NUM_TESTS} -eq 0 ]]; then
     exit 0
 fi
 
+# ==================== Apply --local and --partition overrides ====================
+if [[ "${RUN_LOCAL}" -eq 1 ]]; then
+    for i in "${!ALL_RUN_MODES[@]}"; do
+        if [[ "${ALL_RUN_MODES[$i]}" == "slurm" ]]; then
+            ALL_RUN_MODES[$i]="direct"
+        fi
+    done
+fi
+if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
+    for i in "${!ALL_SLURM_PARTITIONS[@]}"; do
+        ALL_SLURM_PARTITIONS[$i]="${SLURM_PARTITION_OVERRIDE}"
+    done
+fi
+
 # ==================== Print header ====================
 mkdir -p "${RUN_ARTIFACT_DIR}"
 
@@ -413,6 +447,14 @@ echo "  Config:    ${CONFIG}"
 echo "  Tests:     ${ALL_TEST_IDS[*]}"
 if [[ "${MODE}" != "serial" ]]; then
     echo "  MPI ranks: ${MPI_NP}"
+    if [[ "${RUN_LOCAL}" -eq 1 ]]; then
+        echo "  Execution: local (mpirun, no SLURM)"
+    else
+        echo "  Execution: SLURM"
+        if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
+            echo "  Partition: ${SLURM_PARTITION_OVERRIDE} (override)"
+        fi
+    fi
 fi
 echo "  Cores:     ${NPROC_OVERRIDE:-$(nproc)} (override with --nproc)"
 echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
@@ -523,6 +565,10 @@ for i in "${!ALL_TEST_IDS[@]}"; do
         cd "${run_dir_abs}" || exit 1
         export ROOT_DIR CONFIG MPI_NP SLURM_NTASKS="${slurm_ntasks}"
         export RICH_BIN="${rich_bin}"
+        export RUN_LOCAL="${RUN_LOCAL}"
+        if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
+            export SLURM_PARTITION="${slurm_partition}"
+        fi
 
         run_rc=0
         if [[ "${run_mode}" == "slurm" ]]; then
