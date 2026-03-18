@@ -8,14 +8,17 @@ Vector3D RandomPointOnFace(const Tessellation3D &voronoi, size_t faceIndex)
 
     static size_t cachedFace = SIZE_MAX;
     static const Tessellation3D *cachedGrid = nullptr;
+    static size_t cachedBuildGeneration = SIZE_MAX;
     static std::vector<double> cumAreas;
     static std::vector<std::array<size_t, 3>> tris;
     static double totalArea = 0;
 
-    if(faceIndex != cachedFace or &voronoi != cachedGrid)
+    if(faceIndex != cachedFace or &voronoi != cachedGrid
+       or voronoi.GetBuildGeneration() != cachedBuildGeneration)
     {
         cachedFace = faceIndex;
         cachedGrid = &voronoi;
+        cachedBuildGeneration = voronoi.GetBuildGeneration();
 
         cumAreas.clear();
         tris.clear();

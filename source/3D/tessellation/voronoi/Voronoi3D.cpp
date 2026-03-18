@@ -798,6 +798,7 @@ void Voronoi3D::InitialBoxBuild(std::vector<Face> &box, std::vector<Vector3D> &n
 */
 void Voronoi3D::BuildInitialize(size_t num_points)
 {
+    ++buildGeneration_;
     // assert(num_points > 0);
     // Clear data
     PointTetras_.clear();

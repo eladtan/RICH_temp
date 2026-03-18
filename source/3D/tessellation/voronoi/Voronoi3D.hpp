@@ -233,6 +233,8 @@ private:
 
   Tessellation3D::AllPointsMap indicesInAllMyPoints; // the indices of the points in `del_.points_`, in the list of all points
 
+  size_t buildGeneration_ = 0;
+
 public:
 
   #ifdef RICH_MPI
@@ -275,6 +277,8 @@ public:
   void output(std::string const& filename)const override;
 
   void BuildInitialize(size_t num_points);
+
+  size_t GetBuildGeneration(void) const override { return buildGeneration_; }
 
   void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) override;
 

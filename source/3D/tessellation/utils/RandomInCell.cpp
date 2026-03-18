@@ -8,15 +8,18 @@ Vector3D RandomPointInCell(const Tessellation3D &voronoi, size_t cellIndex)
 
     static size_t cachedCell = SIZE_MAX;
     static const Tessellation3D *cachedGrid = nullptr;
+    static size_t cachedBuildGeneration = SIZE_MAX;
     static std::vector<double> cumVolumes;
     static std::vector<std::array<size_t, 3>> tris;
     static double totalVolume = 0;
     static Vector3D center;
 
-    if(cellIndex != cachedCell or &voronoi != cachedGrid)
+    if(cellIndex != cachedCell or &voronoi != cachedGrid
+       or voronoi.GetBuildGeneration() != cachedBuildGeneration)
     {
         cachedCell = cellIndex;
         cachedGrid = &voronoi;
+        cachedBuildGeneration = voronoi.GetBuildGeneration();
         center = voronoi.GetMeshPoint(cellIndex);
 
         cumVolumes.clear();
