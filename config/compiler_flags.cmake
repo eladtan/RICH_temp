@@ -46,6 +46,11 @@ if(DEFINED MC_DEBUG)
     message(STATUS "Defined 'MONTECARLO_DEBUG'")
 endif()
 
+if(DEFINED MC_TRACE_DEBUG)
+    message(STATUS "Monte Carlo Trace Debug Enabled with history size ${MC_TRACE_DEBUG}")
+    add_definitions("-DMC_TRACING_HISTORY=${MC_TRACE_DEBUG}")
+endif()
+
 # if build is Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions("-DDEBUG")
