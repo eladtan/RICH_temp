@@ -43,25 +43,29 @@ private:
 template<typename T, typename Index_T = size_t>
 void MPI_exchange_data(const ExchangeChain &chain, std::vector<T> &data)
 {
+    rank_t myRank, worldSize;
+    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
+    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+
     const ExchangeChain::RankTransferMap &translationMap = chain.GetTranslationMap();
-    std::vector<rank_t> correspondents;
-	std::vector<std::vector<Index_T>> indices;
+
+    std::vector<std::vector<T>> toSend(worldSize);
     for(const auto &[index, target] : translationMap)
     {
-		rank_t otherRank = target.first;
-		size_t rankIdx = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), otherRank));
-		if(rankIdx >= correspondents.size())
-		{
-			correspondents.push_back(otherRank);
-			indices.emplace_back();
-		}
-		indices[rankIdx].push_back(index);
+        toSend[target.first].push_back(data[index]);
     }
-    std::vector<std::vector<T>> dataByRanks = MPI_exchange_data_indexed(correspondents, data, indices);
+
+    std::vector<std::vector<T>> received = MPI_Exchange_all_to_all(toSend, MPI_COMM_WORLD);
+
+    if(translationMap.empty())
+        return;
+
     data.clear();
-    for(const std::vector<T> &dataByRank : dataByRanks)
+    data.insert(data.end(), received[myRank].cbegin(), received[myRank].cend());
+    for(rank_t r = 0; r < worldSize; r++)
     {
-        data.insert(data.end(), dataByRank.cbegin(), dataByRank.cend());
+        if(r != myRank)
+            data.insert(data.end(), received[r].cbegin(), received[r].cend());
     }
 }
 

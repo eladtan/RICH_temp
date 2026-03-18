@@ -10,6 +10,7 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                 std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl,
                                 std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond,
                                 const std::vector<Particle3D> &particles,
+                                size_t initialParticlesPerCell,
                                 bool withHydro
                                 #ifdef RICH_MPI
                                     , ManagerType managerType
@@ -46,6 +47,17 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
     #else // RICH_MPI
         this->manager = std::make_shared<MonteCarloManagerSerial3D>(tess, physics, popControl, boundaryCond);
     #endif // RICH_MPI
+
+    if(this->particles.empty())
+    {
+        this->particles = this->physics->generateInitialParticles(initialParticlesPerCell);
+        int rank = 0;
+        #ifdef RICH_MPI
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        #endif
+        if(rank == 0)
+            std::cout << "RadiationMCStep: generated " << this->particles.size() << " initial photon particles" << std::endl;
+    }
 }
 
 std::vector<Particle3D> &RadiationMCStep::getParticles(void)

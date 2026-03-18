@@ -34,6 +34,7 @@ public:
                     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl,
                     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond,
                     const std::vector<Particle3D> &particles = std::vector<Particle3D>(),
+                    size_t initialParticlesPerCell = 50,
                     bool withHydro = false
                     #ifdef RICH_MPI
                         , ManagerType managerType = ManagerType::AUTO_RDMA

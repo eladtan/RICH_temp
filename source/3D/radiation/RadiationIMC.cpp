@@ -7,8 +7,8 @@
 #define SCATTERING 1
 #define TIMELEFT 2
 
-RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(withHydro), newPhotonsPerCell(newPhotonsPerCell)
+RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro, bool diffusionPressureGradient)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(withHydro), diffusionPressureGradient(diffusionPressureGradient), newPhotonsPerCell(newPhotonsPerCell)
 {}
 
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
@@ -73,7 +73,10 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     this->conserved[cellIndex].internal_energy += -expFactor2 * particle.weight;
     if(this->withHydro)
     {
-        // this->conserved[cellIndex].momentum += -expFactor1 * particle.weight * particle.velocity * units::inv_clight2;
+        if(not this->diffusionPressureGradient)
+        {
+            this->conserved[cellIndex].momentum += -expFactor1 * particle.weight * particle.velocity * units::inv_clight2;
+        }
     }
     this->Erad_time_avg[cellIndex] += particle.weight * expFactor2 * (-1/tmp2);
     particle.weight *= 1 + expFactor1;
@@ -99,7 +102,10 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
             double weightBefore = particle.weight; // to restore after lorentz transformation
             LorentzTransformation(particle, cell.velocity);
             particle.weight = weightBefore;
-            // this->conserved[cellIndex].momentum += particle.weight * (oldVelocity - particle.velocity) * units::inv_clight2; // todo: correct?
+            if(not this->diffusionPressureGradient)
+            {
+                this->conserved[cellIndex].momentum += particle.weight * (oldVelocity - particle.velocity) * units::inv_clight2; // todo: correct?
+            }
         }
         // todo: this needs to be changed once we'll have Compton scattering implemented
     }
@@ -123,6 +129,66 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
     for(size_t i = 0; i < Ncells; i++)
     {
         this->Erad_time_avg[i] /= (fullDt * this->grid.GetVolume(i));
+    }
+
+    std::vector<double> Erad_time_avg_grad = std::vector<double>(Ncells, 0);
+    if(this->diffusionPressureGradient)
+    {
+        #ifdef RICH_MPI
+        MPI_exchange_data(this->grid, this->Erad_time_avg, true);
+        #endif // RICH_MPI
+
+        // todo: fix for 3D, current is 1D!
+        
+        for(size_t i = 0; i < Ncells; i++)
+        {
+            const Vector3D &point = this->grid.GetMeshPoint(i);
+            // locate neighbor from right and left
+            size_t neighbor_right = std::numeric_limits<size_t>::max();
+            size_t neighbor_left = std::numeric_limits<size_t>::max();
+            for(size_t faceIdx : this->grid.GetCellFaces(i))
+            {
+                const std::pair<size_t, size_t> &neighbors = this->grid.GetFaceNeighbors(faceIdx);
+                size_t neighborIdx = (neighbors.first == i)? neighbors.second : neighbors.first;
+                Vector3D diff = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
+                if(diff.x > 0.99)
+                {
+                    neighbor_right = neighborIdx;
+                }
+                else if(diff.x < -0.99)
+                {
+                    neighbor_left = neighborIdx;
+                }
+            }
+            if(neighbor_right == std::numeric_limits<size_t>::max())
+            {
+                throw UniversalError("No right neighbor found in RadiationIMC::postStep");
+            }
+            if(neighbor_left == std::numeric_limits<size_t>::max())
+            {
+                throw UniversalError("No left neighbor found in RadiationIMC::postStep");
+            }
+            const Vector3D &neighbor_right_point = this->grid.GetMeshPoint(neighbor_right);
+            const Vector3D &neighbor_left_point = this->grid.GetMeshPoint(neighbor_left);
+            double grad;
+            if(this->grid.IsPointOutsideBox(neighbor_right))
+            {
+                grad = (this->Erad_time_avg[neighbor_right] - this->Erad_time_avg[i]) / (neighbor_right_point - point).x;
+            }
+            else if(this->grid.IsPointOutsideBox(neighbor_left))
+            {
+                grad = (this->Erad_time_avg[i] - this->Erad_time_avg[neighbor_left]) / (point - neighbor_left_point).x;
+            }
+            else
+            {
+                grad = (this->Erad_time_avg[neighbor_right] - this->Erad_time_avg[neighbor_left]) / (neighbor_right_point - neighbor_left_point).x;
+            }
+            Erad_time_avg_grad[i] = grad;
+        }
+    }
+    
+    for(size_t i = 0; i < Ncells; i++)
+    {
         ComputationalCell3D &cell = this->cells[i];
         cell.internal_energy = this->conserved[i].internal_energy / this->conserved[i].mass;
         if(cell.internal_energy < 0)
@@ -137,7 +203,10 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
         }
         if(this->withHydro)
         {
-            this->conserved[i].momentum += fullDt * this->grid.GetVolume(i) * this->Erad_time_avg_grad[i] / 3;
+            if(this->diffusionPressureGradient)
+            {
+                this->conserved[i].momentum -= fullDt * this->grid.GetVolume(i) * Erad_time_avg_grad[i] / 3;
+            }
             cell.velocity = this->conserved[i].momentum / this->conserved[i].mass;
             this->conserved[i].energy = this->conserved[i].internal_energy + 0.5 * ScalarProd(this->conserved[i].momentum, this->conserved[i].momentum) / this->conserved[i].mass; // TODO: material strength
         }
@@ -146,55 +215,6 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
         cell.pressure = this->eos->de2p(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
     }
 
-    this->Erad_time_avg_grad = std::vector<double>(Ncells, 0);
-
-    // todo: fix for 3D, current is 1D!
-    MPI_exchange_data(this->grid, this->Erad_time_avg, true);
-    for(size_t i = 0; i < Ncells; i++)
-    {
-        const Vector3D &point = this->grid.GetMeshPoint(i);
-        // locate neighbor from right and left
-        size_t neighbor_right = std::numeric_limits<size_t>::max();
-        size_t neighbor_left = std::numeric_limits<size_t>::max();
-        for(size_t faceIdx : this->grid.GetCellFaces(i))
-        {
-            const std::pair<size_t, size_t> &neighbors = this->grid.GetFaceNeighbors(faceIdx);
-            size_t neighborIdx = (neighbors.first == i)? neighbors.second : neighbors.first;
-            Vector3D diff = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
-            if(diff.x > 0.99)
-            {
-                neighbor_right = neighborIdx;
-            }
-            else if(diff.x < -0.99)
-            {
-                neighbor_left = neighborIdx;
-            }
-        }
-        if(neighbor_right == std::numeric_limits<size_t>::max())
-        {
-            throw UniversalError("No right neighbor found in RadiationIMC::postStep");
-        }
-        if(neighbor_left == std::numeric_limits<size_t>::max())
-        {
-            throw UniversalError("No left neighbor found in RadiationIMC::postStep");
-        }
-        const Vector3D &neighbor_right_point = this->grid.GetMeshPoint(neighbor_right);
-        const Vector3D &neighbor_left_point = this->grid.GetMeshPoint(neighbor_left);
-        double grad;
-        if(this->grid.IsPointOutsideBox(neighbor_right))
-        {
-            grad = (this->Erad_time_avg[neighbor_right] - this->Erad_time_avg[i]) / (neighbor_right_point - point).x;
-        }
-        else if(this->grid.IsPointOutsideBox(neighbor_left))
-        {
-            grad = (this->Erad_time_avg[i] - this->Erad_time_avg[neighbor_left]) / (neighbor_left_point - point).x;
-        }
-        else
-        {
-            grad = (this->Erad_time_avg[neighbor_right] - this->Erad_time_avg[neighbor_left]) / (neighbor_right_point - neighbor_left_point).x;
-        }
-        this->Erad_time_avg_grad[i] = grad;
-    }
     for(const MCParticle &particle : particles)
     {
         size_t cellIndex = particle.cellIndex;
@@ -236,10 +256,13 @@ std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(d
             throw eo;
         }
         this->conserved[i].energy -= energyToCreate * gamma;
-        // if(this->withHydro)
-        // {
-        //     this->conserved[i].momentum -= energyToCreate * cell.velocity * units::inv_clight2 * gamma;
-        // }
+        if(this->withHydro)
+        {
+            if(not this->diffusionPressureGradient)
+            {
+                this->conserved[i].momentum -= energyToCreate * cell.velocity * units::inv_clight2 * gamma;
+            }
+        }
         for(size_t j = 0; j < this->newPhotonsPerCell; j++)
         {
             MCParticle particle = this->generateSingleParticle(i, cell);
@@ -299,6 +322,28 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     // };
     // MPI_Sync(MPI_COMM_WORLD, printParticles);
     return newParticles;
+}
+
+std::vector<typename RadiationIMC::Particle> RadiationIMC::generateInitialParticles(size_t particlesPerCell)
+{
+    std::vector<Particle> result;
+    size_t Ncells = this->grid.GetPointNo();
+    for(size_t i = 0; i < Ncells; i++)
+    {
+        double totalErad = this->cells[i].Erad * this->cells[i].density * this->grid.GetVolume(i);
+        double weightPerPhoton = totalErad / particlesPerCell;
+        if(weightPerPhoton <= 0)
+            continue;
+        for(size_t j = 0; j < particlesPerCell; j++)
+        {
+            Particle p = this->generateSingleParticle(i, this->cells[i]);
+            p.cellID = this->cells[i].ID;
+            p.weight = weightPerPhoton;
+            p.initialWeight = weightPerPhoton;
+            result.push_back(p);
+        }
+    }
+    return result;
 }
 
 typename RadiationIMC::Particle RadiationIMC::generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const

@@ -7,6 +7,9 @@ Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCel
         this->currentLoad = nullptr;
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);
         MPI_Comm_size(MPI_COMM_WORLD, &this->size);
+    #else // RICH_MPI
+        this->rank = 0;
+        this->size = 1;
     #endif // RICH_MPI
 }
 
@@ -22,7 +25,7 @@ double Simulation::GetTime(void) const
 
 size_t Simulation::GetCycle(void) const
 {
-    return static_cast<size_t>(this->tracker.getCycle());
+    return this->tracker.getCycle();
 }
 
 void Simulation::SetCycle(size_t cycle)

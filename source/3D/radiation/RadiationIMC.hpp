@@ -10,7 +10,7 @@ public:
     using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro = false);
+    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro = false, bool diffusionPressureGradient = false);
 
     std::vector<Particle> preStep(double fullDt) override;
 
@@ -19,6 +19,8 @@ public:
     void postStep(const std::vector<Particle> &particles, double fullDt) override;
 
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
+
+    std::vector<Particle> generateInitialParticles(size_t particlesPerCell) override;
 
     inline const std::vector<double> &getFactorFleck(void) const{return this->factorFleck;}
 
@@ -31,6 +33,7 @@ private:
     std::vector<double> planckOpacities;
 
     bool withHydro;
+    bool diffusionPressureGradient;
     size_t newPhotonsPerCell;
 };
 
