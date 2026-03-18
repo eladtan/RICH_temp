@@ -458,6 +458,8 @@ public:
   */
   virtual std::vector<Face> GetBoxFaces(void) = 0;
 
+  virtual size_t GetBuildGeneration(void) const = 0;
+
   /**
    * Suppose `partialBuildData` contains correct local data for partial build, and that `allBuildData` have correct values for all the points (non active local).
    * This collective method updates `partialBuildData` to have the data of both active/non active local and global points.    
