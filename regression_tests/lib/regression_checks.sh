@@ -561,7 +561,7 @@ check_eulerian_diffusion_freefree_suite_case() {
     local stdout_log="$3"
     local stderr_log="$4"
 
-    local compare_dir="${run_dir}"
+    local compare_dir="${REGRESSION_ROOT}/cases/eulerian_diffusion_freefree_compare"
     local cases_root="${REGRESSION_ROOT}/cases"
 
     local profile_512="${cases_root}/eulerian_diffusion_freefree_1d/temperature_profile.txt"
