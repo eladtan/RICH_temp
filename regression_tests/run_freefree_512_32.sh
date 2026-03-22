@@ -44,6 +44,27 @@ declare -a CASES=(
     "eulerian_diffusion_freefree_1d_32_limited"
 )
 
+# Same logic as regression_tests/lib/regression_checks.sh / run_freefree_multigroup_512_32.sh:
+# after sbatch --wait, NFS on the head node may not show outputs immediately.
+is_nonempty_and_newer() {
+    local file_path="$1"
+    local start_epoch="$2"
+    local file_epoch
+    local attempt
+
+    for attempt in 1 2 3 4 5; do
+        ls "$(dirname "$file_path")" > /dev/null 2>&1 || true
+        if [[ -s "$file_path" ]]; then
+            file_epoch="$(stat -c %Y "$file_path" 2>/dev/null || true)"
+            if [[ -n "$file_epoch" && "$file_epoch" -ge "$start_epoch" ]]; then
+                return 0
+            fi
+        fi
+        [[ "$attempt" -lt 5 ]] && sleep 2
+    done
+    return 1
+}
+
 run_case() {
     local case_id="$1"
     local case_rel="regression_tests/cases/${case_id}"
@@ -54,6 +75,7 @@ run_case() {
     local run_stderr="${case_dir}/run.stderr.log"
     local rich_bin="${ROOT_DIR}/build/${CONFIG}/${case_id}/rich"
     local case_ntasks="${SLURM_NTASKS_512}"
+    local run_start_epoch
 
     if [[ ! -d "${case_dir}" ]]; then
         echo "Missing regression case directory: ${case_dir}" >&2
@@ -65,6 +87,7 @@ run_case() {
         "${case_dir}/trad_vs_x"*.png "${case_dir}/trad_vs_x"*.pdf \
         "${case_dir}/density_vs_x"*.png "${case_dir}/density_vs_x"*.pdf \
         "${case_dir}/velocity_vs_x"*.png "${case_dir}/velocity_vs_x"*.pdf
+    rm -f "${case_dir}/temperature_profile.txt" "${case_dir}/shock_position.txt"
 
     echo "[BUILD] ${case_id}"
     (
@@ -80,6 +103,7 @@ run_case() {
     fi
 
     echo "[RUN] ${case_id}"
+    run_start_epoch="$(date +%s)"
     if [[ "${case_id}" == *"_32"* ]]; then
         case_ntasks="${SLURM_NTASKS_32}"
     fi
@@ -104,11 +128,11 @@ run_case() {
         "${sbatch_args[@]}"
     fi
 
-    if [[ ! -s "${case_dir}/temperature_profile.txt" ]]; then
+    if ! is_nonempty_and_newer "${case_dir}/temperature_profile.txt" "${run_start_epoch}"; then
         echo "Missing profile output for ${case_id}: ${case_dir}/temperature_profile.txt" >&2
         exit 1
     fi
-    if [[ ! -s "${case_dir}/shock_position.txt" ]]; then
+    if ! is_nonempty_and_newer "${case_dir}/shock_position.txt" "${run_start_epoch}"; then
         echo "Missing shock output for ${case_id}: ${case_dir}/shock_position.txt" >&2
         exit 1
     fi
