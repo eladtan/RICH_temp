@@ -17,6 +17,7 @@ Usage:
     python plot_mach45.py <file1.txt> [file2.txt ...]      # explicit files
     python plot_mach45.py --dir /path/to/run               # scan directory
     python plot_mach45.py --wide                            # full domain view
+    python plot_mach45.py --match <file.txt>                 # shift analytic to best-fit first file
 """
 
 import sys
@@ -25,7 +26,6 @@ import re
 import glob
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -54,13 +54,16 @@ SHOCK_X0 = 2300.0                   # initial shock position
 
 def load_profile(filepath):
     """Load a Mach45 profile txt file."""
-    t_us, Np = None, None
+    t_us, Np, cycle = None, None, None
     with open(filepath) as f:
         for line in f:
             if line.startswith("#"):
                 m = re.search(r"t_us=([\d.e+-]+)", line)
                 if m:
                     t_us = float(m.group(1))
+                m = re.search(r"cycle=(\d+)", line)
+                if m:
+                    cycle = int(m.group(1))
                 m = re.search(r"Np=(\d+)", line)
                 if m:
                     Np = int(m.group(1))
@@ -74,6 +77,7 @@ def load_profile(filepath):
         T_rad=data[:, 3],
         vx=data[:, 4],
         t_us=t_us,
+        cycle=cycle,
         Np=Np,
         path=filepath,
     )
@@ -344,11 +348,38 @@ def compute_mach45_analytic(x_plot, x_shock_plot):
     )
 
 
+def find_best_shift(profile):
+    """Find the shift K that minimizes the L2 density residual between
+    analytic(x - K) and the first data profile.
+
+    Returns K (cm) such that analytic evaluated at x_shock = SHOCK_X0 + K
+    best matches the data.
+    """
+    import scipy.optimize
+
+    x_data = profile["x"]
+    rho_data = profile["rho"]
+
+    x_wide = np.linspace(x_data[0] - 300, x_data[-1] + 300, 10000)
+    analytic = compute_mach45_analytic(x_wide, SHOCK_X0)
+    rho_analytic = analytic["rho"]
+
+    def cost(K):
+        rho_shifted = np.interp(x_data, x_wide + K, rho_analytic,
+                                left=RHO_UP, right=RHO_DN)
+        return np.sum((rho_shifted - rho_data) ** 2)
+
+    result = scipy.optimize.minimize_scalar(cost, bounds=(-300, 300),
+                                            method='bounded')
+    return result.x
+
+
 # =========================================================================
 #  Plotting
 # =========================================================================
 
-def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False):
+def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
+                match_shift=None):
     """
     Plot T_gas, T_rad, density, velocity vs x.
     Style follows Figure 9(b) of arXiv:2108.13453.
@@ -363,15 +394,17 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False):
     n = len(profiles)
 
     x_shock = SHOCK_X0
-    if profiles:
-        x_shock = find_shock_position(profiles[-1])
+    if match_shift is not None:
+        x_shock = SHOCK_X0 + match_shift
 
     for i, prof in enumerate(profiles):
         color = cmap(0.15 + 0.7 * i / max(n - 1, 1)) if n > 1 else "C0"
+        parts = []
+        if prof.get("cycle") is not None:
+            parts.append(f"cycle {prof['cycle']}")
         if prof["t_us"] is not None:
-            t_str = f"t = {prof['t_us']:.3f} μs"
-        else:
-            t_str = Path(prof["path"]).stem
+            parts.append(f"t={prof['t_us']:.3f} μs")
+        t_str = ", ".join(parts) if parts else Path(prof["path"]).stem
         lw = 1.6 if n <= 5 else 1.0
 
         x = prof["x"]
@@ -391,16 +424,15 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False):
     ax_vx.axhline(V_DN / 1e8, **ref_kw)
 
     if wide:
-        xlim = (1945, 2355)
+        xlim = (1945, 2455)
     else:
         margin = 120
         xlim = (x_shock - margin, x_shock + 30)
 
-    # --- Analytical solution ---
-    shock_pos = find_shock_position(profiles[-1]) if profiles else SHOCK_X0
+    # --- Analytical solution (use same x_shock for consistent positioning) ---
     try:
         x_fine = np.linspace(xlim[0] - 20, xlim[1] + 20, 4000)
-        analytic = compute_mach45_analytic(x_fine, shock_pos)
+        analytic = compute_mach45_analytic(x_fine, x_shock)
         akw = dict(ls="-", lw=2, zorder=0)
         ax_Tg.plot(x_fine, analytic["T_gas"], color="magenta", **akw,
                    label="Analytic")
@@ -429,25 +461,60 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False):
         ax.tick_params(labelsize=10)
         ax.grid(True, alpha=0.2)
 
+    time_str = ""
+    if profiles and profiles[-1]["t_us"] is not None:
+        time_str = f",  $t = {profiles[-1]['t_us']:.4f}$ μs"
+
+    shift_str = ""
+    if match_shift is not None:
+        shift_str = f",  analytic shift $K = {match_shift:+.2f}$ cm"
+
     fig.suptitle(
         r"Mach 45 Radiative Shock — cf. Steinberg & Heizler (2021) Fig. 9(b)"
         "\n"
         r"$\sigma_a = 0.0142\,\rho^2\,(T/\mathrm{keV})^{-3.5}$,  "
         r"$\sigma_s = 0.4006\,\rho$,  "
         r"$\gamma = 5/3$,  "
-        r"$C_v = 1.45 \times 10^{15}$ erg/(g keV)",
+        r"$C_v = 1.45 \times 10^{15}$ erg/(g keV)"
+        + time_str + shift_str,
         fontsize=11,
     )
     plt.tight_layout()
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
     print(f"Saved {outfile}")
-    plt.close(fig)
+    plt.show()
+
+
+def export_analytic_profile(outfile, Np=2000, xmin=1950.0, xmax=2450.0,
+                            shock_x=SHOCK_X0):
+    """Export the analytic profile to a .dat file that test.cpp can read.
+
+    Columns: x(cm), rho(g/cc), T_gas(K), Erad(erg/cc), v_x(cm/s)
+    """
+    x_cells = np.linspace(xmin, xmax, Np, endpoint=False) + 0.5 * (xmax - xmin) / Np
+    analytic = compute_mach45_analytic(x_cells, shock_x)
+
+    T_gas_K = np.array(analytic["T_gas"]) * KEV_K
+    T_rad_K = np.array(analytic["T_rad"]) * KEV_K
+    rho = np.array(analytic["rho"])
+    vx = np.array(analytic["vx"])
+    Erad = ARAD * T_rad_K**4
+
+    with open(outfile, "w") as f:
+        f.write(f"# Mach45 analytic profile (Lowrie & Edwards 2008)\n")
+        f.write(f"# Np={Np}  xmin={xmin}  xmax={xmax}  shock_x={shock_x}\n")
+        f.write(f"# x(cm), rho(g/cc), T_gas(K), Erad(erg/cc), v_x(cm/s)\n")
+        for j in range(len(x_cells)):
+            f.write(f"{x_cells[j]}, {rho[j]}, {T_gas_K[j]}, {Erad[j]}, {vx[j]}\n")
+    print(f"Exported analytic profile to {outfile} ({len(x_cells)} points)")
 
 
 def main():
     directory = "."
     explicit_files = []
     wide = False
+    export_dat = None
+    do_match = False
 
     args = sys.argv[1:]
     i = 0
@@ -458,9 +525,19 @@ def main():
         elif args[i] == "--wide":
             wide = True
             i += 1
+        elif args[i] == "--match":
+            do_match = True
+            i += 1
+        elif args[i] == "--export-profile":
+            export_dat = args[i + 1] if i + 1 < len(args) else "mach45_analytic.dat"
+            i += 2 if i + 1 < len(args) else i + 1
         else:
             explicit_files.append(args[i])
             i += 1
+
+    if export_dat:
+        export_analytic_profile(export_dat)
+        return
 
     if explicit_files:
         profiles = [load_profile(f) for f in explicit_files]
@@ -469,7 +546,7 @@ def main():
         if not files:
             print(f"No profile files found in {directory}")
             print("Usage: python plot_mach45.py [file1.txt ...] "
-                  "[--dir path] [--wide]")
+                  "[--dir path] [--wide] [--export-profile file.dat]")
             sys.exit(1)
 
         profiles = [load_profile(f) for f in files]
@@ -481,7 +558,12 @@ def main():
                 t_str = "t = ?"
             print(f"  {Path(p['path']).name:35s}  {t_str}")
 
-    plot_mach45(profiles, wide=wide)
+    match_shift = None
+    if do_match:
+        match_shift = find_best_shift(profiles[0])
+        print(f"Best-fit analytic shift: K = {match_shift:+.4f} cm")
+
+    plot_mach45(profiles, wide=wide, match_shift=match_shift)
 
 
 if __name__ == "__main__":
