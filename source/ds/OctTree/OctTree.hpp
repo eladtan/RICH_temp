@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <stack>
 #include <queue>
+#include <algorithm>
 
 #ifdef DEBUG_MODE
 #include <iostream>
@@ -298,6 +299,9 @@ public:
 
     template<typename U>
     inline typename T::coord_type closestPointDistance(const U &point, bool includeSelf = true) const{return this->getClosestPointInfo(point, includeSelf).second;};
+
+    template<typename U>
+    std::vector<std::pair<T, typename T::coord_type>> getKClosestPoints(const U &point, size_t K, bool includeSelf = true) const;
 };
 
 template<typename T>
@@ -937,5 +941,109 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
 
     return {closestPoint, sqrt(closestDistanceSquared)};
 }
+
+template<typename T>
+template<typename U>
+std::vector<std::pair<T, typename T::coord_type>> OctTree<T>::getKClosestPoints(const U &point, size_t K, bool includeSelf) const
+{
+    struct NodeDistancePair {
+        const OctTreeNode* node;
+        typename T::coord_type distSquared;
+
+        bool operator>(const NodeDistancePair& other) const {
+            return distSquared > other.distSquared;
+        }
+    };
+
+    struct ResultPair {
+        T value;
+        typename T::coord_type distSquared;
+
+        bool operator<(const ResultPair& other) const {
+            return distSquared < other.distSquared;
+        }
+    };
+
+    // Min-heap for tree traversal (closest bounding boxes first)
+    std::priority_queue<NodeDistancePair, std::vector<NodeDistancePair>, std::greater<NodeDistancePair>> pq;
+    // Max-heap for K best results (worst among the best is on top for quick eviction)
+    std::priority_queue<ResultPair> bestK;
+
+    auto worstBestDistSquared = [&]() -> typename T::coord_type {
+        if(bestK.size() < K) return std::numeric_limits<typename T::coord_type>::max();
+        return bestK.top().distSquared;
+    };
+
+    if(this->getRoot() != nullptr)
+    {
+        typename T::coord_type rootDist = this->getRoot()->boundingBox.distanceSquared(point);
+        pq.push({this->getRoot(), rootDist});
+    }
+
+    while(!pq.empty())
+    {
+        NodeDistancePair current = pq.top();
+        pq.pop();
+
+        const OctTreeNode *node = current.node;
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(current.distSquared >= worstBestDistSquared())
+        {
+            continue;
+        }
+
+        if(node->isLeaf)
+        {
+            typename T::coord_type diff_x = node->value[0] - point[0];
+            typename T::coord_type diff_y = node->value[1] - point[1];
+            typename T::coord_type diff_z = node->value[2] - point[2];
+            typename T::coord_type actualDistSquared = diff_x * diff_x + diff_y * diff_y + diff_z * diff_z;
+
+            if(not includeSelf and actualDistSquared < EPSILON * EPSILON)
+            {
+                continue;
+            }
+
+            if(actualDistSquared < worstBestDistSquared())
+            {
+                bestK.push({node->value, actualDistSquared});
+                if(bestK.size() > K)
+                {
+                    bestK.pop();
+                }
+            }
+        }
+        else
+        {
+            for(int i = 0; i < CHILDREN; i++)
+            {
+                if(node->children[i] != nullptr)
+                {
+                    typename T::coord_type childDist = node->children[i]->boundingBox.distanceSquared(point);
+                    if(childDist < worstBestDistSquared())
+                    {
+                        pq.push({node->children[i], childDist});
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<std::pair<T, typename T::coord_type>> result;
+    result.reserve(bestK.size());
+    while(!bestK.empty())
+    {
+        result.push_back({bestK.top().value, sqrt(bestK.top().distSquared)});
+        bestK.pop();
+    }
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+
 #endif // _OCTTREE_HPP
 

@@ -329,15 +329,20 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                     throw eo;
                 }
 
-                size_t closestCell = octTree.closestPoint(p.location).getIndex();
-                if(tess.IsPointInCell(p.location, closestCell))
+                auto twoClosest = octTree.getKClosestPoints(p.location, 2);
+                bool found = false;
+                for(const auto &[cell, dist] : twoClosest)
                 {
-                    // the point is inside my domain, new location
-                    p.cellIndex = closestCell;
-                    myParticles.push_back(p);
-                    // done!
+                    size_t index = cell.getIndex();
+                    if(tess.IsPointInCell(p.location, index))
+                    {
+                        p.cellIndex = index;
+                        myParticles.push_back(p);
+                        found = true;
+                        break;
+                    }
                 }
-                else
+                if(not found)
                 {
                     shouldExchangeParticles.push_back(p);
                 }
@@ -431,8 +436,8 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                         eo.addEntry("Cell Index", p.cellIndex);
                         eo.addEntry("N", N);
                         size_t closestPointIdx = octTree.closestPoint(p.location).getIndex();
-                        eo.addEntry("Closest Local Point", closestPointIdx);
-                        eo.addEntry("Closest Point Value", tess.GetMeshPoint(closestPointIdx));
+                        eo.addEntry("Local Closest Local Point", closestPointIdx);
+                        eo.addEntry("Local Closest Point Value", tess.GetMeshPoint(closestPointIdx));
                         eo.addEntry("Is Point in Cell", tess.IsPointInCell(p.location, closestPointIdx));
                         eo.addEntry("Rank", rank);
                         throw eo;
