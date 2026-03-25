@@ -1290,10 +1290,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     
     this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
     this->ResetAllBuffers();
-    if(this->currentStep > 0 and this->currentStep % SHRINK_BUFFERS_CYCLE == 0)
-    {
-        this->ShrinkAllBuffers();
-    }
     this->PutSelfParticles(particleList);
     this->resetTracker();
     this->currentStep++;
@@ -1524,6 +1520,12 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             throw eo;
         }
     }
+    
+    if((this->currentStep > 0 and this->currentStep % SHRINK_BUFFERS_CYCLE == 0) or this->grid.DidRebalance())
+    {
+        this->ShrinkAllBuffers();
+    }
+
     return populationControlParticles;
 }
 
