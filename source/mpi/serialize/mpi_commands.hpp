@@ -230,16 +230,25 @@ std::vector<T> MPI_All_cast(const Container<T, Ts...> &data, const MPI_Comm &com
 template<typename T>
 T MPI_Bcast_serializable(const T &data, rank_t owner, const MPI_Comm &comm = MPI_COMM_WORLD)
 {
-    Serializer send;
-    size_t sizeSent = send.insert(data);
+    rank_t rank;
+    MPI_Comm_rank(comm, &rank);
+
+    Serializer buf;
+    size_t sizeSent = 0;
+    if(rank == owner)
+    {
+        sizeSent = buf.insert(data);
+    }
     MPI_Bcast(&sizeSent, 1, MPI_UNSIGNED_LONG_LONG, owner, comm);
-    
-    Serializer recv;
-    recv.resize(sizeSent);
-    MPI_Bcast(recv.getData(), sizeSent, MPI_BYTE, owner, comm);
+
+    if(rank != owner)
+    {
+        buf.resize(sizeSent);
+    }
+    MPI_Bcast(buf.getData(), sizeSent, MPI_BYTE, owner, comm);
 
     T value;
-    size_t sizeRead = recv.extract(value, 0);
+    size_t sizeRead = buf.extract(value, 0);
     assert(sizeRead == sizeSent);
     return value;
 }
