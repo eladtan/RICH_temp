@@ -80,8 +80,11 @@ PointsExchangeResult PointsManager::update(const std::vector<Vector3D> &allPoint
         std::cout << "Time for exchange: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
 
+    this->hadRebalance = false;
+
     if(doRebalance and this->checkForRebalance(this->totalWeight))
     {
+        this->hadRebalance = true;
         start = std::chrono::high_resolution_clock::now();
         assert(this->getEnvironmentAgent() != nullptr);
         this->rebalance(allPoints, allWeights);

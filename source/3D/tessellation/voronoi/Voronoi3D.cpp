@@ -1372,6 +1372,11 @@ void Voronoi3D::UpdatePointsTree(const std::vector<Vector3D> &activePoints)
         std::cout << "Time for tree: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
 }
+ 
+bool Voronoi3D::DidRebalance(void) const
+{
+    return this->pointsManager->didRebalance();
+}
 
 void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing, bool suppressExchange)
 {

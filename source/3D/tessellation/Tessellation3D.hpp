@@ -82,6 +82,8 @@ public:
       this->BuildPartiallyParallel(points, weights, indicesToBuild, suppressRebalancing, suppressExchange);
   }
 
+  virtual bool DidRebalance(void) const = 0;
+
   inline void BuildParallel(const std::vector<Vector3D> &points, bool suppressRebalancing = false, bool suppressExchange = false)
   {
       this->BuildParallel(points, std::vector<double>(points.size(), 1.0), suppressRebalancing, suppressExchange);

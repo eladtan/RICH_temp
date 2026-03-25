@@ -75,7 +75,7 @@ struct PointData : public Serializable
 class PointsManager
 {
 public:
-    inline PointsManager(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): ll(ll), ur(ur), comm(comm), totalWeight(0)
+    inline PointsManager(const Vector3D &ll, const Vector3D &ur, const MPI_Comm &comm = MPI_COMM_WORLD): ll(ll), ur(ur), comm(comm), totalWeight(0), hadRebalance(false)
     {
         MPI_Comm_size(this->comm, &this->size);
         MPI_Comm_rank(this->comm, &this->rank);
@@ -99,6 +99,8 @@ public:
 
     virtual std::shared_ptr<LoadBalancer> getLoadBalancer(void) = 0;
 
+    inline bool didRebalance(void) const{return this->hadRebalance;};
+
     void setImbalanceTolerance(double tolerance);
 
     void reportImbalance(void) const;
@@ -117,6 +119,7 @@ protected:
     int rank, size;
     double totalWeight;
     double imbalanceTolerance = IMBALANCE_FACTOR;
+    bool hadRebalance;
 
     /**
      * performs a point exchange, according to a given determination function (point -> rank)
