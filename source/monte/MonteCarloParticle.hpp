@@ -66,7 +66,7 @@ struct MonteCarloParticle
     T velocity = T(std::numeric_limits<typename T::value_type>::max());
     size_t cellIndex = std::numeric_limits<size_t>::max();
     dt_t timeLeft = std::numeric_limits<dt_t>::max();
-    double energy = std::numeric_limits<double>::max();
+    double frequency = std::numeric_limits<double>::max();
     double weight = std::numeric_limits<double>::max();
     double initialWeight = std::numeric_limits<double>::max();
     size_t steps = 0;
@@ -128,7 +128,7 @@ struct MonteCarloParticle
     #endif // MC_TRACING_HISTORY
 
     explicit MonteCarloParticle(size_t id_ = std::numeric_limits<size_t>::max(), const T &location_ = T(std::numeric_limits<double>::max()), const T &velocity_ = T(std::numeric_limits<double>::max()), dt_t timeLeft_ = dt_t(std::numeric_limits<double>::max())):
-        id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), energy(0), weight(0), initialWeight(0), steps(0), on_track(false)
+        id(id_), location(location_), velocity(velocity_), cellIndex(std::numeric_limits<size_t>::max()), timeLeft(timeLeft_), frequency(std::numeric_limits<double>::max()), weight(0), initialWeight(0), steps(0), on_track(false)
     {
         #ifdef MONTECARLO_DEBUG
         this->checkedHere = true;
@@ -408,7 +408,7 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->velocity);
     bytes += serializer->insert(this->cellIndex);
     bytes += serializer->insert(this->timeLeft);
-    bytes += serializer->insert(this->energy);
+    bytes += serializer->insert(this->frequency);
     bytes += serializer->insert(this->weight);
     bytes += serializer->insert(this->initialWeight);
     bytes += serializer->insert(this->steps);
@@ -456,7 +456,7 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->velocity, byteOffset + bytes);
     bytes += serializer->extract(this->cellIndex, byteOffset + bytes);
     bytes += serializer->extract(this->timeLeft, byteOffset + bytes);
-    bytes += serializer->extract(this->energy, byteOffset + bytes);
+    bytes += serializer->extract(this->frequency, byteOffset + bytes);
     bytes += serializer->extract(this->weight, byteOffset + bytes);
     bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
     bytes += serializer->extract(this->steps, byteOffset + bytes);

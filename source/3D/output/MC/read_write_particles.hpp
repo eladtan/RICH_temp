@@ -51,7 +51,7 @@ namespace HDF5Utils
                         mtype.insertMember("velocity", velocity_offset, vecType);
                         mtype.insertMember("cellIndex", HOFFSET(Particle3D, cellIndex), H5::PredType::NATIVE_ULLONG);
                         mtype.insertMember("timeLeft", HOFFSET(Particle3D, timeLeft), H5::PredType::NATIVE_DOUBLE);
-                        mtype.insertMember("energy", HOFFSET(Particle3D, energy), H5::PredType::NATIVE_DOUBLE);
+                        mtype.insertMember("frequency", HOFFSET(Particle3D, frequency), H5::PredType::NATIVE_DOUBLE);
                         mtype.insertMember("weight", HOFFSET(Particle3D, weight), H5::PredType::NATIVE_DOUBLE);
                         mtype.insertMember("initialWeight", HOFFSET(Particle3D, initialWeight), H5::PredType::NATIVE_DOUBLE);
                         mtype.insertMember("steps", HOFFSET(Particle3D, steps), H5::PredType::NATIVE_ULLONG);
