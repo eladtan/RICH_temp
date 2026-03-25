@@ -21,6 +21,8 @@ public:
 
     Vector3D getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &particle) const override;
 
+    double getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energyGroup) const override;
+    
 private:
     double sigmaA0;
     double sigmaS0;

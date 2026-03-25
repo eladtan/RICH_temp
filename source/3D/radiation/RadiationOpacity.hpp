@@ -22,6 +22,8 @@ public:
     virtual Vector3D getRandomVelocity(const ComputationalCell3D &cell) const = 0;
 
     virtual Vector3D getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &particle) const = 0;
+
+    virtual double getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energyGroup) const = 0;
 };
 
 #endif // OPACITY_HPP

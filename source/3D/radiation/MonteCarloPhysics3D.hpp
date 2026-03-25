@@ -27,6 +27,8 @@ public:
 
     virtual std::vector<Particle> generateInitialParticles(size_t /*particlesPerCell*/) { return {}; }
 
+    virtual void adjustExistingParticles(std::vector<Particle> &/*particles*/, double /*fullDt*/) {}
+
     inline const std::vector<double> &getEradTimeAvg(void) const{return this->Erad_time_avg;}
     
     inline std::vector<double> &getEradTimeAvg(void){return this->Erad_time_avg;}

@@ -1,4 +1,5 @@
 #include "PowerLawOpacity.hpp"
+#include "Radiation/CMMC/src/units/units.hpp"
 
 MCPowerLawOpacity::MCPowerLawOpacity(double sigmaA0, double sigmaS0, double sigmaA_rho, double sigmaA_T, double sigmaS_rho, double sigmaS_T)
     : sigmaA0(sigmaA0), sigmaS0(sigmaS0), sigmaA_rho(sigmaA_rho), sigmaA_T(sigmaA_T), sigmaS_rho(sigmaS_rho), sigmaS_T(sigmaS_T)
@@ -8,7 +9,7 @@ MCPowerLawOpacity::MCPowerLawOpacity(double sigmaA0, double sigmaS0, double sigm
 
 double MCPowerLawOpacity::getPlanckOpacity(const ComputationalCell3D &cell) const
 {
-    return this->sigmaA0 * std::pow(cell.density, this->sigmaA_rho) * std::pow(cell.temperature, this->sigmaA_T);
+    return this->sigmaA0 * std::pow(cell.density, this->sigmaA_rho) * std::pow(cell.temperature, /*std::min(cell.temperature, 10 * units::kev_kelvin),*/ this->sigmaA_T);
 }
 
 double MCPowerLawOpacity::getScatteringOpacity(const ComputationalCell3D &cell) const
@@ -34,4 +35,9 @@ Vector3D MCPowerLawOpacity::getNewScatterVelocity(const ComputationalCell3D &cel
     double z = dist(this->rng);
     Vector3D direction = normalize(Vector3D(x, y, z));
     return direction * units::clight;
+}
+
+double MCPowerLawOpacity::getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energyGroup) const
+{
+    throw UniversalError("getGroupAbsorptionOpacity is not implemented yet for MCPowerLawOpacity");
 }

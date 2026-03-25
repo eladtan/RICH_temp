@@ -1,6 +1,15 @@
 #include "computational_cell.hpp"
 #include <cstring>  // for memcpy
 
+static std::array<double, ENERGY_GROUPS_NUM + 1> InitializeEnergyBoundaries(void)
+{
+	std::array<double, ENERGY_GROUPS_NUM + 1> energyBoundaries;
+	energyBoundaries.fill(std::numeric_limits<double>::quiet_NaN());
+	return energyBoundaries;
+}
+
+std::array<double, ENERGY_GROUPS_NUM + 1> ComputationalCell3D::energyBoundaries = InitializeEnergyBoundaries();
+
 ComputationalCell3D::ComputationalCell3D(void):
   density(0), pressure(0),internal_energy(0),temperature(0),ID(0), velocity(), Erad(0), Eg(ENERGY_GROUPS_NUM, 0), Erad_dt(0),
   	Erad_dt_dt(0), cs(0), tracers({}),stickers(),dt(0) {}

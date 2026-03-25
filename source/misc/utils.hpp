@@ -195,13 +195,13 @@ T BiLinearInterpolation(std::vector<T> const& x, std::vector<T> const& y, std::v
 \param xi The interpolation location
 \return f(xi)
 */
-template <typename T>
-T LinearInterpolation(const vector<T> &x, const vector<T> &y, T xi);
+template <typename T, typename ContainerX, typename ContainerY>
+T LinearInterpolation(const ContainerX &x, const ContainerY &y, T xi);
 
-template <typename T>
-T LinearInterpolation(const vector<T> &x, const vector<T> &y, T xi)
+template <typename T, typename ContainerX, typename ContainerY>
+T LinearInterpolation(const ContainerX &x, const ContainerY &y, T xi)
 {
-	typename vector<T>::const_iterator it = upper_bound(x.begin(), x.end(), xi);
+	auto it = std::upper_bound(x.begin(), x.end(), xi);
 	if (it == x.end())
 	{
 	  //		if (x.back() == xi)

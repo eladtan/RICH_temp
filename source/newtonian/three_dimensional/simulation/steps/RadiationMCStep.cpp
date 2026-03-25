@@ -93,6 +93,11 @@ void RadiationMCStep::step(double dt)
         // cells location might have changed because of hydro movements
         UpdateNewCells(this->tess, this->particles, this->cells);
     }
+    this->physics->adjustExistingParticles(this->particles, dt);
+    if(this->withHydro)
+    {
+        UpdateNewCells(this->tess, this->particles, this->cells);
+    }
     this->particles = this->manager->step(this->particles, this->cells, dt);
 
     int rank = 0;

@@ -7,9 +7,35 @@
 #define SCATTERING 1
 #define TIMELEFT 2
 
-RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, size_t newPhotonsPerCell, bool withHydro, bool diffusionPressureGradient)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(withHydro), diffusionPressureGradient(diffusionPressureGradient), newPhotonsPerCell(newPhotonsPerCell)
-{}
+namespace {
+    inline void ClampFrequencyToBounds(double &frequency)
+    {
+        frequency = std::clamp(frequency,
+            ComputationalCell3D::energyBoundaries[0],
+            ComputationalCell3D::energyBoundaries[ENERGY_GROUPS_NUM]);
+    }
+}
+
+    RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, RadiationIMCParameters parameters)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell)
+{
+    if(parameters.withMultigroupOpacity)
+    {
+        this->multigroupOpacity = std::make_shared<MultigroupOpacity>(opacity);
+    }
+    else
+    {
+        this->multigroupOpacity = nullptr;
+    }
+    rank_t rank = 0;
+    #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    #endif
+    if(rank == 0)
+    {
+        std::cout << parameters << std::endl;
+    }
+}
 
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
 {
@@ -25,9 +51,20 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     assert(timeIntersect >= 0);
 
     // todo: change opacity with doppler shift in cast of frequency dependance
-    double dopplerShift = (this->withHydro) ? DopplerShift(particle, cell.velocity) : 1.0;
-
-    double scatteringLength = 1.0 / (opacity->getScatteringOpacity(cell) + (1 - this->factorFleck[cellIndex]) * this->planckOpacities[cellIndex]);
+    double dopplerShift = (this->withHydro && !this->MMC) ? DopplerShift(particle, cell.velocity) : 1.0;
+    double absorptionOpacity;
+    if(this->multigroupOpacity)
+    {
+        double shiftedFrequency = particle.frequency * dopplerShift;
+        ClampFrequencyToBounds(shiftedFrequency);
+        absorptionOpacity = this->opacity->getGroupAbsorptionOpacity(cell, shiftedFrequency);
+    }
+    else
+    {
+        absorptionOpacity = this->planckOpacities[cellIndex];
+    }
+    double scatteringOpacity = this->opacity->getScatteringOpacity(cell);
+    double scatteringLength = 1.0 / (scatteringOpacity + (1 - this->factorFleck[cellIndex]) * absorptionOpacity);
     double _log1p = -std::log1p(this->dist(this->re) - 1); 
     distance_t scatteringDistance = scatteringLength * _log1p / dopplerShift; 
     if(scatteringDistance < 0)
@@ -65,7 +102,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
         throw eo;
     }
     particle.timeLeft -= dt;
-    double tmp2 = this->planckOpacities[cellIndex] * this->factorFleck[cellIndex] * units::clight;
+    double tmp2 = absorptionOpacity * this->factorFleck[cellIndex] * units::clight;
     double tmp = -dt * tmp2;
     double expFactor1 = std::expm1(tmp * dopplerShift);
     double expFactor2 = std::expm1(tmp);
@@ -96,18 +133,34 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     else if(min.first == SCATTERING)
     {
         Vector3D oldVelocity = particle.velocity;
+        double D_lab_to_co = dopplerShift;
         particle.velocity = opacity->getNewScatterVelocity(cell, particle);
-        if(this->withHydro)
+        if(this->multigroupOpacity)
         {
-            double weightBefore = particle.weight; // to restore after lorentz transformation
-            LorentzTransformation(particle, cell.velocity);
-            particle.weight = weightBefore;
-            if(not this->diffusionPressureGradient)
+            particle.frequency *= dopplerShift; // lab → comoving
+            ClampFrequencyToBounds(particle.frequency);
+            // was is it an effective sacttering or a physical one?
+            double random = this->dist(this->re);
+            if(((1 - this->factorFleck[cellIndex]) * absorptionOpacity) > random * ((1 - this->factorFleck[cellIndex]) * absorptionOpacity + scatteringOpacity))
             {
-                this->conserved[cellIndex].momentum += particle.weight * (oldVelocity - particle.velocity) * units::inv_clight2; // todo: correct?
+                random = this->dist(this->re);
+                particle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, random);
             }
         }
-        // todo: this needs to be changed once we'll have Compton scattering implemented
+        if(this->withHydro && !this->MMC)
+        {
+            double weightBefore = particle.weight;
+            particle.weight *= D_lab_to_co;
+            LorentzTransformation(particle, -1 * cell.velocity);
+            if(this->multigroupOpacity)
+            {
+                ClampFrequencyToBounds(particle.frequency);
+            }
+            if(not this->diffusionPressureGradient)
+            {
+                this->conserved[cellIndex].momentum += (weightBefore * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2;
+            }
+        }
     }
     else if(min.first == TIMELEFT)
     {
@@ -123,7 +176,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
     return functionality;
 }
 
-void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double fullDt)
+void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullDt)
 {
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
@@ -171,11 +224,11 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
             const Vector3D &neighbor_right_point = this->grid.GetMeshPoint(neighbor_right);
             const Vector3D &neighbor_left_point = this->grid.GetMeshPoint(neighbor_left);
             double grad;
-            if(this->grid.IsPointOutsideBox(neighbor_right))
+            if(this->grid.IsPointOutsideBox(neighbor_left))
             {
                 grad = (this->Erad_time_avg[neighbor_right] - this->Erad_time_avg[i]) / (neighbor_right_point - point).x;
             }
-            else if(this->grid.IsPointOutsideBox(neighbor_left))
+            else if(this->grid.IsPointOutsideBox(neighbor_right))
             {
                 grad = (this->Erad_time_avg[i] - this->Erad_time_avg[neighbor_left]) / (point - neighbor_left_point).x;
             }
@@ -205,7 +258,7 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
         {
             if(this->diffusionPressureGradient)
             {
-                this->conserved[i].momentum -= fullDt * this->grid.GetVolume(i) * Erad_time_avg_grad[i] / 3;
+                this->conserved[i].momentum.x -= fullDt * this->grid.GetVolume(i) * Erad_time_avg_grad[i] / 3;
             }
             cell.velocity = this->conserved[i].momentum / this->conserved[i].mass;
             this->conserved[i].energy = this->conserved[i].internal_energy + 0.5 * ScalarProd(this->conserved[i].momentum, this->conserved[i].momentum) / this->conserved[i].mass; // TODO: material strength
@@ -215,7 +268,7 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
         cell.pressure = this->eos->de2p(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
     }
 
-    for(const MCParticle &particle : particles)
+    for(const Particle &particle : particles)
     {
         size_t cellIndex = particle.cellIndex;
         assert(cellIndex < Ncells);
@@ -228,14 +281,14 @@ void RadiationIMC::postStep(const std::vector<MCParticle> &particles, double ful
     }
 }
 
-std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(double fullDt)
+std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(double fullDt)
 {
-    std::vector<MCParticle> newParticles;
+    std::vector<Particle> newParticles;
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
     {
         ComputationalCell3D &cell = this->cells[i];
-        double gamma = (this->withHydro)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
+        double gamma = (this->withHydro && !this->MMC)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
         double energyToCreate = this->factorFleck[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities[i] * fullDt * units::clight;
         double energyPerPhoton = energyToCreate * gamma / this->newPhotonsPerCell;
         this->conserved[i].internal_energy -= energyToCreate;
@@ -267,7 +320,23 @@ std::vector<typename RadiationIMC::MCParticle> RadiationIMC::generateParticles(d
         {
             MCParticle particle = this->generateSingleParticle(i, cell);
             particle.timeLeft = fullDt * this->dist(this->re);
-            particle.weight = energyPerPhoton;
+            if(this->withHydro && !this->MMC)
+            {
+                double D = DopplerShift(particle, cell.velocity);
+                if(this->multigroupOpacity)
+                {
+                    particle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, this->dist(this->re)) / D;
+                }
+                particle.weight = energyToCreate / (this->newPhotonsPerCell * D);
+            }
+            else
+            {
+                if(this->multigroupOpacity)
+                {
+                    particle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, this->dist(this->re));
+                }
+                particle.weight = energyPerPhoton;
+            }
             particle.initialWeight = particle.weight;
             newParticles.push_back(particle);
         }
@@ -289,7 +358,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     {
         const ComputationalCell3D &cell = this->cells[i];
         this->planckOpacities[i] = this->opacity->getPlanckOpacity(this->cells[i]);
-        double gamma = (this->withHydro)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
+        double gamma = (this->withHydro && !this->MMC)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
 
         double cv = this->eos->dT2cv(this->cells[i].density, this->cells[i].temperature, this->cells[i].tracers, this->cells[i].tracerNames);
         this->factorFleck[i] = 1 / (1 + (4 * units::arad * boost::math::pow<3>(this->cells[i].temperature) * this->planckOpacities[i] * units::clight * fullDt * gamma) / cv);
@@ -307,10 +376,13 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         }
     }    
 
-    std::vector<MCParticle> newParticles = this->generateParticles(fullDt);
-    std::vector<MCParticle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt); // todo: not here
+    std::vector<Particle> newParticles = this->generateParticles(fullDt);
+    std::vector<Particle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt); // todo: not here
+    for(Particle &particle : newParticles2)
+    {
+        
+    }
     newParticles.insert(newParticles.end(), newParticles2.begin(), newParticles2.end());
-
     // auto printParticles = [&]()
     // {
     //     rank_t rank;
@@ -328,15 +400,40 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateInitialPartic
 {
     std::vector<Particle> result;
     size_t Ncells = this->grid.GetPointNo();
+
+    std::array<double, ENERGY_GROUPS_NUM + 1> cumulPlanck;
+    bool hasPlanckTable = false;
+    double cachedTemperature = -1;
+
     for(size_t i = 0; i < Ncells; i++)
     {
         double totalErad = this->cells[i].Erad * this->cells[i].density * this->grid.GetVolume(i);
         double weightPerPhoton = totalErad / particlesPerCell;
         if(weightPerPhoton <= 0)
             continue;
+
+        if(this->multigroupOpacity && (!hasPlanckTable || this->cells[i].temperature != cachedTemperature))
+        {
+            double kT = units::k_boltz * this->cells[i].temperature;
+            cumulPlanck[0] = 0.0;
+            for(size_t g = 1; g <= ENERGY_GROUPS_NUM; g++)
+            {
+                double a = ComputationalCell3D::energyBoundaries[g - 1] / kT;
+                double b = ComputationalCell3D::energyBoundaries[g] / kT;
+                cumulPlanck[g] = planck_integral::planck_integral(a, b) + cumulPlanck[g - 1];
+            }
+            cachedTemperature = this->cells[i].temperature;
+            hasPlanckTable = true;
+        }
+
         for(size_t j = 0; j < particlesPerCell; j++)
         {
             Particle p = this->generateSingleParticle(i, this->cells[i]);
+            if(this->multigroupOpacity)
+            {
+                double r = this->dist(this->re) * cumulPlanck.back();
+                p.frequency = LinearInterpolation(cumulPlanck, ComputationalCell3D::energyBoundaries, r);
+            }
             p.cellID = this->cells[i].ID;
             p.weight = weightPerPhoton;
             p.initialWeight = weightPerPhoton;
@@ -350,17 +447,86 @@ typename RadiationIMC::Particle RadiationIMC::generateSingleParticle(size_t cell
 {
     Particle particle;
     particle.id = std::numeric_limits<size_t>::max();
-    particle.energy = 0; // TODO
+    particle.frequency = 0; // TODO
     particle.location = RandomPointInCell(this->grid, cellIndex);
     // particle.location = particle.location * (1 - MONTECARLO_EPS) + MONTECARLO_EPS * this->grid.GetMeshPoint(cellIndex);
     particle.timeLeft = 0;
     assert(this->grid.IsPointInCell(particle.location, cellIndex));
     assert(not this->grid.IsPointOutsideBox(particle.location));
     particle.velocity = this->opacity->getRandomVelocity(cell);
-    if(this->withHydro)
+    if(this->withHydro && !this->MMC)
     {
         LorentzTransformation(particle, -1 * cell.velocity);
     }
     particle.cellIndex = cellIndex;
+    // nudge a little bit towards the cell's point
+    static constexpr double nudge = 1e-10;
+    particle.location = particle.location * (1 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
     return particle;
+}
+
+void RadiationIMC::adjustExistingParticles(std::vector<Particle> &particles, double fullDt)
+{
+    if(!this->MMC)
+    {
+        return;
+    }
+
+    size_t Ncells = this->grid.GetPointNo();
+    std::vector<double> divV(Ncells, 0);
+
+    for(size_t i = 0; i < Ncells; i++)
+    {
+        std::vector<size_t> neigh;
+        this->grid.GetNeighbors(i, neigh);
+        auto faces = this->grid.GetCellFaces(i);
+        Vector3D r_i = this->grid.GetMeshPoint(i);
+        for(size_t j = 0; j < neigh.size(); j++)
+        {
+            size_t neighbor_j = neigh[j];
+            auto r_ij = normalize(r_i - this->grid.GetMeshPoint(neighbor_j));
+            double A_ij = this->grid.GetArea(faces[j]);
+            Vector3D v_j = (neighbor_j >= Ncells && this->grid.IsPointOutsideBox(neighbor_j))
+                           ? this->cells[i].velocity
+                           : this->cells[neighbor_j].velocity;
+            divV[i] -= 0.5 * ScalarProd(this->cells[i].velocity + v_j, r_ij) * A_ij;
+        }
+        divV[i] /= this->grid.GetVolume(i);
+    }
+
+    const auto [ll, ur] = this->grid.GetBoxCoordinates();
+
+    auto it = particles.begin();
+    while(it != particles.end())
+    {
+        Particle &p = *it;
+        size_t ci = p.cellIndex;
+        p.location += this->cells[ci].velocity * fullDt;
+        p.weight += -p.weight * fullDt * divV[ci] / 3.0;
+
+        if(this->grid.IsPointOutsideBox(p.location))
+        {
+            p.location.x = std::max(ll.x, std::min(ur.x, p.location.x));
+            p.location.y = std::max(ll.y, std::min(ur.y, p.location.y));
+            p.location.z = std::max(ll.z, std::min(ur.z, p.location.z));
+            MonteCarloParticleStatus status = this->boundary->apply(p);
+            if(status == MonteCarloParticleStatus::REMOVE)
+            {
+                it = particles.erase(it);
+                continue;
+            }
+        }
+        ++it;
+    }
+}
+
+std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters)
+{
+    os << "IMC, with parameters:" << std::endl;
+    os << "\t" << "new photons per cell: " << parameters.newPhotonsPerCell << std::endl;
+    os << "\t" << "with hydro: " << parameters.withHydro << std::endl;
+    os << "\t" << "diffusion pressure gradient: " << parameters.diffusionPressureGradient << std::endl;
+    os << "\t" << "MMC: " << parameters.MMC << std::endl;
+    os << "\t" << "with multigroup opacity: " << parameters.withMultigroupOpacity << std::endl;
+    return os;
 }

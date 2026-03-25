@@ -12,7 +12,7 @@ template<typename T, typename Grid>
 class TwoSidesTemperature : public BoundaryCondition<T, Grid>
 {
 public:
-    TwoSidesTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperatureLeft, double temperatureRight, size_t Npercell, bool withHydro = false);
+    TwoSidesTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperatureLeft, double temperatureRight, size_t Npercell, bool multigroup = false);
     
     MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
 
@@ -23,13 +23,51 @@ private:
     double temperatureLeft;
     double temperatureRight;
     size_t Npercell;
-    bool withHydro;
+    std::array<double, ENERGY_GROUPS_NUM + 1> cumulativePlanckFunctionLeft;
+    std::array<double, ENERGY_GROUPS_NUM + 1> cumulativePlanckFunctionRight;
+    bool multigroup;
 };
 
 template<typename T, typename Grid>
-TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperatureLeft, double temperatureRight, size_t Npercell, bool withHydro):
-    BoundaryCondition<T, Grid>(grid), cells(cells), temperatureLeft(temperatureLeft), temperatureRight(temperatureRight), Npercell(Npercell), withHydro(withHydro)
-{}
+TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, const std::vector<ComputationalCell3D> &cells, double temperatureLeft, double temperatureRight, size_t Npercell, bool multigroup):
+    BoundaryCondition<T, Grid>(grid), cells(cells), temperatureLeft(temperatureLeft), temperatureRight(temperatureRight), Npercell(Npercell), multigroup(multigroup)
+{
+    if(this->multigroup)
+    {
+        double const kTLeft = units::k_boltz * temperatureLeft;
+        double const kTRight = units::k_boltz * temperatureRight;
+        this->cumulativePlanckFunctionLeft[0] = 0.0;
+        this->cumulativePlanckFunctionRight[0] = 0.0;
+        for(size_t g = 1; g < (ENERGY_GROUPS_NUM + 1); g++)
+        {
+            double const aLeft = ComputationalCell3D::energyBoundaries[g-1] / kTLeft;
+            double const bLeft = ComputationalCell3D::energyBoundaries[g] / kTLeft;
+            double const aRight = ComputationalCell3D::energyBoundaries[g-1] / kTRight;
+            double const bRight = ComputationalCell3D::energyBoundaries[g] / kTRight;
+            this->cumulativePlanckFunctionLeft[g] = planck_integral::planck_integral(aLeft, bLeft);
+            this->cumulativePlanckFunctionLeft[g] += this->cumulativePlanckFunctionLeft[g-1];
+            this->cumulativePlanckFunctionRight[g] = planck_integral::planck_integral(aRight, bRight);
+            this->cumulativePlanckFunctionRight[g] += this->cumulativePlanckFunctionRight[g-1];
+        }
+        if(std::abs(this->cumulativePlanckFunctionLeft.back() - 1.0) > 1e-8)
+        {
+            UniversalError eo("Cumulative Planck function left does not sum to 1");
+            eo.addEntry("Cumulative Planck function left", this->cumulativePlanckFunctionLeft);
+            throw eo;
+        }
+        if(std::abs(this->cumulativePlanckFunctionRight.back() - 1.0) > 1e-8)
+        {
+            UniversalError eo("Cumulative Planck function right does not sum to 1");
+            eo.addEntry("Cumulative Planck function right", this->cumulativePlanckFunctionRight);
+            throw eo;
+        }
+    }
+    else
+    {
+        std::fill(this->cumulativePlanckFunctionLeft.begin(), this->cumulativePlanckFunctionLeft.end(), std::numeric_limits<double>::quiet_NaN());
+        std::fill(this->cumulativePlanckFunctionRight.begin(), this->cumulativePlanckFunctionRight.end(), std::numeric_limits<double>::quiet_NaN());
+    }
+}
 
 template<typename T, typename Grid>
 MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
@@ -82,14 +120,11 @@ std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateN
     static const double T4_R = boost::math::pow<4>(this->temperatureRight);
     std::uniform_real_distribution<double> unif(0, 1);
     static std::mt19937_64 re(0);
-    double gamma;
 
     std::vector<MonteCarloParticle<T, Grid>> newParticles;
     size_t N = this->grid.GetPointNo();
     for(size_t i = 0; i < N; i++)
     {
-        const ComputationalCell3D &cell = this->cells[i];
-        bool calculatedGamma = false;
         const T &point = this->grid.GetMeshPoint(i);
         for(const size_t &faceIdx : this->grid.GetCellFaces(i))
         {
@@ -100,19 +135,17 @@ std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateN
                 T normal = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                 if(std::abs(normal.x) > 0.99)
                 { // outside the box
-                    if(not calculatedGamma)
-                    {
-                        gamma = (this->withHydro)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
-                        calculatedGamma = true;
-                    }
                     double energyToProduce;
+                    bool isLeft = false;
                     if(normal.x > 0)
                     {
-                        energyToProduce = units::sigma_sb * T4_R * this->grid.GetArea(faceIdx) * fullDt * gamma / this->Npercell;
+                        isLeft = false;
+                        energyToProduce = units::sigma_sb * T4_R * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     }
                     else
                     {
-                        energyToProduce = units::sigma_sb * T4_L * this->grid.GetArea(faceIdx) * fullDt * gamma / this->Npercell;
+                        isLeft = true;
+                        energyToProduce = units::sigma_sb * T4_L * this->grid.GetArea(faceIdx) * fullDt / this->Npercell;
                     }
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
@@ -128,7 +161,11 @@ std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateN
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
                         newParticle.velocity *= units::clight;
-                        newParticle.energy = 0;
+                        newParticle.frequency = 0;
+                        if(this->multigroup)
+                        {
+                            newParticle.frequency = LinearInterpolation((isLeft)? this->cumulativePlanckFunctionLeft : this->cumulativePlanckFunctionRight, ComputationalCell3D::energyBoundaries, unif(re));
+                        }
                         newParticle.weight = energyToProduce;
                         newParticle.initialWeight = newParticle.weight;
                         newParticle.timeLeft = fullDt * unif(re);
@@ -137,12 +174,14 @@ std::vector<MonteCarloParticle<T, Grid>> TwoSidesTemperature<T, Grid>::generateN
                         {
                             T original = newParticle.location;
                             T direction = point - original;
-                            double t = 1e-6;
+                            double t = 1e-8;
                             while(this->grid.IsPointOutsideBox(newParticle.location) && t < 1.0)
                             {
                                 newParticle.location = original + t * direction;
                                 t *= 2;
                             }
+                            // nudge a little bit again
+                            newParticle.location = newParticle.location + 1e-8 * (point - newParticle.location);
                         }
                     }
                 }

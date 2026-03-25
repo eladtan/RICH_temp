@@ -58,8 +58,9 @@ public:
 
 	double cs;
 	
-  static vector<string> tracerNames;
-  static vector<string> stickerNames;
+	static vector<string> tracerNames;
+	static vector<string> stickerNames;
+	static std::array<double, ENERGY_GROUPS_NUM + 1> energyBoundaries;
 
 	//! \brief Tracers
 	std::array<double,MAX_TRACERS> tracers;
