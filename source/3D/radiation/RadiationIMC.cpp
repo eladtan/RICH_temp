@@ -353,6 +353,10 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     this->factorFleck = std::vector<double>(Ncells);
     this->planckOpacities = std::vector<double>(Ncells);
     this->Erad_time_avg = std::vector<double>(Ncells, 0);
+    if(this->multigroupOpacity)
+    {
+        this->multigroupOpacity->ResetCummulativeOpacityCellID();
+    }
 
     for(size_t i = 0; i < Ncells; i++)
     {

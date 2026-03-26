@@ -20,6 +20,8 @@ public:
 
     inline const std::array<double, ENERGY_GROUPS_NUM + 1> &getCummulativeOpacity(void) const {return this->cummulativeOpacity;}
 
+    inline void ResetCummulativeOpacityCellID(void) {this->cummulativeOpacityCellID = std::numeric_limits<size_t>::max();}
+
 private:
     std::array<double, ENERGY_GROUPS_NUM> energyCenters;
     std::array<double, ENERGY_GROUPS_NUM + 1> cummulativeOpacity;

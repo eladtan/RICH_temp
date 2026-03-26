@@ -42,5 +42,6 @@ double MultigroupOpacity::GetThermalEnergy(const ComputationalCell3D &cell, doub
         this->GetCummulativeOpacity(cell);
     }
     double interp = LinearInterpolation(this->cummulativeOpacity, ComputationalCell3D::energyBoundaries, random * this->cummulativeOpacity.back());
+
     return interp;
 }
