@@ -215,6 +215,21 @@ int main(int argc, char *argv[])
     init_cell.Erad = units::arad * std::pow(T_init, 4) / init_cell.density;
 
     size_t N = tess.GetPointNo();
+    size_t idOffset = 0;
+    #ifdef RICH_MPI
+        {
+            std::vector<size_t> localCounts(static_cast<size_t>(ws), 0);
+            size_t localN = N;
+            MPI_Allgather(&localN, 1, MPI_UNSIGNED_LONG_LONG,
+                          localCounts.data(), 1, MPI_UNSIGNED_LONG_LONG,
+                          MPI_COMM_WORLD);
+            for(int i = 0; i < rank; ++i)
+            {
+                idOffset += localCounts[static_cast<size_t>(i)];
+            }
+        }
+    #endif
+
     std::vector<ComputationalCell3D> initialCells(N, init_cell);
     for(size_t i = 0; i < N; i++)
     {
@@ -222,6 +237,7 @@ int main(int argc, char *argv[])
             initialCells[i].tracers[0] = 1.0;
         else
             initialCells[i].tracers[1] = 1.0;
+        initialCells[i].ID = idOffset + i;
     }
 
     // --- Simulation ---
