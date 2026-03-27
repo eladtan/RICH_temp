@@ -17,7 +17,7 @@ namespace {
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth)
 {
     if(parameters.withMultigroupOpacity)
     {
@@ -26,6 +26,10 @@ namespace {
     else
     {
         this->multigroupOpacity = nullptr;
+    }
+    if(this->withRandomWalk)
+    {
+        this->randomWalk = std::make_unique<RandomWalk>();
     }
     rank_t rank = 0;
     #ifdef RICH_MPI
@@ -52,6 +56,16 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
 
     // todo: change opacity with doppler shift in cast of frequency dependance
     double dopplerShift = (this->withHydro && !this->MMC) ? DopplerShift(particle, cell.velocity) : 1.0;
+
+    if(this->randomWalk && this->rwCellEligible[cellIndex])
+    {
+        if(this->tryRandomWalkStep(particle, functionality, dopplerShift))
+        {
+            ++this->rwStepCount;
+            return functionality;
+        }
+    }
+
     double absorptionOpacity;
     if(this->multigroupOpacity)
     {
@@ -279,6 +293,21 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
         ComputationalCell3D &cell = this->cells[i];
         cell.Erad = this->conserved[i].Erad / this->conserved[i].mass;
     }
+
+    if(this->withRandomWalk)
+    {
+        size_t globalRwSteps = this->rwStepCount;
+        rank_t rank = 0;
+        #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        if(rank == 0)
+            MPI_Reduce(MPI_IN_PLACE, &globalRwSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        else
+            MPI_Reduce(&globalRwSteps, nullptr, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        #endif
+        if(rank == 0)
+            std::cout << "RW steps: " << globalRwSteps << std::endl;
+    }
 }
 
 std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(double fullDt)
@@ -379,6 +408,12 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
             throw eo;
         }
     }    
+
+    if(this->withRandomWalk)
+    {
+        this->precomputeRandomWalkData();
+        this->rwStepCount = 0;
+    }
 
     std::vector<Particle> newParticles = this->generateParticles(fullDt);
     std::vector<Particle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt); // todo: not here
@@ -532,5 +567,11 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     os << "\t" << "diffusion pressure gradient: " << parameters.diffusionPressureGradient << std::endl;
     os << "\t" << "MMC: " << parameters.MMC << std::endl;
     os << "\t" << "with multigroup opacity: " << parameters.withMultigroupOpacity << std::endl;
+    os << "\t" << "with random walk: " << parameters.withRandomWalk << std::endl;
+    if(parameters.withRandomWalk)
+    {
+        os << "\t" << "RW min cell optical depth: " << parameters.rwMinCellOpticalDepth << std::endl;
+        os << "\t" << "RW min particle optical depth: " << parameters.rwMinParticleOpticalDepth << std::endl;
+    }
     return os;
 }

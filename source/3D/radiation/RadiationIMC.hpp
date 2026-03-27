@@ -1,8 +1,10 @@
 #ifndef RADIATION_IMC_HPP
 #define RADIATION_IMC_HPP
 
+#include <memory>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
+#include "RandomWalk.hpp"
 
 struct RadiationIMCParameters
 {
@@ -11,6 +13,9 @@ struct RadiationIMCParameters
     bool diffusionPressureGradient = false;
     bool MMC = false;
     bool withMultigroupOpacity = false;
+    bool withRandomWalk = false;
+    double rwMinCellOpticalDepth = 25.0;
+    double rwMinParticleOpticalDepth = 5.0;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
@@ -51,6 +56,18 @@ private:
     bool diffusionPressureGradient;
     bool MMC;
     size_t newPhotonsPerCell;
+    bool withRandomWalk;
+    double rwMinCellOpticalDepth;
+    double rwMinParticleOpticalDepth;
+
+    std::unique_ptr<RandomWalk> randomWalk;
+    std::vector<bool> rwCellEligible;
+    std::vector<double> rwCellTotalOpacity;
+    std::vector<PGRWCellData> rwCellData;
+    size_t rwStepCount = 0;
+
+    bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
+    void precomputeRandomWalkData();
 };
 
 #endif // RADIATION_IMC_HPP

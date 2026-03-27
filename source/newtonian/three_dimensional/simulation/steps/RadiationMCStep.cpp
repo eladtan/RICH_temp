@@ -1,7 +1,9 @@
 #include "RadiationMCStep.hpp"
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
+#include "3D/radiation/RadiationIMC.hpp"
 #include "utils/rma/RMAFactory.hpp"
 #include <algorithm>
+#include <limits>
 
 RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                 std::vector<ComputationalCell3D> &cells,
@@ -146,6 +148,13 @@ void RadiationMCStep::step(double dt)
     #endif // RICH_MPI
     {
         size_t max_loc = max_temperature_loc; // TODO: (max_Erad_diff > max_temperature_diff) ? max_Erad_loc : max_temperature_loc;
+        double fleckFactor = std::numeric_limits<double>::quiet_NaN();
+        if(const auto *imc = dynamic_cast<const RadiationIMC *>(this->physics.get()); imc != nullptr)
+        {
+            const auto &fleck = imc->getFactorFleck();
+            if(max_loc < fleck.size())
+                fleckFactor = fleck[max_loc];
+        }
         std::cout << "MC Radiation time step ID " << cells[max_loc].ID
             << " old temperature " << old_temperature[max_loc] << " new temperature " << cells[max_loc].temperature
             << " old Erad " << old_Erad[max_loc] << " new Erad " << cells[max_loc].Erad * cells[max_loc].density
@@ -153,6 +162,7 @@ void RadiationMCStep::step(double dt)
             << " max_Erad " << max_Erad << " max_temperature " << max_temperature << " rank " << rank
             << " density " << cells[max_loc].density
             << " width " << tess.GetWidth(max_loc)
+            << " fleck " << fleckFactor
             << " location " << tess.GetMeshPoint(max_loc) << std::endl;
         std::cout << "Next MC time step is " << dt * std::min(1.25, 0.15 / max_diff) << std::endl;
     }

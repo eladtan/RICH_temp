@@ -10,7 +10,6 @@
 #include "mpi/mpi_commands.hpp"
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
-#include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
@@ -19,7 +18,6 @@
 #include "misc/mesh_generator3D.hpp"
 
 #include "3D/radiation/RadiationIMC.hpp"
-#include "3D/radiation/RadiationOpacity.hpp"
 #include "3D/radiation/PowerLawOpacity.hpp"
 #include "monte/population/Comb.hpp"
 #include "monte/boundary/SideTemperature.hpp"
@@ -27,102 +25,18 @@
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 
 /*
- * Desmore 2012 step-opacity test — Monte Carlo (multigroup IMC) version.
+ * Gray Marshak wave test for Random Walk validation.
  *
- * Same problem as runs/desmore2012_step (multigroup diffusion):
- *   Domain:      x in [0, 3]
+ *   Domain:      x in [0, 2000]
  *   Left BC:     Blackbody source, T = 1 keV
- *   Opacity:     sigma_a(E) = sigma_0 / (sqrt(kT) * E^3)
- *                Left  material (x < 2): sigma_0 = 10   * kev^3.5
- *                Right material (x >= 2): sigma_0 = 1000 * kev^3.5
- *   Scattering:  none
- *   EOS:         ideal gas, gamma = 1.4, Cv = 1e15/kev_kelvin
+ *   Opacity:     sigma = (T / 1keV)^{-3}  (pure absorption, no scattering)
+ *   EOS:         ideal gas, gamma = 1.4, Cv = 1e15 / kev_kelvin
  *   Init:        T = 1 eV, rho = 1
- *   Runtime:     1e-9 s
- *   No hydro.
+ *   Time step:   starts at 1e-9, grows 5% per cycle, capped at 1e-6
+ *   No hydro, gray (no multigroup).
  *
- * Usage: mpirun -np N ./test <Nx> [output_prefix] [new_photons_per_cell] [max_photons_per_cell]
+ * Usage: mpirun -np N ./rich <Nx> [prefix] [photons/cell] [max_photons] [rw(0/1)]
  */
-
-namespace
-{
-    class DesmoreMCOpacity : public RadiationOpacity
-    {
-    public:
-        DesmoreMCOpacity(double sigma0_left, double sigma0_right,
-                         const std::vector<double> &groupCenters,
-                         const std::vector<double> &groupBoundaries,
-                         int rank = 0)
-            : sigma0_left(sigma0_left), sigma0_right(sigma0_right),
-              groupCenters(groupCenters), groupBoundaries(groupBoundaries),
-              rng(static_cast<uint64_t>(rank))
-        {}
-
-        double getPlanckOpacity(const ComputationalCell3D &cell) const override
-        {
-            double sigma0 = getSigma0(cell);
-            double kT = units::k_boltz * cell.temperature;
-            double sqrtKT = std::sqrt(kT);
-            size_t G = groupCenters.size();
-
-            double weightedSum = 0;
-            double totalWeight = 0;
-            for(size_t g = 0; g < G; g++)
-            {
-                double a = groupBoundaries[g] / kT;
-                double b = groupBoundaries[g + 1] / kT;
-                double Bg = planck_integral::planck_integral(a, b);
-                double sigma_g = sigma0 / (sqrtKT * groupCenters[g] * groupCenters[g] * groupCenters[g]);
-                weightedSum += sigma_g * Bg;
-                totalWeight += Bg;
-            }
-            return weightedSum / totalWeight;
-        }
-
-        double getScatteringOpacity(const ComputationalCell3D &) const override
-        {
-            return 0.0;
-        }
-
-        Vector3D getRandomVelocity(const ComputationalCell3D &) const override
-        {
-            std::uniform_real_distribution<double> dist(-1 + EPSILON, 1 - EPSILON);
-            double x = dist(rng);
-            double y = dist(rng);
-            double z = dist(rng);
-            return normalize(Vector3D(x, y, z)) * units::clight;
-        }
-
-        Vector3D getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &) const override
-        {
-            return getRandomVelocity(cell);
-        }
-
-        double getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
-        {
-            double sigma0 = getSigma0(cell);
-            double kT = units::k_boltz * cell.temperature;
-            energy = std::clamp(energy, groupBoundaries.front(), groupBoundaries.back());
-            auto it = std::upper_bound(groupBoundaries.begin(), groupBoundaries.end(), energy);
-            size_t idx = static_cast<size_t>(std::distance(groupBoundaries.begin(), it));
-            size_t g = (idx == 0) ? 0 : std::min(idx - 1, groupCenters.size() - 1);
-            double Eg = groupCenters[g];
-            return sigma0 / (std::sqrt(kT) * Eg * Eg * Eg);
-        }
-
-    private:
-        double getSigma0(const ComputationalCell3D &cell) const
-        {
-            return cell.tracers[0] > 0.5 ? sigma0_left : sigma0_right;
-        }
-
-        double sigma0_left;
-        double sigma0_right;
-        std::vector<double> groupCenters;
-        std::vector<double> groupBoundaries;
-        mutable std::mt19937_64 rng;
-    };
-}
 
 int main(int argc, char *argv[])
 {
@@ -139,7 +53,7 @@ int main(int argc, char *argv[])
     if(rank == 0 && argc < 2)
     {
         std::cerr << "Usage: " << argv[0]
-                  << " <Nx> [output_prefix] [new_photons_per_cell] [max_photons_per_cell] [with_random_walk(0/1)]"
+                  << " <Nx> [prefix] [photons/cell] [max_photons] [rw(0/1)]"
                   << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
@@ -147,53 +61,41 @@ int main(int argc, char *argv[])
   try
   {
     size_t Nx = std::stoul(argv[1]);
-    std::string prefix = (argc >= 3) ? argv[2] : "desmore_step_mc";
+    std::string prefix = (argc >= 3) ? argv[2] : "gray_marshak";
     size_t newPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 50;
-    size_t maxPhotonsPerCell = (argc >= 5) ? std::stoul(argv[4]) : 200;
+    size_t maxPhotonsPerCell = (argc >= 5) ? std::stoul(argv[4]) : 50;
     bool useRandomWalk = (argc >= 6) ? (std::stoi(argv[5]) != 0) : true;
 
-    // --- Energy groups (same as diffusion test) ---
+    // Energy groups (gray mode — groups unused but must be initialized)
     size_t const G = ENERGY_GROUPS_NUM;
-    std::vector<double> energy_groups_center(G);
-    std::vector<double> energy_groups_boundary(G + 1);
-
     double const Emin = units::kev * 1e-4;
     double const Emax = units::kev * 1e2;
-
+    std::vector<double> energy_groups_boundary(G + 1);
     energy_groups_boundary[0] = Emin;
     for(size_t g = 0; g < G; g++)
-    {
         energy_groups_boundary[g + 1] = std::pow(Emax / Emin, 1.0 / G) * energy_groups_boundary[g];
-        energy_groups_center[g] = 0.5 * (energy_groups_boundary[g + 1] + energy_groups_boundary[g]);
-    }
-
     for(size_t g = 0; g <= G; g++)
         ComputationalCell3D::energyBoundaries[g] = energy_groups_boundary[g];
 
-    // --- Tracers for two-material setup ---
-    ComputationalCell3D::stickerNames.push_back("Left");
-    ComputationalCell3D::stickerNames.push_back("Right");
-
-    // --- Physical parameters ---
-    double const cv = 1e15 / units::kev_kelvin;
+    // Physical parameters
+    double const cv = 1e9 / units::kev_kelvin;
     IdealGas eos(1.4, cv, 1, 0);
 
-    double const sigma_0_left  = 10.0   * std::pow(units::kev, 3.5);
-    double const sigma_0_right = 1000.0 * std::pow(units::kev, 3.5);
+    // sigma = 30 * (T/kev)^{-1} and constant scattering = 0.01
+    double const sigmaA0 = 30.0 * units::kev_kelvin;
 
-    constexpr double domainLength = 3.0;
-    double const T_init = units::ev_kelvin;       // 1 eV in Kelvin
-    double const T_boundary = units::kev_kelvin;  // 1 keV in Kelvin
+    constexpr double domainLength = 100.0;
+    double const T_init = 50.0 * units::ev_kelvin;
+    double const T_boundary = units::kev_kelvin;
 
-    double const tf = 1e-9;
-    double const dt = 5e-12;
-    size_t const iterations = static_cast<size_t>(tf / dt);
+    double const tf = 1e-7;
+    double const dt_init = 1e-12;
 
     double const width = domainLength;
     Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx);
     Vector3D ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
 
-    // --- Generate mesh ---
+    // Generate mesh
     std::vector<Vector3D> points;
     if(rank == 0)
         points = CartesianMesh(Nx, 1, 1, ll, ur);
@@ -204,7 +106,7 @@ int main(int argc, char *argv[])
     Voronoi3D tess(ll, ur);
     tess.BuildParallel(points);
 
-    // --- Initial conditions ---
+    // Initial conditions
     ComputationalCell3D init_cell;
     init_cell.density = 1.0;
     init_cell.temperature = T_init;
@@ -218,17 +120,10 @@ int main(int argc, char *argv[])
     size_t N = tess.GetPointNo();
 
     std::vector<ComputationalCell3D> initialCells(N, init_cell);
-    for(size_t i = 0; i < N; i++)
-    {
-        if(tess.GetCellCM(i).x < 2.0)
-            initialCells[i].tracers[0] = 1.0;
-        else
-            initialCells[i].tracers[1] = 1.0;
-    }
 
-    // --- Simulation ---
+    // Simulation
     Simulation sim(tess, initialCells, eos);
-    std::shared_ptr<TimeStepFunction3D> tsc = std::make_shared<ManualTimeStep>();
+    auto tsc = std::make_shared<ManualTimeStep>();
     sim.SetTimeStepFunction(tsc);
 
     std::vector<ComputationalCell3D> &cells = sim.getCells();
@@ -237,31 +132,32 @@ int main(int argc, char *argv[])
     for(size_t i = 0; i < cells.size(); i++)
         PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
 
-    // --- MC radiation setup ---
+    // MC radiation setup — gray
     auto eosPtr = std::make_shared<IdealGas>(eos);
-    auto opacityPtr = std::make_shared<DesmoreMCOpacity>(
-        sigma_0_left, sigma_0_right, energy_groups_center, energy_groups_boundary, rank);
+    auto opacityPtr = std::make_shared<MCPowerLawOpacity>(
+        sigmaA0, /*sigmaS0=*/0.01,
+        /*sigmaA_rho=*/0.0, /*sigmaA_T=*/-1.0,
+        /*sigmaS_rho=*/0.0, /*sigmaS_T=*/0.0);
 
     constexpr bool withHydro = false;
     constexpr size_t boundaryPhotonsPerCell = 100;
 
-    std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
-        std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
-            tess, cells, T_boundary, boundaryPhotonsPerCell, /*multigroup=*/true);
+    auto boundaryCond = std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
+        tess, cells, T_boundary, boundaryPhotonsPerCell, /*multigroup=*/false);
 
     RadiationIMCParameters radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
         .diffusionPressureGradient = false,
         .MMC = false,
-        .withMultigroupOpacity = true,
+        .withMultigroupOpacity = false,
         .withRandomWalk = useRandomWalk
     };
-    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
+    auto physics = std::make_shared<RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
-    std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 5);
+    auto popControl = std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(
+        tess, maxPhotonsPerCell, 5);
 
     std::vector<Particle3D> initialParticles;
     size_t initialParticlesPerCell = 0;
@@ -274,39 +170,34 @@ int main(int argc, char *argv[])
     );
     sim.addPhysics(mcStep);
 
-    sim.SetTimeStep(dt);
-
     if(rank == 0)
     {
-        std::cout << "Desmore 2012 step-opacity (MC multigroup IMC)"
+        std::cout << "Gray Marshak wave (RW validation)"
                   << "\n  Nx=" << Nx
-                  << ", G=" << G
                   << ", new/cell=" << newPhotonsPerCell
                   << ", max/cell=" << maxPhotonsPerCell
+                  << ", RW=" << useRandomWalk
                   << "\n  T_init=" << T_init / units::ev_kelvin << " eV"
                   << ", T_boundary=" << T_boundary / units::kev_kelvin << " keV"
-                  << "\n  sigma_0_left=" << sigma_0_left
-                  << ", sigma_0_right=" << sigma_0_right
-                  << "\n  dt=" << dt << " s"
-                  << ", t_final=" << tf << " s"
-                  << ", iterations=" << iterations
+                  << "\n  sigmaA0=" << sigmaA0 << " (sigma=30*(T/keV)^-1)"
+                  << ", sigmaS0=0.01"
+                  << "\n  dt start=" << dt_init << ", dt=max(3e-10, sqrt(t)/1e5)"
+                  << ", t_final=" << tf
                   << "\n  prefix=" << prefix
                   << std::endl;
     }
 
-    // --- Helper to write temperature profile ---
+    // Helper to write temperature profile
     struct CellData
         #ifdef RICH_MPI
             : public Serializable
         #endif
     {
-        double x;
-        double temperature;
-        double Erad;
-        double Erad_time_avg;
+        double x, temperature, Erad, Erad_time_avg;
 
         CellData() : x(0), temperature(0), Erad(0), Erad_time_avg(0) {}
-        CellData(double x_, double T_, double Er_, double ErAvg_) : x(x_), temperature(T_), Erad(Er_), Erad_time_avg(ErAvg_) {}
+        CellData(double x_, double T_, double Er_, double ErAvg_)
+            : x(x_), temperature(T_), Erad(Er_), Erad_time_avg(ErAvg_) {}
 
         #ifdef RICH_MPI
         size_t dump(Serializer *serializer) const override
@@ -318,7 +209,6 @@ int main(int argc, char *argv[])
             off += serializer->insert(this->Erad_time_avg);
             return off;
         }
-
         size_t load(const Serializer *serializer, std::size_t offset)
         {
             size_t rd = 0;
@@ -352,7 +242,7 @@ int main(int argc, char *argv[])
         {
             std::sort(cellData.begin(), cellData.end());
             std::ofstream out(filename);
-            out << "# Desmore2012 step MC multigroup  t=" << time << "  Nx=" << Nx << "\n";
+            out << "# Gray Marshak wave  t=" << time << "  Nx=" << Nx << "\n";
             out << "# x, T(K), Erad(erg/cm^3), Erad_time_avg(erg/cm^3)\n";
             double prevX = -1;
             double sumT = 0, sumErad = 0, sumEradAvg = 0;
@@ -361,10 +251,9 @@ int main(int argc, char *argv[])
             {
                 if(count > 0 && std::abs(cellData[i].x - prevX) > 1e-10)
                 {
-                    out << prevX << ", " << sumT / count << ", " << sumErad / count << ", " << sumEradAvg / count << "\n";
-                    sumT = 0;
-                    sumErad = 0;
-                    sumEradAvg = 0;
+                    out << prevX << ", " << sumT / count << ", "
+                        << sumErad / count << ", " << sumEradAvg / count << "\n";
+                    sumT = sumErad = sumEradAvg = 0;
                     count = 0;
                 }
                 prevX = cellData[i].x;
@@ -374,63 +263,56 @@ int main(int argc, char *argv[])
                 count++;
             }
             if(count > 0)
-                out << prevX << ", " << sumT / count << ", " << sumErad / count << ", " << sumEradAvg / count << "\n";
+                out << prevX << ", " << sumT / count << ", "
+                    << sumErad / count << ", " << sumEradAvg / count << "\n";
             out.close();
             std::cout << "Wrote " << filename << std::endl;
         }
     };
 
-    // Snapshot times (fractions of final time)
-    const std::vector<double> snapshotFractions = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0};
-    size_t nextSnapshot = 0;
-
-    // --- Main time-stepping loop ---
+    // Main time-stepping loop with adaptive dt
     double simTime = 0;
+    double dt = dt_init;
+    size_t cycle = 0;
     auto startWall = std::chrono::high_resolution_clock::now();
 
-    for(size_t i = 0; i < iterations; i++)
+    while(simTime < tf)
     {
-        auto stepStart = std::chrono::high_resolution_clock::now();
+        if(simTime + dt > tf)
+            dt = tf - simTime;
 
-        sim.step();
-
-        simTime += dt;
         sim.SetTimeStep(dt);
 
+        auto stepStart = std::chrono::high_resolution_clock::now();
+        sim.step();
         auto stepEnd = std::chrono::high_resolution_clock::now();
+
+        simTime += dt;
+        cycle++;
         double stepSec = std::chrono::duration<double>(stepEnd - stepStart).count();
         double elapsedWall = std::chrono::duration<double>(stepEnd - startWall).count();
+        double eta = (simTime > 0) ? elapsedWall * (tf - simTime) / simTime : 0;
 
-        double fraction = static_cast<double>(i + 1) / iterations;
-        double eta = (fraction > 0) ? elapsedWall * (1.0 - fraction) / fraction : 0;
-
-        if(rank == 0 && (i % 10 == 0 || i + 1 == iterations))
+        if(rank == 0 && (cycle % 20 == 0 || simTime >= tf))
         {
-            int pct = static_cast<int>(fraction * 100);
             int etaMin = static_cast<int>(eta) / 60;
             int etaSec = static_cast<int>(eta) % 60;
-            std::cout << "Cycle " << i + 1 << "/" << iterations
-                      << " (" << pct << "%)"
+            std::cout << "Cycle " << cycle
                       << "  t=" << simTime
+                      << "  dt=" << dt
                       << "  step=" << stepSec << "s"
                       << "  ETA=" << etaMin << "m" << etaSec << "s"
                       << std::endl;
         }
 
-        if((i + 1) % 20 == 0)
+        if(cycle % 50 == 0)
         {
             char buf[512];
-            std::snprintf(buf, sizeof(buf), "%s_%05zu.txt", prefix.c_str(), i + 1);
+            std::snprintf(buf, sizeof(buf), "%s_%05zu.txt", prefix.c_str(), cycle);
             writeResults(buf, simTime);
         }
 
-        while(nextSnapshot < snapshotFractions.size() && simTime >= snapshotFractions[nextSnapshot] * tf)
-        {
-            int snapIdx = static_cast<int>(snapshotFractions[nextSnapshot] * 10);
-            std::string snapName = prefix + "_snap" + std::to_string(snapIdx) + ".txt";
-            writeResults(snapName, simTime);
-            nextSnapshot++;
-        }
+        dt = std::max(1e-12, std::sqrt(simTime) / 1e6);
     }
 
     auto endWall = std::chrono::high_resolution_clock::now();
@@ -443,13 +325,14 @@ int main(int argc, char *argv[])
   }
   catch(const UniversalError &e)
   {
-      std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
-      reportError(e);
+      reportError(e, std::cerr);
+      std::cerr << std::flush;
       MPI_Abort(MPI_COMM_WORLD, 1);
   }
   catch(const std::exception &e)
   {
-      std::cerr << "=== std::exception on rank " << rank << ": " << e.what() << " ===" << std::endl;
+      std::cerr << "=== std::exception on rank " << rank << ": " << e.what()
+                << " ===" << std::endl;
       MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
