@@ -226,6 +226,9 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
 
     particle.location = rwCenter + displacement * posDir;
 
+    static constexpr double nudge = 1e-10;
+    particle.location = particle.location * (1.0 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
+
     for(size_t fi = 0; fi < normals.size(); ++fi)
     {
         double d = ScalarProd(particle.location - facePoints[fi], normals[fi]);
@@ -249,9 +252,6 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
             fi = static_cast<size_t>(-1);
         }
     }
-
-    static constexpr double nudge = 1e-10;
-    particle.location = particle.location * (1.0 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
 
     particle.velocity = this->opacity->getRandomVelocity(cell);
 
