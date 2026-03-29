@@ -603,7 +603,7 @@ void Delaunay3D::Build(vector<Vector3D> const& points, Vector3D const& maxv, Vec
     hy = std::max(hy, 1e-2 * scale);
     hz = std::max(hz, 1e-2 * scale);
     double const m = 2000.0;
-    double const padding = 200.0;
+    double const padding = 600.0;
     double const R_min = std::max(2.0 * hy, std::sqrt(3.0) * hx + hy);
     double const R_base = padding * R_min * 2.0 * (1.0 + m) / m;
     double const z_base = minv.z - m * hz;

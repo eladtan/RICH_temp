@@ -103,6 +103,9 @@ for arg in "${@:2}"; do
         --shared)
             CMAKE_FLAGS+=" -DDYNAMIC_LIBS=1 "
             ;;
+        --high-res)
+            CMAKE_FLAGS+=" -DHIGH_RES=1 "
+            ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
             ;;
@@ -147,7 +150,7 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 # ==================== Validate arguments ====================
 
 if [[ $# -lt 2 || -z "$TEST_NAME" ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--build-subdir=<name>] [--jobs=<N>]${NC}"
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 
@@ -259,6 +262,12 @@ if [[ -f "$ENV_PATHS_FILE" ]]; then
     fi
 fi
 
+# Intel OneAPI modules set CPATH to include Intel MPI headers.
+# icpx gives CPATH higher priority than -isystem, which can shadow
+# the OpenMPI mpi.h when both -I and -isystem point to the same dir.
+# Unsetting CPATH avoids the wrong mpi.h being picked up.
+unset CPATH
+
 # ==================== Run CMake if needed ====================
 if [[ ! -f Makefile || $RERUN_CMAKE -eq 1 ]]; then
     echo -e "${ORANGE}Running CMake...${NC}"
@@ -341,7 +350,7 @@ progress_bar_and_filtered_output() {
     echo "$progress_done" > "$PROGRESS_STATE_FILE"
 }
 
-# ==================== Run Make with Tee & Progress ====================
+# ==================== Run Make ====================
 echo -e "${CYAN}Running Make...${NC}"
 PROGRESS_FIFO=$(mktemp -u)
 mkfifo "$PROGRESS_FIFO"
@@ -349,15 +358,22 @@ mkfifo "$PROGRESS_FIFO"
 linking_filter < "$PROGRESS_FIFO" | progress_bar_and_filtered_output &
 PROGRESS_PID=$!
 
-stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
-    | tee "$PROGRESS_FIFO" > "$MAKE_OUT"
-
-MAKE_EXIT_CODE=${PIPESTATUS[0]}
+if [[ "${VERBOSE:-0}" == "1" ]]; then
+    # Verbose mode: stream raw make output (including compile commands).
+    stdbuf -oL make VERBOSE=1 -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
+        | tee "$MAKE_OUT"
+    MAKE_EXIT_CODE=${PIPESTATUS[0]}
+else
+    # Default mode: compact progress + linking indicator.
+    stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
+        | tee "$PROGRESS_FIFO" > "$MAKE_OUT"
+    MAKE_EXIT_CODE=${PIPESTATUS[0]}
 wait "$PROGRESS_PID" 2>/dev/null
 rm -f "$PROGRESS_FIFO"
 
 PROGRESS_DONE=$(<"$PROGRESS_STATE_FILE")
 rm -f "$PROGRESS_STATE_FILE"
+fi
 
 # ==================== Final Status ====================
 

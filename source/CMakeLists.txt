@@ -97,6 +97,48 @@ if (NOT HDF5)
     message(FATAL_ERROR "NO HDF5")
 endif()
 
+
+# Static HDF5 needs its transitive deps linked explicitly
+if(NOT DEFINED DYNAMIC_LIBS)
+    # Szip (compression filter used by this HDF5 build)
+    if(DEFINED ENV{EBROOTSZIP})
+        find_library(SZIP_LIB sz PATHS "$ENV{EBROOTSZIP}/lib" NO_DEFAULT_PATH)
+    else()
+        find_library(SZIP_LIB sz)
+    endif()
+    if(SZIP_LIB)
+        list(APPEND HDF5_LIBS ${SZIP_LIB})
+        message(STATUS "Szip for static HDF5: ${SZIP_LIB}")
+    endif()
+
+    # MPI (parallel HDF5 references MPI symbols)
+    if(DEFINED MPI)
+        find_package(MPI REQUIRED)
+        list(APPEND HDF5_LIBS MPI::MPI_C)
+    endif()
+endif()
+
+
+# Static HDF5 needs its transitive deps linked explicitly
+if(NOT DEFINED DYNAMIC_LIBS)
+    # Szip (compression filter used by this HDF5 build)
+    if(DEFINED ENV{EBROOTSZIP})
+        find_library(SZIP_LIB sz PATHS "$ENV{EBROOTSZIP}/lib" NO_DEFAULT_PATH)
+    else()
+        find_library(SZIP_LIB sz)
+    endif()
+    if(SZIP_LIB)
+        list(APPEND HDF5_LIBS ${SZIP_LIB})
+        message(STATUS "Szip for static HDF5: ${SZIP_LIB}")
+    endif()
+
+    # MPI (parallel HDF5 references MPI symbols)
+    if(DEFINED MPI)
+        find_package(MPI REQUIRED)
+        list(APPEND HDF5_LIBS MPI::MPI_C)
+    endif()
+endif()
+
 # MPI (discovered in set_compilers.cmake via mpicxx wrapper)
 
 # VTK (found and validated in config/find_VTK.cmake)

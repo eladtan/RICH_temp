@@ -16,7 +16,6 @@ Usage:
 """
 
 import argparse
-import math
 import os
 import re
 import shutil
@@ -106,7 +105,7 @@ TESTS = [
         "description": (
             "The Sedov--Taylor blast wave \\cite{sedov1959,taylor1950} is a "
             "point-explosion problem with a self-similar analytical solution "
-            "obtained by integrating an ODE \\cite{kamm2000}. It is a standard "
+            "obtained by integrating an ODE \\cite{kamm2007}. It is a standard "
             "verification problem for multi-dimensional Lagrangian and ALE "
             "hydrodynamics.\n\n"
             "\\textbf{Code and physics aspects verified:}\n"
@@ -155,19 +154,21 @@ TESTS = [
         "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
         "pass_criteria": (
             r"Radially binned profiles of density, pressure, and velocity are "
-            r"compared to the Sedov--Taylor ODE solution. "
-            r"The relative $L_1$ error must satisfy:"
+            r"compared to the Sedov--Taylor ODE solution (scaled from theory "
+            r"using $v_s = \tfrac{2}{5}\,R_s/t$, not normalized to numerical peaks). "
+            r"The volume-weighted relative $L_1$ error (weights $\propto r^2$) must satisfy:"
             "\n"
             r"\begin{itemize}" "\n"
-            r"  \item Density: relative $L_1 \le 0.30$." "\n"
+            r"  \item Density: relative $L_1 \le 0.50$." "\n"
             r"  \item Pressure: relative $L_1 \le 0.30$." "\n"
-            r"  \item Velocity: relative $L_1 \le 0.30$." "\n"
+            r"  \item Velocity: relative $L_1 \le 0.60$." "\n"
             r"\end{itemize}"
         ),
         "plots": ["sedov_3d_mpi.png"],
         "plot_caption": (
-            "Sedov--Taylor blast wave: radially binned numerical density (black dots) "
-            "vs.\\ the ODE self-similar solution (red line)."
+            "Sedov--Taylor blast wave: radially binned numerical profiles (black dots) "
+            "vs.\\ the ODE self-similar solution (red line) for density (left), "
+            "pressure (center), and radial velocity (right)."
         ),
     },
     {
@@ -907,6 +908,535 @@ TESTS = [
             "Densmore et al.\\ (2012) (red line)."
         ),
     },
+    {
+        "id": "yee_vortex_64",
+        "title": "Yee Isentropic Vortex (64$\\times$64, Lagrangian)",
+        "description": (
+            "Stationary isentropic vortex (Yee et al.\\ 1999) on a Lagrangian mesh "
+            "with RoundCells correction. The vortex is an exact steady-state solution "
+            "of the compressible Euler equations: a smooth velocity field with matching "
+            "isentropic density and pressure perturbations.\n\n"
+            "The analytical solution at any time $t$ equals the initial condition, so "
+            "the $L_1$ density error at $t=10$ measures numerical dissipation and mesh "
+            "deformation artifacts. This is the lower-resolution run of the convergence "
+            "pair (see also \\texttt{yee\\_vortex\\_128}).\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Lagrangian mesh motion:} Verifies that the moving "
+            "mesh tracks a smooth rotational flow over many revolutions.\n"
+            "  \\item \\textbf{Isentropic flow preservation:} Tests the scheme's "
+            "ability to maintain entropy in a smooth, vortex-dominated flow.\n"
+            "  \\item \\textbf{Density convergence:} Paired with the 128$\\times$128 "
+            "run to verify second-order spatial convergence.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"$64\times64\times1$ Cartesian mesh on $[-5,\,5]^2$, $\gamma = 1.4$. "
+            r"Vortex strength $\beta = 5$, centred at the origin. "
+            r"$T = 1 - \frac{(\gamma-1)\beta^2}{8\gamma\pi^2} e^{1-r^2}$, "
+            r"$\rho = T^{1/(\gamma-1)}$, $p = T^{\gamma/(\gamma-1)}$, "
+            r"$v_x = -\frac{\beta}{2\pi} y\, e^{(1-r^2)/2}$, "
+            r"$v_y = \frac{\beta}{2\pi} x\, e^{(1-r^2)/2}$. "
+            r"$t_{\mathrm{end}} = 10$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Lagrangian + RoundCells (restricted to $xy$-plane).",
+        "execution": "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Volume-weighted $L_1$ density error at $t=10$ compared to the "
+            r"analytical initial condition must be $\le 0.05$."
+        ),
+        "plots": [
+            "yee_vortex_density_2d.png",
+            "yee_vortex_pressure_2d.png",
+            "yee_vortex_density_r.png",
+            "yee_vortex_convergence.png",
+        ],
+        "plot_caption": (
+            "Yee isentropic vortex at $t=10$: density field (top left), pressure "
+            "field (top right), radially binned density profile vs.\\ analytical "
+            "IC for both resolutions (bottom left), and $L_1$ density error "
+            "convergence with second-order reference (bottom right)."
+        ),
+    },
+    {
+        "id": "yee_vortex_128",
+        "title": "Yee Isentropic Vortex (128$\\times$128, Lagrangian)",
+        "description": (
+            "Higher-resolution companion to \\texttt{yee\\_vortex\\_64}. "
+            "Same isentropic vortex problem on a $128\\times128\\times1$ mesh. "
+            "Together with the 64$\\times$64 run, this establishes the spatial "
+            "convergence rate of the Lagrangian scheme for smooth flows."
+        ),
+        "initial_conditions": (
+            r"$128\times128\times1$ Cartesian mesh on $[-5,\,5]^2$, same "
+            r"$\gamma$, $\beta$, velocity and thermodynamic profiles as the "
+            r"64$\times$64 case. $t_{\mathrm{end}} = 10$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Lagrangian + RoundCells (restricted to $xy$-plane).",
+        "execution": "MPI, 16~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Volume-weighted $L_1$ density error at $t=10$ must be $\le 0.05$."
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "spherical_gauss_linear",
+        "title": "Spherical LSQ Gradient -- Linear Field Verification",
+        "description": (
+            "A pure-reconstruction test that verifies the weighted least-squares "
+            "(LSQ) gradient in spherical coordinate space implemented in "
+            "\\texttt{SphericalLinearGauss3D}. Fields that are exactly linear in "
+            "$(r,\\,\\theta)$ are prescribed at every cell centre and then "
+            "reconstructed to face centroids. Because the LSQ gradient can "
+            "represent linear functions exactly, the interpolated values must "
+            "agree with the exact values to machine precision.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{LSQ gradient accuracy:} The 3\\texttimes3 normal "
+            "system and its analytic inverse must yield the exact coordinate "
+            "derivatives $\\partial f/\\partial r$, $\\partial f/\\partial\\theta$, "
+            "$\\partial f/\\partial\\phi$.\n"
+            "  \\item \\textbf{Velocity frame conversion:} Each cell's velocity "
+            "is projected onto its own local spherical basis; the interpolated "
+            "velocity at the face centroid is converted back to Cartesian using "
+            "the basis at that point.\n"
+            "  \\item \\textbf{Coordinate-space interpolation:} The "
+            "displacement $(\\Delta r,\\,\\Delta\\theta,\\,\\Delta\\phi)$ between "
+            "cell centre and face centroid must be computed correctly.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"A Voronoi tessellation from $\sim$4\,000 random points in a "
+            r"spherical shell $1 < r < 2$ embedded in a $[-4,\,4]^3$ box. "
+            r"Scalar fields (density, internal energy) are linear in "
+            r"$(r,\,\theta)$; velocity components $(v_r,\,v_\theta,\,v_\phi)$ "
+            r"are also linear in $(r,\,\theta)$ (no $\phi$ dependence to avoid "
+            r"angle-wrapping artefacts). The slope limiter is disabled so that "
+            r"the reconstruction is purely linear."
+        ),
+        "boundary_conditions": "Rigid walls at box faces.",
+        "mesh_movement": "Static (no time evolution).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"For interior faces (both cell CMs in $1.1 < r < 1.9$):"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item Scalar max relative error $< 10^{-8}$." "\n"
+            r"  \item Velocity max relative error $< 0.1$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "cartesian_gauss_linear",
+        "title": "Cartesian LSQ Gradient -- Linear Field Verification",
+        "description": (
+            "Complementary to \\texttt{spherical\\_gauss\\_linear}: this test "
+            "verifies the standard Cartesian weighted least-squares gradient "
+            "in \\texttt{LinearGauss3D}. Fields that are exactly linear in "
+            "$(x,\\,y,\\,z)$ are prescribed at every cell centre and "
+            "reconstructed to face centroids. Because the LSQ gradient can "
+            "represent linear functions exactly, the Cartesian interpolated "
+            "values must agree with the exact values to machine precision.\n\n"
+            "The test also evaluates the \\emph{spherical} reconstruction "
+            "(\\texttt{SphericalLinearGauss3D}) on the same Cartesian-linear "
+            "fields and checks that the Cartesian mode achieves a strictly "
+            "lower error, confirming that each reconstruction is optimal for "
+            "its own coordinate family.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Cartesian LSQ gradient accuracy:} The normal "
+            "system must yield the exact derivatives $\\partial f/\\partial x$, "
+            "$\\partial f/\\partial y$, $\\partial f/\\partial z$ to roundoff.\n"
+            "  \\item \\textbf{Reconstruction mode comparison:} Cartesian "
+            "reconstruction must outperform spherical for Cartesian-linear "
+            "fields, validating the coordinate-selection logic.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"A Voronoi tessellation from $\sim$4\,000 random points in a "
+            r"spherical shell $1 < r < 2$ embedded in a $[-4,\,4]^3$ box. "
+            r"Scalar fields (density, pressure, internal energy) are linear in "
+            r"$(x,\,y,\,z)$; velocity components $(v_x,\,v_y,\,v_z)$ are "
+            r"also linear in $(x,\,y,\,z)$. The slope limiter is disabled "
+            r"so that the reconstruction is purely linear."
+        ),
+        "boundary_conditions": "Rigid walls at box faces.",
+        "mesh_movement": "Static (no time evolution).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"For interior faces (both cell CMs in $1.1 < r < 1.9$):"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item Cartesian scalar max relative error $< 10^{-6}$." "\n"
+            r"  \item Cartesian velocity max relative error $< 0.1$." "\n"
+            r"  \item Cartesian scalar error strictly less than spherical scalar error." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "spherical_collapse_hires",
+        "title": "Spherical Shell Collapse (High Resolution, Symmetry Test)",
+        "description": (
+            "High-resolution companion to \\texttt{spherical\\_collapse}. "
+            "Uses the same physics and setup but doubles the angular resolution "
+            "($N_{\\mathrm{edge}}=82$ vs.\\ 41), roughly quadrupling the total "
+            "cell count. The purpose is to verify that angular scatter "
+            "decreases with resolution and that the code scales correctly "
+            "to larger problem sizes under MPI."
+        ),
+        "initial_conditions": (
+            r"Same as \texttt{spherical\_collapse} but with "
+            r"$N_{\mathrm{edge}}=82$ (high resolution)."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces of the $[-1.55, 1.55]^3$ box.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Maximum angular density scatter $< 0.1$ and maximum angular "
+            r"velocity scatter $< 0.1$ across all radial bins with "
+            r"significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$)."
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "spherical_collapse",
+        "title": "Spherical Shell Collapse (Symmetry Test)",
+        "description": (
+            "A dense spherical shell ($0.9 < r < 1.0$, $\\rho=1$, $P=1$) is "
+            "embedded in a low-density ambient medium ($\\rho=10^{-3}$, "
+            "$P=10^{-4}$) and allowed to collapse inward on a fixed Eulerian "
+            "mesh. The mesh is constructed by generating a well-rounded "
+            "template sphere (\\texttt{RandSphereSurfaceRounded}, $\\sim$10\\,000 "
+            "points) and replicating it at logarithmically spaced radii from "
+            "$R=1.1$ down to $R=0.05$ with constant $\\Delta R/R$, ensuring "
+            "near-unity aspect ratio. The inner core ($r<0.05$) and the "
+            "region between the outer sphere and the box walls are filled with "
+            "random points.\n\n"
+            "The simulation runs until the volume-averaged inward velocity at "
+            "$r=0.05$ reaches unity. Snapshots are written each time the "
+            "shock front advances inward by $0.1$ in radius.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Spherical symmetry preservation:} The primary "
+            "metric is the angular scatter (standard deviation / mean) of "
+            "density and radial velocity in each radial bin. A well-behaved "
+            "code should maintain low scatter throughout the collapse.\n"
+            "  \\item \\textbf{Eulerian advection on unstructured mesh:} The "
+            "fixed mesh forces all dynamics to be captured by inter-cell "
+            "fluxes, stressing the Riemann solver and reconstruction.\n"
+            "  \\item \\textbf{Strong shock convergence:} The collapsing shell "
+            "drives a converging shock that amplifies any asymmetry.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Dense shell: $\rho = 1$, $P = 1$ for $0.9 < r < 1.0$; "
+            r"ambient: $\rho = 10^{-3}$, $P = 10^{-4}$ elsewhere. "
+            r"Zero velocity everywhere. $\gamma = 5/3$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces of the $[-1.55, 1.55]^3$ box.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "MPI, 64~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Maximum angular density scatter $< 0.1$ and maximum angular "
+            r"velocity scatter $< 0.1$ across all radial bins with "
+            r"significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$)."
+        ),
+        "plots": [
+            "collapse_density_profile.png",
+            "collapse_scatter_profile.png",
+        ],
+        "plot_caption": (
+            "Spherical collapse at termination: radial density profile and "
+            "angular scatter of density and velocity vs.\\ radius."
+        ),
+    },
+    {
+        "id": "rayleigh_taylor_mpi",
+        "title": "Rayleigh--Taylor Instability (3D, MPI)",
+        "description": (
+            "The Rayleigh--Taylor instability \\cite{rayleigh1883,taylor1950rt} "
+            "develops when a heavy fluid is supported against gravity above a "
+            "lighter fluid. A small sinusoidal perturbation at the interface "
+            "grows exponentially in the linear regime with a growth rate "
+            "determined by the Atwood number, gravitational acceleration, and "
+            "perturbation wavenumber \\cite{chandrasekhar1961}.\n\n"
+            "The initial condition places $\\rho_{\\mathrm{heavy}}=2$ above "
+            "$\\rho_{\\mathrm{light}}=1$ in a $[0,1]^2 \\times [0,2]$ box with "
+            "a flat interface at $z=1$ in exact hydrostatic equilibrium. "
+            "A two-mode cosine velocity perturbation in $v_z$ (amplitude "
+            "$0.03$, Gaussian-localised near the interface) seeds the "
+            "instability. Constant downward gravity $g=0.5$ is applied.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Source term coupling:} The conservative gravity "
+            "source term (\\texttt{ConservativeForce3D}) must correctly inject "
+            "momentum and energy to maintain hydrostatic equilibrium and drive "
+            "the instability.\n"
+            "  \\item \\textbf{Lagrangian mesh motion with RoundCells:} The "
+            "moving mesh must track the developing interface while keeping "
+            "cells well-shaped.\n"
+            "  \\item \\textbf{MPI scalability:} The test runs on 128~MPI tasks "
+            "with $\\sim$10$^6$ cells, exercising the parallel domain "
+            "decomposition and communication.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"$\rho_{\mathrm{light}}=1$ for $z < 1$, "
+            r"$\rho_{\mathrm{heavy}}=2$ for $z \geq 1$ (flat interface). "
+            r"Hydrostatic pressure with $P_0=10$, $g=0.5$. $\gamma=5/3$. "
+            r"Velocity perturbation: "
+            r"$v_z = 0.03\,[\cos(2\pi x) + \cos(2\pi y)]\,"
+            r"\exp[-(z-1)^2/0.04]$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces of the $[0,1]^2 \\times [0,2]$ box.",
+        "mesh_movement": "Lagrangian + RoundCells (\\texttt{Lagrangian3D} wrapped in \\texttt{RoundCells3D}).",
+        "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Fitted linear growth rate $\sigma_{\mathrm{fit}}$ (from $t=2$ "
+            r"to $t=3$) within 25\% of analytical "
+            r"$\sigma = \sqrt{A\,g\,k}$ where $A=1/3$, $g=0.5$, $k=2\pi$."
+        ),
+        "plots": [
+            "rayleigh_taylor_mpi_ekz.png",
+            "rayleigh_taylor_mpi_slice.png",
+        ],
+        "plot_caption": (
+            "Rayleigh--Taylor instability: vertical kinetic energy $E_{k,z}(t)$ "
+            "with best-fit exponential growth rate (left), and density slice in "
+            "the $xz$-plane at $y=0.5$ at $t=3$ (right)."
+        ),
+    },
+    {
+        "id": "eulerian_diffusion_freefree_suite",
+        "title": "1D Eulerian Diffusion Suite (Gray Free--Free, Cooling Limiter)",
+        "description": (
+            "A four-case resolution and cooling-limiter study for 1D Eulerian "
+            "radiation-hydrodynamics with gray flux-limited diffusion, free--free "
+            "(bremsstrahlung) absorption opacity, and Thomson scattering. "
+            "Two counter-propagating streams ($v_x = \\pm 10^8\\,\\mathrm{cm\\,s^{-1}}$) "
+            "collide at the domain midpoint, driving a radiative shock. "
+            "The suite runs the same physics at two resolutions "
+            "(512 and 32~cells) and with the cooling-time opacity limiter toggled "
+            "on and off, producing a four-way comparison.\n\n"
+            "\\textbf{The cooling-time opacity limiter.}\\enspace "
+            "When the post-shock cooling length is under-resolved, the "
+            "finite-volume scheme cannot capture the thin radiative relaxation "
+            "layer behind the shock. Because energy is radiated away over fewer "
+            "cells than the physics requires, the post-shock temperature in an "
+            "under-resolved run is artificially elevated: the gas cools too "
+            "fast relative to the compression time, violating the "
+            "resolution-independent structure of the shock.\n\n"
+            "The limiter addresses this by comparing two time scales in every "
+            "cell that is undergoing compression:\n"
+            "\\begin{enumerate}\n"
+            "  \\item \\textbf{Hydrodynamic heating time:} "
+            "$t_{\\mathrm{hydro}} = 1/\\max(-\\nabla\\!\\cdot\\!\\mathbf{v},\\,\\epsilon)$, "
+            "measuring how fast compression is depositing energy.\n"
+            "  \\item \\textbf{Radiative cooling time:} "
+            "$t_{\\mathrm{cool}} = \\rho\\,e / (P_{\\mathrm{Planck}} + P_{\\mathrm{Compton}})$, "
+            "where $P_{\\mathrm{Planck}} = c\\,\\sigma_P\\,(aT^4 - E_r)$ and "
+            "$P_{\\mathrm{Compton}}$ is the Compton exchange rate (if Compton "
+            "scattering is enabled).\n"
+            "\\end{enumerate}\n"
+            "The limiter activates only in cells where the compression speed "
+            "exceeds a fraction of the bulk velocity "
+            "($(-\\nabla\\!\\cdot\\!\\mathbf{v})\\,\\Delta x > 0.25\\,|\\mathbf{v}|$). "
+            "If $t_{\\mathrm{cool}} < 2\\,t_{\\mathrm{hydro}}$, both the Planck "
+            "absorption and scattering opacities are scaled down by a common "
+            "factor so that the effective cooling time equals "
+            "$2\\,t_{\\mathrm{hydro}}$. This preserves the relative weighting "
+            "of absorption and scattering while preventing the cooling rate "
+            "from exceeding what the grid can resolve.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Eulerian radiation-hydrodynamics coupling:} "
+            "Tests the full hydro + gray diffusion pipeline in a "
+            "shock-forming setup with counter-propagating inflows.\n"
+            "  \\item \\textbf{Free--free opacity + Thomson scattering:} "
+            "Validates the gray Kramers free--free absorption and constant "
+            "Thomson scattering opacity paths.\n"
+            "  \\item \\textbf{Resolution convergence:} Comparing 512 vs.\\ "
+            "32~cells reveals the sensitivity of the post-shock structure to "
+            "resolution. The high-resolution run serves as a reference.\n"
+            "  \\item \\textbf{Cooling-limiter effectiveness:} With the limiter "
+            "enabled, the 32-cell $T_{\\mathrm{gas}}$ peak should be closer to "
+            "the 512-cell result, demonstrating that the limiter successfully "
+            "prevents resolution-dependent over-cooling.\n"
+            "  \\item \\textbf{Mixed radiation boundary conditions:} The "
+            "radiation boundary is open on the $x$-faces and closed on $y/z$, "
+            "testing a directional boundary implementation.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Under-resolved cooling layers are one of the "
+            "most common failure modes in production radiation-hydrodynamics "
+            "simulations. This suite directly tests the optional limiter that "
+            "mitigates this problem and quantifies its effect across an "
+            "order-of-magnitude resolution difference."
+        ),
+        "initial_conditions": (
+            r"Domain $x \in [0,\,2\times10^{12}]\,\mathrm{cm}$ with uniform cells. "
+            r"The gas is initialised with $\rho = 2\times10^{-13}\,\mathrm{g\,cm^{-3}}$, "
+            r"$T = 2\times10^{5}\,\mathrm{K}$. "
+            r"The left half has $v_x = +10^8\,\mathrm{cm\,s^{-1}}$ and the right half "
+            r"$v_x = -10^8\,\mathrm{cm\,s^{-1}}$, forming a symmetric collision. "
+            r"The adiabatic index is $\gamma = 5/3$." "\n\n"
+            r"The four runs are:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item 512 cells, limiter \textbf{off} (reference)." "\n"
+            r"  \item 512 cells, limiter \textbf{on}." "\n"
+            r"  \item 32 cells, limiter \textbf{off}." "\n"
+            r"  \item 32 cells, limiter \textbf{on}." "\n"
+            r"\end{itemize}" "\n"
+            r"The run terminates when the shock front (maximum $x$ with "
+            r"$\rho > 2\rho_0$) reaches $0.75\,L$, or when $t = 9\times10^4\,\mathrm{s}$."
+        ),
+        "boundary_conditions": (
+            "Hydrodynamics: left/right inflow ghost states matching the "
+            "respective initial half-domain states; rigid walls on $y/z$ faces. "
+            "Radiation: open (streaming) on the two $x$-boundary faces, closed "
+            "on $y/z$."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": (
+            "MPI, 16~CPUs for 512-cell runs, 4~CPUs for 32-cell runs, "
+            "submitted via SLURM (partition \\texttt{bigrun}, exclusive)."
+        ),
+        "pass_criteria": (
+            r"Each of the four sub-runs must complete without fatal errors and "
+            r"produce a valid \texttt{temperature\_profile.txt} with at least two "
+            r"data points. The suite then generates four-way comparison plots "
+            r"(gas temperature, radiation temperature, density, and velocity "
+            r"vs.\ $x$) which are inspected visually. Quantitative acceptance:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item All profile files contain finite, positive temperatures." "\n"
+            r"  \item The 32-cell limited peak $T_{\mathrm{gas}}$ is closer to "
+            r"the 512-cell reference than the 32-cell unlimited peak." "\n"
+            r"\end{itemize}"
+        ),
+        "plot_dir": "eulerian_diffusion_freefree_compare",
+        "plots": [
+            "temperature_vs_x_compare_512_512_limited_32_32_limited.png",
+            "trad_vs_x_compare_512_512_limited_32_32_limited.png",
+            "density_vs_x_compare_512_512_limited_32_32_limited.png",
+            "velocity_vs_x_compare_512_512_limited_32_32_limited.png",
+        ],
+        "plot_caption": (
+            "Gray free--free diffusion suite: four-way comparison of 512-cell "
+            "(solid), 512-limited (dash-dot), 32-cell (dashed), and 32-limited "
+            "(dotted) runs. Top row: gas temperature (left) and radiation "
+            "temperature (right). Bottom row: density (left) and $x$-velocity "
+            "(right). The cooling limiter brings the low-resolution peak "
+            "$T_{\\mathrm{gas}}$ closer to the high-resolution reference."
+        ),
+    },
+    {
+        "id": "eulerian_diffusion_freefree_multigroup_suite",
+        "title": "1D Eulerian Diffusion Suite (Multigroup Free--Free, Cooling Limiter)",
+        "description": (
+            "The multigroup counterpart of the gray free--free suite. The same "
+            "symmetric collision problem is run with 32 logarithmically spaced "
+            "energy groups, frequency-dependent free--free absorption, and "
+            "Compton scattering. The same four-variant pattern is used "
+            "(512/32~cells $\\times$ limiter on/off) and a four-way comparison "
+            "of profiles is produced.\n\n"
+            "\\textbf{The multigroup cooling limiter.}\\enspace "
+            "In multigroup mode the cooling-time estimate sums over all energy "
+            "groups: the Planck exchange is accumulated group-by-group as "
+            "$c\\,\\sigma_{P,g}\\,(B_g(T) - E_g)$ and the Compton exchange is "
+            "computed from the full Compton transfer matrix $S_{g,g'}$ rather "
+            "than a gray approximation. When the net cooling time is shorter "
+            "than $2\\,t_{\\mathrm{hydro}}$, all group-level absorption "
+            "opacities are scaled by a common factor and the Compton coupling "
+            "matrix entries ($S$ and $\\mathrm{d}S/\\mathrm{d}U_m$) are "
+            "multiplied by a stored per-cell scale factor, ensuring that the "
+            "full multigroup exchange is consistently limited.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Multigroup diffusion with frequency-dependent "
+            "opacities:} Each of the 32 energy groups evolves with its own "
+            "absorption coefficient, testing the group-by-group solver.\n"
+            "  \\item \\textbf{Compton scattering matrix:} The full "
+            "Kompaneets-based Compton transfer matrix is exercised in a "
+            "dynamic (non-static) setting with strong temperature gradients.\n"
+            "  \\item \\textbf{Multigroup cooling limiter:} Verifies that "
+            "the per-cell Compton-limiter scale factor is correctly stored, "
+            "applied to the $S$ and $\\mathrm{d}S/\\mathrm{d}U_m$ matrices, "
+            "and produces the same qualitative resolution-convergence "
+            "improvement seen in the gray case.\n"
+            "  \\item \\textbf{Consistency with gray results:} The spatial "
+            "profiles should be qualitatively similar to the gray suite, "
+            "with frequency-dependent effects introducing only modest "
+            "quantitative differences.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Production simulations typically use "
+            "multigroup transport and Compton scattering. This suite ensures "
+            "that the cooling limiter---originally developed for the gray "
+            "solver---extends correctly to the frequency-dependent case "
+            "including the Compton coupling terms."
+        ),
+        "initial_conditions": (
+            r"Identical domain and gas state to the gray suite "
+            r"($L = 2\times10^{12}\,\mathrm{cm}$, "
+            r"$\rho = 2\times10^{-13}\,\mathrm{g\,cm^{-3}}$, "
+            r"$T = 2\times10^{5}\,\mathrm{K}$, symmetric $\pm 10^8\,\mathrm{cm\,s^{-1}}$). "
+            r"Radiation transport uses 32 logarithmically spaced energy groups "
+            r"with free--free opacity (frequency-dependent Kramers formula) "
+            r"and Compton scattering." "\n\n"
+            r"The four runs are:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item 512 cells, limiter \textbf{off} (reference)." "\n"
+            r"  \item 512 cells, limiter \textbf{on}." "\n"
+            r"  \item 32 cells, limiter \textbf{off}." "\n"
+            r"  \item 32 cells, limiter \textbf{on}." "\n"
+            r"\end{itemize}"
+        ),
+        "boundary_conditions": (
+            "Same as the gray suite: inflow on $x$, rigid on $y/z$; "
+            "radiation open on $x$, closed on $y/z$."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": (
+            "MPI, 16~CPUs for 512-cell runs, 4~CPUs for 32-cell runs, "
+            "submitted via SLURM (partition \\texttt{bigrun}, exclusive). "
+            "Built with \\texttt{--energy\\_groups\\_num=32}."
+        ),
+        "pass_criteria": (
+            r"Same structural criteria as the gray suite: all four sub-runs "
+            r"must complete and produce valid profiles. Additionally:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item All profile files contain finite, positive temperatures." "\n"
+            r"  \item The 32-cell limited peak $T_{\mathrm{gas}}$ is closer to "
+            r"the 512-cell reference than the 32-cell unlimited peak." "\n"
+            r"\end{itemize}"
+        ),
+        "plot_dir": "eulerian_diffusion_freefree_multigroup_compare",
+        "plots": [
+            "temperature_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+            "trad_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+            "density_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+            "velocity_vs_x_compare_mg32_512_512_limited_32_32_limited.png",
+        ],
+        "plot_caption": (
+            "Multigroup free--free diffusion suite (32~energy groups): "
+            "four-way comparison analogous to the gray suite. "
+            "Top row: gas temperature (left) and radiation temperature (right). "
+            "Bottom row: density (left) and $x$-velocity (right). "
+            "The cooling limiter reduces the low-resolution temperature excess "
+            "as in the gray case, while the multigroup Compton coupling "
+            "introduces modest quantitative differences."
+        ),
+    },
 ]
 
 
@@ -1136,6 +1666,155 @@ def _read_desmore2012_mc_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
+def _read_yee_vortex_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / test_id / "vortex_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("DENSITY_L1")
+    if val is not None:
+        thr = "0.05"
+        passed = float(val) <= float(thr)
+        rows.append(("Density $L_1$", val, thr, passed))
+    return rows
+
+
+def _read_spherical_gauss_linear_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / "spherical_gauss_linear" / "gauss_linear_metrics.txt")
+    if not kv:
+        return []
+    rows = []
+    for field, key, thr_val in [
+        ("Scalar max rel. error", "scalar_max_rel_error", 1e-8),
+        ("Velocity max rel. error", "velocity_max_rel_error", 0.1),
+    ]:
+        val = kv.get(key)
+        if val is not None:
+            passed = float(val) < thr_val
+            rows.append((field, val, f"{thr_val:.0e}", passed))
+    faces = kv.get("faces_checked")
+    if faces is not None:
+        rows.append(("Faces checked", faces, "> 0", int(faces) > 0))
+    return rows
+
+
+def _read_collapse_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / "spherical_collapse" / "collapse_metrics.txt")
+    if not kv:
+        return []
+    rows = []
+    for field, key, thr_val in [
+        ("Max density scatter", "max_density_scatter", 0.1),
+        ("Max velocity scatter", "max_velocity_scatter", 0.1),
+    ]:
+        val = kv.get(key)
+        if val is not None:
+            passed = float(val) < thr_val
+            rows.append((field, val, f"{thr_val}", passed))
+    return rows
+
+
+def _read_rt_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "rayleigh_taylor_mpi" / "rt_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    sigma_fit = kv.get("RT_SIGMA_FIT")
+    sigma_ana = kv.get("RT_SIGMA_ANALYTICAL")
+    rel_err = kv.get("RT_GROWTH_RATE_REL_ERROR")
+    thr = kv.get("RT_MAX_GROWTH_RATE_REL_ERROR", "0.25")
+    if rel_err is not None:
+        passed = float(rel_err) <= float(thr)
+        rows.append(("Growth rate rel. error", rel_err, thr, passed))
+    if sigma_fit is not None and sigma_ana is not None:
+        rows.append(("Fitted $\\sigma$", sigma_fit, f"(analytical: {sigma_ana})", True))
+    return rows
+
+
+def _read_freefree_suite_metrics(cases_dir: Path,
+                                  case_prefix: str) -> list[MetricRow]:
+    """Read metrics for a 4-run free-free suite (gray or multigroup)."""
+    rows: list[MetricRow] = []
+    variants = [
+        ("512", f"{case_prefix}_1d"),
+        ("512 limited", f"{case_prefix}_1d_512_limited"),
+        ("32", f"{case_prefix}_1d_32"),
+        ("32 limited", f"{case_prefix}_1d_32_limited"),
+    ]
+    for label, case_name in variants:
+        profile = cases_dir / case_name / "temperature_profile.txt"
+        if profile.is_file():
+            try:
+                import numpy as np
+                raw = np.loadtxt(str(profile))
+                if raw.ndim == 1:
+                    raw = np.expand_dims(raw, axis=0)
+                n_points = raw.shape[0]
+                tgas_col = raw[:, 2] if raw.shape[1] >= 3 else np.array([])
+                tgas_max = float(np.max(tgas_col)) if len(tgas_col) > 0 else 0.0
+                kev = 8.617333262145e-8
+                rows.append((f"{label}: points", str(n_points), "$\\ge 2$",
+                             n_points >= 2))
+                rows.append((f"{label}: peak $T_{{\\mathrm{{gas}}}}$",
+                             f"{tgas_max * kev:.4f} keV", "finite",
+                             np.isfinite(tgas_max) and tgas_max > 0))
+            except Exception:
+                rows.append((f"{label}", "error reading profile", "---", False))
+        else:
+            rows.append((f"{label}", "profile not found", "---", False))
+    return rows
+
+
+def _read_freefree_gray_suite_metrics(cases_dir: Path) -> list[MetricRow]:
+    return _read_freefree_suite_metrics(
+        cases_dir, "eulerian_diffusion_freefree")
+
+
+def _read_freefree_mg_suite_metrics(cases_dir: Path) -> list[MetricRow]:
+    return _read_freefree_suite_metrics(
+        cases_dir, "eulerian_diffusion_freefree_multigroup")
+
+
+def _read_cartesian_gauss_linear_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / "cartesian_gauss_linear" / "cart_gauss_linear_metrics.txt")
+    if not kv:
+        return []
+    rows = []
+    for field, key, thr_val in [
+        ("Cart. scalar max rel. error", "cart_scalar_max_rel_error", 1e-6),
+        ("Cart. velocity max rel. error", "cart_velocity_max_rel_error", 0.1),
+    ]:
+        val = kv.get(key)
+        if val is not None:
+            passed = float(val) < thr_val
+            rows.append((field, val, f"{thr_val:.0e}", passed))
+    faces = kv.get("faces_checked")
+    if faces is not None:
+        rows.append(("Faces checked", faces, "> 0", int(faces) > 0))
+    sph_s = kv.get("sph_scalar_max_rel_error")
+    cart_s = kv.get("cart_scalar_max_rel_error")
+    if sph_s is not None and cart_s is not None:
+        passed = float(cart_s) < float(sph_s)
+        rows.append(("Cart < Sph scalar error", cart_s, sph_s, passed))
+    return rows
+
+
+def _read_collapse_hires_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / "spherical_collapse_hires" / "collapse_metrics.txt")
+    if not kv:
+        return []
+    rows = []
+    for field, key, thr_val in [
+        ("Max density scatter", "max_density_scatter", 0.1),
+        ("Max velocity scatter", "max_velocity_scatter", 0.1),
+    ]:
+        val = kv.get(key)
+        if val is not None:
+            passed = float(val) < thr_val
+            rows.append((field, val, f"{thr_val}", passed))
+    return rows
+
+
 METRIC_READERS: dict[str, object] = {
     "sod_1d": lambda cd: _read_sod_metrics(cd),
     "sedov_3d_mpi": lambda cd: _read_sedov_metrics(cd),
@@ -1152,6 +1831,15 @@ METRIC_READERS: dict[str, object] = {
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
+    "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
+    "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
+    "cartesian_gauss_linear": lambda cd: _read_cartesian_gauss_linear_metrics(cd),
+    "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
+    "spherical_collapse_hires": lambda cd: _read_collapse_hires_metrics(cd),
+    "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
+    "rayleigh_taylor_mpi": lambda cd: _read_rt_metrics(cd),
+    "eulerian_diffusion_freefree_suite": lambda cd: _read_freefree_gray_suite_metrics(cd),
+    "eulerian_diffusion_freefree_multigroup_suite": lambda cd: _read_freefree_mg_suite_metrics(cd),
 }
 
 
@@ -1229,7 +1917,6 @@ PREAMBLE = r"""\documentclass[11pt,a4paper]{article}
 """
 
 BIBLIOGRAPHY = r"""
-\newpage
 \begin{thebibliography}{99}
 
 % --- V&V methodology ---
@@ -1298,7 +1985,7 @@ G.~I. Taylor,
 Discussion,''
 \textit{Proc. R. Soc. London, Ser.~A}, 201(1065):159--174, 1950.
 
-\bibitem{kamm2000}
+\bibitem{kamm2007}
 J.~R. Kamm and F.~X. Timmes,
 ``On Efficient Generation of Numerically Robust Sedov Solutions,''
 Los Alamos Report LA-UR-07-2849, 2007.
@@ -1367,6 +2054,25 @@ R.~Liska and B.~Wendroff,
 Euler Equations,''
 \textit{SIAM J.~Sci.~Comput.}, 25(3):995--1017, 2003.
 
+% --- Rayleigh--Taylor instability ---
+
+\bibitem{rayleigh1883}
+Lord Rayleigh,
+``Investigation of the Character of the Equilibrium of an Incompressible Heavy
+Fluid of Variable Density,''
+\textit{Proc.~London Math.~Soc.}, s1-14(1):170--177, 1883.
+
+\bibitem{taylor1950rt}
+G.~I.~Taylor,
+``The Instability of Liquid Surfaces when Accelerated in a Direction
+Perpendicular to their Planes.~I,''
+\textit{Proc.~R.~Soc.~Lond.~A}, 201(1065):192--196, 1950.
+
+\bibitem{chandrasekhar1961}
+S.~Chandrasekhar,
+\textit{Hydrodynamic and Hydromagnetic Stability},
+Oxford University Press, 1961.
+
 \end{thebibliography}
 """
 
@@ -1375,7 +2081,8 @@ POSTAMBLE = r"""
 """
 
 
-def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path) -> str:
+def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
+                      out_dir: Optional[Path] = None) -> str:
     """Return the LaTeX source for one test section."""
     lines = []
     tid = test["id"]
@@ -1431,18 +2138,35 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path) -> str:
             lines.append("")
 
     # Plots -- prefer PDF (vector), fall back to PNG (raster)
+    # Search in plots_dir first, then in an optional per-test plot_dir under cases_dir.
     plot_files = test.get("plots", [])
     caption = test.get("plot_caption", "")
+    extra_plot_dir = test.get("plot_dir")
     if plot_files:
         available = []
+        search_dirs = [plots_dir]
+        if extra_plot_dir:
+            search_dirs.append(cases_dir / extra_plot_dir)
         for pf in plot_files:
             stem = Path(pf).stem
-            pdf_path = plots_dir / f"{stem}.pdf"
-            png_path = plots_dir / pf
-            if pdf_path.is_file():
-                available.append(pdf_path.resolve())
-            elif png_path.is_file():
-                available.append(png_path.resolve())
+            found = False
+            for sd in search_dirs:
+                pdf_path = sd / f"{stem}.pdf"
+                png_path = sd / pf
+                if pdf_path.is_file():
+                    if out_dir is not None:
+                        available.append(Path(os.path.relpath(pdf_path.resolve(), out_dir.resolve())))
+                    else:
+                        available.append(pdf_path.resolve())
+                    found = True
+                    break
+                elif png_path.is_file():
+                    if out_dir is not None:
+                        available.append(Path(os.path.relpath(png_path.resolve(), out_dir.resolve())))
+                    else:
+                        available.append(png_path.resolve())
+                    found = True
+                    break
         if available:
             lines.append("\\subsection*{Plots}")
             lines.append("\\begin{figure}[htbp]")
@@ -1520,6 +2244,22 @@ def _summary_table() -> str:
         ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
         ("Mach 2 Gray", "MPI", "8", "Eulerian", "Yes"),
         ("Mach 2 Multigroup", "MPI", "8", "Eulerian", "Yes"),
+        ("Marshak Wave 1", "Serial", "1", "Eulerian", "Yes"),
+        ("Marshak Wave 2", "Serial", "1", "Eulerian", "Yes"),
+        ("Marshak Wave 3", "Serial", "1", "Eulerian", "Yes"),
+        ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
+        ("Gresho Vortex (Euler)", "Serial", "1", "Eulerian", "Yes"),
+        ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
+        ("Densmore 2012 MC", "MPI", "32", "Eulerian", "Yes"),
+        ("Yee Vortex ($64^2$)", "MPI", "8", "Lagrangian", "Yes"),
+        ("Yee Vortex ($128^2$)", "MPI", "16", "Lagrangian", "No"),
+        ("Cartesian LSQ Gradient", "Serial", "1", "Static", "No"),
+        ("Spherical LSQ Gradient", "Serial", "1", "Static", "No"),
+        ("Spherical Collapse", "MPI", "64", "Eulerian", "Yes"),
+        ("Spherical Collapse (HiRes)", "MPI", "128", "Eulerian", "No"),
+        ("Rayleigh--Taylor", "MPI", "128", "Lagrangian", "Yes"),
+        ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
+        ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     ]
     for row in rows:
         lines.append(" & ".join(row) + " \\\\")
@@ -1651,11 +2391,12 @@ based.
 """
 
 
-def generate_tex(plots_dir: Path, cases_dir: Path) -> str:
+def generate_tex(plots_dir: Path, cases_dir: Path,
+                  out_dir: Optional[Path] = None) -> str:
     """Return the full LaTeX document as a string."""
     parts = [PREAMBLE, VV_INTRODUCTION, _summary_table()]
     for test in TESTS:
-        parts.append(_section_for_test(test, plots_dir, cases_dir))
+        parts.append(_section_for_test(test, plots_dir, cases_dir, out_dir))
     parts.append(BIBLIOGRAPHY)
     parts.append(POSTAMBLE)
     return "\n".join(parts)
@@ -1742,7 +2483,7 @@ def main() -> int:
     # Step 2: generate .tex
     cases_dir = regression_dir / "cases"
     tex_path = out_dir / "test_report.tex"
-    tex_content = generate_tex(plots_dir, cases_dir)
+    tex_content = generate_tex(plots_dir, cases_dir, out_dir)
     tex_path.write_text(tex_content, encoding="utf-8")
     print(f"Wrote {tex_path}")
 

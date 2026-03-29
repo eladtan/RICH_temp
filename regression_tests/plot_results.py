@@ -118,7 +118,7 @@ def plot_sod(root: Path, out_dir: Path) -> bool:
 
 
 def plot_sedov(root: Path, out_dir: Path) -> bool:
-    """Sedov 3D: density vs r compared to Sedov-Taylor ODE solution."""
+    """Sedov 3D: density, pressure, and velocity vs r compared to Sedov-Taylor ODE."""
     profile = root / "regression_tests" / "cases" / "sedov_3d_mpi" / "sedov_profile.txt"
     if not profile.exists():
         print(f"  [sedov_3d_mpi] profile not found: {profile}")
@@ -138,58 +138,74 @@ def plot_sedov(root: Path, out_dir: Path) -> bool:
     gamma = 5.0 / 3.0
     w = 0.0
     n = 3
+    sim_time = 0.0075
 
-    # Find shock front at max pressure
     idx_shock = int(np.argmax(pressure))
-    shock_front = {
-        "radius": float(r[idx_shock]),
-        "density": float(density[idx_shock]),
-        "pressure": float(pressure[idx_shock]),
-        "velocity": float(velocity[idx_shock]),
-    }
+    shock_radius = float(r[idx_shock])
 
-    # Upstream state from far field
     far_mask = r > 0.8 * float(np.max(r))
     if not np.any(far_mask):
         far_mask = r > np.median(r)
-    upstream = {
-        "density": float(np.median(density[far_mask])),
-        "pressure": float(np.median(pressure[far_mask])),
-        "velocity": float(np.median(velocity[far_mask])),
-    }
+    rho_0 = float(np.median(density[far_mask]))
+    p_upstream = float(np.median(pressure[far_mask]))
+    v_upstream = float(np.median(velocity[far_mask]))
 
-    # Build Sedov-Taylor profiles via ODE integration tables
+    v_s = (2.0 / 5.0) * shock_radius / sim_time
+
     nip = 3000
     ssv = np.linspace(1e-6 + 1.0 / gamma, 2.0 / (gamma + 1.0), num=nip)
-    shock_radius = shock_front["radius"]
-
-    # Use theoretical strong-shock density at the front:
-    # rho_shock = (gamma+1)/(gamma-1) * rho_upstream
-    compression = (gamma + 1.0) / (gamma - 1.0)
-    shock_density_theory = upstream["density"] * compression
 
     radius_table = np.array([shock_radius * sedov.vtoz(v, w, gamma, n) for v in ssv])
     density_table = np.array([
-        shock_density_theory * sedov.vtod(v, w, gamma, n) / compression
-        for v in ssv
+        rho_0 * sedov.vtod(v, w, gamma, n) for v in ssv
+    ])
+    pressure_table = np.array([
+        rho_0 * v_s ** 2 * sedov.vtop(v, w, gamma, n) for v in ssv
+    ])
+    velocity_table = np.array([
+        v_s * sedov.vtoz(v, w, gamma, n) * v for v in ssv
     ])
 
     r_fine = np.linspace(0, float(r.max()), 500)
-    density_analytic = np.array([
-        float(np.interp(ri, radius_table, density_table)) if ri <= shock_radius
-        else upstream["density"]
-        for ri in r_fine
-    ])
+
+    def _interp_field(table, upstream_val):
+        return np.array([
+            float(np.interp(ri, radius_table, table)) if ri <= shock_radius
+            else upstream_val
+            for ri in r_fine
+        ])
+
+    density_analytic = _interp_field(density_table, rho_0)
+    pressure_analytic = _interp_field(pressure_table, p_upstream)
+    velocity_analytic = _interp_field(velocity_table, v_upstream)
 
     plt = _get_plt()
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(r, density, "k.", markersize=2, label="Numeric (binned)")
-    ax.plot(r_fine, density_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
-    ax.set_xlabel("r")
-    ax.set_ylabel("Density")
-    ax.set_title("Sedov 3D -- Density")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+
+    ax1.plot(r, density, "k.", markersize=2, label="Numeric (binned)")
+    ax1.plot(r_fine, density_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
+    ax1.set_xlabel("r")
+    ax1.set_ylabel("Density")
+    ax1.set_title("Sedov 3D -- Density")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(r, pressure, "k.", markersize=2, label="Numeric (binned)")
+    ax2.plot(r_fine, pressure_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
+    ax2.set_xlabel("r")
+    ax2.set_ylabel("Pressure")
+    ax2.set_title("Sedov 3D -- Pressure")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    ax3.plot(r, velocity, "k.", markersize=2, label="Numeric (binned)")
+    ax3.plot(r_fine, velocity_analytic, "r-", linewidth=1.5, label="Sedov-Taylor ODE")
+    ax3.set_xlabel("r")
+    ax3.set_ylabel("Radial Velocity")
+    ax3.set_title("Sedov 3D -- Velocity")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
     fig.tight_layout()
     _save_fig(fig, out_dir, "sedov_3d_mpi")
     plt.close(fig)
@@ -682,6 +698,261 @@ def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Yee isentropic vortex plotters
+# --------------------------------------------------------------------------- #
+
+
+def _yee_density_analytic(x, y):
+    gamma = 1.4
+    beta = 5.0
+    r2 = x**2 + y**2
+    T = 1.0 - (gamma - 1.0) * beta**2 / (8.0 * gamma * np.pi**2) * np.exp(1.0 - r2)
+    return T ** (1.0 / (gamma - 1.0))
+
+
+def _parse_density_l1(check_log: Path) -> float | None:
+    """Extract DENSITY_L1 value from a vortex_check.stdout.log file."""
+    if not check_log.exists():
+        return None
+    with open(str(check_log)) as f:
+        for line in f:
+            if line.startswith("DENSITY_L1="):
+                try:
+                    return float(line.split("=", 1)[1].strip())
+                except ValueError:
+                    return None
+    return None
+
+
+def plot_yee_isentropic_vortex(root: Path, out_dir: Path) -> bool:
+    """Yee isentropic vortex: density/pressure 2D, density vs r, L1 convergence."""
+    cases = root / "regression_tests" / "cases"
+    profile_64 = cases / "yee_vortex_64" / "vortex_profile.txt"
+    profile_128 = cases / "yee_vortex_128" / "vortex_profile.txt"
+
+    if not profile_128.exists():
+        print(f"  [yee_vortex] 128x128 profile not found: {profile_128}")
+        return False
+
+    plt = _get_plt()
+    from matplotlib.tri import Triangulation
+
+    any_ok = False
+
+    # Load 128 data for 2D plots
+    raw128 = np.loadtxt(str(profile_128))
+    if raw128.ndim == 1:
+        raw128 = np.expand_dims(raw128, axis=0)
+    x128 = raw128[:, 0]
+    y128 = raw128[:, 1]
+    vol128 = raw128[:, 2]
+    rho128 = raw128[:, 3]
+    p128 = raw128[:, 4]
+
+    tri128 = Triangulation(x128, y128)
+
+    # Figure 1: Density in xy-plane (128x128)
+    fig1, ax1 = plt.subplots(figsize=(6, 5))
+    tc1 = ax1.tripcolor(tri128, rho128, shading="flat", cmap="viridis")
+    fig1.colorbar(tc1, ax=ax1, label="Density")
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("y")
+    ax1.set_title("Yee Vortex 128$\\times$128 -- Density")
+    ax1.set_aspect("equal")
+    fig1.tight_layout()
+    _save_fig(fig1, out_dir, "yee_vortex_density_2d")
+    plt.close(fig1)
+    any_ok = True
+
+    # Figure 2: Pressure in xy-plane (128x128)
+    fig2, ax2 = plt.subplots(figsize=(6, 5))
+    tc2 = ax2.tripcolor(tri128, p128, shading="flat", cmap="viridis")
+    fig2.colorbar(tc2, ax=ax2, label="Pressure")
+    ax2.set_xlabel("x")
+    ax2.set_ylabel("y")
+    ax2.set_title("Yee Vortex 128$\\times$128 -- Pressure")
+    ax2.set_aspect("equal")
+    fig2.tight_layout()
+    _save_fig(fig2, out_dir, "yee_vortex_pressure_2d")
+    plt.close(fig2)
+
+    # Figure 3: Density vs r (radially binned, both resolutions)
+    r128 = np.sqrt(x128**2 + y128**2)
+    rho_exact_128 = _yee_density_analytic(x128, y128)
+
+    nbins = 40
+    r_max = 5.0
+    r_edges = np.linspace(0, r_max, nbins + 1)
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+
+    def _radial_bin(r, rho, vol):
+        binned = np.zeros(nbins)
+        for i in range(nbins):
+            mask = (r >= r_edges[i]) & (r < r_edges[i + 1])
+            if np.any(mask):
+                binned[i] = np.sum(rho[mask] * vol[mask]) / np.sum(vol[mask])
+        return binned
+
+    rho_binned_128 = _radial_bin(r128, rho128, vol128)
+    rho_exact_binned = _radial_bin(r128, rho_exact_128, vol128)
+
+    fig3, ax3 = plt.subplots(figsize=(8, 5))
+    ax3.plot(r_centers, rho_exact_binned, "r-", linewidth=2, label="Analytical IC")
+
+    if profile_64.exists():
+        raw64 = np.loadtxt(str(profile_64))
+        if raw64.ndim == 1:
+            raw64 = np.expand_dims(raw64, axis=0)
+        x64 = raw64[:, 0]
+        y64 = raw64[:, 1]
+        vol64 = raw64[:, 2]
+        rho64 = raw64[:, 3]
+        r64 = np.sqrt(x64**2 + y64**2)
+        rho_binned_64 = _radial_bin(r64, rho64, vol64)
+        ax3.plot(r_centers, rho_binned_64, "bs-", markersize=3,
+                 linewidth=1, label="RICH 64$\\times$64")
+
+    ax3.plot(r_centers, rho_binned_128, "ko-", markersize=3,
+             linewidth=1, label="RICH 128$\\times$128")
+    ax3.set_xlabel("r")
+    ax3.set_ylabel("Density")
+    ax3.set_title("Yee Isentropic Vortex -- Density Profile")
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    fig3.tight_layout()
+    _save_fig(fig3, out_dir, "yee_vortex_density_r")
+    plt.close(fig3)
+
+    # Figure 4: L1 convergence log-log plot
+    l1_64 = _parse_density_l1(cases / "yee_vortex_64" / "vortex_check.stdout.log")
+    l1_128 = _parse_density_l1(cases / "yee_vortex_128" / "vortex_check.stdout.log")
+
+    if l1_64 is not None and l1_128 is not None and l1_64 > 0 and l1_128 > 0:
+        Ns = np.array([64, 128])
+        L1s = np.array([l1_64, l1_128])
+
+        fig4, ax4 = plt.subplots(figsize=(7, 5))
+        ax4.loglog(Ns, L1s, "ko-", markersize=8, linewidth=2, label="RICH")
+
+        N_ref = np.array([48, 192])
+        L1_ref = L1s[0] * (Ns[0] / N_ref) ** 2
+        ax4.loglog(N_ref, L1_ref, "r--", linewidth=1.5, label="2nd order")
+
+        ax4.set_xlabel("N (cells per side)")
+        ax4.set_ylabel("$L_1$ density error")
+        ax4.set_title("Yee Isentropic Vortex -- Convergence")
+        ax4.legend()
+        ax4.grid(True, alpha=0.3, which="both")
+        fig4.tight_layout()
+        _save_fig(fig4, out_dir, "yee_vortex_convergence")
+        plt.close(fig4)
+        print(f"  [yee_vortex] saved convergence plot (L1_64={l1_64:.3e}, L1_128={l1_128:.3e})")
+    else:
+        print(f"  [yee_vortex] skipped convergence plot (L1 values not available)")
+
+    print(f"  [yee_vortex] saved yee_vortex_density_2d/pressure_2d/density_r .png/.pdf")
+    return any_ok
+
+
+# --------------------------------------------------------------------------- #
+# Rayleigh-Taylor plotter
+# --------------------------------------------------------------------------- #
+
+
+def plot_rayleigh_taylor(root: Path, out_dir: Path) -> bool:
+    """Rayleigh-Taylor: Ek_z(t) with fitted growth rate, and density slice."""
+    case_dir = root / "regression_tests" / "cases" / "rayleigh_taylor_mpi"
+    ek_file = case_dir / "rt_kinetic_energy.txt"
+    slice_file = case_dir / "rt_density_slice.txt"
+
+    if not ek_file.exists():
+        print(f"  [rayleigh_taylor_mpi] kinetic energy file not found: {ek_file}")
+        return False
+
+    checker_path = root / "regression_tests" / "lib" / "check_rayleigh_taylor.py"
+    checker = SourceFileLoader("check_rayleigh_taylor", str(checker_path)).load_module()
+
+    raw = np.loadtxt(str(ek_file))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    time = raw[:, 0]
+    ekz = raw[:, 1]
+
+    positive = ekz > 0
+    time = time[positive]
+    ekz = ekz[positive]
+
+    sigma_analytical = checker.analytical_growth_rate()
+    sigma_fit, log_C, mask = checker.fit_growth_rate(time, ekz)
+
+    checker.make_plots(time, ekz, sigma_fit, log_C, mask,
+                       sigma_analytical,
+                       str(slice_file) if slice_file.exists() else None,
+                       str(out_dir))
+
+    print(f"  [rayleigh_taylor_mpi] saved rayleigh_taylor_mpi_ekz/slice .png/.pdf")
+    return True
+
+
+def plot_eulerian_diffusion_freefree_1d(root: Path, out_dir: Path) -> bool:
+    """1D free-free diffusion test: plot gas temperature versus x."""
+    profile = root / "regression_tests" / "cases" / "eulerian_diffusion_freefree_1d" / "temperature_profile.txt"
+    if not profile.exists():
+        print(f"  [eulerian_diffusion_freefree_1d] profile not found: {profile}")
+        return False
+
+    raw = np.loadtxt(str(profile))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    if raw.shape[1] < 4:
+        print("  [eulerian_diffusion_freefree_1d] expected columns: x density Tgas Trad")
+        return False
+
+    x = raw[:, 0]
+    tgas = raw[:, 2]
+    trad = raw[:, 3]
+    tgas_kev = tgas * 8.617333262145e-8
+    trad_kev = trad * 8.617333262145e-8
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(tgas_kev)) or not np.all(np.isfinite(trad_kev)):
+        print("  [eulerian_diffusion_freefree_1d] non-finite x/Tgas/Trad values")
+        return False
+
+    order = np.argsort(x)
+    x = x[order]
+    tgas_kev = tgas_kev[order]
+    trad_kev = trad_kev[order]
+
+    if np.any(tgas_kev <= 0) or np.any(trad_kev <= 0):
+        print("  [eulerian_diffusion_freefree_1d] Tgas/Trad must be positive for log plots")
+        return False
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(x, tgas_kev, color="tab:red", linewidth=1.2)
+    ax.set_xlabel("x [cm]")
+    ax.set_ylabel("Gas temperature [keV]")
+    ax.set_title("1D Eulerian diffusion (free-free): Tgas vs x")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "eulerian_diffusion_freefree_1d")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.plot(x, trad_kev, color="tab:blue", linewidth=1.2)
+    ax.set_xlabel("x [cm]")
+    ax.set_ylabel("Radiation temperature [keV]")
+    ax.set_title("1D Eulerian diffusion (free-free): Trad vs x")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "eulerian_diffusion_freefree_1d_trad")
+    plt.close(fig)
+    print("  [eulerian_diffusion_freefree_1d] saved eulerian_diffusion_freefree_1d(.png/.pdf) and _trad(.png/.pdf)")
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -699,6 +970,10 @@ ALL_PLOTTERS = {
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
     "desmore2012_mc": plot_desmore2012_mc,
+    "yee_vortex_64": plot_yee_isentropic_vortex,
+    "yee_vortex_128": plot_yee_isentropic_vortex,
+    "rayleigh_taylor_mpi": plot_rayleigh_taylor,
+    "eulerian_diffusion_freefree_1d": plot_eulerian_diffusion_freefree_1d,
 }
 
 

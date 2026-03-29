@@ -245,18 +245,19 @@ int main(int argc, char* argv[]) {
   vector<pair<const ConditionExtensiveUpdater3D::Condition3D*, const ConditionExtensiveUpdater3D::Action3D*>> eu_sequence;
   ConditionExtensiveUpdater3D eu(eu_sequence);
 
-  CourantFriedrichsLewy tsf(0.25, 1, force);
+  auto tsf = std::make_shared<CourantFriedrichsLewy>(0.25, 1, force);
 
   Simulation simulation(tess, cells, eos);
-  HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force,
+  simulation.SetTimeStepFunction(tsf);
+  HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
               std::pair<std::vector<std::string>, std::vector<std::string>>(ComputationalCell3D::tracerNames,
                                                                               ComputationalCell3D::stickerNames));
 
   double init_dt = 1e-12 / tscale;
   double const tf = 3e-8 / tscale;
-  tsf.SetTimeStep(init_dt);
+  simulation.SetTimeStep(init_dt);
   double old_dt = init_dt;
-  double old_time = sim.getTime();
+  double old_time = simulation.GetTime();
 
   double new_dt = force_time_step ? *force_time_step : init_dt;
   std::vector<double> Tgas, Trad, Etotal, time;
@@ -265,31 +266,33 @@ int main(int argc, char* argv[]) {
   Etotal.push_back(init_cell.internal_energy + init_cell.Erad);
   time.push_back(0.0);
 
-  RadiationStep radStep(tess, simulation.getCells(), simulation.getExtensives(),
+  auto radStep = std::make_shared<RadiationStep>(tess, simulation.getCells(), simulation.getExtensives(),
       simulation.getTracker(),
 #ifdef RICH_MPI
       nullptr,
 #endif
       matrix_builder, true);
+  simulation.addPhysics(radStep);
 
-  while (sim.getTime() < tf) {
+  while (simulation.GetTime() < tf) {
     try {
-      radStep.step(old_dt);
-      new_dt = radStep.suggestTimeStep();
-      double const elapsed_time = sim.getTime();
+      simulation.SetTimeStep(old_dt);
+      simulation.step();
+      new_dt = simulation.GetTimeStep();
+      double const elapsed_time = simulation.GetTime();
       double const dt_step = elapsed_time - old_time;
       if (rank == 0) {
-        std::cout << "Cycle " << sim.getCycle()
+        std::cout << "Cycle " << simulation.GetCycle()
                   << " dt " << dt_step
                   << " elapsed " << elapsed_time << std::endl;
       }
       old_time = elapsed_time;
 
-      auto const& cell = sim.getCells()[0];
+      auto const& cell = simulation.getCells()[0];
       Tgas.push_back(cell.temperature);
       Trad.push_back(std::pow(cell.Erad * cell.density / CG::radiation_constant, 0.25));
       Etotal.push_back(cell.internal_energy + cell.Erad);
-      time.push_back(sim.getTime());
+      time.push_back(simulation.GetTime());
 
       if (force_time_step) {
         new_dt = force_time_step.value();
@@ -303,10 +306,11 @@ int main(int argc, char* argv[]) {
       throw;
     }
   }
-  write_vector(time, "time.txt");
-  write_vector(Tgas, "Tgas.txt");
-  write_vector(Trad, "Trad.txt");
-  write_vector(Etotal, "Etotal.txt");
+  std::string const case_dir = fs::path(__FILE__).parent_path().string();
+  write_vector(time, case_dir + "/time.txt");
+  write_vector(Tgas, case_dir + "/Tgas.txt");
+  write_vector(Trad, case_dir + "/Trad.txt");
+  write_vector(Etotal, case_dir + "/Etotal.txt");
   std::cout << "Done" << std::endl;
 #ifdef RICH_MPI
   MPI_Finalize();

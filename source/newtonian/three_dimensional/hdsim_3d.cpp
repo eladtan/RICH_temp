@@ -289,6 +289,8 @@ void HDSim3D::timeAdvance(void)
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, extensive_);
 	eu_(fluxes, tess_, dt, cells_, extensive_, time, face_vel, face_values);
+	if(pm_.MovedPoints())
+	{
 	MovePoints(tess_, point_vel, dt);
 	#ifdef RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
@@ -303,6 +305,7 @@ void HDSim3D::timeAdvance(void)
 	MPI_exchange_data(tess_, extensive_, false);
 	MPI_exchange_data(tess_, cells_, false);
 #endif
+	}
 	cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);

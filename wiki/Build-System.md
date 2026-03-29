@@ -184,6 +184,10 @@ The CMake build system is defined in `source/CMakeLists.txt` with configuration 
 | `config/find_JSON.cmake` | jsoncpp discovery |
 | `config/find_python.cmake` | Python discovery |
 | `config/find_vtune.cmake` | VTune discovery |
+| `config/find_pybind11.cmake` | pybind11 discovery |
+| `config/find_static_library.cmake` | Static library discovery helper |
+| `config/find_cgal.cmake` | CGAL discovery |
+| `config/set_placeholders.cmake` | Placeholder variable setup |
 | `config/include_3rdparty.cmake` | r3d, VCL, Clipper includes |
 
 ## Profiling

@@ -12,10 +12,10 @@ cd RICH
 # Load modules (HUJI ICPL)
 ml restore rich
 
-# Build
-./build_rich.sh gnuReleaseMPI --test_name=sedov_3d
+# Build (serial)
+./build_rich.sh gnuRelease --test_name=sedov_3d
 
-# Run (serial)
+# Run
 cd runs/sedov_3d && ../../build/gnuRelease/rich
 
 # Run regression tests
@@ -47,7 +47,7 @@ cd runs/sedov_3d && ../../build/gnuRelease/rich
 ### Regression Tests
 - [Regression Tests Overview](Regression-Tests-Overview) -- Framework architecture
 - [Running Regression Tests](Running-Regression-Tests) -- CLI, modes, results
-- [Regression Test Catalog](Regression-Test-Catalog) -- All 14 tests in detail
+- [Regression Test Catalog](Regression-Test-Catalog) -- All 20 tests in detail
 
 ### Examples
 - [Sod Shock Tube](Example-Sod-Shock-Tube) -- 1D serial example

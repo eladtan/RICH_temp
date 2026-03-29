@@ -22,7 +22,7 @@ Every RICH simulation follows the same pattern:
 ### 1. Includes
 
 ```cpp
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/RoundCells3D.hpp"
@@ -78,8 +78,8 @@ Available mesh generators:
 | Function | Description |
 |----------|-------------|
 | `RandRectangular(N, ll, ur)` | Random points in a box |
-| `RandSphereR(center, Rmin, Rmax, N)` | Random points in a spherical shell |
-| `RandSphereR2(center, Rmin, Rmax, N)` | Random points biased toward center |
+| `RandSphereR(N, ll, ur, Rmin, Rmax, center)` | Random points in a spherical shell |
+| `RandSphereR2(N, ll, ur, Rmin, Rmax, center)` | Random points biased toward center |
 | `linspace(xmin, xmax, N)` | Uniform 1D points |
 
 `RoundGrid3D` smooths the point distribution using Lloyd iteration (repeated Voronoi-centroid relaxation) to produce more uniform cells. The last argument is the number of iterations.
@@ -139,11 +139,11 @@ The `ComputationalCell3D` struct holds all primitive variables:
 | `pressure` | `double` | Pressure |
 | `internal_energy` | `double` | Specific internal energy |
 | `velocity` | `Vector3D` | Velocity vector |
-| `Temperature` | `double` | Temperature |
-| `Erad` | `double` | Radiation energy density per mass |
-| `Eg` | `std::array<double, N>` | Per-group radiation energy |
-| `tracers` | `flat_map<string, double>` | Passive tracers |
-| `stickers` | `flat_map<string, bool>` | Boolean markers |
+| `temperature` | `double` | Temperature |
+| `Erad` | `double` | Radiation energy per unit mass |
+| `Eg` | `boost::container::small_vector<double, ENERGY_GROUPS_NUM>` | Per-group radiation energy per unit mass |
+| `tracers` | `std::array<double, MAX_TRACERS>` | Passive tracers (indexed by position; names in `tracerNames`) |
+| `stickers` | `std::array<bool, MAX_STICKERS>` | Boolean markers (indexed by position; names in `stickerNames`) |
 
 ### 7. Riemann Solver and Flux Calculator
 

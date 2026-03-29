@@ -176,10 +176,9 @@ int main(void)
         nullptr,
 #endif
         diffusion, false);
-    simulation.addPhysics(radStep);
-
     auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
     simulation.addPhysics(hydroStep);
+    simulation.addPhysics(radStep);
     simulation.SetTimeStep(1e-15);
 
     while (simulation.GetTime() < 0.01)
@@ -216,13 +215,15 @@ int main(void)
     char file_buf[4096];
     strncpy(file_buf, __FILE__, sizeof(file_buf) - 1);
     file_buf[sizeof(file_buf) - 1] = '\0';
-    std::string profile_path = std::string(dirname(file_buf)) + "/mach2_profile.txt";
+    std::string const case_dir = dirname(file_buf);
+    std::string profile_path = case_dir + "/mach2_profile.txt";
 
     // Gather profile data from all MPI ranks and write to file
     {
-        std::vector<double> local_x(Nlocal), local_rho(Nlocal), local_T(Nlocal), local_Trad(Nlocal);
+        size_t const Nfinal = tess.GetPointNo();
+        std::vector<double> local_x(Nfinal), local_rho(Nfinal), local_T(Nfinal), local_Trad(Nfinal);
         auto const& final_cells = simulation.getCells();
-        for (size_t i = 0; i < Nlocal; ++i)
+        for (size_t i = 0; i < Nfinal; ++i)
         {
             local_x[i] = tess.GetMeshPoint(i).x;
             local_rho[i] = final_cells[i].density;
@@ -231,7 +232,7 @@ int main(void)
         }
 
 #ifdef RICH_MPI
-        int local_n = static_cast<int>(Nlocal);
+        int local_n = static_cast<int>(Nfinal);
         std::vector<int> recv_counts(nprocs, 0);
         MPI_Gather(&local_n, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
 
@@ -274,13 +275,13 @@ int main(void)
             out.close();
         }
 #else
-        std::vector<size_t> idx(Nlocal);
+        std::vector<size_t> idx(Nfinal);
         std::iota(idx.begin(), idx.end(), 0);
         std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b){ return local_x[a] < local_x[b]; });
 
         std::ofstream out(profile_path);
         out << std::scientific << std::setprecision(12);
-        for (size_t i = 0; i < Nlocal; ++i)
+        for (size_t i = 0; i < Nfinal; ++i)
         {
             out << local_x[idx[i]] << " " << local_rho[idx[i]] << " " << local_T[idx[i]] << " " << local_Trad[idx[i]] << "\n";
         }

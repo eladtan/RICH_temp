@@ -1,35 +1,41 @@
-set(path_env $ENV{PATH})
+set(VTUNE_DIRECTORY "")
 
-# Split PATH into a CMake list
-string(REPLACE ":" ";" path_env_list "${path_env}")
+# 1) Try EasyBuild environment variable (set by "ml VTune/...")
+if(DEFINED ENV{EBROOTVTUNE})
+    # EasyBuild VTune has a nested vtune/<version> subdirectory
+    file(GLOB _vtune_subdirs "$ENV{EBROOTVTUNE}/vtune/*")
+    foreach(_sd IN LISTS _vtune_subdirs)
+        if(IS_DIRECTORY "${_sd}/include")
+            set(VTUNE_DIRECTORY "${_sd}")
+            break()
+        endif()
+    endforeach()
+    if(NOT VTUNE_DIRECTORY)
+        set(VTUNE_DIRECTORY "$ENV{EBROOTVTUNE}")
+    endif()
+endif()
 
-# TODO: change if necessary
-set(VTUNE_DIRECTORY "/software/x86_64/5.14.0/Intel/OneApi/2024.2.1/vtune/latest/")
-
+# 2) Fallback: scan PATH for a vtune-related directory
 if(NOT VTUNE_DIRECTORY)
-    # Extract likely VTUNE prefixes
-    set(VTUNE_DIRECTORY "")
+    set(path_env $ENV{PATH})
+    string(REPLACE ":" ";" path_env_list "${path_env}")
+
     foreach(dir IN LISTS path_env_list)
         if(dir MATCHES "/vtune")
             string(REGEX REPLACE "/bin(32|64)?$" "" prefix "${dir}")
-            # if there is already a prefix - error, multiple VTUNE installations
             if(VTUNE_DIRECTORY)
                 message(FATAL_ERROR "Multiple VTUNE installations found in PATH: ${VTUNE_DIRECTORY} and ${prefix}")
             endif()
             message(STATUS "Found VTUNE installation at: ${prefix}")
-            # Add the prefix to the list
-            message(STATUS "Using vtune: ${prefix}")
-            list(APPEND VTUNE_DIRECTORY "${prefix}")
+            set(VTUNE_DIRECTORY "${prefix}")
         endif()
     endforeach()
-
-    # if no VTUNE_DIRECTORY found, error
-    if(NOT VTUNE_DIRECTORY)
-        message("No VTUNE installation found in PATH environment variable")
-    endif()
 endif()
 
 if(VTUNE_DIRECTORY)
+    message(STATUS "Using VTune: ${VTUNE_DIRECTORY}")
     set(VTUNE_INCLUDE "${VTUNE_DIRECTORY}/include")
     set(VTUNE_LIB_DIRECTORY "${VTUNE_DIRECTORY}/lib64")
+else()
+    message("No VTUNE installation found (EBROOTVTUNE not set, nothing in PATH)")
 endif()

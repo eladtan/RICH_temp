@@ -16,7 +16,7 @@ class Dissipation
 
     std::vector<double> CalcDissipation(HDSim3D const& sim) const
     {
-        Tessellation3D const& tess = sim.getTesselation();
+        Tessellation3D const& tess = sim.getTessellation();
         size_t const N = tess.GetPointNo();
         size_t const Nfaces = tess.GetTotalFacesNumber();
         if(Nfaces != face_values.size())

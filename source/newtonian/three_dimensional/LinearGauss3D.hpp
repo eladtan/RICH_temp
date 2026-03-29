@@ -29,10 +29,11 @@ public:
 	\param skip_key The sticker name to skip cells for taking them into account for the slope limit
 	\param tsn The names of the stickers and tracers
 	\param pressure_calc Determine whether the pressure should be recalculated
+	\param apply_principal_limit Enable principal-frame velocity limiting
 	*/
 	LinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,bool slf = true,double delta_v = 0.2,
 		double theta = 0.5,double delta_P = 0.7,bool SR=false,const vector<string>& calc_tracers = vector<string>(),
-		const string& skip_key = string(),bool pressure_calc=true);
+		const string& skip_key = string(),bool pressure_calc=true, bool apply_principal_limit=false);
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
@@ -77,6 +78,7 @@ private:
 	const string skip_key_;
 	mutable vector<size_t> to_skip_;
 	const bool pressure_calc_;
+	const bool apply_principal_limit_;
 
 	LinearGauss3D(const LinearGauss3D& origin);
 
