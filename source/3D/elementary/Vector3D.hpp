@@ -70,7 +70,7 @@ public:
 	\param other Other vector
 	*/
 	template<typename VectorType>
-	inline Vector3D(const VectorType &other): Vector3D(other[0], other[1], other[2]){}
+	explicit inline Vector3D(const VectorType &other): Vector3D(other[0], other[1], other[2]){}
 
 	/*! \brief Set vector components
 	\param ix x Component
