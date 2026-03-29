@@ -17,17 +17,21 @@ RadiationStep::RadiationStep(Tessellation3D &tess, std::vector<ComputationalCell
 #ifdef RICH_MPI
     bool RadiationStep::allowRebalance(void)
     {
-        return true;
+        return this->cost != nullptr;
     }
 
     std::string RadiationStep::getRequiredLB(void) const
     {
+        if (!this->cost)
+            return "";
         return "hydro";
     }
 
     std::vector<double> RadiationStep::getLoadBalanceWeights(void)
     {
-        return this->cost->CalculateCost(this->tess, this->cells);
+        if (this->cost)
+            return this->cost->CalculateCost(this->tess, this->cells);
+        return std::vector<double>(this->tess.GetPointNo(), 1.0);
     }
 #endif // RICH_MPI
 

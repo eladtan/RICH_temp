@@ -39,10 +39,7 @@ public:
     \param eu Extensive updater
     \param source Source term
     \param tsn The names of the tracers and stickers, first is the tracers and second is stickers
-    \param proc_update How to load balance
     \param SR Special relativity flag
-    \param new_start Rerun indication
-    \param maxload parallel directive
   */
   HDSim3D(Tessellation3D& tess,
 	  vector<ComputationalCell3D>& cells,
@@ -56,8 +53,7 @@ public:
 	  const ExtensiveUpdater3D& eu,
 	  const	SourceTerm3D& source,
 	  const pair<vector<string>, vector<string> >& tsn,
-	  bool SR=false,
-	  bool new_start = true
+	  bool SR=false
     #ifdef RICH_MPI
       , std::shared_ptr<CostCalculator3D> cost_calc = std::make_shared<CostCalculator3D>()
     #endif // RICH_MPI  
@@ -115,11 +111,6 @@ public:
 
   size_t getCycle(void) const;
 
-  /*! \brief Change/get the max ID of the sim
-  \return t The maximum ID number ofr all cells
-  */
-  size_t & GetMaxID(void);
-
   double getTimeStep(void) const {return this->tsc_.GetTimeStep();}
 
   double suggestTimeStep(void) const {return this->tsc_.SuggestTimeStep();}
@@ -146,7 +137,6 @@ private:
   const ExtensiveUpdater3D& eu_;
   const	SourceTerm3D &source_;
   const ProgressTracker &pt_;
-  size_t Max_ID_;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI

@@ -3,6 +3,8 @@
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
 #include "source/newtonian/three_dimensional/Hllc3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
 #include "source/newtonian/three_dimensional/ConditionActionFlux1.hpp"
@@ -15,13 +17,14 @@
 #include "source/Radiation/MultigroupDiffusion.hpp"
 #include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
-#include "source/Radiation/planck_integral/planck_integral.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <chrono>
 #include <fstream>
 #include <libgen.h>
 #include <string.h>
 #include <iomanip>
 #include <numeric>
+#include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 
 namespace
 {
@@ -203,37 +206,46 @@ int main(void)
 
     double const hydro_cfl = 0.3;
     double const force_cfl = 1;
-    CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
+    auto tsf = std::make_shared<CourantFriedrichsLewy>(hydro_cfl, force_cfl, force);
 
     Eulerian3D pm;
 
-    HDSim3D sim(tess, cells, eos, pm, tsf, flux, cu, eu, force,
+    Simulation simulation(tess, cells, eos);
+    simulation.SetTimeStepFunction(tsf);
+    HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, flux, cu, eu, force,
         std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
-    double old_time = sim.getTime();
-    double current_dt = 1e-15;
-    while (sim.getTime() < 0.01)
+    auto radStep = std::make_shared<RadiationStep>(tess, simulation.getCells(), simulation.getExtensives(),
+        simulation.getTracker(),
+#ifdef RICH_MPI
+        nullptr,
+#endif
+        diffusion, false);
+    simulation.addPhysics(radStep);
+
+    auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
+    simulation.addPhysics(hydroStep);
+    simulation.SetTimeStep(1e-15);
+
+    while (simulation.GetTime() < 0.01)
     {
         try
         {
             auto step_start = std::chrono::steady_clock::now();
+            double old_time = simulation.GetTime();
 
-            double new_dt = sim.RadiationTimeStep(current_dt, diffusion);
-            tsf.SetTimeStep(new_dt);
+            simulation.step();
 
-            old_time = sim.getTime();
-            sim.timeAdvance2();
-            current_dt = sim.getTime() - old_time;
-
+            double current_dt = simulation.GetTime() - old_time;
             auto step_end = std::chrono::steady_clock::now();
             double wall_sec = std::chrono::duration<double>(step_end - step_start).count();
 
             if (rank == 0)
             {
                 std::cout << std::endl;
-                std::cout << "Cycle " << sim.getCycle()
+                std::cout << "Cycle " << simulation.GetCycle()
                           << " dt " << std::scientific << std::setprecision(6) << current_dt
-                          << " time " << sim.getTime()
+                          << " time " << simulation.GetTime()
                           << " wall_time " << std::fixed << std::setprecision(3) << wall_sec << "s"
                           << std::endl;
             }
@@ -254,7 +266,7 @@ int main(void)
     // Gather profile data from all MPI ranks and write to file
     {
         std::vector<double> local_x(Nlocal), local_rho(Nlocal), local_T(Nlocal), local_Trad(Nlocal);
-        auto const& final_cells = sim.getCells();
+        auto const& final_cells = simulation.getCells();
         for (size_t i = 0; i < Nlocal; ++i)
         {
             local_x[i] = tess.GetMeshPoint(i).x;
@@ -323,7 +335,7 @@ int main(void)
 
     // Write spectrum of the hottest cell for plotting
     {
-        auto const& final_cells = sim.getCells();
+        auto const& final_cells = simulation.getCells();
         double local_max_T = -1.0;
         size_t local_max_idx = 0;
         for (size_t i = 0; i < Nlocal; ++i)

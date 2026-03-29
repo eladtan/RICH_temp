@@ -1,5 +1,7 @@
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
@@ -183,10 +185,19 @@ int main(void)
     GravityAcceleration3D acc(0.7, true, G);
     ConservativeForce3D force(acc);
 
-    CourantFriedrichsLewy tsf(0.25, 1, force, std::vector<std::string>(), false);
+    auto tsf = std::make_shared<CourantFriedrichsLewy>(0.25, 1, force, std::vector<std::string>(), false);
 
-    HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force,
+    Simulation simulation(tess, cells, eos);
+    simulation.SetTimeStepFunction(tsf);
+    HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
                 std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+
+    auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
+    simulation.addPhysics(hydroStep);
+    simulation.SetTimeStep(1.0);
+#ifdef RICH_MPI
+    simulation.PresetLoadBalance("hydro");
+#endif
 
     double old_t = 0;
     double metric = 0;
@@ -195,14 +206,14 @@ int main(void)
     double step_tstart = MPI_Wtime();
 #endif
 
-    while (sim.getTime() < 5000.0)
+    while (simulation.GetTime() < 5000.0)
     {
         try
         {
-            sim.timeAdvance2();
+            simulation.step();
 
-            double dt = sim.getTime() - old_t;
-            old_t = sim.getTime();
+            double dt = simulation.GetTime() - old_t;
+            old_t = simulation.GetTime();
 
 #ifdef RICH_MPI
             double step_tend = MPI_Wtime();
@@ -212,17 +223,18 @@ int main(void)
             double wall_elapsed = 0;
 #endif
 
-            size_t N_now = sim.getTesselation().GetPointNo();
+            size_t N_now = tess.GetPointNo();
+            auto const& cur_cells = simulation.getCells();
             double local_sum = 0, local_volume = 0;
             double local_count = 0;
             for (size_t i = 0; i < N_now; ++i)
             {
-                if (sim.getCells()[i].density > 1e-2)
+                if (cur_cells[i].density > 1e-2)
                 {
-                    double r = abs(sim.getTesselation().GetCellCM(i));
+                    double r = abs(tess.GetCellCM(i));
                     double rho0 = prof.densityAt(r, R);
-                    local_sum += sim.getTesselation().GetVolume(i) * std::abs(sim.getCells()[i].density - rho0);
-                    local_volume += sim.getTesselation().GetVolume(i);
+                    local_sum += tess.GetVolume(i) * std::abs(cur_cells[i].density - rho0);
+                    local_volume += tess.GetVolume(i);
                     ++local_count;
                 }
             }
@@ -240,13 +252,13 @@ int main(void)
             if (rank == 0)
             {
                 std::cout<<endl;
-                std::cout << "Cycle " << sim.getCycle()
-                          << " Time " << sim.getTime()
+                std::cout << "Cycle " << simulation.GetCycle()
+                          << " Time " << simulation.GetTime()
                           << " dt " << dt
                           << " WallTime " << wall_elapsed
                           << " Metric " << metric << std::endl;
-                std::cerr << "Cycle " << sim.getCycle()
-                          << " Time " << sim.getTime()
+                std::cerr << "Cycle " << simulation.GetCycle()
+                          << " Time " << simulation.GetTime()
                           << " dt " << dt
                           << " Metric " << metric << std::endl;
             }
@@ -267,10 +279,10 @@ int main(void)
         std::vector<double> volume_sum(nbins, 0.0);
 
         double rmax_local = 0.0;
-        size_t N_final = sim.getTesselation().GetPointNo();
+        size_t N_final = tess.GetPointNo();
         for (size_t i = 0; i < N_final; ++i)
         {
-            double const r = abs(sim.getTesselation().GetCellCM(i));
+            double const r = abs(tess.GetCellCM(i));
             rmax_local = std::max(rmax_local, r);
         }
         double rmax = rmax_local;
@@ -280,16 +292,17 @@ int main(void)
         if (rmax <= 0.0)
             rmax = 1.0;
 
+        auto const& out_cells = simulation.getCells();
         for (size_t i = 0; i < N_final; ++i)
         {
-            Vector3D const cm = sim.getTesselation().GetCellCM(i);
+            Vector3D const cm = tess.GetCellCM(i);
             double const r = abs(cm);
             size_t bin = static_cast<size_t>((r / rmax) * static_cast<double>(nbins));
             if (bin >= nbins)
                 bin = nbins - 1;
-            double const cell_volume = sim.getTesselation().GetVolume(i);
+            double const cell_volume = tess.GetVolume(i);
             r_sum[bin] += r * cell_volume;
-            density_sum[bin] += sim.getCells()[i].density * cell_volume;
+            density_sum[bin] += out_cells[i].density * cell_volume;
             density_analytic_sum[bin] += prof.densityAt(r, R) * cell_volume;
             volume_sum[bin] += cell_volume;
         }

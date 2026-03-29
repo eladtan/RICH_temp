@@ -1,7 +1,7 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
 
-Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_) : tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_)
+Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) : tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID_(0)
 {
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
@@ -11,6 +11,63 @@ Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCel
         this->rank = 0;
         this->size = 1;
     #endif // RICH_MPI
+
+    if (new_start)
+        initializeCellIDs();
+    else
+        recomputeMaxID();
+
+#ifdef RICH_MPI
+    ComputationalCell3D cdummy;
+    MPI_exchange_data(this->tess, this->cells, true, 1, &cdummy);
+#endif
+
+    size_t N = this->tess.GetPointNo();
+    for (size_t i = 0; i < N; ++i)
+        PrimitiveToConserved(this->cells[i], this->tess.GetVolume(i), this->extensives[i]);
+}
+
+void Simulation::initializeCellIDs(void)
+{
+    size_t N = this->cells.size();
+    size_t nstart = 0;
+#ifdef RICH_MPI
+    std::vector<size_t> nrecv(static_cast<size_t>(this->size), 0);
+    size_t nsend = N;
+    MPI_Allgather(&nsend, 1, MPI_UNSIGNED_LONG_LONG, &nrecv[0], 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
+    for (int i = 0; i < this->rank; ++i)
+        nstart += nrecv[static_cast<size_t>(i)];
+#endif
+    for (size_t i = 0; i < N; ++i)
+        this->cells[i].ID = nstart + i;
+    this->Max_ID_ = nstart + N - 1;
+#ifdef RICH_MPI
+    for (int i = this->rank + 1; i < this->size; ++i)
+        this->Max_ID_ += nrecv[static_cast<size_t>(i)];
+#endif
+}
+
+void Simulation::recomputeMaxID(void)
+{
+    size_t N = this->cells.size();
+    size_t maxid = 0;
+    for (size_t i = 0; i < N; ++i)
+        maxid = std::max(maxid, this->cells[i].ID);
+#ifdef RICH_MPI
+    MPI_Allreduce(&maxid, &this->Max_ID_, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+#else
+    this->Max_ID_ = maxid;
+#endif
+}
+
+size_t& Simulation::GetMaxID(void)
+{
+    return this->Max_ID_;
+}
+
+const size_t& Simulation::GetMaxID(void) const
+{
+    return this->Max_ID_;
 }
 
 void Simulation::addPhysics(std::shared_ptr<PhysicsStep> physicsStep)
@@ -183,6 +240,13 @@ void Simulation::step(void)
 void Simulation::storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer> lb)
 {
     this->loads[name] = lb;
+}
+
+void Simulation::PresetLoadBalance(const std::string &name)
+{
+    this->currentLoad = this->tess.GetLoadBalancer();
+    this->loads[name] = this->currentLoad;
+    this->currentLB = name;
 }
 
 void Simulation::setCurrentLoadBalance(const std::string &name)

@@ -314,8 +314,9 @@ int main(void)
 	SeveralSources3D force(forces);
 	CourantFriedrichsLewy tsf(0.225, 1, force, std::vector<std::string> (),	false);
 
+	Simulation simulation(tess, cells, eos);
 	std::unique_ptr<HDSim3D> sim;
-	sim = std::make_unique<HDSim3D>(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
+	sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
 	double init_dt = 1e-5;
     double old_dt = init_dt;
@@ -361,7 +362,7 @@ int main(void)
 			{
 				if(rank == 0)
 					std::cout<<"Doing AMR"<<std::endl;
-				amr(*sim);
+				amr(simulation);
 			}
 			old_dt = sim->getTime() - old_t;
 			old_t = sim->getTime();

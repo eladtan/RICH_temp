@@ -1,6 +1,7 @@
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
@@ -37,6 +38,7 @@ namespace fs = std::filesystem;
 #include <source/Radiation/CMMC/src/planck_integral/planck_integral.hpp>
 #include <algorithm>
 #include "boost/math/special_functions/pow.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 #include <string_view>
 #include <charconv>
 #include <optional>
@@ -245,10 +247,10 @@ int main(int argc, char* argv[]) {
 
   CourantFriedrichsLewy tsf(0.25, 1, force);
 
-  HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force,
+  Simulation simulation(tess, cells, eos);
+  HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force,
               std::pair<std::vector<std::string>, std::vector<std::string>>(ComputationalCell3D::tracerNames,
-                                                                              ComputationalCell3D::stickerNames),
-              false, true);
+                                                                              ComputationalCell3D::stickerNames));
 
   double init_dt = 1e-12 / tscale;
   double const tf = 3e-8 / tscale;
@@ -262,9 +264,18 @@ int main(int argc, char* argv[]) {
   Trad.push_back(std::pow(init_cell.Erad / CG::radiation_constant, 0.25));
   Etotal.push_back(init_cell.internal_energy + init_cell.Erad);
   time.push_back(0.0);
+
+  RadiationStep radStep(tess, simulation.getCells(), simulation.getExtensives(),
+      simulation.getTracker(),
+#ifdef RICH_MPI
+      nullptr,
+#endif
+      matrix_builder, true);
+
   while (sim.getTime() < tf) {
     try {
-      new_dt = sim.RadiationTimeStep(old_dt, matrix_builder, true);
+      radStep.step(old_dt);
+      new_dt = radStep.suggestTimeStep();
       double const elapsed_time = sim.getTime();
       double const dt_step = elapsed_time - old_time;
       if (rank == 0) {

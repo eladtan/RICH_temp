@@ -1,5 +1,7 @@
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
@@ -170,17 +172,26 @@ int main(void)
         const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
     ConditionExtensiveUpdater3D eu(eu_sequence);
 
-    CourantFriedrichsLewy tsf(0.3, 1, force);
+    auto tsf = std::make_shared<CourantFriedrichsLewy>(0.3, 1, force);
 
-    HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force,
+    Simulation simulation(tess, cells, eos);
+    simulation.SetTimeStepFunction(tsf);
+    HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
         std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
+    auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
+    simulation.addPhysics(hydroStep);
+    simulation.SetTimeStep(1.0);
+#ifdef RICH_MPI
+    simulation.PresetLoadBalance("hydro");
+#endif
+
     double const tf = 5.0;
-    while (sim.getTime() < tf)
+    while (simulation.GetTime() < tf)
     {
         try
         {
-            sim.timeAdvance2();
+            simulation.step();
         }
         catch (UniversalError const& eo)
         {
@@ -189,8 +200,8 @@ int main(void)
         }
 
         if (rank == 0)
-            std::cout << "\nCycle " << sim.getCycle() << " Time " << sim.getTime()
-                << " dt " << sim.getTimeStep() << "\n" << std::endl;
+            std::cout << "\nCycle " << simulation.GetCycle() << " Time " << simulation.GetTime()
+                << " dt " << simulation.GetTimeStep() << "\n" << std::endl;
     }
 
     char file_buf[4096];
@@ -201,7 +212,7 @@ int main(void)
     // Gather profile data from all MPI ranks
     {
         Nlocal = tess.GetPointNo();
-        auto const& final_cells = sim.getCells();
+        auto const& final_cells = simulation.getCells();
         std::vector<double> local_x(Nlocal), local_y(Nlocal), local_vol(Nlocal);
         std::vector<double> local_p(Nlocal), local_vx(Nlocal), local_vy(Nlocal);
         for (size_t i = 0; i < Nlocal; ++i)

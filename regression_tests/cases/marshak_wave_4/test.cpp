@@ -1,5 +1,6 @@
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
@@ -13,6 +14,7 @@
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/DiffusionForce.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 #include <fstream>
 #include <iomanip>
 #include <cmath>
@@ -153,12 +155,20 @@ int main(void)
 
 	CourantFriedrichsLewy tsf(0.25, 1, force);
 
-	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force,
+	Simulation simulation(tess, cells, eos);
+	HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force,
 		std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
 	double const tf = 1e-9;
 	double old_dt = 1e-17;
 	tsf.SetTimeStep(old_dt);
+
+	RadiationStep radStep(tess, simulation.getCells(), simulation.getExtensives(),
+		simulation.getTracker(),
+#ifdef RICH_MPI
+		nullptr,
+#endif
+		diffusion, true);
 
 	while (sim.getTime() < tf)
 	{
@@ -168,7 +178,8 @@ int main(void)
 
 		try
 		{
-			double new_dt = sim.RadiationTimeStep(old_dt, diffusion, true);
+			radStep.step(old_dt);
+			double new_dt = radStep.suggestTimeStep();
 			new_dt = std::min(std::max(1e-20, sim.getTime() * 1e-3), new_dt);
 			tsf.SetTimeStep(new_dt);
 			old_dt = new_dt;

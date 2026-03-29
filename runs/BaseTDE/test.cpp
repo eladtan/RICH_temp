@@ -1,6 +1,7 @@
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
@@ -1166,16 +1167,17 @@ int main(void)
 	SeveralSources3D force(forces);
 	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (), false);
 
+	Simulation simulation(tess, cells, eos, !restart);
 	std::unique_ptr<HDSim3D> sim;
 	if(restart)
 	{
-		sim = std::make_unique<HDSim3D>(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, false);
+		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 		sim->SetTime(snap.time);
 		sim->SetCycle(snap.cycle);
 	}
 	else
 	{
-		sim = std::make_unique<HDSim3D>(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
+		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 		sim->SetTime(tstart);
 	}
 	double init_dt = 1e-4;
@@ -1313,7 +1315,7 @@ int main(void)
 			{
 				if(rank == 0)
 					std::cout<<"Doing AMR"<<std::endl;
-				amr(*sim);
+				amr(simulation);
 			}
 #ifdef remove_center
 			if(full_gravity)
@@ -1326,7 +1328,7 @@ int main(void)
 			reference_cell = GetReferenceCell(eos, tess, sim->getTime(), matrix_builder.energy_groups_boundary);
 			if (sim->getCycle() % 7 == 0)
 			{
-				UpdateBox(tess, *sim, 0.5, 1e-5, reference_cell);
+				UpdateBox(tess, simulation, 0.5, 1e-5, reference_cell);
 				std::pair<Vector3D, Vector3D> box = sim->getTesselation().GetBoxCoordinates();
 				double newvol = (box.second.x - box.first.x) * (box.second.y - box.first.y) * (box.second.z - box.first.z);
 				refine.SetSize(newvol);

@@ -13,7 +13,7 @@
 #include <boost/scoped_ptr.hpp>
 #include "3D/tessellation/utils/PolyClip.hpp"
 #include "LinearGauss3D.hpp"
-#include "hdsim_3d.hpp"
+#include "newtonian/three_dimensional/simulation/Simulation.hpp"
 
 //! \brief Abstract class for cell update scheme in amr
 class AMRCellUpdater3D
@@ -203,7 +203,7 @@ public:
 	\brief Runs the AMR
 	\param sim The sim object
 	*/
-	void operator() (HDSim3D &sim);
+	void operator() (Simulation &sim);
 
 	/*! \brief Class constructor
 	\param refine Refinement scheme

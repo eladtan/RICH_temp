@@ -3,7 +3,7 @@
 #include <boost/random/uniform_real_distribution.hpp>
 #include "source/3D/environment/kernels/Rectangle.hpp"
 
-void UpdateBox(Voronoi3D &tess, HDSim3D &sim, double const min_velocity, double const volume_fraction, ComputationalCell3D const& reference_cell)
+void UpdateBox(Voronoi3D &tess, Simulation &sim, double const min_velocity, double const volume_fraction, ComputationalCell3D const& reference_cell)
 {
 	std::vector<ComputationalCell3D>& cells = sim.getCells();
 	std::vector<Conserved3D>& extensives = sim.getExtensives();
@@ -107,7 +107,7 @@ void UpdateBox(Voronoi3D &tess, HDSim3D &sim, double const min_velocity, double 
 		size_t& MaxID = sim.GetMaxID();
 		if(rank == 0)
 		{
-			boost::random::mt19937_64 generator(sim.getCycle());
+			boost::random::mt19937_64 generator(sim.GetCycle());
 			boost::random::uniform_real_distribution<> dist;
 			std::vector<Vector3D> newpoints;
 			double ran[3];

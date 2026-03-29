@@ -16,6 +16,8 @@
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
+#include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
 
 int main(void)
 {
@@ -62,14 +64,14 @@ int main(void)
     ComputationalCell3D inner_cell, outer_cell;
     inner_cell.velocity = Vector3D(0, 0, 0);
     inner_cell.density = 1;
-    inner_cell.internal_energy = 1e5;
+    inner_cell.internal_energy = 8e5;
     inner_cell.pressure = eos.de2p(inner_cell.density, inner_cell.internal_energy, inner_cell.tracers, ComputationalCell3D::tracerNames);
     outer_cell.velocity = Vector3D(0, 0, 0);
     outer_cell.density = 1;
     outer_cell.internal_energy = 0.1;
     outer_cell.pressure = eos.de2p(outer_cell.density, outer_cell.internal_energy, outer_cell.tracers, ComputationalCell3D::tracerNames);
     for(size_t i = 0; i < Nlocal; ++i) {
-        if(abs(tess.GetMeshPoint(i)) < 0.2) {
+        if(abs(tess.GetMeshPoint(i)) < 0.1) {
             cells[i] = inner_cell;
         }
         else {
@@ -94,22 +96,31 @@ int main(void)
     ConditionExtensiveUpdater3D eu(eu_sequence);
     DefaultCellUpdater cu;
     ZeroForce3D force;
-    CourantFriedrichsLewy tsf(0.3, 1.0, force);
+    auto tsf = std::make_shared<CourantFriedrichsLewy>(0.3, 1.0, force);
     Lagrangian3D bpm;
     RoundCells3D pm(bpm, eos);
 
-    HDSim3D sim(tess, cells, eos, pm, tsf, flux, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+    Simulation simulation(tess, cells, eos);
+    simulation.SetTimeStepFunction(tsf);
+    HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, flux, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
-    double old_time = sim.getTime();
-    while(sim.getTime() < 0.0075) {
+    auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
+    simulation.addPhysics(hydroStep);
+    simulation.SetTimeStep(1.0);
+#ifdef RICH_MPI
+    simulation.PresetLoadBalance("hydro");
+#endif
+
+    double old_time = simulation.GetTime();
+    while(simulation.GetTime() < 0.0075) {
         try {
             if(rank == 0) {
-                std::cout << "Cycle " << sim.getCycle()
-                          << " dt " << sim.getTime() - old_time
-                          << " time " << sim.getTime() << std::endl;
+                std::cout << "Cycle " << simulation.GetCycle()
+                          << " dt " << simulation.GetTime() - old_time
+                          << " time " << simulation.GetTime() << std::endl;
             }
-            old_time = sim.getTime();
-            sim.timeAdvance2();
+            old_time = simulation.GetTime();
+            simulation.step();
         }
         catch(UniversalError const& eo) {
             reportError(eo);
@@ -125,8 +136,8 @@ int main(void)
     std::vector<double> volume_sum(nbins, 0.0);
 
     double rmax_local = 0.0;
-    for(size_t i = 0; i < sim.getTesselation().GetPointNo(); ++i) {
-        double const r = abs(sim.getTesselation().GetCellCM(i));
+    for(size_t i = 0; i < tess.GetPointNo(); ++i) {
+        double const r = abs(tess.GetCellCM(i));
         rmax_local = std::max(rmax_local, r);
     }
     double rmax = rmax_local;
@@ -137,22 +148,23 @@ int main(void)
         rmax = 1.0;
     }
 
-    for(size_t i = 0; i < sim.getTesselation().GetPointNo(); ++i) {
-        Vector3D const cm = sim.getTesselation().GetCellCM(i);
+    auto const& final_cells = simulation.getCells();
+    for(size_t i = 0; i < tess.GetPointNo(); ++i) {
+        Vector3D const cm = tess.GetCellCM(i);
         double const r = abs(cm);
         double vr = 0.0;
         if(r > 0.0) {
-            Vector3D const v = sim.getCells()[i].velocity;
+            Vector3D const v = final_cells[i].velocity;
             vr = (v.x * cm.x + v.y * cm.y + v.z * cm.z) / r;
         }
         size_t bin = static_cast<size_t>((r / rmax) * static_cast<double>(nbins));
         if(bin >= nbins) {
             bin = nbins - 1;
         }
-        double const cell_volume = sim.getTesselation().GetVolume(i);
+        double const cell_volume = tess.GetVolume(i);
         r_sum[bin] += r * cell_volume;
-        density_sum[bin] += sim.getCells()[i].density * cell_volume;
-        pressure_sum[bin] += sim.getCells()[i].pressure * cell_volume;
+        density_sum[bin] += final_cells[i].density * cell_volume;
+        pressure_sum[bin] += final_cells[i].pressure * cell_volume;
         vr_sum[bin] += vr * cell_volume;
         volume_sum[bin] += cell_volume;
     }

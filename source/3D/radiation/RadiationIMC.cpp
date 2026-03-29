@@ -31,7 +31,7 @@ namespace {
     {
         this->randomWalk = std::make_unique<RandomWalk>();
     }
-    rank_t rank = 0;
+    int rank = 0;
     #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif
@@ -297,7 +297,7 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
     if(this->withRandomWalk)
     {
         size_t globalRwSteps = this->rwStepCount;
-        rank_t rank = 0;
+        int rank = 0;
         #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         if(rank == 0)

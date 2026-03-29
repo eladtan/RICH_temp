@@ -9,6 +9,7 @@
 #include "misc/utils.hpp"
 #include "newtonian/three_dimensional/SpatialReconstruction3D.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
+#include "newtonian/three_dimensional/cell_updater_3d.hpp"
 #include "3D/tessellation/Neighbors.hpp"
 
 //#define debug_amr 1
@@ -1032,7 +1033,7 @@ ComputationalCell3D SimpleAMRCellUpdaterSR3D::ConvertExtensiveToPrimitve3D(Conse
 		//if (safe_retrieve(old_cell.stickers, tracerstickernames.sticker_names, toskip_[i]))
 			//return old_cell;
 
-	double v = GetVelocity(extensive, G_);
+	double v = 0; // TODO: GetVelocity(extensive, G_) — undefined, needs implementation
 	volume = 1.0 / volume;
 	ComputationalCell3D res;
 	if (res.density < 0)
@@ -1082,7 +1083,7 @@ AMR3D::AMR3D(EquationOfState const& eos,
 }
 
 
-void AMR3D::operator() (HDSim3D &sim)
+void AMR3D::operator() (Simulation &sim)
 {
 	int rank = 0;
 #ifdef RICH_MPI
@@ -1094,7 +1095,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	std::vector<ComputationalCell3D> &cells = sim.getCells();
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
 	EquationOfState const& eos = eos_;
-	double time = sim.getTime();
+	double time = sim.GetTime();
 	// Get remove list
 	std::pair<vector<size_t>, vector<double> > ToRemove = remove_.ToRemove(tess, cells, time);
 	// sort

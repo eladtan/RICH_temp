@@ -214,4 +214,5 @@ void ReadSimulation(const std::string &filename,
     readTessellation(*dataReader, "/tess", sim);
     readPhysicsGroups(*dataReader, "", sim);
     readPrivateInfo(*dataReader, "", sim);
+    sim.recomputeMaxID();
 }

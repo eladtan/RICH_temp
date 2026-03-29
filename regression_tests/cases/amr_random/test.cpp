@@ -225,8 +225,9 @@ int main()
         CourantFriedrichsLewy tsf(0.3, 1.0, force);
         Lagrangian3D bpm;
         RoundCells3D pm(bpm, eos);
+        Simulation simulation(tess, cells, eos);
         HDSim3D sim(
-            tess, cells, eos, pm, tsf, flux, cu, eu, force,
+            tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, flux, cu, eu, force,
             std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
         RandomRefine3D refine(amr_probability, rank);
@@ -235,9 +236,9 @@ int main()
 
         double max_drift_local = 0.0;
         for(size_t round = 0; round < amr_rounds; ++round) {
-            amr(sim);
+            amr(simulation);
             const std::vector<ComputationalCell3D>& current_cells = sim.getCells();
-            const Tessellation3D& current_tess = sim.getTesselation();
+            const Tessellation3D& current_tess = sim.getTessellation();
             const size_t npoints = std::min(current_tess.GetPointNo(), current_cells.size());
             size_t real_local_points = 0;
             double max_density_drift_local = 0.0;
