@@ -372,7 +372,7 @@ def plot_mach2_diffusion(root: Path, out_dir: Path) -> bool:
 
 def _plot_mach2_spectrum(root: Path, out_dir: Path) -> bool:
     """Mach2 multigroup: radiation spectrum of hottest cell vs Planck at Tgas."""
-    spectrum_file = root / "regression_tests" / "cases" / "mach2_spectrum.txt"
+    spectrum_file = root / "regression_tests" / "cases" / "mach2_multigroup" / "mach2_spectrum.txt"
     if not spectrum_file.exists():
         print(f"  [mach2_multigroup] spectrum file not found: {spectrum_file}")
         return False
@@ -635,6 +635,53 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Densmore 2012 MC plotter
+# --------------------------------------------------------------------------- #
+
+
+def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
+    """Densmore 2012 heterogeneous MC: Tgas vs x compared to digitized Figure 4."""
+    case_dir = root / "regression_tests" / "cases" / "desmore2012_mc"
+    profile = case_dir / "desmore2012_mc_profile.txt"
+    ref_file = case_dir / "data" / "densmore2012_fig4_mc.csv"
+
+    if not profile.exists():
+        print(f"  [desmore2012_mc] profile not found: {profile}")
+        return False
+
+    raw = np.loadtxt(str(profile))
+    if raw.ndim == 1:
+        raw = np.expand_dims(raw, axis=0)
+    x_sim = raw[:, 0]
+    T_sim_K = raw[:, 1]
+
+    keV_K = 1.602176634e-9 / 1.380649e-16
+    T_sim_keV = T_sim_K / keV_K
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x_sim, T_sim_keV, "k.", markersize=2, label="RICH MC")
+
+    if ref_file.exists():
+        ref = np.loadtxt(str(ref_file), delimiter=",", comments="#")
+        ax.plot(ref[:, 0], ref[:, 1], "r-", linewidth=1.5,
+                label="Densmore 2012 Fig. 4 (MC)")
+
+    ax.set_xlabel("x [cm]")
+    ax.set_ylabel("Material Temperature [keV]")
+    ax.set_title("Densmore 2012 Heterogeneous Step -- MC IMC")
+    ax.set_xlim(0, 3)
+    ax.set_ylim(0, 1)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "desmore2012_mc")
+    plt.close(fig)
+    print(f"  [desmore2012_mc] saved desmore2012_mc.png/pdf")
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -651,6 +698,7 @@ ALL_PLOTTERS = {
     "marshak_wave_4": plot_marshak_wave_4,
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
+    "desmore2012_mc": plot_desmore2012_mc,
 }
 
 

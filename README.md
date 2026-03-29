@@ -206,6 +206,7 @@ The suite builds and validates these regression cases:
 | `marshak_wave_4` | serial | Marshak wave Problem 4 — divergent density rho=x^{-40/139}, stretched grid |
 | `gresho_euler` | serial | Gresho vortex with Eulerian (fixed) mesh, t_end=5 |
 | `gresho_lagrangian` | mpi | Gresho vortex with Lagrangian + RoundCells mesh, t_end=5 (Slurm, 8 tasks) |
+| `desmore2012_mc` | mpi | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup (Slurm, 32 tasks) |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -217,6 +218,7 @@ Acceptance checks are physics-based:
 - **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 50% for density, gas temperature, and radiation temperature.
 - **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
 - **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
+- **Densmore 2012 MC**: Heterogeneous step-opacity slab (sigma_0=10 for x<2, sigma_0=1000 for x>=2) with Planck source at 1 keV. Monte Carlo IMC with multigroup opacities and random walk, 256 cells, 32 MPI ranks, run to t=1 ns. Gas temperature profile compared to digitized Figure 4 from Densmore et al. (2012). Require L1 error below 0.05 keV.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -227,6 +229,7 @@ You can tune tolerances with environment variables:
 - `MACH2_MAX_DENSITY_REL_L1`, `MACH2_MAX_TEMPERATURE_REL_L1`
 - `MARSHAK_MAX_TGAS_REL_L1`, `MARSHAK_MAX_TRAD_REL_L1`
 - `GRESHO_EULER_MAX_L1`, `GRESHO_LAGRANGIAN_MAX_L1`
+- `DESMORE2012_MC_MAX_TGAS_L1`
 
 ### Parallel execution
 
@@ -345,6 +348,7 @@ Clean all saved regression logs:
   - `regression_tests/cases/marshak_wave_*/marshak_check.stderr.log` (Marshak wave check details)
   - `regression_tests/cases/gresho_euler/gresho_check.stderr.log` (Gresho Euler check details)
   - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
+  - `regression_tests/cases/desmore2012_mc/desmore2012_mc_check.stderr.log` (Densmore 2012 MC check details)
 
 
 ### Plotting regression results
@@ -376,6 +380,7 @@ Available plots:
 | `marshak_wave_4` | Tgas and Trad vs x (divergent density, stretched grid) |
 | `gresho_euler` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
 | `gresho_lagrangian` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
+| `desmore2012_mc` | Gas temperature vs x, compared to Densmore 2012 Figure 4 reference |
 
 Options:
 

@@ -842,6 +842,71 @@ TESTS = [
             "velocity field, and radially binned azimuthal velocity vs.\\ initial condition."
         ),
     },
+    {
+        "id": "desmore2012_mc",
+        "title": "Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo IMC)",
+        "description": (
+            "The first heterogeneous test problem from Densmore et al.\\ "
+            "\\cite{densmore2012} exercises the Monte Carlo Implicit Monte Carlo "
+            "(IMC) radiation transport solver with frequency-dependent opacities "
+            "in a two-material slab geometry. The domain contains an optically "
+            "thin region ($x < 2$~cm, $\\sigma_0 = 10$~keV$^{7/2}$/cm) and an "
+            "optically thick region ($x \\ge 2$~cm, $\\sigma_0 = 1000$~keV$^{7/2}$/cm), "
+            "with a Planck source at 1~keV driving radiation from the left boundary.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Monte Carlo IMC transport:} Particle creation, "
+            "transport, absorption, and re-emission in a frequency-dependent setting.\n"
+            "  \\item \\textbf{Multigroup opacities:} Correct frequency-group "
+            "averaging of the power-law opacity $\\sigma = \\sigma_0 / (\\sqrt{kT}\\,E^3)$.\n"
+            "  \\item \\textbf{Random walk acceleration:} The hybrid MC/diffusion "
+            "random walk is enabled in optically thick cells.\n"
+            "  \\item \\textbf{MPI parallelism:} The problem is distributed across "
+            "32 MPI ranks with domain decomposition and particle communication.\n"
+            "  \\item \\textbf{Heterogeneous material interface:} The sharp opacity "
+            "jump at $x = 2$~cm produces a characteristic temperature spike that "
+            "tests the interface treatment.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} This is the primary verification test for the "
+            "Monte Carlo IMC radiation solver with frequency-dependent opacities. "
+            "The reference solution from the Milagro IMC code \\cite{densmore2012} "
+            "provides an independent, published benchmark."
+        ),
+        "initial_conditions": (
+            r"The domain is $x \in [0,\,3]$~cm with 256 uniformly spaced cells. "
+            r"The opacity follows $\sigma(\nu) = \sigma_0 / (\sqrt{kT}\,E^3)$ with:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item $x < 2$~cm: $\sigma_0 = 10$~keV$^{7/2}$/cm (optically thin)." "\n"
+            r"  \item $x \ge 2$~cm: $\sigma_0 = 1000$~keV$^{7/2}$/cm (optically thick)." "\n"
+            r"\end{itemize}" "\n"
+            r"Initial temperature $T = 1$~eV, density $\rho = 1$~g/cm$^3$, "
+            r"ideal gas EOS with $\gamma = 1.4$ and $C_v = 10^{15}/T_{\mathrm{keV}}$. "
+            r"The simulation runs to $t = 1$~ns with $\Delta t = 5 \times 10^{-12}$~s."
+        ),
+        "boundary_conditions": (
+            r"Left boundary: isotropic Planck source at $T = 1$~keV. "
+            r"Right boundary: reflective."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics.",
+        "execution": "MPI, 32 ranks, SLURM (bigrun partition, exclusive).",
+        "pass_criteria": (
+            r"The gas temperature profile $T_{\mathrm{gas}}(x)$ is compared to "
+            r"the Monte Carlo curve digitized from Figure~4 of Densmore et al.\ "
+            r"\cite{densmore2012}. The $L_1$ norm of the absolute error in keV "
+            r"must satisfy:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item $L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": ["desmore2012_mc.png"],
+        "plot_caption": (
+            "Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH Monte Carlo "
+            "IMC result (black dots) vs.\\ digitized reference from Figure~4 of "
+            "Densmore et al.\\ (2012) (red line)."
+        ),
+    },
 ]
 
 
@@ -1059,6 +1124,18 @@ def _read_gresho_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
     return rows
 
 
+def _read_desmore2012_mc_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "desmore2012_mc" / "desmore2012_mc_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("DESMORE2012_MC_TGAS_L1")
+    if val is not None:
+        passed = float(val) <= 0.05
+        rows.append(("$T_{\\mathrm{gas}}$ $L_1$ [keV]", val, "0.05", passed))
+    return rows
+
+
 METRIC_READERS: dict[str, object] = {
     "sod_1d": lambda cd: _read_sod_metrics(cd),
     "sedov_3d_mpi": lambda cd: _read_sedov_metrics(cd),
@@ -1074,6 +1151,7 @@ METRIC_READERS: dict[str, object] = {
     "marshak_wave_4": lambda cd: _read_marshak_wave_metrics(cd, 4),
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
+    "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
 }
 
 
@@ -1272,6 +1350,14 @@ Oxford University Press, 1984.
 Ya.~B. Zel'dovich and Yu.~P. Raizer,
 \textit{Physics of Shock Waves and High-Temperature Hydrodynamic Phenomena},
 Dover Publications, 2002 (reprint).
+
+% --- Densmore 2012 (MC IMC) ---
+
+\bibitem{densmore2012}
+J.~D. Densmore, K.~G. Thompson, and T.~J. Urbatsch,
+``A hybrid transport-diffusion Monte Carlo method for frequency-dependent
+radiative-transfer simulations,''
+\textit{J.~Comput. Phys.}, 231(20):6924--6934, 2012.
 
 % --- Gresho vortex ---
 

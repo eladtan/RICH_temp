@@ -288,6 +288,7 @@ declare -a ALL_RUN_MODES=()
 declare -a ALL_SLURM_NTASKS=()
 declare -a ALL_SLURM_PARTITIONS=()
 declare -a ALL_SLURM_EXCLUSIVES=()
+declare -a ALL_SLURM_TIME_LIMITS=()
 declare -a ALL_CASE_DIRS=()
 
 load_test_definition() {
@@ -304,6 +305,7 @@ load_test_definition() {
     local SLURM_NTASKS="32"
     local SLURM_PARTITION="bigrun"
     local SLURM_EXCLUSIVE="1"
+    local SLURM_TIME_LIMIT="02:00:00"
 
     source "${def_file}"
 
@@ -338,6 +340,7 @@ load_test_definition() {
     ALL_SLURM_NTASKS+=("${SLURM_NTASKS}")
     ALL_SLURM_PARTITIONS+=("${SLURM_PARTITION}")
     ALL_SLURM_EXCLUSIVES+=("${SLURM_EXCLUSIVE}")
+    ALL_SLURM_TIME_LIMITS+=("${SLURM_TIME_LIMIT}")
     ALL_CASE_DIRS+=("${case_dir}")
     return 0
 }
@@ -418,6 +421,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
     slurm_ntasks="${ALL_SLURM_NTASKS[$i]}"
     slurm_partition="${ALL_SLURM_PARTITIONS[$i]}"
     slurm_exclusive="${ALL_SLURM_EXCLUSIVES[$i]}"
+    slurm_time_limit="${ALL_SLURM_TIME_LIMITS[$i]}"
     case_dir="${ALL_CASE_DIRS[$i]}"
 
     mkdir -p "${case_dir}"
@@ -492,6 +496,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             sbatch_args=(
                 sbatch
                 --wait
+                --time="${slurm_time_limit}"
                 --job-name="reg_${test_id}"
                 --ntasks="${slurm_ntasks}"
                 --partition="${slurm_partition}"
@@ -505,10 +510,13 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             fi
             "${sbatch_args[@]}" || run_rc=$?
         else
+            # Convert HH:MM:SS to seconds for timeout
+            IFS=: read -r _h _m _s <<< "${slurm_time_limit}"
+            timeout_secs=$(( 10#${_h} * 3600 + 10#${_m} * 60 + 10#${_s} ))
             if [[ "${VERBOSE}" -eq 1 ]]; then
-                bash -c "${run_cmd}" > >(tee "${run_stdout}") 2> >(tee "${run_stderr}" >&2) || run_rc=$?
+                timeout "${timeout_secs}" bash -c "${run_cmd}" > >(tee "${run_stdout}") 2> >(tee "${run_stderr}" >&2) || run_rc=$?
             else
-                bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}" || run_rc=$?
+                timeout "${timeout_secs}" bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}" || run_rc=$?
             fi
         fi
 
