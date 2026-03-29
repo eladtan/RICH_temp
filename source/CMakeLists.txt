@@ -15,12 +15,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 message(STATUS "CXX Standard: " ${CMAKE_CXX_STANDARD})
 message(STATUS "Build Type: " ${CMAKE_BUILD_TYPE})
 
-message(STATUS "CMAKE_CXX_FLAGS = " ${CMAKE_CXX_FLAGS})
-message(STATUS "CMAKE_CXX_FLAGS_RELEASE = " ${CMAKE_CXX_FLAGS_RELEASE})
-message(STATUS "CMAKE_CXX_FLAGS_DEBUG = " ${CMAKE_CXX_FLAGS_DEBUG})
-message(STATUS "CMAKE_Fortran_FLAGS = " ${CMAKE_Fortran_FLAGS})
-message(STATUS "CMAKE_Fortran_FLAGS_RELEASE = " ${CMAKE_Fortran_FLAGS_RELEASE})
-message(STATUS "CMAKE_Fortran_FLAGS_DEBUG = " ${CMAKE_Fortran_FLAGS_DEBUG})
+string(TOUPPER "${CMAKE_BUILD_TYPE}" build_type_upper)
+message(STATUS "CXX flags:     ${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${build_type_upper}}")
+message(STATUS "Fortran flags: ${CMAKE_Fortran_FLAGS} ${CMAKE_Fortran_FLAGS_${build_type_upper}}")
 
 project(rich)
 
@@ -59,7 +56,6 @@ include(${CMAKE_SOURCE_DIR}/../config/find_VTK.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_JSON.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_Boost.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_cgal.cmake)
-include(${CMAKE_SOURCE_DIR}/../config/find_python.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_vtune.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_ParMETIS.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_ibverbs.cmake)
@@ -68,17 +64,15 @@ include(${CMAKE_SOURCE_DIR}/../config/find_pybind11.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/set_placeholders.cmake)
 
 if(DEFINED PYBIND11_DIRECTORY)
-    set(PYBIND11_PYTHON_VERSION ${PYTHON_VERSION})
-    find_package(pybind11 QUIET REQUIRED PATHS ${PYBIND11_DIRECTORY} NO_DEFAULT_PATH)
-
-    if(pybind11_FOUND)
-        message(STATUS "pybind11 directory: " ${pybind11_DIR})
-        include_directories("${PYBIND11_DIR}/include")
-    else()
-        message(FATAL_ERROR "PYBIND11 NOT FOUND")
-    endif()
+    find_package(pybind11 QUIET CONFIG PATHS ${PYBIND11_DIRECTORY} NO_DEFAULT_PATH)
 else()
-    message(STATUS "No pybind11")
+    find_package(pybind11 QUIET CONFIG)
+endif()
+
+if(pybind11_FOUND)
+    message(STATUS "pybind11 directory: ${pybind11_DIR}")
+else()
+    message(STATUS "pybind11 not found -- Python embedding disabled")
 endif()
 
 # HDF5
@@ -103,41 +97,15 @@ if (NOT HDF5)
     message(FATAL_ERROR "NO HDF5")
 endif()
 
-# VTK
-# see examples here 
-# https://vtk.org/doc/nightly/html/md__builds_gitlab-kitware-sciviz-ci_Documentation_Doxygen_ModuleMigration.html
+# MPI (discovered in set_compilers.cmake via mpicxx wrapper)
 
-find_package(VTK COMPONENTS 
-    CommonCore 
-    CommonColor
-    CommonDataModel
-    CommonTransforms
-    FiltersGeneral
-    FiltersSources
-    IOXML 
-    IOParallelXML 
-    ParallelMPI 
-    InteractionStyle
-    NO_MODULE 
-    PATHS ${VTK_DIRECTORY} NO_DEFAULT_PATH
-)
-
-if (NOT VTK_FOUND)
-    message(FATAL_ERROR "NO VTK")
-endif()
+# VTK (found and validated in config/find_VTK.cmake)
 
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories("${PROJECT_SOURCE_DIR}/..") # TODO: REMOVE!
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 
-# python
-if(PYTHON_INCLUDE AND PYTHON_LIB_DIRECTORY)
-    include_directories(${PYTHON_INCLUDE})
-    find_library(PYTHON_LIB NAMES ${PYTHON_LIB_NAME} PATHS ${PYTHON_LIB_DIRECTORY} NO_DEFAULT_PATH)
-else()
-    message(STATUS "NO PYTHON")
-endif()
 
 # json
 if(JSONCPP_INCLUDE AND JSONCPP_LIB_DIRECTORY)
@@ -153,7 +121,11 @@ endif()
 # parmetis
 if(PARMETIS_INCLUDE AND PARMETIS_LIB_DIRECTORY)
     include_directories(${PARMETIS_INCLUDE})
-    find_static_library(PARMETIS_LIB parmetis PATHS ${PARMETIS_LIB_DIRECTORY})
+    if(DEFINED DYNAMIC_LIBS)
+        find_library(PARMETIS_LIB parmetis PATHS ${PARMETIS_LIB_DIRECTORY})
+    else()
+        find_static_library(PARMETIS_LIB parmetis PATHS ${PARMETIS_LIB_DIRECTORY})
+    endif()
 endif()
 
 # metis
@@ -165,7 +137,11 @@ endif()
 # gklib
 if(GKLIB_INCLUDE AND GKLIB_LIB_DIRECTORY)
     include_directories(${GKLIB_INCLUDE})
-    find_static_library(GKLIB_LIB GKlib PATHS ${GKLIB_LIB_DIRECTORY})
+    if(DEFINED DYNAMIC_LIBS)
+        find_library(GKLIB_LIB GKlib PATHS ${GKLIB_LIB_DIRECTORY})
+    else()
+        find_static_library(GKLIB_LIB GKlib PATHS ${GKLIB_LIB_DIRECTORY})
+    endif()
 endif()
 
 # cgal
@@ -200,14 +176,20 @@ if(CGAL_DIRECTORY)
 endif()
 
 find_package(ZLIB REQUIRED)
-target_link_libraries(${EXE_NAME} PRIVATE ${HDF5_LIBS} ZLIB::ZLIB)
-
 target_link_libraries(
     ${EXE_NAME} 
     PRIVATE
+    ZLIB::ZLIB
     ${HDF5_LIBS} 
     ${VTK_LIBRARIES}
 )
+
+if(DEFINED MPI)
+    separate_arguments(mpi_compile_flags UNIX_COMMAND "${MPI_COMPILE_FLAGS}")
+    separate_arguments(mpi_link_flags UNIX_COMMAND "${MPI_LINK_FLAGS}")
+    target_compile_options(${EXE_NAME} PRIVATE ${mpi_compile_flags})
+    target_link_options(${EXE_NAME} PRIVATE ${mpi_link_flags})
+endif()
 
 if(DEFINED JSONCPP_LIB)
     target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
@@ -232,14 +214,9 @@ if(DEFINED BOOST_DIR)
     target_link_directories(${EXE_NAME} PRIVATE ${BOOST_DIR}/lib)
 endif()
 
-# link pybind11
+# link pybind11 (includes Python automatically)
 if(pybind11_FOUND)
-    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
-endif()
-
-# link python
-if(DEFINED PYTHON_LIB_LIBRARY)
-    target_link_libraries(${EXE_NAME} PRIVATE ${PYTHON_LIB})
+    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed)
 endif()
 
 # link vtune

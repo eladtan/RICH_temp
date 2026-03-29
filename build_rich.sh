@@ -1,5 +1,59 @@
 #!/bin/bash
 
+# ==================== Auto-completion ====================
+# When sourced with --completions, registers tab-completion and exits.
+# Completions are derived from the case-statement below, so adding a
+# new flag there automatically makes it completable.
+if [[ "$1" == "--completions" ]]; then
+    _build_rich_completions() {
+        local cword=$COMP_CWORD
+        # Reconstruct the full current word from the command line,
+        # because bash splits on '=' (in COMP_WORDBREAKS).
+        local before_cursor="${COMP_LINE:0:$COMP_POINT}"
+        local cur_full="${before_cursor##* }"
+        local cur="${COMP_WORDS[COMP_CWORD]}"
+
+        local configs="gnuReleaseMPI gnuDebugMPI intelReleaseMPI intelDebugMPI gnuRelease gnuDebug intelRelease intelDebug gnuMixedMPI intelMixedMPI"
+
+        # Extract flags directly from this script's case-statement
+        local script="${COMP_WORDS[0]}"
+        local flags
+        local flags="--test_name="
+        flags="$flags $(grep -oP '^\s+--[a-zA-Z_-]+(=\*?)?\)' "$script" 2>/dev/null \
+            | sed 's/[)*]//g; s/^[[:space:]]*//' | sort -u)"
+
+        if [[ $cword -eq 1 ]]; then
+            COMPREPLY=($(compgen -W "$configs" -- "$cur"))
+            return
+        fi
+
+        local script_dir
+        script_dir="$(cd "$(dirname "$script")" && pwd)"
+
+        if [[ "$cur_full" == --test_name=* ]]; then
+            local prefix="${cur_full#--test_name=}"
+            local test_dirs=""
+            if [[ -d "$script_dir/runs" ]]; then
+                test_dirs=$(find "$script_dir/runs" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null)
+            fi
+            COMPREPLY=($(compgen -W "$test_dirs" -- "$prefix"))
+            return
+        fi
+
+        if [[ "$cur_full" == --debug_files=* ]]; then
+            local prefix="${cur_full#--debug_files=}"
+            COMPREPLY=($(compgen -f -- "$prefix"))
+            return
+        fi
+
+        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+        [[ ${#COMPREPLY[@]} -eq 1 && "${COMPREPLY[0]}" == *= ]] && compopt -o nospace
+    }
+    complete -F _build_rich_completions ./build_rich.sh
+    complete -F _build_rich_completions build_rich.sh
+    return 0 2>/dev/null || exit 0
+fi
+
 # ==================== Colors ====================
 RED=$'\033[0;31m'
 FAIL=$'\e[7;31;47m'
@@ -16,16 +70,17 @@ export CCACHE_CPP2=yes
 
 # ==================== Parse Arguments ====================
 CONFIG="$1"
-TEST_ARG="$2"
-TEST_NAME="${TEST_ARG#--test_name=}"
-
+TEST_NAME=""
 CMAKE_FLAGS=""
 MIXED_DEBUG_FILES=""
 BUILD_SUBDIR=""
 MAKE_JOBS="$(nproc)"
-# Parse remaining optional args
-for arg in "${@:3}"; do
+
+for arg in "${@:2}"; do
     case "$arg" in
+        --test_name=*)
+            TEST_NAME="${arg#--test_name=}"
+            ;;
         --with_asan)
             CMAKE_FLAGS+=" -DASAN=1 "
             ;;
@@ -44,6 +99,9 @@ for arg in "${@:3}"; do
         --mc_trace_debug=*)
             val="${arg#--mc_trace_debug=}"
             CMAKE_FLAGS+=" -DMC_TRACE_DEBUG=$val "
+            ;;
+        --shared)
+            CMAKE_FLAGS+=" -DDYNAMIC_LIBS=1 "
             ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
@@ -79,6 +137,7 @@ CMD_FILE="$BUILD_DIR/.build_cmd"
 DEBUG_FILES_FILE="$BUILD_DIR/.debug_files"
 SOURCE_FILES_FILE="$BUILD_DIR/.source_files"
 CMAKE_MTIMES_FILE="$BUILD_DIR/.cmake_mtimes"
+ENV_PATHS_FILE="$BUILD_DIR/.env_paths"
 
 MAKE_OUT="$BUILD_DIR/${CONFIG}_build.out"
 MAKE_ERR="$BUILD_DIR/${CONFIG}_build.err"
@@ -87,8 +146,8 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 
 # ==================== Validate arguments ====================
 
-if [[ $# -lt 2 || "$2" != --test_name=* ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--build-subdir=<name>] [--jobs=<N>]${NC}"
+if [[ $# -lt 2 || -z "$TEST_NAME" ]]; then
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 
@@ -146,7 +205,7 @@ fi
 
 # Generate current list of source files (sorted for consistent comparison)
 CURRENT_SOURCE_FILES=$(find "$ORIG_DIR/source" "$TEST_SOURCE_DIR" \
-    -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.hpp" -o -name "*.h" \) \
+    -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.cxx" -o -name "*.f90" \) \
     2>/dev/null | sort)
 
 if [[ -f "$SOURCE_FILES_FILE" ]]; then
@@ -189,6 +248,17 @@ if [[ -f "$CMAKE_MTIMES_FILE" ]]; then
     fi
 fi
 
+# ==================== Track Environment Paths (PATH / LD_LIBRARY_PATH) ====================
+CURRENT_ENV_PATHS="$(echo "PATH:"; echo "$PATH" | tr ':' '\n' | sort; echo "LD_LIBRARY_PATH:"; echo "$LD_LIBRARY_PATH" | tr ':' '\n' | sort)"
+
+if [[ -f "$ENV_PATHS_FILE" ]]; then
+    OLD_ENV_PATHS=$(<"$ENV_PATHS_FILE")
+    if [[ "$OLD_ENV_PATHS" != "$CURRENT_ENV_PATHS" ]]; then
+        echo -e "${PURPLE}PATH or LD_LIBRARY_PATH changed. Will re-run CMake...${NC}"
+        RERUN_CMAKE=1
+    fi
+fi
+
 # ==================== Run CMake if needed ====================
 if [[ ! -f Makefile || $RERUN_CMAKE -eq 1 ]]; then
     echo -e "${ORANGE}Running CMake...${NC}"
@@ -201,10 +271,11 @@ if [[ ! -f Makefile || $RERUN_CMAKE -eq 1 ]]; then
     if [[ -f "$BUILD_DIR/compile_commands.json" ]]; then
         ln -sf "$BUILD_DIR/compile_commands.json" "$ORIG_DIR/compile_commands.json"
     fi
-    # Save current source files list and cmake mtimes after successful cmake
+    # Save current source files list, cmake mtimes, and env paths after successful cmake
     echo "$CURRENT_SOURCE_FILES" > "$SOURCE_FILES_FILE"
     # Avoid a trailing newline to keep comparison precise
     echo -n "$CURRENT_CMAKE_MTIMES" | strip_trailing_newlines > "$CMAKE_MTIMES_FILE"
+    echo "$CURRENT_ENV_PATHS" > "$ENV_PATHS_FILE"
 else
     echo -e "${BLUE}CMake skipped: Makefile already exists and no changes detected.${NC}"
 fi
@@ -221,6 +292,9 @@ linking_filter() {
 }
 
 # ==================== Progress Bar Output ====================
+PROGRESS_STATE_FILE=$(mktemp)
+echo 0 > "$PROGRESS_STATE_FILE"
+
 progress_bar_and_filtered_output() {
     local width=50
     local linking_printed=0
@@ -255,7 +329,6 @@ progress_bar_and_filtered_output() {
         fi
         bar="$(printf "%-*s" "$width" "$bar")"
 
-        # Print progress bar once
         if [[ $progress_done -eq 0 ]]; then
             printf "\rProgress: [${GREEN}%s${NC}] %3s%%\033[K" "$bar" "$percent"
         elif [[ $progress_done -eq 1 ]]; then
@@ -264,19 +337,32 @@ progress_bar_and_filtered_output() {
             progress_done=2
         fi
     done
+
+    echo "$progress_done" > "$PROGRESS_STATE_FILE"
 }
 
 # ==================== Run Make with Tee & Progress ====================
 echo -e "${CYAN}Running Make...${NC}"
+PROGRESS_FIFO=$(mktemp -u)
+mkfifo "$PROGRESS_FIFO"
+
+linking_filter < "$PROGRESS_FIFO" | progress_bar_and_filtered_output &
+PROGRESS_PID=$!
+
 stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
-    | tee >(linking_filter | progress_bar_and_filtered_output) > "$MAKE_OUT"
+    | tee "$PROGRESS_FIFO" > "$MAKE_OUT"
 
 MAKE_EXIT_CODE=${PIPESTATUS[0]}
+wait "$PROGRESS_PID" 2>/dev/null
+rm -f "$PROGRESS_FIFO"
+
+PROGRESS_DONE=$(<"$PROGRESS_STATE_FILE")
+rm -f "$PROGRESS_STATE_FILE"
 
 # ==================== Final Status ====================
 
 if [[ $MAKE_EXIT_CODE -ne 0 ]]; then
-    if [[ $progress_done -eq 0 ]]; then
+    if [[ $PROGRESS_DONE -eq 0 ]]; then
         echo
     fi
     echo -e "${FAIL}Make failed. See $MAKE_ERR${NC}"
@@ -287,8 +373,7 @@ else
         rm rich
     fi
     ln -s rich_$CONFIG rich
-    # if `progress_done` is 0 or not define, print an empty line
-    if [[ $progress_done -eq 0 ]]; then
+    if [[ $PROGRESS_DONE -eq 0 ]]; then
         echo
     fi
     echo -e "${SUCCESS}Done!${NC}"
