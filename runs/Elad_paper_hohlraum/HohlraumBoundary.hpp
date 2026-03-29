@@ -80,7 +80,7 @@ std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewB
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
                         newParticle.velocity *= units::clight;
-                        newParticle.energy = 0;
+                        newParticle.frequency = 0;
                         newParticle.weight = energyToProduce;
                         newParticle.initialWeight = newParticle.weight;
                         newParticle.timeLeft = fullDt * unif(re);
@@ -90,6 +90,23 @@ std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewB
             }
         }
     }
+
+
+    for(auto &p : newParticles)
+    {
+        if(this->grid.IsPointOutsideBox(p.location))
+        {
+            const Vector3D original = p.location;
+            const Vector3D direction = this->grid.GetMeshPoint(p.cellIndex) - original;
+            double t = 1e-6;
+            while(this->grid.IsPointOutsideBox(p.location) && t < 1.0)
+            {
+                p.location = original + t * direction;
+                t *= 2;
+            }
+        }
+    }
+
     return newParticles;
 }
 

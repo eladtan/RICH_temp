@@ -46,3 +46,9 @@ Vector3D HohlraumOpacity::getNewScatterVelocity(const ComputationalCell3D &cell,
     Vector3D direction = normalize(Vector3D(x, y, z));
     return direction * units::clight;
 }
+
+
+double HohlraumOpacity::getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energyGroup) const
+{
+    throw UniversalError("getGroupAbsorptionOpacity is not implemented yet for HohlraumOpacity");
+}
