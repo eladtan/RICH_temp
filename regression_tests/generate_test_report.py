@@ -860,8 +860,6 @@ TESTS = [
             "transport, absorption, and re-emission in a frequency-dependent setting.\n"
             "  \\item \\textbf{Multigroup opacities:} Correct frequency-group "
             "averaging of the power-law opacity $\\sigma = \\sigma_0 / (\\sqrt{kT}\\,E^3)$.\n"
-            "  \\item \\textbf{Random walk acceleration:} The hybrid MC/diffusion "
-            "random walk is enabled in optically thick cells.\n"
             "  \\item \\textbf{MPI parallelism:} The problem is distributed across "
             "32 MPI ranks with domain decomposition and particle communication.\n"
             "  \\item \\textbf{Heterogeneous material interface:} The sharp opacity "
@@ -903,10 +901,45 @@ TESTS = [
         ),
         "plots": ["desmore2012_mc.png"],
         "plot_caption": (
-            "Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH Monte Carlo "
-            "IMC result (black dots) vs.\\ digitized reference from Figure~4 of "
-            "Densmore et al.\\ (2012) (red line)."
+            "Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH MPI MC "
+            "without random walk (black circles), RICH serial MC with random walk "
+            "(red crosses), and digitized reference from Figure~4 of "
+            "Densmore et al.\\ (2012) (blue line)."
         ),
+    },
+    {
+        "id": "desmore2012_mc_serial",
+        "title": "Densmore 2012 Heterogeneous Step-Opacity (Serial MC, Random Walk)",
+        "description": (
+            "The same heterogeneous problem as \\texttt{desmore2012\\_mc} but run "
+            "serially with the random walk acceleration enabled. This exercises the "
+            "serial (non-MPI) execution path and RW acceleration of the Monte Carlo IMC solver.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Serial execution path:} Verifies that the MC solver "
+            "produces correct results without MPI domain decomposition.\n"
+            "  \\item \\textbf{Cross-validation:} Together with the MPI (no-RW) variant, "
+            "this test confirms that both random walk acceleration and MPI parallelism "
+            "produce accurate results independently.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Identical to \texttt{desmore2012\_mc}: 256 cells, $x \in [0,\,3]$~cm, "
+            r"$\sigma_0 = 10 / 1000$~keV$^{7/2}$/cm, $T_0 = 1$~eV, "
+            r"$t_{\mathrm{end}} = 1$~ns, $\Delta t = 5 \times 10^{-12}$~s."
+        ),
+        "boundary_conditions": (
+            r"Left boundary: isotropic Planck source at $T = 1$~keV. "
+            r"Right boundary: reflective."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics.",
+        "execution": "Serial (single core).",
+        "pass_criteria": (
+            r"Same as \texttt{desmore2012\_mc}: "
+            r"$L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV."
+        ),
+        "plots": [],
+        "plot_caption": "",
     },
     {
         "id": "yee_vortex_64",
@@ -1666,6 +1699,18 @@ def _read_desmore2012_mc_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
+def _read_desmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "desmore2012_mc_serial" / "desmore2012_mc_serial_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("DESMORE2012_MC_TGAS_L1")
+    if val is not None:
+        passed = float(val) <= 0.05
+        rows.append(("$T_{\\mathrm{gas}}$ $L_1$ [keV]", val, "0.05", passed))
+    return rows
+
+
 def _read_yee_vortex_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
     kv = _parse_kv_equals(cases_dir / test_id / "vortex_check.stdout.log")
     if not kv:
@@ -1831,6 +1876,7 @@ METRIC_READERS: dict[str, object] = {
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
+    "desmore2012_mc_serial": lambda cd: _read_desmore2012_mc_serial_metrics(cd),
     "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
     "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
     "cartesian_gauss_linear": lambda cd: _read_cartesian_gauss_linear_metrics(cd),
@@ -2250,7 +2296,8 @@ def _summary_table() -> str:
         ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
         ("Gresho Vortex (Euler)", "Serial", "1", "Eulerian", "Yes"),
         ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
-        ("Densmore 2012 MC", "MPI", "32", "Eulerian", "Yes"),
+        ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
+        ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
         ("Yee Vortex ($64^2$)", "MPI", "8", "Lagrangian", "Yes"),
         ("Yee Vortex ($128^2$)", "MPI", "16", "Lagrangian", "No"),
         ("Cartesian LSQ Gradient", "Serial", "1", "Static", "No"),

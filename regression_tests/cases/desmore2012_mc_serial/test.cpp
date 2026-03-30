@@ -1,4 +1,3 @@
-#include <mpi.h>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -8,7 +7,6 @@
 #include <algorithm>
 #include <numeric>
 #include <filesystem>
-#include "source/mpi/mpi_commands.hpp"
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/Radiation/CMMC/src/units/units.hpp"
 #include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
@@ -24,27 +22,14 @@
 #include "source/monte/population/Comb.hpp"
 #include "source/monte/boundary/SideTemperature.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
-#include "source/newtonian/three_dimensional/CostCalculator3D.hpp"
 
 namespace fs = std::filesystem;
 
 /*
- * Densmore 2012 heterogeneous step-opacity — Monte Carlo regression test.
+ * Densmore 2012 heterogeneous step-opacity — serial Monte Carlo regression test.
  *
- * First heterogeneous problem from Densmore et al., JCP 231 (2012) 6924-6934:
- *   Domain:      x in [0, 3] cm
- *   Left BC:     Planck source at T = 1 keV
- *   Right BC:    Reflective
- *   Opacity:     sigma(E) = sigma_0 / (sqrt(kT) * E^3)
- *                x < 2 cm:  sigma_0 = 10   keV^{3.5}/cm
- *                x >= 2 cm: sigma_0 = 1000 keV^{3.5}/cm
- *   EOS:         ideal gas, gamma = 1.4, Cv = 1e15 / kev_kelvin
- *   Init:        T = 1 eV, rho = 1
- *   Runtime:     1e-9 s, dt = 5e-12 s (200 steps)
- *   No hydro, multigroup IMC without random walk.
- *
- * Outputs desmore2012_mc_profile.txt (x, T_K) for comparison with the
- * digitized Monte Carlo curve from Figure 4 of the paper.
+ * Same physics as the MPI variant but runs serially with random walk enabled.
+ * Outputs desmore2012_mc_serial_profile.txt for comparison.
  */
 
 namespace
@@ -54,11 +39,10 @@ namespace
     public:
         DesmoreMCOpacity(double sigma0_left, double sigma0_right,
                          const std::vector<double> &groupCenters,
-                         const std::vector<double> &groupBoundaries,
-                         int rank = 0)
+                         const std::vector<double> &groupBoundaries)
             : sigma0_left_(sigma0_left), sigma0_right_(sigma0_right),
               groupCenters_(groupCenters), groupBoundaries_(groupBoundaries),
-              rng_(static_cast<uint64_t>(rank))
+              rng_(42)
         {}
 
         double getPlanckOpacity(const ComputationalCell3D &cell) const override
@@ -125,55 +109,16 @@ namespace
         std::vector<double> groupBoundaries_;
         mutable std::mt19937_64 rng_;
     };
-
-    struct CellData
-#ifdef RICH_MPI
-        : public Serializable
-#endif
-    {
-        double x;
-        double temperature;
-
-        CellData() : x(0), temperature(0) {}
-        CellData(double x_, double T_) : x(x_), temperature(T_) {}
-
-#ifdef RICH_MPI
-        size_t dump(Serializer *serializer) const override
-        {
-            size_t off = 0;
-            off += serializer->insert(this->x);
-            off += serializer->insert(this->temperature);
-            return off;
-        }
-
-        size_t load(const Serializer *serializer, std::size_t offset)
-        {
-            size_t rd = 0;
-            rd += serializer->extract(this->x, offset);
-            rd += serializer->extract(this->temperature, offset + rd);
-            return rd;
-        }
-#endif
-
-        bool operator<(const CellData &o) const { return x < o.x; }
-    };
 }
 
-int main(int argc, char *argv[])
+int main(int /*argc*/, char * /*argv*/[])
 {
-    MPI_Init(&argc, &argv);
-    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
-
-    int rank, ws;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &ws);
-
   try
   {
     constexpr size_t Nx = 256;
     constexpr size_t newPhotonsPerCell = 50;
     constexpr size_t maxPhotonsPerCell = 200;
-    constexpr bool   useRandomWalk = false;
+    constexpr bool   useRandomWalk = true;
 
     size_t const G = ENERGY_GROUPS_NUM;
     std::vector<double> energy_groups_center(G);
@@ -213,15 +158,10 @@ int main(int argc, char *argv[])
     Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx);
     Vector3D ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
 
-    std::vector<Vector3D> points;
-    if(rank == 0)
-        points = CartesianMesh(Nx, 1, 1, ll, ur);
-
-    points = MPI_Spread(points, 0, MPI_COMM_WORLD);
-    MPI_Barrier(MPI_COMM_WORLD);
+    std::vector<Vector3D> points = CartesianMesh(Nx, 1, 1, ll, ur);
 
     Voronoi3D tess(ll, ur);
-    tess.BuildParallel(points);
+    tess.Build(points);
 
     ComputationalCell3D init_cell;
     init_cell.density = 1.0;
@@ -256,7 +196,7 @@ int main(int argc, char *argv[])
 
     auto eosPtr = std::make_shared<IdealGas>(eos);
     auto opacityPtr = std::make_shared<DesmoreMCOpacity>(
-        sigma_0_left, sigma_0_right, energy_groups_center, energy_groups_boundary, rank);
+        sigma_0_left, sigma_0_right, energy_groups_center, energy_groups_boundary);
 
     constexpr bool withHydro = false;
     constexpr size_t boundaryPhotonsPerCell = 100;
@@ -284,23 +224,17 @@ int main(int argc, char *argv[])
     auto mcStep = std::make_shared<RadiationMCStep>(
         tess, cells, extensives, physics, popControl, boundaryCond,
         initialParticles, initialParticlesPerCell, withHydro
-#ifdef RICH_MPI
-        , RadiationMCStep::ManagerType::AUTO_RDMA
-#endif
     );
     sim.addPhysics(mcStep);
     sim.SetTimeStep(dt);
 
-    if(rank == 0)
-    {
-        std::cout << "Densmore 2012 heterogeneous step-opacity (MC regression)"
-                  << "\n  Nx=" << Nx << ", G=" << G
-                  << ", new/cell=" << newPhotonsPerCell
-                  << ", max/cell=" << maxPhotonsPerCell
-                  << "\n  dt=" << dt << " s, t_final=" << tf << " s"
-                  << ", iterations=" << iterations
-                  << std::endl;
-    }
+    std::cout << "Densmore 2012 heterogeneous step-opacity (serial MC + RW)"
+              << "\n  Nx=" << Nx << ", G=" << G
+              << ", new/cell=" << newPhotonsPerCell
+              << ", max/cell=" << maxPhotonsPerCell
+              << "\n  dt=" << dt << " s, t_final=" << tf << " s"
+              << ", iterations=" << iterations
+              << std::endl;
 
     double simTime = 0;
     auto startWall = std::chrono::high_resolution_clock::now();
@@ -318,7 +252,7 @@ int main(int argc, char *argv[])
         double fraction = static_cast<double>(i + 1) / iterations;
         double eta = (fraction > 0) ? elapsedWall * (1.0 - fraction) / fraction : 0;
 
-        if(rank == 0 && (i % 10 == 0 || i + 1 == iterations))
+        if(i % 10 == 0 || i + 1 == iterations)
         {
             int pct = static_cast<int>(fraction * 100);
             int etaMin = static_cast<int>(eta) / 60;
@@ -334,64 +268,37 @@ int main(int argc, char *argv[])
 
     auto endWall = std::chrono::high_resolution_clock::now();
     double wallSec = std::chrono::duration<double>(endWall - startWall).count();
-    if(rank == 0)
-        std::cout << "Total wall time: " << wallSec << "s" << std::endl;
+    std::cout << "Total wall time: " << wallSec << "s" << std::endl;
 
-    // --- Write final temperature profile ---
     size_t nPoints = tess.GetPointNo();
-    std::vector<CellData> cellData(nPoints);
+    std::string const caseDir = fs::path(__FILE__).parent_path().string();
+    std::string const profilePath = caseDir + "/desmore2012_mc_serial_profile.txt";
+    std::ofstream out(profilePath);
+    out << "# Densmore2012 serial MC+RW  t=" << simTime << "  Nx=" << Nx << "\n";
+    out << "# x(cm)  T(K)\n";
+
+    std::vector<std::pair<double, double>> cellData(nPoints);
     for(size_t i = 0; i < nPoints; i++)
-    {
-        cellData[i].x = tess.GetMeshPoint(i).x;
-        cellData[i].temperature = cells[i].temperature;
-    }
-#ifdef RICH_MPI
-    cellData = MPI_Gatherv_serializable(cellData, 0, MPI_COMM_WORLD);
-#endif
+        cellData[i] = {tess.GetMeshPoint(i).x, cells[i].temperature};
 
-    if(rank == 0)
-    {
-        std::sort(cellData.begin(), cellData.end());
-        std::string const caseDir = fs::path(__FILE__).parent_path().string();
-        std::string const profilePath = caseDir + "/desmore2012_mc_profile.txt";
-        std::ofstream out(profilePath);
-        out << "# Densmore2012 MC regression  t=" << simTime << "  Nx=" << Nx << "\n";
-        out << "# x(cm)  T(K)\n";
-
-        double prevX = -1;
-        double sumT = 0;
-        int count = 0;
-        for(size_t i = 0; i < cellData.size(); i++)
-        {
-            if(count > 0 && std::abs(cellData[i].x - prevX) > 1e-10)
-            {
-                out << prevX << " " << sumT / count << "\n";
-                sumT = 0;
-                count = 0;
-            }
-            prevX = cellData[i].x;
-            sumT += cellData[i].temperature;
-            count++;
-        }
-        if(count > 0)
-            out << prevX << " " << sumT / count << "\n";
-        out.close();
-        std::cout << "Wrote " << profilePath << std::endl;
-    }
+    std::sort(cellData.begin(), cellData.end());
+    for(auto const &[x, T] : cellData)
+        out << x << " " << T << "\n";
+    out.close();
+    std::cout << "Wrote " << profilePath << std::endl;
 
   }
   catch(const UniversalError &e)
   {
-      std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
+      std::cerr << "=== UniversalError ===" << std::endl;
       reportError(e);
-      MPI_Abort(MPI_COMM_WORLD, 1);
+      return 1;
   }
   catch(const std::exception &e)
   {
-      std::cerr << "=== std::exception on rank " << rank << ": " << e.what() << " ===" << std::endl;
-      MPI_Abort(MPI_COMM_WORLD, 1);
+      std::cerr << "=== std::exception: " << e.what() << " ===" << std::endl;
+      return 1;
   }
 
-    MPI_Finalize();
     return 0;
 }

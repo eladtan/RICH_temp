@@ -656,36 +656,43 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 
 
 def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
-    """Densmore 2012 heterogeneous MC: Tgas vs x compared to digitized Figure 4."""
-    case_dir = root / "regression_tests" / "cases" / "desmore2012_mc"
-    profile = case_dir / "desmore2012_mc_profile.txt"
-    ref_file = case_dir / "data" / "densmore2012_fig4_mc.csv"
+    """Densmore 2012 heterogeneous MC: both MPI (no RW) and serial (RW) vs reference."""
+    cases = root / "regression_tests" / "cases"
+    profile_mpi = cases / "desmore2012_mc" / "desmore2012_mc_profile.txt"
+    profile_serial = cases / "desmore2012_mc_serial" / "desmore2012_mc_serial_profile.txt"
+    ref_file = cases / "desmore2012_mc" / "data" / "densmore2012_fig4_mc.csv"
 
-    if not profile.exists():
-        print(f"  [desmore2012_mc] profile not found: {profile}")
+    if not profile_mpi.exists() and not profile_serial.exists():
+        print(f"  [desmore2012_mc] no profile found for either MPI or serial variant")
         return False
 
-    raw = np.loadtxt(str(profile))
-    if raw.ndim == 1:
-        raw = np.expand_dims(raw, axis=0)
-    x_sim = raw[:, 0]
-    T_sim_K = raw[:, 1]
-
     keV_K = 1.602176634e-9 / 1.380649e-16
-    T_sim_keV = T_sim_K / keV_K
 
     plt = _get_plt()
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(x_sim, T_sim_keV, "k.", markersize=2, label="RICH MC")
 
     if ref_file.exists():
         ref = np.loadtxt(str(ref_file), delimiter=",", comments="#")
-        ax.plot(ref[:, 0], ref[:, 1], "r-", linewidth=1.5,
-                label="Densmore 2012 Fig. 4 (MC)")
+        ax.plot(ref[:, 0], ref[:, 1], "b-", linewidth=1.5,
+                label="Densmore 2012 Fig.\u20094 (MC)")
+
+    if profile_mpi.exists():
+        raw = np.loadtxt(str(profile_mpi))
+        if raw.ndim == 1:
+            raw = np.expand_dims(raw, axis=0)
+        ax.plot(raw[:, 0], raw[:, 1] / keV_K, "ko", markersize=3,
+                markerfacecolor="none", label="RICH MC (MPI, no RW)")
+
+    if profile_serial.exists():
+        raw = np.loadtxt(str(profile_serial))
+        if raw.ndim == 1:
+            raw = np.expand_dims(raw, axis=0)
+        ax.plot(raw[:, 0], raw[:, 1] / keV_K, "rx", markersize=3,
+                label="RICH MC (serial, RW)")
 
     ax.set_xlabel("x [cm]")
     ax.set_ylabel("Material Temperature [keV]")
-    ax.set_title("Densmore 2012 Heterogeneous Step -- MC IMC")
+    ax.set_title("Densmore 2012 Heterogeneous Step-Opacity -- MC IMC")
     ax.set_xlim(0, 3)
     ax.set_ylim(0, 1)
     ax.legend()
@@ -970,6 +977,7 @@ ALL_PLOTTERS = {
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
     "desmore2012_mc": plot_desmore2012_mc,
+    "desmore2012_mc_serial": plot_desmore2012_mc,
     "yee_vortex_64": plot_yee_isentropic_vortex,
     "yee_vortex_128": plot_yee_isentropic_vortex,
     "rayleigh_taylor_mpi": plot_rayleigh_taylor,

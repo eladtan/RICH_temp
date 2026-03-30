@@ -20,6 +20,8 @@ slurm_job_name() {
     local n="$1"
     n="${n/eulerian_diffusion_freefree_multigroup_suite/edf_mg}"
     n="${n/eulerian_diffusion_freefree_suite/edf_gray}"
+    n="${n/desmore2012_mc_serial/dsm_ser}"
+    n="${n/desmore2012_mc/dsm_mpi}"
     n="${n/spherical_collapse_hires/sphc_hi}"
     n="${n/spherical_collapse/sphc}"
     n="${n/spherical_gauss_linear/sph_glin}"

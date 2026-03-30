@@ -207,7 +207,8 @@ The suite builds and validates these regression cases:
 | `marshak_wave_4` | serial | Marshak wave Problem 4 — divergent density rho=x^{-40/139}, stretched grid |
 | `gresho_euler` | serial | Gresho vortex with Eulerian (fixed) mesh, t_end=5 |
 | `gresho_lagrangian` | mpi | Gresho vortex with Lagrangian + RoundCells mesh, t_end=5 (Slurm, 8 tasks) |
-| `desmore2012_mc` | mpi | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup (Slurm, 32 tasks) |
+| `desmore2012_mc` | mpi | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup, no random walk (Slurm, 32 tasks) |
+| `desmore2012_mc_serial` | serial | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup, with random walk (serial) |
 | `yee_vortex_64` | mpi | Yee isentropic vortex 64x64, Lagrangian + RoundCells, t_end=10 (Slurm, 8 tasks) |
 | `yee_vortex_128` | mpi | Yee isentropic vortex 128x128, Lagrangian + RoundCells, t_end=10 (Slurm, 16 tasks) |
 | `cartesian_gauss_linear` | serial | Cartesian LinearGauss3D LSQ gradient verification (linear field, machine precision) |
@@ -228,7 +229,8 @@ Acceptance checks are physics-based:
 - **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 2.5% for density, gas temperature, and radiation temperature.
 - **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
 - **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
-- **Densmore 2012 MC**: Heterogeneous step-opacity slab (sigma_0=10 for x<2, sigma_0=1000 for x>=2) with Planck source at 1 keV. Monte Carlo IMC with multigroup opacities and random walk, 256 cells, 32 MPI ranks, run to t=1 ns. Gas temperature profile compared to digitized Figure 4 from Densmore et al. (2012). Require L1 error below 0.05 keV.
+- **Densmore 2012 MC (MPI, no RW)**: Heterogeneous step-opacity slab (sigma_0=10 for x<2, sigma_0=1000 for x>=2) with Planck source at 1 keV. Monte Carlo IMC with multigroup opacities, no random walk, 256 cells, 32 MPI ranks, run to t=1 ns. Gas temperature profile compared to digitized Figure 4 from Densmore et al. (2012). Require L1 error below 0.05 keV.
+- **Densmore 2012 MC (serial, RW)**: Same problem as above but serial with random walk enabled. Cross-validates the serial execution path and RW acceleration. Same L1 threshold.
 - **Yee isentropic vortex (64 / 128)**: stationary isentropic vortex (Yee et al. 1999) with beta=5, gamma=1.4, domain [-5,5]^2. Lagrangian + RoundCells mesh, run to t=10. Volume-weighted L1 density error vs analytical IC must be <= 0.05. Run at 64x64 and 128x128 to verify second-order convergence.
 - **Spherical collapse**: collapse a dense shell (0.9 < r < 1.0) on an Eulerian mesh built from replicated rounded sphere templates. Run until inward velocity at r=0.05 reaches 1. Require max angular scatter (std-dev/mean) of density and velocity across radial bins below 0.1.
 - **Spherical Gauss linear**: fill cells with fields linear in spherical coordinates (r, theta) and verify that the LSQ gradient in `SphericalLinearGauss3D` recovers them to machine precision. Scalar max relative error < 1e-8, velocity max relative error < 0.1.
@@ -378,6 +380,7 @@ Clean all saved regression logs and generated figures:
   - `regression_tests/cases/gresho_euler/gresho_check.stderr.log` (Gresho Euler check details)
   - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
   - `regression_tests/cases/desmore2012_mc/desmore2012_mc_check.stderr.log` (Densmore 2012 MC check details)
+  - `regression_tests/cases/desmore2012_mc_serial/desmore2012_mc_serial_check.stderr.log` (Densmore 2012 MC serial check details)
   - `regression_tests/cases/yee_vortex_64/vortex_check.stderr.log` (Yee vortex 64x64 check details)
   - `regression_tests/cases/yee_vortex_128/vortex_check.stderr.log` (Yee vortex 128x128 check details)
   - `regression_tests/cases/spherical_collapse/collapse_metrics.txt` (Spherical collapse symmetry metrics)
@@ -415,7 +418,7 @@ Available plots:
 | `marshak_wave_4` | Tgas and Trad vs x (divergent density, stretched grid) |
 | `gresho_euler` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
 | `gresho_lagrangian` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
-| `desmore2012_mc` | Gas temperature vs x, compared to Densmore 2012 Figure 4 reference |
+| `desmore2012_mc` + `desmore2012_mc_serial` | Gas temperature vs x: MPI no-RW (black), serial+RW (blue), and Densmore 2012 Figure 4 reference (red) |
 | `yee_vortex_64` / `yee_vortex_128` | Density field, pressure field, density vs r (both resolutions), L1 convergence log-log |
 | `spherical_collapse` | Radial density profile and angular scatter vs r |
 | `rayleigh_taylor_mpi` | Vertical kinetic energy vs time (log scale) with fitted growth rate; density slice in xz plane |

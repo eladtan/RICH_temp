@@ -495,7 +495,55 @@ Same as `gresho_euler`.
 
 ---
 
-## 15. yee_vortex_64 -- Yee Isentropic Vortex (64x64, Lagrangian)
+## 15. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
+
+**Tags:** `mpi`
+
+### Physics
+Densmore et al. (2012) heterogeneous step-opacity slab problem: optically thin (sigma_0=10) for x<2 cm, optically thick (sigma_0=1000) for x>=2 cm. Monte Carlo Implicit Monte Carlo (IMC) transport with 30-group frequency-dependent opacities. Random walk **enabled**. No hydrodynamics.
+
+### Configuration
+- **Mesh:** 256 Eulerian cells, x in [0, 3] cm
+- **EOS:** Ideal gas, gamma=1.4, Cv=1e15/T_keV
+- **Radiation:** 30-group IMC, Planck boundary at 1 keV (left), reflective (right)
+- **Runtime:** t_final=1 ns, dt=5e-12 s (200 steps)
+- **Execution:** MPI, 32 ranks, SLURM (bigrun, exclusive)
+- **Build flags:** `--energy_groups_num=30`
+
+### Output
+- `desmore2012_mc_profile.txt` -- (x, T_K) profile
+
+### Pass Criteria
+| Metric | Threshold | Override variable |
+|--------|-----------|-------------------|
+| Tgas L1 error (keV) | <= 0.05 | `DESMORE2012_MC_MAX_TGAS_L1` |
+
+---
+
+## 16. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
+
+**Tags:** `serial`
+
+### Physics
+Same problem as `desmore2012_mc` but run serially with random walk enabled. Validates the serial (non-MPI) execution path and random walk acceleration of the MC IMC solver.
+
+### Configuration
+- **Mesh:** 256 Eulerian cells, x in [0, 3] cm
+- **Radiation:** 30-group IMC with random walk, same opacities and boundary conditions
+- **Execution:** Serial (single core)
+- **Build flags:** `--energy_groups_num=30`
+
+### Output
+- `desmore2012_mc_serial_profile.txt` -- (x, T_K) profile
+
+### Pass Criteria
+| Metric | Threshold | Override variable |
+|--------|-----------|-------------------|
+| Tgas L1 error (keV) | <= 0.05 | `DESMORE2012_MC_SERIAL_MAX_TGAS_L1` |
+
+---
+
+## 17. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -544,7 +592,7 @@ The Python checker `regression_tests/lib/check_yee_vortex.py` computes the volum
 
 ---
 
-## 16. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
+## 18. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -579,7 +627,7 @@ Same as `yee_vortex_64`.
 
 ---
 
-## 17. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+## 19. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -604,7 +652,7 @@ Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D 
 
 ---
 
-## 18. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+## 20. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -628,7 +676,7 @@ Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mo
 
 ---
 
-## 19. spherical_collapse -- Spherical Collapse Symmetry
+## 21. spherical_collapse -- Spherical Collapse Symmetry
 
 **Tags:** `mpi`
 
@@ -660,7 +708,7 @@ A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Te
 
 ---
 
-## 20. spherical_collapse_hires -- Spherical Collapse (High Resolution)
+## 22. spherical_collapse_hires -- Spherical Collapse (High Resolution)
 
 **Tags:** `mpi`
 
@@ -693,7 +741,7 @@ High-resolution companion to `spherical_collapse`. Uses the same physics and set
 
 ---
 
-## 21. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+## 23. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
 
 **Tags:** `mpi`
 
@@ -730,7 +778,7 @@ The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the
 
 ---
 
-## 22. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+## 24. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -759,7 +807,7 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 23. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+## 25. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -806,6 +854,8 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
+| `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
 | `yee_vortex_128` | mpi | Isentropic vortex (128x128) | IC density comparison | L1 <= 0.05 |
 | `cartesian_gauss_linear` | serial | Cartesian interpolation | Exact face values | scalar error < 1e-6 |
