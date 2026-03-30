@@ -3,6 +3,7 @@
 #include "3D/radiation/RadiationIMC.hpp"
 #include "utils/rma/RMAFactory.hpp"
 #include <algorithm>
+#include <chrono>
 #include <limits>
 
 RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
@@ -80,6 +81,7 @@ double RadiationMCStep::suggestTimeStep(void) const
 void RadiationMCStep::step(double dt)
 {
     this->stepCounter++;
+    auto radiationStepStart = std::chrono::high_resolution_clock::now();
 
     size_t N = tess.GetPointNo();
 
@@ -90,6 +92,7 @@ void RadiationMCStep::step(double dt)
         old_temperature[i] = cells[i].temperature;
     }
 
+    auto preManagerStart = std::chrono::high_resolution_clock::now();
     if(this->withHydro)
     {
         // cells location might have changed because of hydro movements
@@ -100,12 +103,18 @@ void RadiationMCStep::step(double dt)
     {
         UpdateNewCells(this->tess, this->particles, this->cells);
     }
+    double preManagerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - preManagerStart).count();
+
+    auto managerStart = std::chrono::high_resolution_clock::now();
     this->particles = this->manager->step(this->particles, this->cells, dt);
+    double managerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStart).count();
 
     int rank = 0;
     #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif
+
+    auto postManagerStart = std::chrono::high_resolution_clock::now();
 
     double max_Erad = N > 0 ? *std::max_element(old_Erad.begin(), old_Erad.end()) : std::numeric_limits<double>::lowest();
     double max_temperature = N > 0 ? *std::max_element(old_temperature.begin(), old_temperature.end()) : std::numeric_limits<double>::lowest();
@@ -164,12 +173,29 @@ void RadiationMCStep::step(double dt)
             << " width " << tess.GetWidth(max_loc)
             << " fleck " << fleckFactor
             << " location " << tess.GetMeshPoint(max_loc) << std::endl;
+        std::cout<<cells[max_loc]<<std::endl;
         std::cout << "Next MC time step is " << dt * std::min(1.25, 0.15 / max_diff) << std::endl;
     }
     std::cout.flush();
     #ifdef RICH_MPI
         MPI_Barrier(MPI_COMM_WORLD);
     #endif // RICH_MPI
+
+    double postManagerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - postManagerStart).count();
+    double radiationStepTotal = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - radiationStepStart).count();
+
+    #ifdef RICH_MPI
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &preManagerTime, &preManagerTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &managerTime, &managerTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &postManagerTime, &postManagerTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &radiationStepTotal, &radiationStepTotal, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    #endif
+    if(rank == 0)
+    {
+        std::cout << "RadiationMCStep breakdown (max): preManager=" << preManagerTime
+                  << "s, manager=" << managerTime << "s, postManager=" << postManagerTime
+                  << "s, total=" << radiationStepTotal << "s" << std::endl;
+    }
 
     this->suggested_dt = dt * std::min(1.25, 0.15 / max_diff);
 }
