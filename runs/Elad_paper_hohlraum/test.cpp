@@ -64,6 +64,43 @@ namespace fs = std::filesystem;
  * Timestep:   dt = 1e-11 s,  run until t = 10 ns  (1000 steps)
  */
 
+ #ifdef RICH_MPI
+class HohlraumCostCalculator : public CostCalculator3D
+{
+public:
+    HohlraumCostCalculator(const std::shared_ptr<MonteCarloManager3D> &manager, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics)
+        : manager(manager), physics(physics)
+    {}
+
+    std::vector<double> CalculateCost(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells) const override
+    {
+        // const std::vector<double> &factorFlecks = physics->getFactorFleck();
+        // const std::vector<double> &planckOpacities = physics->getPlanckOpacities();
+        size_t N = tess.GetPointNo();
+        // weights.resize(N, 1.0);
+        // double weight = static_cast<double>(manager.GetStepCounter()) / N;
+        // for(size_t j = 0; j < N; j++)
+        // {
+        //     // weights[j] = std::max(1., planckOpacities[j] * tess.GetWidth(j) * (1 - factorFlecks[j]));
+        //     weights[j] = weight;
+        // }
+        std::vector<double> weights(N, 0.01);
+        const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
+        assert(counters.size() == N);
+
+        for(size_t j = 0; j < N; j++)
+        {
+            weights[j] = static_cast<double>(counters[j]);
+        }
+        return weights;
+    }
+
+private:
+    const std::shared_ptr<MonteCarloManager3D> manager;
+    const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> physics;
+};
+#endif // RICH_MPI
+
 static vector<Vector3D> RandCylindar(std::size_t PointNum, double Rin, double Rout, double Xmin, double Xmax)
 {
     typedef boost::mt19937_64 base_generator_type;
@@ -215,7 +252,7 @@ struct CellData : public Serializable
         return off;
     }
 
-    size_t load(const Serializer *serializer, std::size_t offset)
+    size_t load(const Serializer *serializer, std::size_t offset) override
     {
         size_t rd = 0;
         rd += serializer->extract(this->x, offset);
@@ -241,7 +278,9 @@ void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> 
         Vector3D p = tess.GetMeshPoint(i);
         double ri = mode2d ? std::abs(p.y) : std::sqrt(p.y * p.y + p.z * p.z);
         if(std::abs(ri - r_line) < r_tol)
+        {
             cellData.emplace_back(p.x, ri, cells[i].temperature);
+        }
     }
 
     cellData = MPI_Gatherv_serializable(cellData, 0, MPI_COMM_WORLD);
@@ -278,7 +317,6 @@ void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cel
 
 int main(int argc, char *argv[])
 {
-    vtune_stop();
     DISABLE_TIMERS();
 
     MPI_Init(&argc, &argv);
@@ -299,8 +337,8 @@ int main(int argc, char *argv[])
   try
   {
     double delta = std::stod(argv[1]);
-    size_t newPhotonsPerCell = 50;
-    size_t maxPhotonsPerCell = 20;
+    size_t newPhotonsPerCell = 10;
+    size_t minPhotonsPerCell = 15;
     bool mode2d = false;
     int resumeDump = -1;
 
@@ -324,9 +362,13 @@ int main(int argc, char *argv[])
             positionalArgs.push_back(arg);
     }
     if(positionalArgs.size() >= 1)
+    {
         newPhotonsPerCell = std::stoul(positionalArgs[0]);
+    }
     if(positionalArgs.size() >= 2)
-        maxPhotonsPerCell = std::stoul(positionalArgs[1]);
+    {
+        minPhotonsPerCell = std::stoul(positionalArgs[1]);
+    }
 
     const std::string outputDir = "/home/maorm/shared/Hohlraum/delta_" + std::to_string(delta) + "/size_" + std::to_string(ws);
     char prefixBuf[256];
@@ -346,8 +388,8 @@ int main(int argc, char *argv[])
     const double dt             = 1e-11;                                 // seconds
     const double t_final        = 10e-9;                                 // 10 ns
     const size_t iterations     = static_cast<size_t>(t_final / dt + 0.5);
-    constexpr size_t boundaryPhotonsPerCell = 100;
-    constexpr size_t dumpInterval = 10;
+    constexpr size_t boundaryPhotonsPerCell = 1000;
+    constexpr size_t dumpInterval = 25;
 
     // Domain: 3D revolves around x-axis; 2D is a thin slab at z=1
     // Pad the domain beyond the material boundaries so that no material
@@ -361,7 +403,7 @@ int main(int argc, char *argv[])
 
     // --- Equations of State ---
     IdealGas eosMaterial(1.5, 3e15 / units::kev_kelvin, 1, 0);
-    IdealGas eosVacuum(1.5, 1e5 / units::kev_kelvin, 1, 0);
+    IdealGas eosVacuum(1.5, 1e15 / units::kev_kelvin, 1, 0);
     std::vector<EquationOfState *> eosList = {&eosMaterial, &eosVacuum};
     MixedEOS eos(eosList);
 
@@ -424,7 +466,7 @@ int main(int argc, char *argv[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, params);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 5);
+        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, minPhotonsPerCell, 4);
 
     std::vector<Particle3D> initialParticles;
     auto mcStep = std::make_shared<RadiationMCStep>(
@@ -434,6 +476,9 @@ int main(int argc, char *argv[])
         #endif
     );
     sim.addPhysics(mcStep);
+    #ifdef RICH_MPI
+        mcStep->setCost(std::make_shared<HohlraumCostCalculator>(mcStep->getManager(), physics));
+    #endif // RICH_MPI
 
     sim.SetTimeStep(dt);
 
@@ -473,7 +518,7 @@ int main(int argc, char *argv[])
                   << ", t_final=" << t_final << " s"
                   << ", iterations=" << iterations
                   << ", new/cell=" << newPhotonsPerCell
-                  << ", max/cell=" << maxPhotonsPerCell
+                  << ", max/cell=" << minPhotonsPerCell
                   << ", output=" << prefix
                   << (resumeDump >= 0 ? ", resumed from dump " + std::to_string(resumeDump) : "")
                   << std::endl;
