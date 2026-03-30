@@ -1,7 +1,8 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
 
-Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) : tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID_(0)
+Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
+     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
 {
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
@@ -12,10 +13,14 @@ Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCel
         this->size = 1;
     #endif // RICH_MPI
 
-    if (new_start)
-        initializeCellIDs();
+    if(new_start)
+    {
+        this->initializeCellIDs();
+    }
     else
-        recomputeMaxID();
+    {
+        this->recomputeMaxID();
+    }
 
 #ifdef RICH_MPI
     ComputationalCell3D cdummy;
@@ -23,8 +28,10 @@ Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCel
 #endif
 
     size_t N = this->tess.GetPointNo();
-    for (size_t i = 0; i < N; ++i)
+    for(size_t i = 0; i < N; ++i)
+    {
         PrimitiveToConserved(this->cells[i], this->tess.GetVolume(i), this->extensives[i]);
+    }
 }
 
 void Simulation::initializeCellIDs(void)
@@ -40,10 +47,10 @@ void Simulation::initializeCellIDs(void)
 #endif
     for (size_t i = 0; i < N; ++i)
         this->cells[i].ID = nstart + i;
-    this->Max_ID_ = nstart + N - 1;
+    this->Max_ID = nstart + N - 1;
 #ifdef RICH_MPI
     for (int i = this->rank + 1; i < this->size; ++i)
-        this->Max_ID_ += nrecv[static_cast<size_t>(i)];
+        this->Max_ID += nrecv[static_cast<size_t>(i)];
 #endif
 }
 
@@ -54,20 +61,20 @@ void Simulation::recomputeMaxID(void)
     for (size_t i = 0; i < N; ++i)
         maxid = std::max(maxid, this->cells[i].ID);
 #ifdef RICH_MPI
-    MPI_Allreduce(&maxid, &this->Max_ID_, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&maxid, &this->Max_ID, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
 #else
     this->Max_ID_ = maxid;
 #endif
 }
 
-size_t& Simulation::GetMaxID(void)
+size_t &Simulation::GetMaxID(void)
 {
-    return this->Max_ID_;
+    return this->Max_ID;
 }
 
-const size_t& Simulation::GetMaxID(void) const
+const size_t &Simulation::GetMaxID(void) const
 {
-    return this->Max_ID_;
+    return this->Max_ID;
 }
 
 void Simulation::addPhysics(std::shared_ptr<PhysicsStep> physicsStep)
@@ -127,8 +134,19 @@ double Simulation::GetTimeStep(void) const
     }
 #endif // RICH_MPI
 
+double Simulation::GetWallclockTime(void) const
+{
+    return this->wallclockTime;
+}
+
+void Simulation::SetWallclockTime(double t)
+{
+    this->wallclockTime = t;
+}
+
 void Simulation::step(void)
 {
+    auto stepWallStart = std::chrono::high_resolution_clock::now();
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
     #ifdef RICH_MPI
@@ -205,7 +223,18 @@ void Simulation::step(void)
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
         std::cout.flush();
 
+        #ifdef RICH_MPI
+            MPI_Barrier(MPI_COMM_WORLD);
+        #endif // RICH_MPI
+        auto start = std::chrono::high_resolution_clock::now();
         physics->step(dt);
+        #ifdef RICH_MPI
+            MPI_Barrier(MPI_COMM_WORLD);
+        #endif // RICH_MPI
+        auto end = std::chrono::high_resolution_clock::now();
+        double physicsTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+
+        if(this->rank == 0) std::cout << "Physics " << name << " time: " << physicsTime << std::endl;
 
         double dt_suggest = physics->suggestTimeStep();
         next_time_step = std::min(next_time_step, dt_suggest);
@@ -233,7 +262,9 @@ void Simulation::step(void)
     this->tracker.updateTime(this->tsc->GetTimeStep());
 
     this->tsc->SetTimeStep(next_time_step);
-    // if(this->rank == 0) std::cout << "Time step will be " << this->tsc.GetTimeStep() << std::endl;
+
+    double stepWallSec = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - stepWallStart).count();
+    this->wallclockTime += stepWallSec;
 }
 
 #ifdef RICH_MPI

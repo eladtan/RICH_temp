@@ -68,6 +68,10 @@ public:
 
     void SetTime(double time);
 
+    double GetWallclockTime(void) const;
+
+    void SetWallclockTime(double t);
+
     #ifdef RICH_MPI
         void buildDataTransfer(void);
 
@@ -98,7 +102,8 @@ private:
     std::vector<Conserved3D> extensives;
     ProgressTracker tracker;
     EquationOfState &eos;
-    size_t Max_ID_;
+    size_t Max_ID;
+    double wallclockTime;
     std::shared_ptr<TimeStepFunction3D> tsc; // todo: why?
 
 #ifdef RICH_MPI

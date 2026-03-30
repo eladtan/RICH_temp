@@ -64,17 +64,25 @@ namespace
             reader.ReadElement("/TimeStep", dt);
             sim.SetTimeStep(dt);
         }
+
+        if(reader.Exists("/WallclockTime"))
+        {
+            double wct = 0;
+            reader.ReadElement("/WallclockTime", wct);
+            sim.SetWallclockTime(wct);
+        }
     }
 
     #ifdef RICH_MPI
-    void readLoadBalancers(const HDF5Reader &reader, Simulation &sim)
+    std::string readLoadBalancers(const HDF5Reader &reader, Simulation &sim)
     {
+        std::string currentLBName;
+
         if(!reader.Exists("/load_balance"))
         {
-            return;
+            return currentLBName;
         }
 
-        std::string currentLBName;
         if(reader.Exists("/load_balance/current"))
         {
             reader.ReadElement("/load_balance/current", currentLBName);
@@ -93,10 +101,7 @@ namespace
             sim.storeLoadBalance(name, lb);
         }
 
-        if(!currentLBName.empty())
-        {
-            sim.setCurrentLoadBalance(currentLBName);
-        }
+        return currentLBName;
     }
     #endif
 
@@ -186,9 +191,10 @@ void ReadSimulation(const std::string &filename,
     std::shared_ptr<HDF5Reader> dataReader;
 
     #ifdef RICH_MPI
+    std::string currentLBName;
     if(parallel)
     {
-        readLoadBalancers(globalReader, sim);
+        currentLBName = readLoadBalancers(globalReader, sim);
 
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -212,6 +218,23 @@ void ReadSimulation(const std::string &filename,
     }
 
     readTessellation(*dataReader, "/tess", sim);
+
+    #ifdef RICH_MPI
+    if(parallel && !currentLBName.empty())
+    {
+        auto loads = sim.GetLoads();
+        for(const auto &[name, lb] : loads)
+        {
+            if(name == currentLBName)
+            {
+                sim.getTessellation().PresetLoadBalancer(lb);
+                break;
+            }
+        }
+        sim.PresetLoadBalance(currentLBName);
+    }
+    #endif
+
     readPhysicsGroups(*dataReader, "", sim);
     readPrivateInfo(*dataReader, "", sim);
     sim.recomputeMaxID();

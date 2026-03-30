@@ -54,6 +54,7 @@ namespace
         writer.WriteElement("/Time", sim.GetTime());
         writer.WriteElement("/Cycle", sim.GetCycle());
         writer.WriteElement("/TimeStep", sim.GetTimeStep());
+        writer.WriteElement("/WallclockTime", sim.GetWallclockTime());
 
         #ifdef RICH_MPI
         {
