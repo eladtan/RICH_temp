@@ -186,7 +186,7 @@ All look-ups use bilinear interpolation in log-density / log-temperature space w
 For initial conditions, use `planck_integral` to compute the Planck spectrum in each group:
 
 ```cpp
-#include "source/Radiation/planck_integral/planck_integral.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 for (size_t g = 0; g < Ng; ++g)
     cell.Eg[g] = planck_integral::planck_energy_density_group_integral(
@@ -210,7 +210,7 @@ Monte Carlo boundary conditions are set via `BoundaryCondition` implementations.
 
 ## Planck Integral
 
-The Planck integral library (`source/Radiation/planck_integral/`) provides numerical evaluation of Planck function integrals needed for opacity weighting and energy group calculations.
+The Planck integral library (`source/Radiation/CMMC/src/planck_integral/`) provides numerical evaluation of Planck function integrals needed for opacity weighting and energy group calculations.
 
 ## Coupling to Hydrodynamics
 

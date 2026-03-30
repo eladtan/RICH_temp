@@ -41,7 +41,8 @@ public:
                         bool const compton_on,
                         bool const doppler_on,
                         double const minimum_temperature = -1,
-                        bool const protections_on = true);
+                        bool const protections_on = true,
+                        bool const cooling_time_limiter_on = false);
 
     /**
      * @brief Destructor for the MultigroupDiffusion class.
@@ -127,9 +128,11 @@ public:
 
     mutable std::vector<double> Gammas; // fleck_factor = 1.0 / (1.0 + c*dt*beta*Gamma)
     mutable std::vector<bool> use_n_zero; // flag for cells that need to use n=0 due to negative fleck factor
+    mutable std::vector<double> compton_limiter_scale_; // per-cell Compton coupling reduction factor from cooling-time limiter (1.0 = no reduction)
 
 private:
     bool const protections_on_; // flag whether to use Elad's protections on the amount of change allowed per time step (should not be on when running tests...)
+    bool const cooling_time_limiter_on_;
     mutable bool displayed_warning_; // flag whether to display the planck sum warning
 
     void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,

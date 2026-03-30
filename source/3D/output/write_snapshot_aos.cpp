@@ -1,5 +1,6 @@
 #include "newtonian/three_dimensional/hdsim_3d.hpp"
 #include "write3D.hpp"
+#include "misc/memory_debug.hpp"
 
 
 void WriteData3DHelper_AOS(HDF5Writer &file, const std::string &prefix, const Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells)
@@ -23,6 +24,7 @@ void WriteData3DHelper_AOS(HDF5Writer &file, const std::string &prefix, const Te
 #ifdef RICH_MPI
 void WriteSnapshot3DParallel_AOS(const Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells, std::string const& filename)
 {
+    MEMORY_DEBUG_PRINT("WriteSnapshot3DParallel_AOS: before");
     int rank = 0;
     int ws = 0; // MPI_COMM_WORLD size
 
@@ -63,6 +65,7 @@ void WriteSnapshot3DParallel_AOS(const Tessellation3D &tess, const std::vector<C
             globalFileWriter->AddExternalLink(rankFile, "/", "/rank" + std::to_string(_rank));
         }
     }
+    MEMORY_DEBUG_PRINT("WriteSnapshot3DParallel_AOS: after");
 }
 
 void WriteSnapshot3DParallel_AOS(HDSim3D const &sim, std::string const& filename)

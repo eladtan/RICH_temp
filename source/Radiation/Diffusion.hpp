@@ -144,7 +144,8 @@ public:
               std::vector<std::string> const zero_cells = std::vector<std::string> (), 
               bool const flux_limiter = true, 
               bool const hydro_on = true, 
-              bool const compton_on = false);
+              bool const compton_on = false,
+              bool const cooling_time_limiter_on = false);
     
     ~Diffusion() = default;
 
@@ -198,6 +199,7 @@ public:
     mutable std::vector<double> old_T;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
+    bool const cooling_time_limiter_on_;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

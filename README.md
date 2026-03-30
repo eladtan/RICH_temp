@@ -86,7 +86,7 @@ and then reload it on a new shell via:
 ml restore rich
 ```
 
-Saved `module` configurations can be find in:
+Saved `module` configurations can be found in:
 
 ```shell
 ls ~/.lmod.d
@@ -136,6 +136,7 @@ where `sedov2d_test` represents the subdirectory `runs/sedov2d_test` which conta
   - `--with_asan` - Enable AddressSanitizer.
   - `--energy_groups_num=<N>` - Override `ENERGY_GROUPS_NUM`.
   - `--mc_debug` - Enable Monte-Carlo debug build flag.
+  - `--memory_debug` - Enable memory-usage tracking. Prints per-cycle RSS (max-rank and sum-all in GB) to stderr at key simulation, hydro, radiation, and I/O points. Off by default.
   - `--debug_files=<path>` - Provide a mixed-debug file list for `DEBUG_FILES`.
   - `--build-subdir=<name>` - Build into `build/<config>/<name>/` instead of `build/<config>/`. Useful for keeping multiple test executables side by side without overwriting.
   - `--jobs=<N>` - Number of parallel make jobs (default: auto-detected via `nproc`).
@@ -206,6 +207,17 @@ The suite builds and validates these regression cases:
 | `marshak_wave_4` | serial | Marshak wave Problem 4 — divergent density rho=x^{-40/139}, stretched grid |
 | `gresho_euler` | serial | Gresho vortex with Eulerian (fixed) mesh, t_end=5 |
 | `gresho_lagrangian` | mpi | Gresho vortex with Lagrangian + RoundCells mesh, t_end=5 (Slurm, 8 tasks) |
+| `desmore2012_mc` | mpi | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup, no random walk (Slurm, 32 tasks) |
+| `desmore2012_mc_serial` | serial | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup, with random walk (serial) |
+| `yee_vortex_64` | mpi | Yee isentropic vortex 64x64, Lagrangian + RoundCells, t_end=10 (Slurm, 8 tasks) |
+| `yee_vortex_128` | mpi | Yee isentropic vortex 128x128, Lagrangian + RoundCells, t_end=10 (Slurm, 16 tasks) |
+| `cartesian_gauss_linear` | serial | Cartesian LinearGauss3D LSQ gradient verification (linear field, machine precision) |
+| `spherical_collapse` | mpi | Spherical shell collapse symmetry test, Eulerian mesh (Slurm, 64 tasks) |
+| `spherical_collapse_hires` | mpi | High-resolution spherical collapse (N_edge=82), Eulerian mesh (Slurm, 128 tasks) |
+| `spherical_gauss_linear` | serial | SphericalLinearGauss3D LSQ gradient verification (linear field, machine precision) |
+| `rayleigh_taylor_mpi` | mpi | 3D Rayleigh-Taylor instability, Lagrangian+RoundCells mesh (Slurm, 128 tasks) |
+| `eulerian_diffusion_freefree_suite` | mpi | 1D Eulerian gray free-free diffusion suite: 512, 512-limited, 32, and 32-limited runs with 4-way comparison figures |
+| `eulerian_diffusion_freefree_multigroup_suite` | mpi | 1D Eulerian multigroup (32-bin) free-free diffusion suite with Compton: 512, 512-limited, 32, and 32-limited runs with 4-way comparison figures |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -213,10 +225,18 @@ Acceptance checks are physics-based:
 - **Till**: require final gas and radiation temperatures to agree within **1%**.
 - **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
-- **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 1e-2`.
-- **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 50% for density, gas temperature, and radiation temperature.
+- **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 4e-2`.
+- **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 2.5% for density, gas temperature, and radiation temperature.
 - **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
 - **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
+- **Densmore 2012 MC (MPI, no RW)**: Heterogeneous step-opacity slab (sigma_0=10 for x<2, sigma_0=1000 for x>=2) with Planck source at 1 keV. Monte Carlo IMC with multigroup opacities, no random walk, 256 cells, 32 MPI ranks, run to t=1 ns. Gas temperature profile compared to digitized Figure 4 from Densmore et al. (2012). Require L1 error below 0.05 keV.
+- **Densmore 2012 MC (serial, RW)**: Same problem as above but serial with random walk enabled. Cross-validates the serial execution path and RW acceleration. Same L1 threshold.
+- **Yee isentropic vortex (64 / 128)**: stationary isentropic vortex (Yee et al. 1999) with beta=5, gamma=1.4, domain [-5,5]^2. Lagrangian + RoundCells mesh, run to t=10. Volume-weighted L1 density error vs analytical IC must be <= 0.05. Run at 64x64 and 128x128 to verify second-order convergence.
+- **Spherical collapse**: collapse a dense shell (0.9 < r < 1.0) on an Eulerian mesh built from replicated rounded sphere templates. Run until inward velocity at r=0.05 reaches 1. Require max angular scatter (std-dev/mean) of density and velocity across radial bins below 0.1.
+- **Spherical Gauss linear**: fill cells with fields linear in spherical coordinates (r, theta) and verify that the LSQ gradient in `SphericalLinearGauss3D` recovers them to machine precision. Scalar max relative error < 1e-8, velocity max relative error < 0.1.
+- **Rayleigh-Taylor**: 3D RT instability with ~1e6 cells, heavy-over-light density stratification with constant gravity. Flat interface with velocity perturbation in vz (amplitude 0.03, Gaussian-localised). Fit the exponential growth rate of vertical kinetic energy in the t=2 to t=3 window and require it to be within 25% of the analytical value sigma = sqrt(A*g*k).
+- **Eulerian free-free diffusion suite**: run all four configured variants (`512`, `512-limited`, `32`, `32-limited`) and require fresh `temperature_profile.txt` outputs for each plus 4-way comparison figures (`Tgas`, `Trad`, `density`, `vx`) in `regression_tests/cases/eulerian_diffusion_freefree_compare/`.
+- **Eulerian multigroup free-free diffusion suite**: run all four configured variants (`512`, `512-limited`, `32`, `32-limited`) with `ENERGY_GROUPS_NUM=32`, free-free multigroup opacity, and Compton enabled; require fresh `temperature_profile.txt` outputs for each plus 4-way comparison figures (`Tgas`, `Trad`, `density`, `vx`) in `regression_tests/cases/eulerian_diffusion_freefree_multigroup_compare/`.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
@@ -227,16 +247,21 @@ You can tune tolerances with environment variables:
 - `MACH2_MAX_DENSITY_REL_L1`, `MACH2_MAX_TEMPERATURE_REL_L1`
 - `MARSHAK_MAX_TGAS_REL_L1`, `MARSHAK_MAX_TRAD_REL_L1`
 - `GRESHO_EULER_MAX_L1`, `GRESHO_LAGRANGIAN_MAX_L1`
+- `DESMORE2012_MC_MAX_TGAS_L1`
+- `YEE_VORTEX_MAX_DENSITY_L1`
+- `COLLAPSE_MAX_DENSITY_SCATTER`, `COLLAPSE_MAX_VELOCITY_SCATTER`
+- `RT_MAX_GROWTH_RATE_REL_ERROR`
 
 ### Parallel execution
 
 Tests are built and run in a **pipelined** fashion:
 
 1. Up to **4 tests build concurrently**, each in its own build subdirectory (`build/<config>/<test_id>/`) so executables don't overwrite each other. Available CPU cores are split evenly across concurrent builds (e.g. on a 64-core machine, each build gets `make -j16`).
-2. As soon as a test finishes building, it **immediately starts running** while remaining tests continue to build. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`).
+2. As soon as a test finishes building, it **immediately starts running** while remaining tests continue to build. Serial tests run directly; MPI tests are submitted via Slurm (`sbatch --wait`) by default, or run locally via `mpirun` when `--local` is passed.
 3. After all tests finish, results are checked and a summary table is printed.
 
 Use `--nproc <N>` to override the auto-detected core count (e.g. to limit resource usage on a shared machine).
+Use `--partition <name>` to override the SLURM partition for all MPI tests, or `--local` to bypass SLURM entirely and run MPI tests via direct `mpirun`.
 
 Progress is printed in real time, showing which test is compiling, running, and its final pass/fail status.
 
@@ -253,6 +278,12 @@ Use `--mode` to run only serial or only MPI tests:
 
 # Run all MPI tests with a specific config
 ./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+
+# Run MPI tests on a different SLURM partition
+./regression_tests/run_all.sh --mode mpi --partition short
+
+# Run MPI tests locally (no SLURM)
+./regression_tests/run_all.sh --mode mpi --local
 
 # Run all tests (default, equivalent to --mode all)
 ./regression_tests/run_all.sh
@@ -284,14 +315,17 @@ case the same config is used for both passes.
   --verbose
 ```
 
-- `--mode <serial|mpi|all>`: filter tests by tag (default: `all`).
+- `--mode <serial|mpi|all|serial_then_mpi>`: filter tests by tag (default: `all`).
   - `serial`: default config `gnuRelease`.
   - `mpi`: default config `gnuReleaseMPI`.
   - `all`: default config `gnuReleaseMPI`.
+  - `serial_then_mpi`: runs serial tests first (`gnuRelease`), then MPI tests (`gnuReleaseMPI`).
 - `--config <name>`: build configuration (overrides the mode default).
-- `--mpi-np <N>`: MPI ranks for the Sedov run (default: `4`).
+- `--mpi-np <N>`: MPI ranks for MPI tests (default: `4`; individual tests may override).
+- `--partition <name>`: override the SLURM partition for all MPI tests (default per-test, usually `bigrun`).
+- `--local`: run MPI tests locally via `mpirun` instead of submitting through SLURM. Useful for machines without a SLURM scheduler or for quick local debugging.
 - `--nproc <N>`: override auto-detected core count for parallel builds (default: `$(nproc)`).
-- `--clean-results`: remove `regression_results/` and exit.
+- `--clean-results`: remove `regression_results/` and generated figure files under `regression_tests/`, then exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
 - `--verbose`: stream run output to terminal while also writing logs.
 
@@ -316,7 +350,7 @@ You can combine with `--mode`, `--config`, `--verbose`, and `--keep-artifacts`. 
 ./regression_tests/run_all.sh --test sod_1d --config gnuDebugMPI --verbose
 ```
 
-Clean all saved regression logs:
+Clean all saved regression logs and generated figures:
 
 ```shell
 ./regression_tests/run_all.sh --clean-results
@@ -345,6 +379,14 @@ Clean all saved regression logs:
   - `regression_tests/cases/marshak_wave_*/marshak_check.stderr.log` (Marshak wave check details)
   - `regression_tests/cases/gresho_euler/gresho_check.stderr.log` (Gresho Euler check details)
   - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
+  - `regression_tests/cases/desmore2012_mc/desmore2012_mc_check.stderr.log` (Densmore 2012 MC check details)
+  - `regression_tests/cases/desmore2012_mc_serial/desmore2012_mc_serial_check.stderr.log` (Densmore 2012 MC serial check details)
+  - `regression_tests/cases/yee_vortex_64/vortex_check.stderr.log` (Yee vortex 64x64 check details)
+  - `regression_tests/cases/yee_vortex_128/vortex_check.stderr.log` (Yee vortex 128x128 check details)
+  - `regression_tests/cases/spherical_collapse/collapse_metrics.txt` (Spherical collapse symmetry metrics)
+  - `regression_tests/cases/rayleigh_taylor_mpi/rt_check.stderr.log` (Rayleigh-Taylor growth rate check details)
+  - `regression_tests/cases/eulerian_diffusion_freefree_compare/run.stderr.log` (free-free suite runner errors)
+  - `regression_tests/cases/eulerian_diffusion_freefree_multigroup_compare/run.stderr.log` (multigroup free-free suite runner errors)
 
 
 ### Plotting regression results
@@ -376,6 +418,12 @@ Available plots:
 | `marshak_wave_4` | Tgas and Trad vs x (divergent density, stretched grid) |
 | `gresho_euler` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
 | `gresho_lagrangian` | Pressure field, azimuthal velocity field, v_theta(r) vs IC |
+| `desmore2012_mc` + `desmore2012_mc_serial` | Gas temperature vs x: MPI no-RW (black), serial+RW (blue), and Densmore 2012 Figure 4 reference (red) |
+| `yee_vortex_64` / `yee_vortex_128` | Density field, pressure field, density vs r (both resolutions), L1 convergence log-log |
+| `spherical_collapse` | Radial density profile and angular scatter vs r |
+| `rayleigh_taylor_mpi` | Vertical kinetic energy vs time (log scale) with fitted growth rate; density slice in xz plane |
+| `eulerian_diffusion_freefree_suite` | 4-way overlays for `Tgas`, `Trad`, density, and `vx` (512 / 512-limited / 32 / 32-limited) |
+| `eulerian_diffusion_freefree_multigroup_suite` | 4-way overlays for `Tgas`, `Trad`, density, and `vx` (512 / 512-limited / 32 / 32-limited, 32 energy bins with Compton) |
 
 Options:
 

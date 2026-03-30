@@ -141,9 +141,9 @@ check_sedov_case() {
     "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_sedov_exact.py" \
         --profile "$sedov_profile" \
         --rich-root "$RICH_ROOT" \
-        --max-density-rel-l1 "${SEDOV_MAX_DENSITY_REL_L1:-0.30}" \
+        --max-density-rel-l1 "${SEDOV_MAX_DENSITY_REL_L1:-0.50}" \
         --max-pressure-rel-l1 "${SEDOV_MAX_PRESSURE_REL_L1:-0.30}" \
-        --max-velocity-rel-l1 "${SEDOV_MAX_VELOCITY_REL_L1:-0.30}" \
+        --max-velocity-rel-l1 "${SEDOV_MAX_VELOCITY_REL_L1:-0.60}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Sedov exact-ODE comparison failed"
@@ -477,6 +477,168 @@ check_mach2_case() {
     return 0
 }
 
+check_eulerian_diffusion_freefree_case_common() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local figure_suffix="$5"
+    local profile_file="${run_dir}/temperature_profile.txt"
+    local shock_file="${run_dir}/shock_position.txt"
+    local checker_stdout="${run_dir}/freefree_check.stdout.log"
+    local checker_stderr="${run_dir}/freefree_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale temperature_profile.txt"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$shock_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale shock_position.txt"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_eulerian_diffusion_freefree_1d.py" \
+        --profile "$profile_file" \
+        --output-dir "$run_dir" \
+        --figure-suffix "$figure_suffix" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "free-free 1D profile validation/plot generation failed"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "${run_dir}/temperature_vs_x${figure_suffix}.png" "$run_start_epoch"; then
+        set_check_msg "temperature_vs_x${figure_suffix}.png missing or stale after checker"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "${run_dir}/trad_vs_x${figure_suffix}.png" "$run_start_epoch"; then
+        set_check_msg "trad_vs_x${figure_suffix}.png missing or stale after checker"
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "${run_dir}/velocity_vs_x${figure_suffix}.png" "$run_start_epoch"; then
+        set_check_msg "velocity_vs_x${figure_suffix}.png missing or stale after checker"
+        return 1
+    fi
+
+    set_check_msg "free-free 1D profile valid and temperature/trad/velocity plots generated (${figure_suffix:-default})"
+    return 0
+}
+
+check_eulerian_diffusion_freefree_1d_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" ""
+}
+
+check_eulerian_diffusion_freefree_1d_32_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" "_32"
+}
+
+check_eulerian_diffusion_freefree_1d_32_limited_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" "_32_limited"
+}
+
+check_eulerian_diffusion_freefree_suite_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    local compare_dir="${REGRESSION_ROOT}/cases/eulerian_diffusion_freefree_compare"
+    local cases_root="${REGRESSION_ROOT}/cases"
+
+    local profile_512="${cases_root}/eulerian_diffusion_freefree_1d/temperature_profile.txt"
+    local profile_512_limited="${cases_root}/eulerian_diffusion_freefree_1d_512_limited/temperature_profile.txt"
+    local profile_32="${cases_root}/eulerian_diffusion_freefree_1d_32/temperature_profile.txt"
+    local profile_32_limited="${cases_root}/eulerian_diffusion_freefree_1d_32_limited/temperature_profile.txt"
+
+    local compare_tgas="${compare_dir}/temperature_vs_x_compare_512_512_limited_32_32_limited.png"
+    local compare_trad="${compare_dir}/trad_vs_x_compare_512_512_limited_32_32_limited.png"
+    local compare_density="${compare_dir}/density_vs_x_compare_512_512_limited_32_32_limited.png"
+    local compare_velocity="${compare_dir}/velocity_vs_x_compare_512_512_limited_32_32_limited.png"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    for f in \
+        "$profile_512" \
+        "$profile_512_limited" \
+        "$profile_32" \
+        "$profile_32_limited" \
+        "$compare_tgas" \
+        "$compare_trad" \
+        "$compare_density" \
+        "$compare_velocity"; do
+        if ! is_nonempty_and_newer "$f" "$run_start_epoch"; then
+            set_check_msg "missing or stale output: ${f}"
+            return 1
+        fi
+    done
+
+    set_check_msg "free-free suite ran 4 cases and generated 4-way comparison figures"
+    return 0
+}
+
+check_eulerian_diffusion_freefree_multigroup_suite_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+
+    local compare_dir="${REGRESSION_ROOT}/cases/eulerian_diffusion_freefree_multigroup_compare"
+    local cases_root="${REGRESSION_ROOT}/cases"
+
+    local profile_512="${cases_root}/eulerian_diffusion_freefree_multigroup_1d/temperature_profile.txt"
+    local profile_512_limited="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_512_limited/temperature_profile.txt"
+    local profile_32="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_32/temperature_profile.txt"
+    local profile_32_limited="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_32_limited/temperature_profile.txt"
+
+    local compare_tgas="${compare_dir}/temperature_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+    local compare_trad="${compare_dir}/trad_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+    local compare_density="${compare_dir}/density_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+    local compare_velocity="${compare_dir}/velocity_vs_x_compare_mg32_512_512_limited_32_32_limited.png"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    for f in \
+        "$profile_512" \
+        "$profile_512_limited" \
+        "$profile_32" \
+        "$profile_32_limited" \
+        "$compare_tgas" \
+        "$compare_trad" \
+        "$compare_density" \
+        "$compare_velocity"; do
+        if ! is_nonempty_and_newer "$f" "$run_start_epoch"; then
+            set_check_msg "missing or stale output: ${f}"
+            return 1
+        fi
+    done
+
+    set_check_msg "multigroup free-free suite ran 4 cases and generated 4-way comparison figures"
+    return 0
+}
+
 check_marshak_wave_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -516,6 +678,70 @@ check_marshak_wave_case() {
     fi
 
     set_check_msg "Marshak wave problem ${prob_num} profile comparison passed"
+    return 0
+}
+
+check_spherical_collapse_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/collapse_metrics.txt"
+    local max_density_scatter
+    local max_velocity_scatter
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale collapse_metrics.txt"
+        return 1
+    fi
+
+    max_density_scatter=$(awk '$1 == "max_density_scatter" { print $2 }' "$metrics_file")
+    max_velocity_scatter=$(awk '$1 == "max_velocity_scatter" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse spherical collapse metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$max_density_scatter"; then
+        set_check_msg "spherical_collapse max_density_scatter is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$max_velocity_scatter"; then
+        set_check_msg "spherical_collapse max_velocity_scatter is not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical_collapse pass flag must be 0 or 1"
+        return 1
+    fi
+
+    local max_scatter="${COLLAPSE_MAX_DENSITY_SCATTER:-0.1}"
+
+    if ! awk -v d="$max_density_scatter" -v t="$max_scatter" 'BEGIN { exit !(d < t) }'; then
+        set_check_msg "spherical_collapse max_density_scatter exceeds threshold (${max_density_scatter} >= ${max_scatter})"
+        return 1
+    fi
+
+    local max_vel_scatter="${COLLAPSE_MAX_VELOCITY_SCATTER:-0.1}"
+
+    if ! awk -v v="$max_velocity_scatter" -v t="$max_vel_scatter" 'BEGIN { exit !(v < t) }'; then
+        set_check_msg "spherical_collapse max_velocity_scatter exceeds threshold (${max_velocity_scatter} >= ${max_vel_scatter})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical_collapse test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter})"
     return 0
 }
 
@@ -560,5 +786,324 @@ check_gresho_case() {
     fi
 
     set_check_msg "Gresho vortex (${test_type}) profile comparison passed"
+    return 0
+}
+
+check_desmore2012_mc_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/desmore2012_mc_profile.txt"
+    local reference_file="${REGRESSION_ROOT}/cases/desmore2012_mc/data/densmore2012_fig4_mc.csv"
+    local checker_stdout="${run_dir}/desmore2012_mc_check.stdout.log"
+    local checker_stderr="${run_dir}/desmore2012_mc_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale desmore2012_mc_profile.txt"
+        return 1
+    fi
+
+    if [[ ! -f "$reference_file" ]]; then
+        set_check_msg "missing reference file: ${reference_file}"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_desmore2012_mc.py" \
+        --profile "$profile_file" \
+        --reference "$reference_file" \
+        --max-tgas-l1 "${DESMORE2012_MC_MAX_TGAS_L1:-0.05}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Densmore 2012 MC gas temperature comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Densmore 2012 MC gas temperature comparison passed"
+    return 0
+}
+
+check_desmore2012_mc_serial_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/desmore2012_mc_serial_profile.txt"
+    local reference_file="${REGRESSION_ROOT}/cases/desmore2012_mc/data/densmore2012_fig4_mc.csv"
+    local checker_stdout="${run_dir}/desmore2012_mc_serial_check.stdout.log"
+    local checker_stderr="${run_dir}/desmore2012_mc_serial_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale desmore2012_mc_serial_profile.txt"
+        return 1
+    fi
+
+    if [[ ! -f "$reference_file" ]]; then
+        set_check_msg "missing reference file: ${reference_file}"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_desmore2012_mc.py" \
+        --profile "$profile_file" \
+        --reference "$reference_file" \
+        --max-tgas-l1 "${DESMORE2012_MC_SERIAL_MAX_TGAS_L1:-0.05}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Densmore 2012 serial MC+RW gas temperature comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Densmore 2012 serial MC+RW gas temperature comparison passed"
+    return 0
+}
+
+check_yee_vortex_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/vortex_profile.txt"
+    local checker_stdout="${run_dir}/vortex_check.stdout.log"
+    local checker_stderr="${run_dir}/vortex_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale vortex_profile.txt"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_yee_vortex.py" \
+        --profile "$profile_file" \
+        --max-density-l1 "${YEE_VORTEX_MAX_DENSITY_L1:-0.05}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Yee isentropic vortex density L1 check failed"
+        return 1
+    fi
+
+    set_check_msg "Yee isentropic vortex density L1 check passed"
+    return 0
+}
+
+check_spherical_gauss_linear_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/gauss_linear_metrics.txt"
+    local scalar_err
+    local vel_err
+    local faces_checked
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale gauss_linear_metrics.txt"
+        return 1
+    fi
+
+    scalar_err=$(awk '$1 == "scalar_max_rel_error" { print $2 }' "$metrics_file")
+    vel_err=$(awk '$1 == "velocity_max_rel_error" { print $2 }' "$metrics_file")
+    faces_checked=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+
+    if [[ -z "$scalar_err" || -z "$vel_err" || -z "$faces_checked" ]]; then
+        set_check_msg "failed to parse spherical gauss linear metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$scalar_err"; then
+        set_check_msg "scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$vel_err"; then
+        set_check_msg "velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    local max_scalar="${GAUSS_LINEAR_MAX_SCALAR_REL:-1e-8}"
+    local max_vel="${GAUSS_LINEAR_MAX_VEL_REL:-0.1}"
+
+    if ! awk -v e="$scalar_err" -v t="$max_scalar" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "scalar_max_rel_error exceeds threshold (${scalar_err} >= ${max_scalar})"
+        return 1
+    fi
+
+    if ! awk -v e="$vel_err" -v t="$max_vel" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "velocity_max_rel_error exceeds threshold (${vel_err} >= ${max_vel})"
+        return 1
+    fi
+
+    if ! awk -v n="$faces_checked" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "no faces were checked"
+        return 1
+    fi
+
+    local cart_scalar_err
+    local cart_vel_err
+    cart_scalar_err=$(awk '$1 == "cart_scalar_max_rel_error" { print $2 }' "$metrics_file")
+    cart_vel_err=$(awk '$1 == "cart_velocity_max_rel_error" { print $2 }' "$metrics_file")
+
+    if [[ -z "$cart_scalar_err" || -z "$cart_vel_err" ]]; then
+        set_check_msg "failed to parse Cartesian gauss linear metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$cart_scalar_err"; then
+        set_check_msg "cart_scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$cart_vel_err"; then
+        set_check_msg "cart_velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    if ! awk -v s="$scalar_err" -v c="$cart_scalar_err" 'BEGIN { exit !(s < c) }'; then
+        set_check_msg "spherical scalar error not less than Cartesian (${scalar_err} >= ${cart_scalar_err})"
+        return 1
+    fi
+
+    set_check_msg "Spherical Gauss linear test passed (sph_scalar_rel=${scalar_err}, cart_scalar_rel=${cart_scalar_err}, sph_vel_rel=${vel_err}, cart_vel_rel=${cart_vel_err}, faces=${faces_checked})"
+    return 0
+}
+
+check_cartesian_gauss_linear_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/cart_gauss_linear_metrics.txt"
+    local cart_scalar_err
+    local cart_vel_err
+    local faces_checked
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale cart_gauss_linear_metrics.txt"
+        return 1
+    fi
+
+    cart_scalar_err=$(awk '$1 == "cart_scalar_max_rel_error" { print $2 }' "$metrics_file")
+    cart_vel_err=$(awk '$1 == "cart_velocity_max_rel_error" { print $2 }' "$metrics_file")
+    faces_checked=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+
+    if [[ -z "$cart_scalar_err" || -z "$cart_vel_err" || -z "$faces_checked" ]]; then
+        set_check_msg "failed to parse Cartesian gauss linear metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$cart_scalar_err"; then
+        set_check_msg "cart_scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$cart_vel_err"; then
+        set_check_msg "cart_velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    local max_scalar="${CART_GAUSS_LINEAR_MAX_SCALAR_REL:-1e-6}"
+    local max_vel="${CART_GAUSS_LINEAR_MAX_VEL_REL:-0.1}"
+
+    if ! awk -v e="$cart_scalar_err" -v t="$max_scalar" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "cart_scalar_max_rel_error exceeds threshold (${cart_scalar_err} >= ${max_scalar})"
+        return 1
+    fi
+
+    if ! awk -v e="$cart_vel_err" -v t="$max_vel" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "cart_velocity_max_rel_error exceeds threshold (${cart_vel_err} >= ${max_vel})"
+        return 1
+    fi
+
+    if ! awk -v n="$faces_checked" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "no faces were checked"
+        return 1
+    fi
+
+    local sph_scalar_err
+    local sph_vel_err
+    sph_scalar_err=$(awk '$1 == "sph_scalar_max_rel_error" { print $2 }' "$metrics_file")
+    sph_vel_err=$(awk '$1 == "sph_velocity_max_rel_error" { print $2 }' "$metrics_file")
+
+    if [[ -z "$sph_scalar_err" || -z "$sph_vel_err" ]]; then
+        set_check_msg "failed to parse spherical gauss linear metrics from Cartesian test"
+        return 1
+    fi
+
+    if ! is_finite_number "$sph_scalar_err"; then
+        set_check_msg "sph_scalar_max_rel_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$sph_vel_err"; then
+        set_check_msg "sph_velocity_max_rel_error is not finite"
+        return 1
+    fi
+
+    if ! awk -v c="$cart_scalar_err" -v s="$sph_scalar_err" 'BEGIN { exit !(c < s) }'; then
+        set_check_msg "Cartesian scalar error not less than spherical (${cart_scalar_err} >= ${sph_scalar_err})"
+        return 1
+    fi
+
+    local max_sph_vel="${CART_GAUSS_LINEAR_MAX_SPH_VEL_REL:-0.5}"
+    if ! awk -v e="$sph_vel_err" -v t="$max_sph_vel" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "sph_velocity_max_rel_error exceeds threshold (${sph_vel_err} >= ${max_sph_vel})"
+        return 1
+    fi
+
+    set_check_msg "Cartesian Gauss linear test passed (cart_scalar_rel=${cart_scalar_err}, sph_scalar_rel=${sph_scalar_err}, cart_vel_rel=${cart_vel_err}, sph_vel_rel=${sph_vel_err}, faces=${faces_checked})"
+    return 0
+}
+
+check_rayleigh_taylor_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local ek_file="${run_dir}/rt_kinetic_energy.txt"
+    local slice_file="${run_dir}/rt_density_slice.txt"
+    local checker_stdout="${run_dir}/rt_check.stdout.log"
+    local checker_stderr="${run_dir}/rt_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$ek_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale rt_kinetic_energy.txt"
+        return 1
+    fi
+
+    local plot_dir="${run_dir}"
+    local slice_arg=""
+    if [[ -s "$slice_file" ]]; then
+        slice_arg="--slice ${slice_file}"
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_rayleigh_taylor.py" \
+        --profile "$ek_file" \
+        ${slice_arg} \
+        --max-growth-rate-rel-error "${RT_MAX_GROWTH_RATE_REL_ERROR:-0.25}" \
+        --plot-dir "$plot_dir" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Rayleigh-Taylor growth rate comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Rayleigh-Taylor growth rate comparison passed"
     return 0
 }

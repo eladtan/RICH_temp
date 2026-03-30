@@ -11,3 +11,7 @@ foreach(dir IN LISTS ld_path_list)
         endif()
     endif()
 endforeach()
+
+if(NOT PYBIND11_DIRECTORY)
+    message(STATUS "No pybind11 directory found; pybind11 support will be disabled")
+endif()

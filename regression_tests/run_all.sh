@@ -14,6 +14,24 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHECKS_SCRIPT="${ROOT_DIR}/regression_tests/lib/regression_checks.sh"
 TESTS_DIR="${ROOT_DIR}/regression_tests/tests"
 
+# Shorten a test_id to at most 8 characters for SLURM --job-name,
+# keeping the distinguishing part visible in default squeue output.
+slurm_job_name() {
+    local n="$1"
+    n="${n/eulerian_diffusion_freefree_multigroup_suite/edf_mg}"
+    n="${n/eulerian_diffusion_freefree_suite/edf_gray}"
+    n="${n/desmore2012_mc_serial/dsm_ser}"
+    n="${n/desmore2012_mc/dsm_mpi}"
+    n="${n/spherical_collapse_hires/sphc_hi}"
+    n="${n/spherical_collapse/sphc}"
+    n="${n/spherical_gauss_linear/sph_glin}"
+    n="${n/cartesian_gauss_linear/crt_glin}"
+    n="${n/rayleigh_taylor_mpi/rt_mpi}"
+    n="${n/marshak_wave_/mw}"
+    n="${n/yee_vortex_/yv}"
+    printf '%s' "${n:0:8}"
+}
+
 if [[ ! -f "${CHECKS_SCRIPT}" ]]; then
     echo "Missing checks script: ${CHECKS_SCRIPT}" >&2
     exit 2
@@ -34,6 +52,8 @@ TEST_FILTER=""
 CLEAN_RESULTS=0
 MODE="all"
 NPROC_OVERRIDE=""
+SLURM_PARTITION_OVERRIDE=""
+RUN_LOCAL=0
 
 ARTIFACT_ROOT="${ROOT_DIR}/regression_results"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -66,7 +86,9 @@ Options:
   --config <name>          Build configuration (auto-derived from --mode if omitted)
   --mpi-np <N>             MPI ranks for sedov_3d test (default: ${MPI_NP})
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
-  --clean-results          Delete regression_results directory and exit
+  --partition <name>       Override SLURM partition for all MPI tests (default per-test, usually bigrun)
+  --local                  Run MPI tests locally via mpirun instead of submitting through SLURM
+  --clean-results          Delete regression_results, generated figures, and run artifacts from cases, then exit
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
   --verbose                Stream run output to terminal as well
@@ -81,6 +103,8 @@ Modes:
 Examples:
   ./regression_tests/run_all.sh --mode serial
   ./regression_tests/run_all.sh --mode mpi --config intelReleaseMPI
+  ./regression_tests/run_all.sh --mode mpi --partition short
+  ./regression_tests/run_all.sh --mode mpi --local
   ./regression_tests/run_all.sh --mode serial_then_mpi
   ./regression_tests/run_all.sh --test sod_1d --config gnuRelease
   ./regression_tests/run_all.sh --clean-results
@@ -109,6 +133,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean-results)
             CLEAN_RESULTS=1
+            shift
+            ;;
+        --partition)
+            SLURM_PARTITION_OVERRIDE="${2:-}"
+            shift 2
+            ;;
+        --local)
+            RUN_LOCAL=1
             shift
             ;;
         --nproc)
@@ -148,10 +180,12 @@ esac
 if [[ "${MODE}" == "serial_then_mpi" ]]; then
     echo "${BOLD}=== serial_then_mpi: running serial pass ===${NC}"
     passthrough_args=()
-    [[ "${KEEP_ARTIFACTS}" -eq 1 ]] && passthrough_args+=(--keep-artifacts)
-    [[ "${VERBOSE}" -eq 1 ]]       && passthrough_args+=(--verbose)
-    [[ -n "${TEST_FILTER}" ]]      && passthrough_args+=(--test "${TEST_FILTER}")
-    [[ -n "${NPROC_OVERRIDE}" ]]   && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
+    [[ "${KEEP_ARTIFACTS}" -eq 1 ]]            && passthrough_args+=(--keep-artifacts)
+    [[ "${VERBOSE}" -eq 1 ]]                   && passthrough_args+=(--verbose)
+    [[ -n "${TEST_FILTER}" ]]                  && passthrough_args+=(--test "${TEST_FILTER}")
+    [[ -n "${NPROC_OVERRIDE}" ]]               && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
+    [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]     && passthrough_args+=(--partition "${SLURM_PARTITION_OVERRIDE}")
+    [[ "${RUN_LOCAL}" -eq 1 ]]                 && passthrough_args+=(--local)
 
     mpi_config="${CONFIG}"
     if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
@@ -214,6 +248,10 @@ if ! [[ "${MPI_NP}" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
+if [[ -n "${SLURM_PARTITION_OVERRIDE}" && "${RUN_LOCAL}" -eq 1 ]]; then
+    echo "${ORANGE}Warning: --partition is ignored when --local is set${NC}" >&2
+fi
+
 if [[ -n "${NPROC_OVERRIDE}" ]] && ! [[ "${NPROC_OVERRIDE}" =~ ^[1-9][0-9]*$ ]]; then
     echo "--nproc must be a positive integer" >&2
     exit 2
@@ -233,19 +271,58 @@ if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
     else
         echo "No results directory to clean (${ARTIFACT_ROOT})"
     fi
-    # Also clean run-generated data from regression_tests/cases/
-    local_cases_dir="${REGRESSION_ROOT}/cases"
+    # Also clean run-generated data and figures from regression_tests/.
+    local_regression_dir="${ROOT_DIR}/regression_tests"
+    local_cases_dir="${local_regression_dir}/cases"
     if [[ -d "${local_cases_dir}" ]]; then
         cleaned=0
         while IFS= read -r -d '' f; do
             rm -f "$f"
             cleaned=$((cleaned + 1))
         done < <(find "${local_cases_dir}" -maxdepth 2 \
-            \( -name "*.log" -o -name "*.txt" -o -name "*.h5" -o -name "rich" \) \
+            \( -name "*.log" -o -name "*.txt" -o -name "*.h5" -o -name "*.vtu" -o -name "rich" \) \
             ! -name "test.cpp" -print0)
         if [[ ${cleaned} -gt 0 ]]; then
             echo "Cleaned ${cleaned} run-generated files from ${local_cases_dir}"
         fi
+
+        # Remove run-generated subdirectories inside case dirs:
+        #   snap_*  - HDF5/VTU snapshot directories
+        #   build/  - stale in-case build artifacts
+        #   regression_tests/ - accidental nested run artifacts
+        #   rt_final/ and similar VTU output dirs from WriteSnapshot3D
+        cleaned_dirs=0
+        while IFS= read -r -d '' d; do
+            rm -rf "$d"
+            cleaned_dirs=$((cleaned_dirs + 1))
+        done < <(find "${local_cases_dir}" -mindepth 2 -maxdepth 2 -type d \
+            \( -name "snap_*" -o -name "build" -o -name "regression_tests" \
+               -o -name "regression_results" -o -name "rt_final" \
+               -o -name "__pycache__" \) -print0)
+        if [[ ${cleaned_dirs} -gt 0 ]]; then
+            echo "Cleaned ${cleaned_dirs} run-generated directories from ${local_cases_dir}"
+        fi
+    fi
+
+    if [[ -d "${local_regression_dir}" ]]; then
+        cleaned_figures=0
+        while IFS= read -r -d '' f; do
+            rm -f "$f"
+            cleaned_figures=$((cleaned_figures + 1))
+        done < <(find "${local_regression_dir}" -type f \
+            \( -name "*.png" -o -name "*.pdf" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.svg" \) -print0)
+        if [[ ${cleaned_figures} -gt 0 ]]; then
+            echo "Cleaned ${cleaned_figures} figure file(s) from ${local_regression_dir}"
+        fi
+
+        # Remove top-level generated directories
+        for d in "${local_regression_dir}/plots" \
+                 "${local_regression_dir}/__pycache__"; do
+            if [[ -d "$d" ]]; then
+                rm -rf "$d"
+                echo "Removed ${d}"
+            fi
+        done
     fi
     exit 0
 fi
@@ -288,6 +365,7 @@ declare -a ALL_RUN_MODES=()
 declare -a ALL_SLURM_NTASKS=()
 declare -a ALL_SLURM_PARTITIONS=()
 declare -a ALL_SLURM_EXCLUSIVES=()
+declare -a ALL_SLURM_TIME_LIMITS=()
 declare -a ALL_CASE_DIRS=()
 
 load_test_definition() {
@@ -304,6 +382,7 @@ load_test_definition() {
     local SLURM_NTASKS="32"
     local SLURM_PARTITION="bigrun"
     local SLURM_EXCLUSIVE="1"
+    local SLURM_TIME_LIMIT="02:00:00"
 
     source "${def_file}"
 
@@ -338,6 +417,7 @@ load_test_definition() {
     ALL_SLURM_NTASKS+=("${SLURM_NTASKS}")
     ALL_SLURM_PARTITIONS+=("${SLURM_PARTITION}")
     ALL_SLURM_EXCLUSIVES+=("${SLURM_EXCLUSIVE}")
+    ALL_SLURM_TIME_LIMITS+=("${SLURM_TIME_LIMIT}")
     ALL_CASE_DIRS+=("${case_dir}")
     return 0
 }
@@ -365,6 +445,20 @@ if [[ ${NUM_TESTS} -eq 0 ]]; then
     exit 0
 fi
 
+# ==================== Apply --local and --partition overrides ====================
+if [[ "${RUN_LOCAL}" -eq 1 ]]; then
+    for i in "${!ALL_RUN_MODES[@]}"; do
+        if [[ "${ALL_RUN_MODES[$i]}" == "slurm" ]]; then
+            ALL_RUN_MODES[$i]="direct"
+        fi
+    done
+fi
+if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
+    for i in "${!ALL_SLURM_PARTITIONS[@]}"; do
+        ALL_SLURM_PARTITIONS[$i]="${SLURM_PARTITION_OVERRIDE}"
+    done
+fi
+
 # ==================== Print header ====================
 mkdir -p "${RUN_ARTIFACT_DIR}"
 
@@ -374,6 +468,14 @@ echo "  Config:    ${CONFIG}"
 echo "  Tests:     ${ALL_TEST_IDS[*]}"
 if [[ "${MODE}" != "serial" ]]; then
     echo "  MPI ranks: ${MPI_NP}"
+    if [[ "${RUN_LOCAL}" -eq 1 ]]; then
+        echo "  Execution: local (mpirun, no SLURM)"
+    else
+        echo "  Execution: SLURM"
+        if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
+            echo "  Partition: ${SLURM_PARTITION_OVERRIDE} (override)"
+        fi
+    fi
 fi
 echo "  Cores:     ${NPROC_OVERRIDE:-$(nproc)} (override with --nproc)"
 echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
@@ -418,6 +520,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
     slurm_ntasks="${ALL_SLURM_NTASKS[$i]}"
     slurm_partition="${ALL_SLURM_PARTITIONS[$i]}"
     slurm_exclusive="${ALL_SLURM_EXCLUSIVES[$i]}"
+    slurm_time_limit="${ALL_SLURM_TIME_LIMITS[$i]}"
     case_dir="${ALL_CASE_DIRS[$i]}"
 
     mkdir -p "${case_dir}"
@@ -443,7 +546,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             build_cmd+=("${extra_build_args[@]}")
         fi
 
-        if ! "${build_cmd[@]}" >"${local_build_stdout}" 2>"${local_build_stderr}"; then
+        if ! VERBOSE=1 "${build_cmd[@]}" >"${local_build_stdout}" 2>"${local_build_stderr}"; then
             print_status "BUILD" "${test_id}" "FAIL (build failed, see build.stderr.log)" "${RED}"
             echo "1" > "${case_dir}/build_status.txt"
             echo "build failed (see build.stderr.log)" > "${case_dir}/build_detail.txt"
@@ -484,6 +587,10 @@ for i in "${!ALL_TEST_IDS[@]}"; do
         cd "${run_dir_abs}" || exit 1
         export ROOT_DIR CONFIG MPI_NP SLURM_NTASKS="${slurm_ntasks}"
         export RICH_BIN="${rich_bin}"
+        export RUN_LOCAL="${RUN_LOCAL}"
+        if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
+            export SLURM_PARTITION="${slurm_partition}"
+        fi
 
         run_rc=0
         if [[ "${run_mode}" == "slurm" ]]; then
@@ -492,7 +599,8 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             sbatch_args=(
                 sbatch
                 --wait
-                --job-name="reg_${test_id}"
+                --time="${slurm_time_limit}"
+                --job-name="$(slurm_job_name "${test_id}")"
                 --ntasks="${slurm_ntasks}"
                 --partition="${slurm_partition}"
                 --output="${run_stdout}"
@@ -505,10 +613,13 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             fi
             "${sbatch_args[@]}" || run_rc=$?
         else
+            # Convert HH:MM:SS to seconds for timeout
+            IFS=: read -r _h _m _s <<< "${slurm_time_limit}"
+            timeout_secs=$(( 10#${_h} * 3600 + 10#${_m} * 60 + 10#${_s} ))
             if [[ "${VERBOSE}" -eq 1 ]]; then
-                bash -c "${run_cmd}" > >(tee "${run_stdout}") 2> >(tee "${run_stderr}" >&2) || run_rc=$?
+                timeout "${timeout_secs}" bash -c "${run_cmd}" > >(tee "${run_stdout}") 2> >(tee "${run_stderr}" >&2) || run_rc=$?
             else
-                bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}" || run_rc=$?
+                timeout "${timeout_secs}" bash -c "${run_cmd}" >"${run_stdout}" 2>"${run_stderr}" || run_rc=$?
             fi
         fi
 

@@ -119,7 +119,7 @@ After fluxes are computed, conserved variables are updated and converted back to
 DefaultCellUpdater cu;
 ```
 
-The `DefaultCellUpdater` uses the EOS to compute pressure from the updated density and internal energy. The `EOSConsistent` variant enforces strict thermodynamic consistency.
+The `DefaultCellUpdater` uses the EOS to compute pressure from the updated density and internal energy. In 1D, the `EOSConsistent` interpolation scheme (used in the Sod test) enforces strict thermodynamic consistency during reconstruction.
 
 ## Extensive Updater
 

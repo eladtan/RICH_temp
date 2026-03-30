@@ -2,6 +2,8 @@
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
+#include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
@@ -38,6 +40,7 @@ namespace fs = std::filesystem;
 #include <sstream>
 #include "source/3D/environment/kernels/Rectangle.hpp"
 #include "source/newtonian/three_dimensional/Dissipation.hpp"
+#include <memory>
 
 typedef std::array<double, 4> state_type;
 
@@ -53,10 +56,10 @@ namespace
 		double Rsmooth = std::max(Rt * 0.4, std::min(Rt - Rstar * 15, Rt * smooth_factor));
 		std::vector<Conserved3D> &extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
-		size_t const N = sim.getTesselation().GetPointNo();
+		size_t const N = sim.getTessellation().GetPointNo();
 		for(size_t i = 0; i < N; ++i)
 		{
-			double R = fastabs(sim.getTesselation().GetCellCM(i));
+			double R = fastabs(sim.getTessellation().GetCellCM(i));
 			if(R < Rsmooth)
 			{
 				double new_density = std::max(1e-20, cells[i].density * 0.8);
@@ -79,7 +82,7 @@ namespace
 					cells[i].Eg[g] *= density_ratio * Erad_ratio;
 				cells[i].Erad_dt *= density_ratio * Erad_ratio;
 				cells[i].Erad_dt_dt *= density_ratio * Erad_ratio;
-				PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+				PrimitiveToConserved(cells[i], sim.getTessellation().GetVolume(i), extensives[i]);
 			}
 			else 
 			{
@@ -89,12 +92,14 @@ namespace
 					cells[i].internal_energy = eos.dT2e(cells[i].density, cells[i].temperature, cells[i].tracers, ComputationalCell3D::tracerNames);
 					cells[i].pressure = eos.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
 					cells[i].tracers[0] = eos.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
-					PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+					PrimitiveToConserved(cells[i], sim.getTessellation().GetVolume(i), extensives[i]);
 				}
 			}
 		}
-		MPI_exchange_data(sim.getTesselation(), cells, true);
-		MPI_exchange_data(sim.getTesselation(), extensives, true);
+#ifdef RICH_MPI
+		MPI_exchange_data(sim.getTessellation(), cells, true);
+		MPI_exchange_data(sim.getTessellation(), extensives, true);
+#endif
 	}
 	class DissipationDiag: public DiagnosticAppendix3D
 	{
@@ -125,7 +130,7 @@ namespace
 		std::vector<double> operator()(const HDSim3D& sim) const
 		{
 		    std::vector<Slope3D> slopes = interp_.GetSlopesUnlimited();
-			size_t const N = sim.getTesselation().GetPointNo();
+			size_t const N = sim.getTessellation().GetPointNo();
 			std::vector<double> res(N, 0);
 			switch(value_)
 			{
@@ -280,11 +285,11 @@ namespace
 	}
 
 	void UpdateReferenceFrame(HDSim3D &sim, double const Rstar, double const Mstar, double const MBH, 
-		double const beta)
+		double const beta, Simulation &simulation)
 	{
 		double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
 		double const Rp = Rt / beta;
-		state_type x0 = GetTrueAnomaly(sim.getTime(), MBH, Rp);
+		state_type x0 = GetTrueAnomaly(simulation.GetTime(), MBH, Rp);
 		int rank = 0;
 #ifdef RICH_MPI
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -296,11 +301,11 @@ namespace
 				std::cout<<x0[i]<<" ";
 			std::cout<<std::endl;
 		}
-		std::vector<Vector3D> points = sim.getTesselation().accessMeshPoints();
+		std::vector<Vector3D> points = sim.getTessellation().accessMeshPoints();
 		std::vector<Conserved3D> &extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
-		size_t const N = sim.getTesselation().GetPointNo();
-		std::pair<Vector3D, Vector3D> box_points = sim.getTesselation().GetBoxCoordinates();
+		size_t const N = sim.getTessellation().GetPointNo();
+		std::pair<Vector3D, Vector3D> box_points = sim.getTessellation().GetBoxCoordinates();
 		double const reference_density = 1e-8 * Mstar / ((box_points.second.x - box_points.first.x) * (box_points.second.y - box_points.first.y) * (box_points.second.z - box_points.first.z));
 		for(size_t i = 0; i < N; ++i)
 		{
@@ -321,29 +326,29 @@ namespace
 		box_points.first.y += x0[1];
 		box_points.second.x += x0[0];
 		box_points.second.y += x0[1];
-		sim.getTesselation().SetBox(box_points.first, box_points.second);
+		sim.getTessellation().SetBox(box_points.first, box_points.second);
 #ifdef RICH_MPI
-		sim.getTesselation().BuildParallel(points);
+		sim.getTessellation().BuildParallel(points);
 		ComputationalCell3D cdummy;
-		MPI_exchange_data(sim.getTesselation(), cells, false);
+		MPI_exchange_data(sim.getTessellation(), cells, false);
 #else
-		sim.getTesselation().Build(points);
+		sim.getTessellation().Build(points);
 #endif
 	}
 
 	void CheckIfFullGravityIsNeeded(HDSim3D &sim, std::string const& gravity_name, double const Rstar,
-		double const Mstar, double const MBH, double const beta, std::string const& restart_name)
+		double const Mstar, double const MBH, double const beta, std::string const& restart_name, Simulation &simulation)
 	{
 		int rank = 0;
 #ifdef RICH_MPI
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
-		if(sim.getTime() > 5)
+		if(simulation.GetTime() > 5)
 		{
 			double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
 			double const Rp = Rt / beta;
-			state_type x0 = GetTrueAnomaly(sim.getTime(), MBH, Rp, -3 * Mstar * std::pow(MBH / Mstar, 0.3333333) / Rstar);
-			Tessellation3D const& tess = sim.getTesselation();
+			state_type x0 = GetTrueAnomaly(simulation.GetTime(), MBH, Rp, -3 * Mstar * std::pow(MBH / Mstar, 0.3333333) / Rstar);
+			Tessellation3D const& tess = sim.getTessellation();
 			std::vector<ComputationalCell3D> const& cells = sim.getCells();
 			int need_update = 0;
 			for(size_t i = 0; i < tess.GetPointNo(); ++i)
@@ -361,12 +366,12 @@ namespace
 				std::cout<<x0[0]<<","<<x0[1]<<std::endl;
 			if((x0[1] > 0.1 && x0[2] > 0.1) || need_update == 1)
 			{
-				UpdateReferenceFrame(sim, Rstar, Mstar, MBH, beta);
+				UpdateReferenceFrame(sim, Rstar, Mstar, MBH, beta, simulation);
 #ifdef RICH_MPI
 				int rank = 0;
 				MPI_Barrier(MPI_COMM_WORLD);
 				MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-				std::cout<<"Point number "<<sim.getTesselation().GetPointNo()<<std::endl;
+				std::cout<<"Point number "<<sim.getTessellation().GetPointNo()<<std::endl;
 				if(rank == 0)
 #endif
 				write_number(1, gravity_name);
@@ -535,7 +540,9 @@ namespace
 		std::pair<vector<size_t>, vector<Vector3D>> ToRefine(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
 			int rank = 0;
+#ifdef RICH_MPI
 			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
 			std::vector<std::vector<double>> maxr;
 			std::vector<std::vector<double>> phi;
 			std::vector<double> theta;
@@ -567,7 +574,9 @@ namespace
 				if(tess.GetMeshPoint(i).x > 0.85 * Rt && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
 					rho_x = std::max(rho_x, cells[i].density);
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
 			if(rank == 0)
 				std::cout << "rho_x = " << rho_x << std::endl;
 			for (size_t i = 0; i < Norg; ++i)
@@ -691,7 +700,9 @@ namespace
 				if(tess.GetMeshPoint(i).x > Rt * 0.85 && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
 					rho_x = std::max(rho_x, cells[i].density);
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				bool good = true;
@@ -1164,38 +1175,48 @@ int main(void)
 	forces.push_back(gravity_force);
 	// forces.push_back(zero_force);
 	SeveralSources3D force(forces);
-	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (), false);
+	auto tsf = std::make_shared<CourantFriedrichsLewy>(0.3, 1, force, std::vector<std::string> (), false);
 
 	Simulation simulation(tess, cells, eos, !restart);
+	simulation.SetTimeStepFunction(tsf);
 	std::unique_ptr<HDSim3D> sim;
 	if(restart)
 	{
-		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
-		sim->SetTime(snap.time);
-		sim->SetCycle(snap.cycle);
+		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+		simulation.SetTime(snap.time);
+		simulation.SetCycle(snap.cycle);
 	}
 	else
 	{
-		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
-		sim->SetTime(tstart);
+		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+		simulation.SetTime(tstart);
 	}
+	auto radStep = std::make_shared<RadiationStep>(tess, simulation.getCells(), simulation.getExtensives(),
+		simulation.getTracker(),
+#ifdef RICH_MPI
+		nullptr,
+#endif
+		matrix_builder, false);
+	auto hydroStep = std::make_shared<HydroStep>(*sim, HydroStep::TIMEADVANCE_2);
+	simulation.addPhysics(hydroStep);
+	simulation.addPhysics(radStep);
 	double init_dt = 1e-4;
-	tsf.SetTimeStep(init_dt);
+	simulation.SetTimeStep(init_dt);
 	if (rank == 0)
-		std::cout << "Restart time " << sim->getTime() << std::endl;
-	ComputationalCell3D reference_cell = GetReferenceCell(eos, tess, sim->getTime(), matrix_builder.energy_groups_boundary);
+		std::cout << "Restart time " << simulation.GetTime() << std::endl;
+	ComputationalCell3D reference_cell = GetReferenceCell(eos, tess, simulation.GetTime(), matrix_builder.energy_groups_boundary);
 	double tf = 6 * std::sqrt(apocenter * apocenter * apocenter / Mbh);
 	double mindt = 0.001;
 	double nextT = 0;
-	nextT = (t_restart < -20) ? sim->getTime() : t_restart;
-	nextT += std::min(50.0, mindt + 0.2 * std::pow(std::abs(sim->getTime()), 0.666666));
-	nextT = std::max(nextT, sim->getTime() + 0.01);
+	nextT = (t_restart < -20) ? simulation.GetTime() : t_restart;
+	nextT += std::min(50.0, mindt + 0.2 * std::pow(std::abs(simulation.GetTime()), 0.666666));
+	nextT = std::max(nextT, simulation.GetTime() + 0.01);
 
 	RemoveBig remove(8 * width * width * width, eos, Mbh, M, R, beta);
 	MassRefine refine(8 * width * width * width, Mbh, M, R, beta);
 	PCM3D ainterp(ghost);
 	AMR3D amr(eos, refine, remove, interp);
-	std::pair<Vector3D, Vector3D> box2 = sim->getTesselation().GetBoxCoordinates();
+	std::pair<Vector3D, Vector3D> box2 = sim->getTessellation().GetBoxCoordinates();
 	double newvol2 = (box2.second.x - box2.first.x) * (box2.second.y - box2.first.y) * (box2.second.z - box2.first.z);
 	refine.SetSize(newvol2);
 	remove.SetSize(newvol2);
@@ -1224,7 +1245,7 @@ int main(void)
 	appendices.push_back(&diag3);
 	appendices.push_back(&DissDiag);
 	
-	double old_t = sim->getTime();
+	double old_t = simulation.GetTime();
 	double old_dt = init_dt;
 	double step_time = 0;
 	double const restart_wtime = 15000;
@@ -1237,9 +1258,9 @@ int main(void)
 	// 	dissipation.face_values.shrink_to_fit();
 	// }
 	
-	while (sim->getTime() < tf)
+	while (simulation.GetTime() < tf)
 	{
-		if (sim->getCycle() % 1 == 0)
+		if (simulation.GetCycle() % 1 == 0)
 		{
 			int ntotal = tess.GetPointNo();
 #ifdef RICH_MPI
@@ -1250,10 +1271,10 @@ int main(void)
 			{
 				std::cout<<std::endl;
 				std::cout << "Point num " << ntotal << " dt " << old_dt << " run time " << step_time << std::endl;
-				std::cout << "Cycle " << sim->getCycle() << " Time " << sim->getTime() << std::endl;
+				std::cout << "Cycle " << simulation.GetCycle() << " Time " << simulation.GetTime() << std::endl;
 			}
 		}
-		if (sim->getTime() > nextT)
+		if (simulation.GetTime() > nextT)
 		{
 			if(rank == 0)
 				std::cout<<"Starting writing file "<<file_name + int2str(counter) + ".h5"<<std::endl;
@@ -1261,7 +1282,7 @@ int main(void)
 			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true);
 			if (rank == 0)
 				write_int(counter, counter_name);
-			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.2 * std::pow(std::abs(sim->getTime()), 0.666666));
+			nextT = simulation.GetTime() + std::min(min_dt_output, mindt + 0.2 * std::pow(std::abs(simulation.GetTime()), 0.666666));
 			++counter;
 			dissipation.face_values.clear();
 			dissipation.face_values.shrink_to_fit();
@@ -1290,27 +1311,17 @@ int main(void)
 #endif
 #ifdef RICH_MPI
 			MPI_Barrier(MPI_COMM_WORLD);
-			double rad_start_time = MPI_Wtime();
 #endif
-			double new_dt = sim->RadiationTimeStep(old_dt, matrix_builder);
-#ifdef RICH_MPI
-			MPI_Barrier(MPI_COMM_WORLD);
-			double rad_end_time = MPI_Wtime();
-			if(rank == 0)
-				std::cout << "Radiation step time: " << rad_end_time - rad_start_time << std::endl;
-#endif
-			new_dt = std::max(2.01e-4, new_dt);
-			// Prevent small time step
-			if(new_dt < 0.5 * old_dt)
-			    new_dt = 0.5 * old_dt;
-			new_dt = std::min(new_dt, 0.03);
-			tsf.SetTimeStep(new_dt);
-			if (rank == 0)
-				std::cout << "Finished rad step" << std::endl;
-			sim->timeAdvance2();
-			if (rank == 0)
-				std::cout << "Finished hydro step" << std::endl;
-			if (full_gravity && sim->getCycle() % 10 == 0)
+			simulation.step();
+			{
+				double new_dt = simulation.GetTimeStep();
+				new_dt = std::max(2.01e-4, new_dt);
+				if(new_dt < 0.5 * old_dt)
+					new_dt = 0.5 * old_dt;
+				new_dt = std::min(new_dt, 0.03);
+				simulation.SetTimeStep(new_dt);
+			}
+			if (full_gravity && simulation.GetCycle() % 10 == 0)
 			{
 				if(rank == 0)
 					std::cout<<"Doing AMR"<<std::endl;
@@ -1320,15 +1331,15 @@ int main(void)
 			if(full_gravity)
 				RemoveCenter(*sim, Mbh, M, R, eos, beta);
 #endif
-			old_dt = sim->getTime() - old_t;
-			old_t = sim->getTime();
+			old_dt = simulation.GetTime() - old_t;
+			old_t = simulation.GetTime();
 			if(not full_gravity)
-				CheckIfFullGravityIsNeeded(*sim, gravity_name, R, M, Mbh, beta, restart_name);
-			reference_cell = GetReferenceCell(eos, tess, sim->getTime(), matrix_builder.energy_groups_boundary);
-			if (sim->getCycle() % 7 == 0)
+				CheckIfFullGravityIsNeeded(*sim, gravity_name, R, M, Mbh, beta, restart_name, simulation);
+			reference_cell = GetReferenceCell(eos, tess, simulation.GetTime(), matrix_builder.energy_groups_boundary);
+			if (simulation.GetCycle() % 7 == 0)
 			{
 				UpdateBox(tess, simulation, 0.5, 1e-5, reference_cell);
-				std::pair<Vector3D, Vector3D> box = sim->getTesselation().GetBoxCoordinates();
+				std::pair<Vector3D, Vector3D> box = sim->getTessellation().GetBoxCoordinates();
 				double newvol = (box.second.x - box.first.x) * (box.second.y - box.first.y) * (box.second.z - box.first.z);
 				refine.SetSize(newvol);
 				remove.SetSize(newvol);

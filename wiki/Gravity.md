@@ -42,7 +42,7 @@ Gravity is applied as an acceleration source term in the hydro equations:
 #include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
 #include "source/newtonian/three_dimensional/ConservativeForce3D.hpp"
 
-// Create gravity acceleration (opening_angle, symmetric_flag, softening)
+// Create gravity acceleration (theta, quadrupole, G)
 GravityAcceleration3D grav_acc(1.05, true, 1.0);
 
 // Wrap as a conservative force (preserves energy)

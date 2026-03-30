@@ -48,7 +48,8 @@ regression_tests/
 │   ├── check_sedov_exact.py      # Sedov vs Sedov-Taylor ODE
 │   ├── check_mach2_profile.py    # Mach 2 shock vs NLTE analytical solution
 │   ├── check_marshak_wave.py     # Marshak wave vs self-similar solutions
-│   └── check_gresho_profile.py   # Gresho vortex vs azimuthal velocity IC
+│   ├── check_gresho_profile.py   # Gresho vortex vs azimuthal velocity IC
+│   └── check_yee_vortex.py      # Yee isentropic vortex density L1 check
 ├── tests/                        # One .sh file per test defining metadata
 │   ├── sod_1d.sh
 │   ├── sedov_3d_mpi.sh
@@ -60,7 +61,9 @@ regression_tests/
 │   ├── mach2_multigroup.sh
 │   ├── marshak_wave_1.sh .. marshak_wave_4.sh
 │   ├── gresho_euler.sh
-│   └── gresho_lagrangian.sh
+│   ├── gresho_lagrangian.sh
+│   ├── yee_vortex_64.sh
+│   └── yee_vortex_128.sh
 ├── cases/                        # Per-test source and config
 │   ├── sod_1d/test.cpp
 │   ├── sedov_3d_mpi/test.cpp

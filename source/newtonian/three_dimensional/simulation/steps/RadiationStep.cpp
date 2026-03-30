@@ -1,4 +1,5 @@
 #include "RadiationStep.hpp"
+#include "misc/memory_debug.hpp"
 
 RadiationStep::RadiationStep(Tessellation3D &tess, std::vector<ComputationalCell3D> &cells,
                     std::vector<Conserved3D> &extensives,
@@ -57,11 +58,13 @@ void RadiationStep::step(double dt)
 
 
 	this->matrix_builder.prestep(this->tess, this->cells);
+	MEMORY_DEBUG_PRINT("radiation: after prestep");
 	while(total_elapsed_time < dt * 0.9999999)
 	{
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
 
 		bool step_success = this->matrix_builder.step(CG_eps, total_iters, this->tess, this->cells, this->extensives, dt_try, this->pt.getTime());
+		MEMORY_DEBUG_PRINT("radiation: after solver step");
 
 		max_iter_done = std::max(max_iter_done, total_iters);
 		
@@ -83,6 +86,7 @@ void RadiationStep::step(double dt)
 	this->suggested_dt = this->matrix_builder.calculate_dt(dt, this->tess, this->cells);
 
 	this->matrix_builder.poststep();
+	MEMORY_DEBUG_PRINT("radiation: after poststep");
 
 #ifdef RICH_MPI
 	MPI_exchange_data(this->tess, this->cells, true);

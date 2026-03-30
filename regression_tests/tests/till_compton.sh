@@ -7,3 +7,4 @@ BUILD_ARGS="--energy_groups_num=32"
 RUN_DIR_REL="regression_tests/cases/till_compton"
 RUN_COMMAND='"${RICH_BIN}"'
 CHECK_FUNCTION="check_till_case"
+SLURM_TIME_LIMIT="02:00:00"

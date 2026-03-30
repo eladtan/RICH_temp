@@ -1,9 +1,16 @@
 #include "misc/universal_error.hpp"
 #include "read3D.hpp"
 
-Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &globalfile, bool const good_open)
+Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader,
+                                const HDF5Reader &globalfile,
+                                bool const good_open,
+                                const std::string& rank_prefix = "")
 {
     Snapshot3D res;
+    const auto rank_path = [&rank_prefix](const std::string& path)
+    {
+        return rank_prefix.empty() ? path : rank_prefix + path;
+    };
     std::vector<double> box;
     globalfile.ReadElement("/Box", box);
 
@@ -26,16 +33,16 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
             res.cycle = cycle[0];
         }
 
-        if(reader.Exists("/tracers"))
+        if(reader.Exists(rank_path("/tracers")))
         {
-            for(const std::string &tracerName : reader.ReadGroupNames("/tracers"))
+            for(const std::string &tracerName : reader.ReadGroupNames(rank_path("/tracers")))
             {
                 res.tracerstickernames.first.push_back(tracerName);
             }   
         }
-        if(reader.Exists("/stickers"))
+        if(reader.Exists(rank_path("/stickers")))
         {
-            for(const std::string &stickerName : reader.ReadGroupNames("/stickers"))
+            for(const std::string &stickerName : reader.ReadGroupNames(rank_path("/stickers")))
             {
                 res.tracerstickernames.second.push_back(stickerName);
             }
@@ -46,9 +53,9 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
     // Mesh points
         {
             std::vector<double> x, y, z;
-            reader.ReadElement("/X", x);
-            reader.ReadElement("/Y", y);
-            reader.ReadElement("/Z", z);
+            reader.ReadElement(rank_path("/X"), x);
+            reader.ReadElement(rank_path("/Y"), y);
+            reader.ReadElement(rank_path("/Z"), z);
             res.mesh_points.resize(x.size());
             for(size_t i = 0; i < x.size(); ++i)
             {
@@ -59,21 +66,21 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
         // Hydrodynamic
         {
             vector<double> density;
-            reader.ReadElement("/Density", density);
+            reader.ReadElement(rank_path("/Density"), density);
 
             std::vector<double> Erad;
-            if(reader.Exists("/Erad"))
+            if(reader.Exists(rank_path("/Erad")))
             {
-                reader.ReadElement("/Erad", Erad);
+                reader.ReadElement(rank_path("/Erad"), Erad);
             }
             else
             {
                 Erad.resize(density.size(), 0);
             }
             std::vector<double> temperature;
-            if(reader.Exists("/Temperature"))
+            if(reader.Exists(rank_path("/Temperature")))
             {
-                reader.ReadElement("/Temperature", temperature);
+                reader.ReadElement(rank_path("/Temperature"), temperature);
             }
             else
             {
@@ -81,36 +88,36 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
             }
 
             std::vector<double> pressure;
-            reader.ReadElement("/Pressure", pressure);
+            reader.ReadElement(rank_path("/Pressure"), pressure);
             std::vector<double> energy;
-            reader.ReadElement("/InternalEnergy", energy);
+            reader.ReadElement(rank_path("/InternalEnergy"), energy);
 
             vector<size_t> IDs(density.size(), 0);
-            if(reader.Exists("/ID"))
+            if(reader.Exists(rank_path("/ID")))
             {
-                reader.ReadElement("/ID", IDs);
+                reader.ReadElement(rank_path("/ID"), IDs);
             }
 
             std::vector<double> x_velocity;
-            reader.ReadElement("/Vx", x_velocity);
+            reader.ReadElement(rank_path("/Vx"), x_velocity);
             std::vector<double> y_velocity;
-            reader.ReadElement("/Vy", y_velocity);
+            reader.ReadElement(rank_path("/Vy"), y_velocity);
             std::vector<double> z_velocity;
-            reader.ReadElement("/Vz", z_velocity);
+            reader.ReadElement(rank_path("/Vz"), z_velocity);
 
             vector<vector<double>> tracers(res.tracerstickernames.first.size());
 
             for(size_t n = 0; n < res.tracerstickernames.first.size(); ++n)
             {
                 std::string tracerName = res.tracerstickernames.first[n];
-                reader.ReadElement("/tracers/" + tracerName, tracers[n]);
+                reader.ReadElement(rank_path("/tracers/" + tracerName), tracers[n]);
             }
 
             vector<vector<int>> stickers(res.tracerstickernames.second.size());
             for(size_t n = 0; n < res.tracerstickernames.second.size(); ++n)
             {
                 std::string stickerName = res.tracerstickernames.second[n];
-                reader.ReadElement("/stickers/" + stickerName, stickers[n]);
+                reader.ReadElement(rank_path("/stickers/" + stickerName), stickers[n]);
             }
 
             res.cells.resize(density.size());
@@ -136,10 +143,10 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
             }
             for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g)
             {
-                if(reader.Exists("/Eg_" + std::to_string(g)))
+                if(reader.Exists(rank_path("/Eg_" + std::to_string(g))))
                 {
                     std::vector<double> Eg_temp;
-                    reader.ReadElement("/Eg_" + std::to_string(g), Eg_temp);
+                    reader.ReadElement(rank_path("/Eg_" + std::to_string(g)), Eg_temp);
                     for(size_t i = 0; i < res.cells.size(); ++i)
                         res.cells.at(i).Eg[g] = Eg_temp[i];
                 }
@@ -154,7 +161,7 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader, const HDF5Reader &glob
         // Volume
         {
             std::vector<double> volume;
-            reader.ReadElement("/Volume", volume);
+            reader.ReadElement(rank_path("/Volume"), volume);
             res.volumes = volume;
         }
     }
@@ -169,15 +176,16 @@ Snapshot3D ReadSnapshot3D(const string &fname
 #endif
 )
 {
-    HDF5Reader globalfile(fname);
-    
     #ifdef RICH_MPI
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif // RICH_MPI
+
+    HDF5Reader globalfile(fname);
     
     std::shared_ptr<HDF5Reader> reader = nullptr;
     bool good_open = true;
+    std::string rank_prefix;
 
     #ifdef RICH_MPI
         if(mpi_write)
@@ -185,12 +193,22 @@ Snapshot3D ReadSnapshot3D(const string &fname
             int rank_to_read = (fake_rank >= 0)? fake_rank : rank;
             std::string dirname = std::filesystem::path(fname).replace_extension("").string();
             std::string rank_file = dirname + "/" + std::to_string(rank_to_read) + ".h5";
-            if(not std::filesystem::exists(rank_file))
+            const std::string embedded_rank_group = "/rank" + std::to_string(rank_to_read);
+            if(std::filesystem::exists(rank_file))
+            {
+                reader = std::make_shared<HDF5Reader>(rank_file);
+            }
+            else if(globalfile.Exists(embedded_rank_group))
+            {
+                reader = std::make_shared<HDF5Reader>(fname);
+                rank_prefix = embedded_rank_group;
+            }
+            else
             {
                 rank_file = dirname + "/0.h5";
                 good_open = false;
+                reader = std::make_shared<HDF5Reader>(rank_file);
             }
-            reader = std::make_shared<HDF5Reader>(rank_file);
         }
         else
         {
@@ -200,7 +218,7 @@ Snapshot3D ReadSnapshot3D(const string &fname
         reader = std::make_shared<HDF5Reader>(fname);
     #endif // RICH_MPI
 
-    Snapshot3D res = ReadSnapshot3DHelper(*reader, globalfile, good_open);
+    Snapshot3D res = ReadSnapshot3DHelper(*reader, globalfile, good_open, rank_prefix);
 
     return res;
 }

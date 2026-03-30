@@ -1,5 +1,6 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
+#include "misc/memory_debug.hpp"
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
      tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
@@ -146,6 +147,7 @@ void Simulation::SetWallclockTime(double t)
 
 void Simulation::step(void)
 {
+    MEMORY_DEBUG_PRINT("Simulation::step START cycle=" + std::to_string(this->tracker.getCycle()));
     auto stepWallStart = std::chrono::high_resolution_clock::now();
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
@@ -223,6 +225,7 @@ void Simulation::step(void)
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
         std::cout.flush();
 
+        MEMORY_DEBUG_PRINT("Before " + name);
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI
@@ -231,6 +234,7 @@ void Simulation::step(void)
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI
+        MEMORY_DEBUG_PRINT("After " + name);
         auto end = std::chrono::high_resolution_clock::now();
         double physicsTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 

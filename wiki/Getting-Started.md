@@ -84,6 +84,7 @@ ml boost/1.78.0
 ml hdf5/1.14.2/Intel/OneApi-2023.2.0_cxx
 ml gcc/15.1.0
 ml vtk/9.3.0/Intel/OneApi/2024.2.1/with_X
+ml openmpi/4.1.6/Intel/OneApi/2024.2.1  # required for MPI configs
 ```
 
 Save and restore:

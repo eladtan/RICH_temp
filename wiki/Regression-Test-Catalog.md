@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 14 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 22 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -495,6 +495,347 @@ Same as `gresho_euler`.
 
 ---
 
+## 15. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
+
+**Tags:** `mpi`
+
+### Physics
+Densmore et al. (2012) heterogeneous step-opacity slab problem: optically thin (sigma_0=10) for x<2 cm, optically thick (sigma_0=1000) for x>=2 cm. Monte Carlo Implicit Monte Carlo (IMC) transport with 30-group frequency-dependent opacities. Random walk **enabled**. No hydrodynamics.
+
+### Configuration
+- **Mesh:** 256 Eulerian cells, x in [0, 3] cm
+- **EOS:** Ideal gas, gamma=1.4, Cv=1e15/T_keV
+- **Radiation:** 30-group IMC, Planck boundary at 1 keV (left), reflective (right)
+- **Runtime:** t_final=1 ns, dt=5e-12 s (200 steps)
+- **Execution:** MPI, 32 ranks, SLURM (bigrun, exclusive)
+- **Build flags:** `--energy_groups_num=30`
+
+### Output
+- `desmore2012_mc_profile.txt` -- (x, T_K) profile
+
+### Pass Criteria
+| Metric | Threshold | Override variable |
+|--------|-----------|-------------------|
+| Tgas L1 error (keV) | <= 0.05 | `DESMORE2012_MC_MAX_TGAS_L1` |
+
+---
+
+## 16. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
+
+**Tags:** `serial`
+
+### Physics
+Same problem as `desmore2012_mc` but run serially with random walk enabled. Validates the serial (non-MPI) execution path and random walk acceleration of the MC IMC solver.
+
+### Configuration
+- **Mesh:** 256 Eulerian cells, x in [0, 3] cm
+- **Radiation:** 30-group IMC with random walk, same opacities and boundary conditions
+- **Execution:** Serial (single core)
+- **Build flags:** `--energy_groups_num=30`
+
+### Output
+- `desmore2012_mc_serial_profile.txt` -- (x, T_K) profile
+
+### Pass Criteria
+| Metric | Threshold | Override variable |
+|--------|-----------|-------------------|
+| Tgas L1 error (keV) | <= 0.05 | `DESMORE2012_MC_SERIAL_MAX_TGAS_L1` |
+
+---
+
+## 17. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
+
+**Tags:** `mpi`
+
+### Physics
+
+Stationary isentropic vortex (Yee et al. 1999) -- an exact steady-state solution of the compressible Euler equations. A smooth rotational velocity field is in exact pressure-gradient balance with isentropic density and pressure perturbations. The analytical solution at any time equals the initial condition.
+
+This is the lower-resolution run of a convergence pair (see also `yee_vortex_128`).
+
+**Governing equations:** 2D Euler equations (simulated in 3D with 1 cell in z).
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Domain | [-5, 5]^2 x [0, dz] |
+| Grid | 64 x 64 x 1 Cartesian |
+| EOS | Ideal gas, gamma = 1.4 |
+| Vortex strength | beta = 5 |
+| Vortex center | (0, 0) |
+| Mesh motion | Lagrangian + RoundCells (xy-plane) |
+| Solver | HLLC, LinearGauss3D |
+| Boundary | Rigid wall |
+| End time | t = 10 |
+| SLURM | 8 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/yee_vortex_64/test.cpp`
+
+### Output
+
+`vortex_profile.txt` -- columns: x, y, volume, density, pressure, vx, vy
+
+### Validation
+
+The Python checker `regression_tests/lib/check_yee_vortex.py` computes the volume-weighted L1 density error against the analytical initial condition.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Density L1 | <= 0.05 | `YEE_VORTEX_MAX_DENSITY_L1` |
+
+### References
+
+- Yee, H-C., Sandham, N. & Djomehri, M. (1999). "Low dissipative high order shock-capturing methods using characteristic-based filters." *JCP* 150, 199-238.
+
+---
+
+## 18. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
+
+**Tags:** `mpi`
+
+### Physics
+
+Higher-resolution companion to `yee_vortex_64`. Same isentropic vortex problem on a 128x128x1 mesh. Together with the 64x64 run, this establishes the spatial convergence rate of the Lagrangian scheme for smooth flows.
+
+### Configuration
+
+Same as `yee_vortex_64` except:
+
+| Parameter | Value |
+|-----------|-------|
+| Grid | 128 x 128 x 1 Cartesian |
+| SLURM | 16 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/yee_vortex_128/test.cpp`
+
+### Output
+
+`vortex_profile.txt` -- same format as 64x64 case
+
+### Validation
+
+Same as `yee_vortex_64`.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Density L1 | <= 0.05 | `YEE_VORTEX_MAX_DENSITY_L1` |
+
+---
+
+## 19. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+
+**Tags:** `serial`
+
+### Physics
+
+Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D Voronoi mesh is initialized with fields that are linear in Cartesian coordinates (density, pressure, internal energy, velocity). The test compares face-interpolated values from Cartesian vs spherical `LinearGauss3D` modes against exact values in an annular region (1.1 < r < 1.9).
+
+**Source:** `regression_tests/cases/cartesian_gauss_linear/test.cpp`
+
+### Output
+
+`cart_gauss_linear_metrics.txt` -- scalar/velocity max relative errors for Cartesian and spherical modes, and number of faces checked.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Cartesian scalar max rel error | < 1e-6 | `CART_GAUSS_LINEAR_MAX_SCALAR_REL` |
+| Cartesian velocity max rel error | < 0.1 | `CART_GAUSS_LINEAR_MAX_VEL_REL` |
+| Cartesian scalar error < spherical scalar error | Required | -- |
+| faces_checked | > 0 | -- |
+
+---
+
+## 20. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+
+**Tags:** `serial`
+
+### Physics
+
+Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mode. Fields are linear in spherical coordinates (r, theta, phi). Spherical interpolation should outperform Cartesian for these fields.
+
+**Source:** `regression_tests/cases/spherical_gauss_linear/test.cpp`
+
+### Output
+
+`gauss_linear_metrics.txt` -- scalar/velocity max relative errors for spherical and Cartesian modes.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Spherical scalar max rel error | < 1e-8 | `GAUSS_LINEAR_MAX_SCALAR_REL` |
+| Spherical velocity max rel error | < 0.1 | `GAUSS_LINEAR_MAX_VEL_REL` |
+| Spherical scalar error < Cartesian scalar error | Required | -- |
+
+---
+
+## 21. spherical_collapse -- Spherical Collapse Symmetry
+
+**Tags:** `mpi`
+
+### Physics
+
+A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Tests that the collapse remains spherically symmetric by measuring density and radial-velocity scatter in radial bins. Uses Eulerian hydro with HLLC, `SphericalLinearGauss`, and rigid walls.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Mesh motion | Eulerian (fixed) |
+| Solver | HLLC, SphericalLinearGauss |
+| SLURM | 64 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/spherical_collapse/test.cpp`
+
+### Output
+
+`collapse_metrics.txt` -- fields: `max_density_scatter`, `max_velocity_scatter`, `pass`
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| max_density_scatter | < 0.1 | `COLLAPSE_MAX_DENSITY_SCATTER` |
+| max_velocity_scatter | < 0.1 | `COLLAPSE_MAX_VELOCITY_SCATTER` |
+| `pass` field | Must be `1` | -- |
+
+---
+
+## 22. spherical_collapse_hires -- Spherical Collapse (High Resolution)
+
+**Tags:** `mpi`
+
+### Physics
+
+High-resolution companion to `spherical_collapse`. Uses the same physics and setup but doubles the angular resolution (N_edge=82 vs 41), roughly quadrupling the total cell count. Verifies that angular scatter decreases with resolution and that the code scales correctly to larger problem sizes under MPI.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Mesh motion | Eulerian (fixed) |
+| Solver | HLLC, SphericalLinearGauss |
+| Build flag | `--high-res` |
+| SLURM | 128 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/spherical_collapse_hires/test.cpp` (symlink to `spherical_collapse/test.cpp`, compiled with `-DHIGH_RES`)
+
+### Output
+
+`collapse_metrics.txt` -- fields: `max_density_scatter`, `max_velocity_scatter`, `pass`
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| max_density_scatter | < 0.1 | `COLLAPSE_MAX_DENSITY_SCATTER` |
+| max_velocity_scatter | < 0.1 | `COLLAPSE_MAX_VELOCITY_SCATTER` |
+| `pass` field | Must be `1` | -- |
+
+---
+
+## 23. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+
+**Tags:** `mpi`
+
+### Physics
+
+The Rayleigh-Taylor instability: a heavy fluid (rho=2) sits above a light fluid (rho=1) in a gravitational field with a perturbed interface. The instability growth rate is compared against reference values. Uses Lagrangian hydro with HLLC, LinearGauss3D, and RoundCells.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Mesh motion | Lagrangian + RoundCells |
+| Solver | HLLC, LinearGauss3D |
+| End time | t = 3 |
+| SLURM | 128 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/rayleigh_taylor_mpi/test.cpp`
+
+### Output
+
+- `rt_kinetic_energy.txt` -- time vs z-kinetic energy
+- `rt_density_slice.txt` -- x, z, rho for cells near y=0.5
+- `rt_final.h5` -- final HDF5 snapshot
+
+### Validation
+
+The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the growth rate against a reference value.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Growth rate relative error | <= 0.25 | `RT_MAX_GROWTH_RATE_REL_ERROR` |
+
+---
+
+## 24. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+
+**Tags:** `mpi`
+
+### Physics
+
+A suite of four grey radiation-diffusion tests with free-free opacity and Thomson scattering. Two colliding flows create a radiative shock. Tests are run at different resolutions (512 and 32 cells) with and without flux limiting, and the results are compared across configurations.
+
+### Variants
+
+| Case | Cells | Flux Limiter |
+|------|-------|-------------|
+| `eulerian_diffusion_freefree_1d` | 512 | No |
+| `eulerian_diffusion_freefree_1d_512_limited` | 512 | Yes |
+| `eulerian_diffusion_freefree_1d_32` | 32 | No |
+| `eulerian_diffusion_freefree_1d_32_limited` | 32 | Yes |
+
+**Source:** `regression_tests/cases/eulerian_diffusion_freefree_1d/test.cpp`
+
+### Output
+
+Per case: `temperature_profile.txt` (x, rho, T, Trad, vx), `shock_position.txt`
+
+### Validation
+
+Checks that all four temperature profiles and comparison plots are generated without fatal errors.
+
+---
+
+## 25. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+
+**Tags:** `mpi`
+
+### Physics
+
+Same setup as `eulerian_diffusion_freefree_suite` but with 32-group multigroup radiation diffusion instead of grey. Validates that the multigroup solver produces consistent results across resolutions and flux-limiter settings.
+
+### Configuration
+
+Same as grey suite plus:
+
+| Parameter | Value |
+|-----------|-------|
+| Energy groups | 32 |
+| Build args | `--energy_groups_num=32` |
+
+**Source:** `regression_tests/cases/eulerian_diffusion_freefree_multigroup_1d/test.cpp`
+
+### Output
+
+Per case: `temperature_profile.txt` (x, rho, T, Trad, vx), `shock_position.txt`
+
+### Validation
+
+Checks that all four temperature profiles and comparison plots are generated without fatal errors.
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -513,3 +854,14 @@ Same as `gresho_euler`.
 | `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
+| `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
+| `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
+| `yee_vortex_128` | mpi | Isentropic vortex (128x128) | IC density comparison | L1 <= 0.05 |
+| `cartesian_gauss_linear` | serial | Cartesian interpolation | Exact face values | scalar error < 1e-6 |
+| `spherical_gauss_linear` | serial | Spherical interpolation | Exact face values | scalar error < 1e-8 |
+| `spherical_collapse` | mpi | Spherical symmetry | Scatter in radial bins | scatter < 0.1 |
+| `spherical_collapse_hires` | mpi | Spherical symmetry (hi-res) | Scatter in radial bins | scatter < 0.1 |
+| `rayleigh_taylor_mpi` | mpi | RT instability | Growth rate | rel error <= 0.25 |
+| `eulerian_diffusion_freefree_suite` | mpi | Grey free-free diffusion | Profile comparison | All outputs valid |
+| `eulerian_diffusion_freefree_multigroup_suite` | mpi | MG free-free diffusion | Profile comparison | All outputs valid |

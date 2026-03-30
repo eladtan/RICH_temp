@@ -6,6 +6,7 @@ BUILD_TEST_NAME="regression_tests/cases/voronoi_volume"
 RUN_DIR_REL="regression_tests/cases/voronoi_volume"
 CHECK_FUNCTION="check_voronoi_volume_case"
 
+SLURM_TIME_LIMIT="02:00:00"
 if [[ "${CONFIG}" == *MPI* ]]; then
     RUN_MODE="slurm"
     SLURM_NTASKS="64"

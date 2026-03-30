@@ -53,7 +53,7 @@ This problem is a standard test for hydrodynamics codes because it has an exact 
 This is the full `runs/sedov_3d/main.cpp` with no modifications:
 
 ```cpp
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/RoundCells3D.hpp"
@@ -78,8 +78,8 @@ int main(void)
     Vector3D ll(-1, -1, -1), ur(1, 1, 1);
     int rank = 0;
 #ifdef RICH_MPI
-    MPI_Init(NULL, NULL);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Init(NULL, NULL);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 
     std::vector<Vector3D> points;
@@ -99,7 +99,7 @@ int main(void)
     }
 
     if (rank == 0)
-        std::cout << "Done round" << std::endl;
+		std::cout << "Done round" << std::endl;
 
     Voronoi3D tess(ll, ur);
 #ifdef RICH_MPI
@@ -116,13 +116,11 @@ int main(void)
     inner_cell.velocity = Vector3D(0, 0 , 0);
     inner_cell.density = 1;
     inner_cell.internal_energy = 1e5;
-    inner_cell.pressure = eos.de2p(inner_cell.density, inner_cell.internal_energy,
-                                    inner_cell.tracers, ComputationalCell3D::tracerNames);
+    inner_cell.pressure = eos.de2p(inner_cell.density, inner_cell.internal_energy, inner_cell.tracers, ComputationalCell3D::tracerNames);
     outer_cell.velocity = Vector3D(0, 0 , 0);
     outer_cell.density = 1;
     outer_cell.internal_energy = 0.1;
-    outer_cell.pressure = eos.de2p(outer_cell.density, outer_cell.internal_energy,
-                                    outer_cell.tracers, ComputationalCell3D::tracerNames);
+    outer_cell.pressure = eos.de2p(outer_cell.density, outer_cell.internal_energy, outer_cell.tracers, ComputationalCell3D::tracerNames);
     for(size_t i = 0; i < Nlocal; ++i)
     {
         if(abs(tess.GetMeshPoint(i)) < 0.2)
@@ -131,42 +129,40 @@ int main(void)
             cells[i] = outer_cell;
     }
 
-    Hllc3D rs;
+	Hllc3D rs;
 
     RigidWallGenerator3D ghost;
 
-    LinearGauss3D interp(eos, ghost);
+	LinearGauss3D interp(eos, ghost);
 
-    std::vector<pair<const ConditionActionFlux1::Condition3D*,
-        const ConditionActionFlux1::Action3D*> > sequence;
+	std::vector<pair<const ConditionActionFlux1::Condition3D*,
+		const ConditionActionFlux1::Action3D*> > sequence;
+
     ConditionActionFlux1::Condition3D* isbulk = new IsBulkFace3D();
-    ConditionActionFlux1::Condition3D* isboundary = new IsBoundaryFace3D();
+	ConditionActionFlux1::Condition3D* isboundary = new IsBoundaryFace3D();
     ConditionActionFlux1::Action3D* normal_flux = new RegularFlux3D(rs);
-    ConditionActionFlux1::Action3D* rigid_flux = new RigidWallFlux3D(rs);
+	ConditionActionFlux1::Action3D* rigid_flux = new RigidWallFlux3D(rs);
     sequence.push_back(std::pair<const ConditionActionFlux1::Condition3D*,
-        const ConditionActionFlux1::Action3D*>(isboundary, rigid_flux));
+		const ConditionActionFlux1::Action3D*>(isboundary, rigid_flux));
     sequence.push_back(std::pair<const ConditionActionFlux1::Condition3D*,
-        const ConditionActionFlux1::Action3D*>(isbulk, normal_flux));
-    ConditionActionFlux1 flux(sequence, interp);
+		const ConditionActionFlux1::Action3D*>(isbulk, normal_flux));
+	ConditionActionFlux1 flux(sequence, interp);
 
-    std::vector<std::pair<const ConditionExtensiveUpdater3D::Condition3D*,
-        const ConditionExtensiveUpdater3D::Action3D*> > eu_sequence;
-    ConditionExtensiveUpdater3D eu(eu_sequence);
+	std::vector<std::pair<const ConditionExtensiveUpdater3D::Condition3D*, const ConditionExtensiveUpdater3D::Action3D*> > eu_sequence;
+	ConditionExtensiveUpdater3D eu(eu_sequence);
 
-    DefaultCellUpdater cu;
+	DefaultCellUpdater cu;
 
-    ZeroForce3D force;
+	ZeroForce3D force;
 
-    double const hydro_cfl = 0.3;
-    double const force_cfl = 1;
-    CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
+	double const hydro_cfl = 0.3;
+	double const force_cfl = 1;
+	CourantFriedrichsLewy tsf(hydro_cfl, force_cfl, force);
 
-    Lagrangian3D bpm;
+	Lagrangian3D bpm;
     RoundCells3D pm(bpm, eos);
 
-    HDSim3D sim(tess, cells, eos, pm, tsf, flux, cu, eu, force,
-                std::make_pair(ComputationalCell3D::tracerNames,
-                               ComputationalCell3D::stickerNames));
+	HDSim3D sim(tess, cells, eos, pm, tsf, flux, cu, eu, force, std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
     double old_time = sim.getTime();
     while(sim.getTime() < 0.0075)
@@ -176,8 +172,7 @@ int main(void)
             if(rank == 0)
             {
                 std::cout<<std::endl;
-                std::cout<<"Iteration "<<sim.getCycle()<<" dt "
-                         <<sim.getTime() - old_time<<" time "<<sim.getTime()<<std::endl;
+                std::cout<<"Iteration "<<sim.getCycle()<<" dt "<<sim.getTime() - old_time<<" time "<<sim.getTime()<<std::endl;
             }
             old_time = sim.getTime();
             if(sim.getCycle() % 100 == 0)
@@ -205,7 +200,7 @@ int main(void)
 ### 1. Header Includes
 
 ```cpp
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 ```
 
 Provides `Voronoi3D`, the concrete implementation of `Tessellation3D`. This is the 3D Voronoi mesh -- the spatial discretization that defines cells, faces, volumes, and neighbor relationships.

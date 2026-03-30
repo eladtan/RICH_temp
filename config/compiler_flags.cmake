@@ -34,6 +34,11 @@ endif()
 
 add_definitions("-DENERGY_GROUPS_NUM=${ENERGY_GROUPS_NUM}")
 
+if(DEFINED HIGH_RES)
+    message(STATUS "High-resolution mode enabled")
+    add_definitions("-DHIGH_RES")
+endif()
+
 if(DEFINED ASAN)
     message(STATUS "Address Sanitizer Enabled")
     list(APPEND CMAKE_CXX_FLAGS "-fsanitize=address,undefined,bounds")
@@ -49,6 +54,11 @@ endif()
 if(DEFINED MC_TRACE_DEBUG)
     message(STATUS "Monte Carlo Trace Debug Enabled with history size ${MC_TRACE_DEBUG}")
     add_definitions("-DMC_TRACING_HISTORY=${MC_TRACE_DEBUG}")
+endif()
+
+if(DEFINED MEMORY_DEBUG)
+    message(STATUS "Memory Debug Mode Enabled")
+    add_definitions("-DMEMORY_DEBUG")
 endif()
 
 # if build is Debug

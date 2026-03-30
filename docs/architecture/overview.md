@@ -43,8 +43,7 @@ source/
 │   ├── MultigroupDiffusion.hpp   # Multigroup diffusion
 │   ├── RadiationDriver.hpp       # Abstract radiation interface
 │   ├── conj_grad_solve.hpp       # Conjugate gradient solver
-│   ├── planck_integral/          # Planck function integration
-│   └── CMMC/                     # Compton Matrix Monte Carlo
+│   └── CMMC/                     # Compton Matrix Monte Carlo (includes nested submodule src/planck_integral)
 ├── mpi/                          # MPI utilities
 │   ├── mpi_commands.hpp          # MPI wrappers
 │   ├── ExchangeChain.hpp         # Ring exchange pattern

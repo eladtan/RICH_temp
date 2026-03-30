@@ -8,7 +8,7 @@ Run the full regression suite:
 ./regression_tests/run_all.sh
 ```
 
-This builds and runs all 14 tests with the default `gnuReleaseMPI` configuration.
+This builds and runs all 20 tests with the default `gnuReleaseMPI` configuration.
 
 ## Command Reference
 
@@ -89,6 +89,12 @@ Available test IDs:
 | `marshak_wave_4` | serial |
 | `gresho_euler` | serial |
 | `gresho_lagrangian` | mpi |
+| `cartesian_gauss_linear` | serial |
+| `spherical_gauss_linear` | serial |
+| `spherical_collapse` | mpi |
+| `rayleigh_taylor_mpi` | mpi |
+| `eulerian_diffusion_freefree_suite` | mpi |
+| `eulerian_diffusion_freefree_multigroup_suite` | mpi |
 | `sedov_3d_mpi` | mpi |
 | `lane_self_gravity` | mpi |
 | `mach2_diffusion` | mpi |
