@@ -14,9 +14,10 @@
 #include "ReallocationAgent.hpp"
 #include "utils/rma/RMAFactory.hpp"
 
-#define BUFFER_REALLOCATION_FACTOR 3 // 1.618033 // golden ratio
+#define BUFFER_REALLOCATION_FACTOR 1.5 // 1.618033 // golden ratio
 #define MINIMAL_BUFF_SIZE 50
-#define BUFFER_SHRINK_FACTOR 0.5
+#define BUFFER_SHRINK_FACTOR 0.1
+#define BUFFER_SHRINK_NEIGHBOR_FACTOR 0.5
 #define MPI_INDEX_T MPI_UINT32_T
 
 template<typename T, typename Grid>
@@ -74,6 +75,7 @@ public:
     double reallocationTime;
     size_t reallocationsThisStep;
     size_t reallocationsTotal;
+    double requestedFactor;
 
 private:
     std::unique_ptr<RemoteMemoryAgent<MCParticle>> particles_agent;
@@ -85,7 +87,6 @@ private:
     std::shared_ptr<DistributedMutex> remoteTHMutex;
     RDMA_Type rdma_type;
     bool destroyed;
-    double requestedFactor;
     MPI_Group group_world, group_internal;
 
     #ifdef ADVANCED_MONTECARLO_DEBUG
@@ -550,10 +551,8 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         }
     }
     size_t peerNewBuffSize = std::ceil(this->peer_buffsize * factor);
-    if(newBuffSize < MINIMAL_BUFF_SIZE or peerNewBuffSize < MINIMAL_BUFF_SIZE)
-    {
-        return;
-    }
+    newBuffSize = std::max<size_t>(newBuffSize, MINIMAL_BUFF_SIZE);
+    peerNewBuffSize = std::max<size_t>(peerNewBuffSize, MINIMAL_BUFF_SIZE);
 
     this->buffsize = newBuffSize;
 

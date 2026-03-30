@@ -20,10 +20,9 @@
 #include <mpi.h>
 
 #define MONTECARLO_EPSILON 1e-8
-#define DEFAULT_BUFFER_SIZE 1000
+#define DEFAULT_BUFFER_SIZE 500
 #define MONTECARLO_CHANGE_TAG 1280
 #define SHRINK_BUFFERS_CYCLE 50
-
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -138,6 +137,7 @@ private:
     size_t maxConsecutiveSteps;
     double maxConsecutiveStepsTime;
     RDMA_Type rdma_type;
+    size_t lastBuildGeneration;
     
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -150,6 +150,8 @@ private:
     void ResetAllBuffers(void); 
 
     void ShrinkAllBuffers(void);
+
+    void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
     
     void InitializeHandlers(size_t bufferSizes);
 };
@@ -170,6 +172,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
         std::cout << "Done initializing MonteCarloManager" << std::endl;
     }
     this->cellsStepsCounters = std::vector<size_t>(this->grid.GetPointNo(), 0);
+    this->lastBuildGeneration = std::numeric_limits<size_t>::max();
 }
 
 template<typename T, typename Grid>
@@ -844,12 +847,11 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         #ifdef ADVANCED_MONTECARLO_DEBUG
             handler->LockSelfBuffer();
         #endif // ADVANCED_MONTECARLO_DEBUG
-        
-        size_t consecutiveSteps = 0;
-        auto stepStartTime = std::chrono::high_resolution_clock::now();
-
+                
         for(int i = 0; i < length; i++)
         {
+            auto stepStartTime = std::chrono::high_resolution_clock::now();
+            size_t consecutiveSteps = 0;
             assert(i < handler->buffsize);
             size_t particleIndex = handler->th[i];
             assert(particleIndex < handler->buffsize);
@@ -1200,16 +1202,16 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                 throw eo;
             }
             this->reallocationAgent->HandleAllWaitingReallocations();
+
+            double consecutiveStepsTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - stepStartTime).count();
+            this->maxConsecutiveSteps = std::max(this->maxConsecutiveSteps, consecutiveSteps);
+            this->maxConsecutiveStepsTime = std::max(this->maxConsecutiveStepsTime, consecutiveStepsTime);
         }
         
         if(length > 0)
         {
             next_active_ranks.push_back(_rank);
         }
-
-        double consecutiveStepsTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - stepStartTime).count();
-        this->maxConsecutiveSteps = std::max(this->maxConsecutiveSteps, consecutiveSteps);
-        this->maxConsecutiveStepsTime = std::max(this->maxConsecutiveStepsTime, consecutiveStepsTime);
         
         this->reallocationAgent->HandleAllWaitingReallocations();
 
@@ -1265,14 +1267,93 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::ShrinkAllBuffers(void)
         {
             return;
         }
+        double factor;
         if(std::find(this->neighbors.cbegin(), this->neighbors.cend(), _rank) != this->neighbors.cend())
         {
-            // a neighbor - don't shrink
-            return;
+            factor = BUFFER_SHRINK_NEIGHBOR_FACTOR;
+        }    
+        else
+        {
+            factor = BUFFER_SHRINK_FACTOR;
         }
-        this->rankHandlers[_rank]->Reallocate(BUFFER_SHRINK_FACTOR);
+        this->rankHandlers[_rank]->requestedFactor = factor;
+        this->rankHandlers[_rank]->Reallocate(factor);
     };
     ForEachRankSync(this->comm_world, this->ranksOrder, shrinkBuffer);
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
+{
+    using index_t = typename RankHandler::index_t;
+    const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(index_t);
+    size_t localHandlerMemory = 0;
+    for(const RankHandler *h : this->rankHandlers)
+    {
+        if(h == nullptr) continue;
+        localHandlerMemory += h->buffsize * bytesPerSlot;
+    }
+
+    struct { double val; int rank; } myMem, maxMem;
+    myMem.val = static_cast<double>(localHandlerMemory);
+    myMem.rank = this->rank_world;
+    MPI_Allreduce(&myMem, &maxMem, 1, MPI_DOUBLE_INT, MPI_MAXLOC, this->comm_world);
+
+    double avgMem = static_cast<double>(localHandlerMemory);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &avgMem, &avgMem, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
+
+    size_t preLoopInitial = initialParticlesNum;
+    size_t preLoopPreStep = preStepParticlesNum;
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &preLoopInitial, &preLoopInitial, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &preLoopPreStep, &preLoopPreStep, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+
+    std::string handlerBreakdown;
+    if(this->rank_world == maxMem.rank)
+    {
+        boost::container::flat_set<rank_t> neighborSet(this->neighbors.begin(), this->neighbors.end());
+        std::ostringstream ss;
+        double selfTotal = 0, neighborTotal = 0, nonNeighborTotal = 0;
+        for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
+        {
+            const RankHandler *h = this->rankHandlers[r];
+            if(h == nullptr) continue;
+            double handlerMB = h->buffsize * bytesPerSlot / (1024.0 * 1024.0);
+            bool isSelf = (h->peer_rank_world == this->rank_world);
+            bool isNeighbor = !isSelf && neighborSet.count(r) > 0;
+            (isSelf ? selfTotal : isNeighbor ? neighborTotal : nonNeighborTotal) += handlerMB;
+            // const char *tag = isSelf ? " [self]" : isNeighbor ? " [neighbor]" : " [non-neighbor]";
+            // ss << "  [" << h->peer_rank_world << "]: "
+            //    << handlerMB << " MB (buffsize=" << h->buffsize << ")"
+            //    << tag << "\n";
+        }
+        ss << "  Totals: self=" << selfTotal << " MB, neighbors=" << neighborTotal << " MB, non-neighbors=" << nonNeighborTotal << " MB\n";
+        handlerBreakdown = ss.str();
+    }
+
+    if(maxMem.rank != 0)
+    {
+        if(this->rank_world == maxMem.rank)
+        {
+            int strLen = static_cast<int>(handlerBreakdown.size());
+            MPI_Send(&strLen, 1, MPI_INT, 0, 999, this->comm_world);
+            MPI_Send(handlerBreakdown.data(), strLen, MPI_CHAR, 0, 1000, this->comm_world);
+        }
+        else if(this->rank_world == 0)
+        {
+            int strLen = 0;
+            MPI_Recv(&strLen, 1, MPI_INT, maxMem.rank, 999, this->comm_world, MPI_STATUS_IGNORE);
+            handlerBreakdown.resize(strLen);
+            MPI_Recv(&handlerBreakdown[0], strLen, MPI_CHAR, maxMem.rank, 1000, this->comm_world, MPI_STATUS_IGNORE);
+        }
+    }
+
+    if(this->rank_world == 0)
+    {
+        avgMem /= this->size_world;
+        std::cout << "RankHandler memory: max=" << maxMem.val / (1024.0 * 1024.0) << " MB (rank " << maxMem.rank << "), avg=" << avgMem / (1024.0 * 1024.0) << " MB" << std::endl;
+        std::cout << handlerBreakdown;
+        std::cout << "Starting with " << (preLoopInitial + preLoopPreStep) << ". Came with " << preLoopInitial << ". Generated " << preLoopPreStep << " particles in preStep." << std::endl;
+    }
 }
 
 template<typename T, typename Grid>
@@ -1282,8 +1363,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     // {
     //     std::cout << "Changed grid for rank " << this->rank_world << ": " << this->Ncells << " -> " << this->grid.GetPointNo() <<  std::endl;
     // }
+    auto managerStepStart = std::chrono::high_resolution_clock::now();
+
     START_TIMER_PREEMPTIVE("Initialization");
 
+    auto initStart = std::chrono::high_resolution_clock::now();
     this->Ncells = this->grid.GetPointNo();
     this->ranks_ghost_map = GetGhostMap(this->grid);
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
@@ -1302,6 +1386,17 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
     this->transfersCounter = 0;
     
+    bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());
+    if(didRebalance)
+    {
+        if(this->rank_world == 0)
+        {
+            std::cout << "Doing shrink because of rebalance" << std::endl;
+        }
+        this->ShrinkAllBuffers();
+    }
+    this->lastBuildGeneration = this->grid.GetBuildGeneration();
+
     size_t totalParticles = 0;
     for(RankHandler *handler : this->rankHandlers)
     {
@@ -1336,6 +1431,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     // this->progress->Reset(totalParticles);
     MPI_Barrier(this->comm_world);
+    double initTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - initStart).count();
 
     START_TIMER_PREEMPTIVE("Prestep");
 
@@ -1368,6 +1464,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     }
     // MPI_Barrier(MPI_COMM_WORLD);
 
+    auto addParticlesStart = std::chrono::high_resolution_clock::now();
     {
         START_TIMER("Adding Particles");
         this->AddParticles(newParticles1);
@@ -1386,9 +1483,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     MonteCarloStepFinalData data;
     size_t numOfCounterDecrementations = 0;
+    double addParticlesTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - addParticlesStart).count();
+
+    this->PrintMemoryDiagnostics(initialParticlesNum, preStepParticlesNum);
+
     auto start = std::chrono::high_resolution_clock::now();
-    size_t lastLocalDecrementAmount;
-    size_t decrementTryCounter = 0;
 
     const bool &verify = amountManager.GetVerifyRef();
     const bool &done = amountManager.GetDoneRef();
@@ -1424,14 +1523,27 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     MPI_Barrier(this->comm_world);
     auto end = std::chrono::high_resolution_clock::now();
-    
+    double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+   
     START_TIMER_PREEMPTIVE("Boundary Condition");
+
+    MPI_Barrier(this->comm_world);
+    start = std::chrono::high_resolution_clock::now();
     std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
-    
+    MPI_Barrier(this->comm_world);
+    end = std::chrono::high_resolution_clock::now();
+    double populationControlTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+
     START_TIMER_PREEMPTIVE("Poststep");
+    MPI_Barrier(this->comm_world);
+    start = std::chrono::high_resolution_clock::now();
     this->physics->postStep(populationControlParticles, fullDt);
+    MPI_Barrier(this->comm_world);
+    end = std::chrono::high_resolution_clock::now();
+    double postStepTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
     START_TIMER_PREEMPTIVE("Diagnostics");
+    auto diagnosticsStart = std::chrono::high_resolution_clock::now();
 
     double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
@@ -1490,11 +1602,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     
     if(this->rank_world == 0)
     {
-        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
         std::cout << "Elapsed: " << elapsed << " seconds, max " << maxReallocationTime << " in reallocation (average: " << reallocationTime / this->size_world << ")" << std::endl;
         std::cout << "Started with " << startingParticleNum << ". Came with " << initialParticlesNum << ". Generated " << preStepParticlesNum << " particles in preStep. ";
         std::cout << "Number of leaving particles is " << leavingNumber << " and remaining (after population control) " << newParticlesNum << ". ";
         std::cout << "Total steps: " << totalSteps << ", total counter decrementations: " << totalCounterDecrementations << std::endl;
+        std::cout << "Population control time: " << populationControlTime << ", post step time: " << postStepTime << std::endl;
         // std::cout << "Max steps: " << maxSteps.x << " on rank " << maxSteps.rank << ", average is " << totalSteps / this->size_world << std::endl;
         // std::cout << "Max calls to transfer: " << maxTransfers.x << " on rank " << maxTransfers.rank << ", average is " << callsToTransfer / this->size_world << std::endl;
         std::cout << "Max consecutive steps: " << this->maxConsecutiveSteps << ", time " << this->maxConsecutiveStepsTime << std::endl;
@@ -1521,9 +1633,32 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         }
     }
     
-    if((this->currentStep > 0 and this->currentStep % SHRINK_BUFFERS_CYCLE == 0) or this->grid.DidRebalance())
+    if(not didRebalance)
     {
-        this->ShrinkAllBuffers();
+        if(this->currentStep > 0 and this->currentStep % SHRINK_BUFFERS_CYCLE == 0)
+        {
+            if(this->rank_world == 0)
+            {
+                std::cout << "Doing shrink becuase of step number (currentStep=" << this->currentStep << ", SHRINK_BUFFERS_CYCLE=" << SHRINK_BUFFERS_CYCLE << ")" << std::endl;
+            }
+            this->ShrinkAllBuffers();
+        }
+    }
+
+    double diagnosticsTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - diagnosticsStart).count();
+    double managerTotalTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStepStart).count();
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &initTime, &initTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &addParticlesTime, &addParticlesTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &diagnosticsTime, &diagnosticsTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &managerTotalTime, &managerTotalTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        double accounted = maxPreStepData.seconds + elapsed + populationControlTime + postStepTime;
+        std::cout << "Manager breakdown (max): init=" << initTime << "s, addParticles=" << addParticlesTime
+                  << "s, prestep=" << maxPreStepData.seconds << "s, mainLoop=" << elapsed
+                  << "s, popControl=" << populationControlTime << "s, postStep=" << postStepTime
+                  << "s, diagnostics=" << diagnosticsTime << "s, total=" << managerTotalTime
+                  << "s, previously accounted=" << accounted << "s" << std::endl;
     }
 
     return populationControlParticles;
