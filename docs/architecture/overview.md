@@ -17,7 +17,7 @@ source/
 │   ├── gravity/                  # GravityTree, DistributedGravityTree
 │   ├── range/                    # Spatial queries (OctTree, KDTree)
 │   ├── output/                   # WriteSnapshot3D, Snapshot3D
-│   ├── radiation/                # MonteCarloPhysics3D, RadiationIMC
+│   ├── radiation/                # MonteCarloRadiationPhysics3D, RadiationIMC
 │   ├── monte/                    # MonteCarloManager3D
 │   ├── environment/              # Environment agents and kernels
 │   └── GeometryCommon/           # RoundGrid3D, intersections
@@ -101,7 +101,7 @@ HDSim3D (main simulation object)
 | Interface | Implementations |
 |-----------|----------------|
 | `RadiationDriver` | `Diffusion`, `MultigroupDiffusion` |
-| `MonteCarloPhysics<T,Grid>` | `MonteCarloPhysics3D`, `RadiationIMC` |
+| `MonteCarloPhysics<T,Grid>` | `MonteCarloRadiationPhysics3D`, `RadiationIMC` |
 
 ## Data Flow
 

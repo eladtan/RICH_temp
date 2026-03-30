@@ -196,7 +196,7 @@ RICH also includes a Monte Carlo radiation transport module for more general tra
 
 | Class | Purpose |
 |-------|---------|
-| `MonteCarloPhysics3D` | 3D Monte Carlo photon transport |
+| `MonteCarloRadiationPhysics3D` | 3D Monte Carlo photon transport |
 | `RadiationIMC` | Implicit Monte Carlo radiation |
 | `MonteCarloManager` | Serial MC manager |
 | `TwoSidedMonteCarloManager` | MPI-aware MC manager |
