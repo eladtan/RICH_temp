@@ -542,9 +542,11 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     
     size_t newBuffSize = std::ceil(this->buffsize * factor);
     size_t oldBuffSize = this->buffsize;
+
+    bool noParticles = (*this->th_length == 0);
     if(oldBuffSize > newBuffSize)
     {
-        if(*this->th_length != 0)
+        if(not noParticles)
         {
             std::cerr << "Can not shrink memory when there are particles (there are " << (*this->th_length) << " particles)" << std::endl;
             exit(1);
@@ -560,15 +562,36 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     {
         assert(this->size_internal == 2);
 
-        this->particles_agent->Resize(this->buffsize);
-        this->av_agent->Resize(this->buffsize);
-        this->th_agent->Resize(this->buffsize);
+        int localNoParticles = noParticles ? 1 : 0;
+        int peerNoParticles = 0;
+        MPI_Sendrecv(&localNoParticles, 1, MPI_INT, this->other_rank, 0, &peerNoParticles, 1, MPI_INT, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
+        bool bothEmpty = (localNoParticles and peerNoParticles);
+
+        if(bothEmpty)
+        {
+            this->particles_agent->Replace(this->buffsize);
+            this->av_agent->Replace(this->buffsize);
+            this->th_agent->Replace(this->buffsize);
+        }
+        else
+        {
+            this->particles_agent->Resize(this->buffsize);
+            this->av_agent->Resize(this->buffsize);
+            this->th_agent->Resize(this->buffsize);
+        }
 
         this->particles = this->particles_agent->GetLocalPointer();
         this->av = this->av_agent->GetLocalPointer();
         this->th = this->th_agent->GetLocalPointer();
 
-        if(this->buffsize >= oldBuffSize)
+        if(noParticles)
+        {
+            std::iota(this->av, this->av + this->buffsize, 0);
+            *this->av_length = static_cast<int>(this->buffsize);
+            *this->th_length = 0;
+            std::fill(this->th, this->th + this->buffsize, inf);
+        }
+        else if(this->buffsize >= oldBuffSize)
         {
             size_t difference = this->buffsize - oldBuffSize;
             std::memmove(this->av + difference, this->av, oldBuffSize * sizeof(index_t));
@@ -591,36 +614,54 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         #endif // ADVANCED_MONTECARLO_DEBUG
     }
     else
-    {        
-        MCParticle *new_particles = new MCParticle[this->buffsize];
-        index_t *new_av = new typename RankHandler::index_t[this->buffsize];
-        index_t *new_th = new typename RankHandler::index_t[this->buffsize];
-
-        if(this->buffsize >= oldBuffSize)
+    {
+        if(noParticles)
         {
-            std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
-            std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
-            size_t difference = this->buffsize - oldBuffSize;
-            std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
-            std::iota(new_av, new_av + difference, oldBuffSize);
-            int difference_int = difference;
-            *this->av_length += difference_int;
+            delete[] this->particles;
+            delete[] this->av;
+            delete[] this->th;
+
+            this->particles = new MCParticle[this->buffsize];
+            this->av = new index_t[this->buffsize];
+            this->th = new index_t[this->buffsize];
+
+            std::iota(this->av, this->av + this->buffsize, 0);
+            *this->av_length = static_cast<int>(this->buffsize);
+            *this->th_length = 0;
+            std::fill(this->th, this->th + this->buffsize, inf);
         }
         else
         {
-            std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
-            std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
-            std::iota(new_av, new_av + this->buffsize, 0);
-            *this->av_length = static_cast<int>(this->buffsize);
-        }
-        std::fill(new_th + *this->th_length, new_th + this->buffsize, inf);
+            MCParticle *new_particles = new MCParticle[this->buffsize];
+            index_t *new_av = new typename RankHandler::index_t[this->buffsize];
+            index_t *new_th = new typename RankHandler::index_t[this->buffsize];
 
-        delete[] this->particles;
-        delete[] this->av;
-        delete[] this->th;
-        this->particles = new_particles;
-        this->av = new_av;
-        this->th = new_th;
+            if(this->buffsize >= oldBuffSize)
+            {
+                std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
+                std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
+                size_t difference = this->buffsize - oldBuffSize;
+                std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
+                std::iota(new_av, new_av + difference, oldBuffSize);
+                int difference_int = difference;
+                *this->av_length += difference_int;
+            }
+            else
+            {
+                std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
+                std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
+                std::iota(new_av, new_av + this->buffsize, 0);
+                *this->av_length = static_cast<int>(this->buffsize);
+            }
+            std::fill(new_th + *this->th_length, new_th + this->buffsize, inf);
+
+            delete[] this->particles;
+            delete[] this->av;
+            delete[] this->th;
+            this->particles = new_particles;
+            this->av = new_av;
+            this->th = new_th;
+        }
 
         this->peer_buffsize = this->buffsize;
 
