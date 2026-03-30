@@ -70,7 +70,7 @@ private:
     struct MonteCarloStepFinalData
     {
         std::vector<MCParticle> remaining;
-        std::vector<MCParticle> leaving;
+        size_t leavingCount = 0;
     };
 
     const Grid &grid;
@@ -465,7 +465,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         {}
                         else if(status == MonteCarloParticleStatus::REMOVE)
                         {
-                            stepData.leaving.push_back(particle);
+                            stepData.leavingCount++;
                             this->allStepsCounter += particle.steps;
                             // remove particle from current list
                             removeParticle(i);
@@ -672,7 +672,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
 
         size_t newParticlesNum = populationControlParticles.size();
-        size_t leavingNumber = data.leaving.size();
+        size_t leavingNumber = data.leavingCount;
 
         size_t totalSteps = this->allStepsCounter;
         size_t totalCounterDecrementations = numOfCounterDecrementations;

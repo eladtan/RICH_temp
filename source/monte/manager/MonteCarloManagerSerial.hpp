@@ -24,7 +24,7 @@ public:
     struct MonteCarloStepFinalData
     {
         std::vector<MCParticle> remaining;
-        std::vector<MCParticle> leaving;
+        size_t leavingCount = 0;
     };
 
     MonteCarloManagerSerial(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
@@ -354,7 +354,7 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
                     else if(status == MonteCarloParticleStatus::REMOVE)
                     {
                         // std::cout << "Particle " << particle << "(" << &particle << ")" << " is leaving the domain" << std::endl;
-                        stepData.leaving.push_back(particle);
+                        stepData.leavingCount++;
                         removeParticle(i);
                         break;
                     }

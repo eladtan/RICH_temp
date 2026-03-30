@@ -1101,7 +1101,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                 }
                                 else if(status == MonteCarloParticleStatus::REMOVE)
                                 {
-                                    stepData.leaving.push_back(particle);
+                                    stepData.leavingCount++;
                                     this->allStepsCounter += particle.steps;
                                     // remove particle from current list
                                     removeParticle(index, i);
@@ -1552,7 +1552,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     auto diagnosticsStart = std::chrono::high_resolution_clock::now();
 
     size_t newParticlesNum = data.remaining.size();
-    size_t leavingNumber = data.leaving.size();
+    size_t leavingNumber = data.leavingCount;
 
     size_t totalSteps = this->allStepsCounter;
     size_t totalCounterDecrementations = numOfCounterDecrementations;
