@@ -106,6 +106,9 @@ for arg in "${@:2}"; do
         --high-res)
             CMAKE_FLAGS+=" -DHIGH_RES=1 "
             ;;
+        --memory_debug)
+            CMAKE_FLAGS+=" -DMEMORY_DEBUG=1 "
+            ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
             ;;
@@ -150,7 +153,7 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 # ==================== Validate arguments ====================
 
 if [[ $# -lt 2 || -z "$TEST_NAME" ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--build-subdir=<name>] [--jobs=<N>]${NC}"
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 
@@ -360,20 +363,22 @@ PROGRESS_PID=$!
 
 if [[ "${VERBOSE:-0}" == "1" ]]; then
     # Verbose mode: stream raw make output (including compile commands).
+    # Also tee into the progress FIFO so the background reader can finish.
     stdbuf -oL make VERBOSE=1 -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
-        | tee "$MAKE_OUT"
+        | tee "$PROGRESS_FIFO" "$MAKE_OUT"
     MAKE_EXIT_CODE=${PIPESTATUS[0]}
 else
     # Default mode: compact progress + linking indicator.
     stdbuf -oL make -j"${MAKE_JOBS}" --output-sync=target 2> "$MAKE_ERR" \
         | tee "$PROGRESS_FIFO" > "$MAKE_OUT"
     MAKE_EXIT_CODE=${PIPESTATUS[0]}
+fi
+
 wait "$PROGRESS_PID" 2>/dev/null
 rm -f "$PROGRESS_FIFO"
 
 PROGRESS_DONE=$(<"$PROGRESS_STATE_FILE")
 rm -f "$PROGRESS_STATE_FILE"
-fi
 
 # ==================== Final Status ====================
 

@@ -1,4 +1,5 @@
 #include "hdsim_3d.hpp"
+#include "misc/memory_debug.hpp"
 
 namespace
 {
@@ -183,6 +184,7 @@ void HDSim3D::timeAdvance2(void)
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
+	MEMORY_DEBUG_PRINT("hydro: after MPI reset");
 	const double time = pt_.getTime();
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, time, point_vel);
@@ -199,15 +201,19 @@ void HDSim3D::timeAdvance2(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
+	MEMORY_DEBUG_PRINT("hydro: after CFL + face velocities");
 	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt);
+	MEMORY_DEBUG_PRINT("hydro: after flux calc");
 	vector<Conserved3D> mid_extensives(extensive_);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
+	MEMORY_DEBUG_PRINT("hydro: after extensive update");
 	auto t1 = get_time();
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
+	MEMORY_DEBUG_PRINT("hydro: after source terms");
 	if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
@@ -244,11 +250,13 @@ void HDSim3D::timeAdvance2(void)
 		MPI_exchange_data(tess_, point_vel, true);
 #endif
 	}
+	MEMORY_DEBUG_PRINT("hydro: after Voronoi rebuild");
 
 cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
 #endif
+MEMORY_DEBUG_PRINT("hydro: after cell update (1st half)");
 
 CalcFaceVelocities(tess_, point_vel, face_vel);
 face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt);
@@ -262,10 +270,12 @@ cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
 #endif
+MEMORY_DEBUG_PRINT("hydro: after cell update (2nd half)");
 }
 
 void HDSim3D::timeAdvance(void)
 {
+	MEMORY_DEBUG_PRINT("hydro1: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
@@ -310,11 +320,13 @@ void HDSim3D::timeAdvance(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
+	MEMORY_DEBUG_PRINT("hydro1: end");
 }
 
 
 void HDSim3D::timeAdvance3(void)
 {
+	MEMORY_DEBUG_PRINT("hydro3: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
@@ -417,10 +429,12 @@ void HDSim3D::timeAdvance3(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
+	MEMORY_DEBUG_PRINT("hydro3: end");
 }
 
 void HDSim3D::timeAdvance33(void)
 {
+	MEMORY_DEBUG_PRINT("hydro33: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
@@ -531,10 +545,12 @@ void HDSim3D::timeAdvance33(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
+	MEMORY_DEBUG_PRINT("hydro33: end");
 }
 
 void HDSim3D::timeAdvance32(void)
 {
+	MEMORY_DEBUG_PRINT("hydro32: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
@@ -615,10 +631,12 @@ void HDSim3D::timeAdvance32(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
+	MEMORY_DEBUG_PRINT("hydro32: end");
 }
 
 void HDSim3D::timeAdvance4(void)
 {
+	MEMORY_DEBUG_PRINT("hydro4: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
@@ -733,6 +751,7 @@ void HDSim3D::timeAdvance4(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
+	MEMORY_DEBUG_PRINT("hydro4: end");
 }
 
 const Tessellation3D& HDSim3D::getTessellation(void) const

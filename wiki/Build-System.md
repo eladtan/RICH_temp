@@ -60,6 +60,7 @@ intelMixed          intelMixedMPI
 | `--with_asan` | Enable AddressSanitizer | Off |
 | `--energy_groups_num=<N>` | Override `ENERGY_GROUPS_NUM` for multigroup radiation | Compile-time default |
 | `--mc_debug` | Enable Monte Carlo debug mode | Off |
+| `--memory_debug` | Print per-cycle RSS memory usage (max-rank and sum-all in GB) to stderr at key simulation, hydro, radiation, and I/O checkpoints | Off |
 | `--debug_files=<path>` | File list for mixed-debug builds | -- |
 | `--build-subdir=<name>` | Build into `build/<config>/<name>/` | `build/<config>/` |
 | `--jobs=<N>` | Parallel make jobs | `$(nproc)` |
@@ -75,6 +76,9 @@ intelMixed          intelMixedMPI
 
 # Debug build with AddressSanitizer
 ./build_rich.sh gnuDebug --test_name=sod --with_asan
+
+# MPI build with memory tracking (prints RSS to stderr at each simulation phase)
+./build_rich.sh intelReleaseMPI --test_name=BaseTDE --memory_debug
 
 # Build into a named subdirectory (keeps multiple executables)
 ./build_rich.sh gnuReleaseMPI --test_name=sedov_3d --build-subdir=sedov

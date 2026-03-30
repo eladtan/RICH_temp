@@ -136,6 +136,7 @@ where `sedov2d_test` represents the subdirectory `runs/sedov2d_test` which conta
   - `--with_asan` - Enable AddressSanitizer.
   - `--energy_groups_num=<N>` - Override `ENERGY_GROUPS_NUM`.
   - `--mc_debug` - Enable Monte-Carlo debug build flag.
+  - `--memory_debug` - Enable memory-usage tracking. Prints per-cycle RSS (max-rank and sum-all in GB) to stderr at key simulation, hydro, radiation, and I/O points. Off by default.
   - `--debug_files=<path>` - Provide a mixed-debug file list for `DEBUG_FILES`.
   - `--build-subdir=<name>` - Build into `build/<config>/<name>/` instead of `build/<config>/`. Useful for keeping multiple test executables side by side without overwriting.
   - `--jobs=<N>` - Number of parallel make jobs (default: auto-detected via `nproc`).

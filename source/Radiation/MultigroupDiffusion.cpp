@@ -1,5 +1,6 @@
 #include "Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
 #include "MultigroupDiffusion.hpp"
+#include "misc/memory_debug.hpp"
 // TODO: make a units namespace used by all the program 
 #include "CMMC/src/units/units.hpp"
 #include "CMMC/src/planck_integral/planck_integral.hpp"
@@ -341,6 +342,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     std::size_t tot_iters = 0;
     bool good_end = false;
     new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full, good_end);
+    MEMORY_DEBUG_PRINT("multigroup: after BiCGSTAB");
     if (not good_end)
         return false;
     tot_iters += total_iters;
@@ -348,6 +350,7 @@ bool MultigroupDiffusion::step(double const tolerance,
     if (rank == 0) std::cout << "Total iterations: " << tot_iters << std::endl;
 
     PostCG(tess, extensives, dt, cells, new_Eg, new_Eg_full);
+    MEMORY_DEBUG_PRINT("multigroup: after PostCG");
 
 #ifdef RICH_MPI
     MPI_exchange_data(tess, cells, true);

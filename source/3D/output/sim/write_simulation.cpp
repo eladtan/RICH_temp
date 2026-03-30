@@ -8,6 +8,7 @@
 #include <thread>
 #include <chrono>
 #include "misc/universal_error.hpp"
+#include "misc/memory_debug.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 #ifdef RICH_MPI
@@ -122,6 +123,7 @@ void WriteSimulation(const Simulation &sim, const std::string &filename
                      #endif
                      )
 {
+    MEMORY_DEBUG_PRINT("WriteSimulation: before");
     #ifdef RICH_MPI
         int rank = 0, ws = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -175,4 +177,5 @@ void WriteSimulation(const Simulation &sim, const std::string &filename
         writeTessellation(writer, "/tess", sim);
         writePhysicsGroups(writer, "", sim);
     }
+    MEMORY_DEBUG_PRINT("WriteSimulation: after");
 }

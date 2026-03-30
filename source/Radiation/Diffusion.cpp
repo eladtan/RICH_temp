@@ -1,4 +1,5 @@
 #include "Diffusion.hpp"
+#include "misc/memory_debug.hpp"
 #include <boost/math/special_functions.hpp>
 
 #ifdef RICH_MPI
@@ -198,6 +199,7 @@ bool Diffusion::step(double const tolerance,
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
+    MEMORY_DEBUG_PRINT("diffusion: after BiCGSTAB");
     if(not good_end)
         return false;
     
@@ -238,6 +240,7 @@ bool Diffusion::step(double const tolerance,
 
     try {
         PostCG(tess, extensives, dt, cells, new_Er, new_Er_full);
+        MEMORY_DEBUG_PRINT("diffusion: after PostCG");
     } catch(UniversalError const& eo) {
         if(rank == 0){
             std::cout<< "PostCG Exception:" << std::endl;

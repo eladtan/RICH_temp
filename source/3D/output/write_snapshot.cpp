@@ -1,4 +1,5 @@
 #include "write3D.hpp"
+#include "misc/memory_debug.hpp"
 
 struct VTU_Output
 {
@@ -257,6 +258,7 @@ VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, co
 #ifdef RICH_MPI
     void WriteSnapshot3DParallel(HDSim3D const &sim, std::string const &filename, const vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
     {
+        MEMORY_DEBUG_PRINT("WriteSnapshot3DParallel: before");
         int rank = 0;
         int ws = 0; // MPI_COMM_WORLD size
 
@@ -306,6 +308,7 @@ VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, co
                 globalFileWriter->AddExternalLink(rankFile, "/", "/rank" + std::to_string(_rank));
             }
         }
+        MEMORY_DEBUG_PRINT("WriteSnapshot3DParallel: after");
     }
 #endif // RICH_MPI
 
@@ -315,6 +318,7 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
 #endif // RICH_MPI
                                          , bool write_vtu)
 {
+    MEMORY_DEBUG_PRINT("WriteSnapshot3D: before");
     #ifdef RICH_MPI
         int rank = 0;
         int ws = 0; // MPI_COMM_WORLD size
@@ -411,4 +415,5 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
     {
         writeVTU(filename, sim, vtu);
     }
+    MEMORY_DEBUG_PRINT("WriteSnapshot3D: after");
 }

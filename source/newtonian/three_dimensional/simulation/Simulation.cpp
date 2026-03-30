@@ -1,5 +1,6 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
+#include "misc/memory_debug.hpp"
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) : tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID_(0)
 {
@@ -129,6 +130,7 @@ double Simulation::GetTimeStep(void) const
 
 void Simulation::step(void)
 {
+    MEMORY_DEBUG_PRINT("Simulation::step START cycle=" + std::to_string(this->tracker.getCycle()));
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
     #ifdef RICH_MPI
@@ -205,7 +207,9 @@ void Simulation::step(void)
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
         std::cout.flush();
 
+        MEMORY_DEBUG_PRINT("Before " + name);
         physics->step(dt);
+        MEMORY_DEBUG_PRINT("After " + name);
 
         double dt_suggest = physics->suggestTimeStep();
         next_time_step = std::min(next_time_step, dt_suggest);
