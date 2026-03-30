@@ -15,6 +15,7 @@
 #include "RankHandler.hpp"
 #include "ReallocationAgent.hpp"
 #include "utils/debug/SmartTimer.hpp"
+#include "misc/memory_debug.hpp"
 #include <memory>
 #include <random>
 #include <mpi.h>
@@ -60,7 +61,7 @@ public:
     struct MonteCarloStepFinalData
     {
         std::vector<MCParticle> remaining;
-        std::vector<MCParticle> leaving;
+        size_t leavingCount = 0;
     };
 
     MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
@@ -83,7 +84,7 @@ public:
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const {return this->cellsStepsCounters;}
 
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, dt_t fullDt);
+    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
     
     class Tracker
     {
@@ -141,7 +142,7 @@ private:
     
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
-    void PutSelfParticles(const std::vector<MCParticle> &particles);
+    void PutSelfParticles(std::vector<MCParticle> &&particles);
 
     void FreeHandlers(void);
 
@@ -421,7 +422,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(const std::vector<MCParticle> &particles)
+void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector<MCParticle> &&particles)
 {
     using index_t = typename RankHandler::index_t;
 
@@ -473,6 +474,10 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(const std::
             particle.id = this->myIDCounter++;
         }
     }
+
+    // don't waste memory - remove current particles from the input vector
+    std::vector<MCParticle> empty;
+    particles.swap(empty);
 }
 
 template<typename T, typename Grid>
@@ -1357,7 +1362,7 @@ void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesN
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::MonteCarloManager::step(const std::vector<MCParticle> &particleList, dt_t fullDt)
+std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::MonteCarloManager::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 {
     // if(this->Ncells != this->grid.GetPointNo())
     // {
@@ -1374,7 +1379,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     
     this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
     this->ResetAllBuffers();
-    this->PutSelfParticles(particleList);
+    size_t initialParticlesNum = particleList.size();
+    this->PutSelfParticles(std::move(particleList));
     this->resetTracker();
     this->currentStep++;
     this->iteration = 0;
@@ -1435,8 +1441,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     START_TIMER_PREEMPTIVE("Prestep");
 
-    size_t initialParticlesNum = particleList.size();
-
     RankHandler *handler = this->rankHandlers[this->rank_world];
     
     this->physics->updateGridData();
@@ -1465,15 +1469,16 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     // MPI_Barrier(MPI_COMM_WORLD);
 
     auto addParticlesStart = std::chrono::high_resolution_clock::now();
+    size_t preStepParticlesNum = newParticles1.size();
     {
         START_TIMER("Adding Particles");
         this->AddParticles(newParticles1);
+        std::vector<MCParticle>().swap(newParticles1);
     }
     // MPI_Barrier(this->comm_world);
     size_t numParticles = *handler->th_length;
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
-    size_t preStepParticlesNum = newParticles1.size();
     int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
 
     this->localDecrementAmount = 0;
@@ -1492,6 +1497,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     const bool &verify = amountManager.GetVerifyRef();
     const bool &done = amountManager.GetDoneRef();
 
+    MEMORY_DEBUG_PRINT("Before main loop in MCM");
     START_TIMER_PREEMPTIVE("Main Loop");
     try
     {
@@ -1529,7 +1535,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     MPI_Barrier(this->comm_world);
     start = std::chrono::high_resolution_clock::now();
-    std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
+    data.remaining = this->populationControl->activate(data.remaining);
     MPI_Barrier(this->comm_world);
     end = std::chrono::high_resolution_clock::now();
     double populationControlTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
@@ -1537,7 +1543,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     START_TIMER_PREEMPTIVE("Poststep");
     MPI_Barrier(this->comm_world);
     start = std::chrono::high_resolution_clock::now();
-    this->physics->postStep(populationControlParticles, fullDt);
+    this->physics->postStep(data.remaining, fullDt);
     MPI_Barrier(this->comm_world);
     end = std::chrono::high_resolution_clock::now();
     double postStepTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
@@ -1545,10 +1551,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     START_TIMER_PREEMPTIVE("Diagnostics");
     auto diagnosticsStart = std::chrono::high_resolution_clock::now();
 
-    double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-    // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
-
-    size_t newParticlesNum = populationControlParticles.size();
+    size_t newParticlesNum = data.remaining.size();
     size_t leavingNumber = data.leaving.size();
 
     size_t totalSteps = this->allStepsCounter;
@@ -1614,9 +1617,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     std::cout.flush();
     MPI_Barrier(this->comm_world);
 
-    // vtune_stop();
-    // return data.finalData;
-
     for(const RankHandler *handler : this->rankHandlers)
     {
         if(handler == nullptr)
@@ -1661,7 +1661,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                   << "s, previously accounted=" << accounted << "s" << std::endl;
     }
 
-    return populationControlParticles;
+    return data.remaining;
 }
 
 #endif // MONTE_CARLO_MANAGER_HPP

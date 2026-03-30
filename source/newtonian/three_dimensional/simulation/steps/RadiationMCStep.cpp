@@ -106,7 +106,7 @@ void RadiationMCStep::step(double dt)
     double preManagerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - preManagerStart).count();
 
     auto managerStart = std::chrono::high_resolution_clock::now();
-    this->particles = this->manager->step(this->particles, this->cells, dt);
+    this->particles = this->manager->step(std::move(this->particles), this->cells, dt);
     double managerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStart).count();
 
     int rank = 0;

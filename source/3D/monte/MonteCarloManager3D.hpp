@@ -18,7 +18,7 @@ public:
 
     virtual const std::vector<size_t> &GetCellsStepsCounters(void) const = 0;
 
-    virtual std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
+    virtual std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
 };
 
 class MonteCarloManagerSerial3D : public MonteCarloManagerSerial<Vector3D, Tessellation3D>, public MonteCarloManager3D
@@ -32,7 +32,7 @@ public:
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
+    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
 #ifdef RICH_MPI
@@ -49,9 +49,9 @@ public:
                         const MPI_Comm &comm = MPI_COMM_WORLD,
                         RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
 
-    inline const std::vector<size_t> &GetCellsStepsCounters(void) const{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
+    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
 
@@ -65,9 +65,9 @@ public:
                                 const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
                                 const MPI_Comm &comm = MPI_COMM_WORLD);
 
-    inline const std::vector<size_t> &GetCellsStepsCounters(void) const{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
+    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
 #endif // RICH_MPI

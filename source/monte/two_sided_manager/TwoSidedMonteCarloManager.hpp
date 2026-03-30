@@ -40,7 +40,7 @@ public:
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const {return this->cellsStepsCounters;}
 
     // todo: should return that?
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, dt_t fullDt);
+    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
     
     class Tracker
     {
@@ -555,7 +555,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
 }
 
 template<typename T, typename Grid>
-std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::step(const std::vector<MCParticle> &particleList, dt_t fullDt)
+std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 {
     try
     {
@@ -564,7 +564,12 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
         this->particles.clear();
 
+        size_t initialParticlesNum = particleList.size();
         this->PutSelfParticles(particleList.data(), particleList.size());
+        {
+            std::vector<MCParticle> empty;
+            particleList.swap(empty);
+        }
         this->resetTracker();
         this->currentStep++;
         this->iteration = 0;
@@ -590,8 +595,6 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         }
 
         MPI_Barrier(this->comm_world);
-
-        size_t initialParticlesNum = particleList.size();
         
         this->physics->updateGridData();
 

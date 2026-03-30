@@ -33,7 +33,7 @@ public:
 
     virtual ~MonteCarloManagerSerial();
 
-    std::vector<MCParticle> step(const std::vector<MCParticle> &particleList, dt_t fullDt);
+    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
     
     class Tracker
     {
@@ -82,7 +82,7 @@ private:
 
     void HandleAll(MonteCarloStepFinalData &cache);
 
-    void PutSelfParticles(const std::vector<MCParticle> &particles);
+    void PutSelfParticles(std::vector<MCParticle> &&particles);
 
     void PrepareForStep(void);
 
@@ -199,7 +199,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     return this->track[id];
 }
 template<typename T, typename Grid>
-void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles(const std::vector<MCParticle> &particles)
+void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles(std::vector<MCParticle> &&particles)
 {
     size_t particlesNum = particles.size();
     bool reallocated = false;
@@ -259,6 +259,10 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles
         // std::cout << "Assigned ID " << firstID + i << std::endl;
     }
     this->myIDCounter += assignedCounter;
+
+    // don't waste memory - remove current particles from the input vector
+    std::vector<MCParticle> empty;
+    particles.swap(empty);
 }
 
 template<typename T, typename Grid>
@@ -384,16 +388,15 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::step(const std::vector<MCParticle> &particleList, dt_t fullDt)
+std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 
 {
     this->PrepareForStep();
     this->physics->updateGridData();
-    std::vector<MCParticle> particlesListCpy = particleList;
     
     this->resetTracker();
 
-    this->PutSelfParticles(particlesListCpy);
+    this->PutSelfParticles(std::move(particleList));
 
     int length = this->particlesData.th_length;
     for(int i = 0; i < length; i++)
