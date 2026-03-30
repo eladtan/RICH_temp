@@ -21,7 +21,7 @@ public:
 
     virtual std::vector<MCParticle> preStep(double fullDt) = 0;
 
-    virtual MonteCarloFunctionality<T, Grid> step(MCParticle &particle) = 0;
+    virtual MonteCarloFunctionality<T, Grid> step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) = 0;
 
     virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
 

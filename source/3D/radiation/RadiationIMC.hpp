@@ -31,7 +31,7 @@ public:
 
     std::vector<Particle> preStep(double fullDt) override;
 
-    Functionality step(Particle &particle) override;
+    Functionality step(Particle &particle, std::vector<Particle> &particlesToAdd) override;
 
     void postStep(const std::vector<Particle> &particles, double fullDt) override;
 

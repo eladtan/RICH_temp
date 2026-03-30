@@ -220,9 +220,8 @@ template<typename T, typename Grid>
 bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
 {
     static std::vector<size_t> removeParticlesVec;
-    static std::vector<MCParticle> newParticles;
+    static std::vector<MCParticle> particlesToAdd;
     removeParticlesVec.clear();
-    newParticles.clear();
     
     auto eliminateParticle = [&](size_t particleIndex)
     {
@@ -392,7 +391,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
             #ifdef MONTECARLO_DEBUG
                 particle.previousLocation = particle.location;
             #endif // MONTECARLO_DEBUG
-            MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
+            MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
 
             // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
             if(debug)
@@ -400,10 +399,6 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 std::cout << "Particle " << particle << ", functionality is " << functionality.change << std::endl;
             }
 
-            if(not functionality.particlesToAdd.empty())
-            {
-                newParticles.insert(newParticles.end(), functionality.particlesToAdd.cbegin(), functionality.particlesToAdd.cend());
-            }
             if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
             {
                 size_t nextCellIndex = functionality.nextCellIndex;
@@ -546,10 +541,10 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
     {
         this->RemoveParticles(removeParticlesVec);
     }
-    if(not newParticles.empty())
+    if(not particlesToAdd.empty())
     {        
-        this->PutSelfParticles(newParticles.data(), newParticles.size());
-        this->localDecrementAmount -= newParticles.size();
+        this->localDecrementAmount -= particlesToAdd.size();
+        this->PutSelfParticles(particlesToAdd.data(), particlesToAdd.size());
     }
     return (length == 0);
 }

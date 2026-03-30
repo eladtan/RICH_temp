@@ -14,7 +14,7 @@ public:
 
     std::vector<MCParticle> preStep(double fullDt) override;
 
-    Functionality step(MCParticle &particle) override;
+    Functionality step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) override;
 
     void postStep(const std::vector<MCParticle> &particles) override;
 };
@@ -25,8 +25,9 @@ NoMonteCarloPhysics<T, Grid>::NoMonteCarloPhysics(Grid &grid, const std::shared_
 {}
 
 template<typename T, typename Grid>
-typename NoMonteCarloPhysics<T, Grid>::Functionality NoMonteCarloPhysics<T, Grid>::step(MCParticle &particle)
+typename NoMonteCarloPhysics<T, Grid>::Functionality NoMonteCarloPhysics<T, Grid>::step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd)
 {
+    (void) particlesToAdd; // particlesToAdd is not used in this physics
     Functionality functionality;
 
     auto [faceIntersect, timeIntersect, nextCellIndex] = this->getIntersectionDetails(particle);

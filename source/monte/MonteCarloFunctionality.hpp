@@ -11,7 +11,6 @@ public:
 
     MonteCarloParticleStatus change = MonteCarloParticleStatus::NO_CELL_MOVE;
     size_t nextCellIndex = std::numeric_limits<size_t>::max();
-    std::vector<MCParticle> particlesToAdd;
 };
 
 #endif // MONTE_CARLO_FUNCTIONALITY_HPP

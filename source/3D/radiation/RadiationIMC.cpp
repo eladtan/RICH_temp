@@ -41,8 +41,9 @@ namespace {
     }
 }
 
-typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle)
+typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std::vector<Particle> &particlesToAdd)
 {
+    (void) particlesToAdd; // particlesToAdd is not used in this physics
     Functionality functionality;
 
     bool debug = false;

@@ -285,7 +285,8 @@ template<typename T, typename Grid>
 void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteCarloStepFinalData &stepData)
 {
     static std::vector<size_t> removeParticlesVec;
-        
+    static std::vector<MCParticle> particlesToAdd;
+
     size_t removeCounter = 0;
 
     auto removeParticle = [&](size_t i)
@@ -318,7 +319,7 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
             particle.steps++;
             this->cellsStepsCounters[particle.cellIndex]++;
     
-            MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle);
+            MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
 
             #ifdef MC_TRACING_HISTORY
                 particle.recordHistory(particle.cellIndex, 0, static_cast<int>(functionality.change));
@@ -379,6 +380,12 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
                 break;
             }
         }
+    }
+
+    if(not particlesToAdd.empty())
+    {
+        this->AddParticles(particlesToAdd);
+        particlesToAdd.clear();
     }
 
     if(removeCounter > 0)

@@ -58,7 +58,7 @@ std::vector<rank_t> GetRanksOrder(const MPI_Comm &comm)
     return myOrder;
 }
 
-void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, const std::function<void(rank_t)> &func)
+void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, const std::function<void(rank_t)> &func, bool use_barrier)
 {
     rank_t rank, size;
     MPI_Comm_size(comm, &size);
@@ -66,7 +66,7 @@ void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, con
 
     for(const rank_t &_rank : order)
     {
-        MPI_Barrier(comm);
+        if(use_barrier) MPI_Barrier(comm);
         func(_rank);
     }
 
@@ -76,17 +76,20 @@ void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, con
 
     if(not sizeIsEven)
     {
-        if(rank == lastRank)
+        if(use_barrier)
         {
-            for(rank_t i = 0; i < even_comm_size; i++)
+            if(rank == lastRank)
             {
-                MPI_Barrier(comm); // match with their barrier
+                for(rank_t i = 0; i < even_comm_size; i++)
+                {
+                    MPI_Barrier(comm); // match with their barrier
+                }
             }
         }
         // now everybody need to synchronize with rank `N-1`
         for(rank_t _rank = 0; _rank < size; _rank++)
         {
-            MPI_Barrier(comm);
+            if(use_barrier) MPI_Barrier(comm);
             if(rank == lastRank or rank == _rank)
             {
                 rank_t otherRank = (rank == _rank)? lastRank : _rank;

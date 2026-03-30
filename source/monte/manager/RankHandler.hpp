@@ -13,6 +13,7 @@
 #include "tools/ConditionVariable.hpp"
 #include "ReallocationAgent.hpp"
 #include "utils/rma/RMAFactory.hpp"
+#include "misc/memory_debug.hpp"
 
 #define BUFFER_REALLOCATION_FACTOR 1.5 // 1.618033 // golden ratio
 #define MINIMAL_BUFF_SIZE 50
@@ -47,9 +48,14 @@ public:
     size_t buffsize, peer_buffsize;
     MCParticle *particles;
     index_t *av;
-    volatile int *av_length;
     index_t *th;
-    volatile int *th_length; 
+
+private:
+    int av_length_storage;
+    int th_length_storage;
+public:
+    volatile int &av_length;
+    volatile int &th_length;
 
     std::shared_ptr<ReallocationAgent> &reallocationAgent;
     
@@ -99,6 +105,8 @@ private:
 template<typename T, typename Grid>
 RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type):
     comm_world(comm_world), comm(private_comm), buffsize(buffsize),
+    av_length_storage(0), th_length_storage(0),
+    av_length(av_length_storage), th_length(th_length_storage),
     rdma_type(rdma_type), destroyed(false), reallocationAgent(reallocationAgent), reallocationsTotal(0)
 {
     assert(private_comm != MPI_COMM_NULL);
@@ -120,14 +128,12 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
         this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
         this->av_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
         this->th_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
-        this->av_length_agent = RMAFactory::Create<int>(this->rdma_type, 1, this->comm);
-        this->th_length_agent = RMAFactory::Create<int>(this->rdma_type, 1, this->comm);
+        this->av_length_agent = RMAFactory::CreateOver<int>(this->rdma_type, &this->av_length_storage, 1, this->comm);
+        this->th_length_agent = RMAFactory::CreateOver<int>(this->rdma_type, &this->th_length_storage, 1, this->comm);
 
         this->particles = this->particles_agent->GetLocalPointer();
         this->av = this->av_agent->GetLocalPointer();
         this->th = this->th_agent->GetLocalPointer();
-        this->av_length = const_cast<volatile int*>(this->av_length_agent->GetLocalPointer());
-        this->th_length = const_cast<volatile int*>(this->th_length_agent->GetLocalPointer());
         
         // initialize mutexes
         std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0, this->rdma_type);
@@ -140,13 +146,11 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
     }
     else
     {
-        // initialized from outside
         this->other_rank = 0;
         this->particles = new MCParticle[this->buffsize];
         this->av = new index_t[this->buffsize];
         this->th = new index_t[this->buffsize];
-        this->av_length = new int(this->buffsize);
-        this->th_length = new int(0);
+        this->av_length_storage = static_cast<int>(this->buffsize);
         std::iota(this->av, this->av + this->buffsize, 0);
     }
 
@@ -188,8 +192,8 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::Reset(void)
 {
-    *this->av_length = static_cast<int>(this->buffsize);
-    *this->th_length = 0;
+    this->av_length = static_cast<int>(this->buffsize);
+    this->th_length = 0;
     std::fill(this->th, this->th + this->buffsize, std::numeric_limits<index_t>::max());
     std::iota(this->av, this->av + this->buffsize, 0);
 }
@@ -223,8 +227,6 @@ void RankHandler<T, Grid>::Destroy(void)
         delete[] this->particles;
         delete[] this->av;
         delete[] this->th;
-        delete this->av_length;
-        delete this->th_length;
     #ifdef RICH_MPI
     }
     #endif // RICH_MPI
@@ -253,7 +255,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
     // }
         
     boost::container::flat_map<index_t, size_t> avMap;
-    int av_length = *this->av_length;
+    int av_length = this->av_length;
     for(int i = 0; i < av_length; i++)
     {
         index_t avValue = this->av[i];
@@ -284,7 +286,7 @@ void RankHandler<T, Grid>::ValidateArraysContents(void) const
     }
 
     boost::container::flat_map<index_t, size_t> thMap;
-    int th_length = *this->th_length;
+    int th_length = this->th_length;
     for(int i = 0; i < th_length; i++)
     {
         index_t thValue = this->th[i];
@@ -451,8 +453,8 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     }
     
     // std::cout << "Rank " << this->rank_world << " removes particles " << indicesInToHandle << " from rank " << this->peer_rank_world << "'s buffer" << std::endl;
-    volatile int &th_length = *this->th_length;
-    volatile int &av_length = *this->av_length;
+    volatile int &th_length = this->th_length;
+    volatile int &av_length = this->av_length;
     
     #ifdef ADVANCED_MONTECARLO_DEBUG
     try
@@ -531,6 +533,8 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
 template<typename T, typename Grid>
 void RankHandler<T, Grid>::Reallocate(double factor)
 {
+    memory_debug::check_system_memory("RankHandler::Reallocate");
+
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
     
     this->reallocationsThisStep++;
@@ -543,12 +547,12 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     size_t newBuffSize = std::ceil(this->buffsize * factor);
     size_t oldBuffSize = this->buffsize;
 
-    bool noParticles = (*this->th_length == 0);
+    bool noParticles = (this->th_length == 0);
     if(oldBuffSize > newBuffSize)
     {
         if(not noParticles)
         {
-            std::cerr << "Can not shrink memory when there are particles (there are " << (*this->th_length) << " particles)" << std::endl;
+            std::cerr << "Can not shrink memory when there are particles (there are " << this->th_length << " particles)" << std::endl;
             exit(1);
         }
     }
@@ -587,8 +591,8 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         if(noParticles)
         {
             std::iota(this->av, this->av + this->buffsize, 0);
-            *this->av_length = static_cast<int>(this->buffsize);
-            *this->th_length = 0;
+            this->av_length = static_cast<int>(this->buffsize);
+            this->th_length = 0;
             std::fill(this->th, this->th + this->buffsize, inf);
         }
         else if(this->buffsize >= oldBuffSize)
@@ -600,12 +604,12 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             std::fill(this->th + oldBuffSize, this->th + this->buffsize, inf);
 
             int difference_int = static_cast<int>(difference);
-            *this->av_length += difference_int;
+            this->av_length += difference_int;
         }
         else
         {
             std::iota(this->av, this->av + this->buffsize, 0);
-            *this->av_length = static_cast<int>(this->buffsize);
+            this->av_length = static_cast<int>(this->buffsize);
         }
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
 
@@ -626,8 +630,8 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             this->th = new index_t[this->buffsize];
 
             std::iota(this->av, this->av + this->buffsize, 0);
-            *this->av_length = static_cast<int>(this->buffsize);
-            *this->th_length = 0;
+            this->av_length = static_cast<int>(this->buffsize);
+            this->th_length = 0;
             std::fill(this->th, this->th + this->buffsize, inf);
         }
         else
@@ -639,21 +643,21 @@ void RankHandler<T, Grid>::Reallocate(double factor)
             if(this->buffsize >= oldBuffSize)
             {
                 std::memcpy(new_particles, this->particles, oldBuffSize * sizeof(MCParticle));
-                std::memcpy(new_th, this->th, *this->th_length * sizeof(index_t));
+                std::memcpy(new_th, this->th, this->th_length * sizeof(index_t));
                 size_t difference = this->buffsize - oldBuffSize;
                 std::memcpy(new_av + difference, this->av, oldBuffSize * sizeof(index_t));
                 std::iota(new_av, new_av + difference, oldBuffSize);
                 int difference_int = difference;
-                *this->av_length += difference_int;
+                this->av_length += difference_int;
             }
             else
             {
                 std::memcpy(new_particles, this->particles, this->buffsize * sizeof(MCParticle));
                 std::memcpy(new_th, this->th, this->buffsize * sizeof(index_t));
                 std::iota(new_av, new_av + this->buffsize, 0);
-                *this->av_length = static_cast<int>(this->buffsize);
+                this->av_length = static_cast<int>(this->buffsize);
             }
-            std::fill(new_th + *this->th_length, new_th + this->buffsize, inf);
+            std::fill(new_th + this->th_length, new_th + this->buffsize, inf);
 
             delete[] this->particles;
             delete[] this->av;
@@ -813,8 +817,8 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
     {
         for(size_t i = 0; i < Np; i++)
         {
-            assert(*this->av_length > 0);
-            size_t availIndex = this->av[--(*this->av_length)];
+            assert(this->av_length > 0);
+            size_t availIndex = this->av[--this->av_length];
             this->particles[availIndex] = particles[i];
             #ifdef MONTECARLO_DEBUG
             if(particles[i].nextRank != this->rank_world)
@@ -826,8 +830,8 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
                 throw eo;
             }
             #endif // MONTECARLO_DEBUG
-            this->th[(*this->th_length)++] = availIndex;
-            assert(*this->th_length < this->buffsize);
+            this->th[this->th_length++] = availIndex;
+            assert(this->th_length < static_cast<int>(this->buffsize));
         }
     }
 }
