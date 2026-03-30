@@ -56,6 +56,11 @@ if(DEFINED MC_TRACE_DEBUG)
     add_definitions("-DMC_TRACING_HISTORY=${MC_TRACE_DEBUG}")
 endif()
 
+if(DEFINED MEMORY_DEBUG)
+    message(STATUS "Memory Debug Mode Enabled")
+    add_definitions("-DMEMORY_DEBUG")
+endif()
+
 # if build is Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions("-DDEBUG")
