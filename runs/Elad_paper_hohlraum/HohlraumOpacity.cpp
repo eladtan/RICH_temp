@@ -13,7 +13,7 @@ double HohlraumOpacity::getPlanckOpacity(const ComputationalCell3D &cell) const
     {
         // Material region: sigma_a = 300 * (T/keV)^{-3}
         double T_keV = cell.temperature / units::kev_kelvin;
-        T_keV = std::max(T_keV, 1e-10);
+        T_keV = std::max(T_keV, 1e-4);
         return 300.0 * std::pow(T_keV, -3.0);
     }
     // Vacuum: essentially zero opacity
