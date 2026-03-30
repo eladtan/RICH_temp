@@ -314,12 +314,40 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
 {
     std::vector<Particle> newParticles;
     size_t Ncells = this->grid.GetPointNo();
+
+    std::vector<double> energyToCreateVec(Ncells);
+    std::vector<double> gammaVec(Ncells);
+    double localTotalEnergy = 0;
     for(size_t i = 0; i < Ncells; i++)
     {
         ComputationalCell3D &cell = this->cells[i];
-        double gamma = (this->withHydro && !this->MMC)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
-        double energyToCreate = this->factorFleck[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities[i] * fullDt * units::clight;
-        double energyPerPhoton = energyToCreate * gamma / this->newPhotonsPerCell;
+        gammaVec[i] = (this->withHydro && !this->MMC) ? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
+        energyToCreateVec[i] = this->factorFleck[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities[i] * fullDt * units::clight;
+        localTotalEnergy += energyToCreateVec[i];
+    }
+
+    double globalTotalEnergy = localTotalEnergy;
+    size_t globalTotalCells = Ncells;
+    #ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    #endif
+
+    size_t totalParticles = globalTotalCells * this->newPhotonsPerCell * 3;
+    std::vector<size_t> nPhotons(Ncells);
+    for(size_t i = 0; i < Ncells; i++)
+    {
+        size_t proportionalShare = (globalTotalEnergy > 0)
+            ? static_cast<size_t>(energyToCreateVec[i] / globalTotalEnergy * totalParticles)
+            : this->newPhotonsPerCell;
+        nPhotons[i] = std::max(this->newPhotonsPerCell, std::min(proportionalShare, this->newPhotonsPerCell * 20));
+    }
+
+    for(size_t i = 0; i < Ncells; i++)
+    {
+        ComputationalCell3D &cell = this->cells[i];
+        double energyToCreate = energyToCreateVec[i];
+        double gamma = gammaVec[i];
         this->conserved[i].internal_energy -= energyToCreate;
         if(this->conserved[i].internal_energy < 0)
         {
@@ -345,7 +373,9 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 this->conserved[i].momentum -= energyToCreate * cell.velocity * units::inv_clight2 * gamma;
             }
         }
-        for(size_t j = 0; j < this->newPhotonsPerCell; j++)
+        size_t nPhotonsCell = nPhotons[i];
+        double energyPerPhoton = energyToCreate * gamma / nPhotonsCell;
+        for(size_t j = 0; j < nPhotonsCell; j++)
         {
             MCParticle particle = this->generateSingleParticle(i, cell);
             particle.timeLeft = fullDt * this->dist(this->re);
@@ -356,7 +386,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 {
                     particle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, this->dist(this->re)) / D;
                 }
-                particle.weight = energyToCreate / (this->newPhotonsPerCell * D);
+                particle.weight = energyToCreate / (nPhotonsCell * D);
             }
             else
             {
