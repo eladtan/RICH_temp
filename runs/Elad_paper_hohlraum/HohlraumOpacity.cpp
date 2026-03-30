@@ -4,7 +4,11 @@
 
 HohlraumOpacity::HohlraumOpacity()
 {
-    this->rng = std::mt19937_64(0);
+    int rank = 0;
+    #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    #endif // RICH_MPI
+    this->rng = std::mt19937_64(rank);
 }
 
 double HohlraumOpacity::getPlanckOpacity(const ComputationalCell3D &cell) const
