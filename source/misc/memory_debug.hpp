@@ -1,16 +1,81 @@
 #ifndef MEMORY_DEBUG_HPP
 #define MEMORY_DEBUG_HPP
 
-#ifdef MEMORY_DEBUG
-
 #include <string>
 #include <fstream>
 #include <iostream>
 #include <iomanip>
-#include <vector>
+#include <unistd.h>
 #ifdef RICH_MPI
 #include <mpi.h>
 #endif
+
+namespace memory_debug {
+
+    inline void check_system_memory(const char *context)
+    {
+        #ifdef MEMORY_DEBUG
+        std::ifstream meminfo("/proc/meminfo");
+        if(!meminfo.is_open()) return;
+
+        long long mem_free_kb = -1, buffers_kb = 0, cached_kb = 0;
+        std::string line;
+        while(std::getline(meminfo, line))
+        {
+            auto parse_value = [&](const char *prefix, long long &out) -> bool {
+                std::string pfx(prefix);
+                if(line.compare(0, pfx.size(), pfx) == 0)
+                {
+                    std::size_t pos = line.find_first_of("0123456789", pfx.size());
+                    if(pos != std::string::npos)
+                        out = std::stoll(line.substr(pos));
+                    return true;
+                }
+                return false;
+            };
+            parse_value("MemFree:", mem_free_kb);
+            parse_value("Buffers:", buffers_kb);
+            parse_value("Cached:", cached_kb);
+        }
+
+        long long buff_cache_kb = buffers_kb + cached_kb;
+        constexpr long long threshold_free_kb = 1024LL * 1024;
+        constexpr long long threshold_cache_kb = 30LL * 1024 * 1024;
+
+        bool low_free = (mem_free_kb >= 0 && mem_free_kb < threshold_free_kb);
+        bool high_cache = (buff_cache_kb > threshold_cache_kb);
+
+        if(low_free || high_cache)
+        {
+            int rank = 0;
+            char hostname[256] = "unknown";
+    #ifdef RICH_MPI
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            int name_len;
+            MPI_Get_processor_name(hostname, &name_len);
+    #else
+            gethostname(hostname, sizeof(hostname));
+    #endif
+            double free_mb = (mem_free_kb >= 0) ? mem_free_kb / 1024.0 : -1;
+            double cache_gb = buff_cache_kb / (1024.0 * 1024.0);
+            std::cerr << "[MEMORY WARNING] rank " << rank << " on " << hostname
+                    << " (" << context << "): "
+                    << "MemFree=" << std::fixed << std::setprecision(0) << free_mb << " MB, "
+                    << "buff/cache=" << std::setprecision(1) << cache_gb << " GB";
+            if(low_free)
+                std::cerr << " [FREE BELOW 1024 MB]";
+            if(high_cache)
+                std::cerr << " [CACHE ABOVE 30 GB]";
+            std::cerr << std::endl;
+        }
+        #endif // MEMORY_DEBUG
+    }
+
+} // namespace memory_debug
+
+#ifdef MEMORY_DEBUG
+
+#include <vector>
 
 namespace memory_debug {
 inline void print_memory(const std::string& label)
