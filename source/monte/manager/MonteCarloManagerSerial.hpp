@@ -12,8 +12,7 @@
 #include "utils/debug/vtune.h" // TODO: remove
 
 #define MONTECARLO_EPSILON 1e-8
-#define REALLOCATION_FACTOR 2
-#define DEFAULT_BUFFER_SIZE 1000
+#define SERIAL_REALLOCATION_FACTOR 2
 
 template<typename T, typename Grid>
 class MonteCarloManagerSerial
@@ -115,14 +114,15 @@ void MonteCarloManagerSerial<T, Grid>::AddParticles(const std::vector<MCParticle
     if(this->particlesData.av_length < particles.size())
     {
         // allocation is needed
-        size_t newBuffSize = std::max(this->particlesData.buffsize * REALLOCATION_FACTOR, this->particlesData.buffsize + particles.size());
+        size_t newBuffSize = std::max(this->particlesData.buffsize * SERIAL_REALLOCATION_FACTOR, this->particlesData.buffsize + particles.size());
         size_t oldBuffSize = this->particlesData.buffsize;
         this->particlesData.buffsize = newBuffSize;
         MCParticle *new_particles = new MCParticle[this->particlesData.buffsize];
         index_t *new_av = new index_t[this->particlesData.buffsize];
         index_t *new_th = new index_t[this->particlesData.buffsize];
         std::memcpy(new_particles, this->particlesData.particles, oldBuffSize * sizeof(MCParticle));
-        std::memcpy(new_av, this->particlesData.av, oldBuffSize * sizeof(index_t));
+        index_t difference = newBuffSize - oldBuffSize;
+        std::memcpy(new_av + difference, this->particlesData.av, oldBuffSize * sizeof(index_t));
         std::memcpy(new_th, this->particlesData.th, oldBuffSize * sizeof(index_t));
         delete[] this->particlesData.particles;
         delete[] this->particlesData.av;
@@ -132,7 +132,6 @@ void MonteCarloManagerSerial<T, Grid>::AddParticles(const std::vector<MCParticle
         this->particlesData.th = new_th;
         // set `av`
         assert(oldBuffSize < newBuffSize);
-        index_t difference = newBuffSize - oldBuffSize;
         std::iota(new_av, new_av + difference, oldBuffSize);
         this->particlesData.av_length += static_cast<int>(difference);
     }
