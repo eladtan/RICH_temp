@@ -10,7 +10,7 @@
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
-#include "newtonian/three_dimensional/Simulation.hpp"
+#include "newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "newtonian/three_dimensional/ManualTimeStep.hpp"
 #include "3D/output/write3D.hpp"
 
@@ -19,11 +19,11 @@
 #include "3D/radiation/PowerLawOpacity.hpp"
 #include "monte/population/Comb.hpp"
 #include "monte/boundary/SideTemperature.hpp"
-#include "newtonian/three_dimensional/RadiationMCStep.hpp"
+#include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 
 // Diffusion includes
 #include "Radiation/Diffusion.hpp"
-#include "newtonian/three_dimensional/RadiationStep.hpp"
+#include "newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 
 /*

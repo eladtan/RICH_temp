@@ -1,4 +1,3 @@
-#include <mpi.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -37,7 +36,11 @@
 #include "monte/population/Comb.hpp"
 #include "monte/boundary/TwoSidesTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
-#include "newtonian/three_dimensional/CostCalculator3D.hpp"
+
+#ifdef RICH_MPI
+    #include <mpi.h>
+    #include "newtonian/three_dimensional/CostCalculator3D.hpp"
+#endif // RICH_MPI
 
 /*
  * Mach 45 Radiative Shock benchmark from:
@@ -251,8 +254,10 @@ int main(int argc, char *argv[])
     vtune_stop();
     DISABLE_TIMERS();
 
-    MPI_Init(&argc, &argv);
-    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
+    #ifdef RICH_MPI
+        MPI_Init(&argc, &argv);
+        MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
+    #endif // RICH_MPI
 
     int rank = 0, ws = 1;
     #ifdef RICH_MPI
@@ -455,6 +460,7 @@ int main(int argc, char *argv[])
                 if(xi > local_max_x) { local_max_x = xi; max_idx = i; }
             }
 
+            #ifdef RICH_MPI
             auto [left_rank, left_x] = MPI_Min_loc(local_min_x);
             auto [right_rank, right_x] = MPI_Max_loc(local_max_x);
 
@@ -465,6 +471,11 @@ int main(int argc, char *argv[])
             if(rank == right_rank)
                 right_cell = initialCells[max_idx];
             right_cell = MPI_Bcast_serializable(right_cell, right_rank);
+
+            #else // RICH_MPI
+                left_cell = initialCells[min_idx];
+                right_cell = initialCells[max_idx];
+            #endif // RICH_MPI
 
             T_up = left_cell.temperature;
             T_dn = right_cell.temperature;
@@ -715,14 +726,24 @@ int main(int argc, char *argv[])
       std::cerr << std::setprecision(16);  
       std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
       reportError(e);
-      MPI_Abort(MPI_COMM_WORLD, 1);
+      #ifdef RICH_MPI
+          MPI_Abort(MPI_COMM_WORLD, 1);
+      #else // RICH_MPI
+        return 1;
+      #endif // RICH_MPI
   }
   catch(const std::exception &e)
   {
       std::cerr << "=== std::exception on rank " << rank << ": " << e.what() << " ===" << std::endl;
-      MPI_Abort(MPI_COMM_WORLD, 1);
+      #ifdef RICH_MPI
+          MPI_Abort(MPI_COMM_WORLD, 1);
+      #else // RICH_MPI
+        return 1;
+      #endif // RICH_MPI
   }
 
-    MPI_Finalize();
+    #ifdef RICH_MPI
+        MPI_Finalize();
+    #endif // RICH_MPI
     return 0;
 }

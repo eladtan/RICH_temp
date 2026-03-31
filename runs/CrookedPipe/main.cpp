@@ -24,8 +24,8 @@
 #include "CrookedPipeOpacity.hpp"
 #include "3D/tessellation/voronoi/pointsManager/ParMETISPointManager.hpp"
 #include "3D/output/MC/read_write_particles.hpp"
-#include "newtonian/three_dimensional/Simulation.hpp"
-#include "newtonian/three_dimensional/RadiationMCStep.hpp"
+#include "newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/time_step_function3D.hpp"
 #include "newtonian/three_dimensional/ManualTimeStep.hpp"
 // #define RDMA
@@ -188,19 +188,22 @@ int main(int argc, char *argv[])
     do_output = (argc >= 4) ? std::stoul(argv[3]) : false;
 
     #ifdef RICH_MPI
-    std::string managerTypeStr = std::string(argv[4]);
-    RadiationMCStep::ManagerType managerType = RadiationMCStep::ManagerType::MPI_RMA;
-    if(managerTypeStr == "MPI_RMA")
+    RadiationMCStep::ManagerType managerType = RadiationMCStep::ManagerType::AUTO_RDMA;
+    if(argc >= 5)
     {
-        managerType = RadiationMCStep::ManagerType::MPI_RMA;
-    }
-    else if(managerTypeStr == "IBV_RDMA")
-    {
-        managerType = RadiationMCStep::ManagerType::IBV_RDMA;
-    }
-    else if(managerTypeStr == "P2P")
-    {
-        managerType = RadiationMCStep::ManagerType::P2P;
+        std::string managerTypeStr = std::string(argv[4]);
+        if(managerTypeStr == "MPI_RMA")
+        {
+            managerType = RadiationMCStep::ManagerType::MPI_RMA;
+        }
+        else if(managerTypeStr == "IBV_RDMA")
+        {
+            managerType = RadiationMCStep::ManagerType::IBV_RDMA;
+        }
+        else if(managerTypeStr == "P2P")
+        {
+            managerType = RadiationMCStep::ManagerType::P2P;
+        }
     }
     #endif // RICH_MPI
     size_t iterations = (argc >= 6) ? std::stoul(argv[5]) : std::numeric_limits<size_t>::max();
@@ -377,7 +380,7 @@ int main(int argc, char *argv[])
 
         Output(prefix + "start");
         vtune_start();
-        
+
         std::chrono::high_resolution_clock::time_point start, end1, end2;
         std::chrono::high_resolution_clock::time_point start_total, end_total;
 
@@ -433,9 +436,10 @@ int main(int argc, char *argv[])
         {
             std::cout << "Total time taken: " << totalTimeTaken << " seconds" << std::endl;
         }
+        
+        Output(prefix + "final");
     }
 
-    Output(prefix + "final");
-
+    mcStep.reset();
     MPI_Finalize();
 }

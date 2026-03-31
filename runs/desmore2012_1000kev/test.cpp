@@ -96,13 +96,13 @@ int main(void)
 
     using boost::math::pow;
 	AnalyticOpacity opacity(
-        [energy_groups_center, sigma_0_nom](ComputationalCell3D const& cell, std::size_t const group){ 
-            return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group])/(sigma_0_nom * 3.0);
+        [sigma_0_nom](ComputationalCell3D const& cell, double energy){ 
+            return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy)/(sigma_0_nom * 3.0);
             },
-        [energy_groups_center, sigma_0_nom](ComputationalCell3D const& cell, std::size_t const group){ 
-            return sigma_0_nom/(std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group]));
+        [sigma_0_nom](ComputationalCell3D const& cell, double energy){ 
+            return sigma_0_nom/(std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy));
             },
-        [](ComputationalCell3D const& cell, std::size_t group) { return 0.0; },
+        [](ComputationalCell3D const& cell, double energy) { return 0.0; },
 
         energy_groups_center,
         energy_groups_boundary

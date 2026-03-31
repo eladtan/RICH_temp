@@ -230,6 +230,8 @@ int main(void)
 
     // The diffusion class
     GrayPowerLawOpacity opacity(CG::speed_of_light / (3 * 0.848902), 0, 0, 3.93e-5, 0, 0);
+    opacity.energy_groups_center = energy_groups_center;
+    opacity.energy_groups_boundary = energy_groups_boundary;
     MultigroupDiffusionXInflowBoundary diffusion_boundary(left_cell, right_cell, opacity);
     MultigroupDiffusion diffusion(energy_groups_center, energy_groups_boundary, opacity, diffusion_boundary, eos, std::vector<std::string>(), true, true, false, true, false);
 

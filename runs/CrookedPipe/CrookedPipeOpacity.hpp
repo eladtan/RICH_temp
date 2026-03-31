@@ -6,23 +6,16 @@
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "3D/radiation/LorentzTransformation.hpp"
 
-class CrookedPipeOpacity : public RadiationOpacity
+class CrookedPipeOpacity : public OpacityCalculator
 {
 public:
     CrookedPipeOpacity();
 
     inline ~CrookedPipeOpacity() override = default;
 
-    double getPlanckOpacity(const ComputationalCell3D &cell) const override;
+    double CalcPlanckOpacity(const ComputationalCell3D &cell) const override;
 
-    double getScatteringOpacity(const ComputationalCell3D &cell) const override;
-
-    Vector3D getRandomVelocity(const ComputationalCell3D &cell) const override;
-
-    Vector3D getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &particle) const override;
-
-private:
-    mutable std::mt19937_64 rng;
+    double CalcScatteringOpacity(const ComputationalCell3D &cell) const override;
 };
 
 #endif // CROOKED_PIPE_OPACITY_HPP

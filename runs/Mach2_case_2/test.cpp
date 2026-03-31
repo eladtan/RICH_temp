@@ -108,7 +108,7 @@ int main(void)
     // Create the initial points
     std::vector<Vector3D> points;
     if(rank == 0)
-        points = CartesianMesh(Np, 1, 1, ll, ur);
+        points = CartesianMesh(Np, 2, 2, ll, ur);
 #ifdef RICH_MPI
     points = MPI_Spread(points, 0, MPI_COMM_WORLD);
 #endif

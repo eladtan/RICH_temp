@@ -106,15 +106,15 @@ int main(void)
 
     using boost::math::pow;
 	AnalyticOpacity opacity(
-        [&tess, energy_groups_center, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, std::size_t const group){ 
+        [&tess, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, double energy){ 
 			double sigma_0_nom = tess.GetCellCM(cell.ID).x < 0.5 ? sigma_0_nom_left : sigma_0_nom_right;
-			return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group])/(sigma_0_nom * 3.0);
+			return CG::speed_of_light*std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy)/(sigma_0_nom * 3.0);
             },
-        [&tess, energy_groups_center, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, std::size_t const group){
+        [&tess, sigma_0_nom_left, sigma_0_nom_right](ComputationalCell3D const& cell, double energy){
 			double sigma_0_nom = tess.GetCellCM(cell.ID).x < 0.5 ? sigma_0_nom_left : sigma_0_nom_right;
-            return sigma_0_nom/(std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy_groups_center[group]));
+            return sigma_0_nom/(std::sqrt(CG::boltzmann_constant*cell.temperature)*pow<3>(energy));
             },
-        [](ComputationalCell3D const& cell, std::size_t group) { return 0.0; },
+        [](ComputationalCell3D const& cell, double energy) { return 0.0; },
 
         energy_groups_center,
         energy_groups_boundary

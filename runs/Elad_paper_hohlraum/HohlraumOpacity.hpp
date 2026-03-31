@@ -6,25 +6,18 @@
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "3D/radiation/LorentzTransformation.hpp"
 
-class HohlraumOpacity : public RadiationOpacity
+class HohlraumOpacity : public OpacityCalculator
 {
 public:
     HohlraumOpacity();
 
     inline ~HohlraumOpacity() override = default;
 
-    double getPlanckOpacity(const ComputationalCell3D &cell) const override;
+    double CalcPlanckOpacity(const ComputationalCell3D &cell) const override;
 
-    double getScatteringOpacity(const ComputationalCell3D &cell) const override;
+    double CalcScatteringOpacity(const ComputationalCell3D &cell) const override;
 
-    Vector3D getRandomVelocity(const ComputationalCell3D &cell) const override;
-
-    Vector3D getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &particle) const override;
-
-    double getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energyGroup) const override;
-
-private:
-    mutable std::mt19937_64 rng;
+    double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energyGroup) const override;
 };
 
 #endif // HOHLRAUM_OPACITY_HPP

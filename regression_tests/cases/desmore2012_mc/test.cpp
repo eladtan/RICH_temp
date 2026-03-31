@@ -49,7 +49,7 @@ namespace fs = std::filesystem;
 
 namespace
 {
-    class DesmoreMCOpacity : public RadiationOpacity
+    class DesmoreMCOpacity : public OpacityCalculator
     {
     public:
         DesmoreMCOpacity(double sigma0_left, double sigma0_right,
@@ -57,11 +57,10 @@ namespace
                          const std::vector<double> &groupBoundaries,
                          int rank = 0)
             : sigma0_left_(sigma0_left), sigma0_right_(sigma0_right),
-              groupCenters_(groupCenters), groupBoundaries_(groupBoundaries),
-              rng_(static_cast<uint64_t>(rank))
+              groupCenters_(groupCenters), groupBoundaries_(groupBoundaries)
         {}
 
-        double getPlanckOpacity(const ComputationalCell3D &cell) const override
+        double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {
             double sigma0 = getSigma0(cell);
             double kT = units::k_boltz * cell.temperature;
@@ -82,26 +81,12 @@ namespace
             return weightedSum / totalWeight;
         }
 
-        double getScatteringOpacity(const ComputationalCell3D &) const override
+        double CalcScatteringOpacity(const ComputationalCell3D &) const override
         {
             return 0.0;
         }
 
-        Vector3D getRandomVelocity(const ComputationalCell3D &) const override
-        {
-            std::uniform_real_distribution<double> dist(-1 + EPSILON, 1 - EPSILON);
-            double x = dist(rng_);
-            double y = dist(rng_);
-            double z = dist(rng_);
-            return normalize(Vector3D(x, y, z)) * units::clight;
-        }
-
-        Vector3D getNewScatterVelocity(const ComputationalCell3D &cell, const MCParticle &) const override
-        {
-            return getRandomVelocity(cell);
-        }
-
-        double getGroupAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
+        double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
         {
             double sigma0 = getSigma0(cell);
             double kT = units::k_boltz * cell.temperature;
@@ -123,7 +108,6 @@ namespace
         double sigma0_right_;
         std::vector<double> groupCenters_;
         std::vector<double> groupBoundaries_;
-        mutable std::mt19937_64 rng_;
     };
 
     struct CellData

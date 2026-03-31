@@ -23,6 +23,7 @@
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/MultigroupDiffusionForce.hpp"
 #include "source/Radiation/MultigroupDiffusion.hpp"
+#include "source/Radiation/OpacityCalculator.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include "source/newtonian/three_dimensional/LagrangianExtensiveUpdater3D.hpp"
@@ -41,7 +42,7 @@ namespace fs = std::filesystem;
 
 namespace
 {
-	class STAMGopacity: public MultigroupDiffusionCoefficientCalculator
+	class STAMGopacity: public OpacityCalculator
 	{
 	private:
 		std::vector<double> rho_, T_;
@@ -53,6 +54,8 @@ namespace
 			for(double& Egb : energy_groups_boundary)
 			    Egb *= 11604.5 * CG::boltzmann_constant;
 			energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
+			for (size_t i = 0; i < energy_groups_boundary.size() - 1; ++i)
+				energy_groups_center[i] = std::sqrt(energy_groups_boundary[i] * energy_groups_boundary[i + 1]);
 			size_t const Ng = energy_groups_boundary.size() - 1;
 			T_ = read_vector(file_directory +"T.txt");
 			// Convert from ev to kelvin
@@ -92,8 +95,9 @@ namespace
 			}
 		}
 
-		double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, size_t const group) const override
+		double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override
 		{
+			std::size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
@@ -115,8 +119,9 @@ namespace
 			return CG::speed_of_light / (3 * sig);
 		}
 
-		double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
+		double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
 		{
+			std::size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1, T_ratio = 1;
@@ -141,8 +146,9 @@ namespace
 			return sig;
 		}
 
-		double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
+		double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
 		{
+			std::size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
@@ -190,11 +196,11 @@ int main(void)
 	ComputationalCell3D c_opac;
 	c_opac.density = 0.1;
 	c_opac.temperature = 10000;
-	double d_temp = opacity.CalcAbsorptionCoefficientGroup(c_opac, 1);
+	double d_temp = opacity.CalcAbsorptionOpacity(c_opac, opacity.energy_groups_center[1]);
 	c_opac.temperature = 1e7;
-	d_temp = opacity.CalcAbsorptionCoefficientGroup(c_opac, 1);
+	d_temp = opacity.CalcAbsorptionOpacity(c_opac, opacity.energy_groups_center[1]);
 	c_opac.density = 1e-7;
-	d_temp = opacity.CalcAbsorptionCoefficientGroup(c_opac, 1);
+	d_temp = opacity.CalcAbsorptionOpacity(c_opac, opacity.energy_groups_center[1]);
 	if (rank == 0)
 		std::cout << "end sta" << std::endl;
 

@@ -63,7 +63,7 @@ namespace
         }
     };
  
-    class GrayFreeFreeOpacity : public DiffusionCoefficientCalculator
+    class GrayFreeFreeOpacity : public OpacityCalculator
     {
     public:
         explicit GrayFreeFreeOpacity(double Z)
