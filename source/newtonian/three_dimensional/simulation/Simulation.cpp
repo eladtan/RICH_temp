@@ -64,7 +64,7 @@ void Simulation::recomputeMaxID(void)
 #ifdef RICH_MPI
     MPI_Allreduce(&maxid, &this->Max_ID, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
 #else
-    this->Max_ID_ = maxid;
+    this->Max_ID = maxid;
 #endif
 }
 
