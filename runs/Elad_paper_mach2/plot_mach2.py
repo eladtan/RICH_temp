@@ -33,7 +33,8 @@ T_UP = 0.122   # keV
 T_DN = 0.253   # keV
 RHO_UP = 1.0   # g/cc
 RHO_DN = 2.29  # g/cc
-V_DN = -1.95e7 # cm/s
+V_UP = 3.4616e7  # cm/s, upstream velocity in shock frame (rightward)
+V_DN = 1.5116e7  # cm/s, downstream velocity in shock frame (rightward)
 
 
 def load_profile(filepath):
@@ -64,10 +65,14 @@ def load_profile(filepath):
 
 
 def find_shock_position(prof):
-    """Locate shock front as the steepest density gradient."""
+    """Locate shock front as the steepest density gradient,
+    excluding boundary cells where ghost-cell artifacts can dominate."""
     rho = prof["rho"]
     x = prof["x"]
+    margin = max(10, len(rho) // 50)
     drho = np.abs(np.diff(rho))
+    drho[:margin] = 0
+    drho[-margin:] = 0
     idx = np.argmax(drho)
     return 0.5 * (x[idx] + x[idx + 1])
 
@@ -101,7 +106,7 @@ def compute_mach2_analytic(x_plot, x_shock_plot):
     avoid stack-overflow in the Noebauer class hierarchy).
 
     Returns dict with 'T_gas' (keV), 'T_rad' (keV), 'rho' (g/cc),
-    'vx' (cm/s, lab frame with upstream at rest).
+    'vx' (cm/s, shock frame with rightward flow).
     """
     import scipy.optimize
     import scipy.integrate
@@ -282,9 +287,10 @@ def compute_mach2_analytic(x_plot, x_shock_plot):
     T_rad_keV = th_full * T_UP
     rho_dim = rho_full * RHO_UP
 
-    # Velocity: mass conservation in shock frame -> lab frame (upstream at rest)
-    v_lab = M0 * cs_left * (1.0 / rho_full - 1.0)
-    vx_dim = np.interp(np.asarray(x_plot), x_dim, v_lab, left=0.0, right=V_DN)
+    # Velocity in the shock frame (shock stationary, fluid flows rightward)
+    v_shock = M0 * cs_left / rho_full
+    vx_dim = np.interp(np.asarray(x_plot), x_dim, v_shock,
+                        left=M0 * cs_left, right=M0 * cs_left / rho1)
 
     x_arr = np.asarray(x_plot)
     return dict(
@@ -311,7 +317,7 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
 
     x_shock = 0.0
     if not wide and profiles:
-        x_shock = -find_shock_position(profiles[-1])
+        x_shock = find_shock_position(profiles[-1])
 
     for i, prof in enumerate(profiles):
         color = cmap(0.15 + 0.7 * i / max(n - 1, 1)) if n > 1 else "C0"
@@ -321,14 +327,12 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
             t_str = Path(prof["path"]).stem
         lw = 1.6 if n <= 5 else 1.0
 
-        # Negate x to match paper convention: upstream (cold) on left,
-        # downstream (hot) on right.
-        x = -prof["x"]
+        x = prof["x"]
 
         ax_Tg.plot(x, prof["T_gas"], color=color, lw=lw, label=t_str)
         ax_Tr.plot(x, prof["T_rad"], color=color, lw=lw, label=t_str)
         ax_rho.plot(x, prof["rho"], color=color, lw=lw, label=t_str)
-        ax_vx.plot(x, -prof["vx"] / 1e7, color=color, lw=lw, label=t_str)
+        ax_vx.plot(x, prof["vx"] / 1e7, color=color, lw=lw, label=t_str)
 
     ref_kw = dict(color="gray", ls="--", lw=0.7, alpha=0.5)
     for ax in (ax_Tg, ax_Tr):
@@ -336,17 +340,17 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
         ax.axhline(T_DN, **ref_kw)
     ax_rho.axhline(RHO_UP, **ref_kw)
     ax_rho.axhline(RHO_DN, **ref_kw)
-    ax_vx.axhline(0, **ref_kw)
-    ax_vx.axhline(-V_DN / 1e7, **ref_kw)
+    ax_vx.axhline(V_UP / 1e7, **ref_kw)
+    ax_vx.axhline(V_DN / 1e7, **ref_kw)
 
     if wide:
-        xlim = (-0.72, 0.22)
+        xlim = (-0.22, 0.72)
     else:
         margin = 0.12
         xlim = (x_shock - margin, x_shock + margin)
 
     # --- Analytical solution on all panels ---
-    shock_pos = -find_shock_position(profiles[-1]) if profiles else 0.0
+    shock_pos = find_shock_position(profiles[-1]) if profiles else 0.0
     try:
         x_fine = np.linspace(xlim[0] - 0.05, xlim[1] + 0.05, 2000)
         analytic = compute_mach2_analytic(x_fine, shock_pos)
@@ -359,6 +363,8 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
                    label=r'Analytic $T_r$', zorder=0)
         ax_rho.plot(x_fine, analytic['rho'], color='magenta', **akw,
                     label='Analytic')
+        ax_vx.plot(x_fine, np.array(analytic['vx']) / 1e7, color='magenta', **akw,
+                   label='Analytic')
     except Exception as e:
         print(f"Warning: could not compute analytical solution: {e}")
 
