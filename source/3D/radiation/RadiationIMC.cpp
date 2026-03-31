@@ -294,17 +294,33 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
     for(size_t i = 0; i < Ncells; i++)
     {
         this->conserved[i].Erad = 0;
+        if(this->multigroupOpacity)
+        {
+            std::fill(this->conserved[i].Eg.begin(), this->conserved[i].Eg.end(), 0.0);
+        }
     }
     for(const Particle &particle : particles)
     {
         size_t cellIndex = particle.cellIndex;
         assert(cellIndex < Ncells);
         this->conserved[cellIndex].Erad += particle.weight;
+        if(this->multigroupOpacity)
+        {
+            size_t g = this->opacity->findGroup(particle.frequency);
+            this->conserved[cellIndex].Eg[g] += particle.weight;
+        }
     }
     for(size_t i = 0; i < Ncells; i++)
     {
         ComputationalCell3D &cell = this->cells[i];
         cell.Erad = this->conserved[i].Erad / this->conserved[i].mass;
+        if(this->multigroupOpacity)
+        {
+            for(size_t g = 0; g < cell.Eg.size(); g++)
+            {
+                cell.Eg[g] = this->conserved[i].Eg[g] / this->conserved[i].mass;
+            }
+        }
     }
 
     if(this->withRandomWalk)
