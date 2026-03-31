@@ -1107,3 +1107,35 @@ check_rayleigh_taylor_case() {
     set_check_msg "Rayleigh-Taylor growth rate comparison passed"
     return 0
 }
+
+check_doppler_mc_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local spectrum_file="${run_dir}/doppler_mc_spectrum.txt"
+    local checker_stdout="${run_dir}/doppler_mc_check.stdout.log"
+    local checker_stderr="${run_dir}/doppler_mc_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale doppler_mc_spectrum.txt"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_doppler_mc.py" \
+        --spectrum "$spectrum_file" \
+        --max-l1 "${DOPPLER_MC_MAX_L1:-0.15}" \
+        --plot-dir "$run_dir" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Doppler MC spectrum comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Doppler MC spectrum comparison passed"
+    return 0
+}
