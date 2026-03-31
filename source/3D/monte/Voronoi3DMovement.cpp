@@ -91,7 +91,7 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
 
     START_TIMER("Prepare Transfer Data");
 
-    std::vector<std::vector<Particle3D>> particlesToProcessors(size);
+    std::vector<Serializer> senders(size);
     std::vector<Particle3D> selfParticles;
     size_t sentCounter = 0;
     for(Particle3D &p : particles)
@@ -105,15 +105,18 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
         }
         else
         {
-            particlesToProcessors[newRank].push_back(p);
+            senders[newRank].insert(p);
             sentCounter++;
         }
     }
 
+    particles.clear();
+    particles.shrink_to_fit();
+
     std::vector<std::vector<Particle3D>> allNewParticles;
     {
         START_TIMER_PREEMPTIVE("Particles Exchange");
-        allNewParticles = MPI_Iexchange_all_to_all(particlesToProcessors, MPI_COMM_WORLD);
+        allNewParticles = MPI_Iexchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
     }
 
     size_t receivedCounter = 0;
@@ -166,7 +169,7 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
 
     const std::shared_ptr<EnvironmentAgent> &envAgent = tess.GetEnvironmentAgent();
     std::vector<Particle3D> newParticles;
-    std::vector<std::vector<Particle3D>> sendValues(size);
+    std::vector<Serializer> senders(size);
 
     size_t sentCounter = 0;
     for(Particle3D &p : particles)
@@ -178,12 +181,15 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
         }
         else
         {
-            sendValues[approxOwner].push_back(p);
+            senders[approxOwner].insert(p);
             sentCounter++;
         }
     }
-    
-    std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all(sendValues, MPI_COMM_WORLD);
+
+    particles.clear();
+    particles.shrink_to_fit();
+
+    std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
     for(rank_t _rank = 0; _rank < size; _rank++)
     {
         const std::vector<Particle3D> &particlesFromRank = receiveValues[_rank];
@@ -350,11 +356,11 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         }
         else
         {
-            for(size_t i = 0; i < particles.size(); i++)
-            {
-                shouldExchangeParticles.push_back(particles[i]);
-            }
+            shouldExchangeParticles = std::move(particles);
         }
+
+        particles.clear();
+        particles.shrink_to_fit();
 
         size_t numParticlesLeft = particlesLeft.size();
         MPI_Allreduce(MPI_IN_PLACE, &numParticlesLeft, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
@@ -363,16 +369,16 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             std::cout << "Number of particles left to determination: " << numParticlesLeft << std::endl;
         }
 
-        // first guesses
         FirstInaccurateMovements(tess, shouldExchangeParticles);
 
-        particles = myParticles;
         std::vector<Particle3D> newParticles = std::move(myParticles);
-        std::vector<boost::container::flat_set<rank_t>> ranksTested(particles.size());
 
-        for(size_t i = 0; i < shouldExchangeParticles.size(); i++)
+        particles = std::move(shouldExchangeParticles);
+        std::vector<boost::container::flat_set<rank_t>> ranksTested;
+
+        for(size_t i = 0; i < particles.size(); i++)
         {
-            Particle3D &p = shouldExchangeParticles[i];
+            Particle3D &p = particles[i];
 
             size_t closestCell = std::numeric_limits<size_t>::max();
             if(N > 0)
@@ -388,11 +394,9 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             }
             else
             {
-                size_t idx = particles.size();
-                particlesLeft.insert(idx);
+                particlesLeft.insert(i);
                 ranksTested.push_back({rank});
             }
-            particles.push_back(p);
         }
 
         std::vector<double> radiuses(particles.size(), initialRadius);

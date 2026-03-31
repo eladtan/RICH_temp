@@ -19,6 +19,8 @@ def parse_args():
                         help="Comma-separated list of specific cycles to plot (e.g. --cycles=50,100,150)")
     parser.add_argument("--optimal", action="store_true",
                         help="Plot only the max selected cycle plus an ideal strong-scaling reference line")
+    parser.add_argument("--sum", action="store_true",
+                        help="Sum all cycle times (only for procs that reached the same max cycle) and plot with strong scaling")
     parser.add_argument("--dir", type=str, default=os.path.dirname(os.path.abspath(__file__)),
                         help="Directory to search for .out files")
     return parser.parse_args()
@@ -150,6 +152,50 @@ def main():
     max_cycles_per_rank = {nprocs: max(ct.keys()) for nprocs, ct in all_cycle_data.items()}
     max_common_cycle = min(max_cycles_per_rank.values())
 
+    print(f"Max common cycle: {max_common_cycle}")
+
+    nprocs_list = sorted(all_cycle_data.keys())
+
+    if args.sum:
+        overall_max = max(max_cycles_per_rank.values())
+        qualifying = sorted(
+            n for n, mc in max_cycles_per_rank.items() if mc == overall_max
+        )
+        if not qualifying:
+            print("No processors reached the overall max cycle.", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Summing cycles 1..{overall_max} for processors that reached cycle {overall_max}: {qualifying}")
+        print()
+
+        sum_times = []
+        for nprocs in qualifying:
+            ct = all_cycle_data[nprocs]
+            total = sum(ct[c] for c in range(1, overall_max + 1) if c in ct)
+            sum_times.append(total)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(qualifying, sum_times, "o-", label=f"Total time (cycles 1\u2013{overall_max})", markersize=5)
+
+        min_nprocs = qualifying[0]
+        A = min_nprocs * sum_times[0]
+        x = np.linspace(qualifying[0], qualifying[-1], 200)
+        ax.plot(x, A / x, "--", color="gray", label=f"Strong scaling (A={A:.0f})")
+
+        ax.set_xlabel("Number of processors")
+        ax.set_ylabel("Total time (s)")
+        ax.set_title(f"Scalability: total time (cycles 1\u2013{overall_max}) vs. processor count")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_xticks(qualifying)
+        ax.set_xticklabels([str(n) for n in qualifying])
+
+        plt.tight_layout()
+        plt.show()
+        return
+
     if args.cycles:
         selected_cycles = sorted(adjust_cycle(int(x.strip())) for x in args.cycles.split(","))
     else:
@@ -160,11 +206,8 @@ def main():
         print(f"No valid cycles to plot (max common cycle is {max_common_cycle}).", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Max common cycle: {max_common_cycle}")
     print(f"Plotting cycles: {selected_cycles}")
     print()
-
-    nprocs_list = sorted(all_cycle_data.keys())
 
     if args.optimal:
         selected_cycles = [max(selected_cycles)]

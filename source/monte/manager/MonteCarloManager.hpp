@@ -424,8 +424,6 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector
 {
     using index_t = typename RankHandler::index_t;
 
-    RankHandler *handler = this->rankHandlers[this->rank_world];
-
     #ifdef MONTECARLO_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
     for(const MCParticle &particle : particles)
@@ -448,21 +446,28 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector
     #endif // MONTECARLO_DEBUG
 
     size_t particlesNum = particles.size();
-    if(handler->buffsize < particlesNum)
+    if(particlesNum == 0)
     {
-        // reallocate buffer if needed
-        double factor = std::ceil(static_cast<double>(particlesNum) / static_cast<double>(handler->buffsize));
+        return;
+    }
+
+    RankHandler *handler = this->rankHandlers[this->rank_world];
+
+    if(static_cast<size_t>(handler->av_length) < particlesNum)
+    {
+        double factor = std::max<double>(BUFFER_REALLOCATION_FACTOR, std::ceil(static_cast<double>(particlesNum) / static_cast<double>(handler->buffsize)));
         handler->Reallocate(factor);
     }
 
     handler->av_length -= static_cast<int>(particlesNum);
     index_t *av_indices = handler->av + handler->av_length;
+    int oldTHLength = handler->th_length;
     handler->th_length += particlesNum;
 
     for(size_t i = 0; i < particlesNum; i++)
     {
         size_t particleIdx = av_indices[i];
-        handler->th[i] = particleIdx;
+        handler->th[oldTHLength + i] = particleIdx;
         std::memcpy(handler->particles + particleIdx, &particles[i], sizeof(MCParticle));
         MCParticle &particle = handler->particles[particleIdx];
         if(particle.id == std::numeric_limits<size_t>::max())
@@ -1363,17 +1368,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     
     this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
     this->ResetAllBuffers();
-    size_t initialParticlesNum = particleList.size();
-    this->PutSelfParticles(std::move(particleList));
-    this->resetTracker();
-    this->currentStep++;
-    this->iteration = 0;
-    this->allStepsCounter = 0;
-    this->dynamicallyAdded = 0;
-    // this->neighbors = this->grid.GetDuplicatedProcs();    
-    this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
-    this->transfersCounter = 0;
-    
+
     bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());
     if(didRebalance)
     {
@@ -1384,6 +1379,43 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         this->ShrinkAllBuffers();
     }
     this->lastBuildGeneration = this->grid.GetBuildGeneration();
+
+    size_t initialParticlesNum = particleList.size();
+    this->PutSelfParticles(std::move(particleList));
+
+    START_TIMER_PREEMPTIVE("Prestep");
+
+    this->physics->updateGridData();
+    std::chrono::high_resolution_clock::time_point preStepStart = std::chrono::high_resolution_clock::now();
+    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+    std::chrono::high_resolution_clock::time_point preStepEnd = std::chrono::high_resolution_clock::now();
+
+    double preStepSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(preStepEnd - preStepStart).count();
+    auto [maxPreStepRank, maxPreStepTime] = MPI_Max_loc(preStepSeconds, this->comm_world);
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepSeconds, &preStepSeconds, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
+
+    if(this->rank_world == 0)
+    {
+        std::cout << "Prestep time: avg=" << preStepSeconds / this->size_world << "s, max=" << maxPreStepTime << "s (rank " << maxPreStepRank << ")" << std::endl;
+    }
+
+    size_t preStepParticlesNum = newParticles1.size();
+
+    auto addParticlesStart = std::chrono::high_resolution_clock::now();
+    {
+        START_TIMER("Adding Particles");
+        this->AddParticles(newParticles1);
+        std::vector<MCParticle>().swap(newParticles1);
+    }
+
+    this->resetTracker();
+    this->currentStep++;
+    this->iteration = 0;
+    this->allStepsCounter = 0;
+    this->dynamicallyAdded = 0;
+    // this->neighbors = this->grid.GetDuplicatedProcs();    
+    this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
+    this->transfersCounter = 0;
 
     size_t totalParticles = 0;
     for(RankHandler *handler : this->rankHandlers)
@@ -1421,44 +1453,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MPI_Barrier(this->comm_world);
     double initTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - initStart).count();
 
-    START_TIMER_PREEMPTIVE("Prestep");
-
-    RankHandler *handler = this->rankHandlers[this->rank_world];
-    
-    this->physics->updateGridData();
-    // MPI_Barrier(MPI_COMM_WORLD);
-    // measure time for prestep
-    std::chrono::high_resolution_clock::time_point preStepStart = std::chrono::high_resolution_clock::now();
-    std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
-    std::chrono::high_resolution_clock::time_point preStepEnd = std::chrono::high_resolution_clock::now();
-
-    double preStepSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(preStepEnd - preStepStart).count();
-    // get maximal
-    struct
-    {
-        double seconds;
-        int rank;
-    } myPreStepData, maxPreStepData;
-    myPreStepData.seconds = preStepSeconds;
-    myPreStepData.rank = this->rank_world;
-    MPI_Reduce(&myPreStepData, &maxPreStepData, 1, MPI_DOUBLE_INT, MPI_MAXLOC, 0, this->comm_world);
-    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepSeconds, &preStepSeconds, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
-
-    if(this->rank_world == 0)
-    {
-        std::cout << "Prestep time: avg=" << preStepSeconds / this->size_world << "s, max=" << maxPreStepData.seconds << "s (rank " << maxPreStepData.rank << ")" << std::endl;
-    }
-    // MPI_Barrier(MPI_COMM_WORLD);
-
-    auto addParticlesStart = std::chrono::high_resolution_clock::now();
-    size_t preStepParticlesNum = newParticles1.size();
-    {
-        START_TIMER("Adding Particles");
-        this->AddParticles(newParticles1);
-        std::vector<MCParticle>().swap(newParticles1);
-    }
-    // MPI_Barrier(this->comm_world);
-    size_t numParticles = handler->th_length;
+    size_t numParticles = initialParticlesNum + preStepParticlesNum;
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
     int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
@@ -1540,24 +1535,13 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     size_t totalCounterDecrementations = numOfCounterDecrementations;
     size_t callsToTransfer = this->transfersCounter;
 
-    struct
-    {
-        int x;
-        int rank;
-    } mySteps, maxSteps, myTransfers, maxTransfers;
-
-    mySteps.x = 0;
+    int myStepsCount = 0;
     for(size_t counter : this->cellsStepsCounters)
     {
-        mySteps.x += static_cast<int>(counter);
+        myStepsCount += static_cast<int>(counter);
     }
-    mySteps.rank = this->rank_world;
-    
-    MPI_Reduce(&mySteps, &maxSteps, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
-
-    myTransfers.x = static_cast<int>(this->transfersCounter);
-    myTransfers.rank = this->rank_world;
-    MPI_Reduce(&myTransfers, &maxTransfers, 1, MPI_2INT, MPI_MAXLOC, 0, this->comm_world);
+    auto [maxStepsRank, maxStepsVal] = MPI_Max_loc(myStepsCount, this->comm_world);
+    auto [maxTransfersRank, maxTransfersVal] = MPI_Max_loc(static_cast<int>(this->transfersCounter), this->comm_world);
 
     double reallocationTime = 0, maxReallocationTime = 0;
     size_t totalReallocations = 0;
@@ -1630,9 +1614,9 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &managerTotalTime, &managerTotalTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
     if(this->rank_world == 0)
     {
-        double accounted = maxPreStepData.seconds + elapsed + populationControlTime + postStepTime;
+        double accounted = maxPreStepTime + elapsed + populationControlTime + postStepTime;
         std::cout << "Manager breakdown (max): init=" << initTime << "s, addParticles=" << addParticlesTime
-                  << "s, prestep=" << maxPreStepData.seconds << "s, mainLoop=" << elapsed
+                  << "s, prestep=" << maxPreStepTime << "s, mainLoop=" << elapsed
                   << "s, popControl=" << populationControlTime << "s, postStep=" << postStepTime
                   << "s, diagnostics=" << diagnosticsTime << "s, total=" << managerTotalTime
                   << "s, previously accounted=" << accounted << "s" << std::endl;

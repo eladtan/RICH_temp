@@ -22,7 +22,7 @@ class Serializer
 public:
     Serializer(void) = default;
 
-    void reset(){this->internal.clear();};
+    void reset(){this->internal.clear(); this->internal.shrink_to_fit();};
 
     char *resize(size_t size);
 
