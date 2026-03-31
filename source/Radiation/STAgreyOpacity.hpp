@@ -9,7 +9,7 @@
 /**
  * @brief The STAgreyOpacity class calculates the diffusion, Planck, and scattering opacities based on the given temperature and density.
  */
-class STAgreyOpacity: public DiffusionCoefficientCalculator
+class STAgreyOpacity: public OpacityCalculator
 {
 private:
     std::vector<double> rho_, T_;  // Vectors to store the density and temperature values

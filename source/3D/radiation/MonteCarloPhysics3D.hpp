@@ -21,7 +21,7 @@ public:
     using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    MonteCarloRadiationPhysics3D(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity);
+    MonteCarloRadiationPhysics3D(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity);
     
     virtual Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const = 0;
 
@@ -40,7 +40,7 @@ protected:
     std::vector<double> Erad_time_avg;
     std::vector<Conserved3D> &conserved;
     std::shared_ptr<EquationOfState> eos;
-    std::shared_ptr<RadiationOpacity> opacity;
+    std::shared_ptr<OpacityCalculator> opacity;
     std::uniform_real_distribution<double> dist;
     std::mt19937_64 re;
 };

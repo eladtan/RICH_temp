@@ -80,7 +80,7 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
         cell_temp = cells[i];
         cell_temp.density *= mass_scale / pow<3>(length_scale);
 
-        double const Dg_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficientGroup(cell_temp, group);
+        double const Dg_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficient(cell_temp, multigroup_.energy_groups_center[group]);
 
         lambda_g[i] = multigroup_.flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Eg, Dg_i, Eg_fluid_i) : 1.0;
         
@@ -155,11 +155,11 @@ std::vector<double> EnergyGroupToLabFrame::operator()(HDSim3D const& sim) const 
         cell_temp = cells[i];
         cell_temp.density *= mass_scale / pow<3>(length_scale);
 
-        double const Dg_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficientGroup(cell_temp, group);
+        double const Dg_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficient(cell_temp, multigroup_.energy_groups_center[group]);
 
-        double const Dgp_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficientGroup(cell_temp, gp);
+        double const Dgp_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficient(cell_temp, multigroup_.energy_groups_center[gp]);
 
-        double const Dgm_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficientGroup(cell_temp, gm);
+        double const Dgm_i = multigroup_.coefficient_calculator.CalcDiffusionCoefficient(cell_temp, multigroup_.energy_groups_center[gm]);
 
         double const lambda_gp = multigroup_.flux_limiter_ ? CG::CalcSingleFluxLimiter(grad_Egp, Dgp_i, Egp_fluid_i) : 1.0;
 

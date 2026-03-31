@@ -16,7 +16,7 @@ namespace {
     }
 }
 
-    RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, RadiationIMCParameters parameters)
+    RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
     : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth)
 {
     if(parameters.withMultigroupOpacity)
@@ -72,20 +72,20 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     {
         double shiftedFrequency = particle.frequency * dopplerShift;
         ClampFrequencyToBounds(shiftedFrequency);
-        absorptionOpacity = this->opacity->getGroupAbsorptionOpacity(cell, shiftedFrequency);
+        absorptionOpacity = this->opacity->CalcAbsorptionOpacity(cell, shiftedFrequency);
     }
     else
     {
         absorptionOpacity = this->planckOpacities[cellIndex];
     }
-    double scatteringOpacity = this->opacity->getScatteringOpacity(cell);
+    double scatteringOpacity = this->opacity->CalcScatteringOpacity(cell);
     double scatteringLength = 1.0 / (scatteringOpacity + (1 - this->factorFleck[cellIndex]) * absorptionOpacity);
     double _log1p = -std::log1p(this->dist(this->re) - 1); 
     distance_t scatteringDistance = scatteringLength * _log1p / dopplerShift; 
     if(scatteringDistance < 0)
     {
         UniversalError eo("Negative scattering distance in RadiationIMC::step");
-        eo.addEntry("Cell scattering distance", opacity->getScatteringOpacity(cell));
+        eo.addEntry("Cell scattering distance", opacity->CalcScatteringOpacity(cell));
         eo.addEntry("Factor fleck", this->factorFleck[cellIndex]);
         eo.addEntry("Planck opacity", this->planckOpacities[cellIndex]);
         eo.addEntry("log(1-randm)", _log1p);
@@ -421,7 +421,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     for(size_t i = 0; i < Ncells; i++)
     {
         const ComputationalCell3D &cell = this->cells[i];
-        this->planckOpacities[i] = this->opacity->getPlanckOpacity(this->cells[i]);
+        this->planckOpacities[i] = this->opacity->CalcPlanckOpacity(this->cells[i]);
         double gamma = (this->withHydro && !this->MMC)? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
 
         double cv = this->eos->dT2cv(this->cells[i].density, this->cells[i].temperature, this->cells[i].tracers, this->cells[i].tracerNames);

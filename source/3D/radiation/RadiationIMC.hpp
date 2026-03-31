@@ -27,7 +27,7 @@ public:
     using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<RadiationOpacity> opacity, RadiationIMCParameters parameters);
+    RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters);
 
     std::vector<Particle> preStep(double fullDt) override;
 

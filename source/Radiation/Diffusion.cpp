@@ -30,7 +30,7 @@ namespace CG
     }
 }
 
-Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc, 
+Diffusion::Diffusion(OpacityCalculator const& D_coefficient_calc, 
                      DiffusionBoundaryCalculator const& boundary_calc,
                      EquationOfState const& eos, 
                      std::vector<std::string> const zero_cells, 

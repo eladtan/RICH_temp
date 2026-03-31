@@ -76,7 +76,7 @@ MultigroupDiffusionXInflowBoundary::MultigroupDiffusionXInflowBoundary(Computati
                                                                        MultigroupDiffusionCoefficientCalculator const& coefficient_calculator) : left_state_(left_state),
     right_state_(right_state),
     coefficient_calculator_(coefficient_calculator),
-    MultigroupDiffusionBoundaryCalculator(std::vector<double>(), std::vector<double>()) {
+    MultigroupDiffusionBoundaryCalculator(coefficient_calculator.energy_groups_center, coefficient_calculator.energy_groups_boundary) {
 }
 
 void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t const group,
@@ -99,8 +99,8 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
         Vector3D const r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
 
         // max temperature?
-        double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[index], group);
-        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(left_state_, group);
+        double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficient(cells[index], energy_groups_center[group]);
+        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficient(left_state_, energy_groups_center[group]);
 
         // this is supposed to be harmonic probably but for the sake of sake
         double const Dg_ij = 0.5 * (Dg_i + Dg_j);
@@ -125,8 +125,8 @@ void MultigroupDiffusionXInflowBoundary::setBoundaryValuesGroup(std::size_t cons
         Vector3D const r_ij = tess.GetMeshPoint(index) - tess.GetMeshPoint(outside_point);
 
         // max temperature?
-        double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficientGroup(cells[index], group);
-        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficientGroup(right_state_, group);
+        double const Dg_i = coefficient_calculator_.CalcDiffusionCoefficient(cells[index], energy_groups_center[group]);
+        double const Dg_j = coefficient_calculator_.CalcDiffusionCoefficient(right_state_, energy_groups_center[group]);
 
         // this is supposed to be harmonic probably but for the sake of sake
         double Dg_ij = 0.5 * (Dg_i + Dg_j);

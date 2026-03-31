@@ -521,7 +521,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                 }
             }
             for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
-                double const Dg = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], g);
+                double const Dg = coefficient_calculator.CalcDiffusionCoefficient(cells_cgs[i], energy_groups_center[g]);
                 Vector3D grad_for_limiter = grad_temp_array[g] / (tess.GetVolume(i) * pow<3>(length_scale_));
                 double const Eg_i = cells_cgs[i].Eg[g] * cells_cgs[i].density;
                 double const min_grad = std::abs(Eg_i) / (1000.0 * cell_width);
@@ -601,8 +601,8 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
                         cell_j->temperature = max_T;
                         cell_i.temperature = max_T;
 
-                        double const D_i = coefficient_calculator.CalcDiffusionCoefficientGroup(cell_i, group);
-                        double const D_j = coefficient_calculator.CalcDiffusionCoefficientGroup(*cell_j, group);
+                        double const D_i = coefficient_calculator.CalcDiffusionCoefficient(cell_i, energy_groups_center[group]);
+                        double const D_j = coefficient_calculator.CalcDiffusionCoefficient(*cell_j, energy_groups_center[group]);
 
                         cell_i.temperature = T_i;
                         cell_j->temperature = T_j;
@@ -921,7 +921,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
                     }
                 }
                 gradEg *= 1.0 / volume;
-                double const D = coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group);
+                double const D = coefficient_calculator.CalcDiffusionCoefficient(cells_cgs[i], energy_groups_center[group]);
                 double const flux_limit = CG::CalcSingleFluxLimiter(gradEg, D, Eg_i);
                 if(cells[i].ID == print_id)
                     std::cout<<"Group "<<group<<" flux_limit "<<flux_limit<<" sigma rossland "<<units::clight / (3 * D)<<" Eg_i "<<Eg_i<<" gradEg "<<gradEg<<std::endl;
@@ -1025,7 +1025,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
                 eo.addEntry("Eg[" + std::to_string(group) + "]_full", full_CG_result[i * ENERGY_GROUPS_NUM + group]);
                 eo.addEntry("Eg[" + std::to_string(group) + "]", CG_result[i * ENERGY_GROUPS_NUM + group]);
                 eo.addEntry("sigma_absorption_group[" + std::to_string(group) + "]", sigma_absorption_group[i][group]);
-                eo.addEntry("sigma_rossland_group[" + std::to_string(group) + "]", units::clight / (3 * coefficient_calculator.CalcDiffusionCoefficientGroup(cells_cgs[i], group)));
+                eo.addEntry("sigma_rossland_group[" + std::to_string(group) + "]", units::clight / (3 * coefficient_calculator.CalcDiffusionCoefficient(cells_cgs[i], energy_groups_center[group])));
             }
             throw eo;
         }
@@ -1144,7 +1144,7 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
         double const Um = get_radiation_energy_density(cell.temperature);
         for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
 
-            sigma_absorption_group[i][g] = std::min(coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g),
+            sigma_absorption_group[i][g] = std::min(coefficient_calculator.CalcAbsorptionOpacity(cell, energy_groups_center[g]),
                 CG::max_coupling_strength / (CG::speed_of_light * dt));
             if (protections_on_) {
                 if (Trad > 1.1 * cells[i].temperature && cv < 0.1 * get_radiation_cv(Trad)) {
@@ -1166,7 +1166,7 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
                 throw UniversalError("negative absorption coefficient");
             }
 
-            sigma_scattering_group[i][g] = coefficient_calculator.CalcScatteringCoefficientGroup(cell, g);
+            sigma_scattering_group[i][g] = coefficient_calculator.CalcScatteringOpacity(cell, energy_groups_center[g]);
 
             if (sigma_scattering_group[i][g] < 0.) {
                 throw UniversalError("negative scattering coefficient");

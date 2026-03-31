@@ -11,7 +11,7 @@
 class MultigroupOpacity
 {
 public:
-    MultigroupOpacity(std::shared_ptr<RadiationOpacity> opacity);
+    MultigroupOpacity(std::shared_ptr<OpacityCalculator> opacity);
     
     void GetCummulativeOpacity(const ComputationalCell3D &cell);
 
@@ -27,7 +27,7 @@ private:
     std::array<double, ENERGY_GROUPS_NUM> energyCenters;
     std::array<double, ENERGY_GROUPS_NUM + 1> cummulativeOpacity;
     size_t cummulativeOpacityCellID;
-    std::shared_ptr<RadiationOpacity> opacity;
+    std::shared_ptr<OpacityCalculator> opacity;
 };
 
 #endif // MULTIGROUP_OPACITY_HPP

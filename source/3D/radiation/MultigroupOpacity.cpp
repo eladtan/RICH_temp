@@ -1,7 +1,7 @@
 #include "MultigroupOpacity.hpp"
 #include "misc/universal_error.hpp"
 
-MultigroupOpacity::MultigroupOpacity(std::shared_ptr<RadiationOpacity> opacity)
+MultigroupOpacity::MultigroupOpacity(std::shared_ptr<OpacityCalculator> opacity)
     : opacity(opacity)
 {
     this->cummulativeOpacityCellID = std::numeric_limits<size_t>::max();
@@ -29,7 +29,7 @@ void MultigroupOpacity::GetCummulativeOpacity(const ComputationalCell3D &cell)
         double const b = ComputationalCell3D::energyBoundaries[g] / kT;
     
         double const bg = planck_integral::planck_integral(a, b);
-        this->cummulativeOpacity[g] = opacity->getGroupAbsorptionOpacity(cell, this->energyCenters[g-1]) * bg;
+        this->cummulativeOpacity[g] = opacity->CalcAbsorptionOpacity(cell, this->energyCenters[g-1]) * bg;
         this->cummulativeOpacity[g] += this->cummulativeOpacity[g-1];
     }
     this->cummulativeOpacityCellID = cell.ID;

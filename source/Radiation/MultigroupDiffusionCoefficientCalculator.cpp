@@ -1,13 +1,6 @@
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "misc/simple_io.hpp"
 
-MultigroupDiffusionCoefficientCalculator
-::MultigroupDiffusionCoefficientCalculator(std::vector<double> const& energy_groups_center_,
-                                           std::vector<double> const& energy_groups_boundary_) :
-    energy_groups_center(energy_groups_center_),
-    energy_groups_boundary(energy_groups_boundary_) {
-}
-
 
 double interpolateTable(double const T,
                         double const d,
@@ -51,12 +44,11 @@ double interpolateTable(double const T,
 }
 
 GraySTAopacity::GraySTAopacity(std::string const file_directory) :
-    T_(),
     rho_(),
+    T_(),
     rossland_(),
     planck_(),
-    scatter_(),
-    MultigroupDiffusionCoefficientCalculator(std::vector<double>(), std::vector<double>()) {
+    scatter_() {
 
     constexpr std::size_t Nmatrix = 128;
 
@@ -91,50 +83,51 @@ GraySTAopacity::GraySTAopacity(std::string const file_directory) :
     rho_ = read_vector(file_directory + "rho.txt");
 }
 
-double GraySTAopacity::CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double GraySTAopacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const {
     double const T = std::log(cell.temperature);
     double const d = std::log(cell.density);
 
     return CG::speed_of_light / (3.0 * interpolateTable(T, d, T_, rho_, rossland_));
 }
 
-double GraySTAopacity::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double GraySTAopacity::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
     double const T = std::log(cell.temperature);
     double const d = std::log(cell.density);
 
     return interpolateTable(T, d, T_, rho_, planck_, -3.5);
 }
 
-double GraySTAopacity::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double GraySTAopacity::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
     double const T = std::log(cell.temperature);
     double const d = std::log(cell.density);
     return interpolateTable(T, d, T_, rho_, scatter_);
 }
 
-AnalyticOpacity::AnalyticOpacity(std::function<double(ComputationalCell3D const& cell, std::size_t const)> diffusion_coefficient_groups_function_,
-                                 std::function<double(ComputationalCell3D const& cell, std::size_t const)> sigma_absorption_groups_function_,
-                                 std::function<double(ComputationalCell3D const& cell, std::size_t const)> sigma_scattering_groups_function_,
+AnalyticOpacity::AnalyticOpacity(std::function<double(ComputationalCell3D const& cell, double)> diffusion_coefficient_groups_function_,
+                                 std::function<double(ComputationalCell3D const& cell, double)> sigma_absorption_groups_function_,
+                                 std::function<double(ComputationalCell3D const& cell, double)> sigma_scattering_groups_function_,
                                  std::vector<double> const& energy_groups_center_,
                                  std::vector<double> const& energy_groups_boundary_) :
     diffusion_coefficient_groups_function(diffusion_coefficient_groups_function_),
     sigma_absorption_groups_function(sigma_absorption_groups_function_),
-    sigma_scattering_groups_function(sigma_scattering_groups_function_),
-    MultigroupDiffusionCoefficientCalculator(energy_groups_center_, energy_groups_boundary_) {
+    sigma_scattering_groups_function(sigma_scattering_groups_function_) {
+    energy_groups_center = energy_groups_center_;
+    energy_groups_boundary = energy_groups_boundary_;
 }
 
-double AnalyticOpacity::CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell,
-                                                      std::size_t const group) const {
-    return diffusion_coefficient_groups_function(cell, group);
+double AnalyticOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell,
+                                                      double energy) const {
+    return diffusion_coefficient_groups_function(cell, energy);
 }
 
-double AnalyticOpacity::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell,
-                                                       std::size_t const group) const {
-    return sigma_absorption_groups_function(cell, group);
+double AnalyticOpacity::CalcAbsorptionOpacity(ComputationalCell3D const& cell,
+                                                       double energy) const {
+    return sigma_absorption_groups_function(cell, energy);
 }
 
-double AnalyticOpacity::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell,
-                                                       std::size_t const group) const {
-    return sigma_scattering_groups_function(cell, group);
+double AnalyticOpacity::CalcScatteringOpacity(ComputationalCell3D const& cell,
+                                                       double energy) const {
+    return sigma_scattering_groups_function(cell, energy);
 }
 
 GrayPowerLawOpacity::GrayPowerLawOpacity(double const D0,
@@ -148,19 +141,18 @@ GrayPowerLawOpacity::GrayPowerLawOpacity(double const D0,
     beta_(beta),
     planck0_(planck0),
     alpha_planck_(alpha_planck),
-    beta_planck_(beta_planck),
-    MultigroupDiffusionCoefficientCalculator(std::vector<double>(), std::vector<double>()) {
+    beta_planck_(beta_planck) {
 }
 
-double GrayPowerLawOpacity::CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double GrayPowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const {
     return D0_ * std::pow(cell.density, alpha_) * std::pow(cell.temperature, beta_);
 }
 
-double GrayPowerLawOpacity::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double GrayPowerLawOpacity::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
     return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
 }
 
-double GrayPowerLawOpacity::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double GrayPowerLawOpacity::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
     return 0.0;
 }
 
@@ -168,16 +160,18 @@ double GrayPowerLawOpacity::CalcScatteringCoefficientGroup(ComputationalCell3D c
 FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup(double const Z_,
                                                                          std::vector<double> const& energy_groups_center_,
                                                                          std::vector<double> const& energy_groups_boundary_) :
-    Z(Z_),
-    MultigroupDiffusionCoefficientCalculator(energy_groups_center_, energy_groups_boundary_) {}
-
-double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
-    return CG::speed_of_light / (3.0 * CalcAbsorptionCoefficientGroup(cell, group));
+    Z(Z_) {
+    energy_groups_center = energy_groups_center_;
+    energy_groups_boundary = energy_groups_boundary_;
 }
 
-double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
-    double const nu_g = energy_groups_center[group]/h;
-    double const e = energy_groups_center[group];
+double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const {
+    return CG::speed_of_light / (3.0 * CalcAbsorptionOpacity(cell, energy));
+}
+
+double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
+    double const nu_g = energy/h;
+    double const e = energy;
     double const kT = kB*cell.temperature;
 
     double const m_p = 1.6726231e-24;
@@ -186,15 +180,17 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionCoefficientGroup(Compu
 
     double g_ff = std::max(1.0, std::log(std::exp(5.960) * std::pow(cell.temperature, 1.5) / (nu_g * Z)));
 
-    // return coefficient*Z*Z*n_e*n_i*(1.0 - std::exp(-h*nu_g/kT))/(std::sqrt(kT)*pow<3>(nu_g));
     return g_ff * 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(cell.temperature)*(1.-std::exp(-e/(CG::boltzmann_constant*cell.temperature)))*std::pow(e/h, -3);
 }
 
-double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, std::size_t const group) const {
+double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
     return 0.0;
 }
 
 ZeroAbsorptionZeroDiffusionMultigroup::ZeroAbsorptionZeroDiffusionMultigroup(
     std::vector<double> const& energy_groups_center_,
     std::vector<double> const& energy_groups_boundary_
-) : MultigroupDiffusionCoefficientCalculator(energy_groups_center_, energy_groups_boundary_) {}
+) {
+    energy_groups_center = energy_groups_center_;
+    energy_groups_boundary = energy_groups_boundary_;
+}

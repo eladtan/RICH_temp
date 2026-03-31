@@ -23,7 +23,7 @@ void RadiationIMC::precomputeRandomWalkData()
     for(size_t i = 0; i < Ncells; i++)
     {
         const ComputationalCell3D &cell = this->cells[i];
-        double scatOp = this->opacity->getScatteringOpacity(cell);
+        double scatOp = this->opacity->CalcScatteringOpacity(cell);
         double sigmaT_gray = this->planckOpacities[i] + scatOp;
         this->rwCellTotalOpacity[i] = sigmaT_gray;
 
@@ -52,7 +52,7 @@ void RadiationIMC::precomputeRandomWalkData()
                 double a = ComputationalCell3D::energyBoundaries[g] / kT;
                 double b = ComputationalCell3D::energyBoundaries[g + 1] / kT;
                 double Bg = planck_integral::planck_integral(a, b);
-                double sigA_g = this->opacity->getGroupAbsorptionOpacity(cell, energyCenters[g]);
+                double sigA_g = this->opacity->CalcAbsorptionOpacity(cell, energyCenters[g]);
                 double sigT_g = sigA_g + scatOp;
 
                 totalSigABgAll += sigA_g * Bg;
