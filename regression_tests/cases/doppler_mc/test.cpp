@@ -206,7 +206,8 @@ int main(int argc, char *argv[])
             .diffusionPressureGradient = false,
             .MMC = false,
             .withMultigroupOpacity = true,
-            .withRandomWalk = false
+            .withRandomWalk = false,
+            .noHydroFeedback = true
         };
 
         auto boundaryCond =

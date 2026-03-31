@@ -16,6 +16,7 @@ struct RadiationIMCParameters
     bool withRandomWalk = false;
     double rwMinCellOpticalDepth = 25.0;
     double rwMinParticleOpticalDepth = 5.0;
+    bool noHydroFeedback = false;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
@@ -59,6 +60,7 @@ private:
     bool withRandomWalk;
     double rwMinCellOpticalDepth;
     double rwMinParticleOpticalDepth;
+    bool noHydroFeedback;
 
     std::unique_ptr<RandomWalk> randomWalk;
     std::vector<bool> rwCellEligible;

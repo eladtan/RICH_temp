@@ -184,7 +184,10 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
 
     double rwAbsRate = sigma_a_eff * f * units::clight;
     double rwExp = std::expm1(-dt * rwAbsRate);
-    this->conserved[cellIndex].internal_energy += -rwExp * particle.weight;
+    if(!this->noHydroFeedback)
+    {
+        this->conserved[cellIndex].internal_energy += -rwExp * particle.weight;
+    }
     if(rwAbsRate > 0)
         this->Erad_time_avg[cellIndex] += particle.weight * rwExp * (-1.0 / rwAbsRate);
     particle.weight *= 1.0 + rwExp;
@@ -194,7 +197,10 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     if(particle.weight < particle.initialWeight * 1e-2)
     {
         functionality.change = MonteCarloParticleStatus::REMOVE;
-        this->conserved[cellIndex].internal_energy += particle.weight;
+        if(!this->noHydroFeedback)
+        {
+            this->conserved[cellIndex].internal_energy += particle.weight;
+        }
         return true;
     }
 
@@ -280,7 +286,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
         LorentzTransformation(particle, -1 * cell.velocity);
         if(this->multigroupOpacity)
             ClampFrequencyToBounds(particle.frequency);
-        if(!this->diffusionPressureGradient)
+        if(!this->diffusionPressureGradient && !this->noHydroFeedback)
             this->conserved[cellIndex].momentum += (oldWeight * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2;
     }
 
