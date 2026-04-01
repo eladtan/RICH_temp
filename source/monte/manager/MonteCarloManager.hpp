@@ -74,8 +74,6 @@ public:
 
     void ClearCommunicator(void);
 
-    void SetCommunicator(const MPI_Comm &comm);
-
     void TransferParticles(rank_t rankBuffer, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num);
 
     void TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks);
@@ -142,6 +140,8 @@ private:
 
     void PutSelfParticles(std::vector<MCParticle> &&particles);
 
+    void PrepareHandlers(void);
+
     void FreeHandlers(void);
 
     void AddParticles(const std::vector<MCParticle> &particles);
@@ -151,8 +151,6 @@ private:
     void ShrinkAllBuffers(void);
 
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
-    
-    void InitializeHandlers(size_t bufferSizes);
 };
 
 template<typename T, typename Grid>
@@ -163,8 +161,21 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     this->myIDCounter = 0;
     this->currentStep = 0;
     // this->progress = std::make_shared<ProgressCounter>(comm);
-    this->SetCommunicator(comm);
-    this->InitializeHandlers(bufferSizes);
+    this->comm_world = comm;
+    MPI_Comm_rank(this->comm_world, &this->rank_world);
+    MPI_Comm_size(this->comm_world, &this->size_world);
+
+    this->ranksOrder = GetRanksOrder(this->comm_world);
+    this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
+
+    this->rankHandlers = std::vector<RankHandler*>(this->size_world, nullptr);
+
+    auto reallocationFunction = [this](rank_t rank)
+    {
+        this->rankHandlers[rank]->Reallocate(BUFFER_REALLOCATION_FACTOR);
+    };
+
+    this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction);
 
     if(this->rank_world == 0)
     {
@@ -172,28 +183,6 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     }
     this->cellsStepsCounters = std::vector<size_t>(this->grid.GetPointNo(), 0);
     this->lastBuildGeneration = std::numeric_limits<size_t>::max();
-}
-
-template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::InitializeHandlers(size_t bufferSizes)
-{
-    this->rankHandlers = std::vector<RankHandler*>(this->size_world, nullptr);
-
-    auto createHandler = [&](rank_t _rank)
-    {
-        this->rankHandlers[_rank] = new RankHandler(bufferSizes, this->comm_world, this->communicators[_rank], this->reallocationAgent, this->rdma_type);
-        if(this->rankHandlers[_rank]->peer_rank_world != _rank)
-        {
-            UniversalError eo("Peer rank world does not match");
-            eo.addEntry("Rank", _rank);
-            eo.addEntry("Peer Rank World", this->rankHandlers[_rank]->peer_rank_world);
-            throw eo;
-        }
-    };
-    
-    ForEachRankSync(this->comm_world, this->ranksOrder, createHandler);
-
-    MPI_Barrier(this->comm_world);
 }
 
 template<typename T, typename Grid>
@@ -225,71 +214,17 @@ void MonteCarloManager<T, Grid>::ClearCommunicator()
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::SetCommunicator(const MPI_Comm &comm)
-{
-    this->ClearCommunicator();
-
-    this->comm_world = comm;
-    MPI_Comm_rank(this->comm_world, &this->rank_world);
-    MPI_Comm_size(this->comm_world, &this->size_world);
-
-    this->ranksOrder = GetRanksOrder(this->comm_world);
-
-    this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
-
-    MPI_Group worldGroup;
-    MPI_Comm_group(MPI_COMM_WORLD, &worldGroup);
-    auto setComm = [&](rank_t _rank)
-    {
-        MPI_Group group;
-        int ranks[2] = {std::min(this->rank_world, _rank), std::max(this->rank_world, _rank)};
-        int tag = ranks[0] * this->size_world + ranks[1];
-        MPI_Group_incl(worldGroup, (_rank == this->rank_world)? 1 : 2, ranks, &group);
-        MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[_rank]);
-        MPI_Group_free(&group);
-    };
-
-    ForEachRankSync(this->comm_world, this->ranksOrder, setComm);
-    
-    MPI_Group_free(&worldGroup);
-
-    // this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
-
-    // for(int rank1 = 0; rank1 < this->size_world; rank1++)
-    // {
-    //     for(int rank2 = 0; rank2 <= rank1; rank2++)
-    //     {
-    //         MPI_Barrier(this->comm_world);
-    //         int color = (this->rank_world == rank1 || this->rank_world == rank2) ? 1 : MPI_UNDEFINED;
-
-    //         MPI_Comm new_comm = MPI_COMM_NULL;
-    //         MPI_Comm_split(this->comm_world, color, this->rank_world, &new_comm);
-    //         this->communicators.push_back(new_comm);
-
-    //         if(this->rank_world == rank1 or this->rank_world == rank2)
-    //         {
-    //             rank_t otherRank = (rank1 == this->rank_world)? rank2 : rank1;
-    //             this->communicators[otherRank] = new_comm;
-    //         }
-    //     }
-    // }
-
-
-    auto reallocationFunction = [this](rank_t rank)
-    {
-        this->rankHandlers[rank]->Reallocate(BUFFER_REALLOCATION_FACTOR);
-    };
-
-    this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction);
-}
-
-template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::FreeHandlers(void)
 {
     auto freeHandler = [&](rank_t _rank)
     {
-        this->rankHandlers[_rank]->Destroy();
-        delete this->rankHandlers[_rank];    
+        RankHandler *handler = this->rankHandlers[_rank];
+        if(handler != nullptr)
+        {
+            handler->Destroy();
+            delete handler;    
+        }
+        this->rankHandlers[_rank] = nullptr;
     };
     
     ForEachRankSync(this->comm_world, this->ranksOrder, freeHandler);
@@ -1261,6 +1196,10 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::ShrinkAllBuffers(void)
         {
             return;
         }
+        if(this->rankHandlers[_rank] == nullptr)
+        {
+            return;
+        }
         double factor;
         if(std::find(this->neighbors.cbegin(), this->neighbors.cend(), _rank) != this->neighbors.cend())
         {
@@ -1351,6 +1290,72 @@ void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesN
 }
 
 template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::PrepareHandlers(void)
+{
+    boost::container::flat_set<rank_t> oldNeighbors(this->neighbors.cbegin(), this->neighbors.cend());
+    this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
+
+    // Self handler: 1-process communicator, no coordination needed
+    if(this->rankHandlers[this->rank_world] == nullptr)
+    {
+        MPI_Group worldGroup;
+        MPI_Comm_group(this->comm_world, &worldGroup);
+        MPI_Group group;
+        int ranks[1] = {this->rank_world};
+        int tag = this->rank_world * this->size_world + this->rank_world;
+        MPI_Group_incl(worldGroup, 1, ranks, &group);
+        MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[this->rank_world]);
+        MPI_Group_free(&group);
+        MPI_Group_free(&worldGroup);
+        this->rankHandlers[this->rank_world] = new RankHandler(DEFAULT_BUFFER_SIZE, this->comm_world, this->communicators[this->rank_world], this->reallocationAgent, this->rdma_type);
+    }
+
+    std::vector<rank_t> newNeighbors;
+    for(rank_t rank : this->neighbors)
+    {
+        if(oldNeighbors.find(rank) == oldNeighbors.end() and this->rankHandlers[rank] == nullptr)
+        {
+            newNeighbors.push_back(rank);
+        }
+    }
+
+    int anyNewNeighbors = newNeighbors.empty() ? 0 : 1;
+    int numNewNeighbors = newNeighbors.size();
+    MPI_Allreduce(MPI_IN_PLACE, &numNewNeighbors, 1, MPI_INT, MPI_SUM, this->comm_world);
+    if(numNewNeighbors > 0)
+    {
+        MPI_Group worldGroup;
+        MPI_Comm_group(this->comm_world, &worldGroup);
+        auto createHandler = [this, &worldGroup](rank_t rank)
+        {
+            MPI_Group group;
+            int ranks[2] = {std::min(this->rank_world, rank), std::max(this->rank_world, rank)};
+            int tag = ranks[0] * this->size_world + ranks[1];
+            MPI_Group_incl(worldGroup, 2, ranks, &group);
+            MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[rank]);
+            MPI_Group_free(&group);
+
+            this->rankHandlers[rank] = new RankHandler(DEFAULT_BUFFER_SIZE, this->comm_world, this->communicators[rank], this->reallocationAgent, this->rdma_type);
+            if(this->rankHandlers[rank]->peer_rank_world != rank)
+            {
+                UniversalError eo("Peer rank world does not match");
+                eo.addEntry("Rank", rank);
+                eo.addEntry("Peer Rank World", this->rankHandlers[rank]->peer_rank_world);
+                throw eo;
+            }    
+        };
+        ForEachRankSyncByList(this->comm_world, newNeighbors, createHandler);
+        
+        MPI_Group_free(&worldGroup);
+    }
+    if(this->rank_world == 0)
+    {
+        std::cout << "Number of new neighbors: " << numNewNeighbors << std::endl;
+    }
+    this->ResetAllBuffers();
+}
+
+template<typename T, typename Grid>
 std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::MonteCarloManager::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 {
     // if(this->Ncells != this->grid.GetPointNo())
@@ -1366,7 +1371,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->ranks_ghost_map = GetGhostMap(this->grid);
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
     
-    this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
+    this->PrepareHandlers();
     this->ResetAllBuffers();
 
     bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());

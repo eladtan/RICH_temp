@@ -5,15 +5,20 @@
 
 #include <mpi.h>
 #include <vector>
+#include <algorithm>
 #include <numeric>
 #include <cassert>
 #include <functional>
+#include <set>
+#include <unordered_map>
 
 using rank_t = int;
 
 std::vector<rank_t> GetRanksOrder(const MPI_Comm &comm);
 
 void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, const std::function<void(rank_t)> &func, bool use_barrier = true);
+
+void ForEachRankSyncByList(const MPI_Comm &comm, const std::vector<rank_t> &new_neighbors, const std::function<void(rank_t)> &func);
 
 #endif // RICH_MPI
 
