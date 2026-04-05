@@ -470,7 +470,7 @@ int main(int argc, char *argv[])
 
     std::vector<Particle3D> initialParticles;
     auto mcStep = std::make_shared<RadiationMCStep>(
-        tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, withHydro
+        tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, 0, withHydro
         #ifdef RICH_MPI
             , RadiationMCStep::ManagerType::AUTO_RDMA
         #endif
@@ -526,10 +526,10 @@ int main(int argc, char *argv[])
 
     WriteSimulation(sim, prefix + "latest_sim.h5");
 
-    if(resumeDump < 0)
-    {
-        WriteVTK(tess, cells, physics, prefix + "init.vtu");
-    }
+    // if(resumeDump < 0)
+    // {
+    //     WriteVTK(tess, cells, physics, prefix + "init.vtu");
+    // }
     
     // --- Main time-stepping loop ---
     auto startWall = std::chrono::high_resolution_clock::now();
@@ -575,7 +575,7 @@ int main(int argc, char *argv[])
             char buf[512];
 
             std::snprintf(buf, sizeof(buf), "%s%05zu.pvtu", prefix.c_str(), dumpCount);
-            WriteVTK(tess, cells, physics, buf);
+            // WriteVTK(tess, cells, physics, buf);
 
             WriteSimulation(sim, prefix + "latest_sim.h5");
             if(rank == 0)
