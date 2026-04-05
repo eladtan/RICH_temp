@@ -5,7 +5,7 @@
 #include "monte/manager/MonteCarloManager.hpp"
 #include "monte/two_sided_manager/TwoSidedMonteCarloManager.hpp"
 #endif // RICH_MPI
-#include "monte/manager/MonteCarloManagerSerial.hpp"
+#include "monte/serial_manager/MonteCarloManagerSerial.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 

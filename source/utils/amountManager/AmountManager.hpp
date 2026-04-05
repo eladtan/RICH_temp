@@ -1,5 +1,5 @@
-#ifndef PARTICLE_AMOUNT_MANAGER2_HPP
-#define PARTICLE_AMOUNT_MANAGER2_HPP
+#ifndef AMOUNT_MANAGER_HPP
+#define AMOUNT_MANAGER_HPP
 
 #ifdef RICH_MPI
 
@@ -7,14 +7,14 @@
 #include <cassert>
 #include <mpi.h>
 
-class ParticleAmountManager2
+class AmountManager
 {
 public:
     using counter_t = long long int;
 
-    ParticleAmountManager2(MPI_Comm comm);
+    AmountManager(MPI_Comm comm);
 
-    ~ParticleAmountManager2();
+    ~AmountManager();
     
     void Initialize(counter_t num);
 
@@ -60,4 +60,4 @@ private:
 
 #endif // RICH_MPI
 
-#endif // PARTICLE_AMOUNT_MANAGER2_HPP
+#endif // AMOUNT_MANAGER_HPP

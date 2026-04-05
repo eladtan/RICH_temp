@@ -4,6 +4,7 @@
 #include <memory>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
+#include "3D/monte/Voronoi3DMovement.hpp"
 #include "RandomWalk.hpp"
 
 struct RadiationIMCParameters

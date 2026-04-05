@@ -77,23 +77,15 @@ inline std::tuple<size_t, dt_t, size_t> MonteCarloPhysics<T, Grid>::getIntersect
     size_t cellIndex = particle.cellIndex;
     const std::vector<T> &normalsOfFaces = this->gridData.normalsOfCells[cellIndex];
     const std::vector<T> &pointsOnFaces = this->gridData.pointsOnFaces[cellIndex];
-    try
-    {
-        auto [faceIntersect, timeIntersect] = particle.distanceToNearestFace(this->grid, normalsOfFaces, pointsOnFaces);
-        // std::cout << "faceIntersect is " << faceIntersect << " and timeIntersect is " << timeIntersect << std::endl;
-        assert(faceIntersect < this->grid.GetTotalFacesNumber());
-        assert(timeIntersect >= 0);
-        const std::pair<size_t, size_t> &cellNeighbors = this->grid.GetFaceNeighbors(faceIntersect);
-        assert(particle.cellIndex == cellNeighbors.first or particle.cellIndex == cellNeighbors.second);
-        size_t nextCellIndex = (cellNeighbors.first == particle.cellIndex)? cellNeighbors.second : cellNeighbors.first;
-        // std::cout << "nextCellIndex is " << nextCellIndex << std::endl;
-        return std::make_tuple(faceIntersect, timeIntersect, nextCellIndex);
-    }
-    catch(const UniversalError &eo)
-    {
-        reportError(eo);
-        exit(1);
-    }
+    auto [faceIntersect, timeIntersect] = particle.distanceToNearestFace(this->grid, normalsOfFaces, pointsOnFaces);
+    // std::cout << "faceIntersect is " << faceIntersect << " and timeIntersect is " << timeIntersect << std::endl;
+    assert(faceIntersect < this->grid.GetTotalFacesNumber());
+    assert(timeIntersect >= 0);
+    const std::pair<size_t, size_t> &cellNeighbors = this->grid.GetFaceNeighbors(faceIntersect);
+    assert(particle.cellIndex == cellNeighbors.first or particle.cellIndex == cellNeighbors.second);
+    size_t nextCellIndex = (cellNeighbors.first == particle.cellIndex)? cellNeighbors.second : cellNeighbors.first;
+    // std::cout << "nextCellIndex is " << nextCellIndex << std::endl;
+    return std::make_tuple(faceIntersect, timeIntersect, nextCellIndex);
 }
 
 #endif // MONTE_CARLO_PHYSICS_HPP

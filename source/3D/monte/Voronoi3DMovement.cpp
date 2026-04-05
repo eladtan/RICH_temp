@@ -207,6 +207,10 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
 
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs)
 {
+    if(not dynamic_cast<const Voronoi3D*>(&tess))
+    {
+        throw UniversalError("UpdateNewCells: Tessellation is not a Voronoi3D");
+    }
     bool verbose = true;
     START_TIMER("Update New Cells");
 

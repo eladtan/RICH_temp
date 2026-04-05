@@ -9,8 +9,8 @@
 #include <chrono>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
-#include "tools/DistributedMutex.hpp"
-#include "tools/ConditionVariable.hpp"
+#include "utils/rma-helpers/DistributedMutex.hpp"
+#include "monte/MonteCarloParticle.hpp"
 #include "ReallocationAgent.hpp"
 #include "utils/rma/RMAFactory.hpp"
 #include "misc/memory_debug.hpp"
@@ -552,8 +552,11 @@ void RankHandler<T, Grid>::Reallocate(double factor)
     {
         if(not noParticles)
         {
-            std::cerr << "Can not shrink memory when there are particles (there are " << this->th_length << " particles)" << std::endl;
-            exit(1);
+            UniversalError eo("Can not shrink memory when there are particles (there are " + std::to_string(this->th_length) + " particles)");
+            eo.addEntry("My Rank", this->rank_world);
+            eo.addEntry("Peer Rank", this->peer_rank_world);
+            eo.addEntry("TH Length", this->th_length);
+            throw eo;
         }
     }
     size_t peerNewBuffSize = std::ceil(this->peer_buffsize * factor);

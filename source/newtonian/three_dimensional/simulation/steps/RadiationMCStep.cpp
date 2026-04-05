@@ -98,11 +98,12 @@ void RadiationMCStep::step(double dt)
         // cells location might have changed because of hydro movements
         UpdateNewCells(this->tess, this->particles, this->cells);
     }
+    // it's adjustExistingParticles's reponsibility to call UNC inside, if needed
     this->physics->adjustExistingParticles(this->particles, dt);
-    if(this->withHydro)
-    {
-        UpdateNewCells(this->tess, this->particles, this->cells);
-    }
+    // if(this->withHydro)
+    // {
+    //     UpdateNewCells(this->tess, this->particles, this->cells);
+    // }
     double preManagerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - preManagerStart).count();
 
     auto managerStart = std::chrono::high_resolution_clock::now();

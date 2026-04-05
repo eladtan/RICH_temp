@@ -3,10 +3,6 @@
 
 // #define MONTECARLO_EPS 1e-7
 
-#define INTERSECTION 0
-#define SCATTERING 1
-#define TIMELEFT 2
-
 namespace {
     inline void ClampFrequencyToBounds(double &frequency)
     {
@@ -97,9 +93,15 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 
     dt_t timeLeft = particle.timeLeft;
     std::array<std::pair<size_t, dt_t>, 3> times;
-    times[0] = {INTERSECTION, timeIntersect};
-    times[1] = {SCATTERING, timeScattering};
-    times[2] = {TIMELEFT, timeLeft};
+    enum Events
+    { 
+        INTERSECTION = 0, 
+        SCATTERING = 1, 
+        TIMELEFT = 2
+    };
+    times[Events::INTERSECTION] = {INTERSECTION, timeIntersect};
+    times[Events::SCATTERING] = {SCATTERING, timeScattering};
+    times[Events::TIMELEFT] = {TIMELEFT, timeLeft};
 
     std::pair<size_t, double> min = *std::min_element(times.begin(), times.end(), [](const std::pair<size_t, dt_t> &a, const std::pair<size_t, dt_t> &b) { return a.second < b.second; });
     if(debug)
@@ -146,12 +148,12 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         return functionality;
     }
 
-    if(min.first == INTERSECTION)
+    if(min.first == Events::INTERSECTION)
     {
         functionality.change = MonteCarloParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = nextCellIndex;
     }
-    else if(min.first == SCATTERING)
+    else if(min.first == Events::SCATTERING)
     {
         Vector3D oldVelocity = particle.velocity;
         double D_lab_to_co = dopplerShift;
@@ -183,7 +185,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
             }
         }
     }
-    else if(min.first == TIMELEFT)
+    else if(min.first == Events::TIMELEFT)
     {
         functionality.change = MonteCarloParticleStatus::DONE;
     }
@@ -479,10 +481,6 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
 
     std::vector<Particle> newParticles = this->generateParticles(fullDt);
     std::vector<Particle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt); // todo: not here
-    for(Particle &particle : newParticles2)
-    {
-        
-    }
     newParticles.insert(newParticles.end(), newParticles2.begin(), newParticles2.end());
     // auto printParticles = [&]()
     // {
@@ -619,6 +617,8 @@ void RadiationIMC::adjustExistingParticles(std::vector<Particle> &particles, dou
         }
         ++it;
     }
+
+    UpdateNewCells(this->grid, particles, this->cells);
 }
 
 std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters)

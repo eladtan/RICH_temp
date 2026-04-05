@@ -1,4 +1,4 @@
-#include "ParticleAmountManager2.hpp"
+#include "AmountManager.hpp"
 
 #ifdef RICH_MPI
 
@@ -6,7 +6,7 @@
 #define DONE_TAG 9919
 #define VERIFY_TAG 9920
 
-ParticleAmountManager2::ParticleAmountManager2(MPI_Comm comm)
+AmountManager::AmountManager(MPI_Comm comm)
     : comm(comm), cyclesWaiting(0), globalNum(0), tempNum(0), done(false), verify(false)
 {
     MPI_Comm_rank(this->comm, &this->rank);
@@ -50,17 +50,17 @@ ParticleAmountManager2::ParticleAmountManager2(MPI_Comm comm)
     MPI_Barrier(this->comm);
 }
 
-void ParticleAmountManager2::Initialize(counter_t num)
+void AmountManager::Initialize(counter_t num)
 {
     MPI_Reduce(&num, &this->globalNum, 1, MPI_LONG_LONG, MPI_SUM, 0, this->comm);
 }
 
-void ParticleAmountManager2::Increase(counter_t n)
+void AmountManager::Increase(counter_t n)
 {
     this->tempNum += n;
 }
 
-void ParticleAmountManager2::Progress(void)
+void AmountManager::Progress(void)
 {
     this->CheckVerify();
     this->CheckDone();
@@ -104,7 +104,7 @@ void ParticleAmountManager2::Progress(void)
     }
 }
 
-void ParticleAmountManager2::MarkChildrenDone(void)
+void AmountManager::MarkChildrenDone(void)
 {
     if(this->done)
     {
@@ -121,7 +121,7 @@ void ParticleAmountManager2::MarkChildrenDone(void)
     this->done = true;
 }
 
-void ParticleAmountManager2::AskChildrenVerify(void)
+void AmountManager::AskChildrenVerify(void)
 {
     if(this->verify)
     {
@@ -138,7 +138,7 @@ void ParticleAmountManager2::AskChildrenVerify(void)
     this->verify = true;
 }
 
-void ParticleAmountManager2::Verify(bool ok)
+void AmountManager::Verify(bool ok)
 {
     if(this->verify)
     {
@@ -152,7 +152,7 @@ void ParticleAmountManager2::Verify(bool ok)
     }
 }
 
-void ParticleAmountManager2::CheckVerify(void)
+void AmountManager::CheckVerify(void)
 {    
     if(this->rank == 0)
     {
@@ -172,7 +172,7 @@ void ParticleAmountManager2::CheckVerify(void)
     }
 }
 
-void ParticleAmountManager2::CheckDone(void)
+void AmountManager::CheckDone(void)
 {
     if(this->rank == 0)
     {
@@ -191,7 +191,7 @@ void ParticleAmountManager2::CheckDone(void)
     }
 }
 
-ParticleAmountManager2::~ParticleAmountManager2()
+AmountManager::~AmountManager()
 {
     if(this->request1 != MPI_REQUEST_NULL)
     {

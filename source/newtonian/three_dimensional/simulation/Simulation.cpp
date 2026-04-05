@@ -204,15 +204,15 @@ void Simulation::step(void)
                     // std::cout << "Rank " << this->rank << " weights: " << weights << std::endl;
 
                     physics->beforeLB();
-                    if(this->rank == 0) std::cout << "beforeLB done, calling Rebalance..." << std::endl;
                     // have new build
                     this->tess.Rebalance(weights);
-                    if(this->rank == 0) std::cout << "Rebalance done, calling buildDataTransfer..." << std::endl;
                     this->buildDataTransfer();
-                    if(this->rank == 0) std::cout << "buildDataTransfer done, calling afterLB..." << std::endl;
                     physics->afterLB();
-                    if(this->rank == 0) std::cout << "afterLB done" << std::endl;
-                 }
+                }
+                else
+                {
+                    if(this->rank == 0) std::cout << LB << " is already rebalanced" << std::endl;
+                }
             }
 
             std::shared_ptr<LoadBalancer> load = this->tess.GetLoadBalancer();
@@ -249,9 +249,11 @@ void Simulation::step(void)
             
             if(firstTime)
             {
+                physics->beforeLB();
                 std::vector<double> weights = physics->getLoadBalanceWeights();
                 this->tess.Rebalance(weights);
                 this->buildDataTransfer();
+                physics->afterLB();
             }
         #endif // RICH_MPI
 

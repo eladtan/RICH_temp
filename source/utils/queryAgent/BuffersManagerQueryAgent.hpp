@@ -22,7 +22,7 @@
 #include "mpi/serialize/Serializer.hpp"
 #include "misc/universal_error.hpp"
 #include "monte/two_sided_manager/BuffersManager.hpp"
-#include "monte/manager/tools/ParticleAmountManager2.hpp"
+#include "utils/amountManager/AmountManager.hpp"
 
 #define TAG_REQUEST 200
 #define TAG_RESPONSE 201
@@ -79,7 +79,7 @@ private:
 
     std::shared_ptr<BuffersManager<_subQueryData>> queriesBufferManager;
     std::shared_ptr<BuffersManager<_answerInfo>> answersBufferManager;
-    std::shared_ptr<ParticleAmountManager2> finishManager;
+    std::shared_ptr<AmountManager> finishManager;
     std::vector<std::pair<rank_t, _subQueryData>> queriesToHandle;
     std::vector<std::pair<rank_t, _answerInfo>> answersToHandle;
 
@@ -232,7 +232,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
     this->finishedMyQueries = queries.empty();
     size_t i = 0;
 
-    this->finishManager = std::make_shared<ParticleAmountManager2>(this->comm);
+    this->finishManager = std::make_shared<AmountManager>(this->comm);
 
     this->finishManager->Initialize(1);
 

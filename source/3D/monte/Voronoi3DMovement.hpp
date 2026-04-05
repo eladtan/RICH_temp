@@ -7,6 +7,7 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "ds/OctTree/OctTree.hpp"
 #include "utils/debug/SmartTimer.hpp"
+#include "MonteCarlo3D.hpp"
 #ifdef RICH_MPI
     #include "mpi/serialize/mpi_commands.hpp"
     #include "3D/range/finders/utils/RankedIndexedVector.hpp"
@@ -14,8 +15,6 @@
 #else // RICH_MPI
     #include "3D/range/finders/utils/IndexedVector.hpp"
 #endif // RICH_MPI
-
-using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 
 void AssertLocations(const Tessellation3D &tess, const std::vector<Particle3D> &particles);
 

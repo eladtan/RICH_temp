@@ -6,8 +6,7 @@
 #include "monte/MonteCarloParticle.hpp"
 #include "monte/physics/MonteCarloPhysics.hpp"
 #include "monte/population/PopulationControl.hpp"
-#include "tools/ParticleAmountManager.hpp"
-#include "tools/ParticleAmountManager2.hpp"
+#include "utils/amountManager/AmountManager.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "monte/utils/GhostMap.hpp"
 #include "monte/utils/RankSync.hpp"
@@ -114,7 +113,7 @@ private:
     rank_t rank_world, size_world;
     size_t Ncells;
     // std::shared_ptr<ProgressCounter> progress;
-    typename ParticleAmountManager2::counter_t localDecrementAmount;
+    typename AmountManager::counter_t localDecrementAmount;
     std::vector<MPI_Comm> communicators;
     std::vector<rank_t> ranksOrder;
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
@@ -300,7 +299,7 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
         #endif // MONTECARLO_DEBUG
     }
 
-    this->localDecrementAmount -= static_cast<typename ParticleAmountManager2::counter_t>(particlesNum);
+    this->localDecrementAmount -= static_cast<typename AmountManager::counter_t>(particlesNum);
     // std::cout << "Done add particles" << std::endl;
 }
 
@@ -1036,8 +1035,10 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                 }
                                 else
                                 {
-                                    std::cout << "Unknown boundary condition for particle " << particle << std::endl;
-                                    exit(1);
+                                    UniversalError eo("Unknown boundary condition for particle");
+                                    eo.addEntry("Particle", particle);
+                                    eo.addEntry("Status", status);
+                                    throw eo;
                                 }
                                 break;    
                             }
@@ -1190,16 +1191,17 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::ResetAllBuffers(void)
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::MonteCarloManager::ShrinkAllBuffers(void)
 {
-    auto shrinkBuffer = [&](rank_t _rank)
+    std::vector<rank_t> shrinkList;
+    for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
     {
-        if(_rank == this->rank_world)
+        if(r != this->rank_world and this->rankHandlers[r] != nullptr and this->rankHandlers[r]->buffsize > MINIMAL_BUFF_SIZE)
         {
-            return;
+            shrinkList.push_back(r);
         }
-        if(this->rankHandlers[_rank] == nullptr)
-        {
-            return;
-        }
+    }
+
+    auto shrinkBuffer = [this](rank_t _rank)
+    {
         double factor;
         if(std::find(this->neighbors.cbegin(), this->neighbors.cend(), _rank) != this->neighbors.cend())
         {
@@ -1212,7 +1214,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::ShrinkAllBuffers(void)
         this->rankHandlers[_rank]->requestedFactor = factor;
         this->rankHandlers[_rank]->Reallocate(factor);
     };
-    ForEachRankSync(this->comm_world, this->ranksOrder, shrinkBuffer, false);
+    ForEachRankSyncByList(this->comm_world, shrinkList, shrinkBuffer);
 }
 
 template<typename T, typename Grid>
@@ -1319,23 +1321,19 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
         }
     }
 
-    int anyNewNeighbors = newNeighbors.empty() ? 0 : 1;
     int numNewNeighbors = newNeighbors.size();
     MPI_Allreduce(MPI_IN_PLACE, &numNewNeighbors, 1, MPI_INT, MPI_SUM, this->comm_world);
     if(numNewNeighbors > 0)
     {
-        MPI_Group worldGroup;
-        MPI_Comm_group(this->comm_world, &worldGroup);
-        auto createHandler = [this, &worldGroup](rank_t rank)
+        auto createHandler = [this](rank_t rank, MPI_Comm pair_comm)
         {
-            MPI_Group group;
-            int ranks[2] = {std::min(this->rank_world, rank), std::max(this->rank_world, rank)};
-            int tag = ranks[0] * this->size_world + ranks[1];
-            MPI_Group_incl(worldGroup, 2, ranks, &group);
-            MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[rank]);
-            MPI_Group_free(&group);
+            if(this->rankHandlers[rank] != nullptr)
+            {
+                return;
+            }
 
-            this->rankHandlers[rank] = new RankHandler(DEFAULT_BUFFER_SIZE, this->comm_world, this->communicators[rank], this->reallocationAgent, this->rdma_type);
+            this->communicators[rank] = pair_comm;
+            this->rankHandlers[rank] = new RankHandler(DEFAULT_BUFFER_SIZE, this->comm_world, pair_comm, this->reallocationAgent, this->rdma_type);
             if(this->rankHandlers[rank]->peer_rank_world != rank)
             {
                 UniversalError eo("Peer rank world does not match");
@@ -1345,9 +1343,8 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
             }    
         };
         ForEachRankSyncByList(this->comm_world, newNeighbors, createHandler);
-        
-        MPI_Group_free(&worldGroup);
     }
+
     if(this->rank_world == 0)
     {
         std::cout << "Number of new neighbors: " << numNewNeighbors << std::endl;
@@ -1465,7 +1462,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     this->localDecrementAmount = 0;
 
-    ParticleAmountManager2 amountManager(this->comm_world);
+    AmountManager amountManager(this->comm_world);
     amountManager.Initialize(startingParticleNum);
 
     MonteCarloStepFinalData data;

@@ -273,7 +273,11 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
 
     if(crash)
     {
-        exit(1);
+        #ifdef RICH_MPI
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        #else
+            exit(1);
+        #endif
     }
 
     if(min_alpha != std::numeric_limits<distance_t>::max())

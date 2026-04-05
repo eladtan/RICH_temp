@@ -7,7 +7,6 @@
 #include "monte/MonteCarloParticle.hpp"
 #include "monte/physics/MonteCarloPhysics.hpp"
 #include "monte/population/PopulationControl.hpp"
-#include "tools/ProgressCounter.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "utils/debug/vtune.h" // TODO: remove
 
@@ -217,6 +216,7 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles
         this->particlesData.th = new_th;
         this->particlesData.av = new_av;
         this->particlesData.particles = new_particles;
+        reallocated = true;
     }
     this->particlesData.av_length = 0;
     this->particlesData.th_length = 0;
@@ -361,8 +361,10 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
                     }
                     else
                     {
-                        std::cerr << "Unknown boundary condition for particle " << particle << std::endl;
-                        exit(1);
+                        UniversalError eo("Unknown boundary condition for particle");
+                        eo.addEntry("Particle", particle);
+                        eo.addEntry("Status", status);
+                        throw eo;
                     }
                     continue;
                 }

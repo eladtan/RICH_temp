@@ -12,8 +12,7 @@
 #include "monte/physics/MonteCarloPhysics.hpp"
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
-#include "monte/manager/tools/ParticleAmountManager.hpp"
-#include "monte/manager/tools/ParticleAmountManager2.hpp"
+#include "utils/amountManager/AmountManager.hpp"
 #include "BuffersManager.hpp"
 
 #define MONTECARLO_EPSILON 1e-8
@@ -85,7 +84,7 @@ private:
     
     std::vector<MCParticle> particles;
     std::shared_ptr<BuffersManager<MCParticle>> buffersManager;
-    typename ParticleAmountManager2::counter_t localDecrementAmount;
+    typename AmountManager::counter_t localDecrementAmount;
     Tracker tracker;
 
     size_t allStepsCounter;
@@ -406,8 +405,6 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 assert(nextCellIndex != particle.cellIndex);
                 assert(particle.timeLeft >= 0);
 
-                rank_t rank;
-                MPI_Comm_rank(MPI_COMM_WORLD, &rank);
                 if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                 {
                     // local neighbor
@@ -467,8 +464,10 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         }
                         else
                         {
-                            std::cout << "Unknown boundary condition for particle " << particle << std::endl;
-                            exit(1);
+                            UniversalError eo("Unknown boundary condition for particle");
+                            eo.addEntry("Particle", particle);
+                            eo.addEntry("Status", status);
+                            throw eo;
                         }
                         break;    
                     }
@@ -610,7 +609,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         // std::cout << "Rank " << this->rank_world << ", startingParticleNum is " << startingParticleNum << " = " << initialParticlesNum << " + " << preStepParticlesNum << std::endl;
 
         this->localDecrementAmount = 0;
-        ParticleAmountManager2 amountManager(this->comm_world);
+        AmountManager amountManager(this->comm_world);
         amountManager.Initialize(startingParticleNum);
 
         MonteCarloStepFinalData data;
@@ -646,7 +645,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
             bool isEmpty = this->HandleAll(data);
 
-            amountManager.Decrease(static_cast<ParticleAmountManager2::counter_t>(this->localDecrementAmount));
+            amountManager.Decrease(static_cast<AmountManager::counter_t>(this->localDecrementAmount));
             this->localDecrementAmount = 0;
 
             amountManager.Progress();
