@@ -836,6 +836,56 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
+## 26. Doppler MC (`doppler_mc`)
+
+### Physics
+
+Monte Carlo Doppler frequency-shift validation. Two cells with different velocities create opposite velocity divergence; photons undergo Lorentz boosts during scattering, shifting the radiation spectrum. Validates MC Doppler against the analytical solution from Eq. V.31 of Giron et al. (2026, arXiv:2601.05120):
+
+E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Cells | 2 (5x5x5 cm each) |
+| Cell 0 velocity | (0, 0, 0) cm/s (stationary) |
+| Cell 1 velocity | (10^9, 0, 0) cm/s |
+| Temperature | 1 keV |
+| Density | 1 g/cm^3 |
+| Energy groups | 100 (log-spaced, 0.1 eV -- 100 keV) |
+| Build args | `--energy_groups_num=100` |
+| Scattering opacity | 10 cm^-1 |
+| Absorption/Planck opacity | ~0 |
+| Initial spectrum | Truncated Planck (1.12--8.12 keV) |
+| Photons per cell | 10,000 |
+| Boundary | Rigid (specular reflection) |
+| Time | 40 ns, dt = 0.1 ns |
+| Hydro | Off (withHydro=true for Lorentz boosts, no evolution) |
+
+**Source:** `regression_tests/cases/doppler_mc/test.cpp`
+
+### Output
+
+`doppler_mc_spectrum.txt`: per-group initial and final radiation energy density for both cells, plus metadata (K values, time, velocity).
+
+### Validation
+
+`regression_tests/lib/check_doppler_mc.py` computes the analytical Doppler-shifted spectrum and compares via relative L1 norm over non-negligible groups. Generates two plots (`doppler_mc_left.png`, `doppler_mc_right.png`).
+
+### Pass Criteria
+
+| Metric | Threshold | Env Override |
+|--------|-----------|--------------|
+| Relative L1 (expansion cell) | <= 0.15 | `DOPPLER_MC_MAX_L1` |
+| Relative L1 (compression cell) | <= 0.15 | `DOPPLER_MC_MAX_L1` |
+
+### References
+
+- Giron, Krief, Stone, Steinberg (2026), arXiv:2601.05120, Section V.3.2, Eq. V.31
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -865,3 +915,4 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `rayleigh_taylor_mpi` | mpi | RT instability | Growth rate | rel error <= 0.25 |
 | `eulerian_diffusion_freefree_suite` | mpi | Grey free-free diffusion | Profile comparison | All outputs valid |
 | `eulerian_diffusion_freefree_multigroup_suite` | mpi | MG free-free diffusion | Profile comparison | All outputs valid |
+| `doppler_mc` | serial | MC Doppler shift (100 groups) | Analytical Eq. V.31 | rel L1 <= 0.15 |

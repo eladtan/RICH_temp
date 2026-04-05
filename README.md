@@ -218,6 +218,7 @@ The suite builds and validates these regression cases:
 | `rayleigh_taylor_mpi` | mpi | 3D Rayleigh-Taylor instability, Lagrangian+RoundCells mesh (Slurm, 128 tasks) |
 | `eulerian_diffusion_freefree_suite` | mpi | 1D Eulerian gray free-free diffusion suite: 512, 512-limited, 32, and 32-limited runs with 4-way comparison figures |
 | `eulerian_diffusion_freefree_multigroup_suite` | mpi | 1D Eulerian multigroup (32-bin) free-free diffusion suite with Compton: 512, 512-limited, 32, and 32-limited runs with 4-way comparison figures |
+| `doppler_mc` | serial | MC Doppler frequency shift, 100-group, high scattering, 2 cells (serial) |
 
 Acceptance checks are physics-based:
 - **Sod**: compare simulated density/pressure profiles to the exact Riemann solution (`analytic/enrs.py`).
@@ -237,6 +238,7 @@ Acceptance checks are physics-based:
 - **Rayleigh-Taylor**: 3D RT instability with ~1e6 cells, heavy-over-light density stratification with constant gravity. Flat interface with velocity perturbation in vz (amplitude 0.03, Gaussian-localised). Fit the exponential growth rate of vertical kinetic energy in the t=2 to t=3 window and require it to be within 25% of the analytical value sigma = sqrt(A*g*k).
 - **Eulerian free-free diffusion suite**: run all four configured variants (`512`, `512-limited`, `32`, `32-limited`) and require fresh `temperature_profile.txt` outputs for each plus 4-way comparison figures (`Tgas`, `Trad`, `density`, `vx`) in `regression_tests/cases/eulerian_diffusion_freefree_compare/`.
 - **Eulerian multigroup free-free diffusion suite**: run all four configured variants (`512`, `512-limited`, `32`, `32-limited`) with `ENERGY_GROUPS_NUM=32`, free-free multigroup opacity, and Compton enabled; require fresh `temperature_profile.txt` outputs for each plus 4-way comparison figures (`Tgas`, `Trad`, `density`, `vx`) in `regression_tests/cases/eulerian_diffusion_freefree_multigroup_compare/`.
+- **Doppler MC**: two-cell MC Doppler test (one stationary, one moving at 10^9 cm/s) with 100 energy groups and high scattering opacity. Validates that MC Lorentz boosts during scattering reproduce the analytical Doppler frequency shift (Eq. V.31, arXiv:2601.05120). Photon spectra for expansion and compression cells compared to E(nu,t)=E(nu*exp(-Kt),0). Require relative L1 error below 0.15.
 
 The regression cases write lightweight profile/text outputs (for example `sod_profile.txt` and `sedov_profile.txt`) and avoid snapshot dumps from the test cases.
 
