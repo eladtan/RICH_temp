@@ -1403,13 +1403,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     size_t preStepParticlesNum = newParticles1.size();
 
-    auto addParticlesStart = std::chrono::high_resolution_clock::now();
-    {
-        START_TIMER("Adding Particles");
-        this->AddParticles(newParticles1);
-        std::vector<MCParticle>().swap(newParticles1);
-    }
-
     this->resetTracker();
     this->currentStep++;
     this->iteration = 0;
@@ -1419,7 +1412,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
     this->transfersCounter = 0;
 
-    size_t totalParticles = 0;
     for(RankHandler *handler : this->rankHandlers)
     {
         if(handler == nullptr)
@@ -1429,7 +1421,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         handler->reallocationTime = 0;
         handler->reallocationsThisStep = 0;
         int length = handler->th_length;
-        totalParticles += length;
         for(int i = 0; i < length; i++)
         {
             size_t particleIndex = handler->th[i];
@@ -1451,7 +1442,13 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         }
     }
 
-    // this->progress->Reset(totalParticles);
+    auto addParticlesStart = std::chrono::high_resolution_clock::now();
+    {
+        START_TIMER("Adding Particles");
+        this->AddParticles(newParticles1);
+        std::vector<MCParticle>().swap(newParticles1);
+    }
+
     MPI_Barrier(this->comm_world);
     double initTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - initStart).count();
 
