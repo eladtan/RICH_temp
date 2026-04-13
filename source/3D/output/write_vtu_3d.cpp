@@ -1,9 +1,23 @@
 #include "write_vtu_3d.hpp"
 #include <set>
+#include <algorithm>
 #include "misc/universal_error.hpp"
 
 namespace write_vtu3d
 {
+
+// VTK's internal SplitFileName uses vtksys::SystemTools::GetFilenameWithoutExtension
+// which strips from the FIRST dot, not the last. This causes filenames like
+// "Hohlraum_0.03_128_00000.pvtu" to produce a stem of "Hohlraum_0" instead of
+// "Hohlraum_0.03_128_00000", breaking subdirectory naming and per-rank file paths.
+// Fix: replace dots in the stem with underscores before passing to VTK.
+static std::filesystem::path sanitize_vtk_filename(const std::filesystem::path &path)
+{
+	std::string stem_str = path.stem().string();
+	std::replace(stem_str.begin(), stem_str.end(), '.', '_');
+	return path.parent_path() / (stem_str + path.extension().string());
+}
+
 	void write_vtu_3d(std::filesystem::path const& file_name,
 					std::vector<std::string> const& cell_variable_names,
 					std::vector<std::vector<double>> const& cell_variables,
@@ -207,6 +221,7 @@ namespace write_vtu3d
 		// ----- write file to disk
 		std::filesystem::path pname(file_name);
 		pname.replace_extension("pvtu");
+		pname = sanitize_vtk_filename(pname);
 		//printf("%d/%d writing vtu file '%s'\n", mpi_rank+1, mpi_size, file_pvtu.c_str());
 		pwriter->SetFileName(pname.c_str());
 		pwriter->SetInputData(ugrid);
@@ -371,6 +386,7 @@ void write_vtu_3d_points(std::filesystem::path const& file_name,
 		// ----- write file to disk
 		std::filesystem::path pname(file_name);
 		pname.replace_extension("pvtu");
+		pname = sanitize_vtk_filename(pname);
 		//printf("%d/%d writing vtu file '%s'\n", mpi_rank+1, mpi_size, file_pvtu.c_str());
 		pwriter->SetFileName(pname.c_str());
 		pwriter->SetInputData(ugrid);
