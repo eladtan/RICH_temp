@@ -5,10 +5,12 @@ Figure 5a from Steinberg & Heizler (2021), arXiv:2108.13453, Section 4.2
 (McClarren & Urbatsch 2009 cylindrical hohlraum benchmark).
 
 Usage:
-    python plot_figure5a.py                           # default: latest 512-rank profile
-    python plot_figure5a.py <file1.txt> [file2.txt …] # explicit profile files
+    python plot_figure5a.py                                  # default dir + 512-rank profile
+    python plot_figure5a.py --dir /path/to/results           # custom results directory
+    python plot_figure5a.py file1.txt [file2.txt …]          # explicit profile files
 """
 
+import argparse
 import sys
 import os
 import re
@@ -18,9 +20,8 @@ import matplotlib
 if not os.environ.get("DISPLAY"):
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
 
-DATA_DIR = "/home/maorm/shared/Hohlraum2"
+DEFAULT_DATA_DIR = "/home/maorm/shared/Hohlraum/delta_0.030000/size_512"
 
 # Material regions (absorbing, blue in paper Fig. 3), at r = 0.05 cm
 MATERIAL_REGIONS = [
@@ -68,9 +69,20 @@ def shade_material_regions(ax, ymax):
                    label="Absorbing material" if i == 0 else None)
 
 
-def find_dumps_at_times(prefix, target_times_ns):
+def detect_prefix(data_dir):
+    """Auto-detect the dump file prefix from .txt files in data_dir.
+    Expects filenames like PREFIX_00001.txt and returns PREFIX, or None."""
+    prefix_re = re.compile(r"^(.+)_\d{5}\.txt$")
+    for name in os.listdir(data_dir):
+        m = prefix_re.match(name)
+        if m:
+            return m.group(1)
+    return None
+
+
+def find_dumps_at_times(data_dir, prefix, target_times_ns):
     """Find dump files closest to each target time."""
-    pattern = os.path.join(DATA_DIR, f"{prefix}_?????.txt")
+    pattern = os.path.join(data_dir, f"{prefix}_?????.txt")
     files = sorted(glob.glob(pattern))
     results = {}
     for f in files:
@@ -94,16 +106,69 @@ def plot_single(ax, filepath, label=None, color=None, nbins=200):
     return t_ns
 
 
-def main():
-    if len(sys.argv) > 1:
-        files = sys.argv[1:]
-    else:
-        files = None
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Plot material temperature along r = 0.05 cm vs x "
+                    "(Figure 5a, Steinberg & Heizler 2021)."
+    )
+    parser.add_argument("files", nargs="*",
+                        help="Explicit profile .txt files to plot (skips auto-panel mode)")
+    parser.add_argument("--dir", type=str, nargs="+", default=[DEFAULT_DATA_DIR],
+                        help="One or two directories containing dump files. "
+                             "One dir: time-evolution plot. "
+                             "Two dirs: time-evolution from first + comparison panel at t~1 ns. "
+                             f"(default: {DEFAULT_DATA_DIR})")
+    parser.add_argument("--output", type=str, default="figure5a.png",
+                        help="Output file path (PNG or PDF). (default: figure5a.png)")
+    return parser.parse_args()
 
-    if files:
-        # --- Mode 1: plot user-specified files ---
+
+def setup_dir(data_dir):
+    """Resolve directory, detect prefix, return (data_dir, prefix) or exit."""
+    data_dir = os.path.expanduser(data_dir)
+    if not os.path.isdir(data_dir):
+        print(f"Error: directory does not exist: {data_dir}", file=sys.stderr)
+        sys.exit(1)
+    prefix = detect_prefix(data_dir)
+    if prefix is None:
+        print(f"Error: no dump files (PREFIX_00000.txt) found in {data_dir}", file=sys.stderr)
+        sys.exit(1)
+    print(f"  {data_dir}  ->  prefix '{prefix}'")
+    return data_dir, prefix
+
+
+def plot_time_evolution(ax, data_dir, prefix, target_times):
+    """Plot time-evolution panel and return the dumps dict."""
+    dumps = find_dumps_at_times(data_dir, prefix, target_times)
+    if not dumps:
+        print(f"Warning: no dumps matched target times in {data_dir}", file=sys.stderr)
+        return dumps
+    cmap = plt.cm.plasma
+    available_times = sorted(dumps.keys())
+    for i, t in enumerate(available_times):
+        fpath, actual_t = dumps[t]
+        color = cmap(0.15 + 0.75 * i / max(len(available_times) - 1, 1))
+        plot_single(ax, fpath, label=f"t = {actual_t:.1f} ns", color=color)
+    shade_material_regions(ax, 1.0)
+    ax.set_xlabel("x (cm)", fontsize=13)
+    ax.set_ylabel(r"$T_{\mathrm{mat}}$ (keV)", fontsize=13)
+    ax.set_xlim(0, 1.45)
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=9, loc="upper right")
+    ax.set_title(
+        r"(a) Material temperature along $r = 0.05$ cm"
+        f"\n({prefix})",
+        fontsize=12,
+    )
+    return dumps
+
+
+def main():
+    args = parse_args()
+
+    if args.files:
         fig, ax = plt.subplots(figsize=(10, 5))
-        for f in files:
+        for f in args.files:
             plot_single(ax, f)
         shade_material_regions(ax, 1.0)
         ax.set_xlabel("x (cm)", fontsize=13)
@@ -113,77 +178,60 @@ def main():
         ax.legend(fontsize=10)
         ax.set_title("Material temperature along r = 0.05 cm", fontsize=14)
         plt.tight_layout()
-        plt.savefig("figure5a.png", dpi=150)
-        print("Saved figure5a.png")
+        plt.savefig(args.output, dpi=150)
+        print(f"Saved {args.output}")
         plt.show()
         return
 
-    # --- Mode 2: automatic multi-panel figure ---
-    # Panel (a): time evolution from the 512-rank run
-    # Panel (b): comparison of 512 vs 1024 at t ~ 1 ns
-    prefix_512 = "Hohlraum_0.03_512"
-    prefix_1024 = "Hohlraum_0.03_1024"
+    print("Detected directories and prefixes:")
+    dirs_and_prefixes = [setup_dir(d) for d in args.dir]
+    print()
 
     target_times = [1, 2, 3, 4, 5, 6]
-    dumps_512 = find_dumps_at_times(prefix_512, target_times)
+    data_dir_1, prefix_1 = dirs_and_prefixes[0]
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    if len(dirs_and_prefixes) == 1:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        plot_time_evolution(ax, data_dir_1, prefix_1, target_times)
+        fig.suptitle(
+            "McClarren & Urbatsch (2009) Hohlraum — "
+            "cf. Steinberg & Heizler (2021) Fig. 5a",
+            fontsize=14, y=1.02,
+        )
+    else:
+        data_dir_2, prefix_2 = dirs_and_prefixes[1]
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    # --- Panel (a): time evolution ---
-    ax = axes[0]
-    cmap = plt.cm.plasma
-    available_times = sorted(dumps_512.keys())
-    for i, t in enumerate(available_times):
-        fpath, actual_t = dumps_512[t]
-        color = cmap(0.15 + 0.75 * i / max(len(available_times) - 1, 1))
-        plot_single(ax, fpath, label=f"t = {actual_t:.1f} ns", color=color)
+        dumps_1 = plot_time_evolution(axes[0], data_dir_1, prefix_1, target_times)
 
-    shade_material_regions(ax, 1.0)
-    ax.set_xlabel("x (cm)", fontsize=13)
-    ax.set_ylabel(r"$T_{\mathrm{mat}}$ (keV)", fontsize=13)
-    ax.set_xlim(0, 1.45)
-    ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9, loc="upper right")
-    ax.set_title(
-        r"(a) Material temperature along $r = 0.05$ cm"
-        "\n"
-        r"($\Delta r \approx 0.03$ cm, $\Delta t = 10^{-11}$ s, 512 ranks)",
-        fontsize=12,
-    )
+        ax = axes[1]
+        dumps_2 = find_dumps_at_times(data_dir_2, prefix_2, [1.0])
+        if 1.0 in dumps_1:
+            fpath, actual_t = dumps_1[1.0]
+            plot_single(ax, fpath, label=f"{prefix_1}, t = {actual_t:.1f} ns", color="C0")
+        if 1.0 in dumps_2:
+            fpath, actual_t = dumps_2[1.0]
+            plot_single(ax, fpath, label=f"{prefix_2}, t = {actual_t:.1f} ns", color="C1")
 
-    # --- Panel (b): 512 vs 1024 comparison at t ~ 1 ns ---
-    ax = axes[1]
-    dumps_1024 = find_dumps_at_times(prefix_1024, [1.0])
+        shade_material_regions(ax, 1.0)
+        ax.set_xlabel("x (cm)", fontsize=13)
+        ax.set_ylabel(r"$T_{\mathrm{mat}}$ (keV)", fontsize=13)
+        ax.set_xlim(0, 1.45)
+        ax.set_ylim(bottom=0)
+        ax.legend(fontsize=10)
+        ax.set_title(
+            r"(b) Comparison at $t \approx 1$ ns",
+            fontsize=12,
+        )
+        fig.suptitle(
+            "McClarren & Urbatsch (2009) Hohlraum — "
+            "cf. Steinberg & Heizler (2021) Fig. 5a",
+            fontsize=14, y=1.02,
+        )
 
-    if 1.0 in dumps_512:
-        fpath, actual_t = dumps_512[1.0]
-        plot_single(ax, fpath, label=f"512 ranks, t = {actual_t:.1f} ns", color="C0")
-    if 1.0 in dumps_1024:
-        fpath, actual_t = dumps_1024[1.0]
-        plot_single(ax, fpath, label=f"1024 ranks, t = {actual_t:.1f} ns",
-                    color="C1")
-
-    shade_material_regions(ax, 1.0)
-    ax.set_xlabel("x (cm)", fontsize=13)
-    ax.set_ylabel(r"$T_{\mathrm{mat}}$ (keV)", fontsize=13)
-    ax.set_xlim(0, 1.45)
-    ax.set_ylim(bottom=0)
-    ax.legend(fontsize=10)
-    ax.set_title(
-        r"(b) Comparison at $t \approx 1$ ns"
-        "\n"
-        r"($\Delta r \approx 0.03$ cm, $\Delta t = 10^{-11}$ s)",
-        fontsize=12,
-    )
-
-    fig.suptitle(
-        "McClarren & Urbatsch (2009) Hohlraum — "
-        "cf. Steinberg & Heizler (2021) Fig. 5a",
-        fontsize=14, y=1.02,
-    )
     plt.tight_layout()
-    plt.savefig("figure5a.png", dpi=150, bbox_inches="tight")
-    print("Saved figure5a.png")
+    plt.savefig(args.output, dpi=150, bbox_inches="tight")
+    print(f"Saved {args.output}")
     plt.show()
 
 
