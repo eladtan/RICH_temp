@@ -23,6 +23,8 @@
 #define DEFAULT_BUFFER_SIZE 500
 #define MONTECARLO_CHANGE_TAG 1280
 #define SHRINK_BUFFERS_CYCLE 50
+#define SEND_BUFFER_MIN_SIZE 200
+#define SEND_BUFFER_MIN_CYCLES 100
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -134,6 +136,9 @@ private:
     size_t dynamicallyAdded;
     RDMA_Type rdma_type;
     size_t lastBuildGeneration;
+
+    boost::container::flat_map<rank_t, std::vector<MCParticle>> sendBuffers;
+    size_t sendBufferCycleCounter;
     
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -148,6 +153,12 @@ private:
     void ResetAllBuffers(void); 
 
     void ShrinkAllBuffers(void);
+
+    void FlushSendBuffers(void);
+
+    void FlushAllSendBuffers(void);
+
+    bool AllSendBuffersEmpty(void) const;
 
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
 };
@@ -182,6 +193,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     }
     this->cellsStepsCounters = std::vector<size_t>(this->grid.GetPointNo(), 0);
     this->lastBuildGeneration = std::numeric_limits<size_t>::max();
+    this->sendBufferCycleCounter = 0;
 }
 
 template<typename T, typename Grid>
@@ -1150,7 +1162,25 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         #endif // ADVANCED_MONTECARLO_DEBUG
     }
 
-    this->TransferParticles(active_ranks, transferParticlesVec, transferToRanks);
+    for(size_t i = 0; i < activeRanksNum; i++)
+    {
+        const rank_t &fromRank = active_ranks[i];
+        RankHandler *currRankHandler = this->rankHandlers[fromRank];
+        const std::vector<size_t> &myTHIndices = transferParticlesVec[i];
+        const std::vector<rank_t> &myTransferRanks = transferToRanks[i];
+        size_t numToTransfer = myTHIndices.size();
+
+        for(size_t j = 0; j < numToTransfer; j++)
+        {
+            const size_t &indexInToHandle = myTHIndices[j];
+            const rank_t &toRank = myTransferRanks[j];
+            assert(toRank != this->rank_world);
+            size_t particleIdx = currRankHandler->th[indexInToHandle];
+            MCParticle &particle = currRankHandler->particles[particleIdx];
+            particle.sent = false;
+            this->sendBuffers[toRank].push_back(particle);
+        }
+    }
 
     for(size_t i = 0; i < activeRanksNum; i++)
     {
@@ -1215,6 +1245,53 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::ShrinkAllBuffers(void)
         this->rankHandlers[_rank]->Reallocate(factor);
     };
     ForEachRankSyncByList(this->comm_world, shrinkList, shrinkBuffer);
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::FlushSendBuffers(void)
+{
+    this->sendBufferCycleCounter++;
+    bool cycleFull = this->sendBufferCycleCounter >= SEND_BUFFER_MIN_CYCLES;
+
+    for(auto &[toRank, particles] : this->sendBuffers)
+    {
+        if(particles.empty())
+            continue;
+        if(particles.size() >= SEND_BUFFER_MIN_SIZE or cycleFull)
+        {
+            RankHandler *remoteHandler = this->rankHandlers[toRank];
+            remoteHandler->TransferParticles(particles);
+            particles.clear();
+        }
+    }
+
+    if(cycleFull)
+        this->sendBufferCycleCounter = 0;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
+{
+    for(auto &[toRank, particles] : this->sendBuffers)
+    {
+        if(particles.empty())
+            continue;
+        RankHandler *remoteHandler = this->rankHandlers[toRank];
+        remoteHandler->TransferParticles(particles);
+        particles.clear();
+    }
+    this->sendBufferCycleCounter = 0;
+}
+
+template<typename T, typename Grid>
+bool MonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
+{
+    for(const auto &[rank, particles] : this->sendBuffers)
+    {
+        if(!particles.empty())
+            return false;
+    }
+    return true;
 }
 
 template<typename T, typename Grid>
@@ -1370,6 +1447,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     
     this->PrepareHandlers();
     this->ResetAllBuffers();
+    this->sendBuffers.clear();
+    this->sendBufferCycleCounter = 0;
 
     bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());
     if(didRebalance)
@@ -1482,6 +1561,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             this->reallocationAgent->HandleAllWaitingReallocations();
             this->HandleAll(data);
 
+            this->FlushSendBuffers();
+
             amountManager.Decrease(this->localDecrementAmount);
             this->localDecrementAmount = 0;
 
@@ -1489,8 +1570,10 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             
             if(verify)
             {
+                this->FlushAllSendBuffers();
                 this->reallocationAgent->HandleAllWaitingReallocations();
-                bool ok = amountManager.GetPendingValue() == 0;
+                bool ok = amountManager.GetPendingValue() == 0
+                          and this->AllSendBuffersEmpty();
                 amountManager.Verify(ok);
             }
 
