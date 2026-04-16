@@ -14,7 +14,7 @@ public:
     inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD): 
             HilbertCurveEnvironmentAgent(ll, ur, loadBalancer, comm)
     {
-        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
+        this->hilbertTree = std::make_shared<HilbertTree_Type>(this->loadBalancer, this->comm);
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
@@ -38,7 +38,7 @@ public:
     inline void onRebalance(void) override
     {
         this->HilbertCurveEnvironmentAgent::onRebalance();
-        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
+        this->hilbertTree = std::make_shared<HilbertTree_Type>(this->loadBalancer, this->comm);
     }
     
     template<typename U>

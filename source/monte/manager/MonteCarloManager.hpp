@@ -85,6 +85,12 @@ public:
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) {return this->cellsStepsCounters;}
 
+    inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
+
+    inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
+
+    inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes_;}
+
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
     
     class Tracker
@@ -138,6 +144,9 @@ private:
     size_t dynamicallyAdded;
     RDMA_Type rdma_type;
     size_t lastBuildGeneration;
+    size_t startParticleCount_ = 0;
+    size_t endParticleCount_ = 0;
+    size_t handlerMemoryBytes_ = 0;
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> sendBuffers;
     size_t sendBufferCycleCounter;
@@ -1494,6 +1503,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     }
 
     size_t preStepParticlesNum = newParticles1.size();
+    this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
 
     this->resetTracker();
     this->currentStep++;
@@ -1557,6 +1567,13 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     MonteCarloStepFinalData data;
     size_t numOfCounterDecrementations = 0;
     double addParticlesTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - addParticlesStart).count();
+
+    {
+        const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(typename RankHandler::index_t);
+        this->handlerMemoryBytes_ = 0;
+        for (const RankHandler *h : this->rankHandlers)
+            if (h != nullptr) this->handlerMemoryBytes_ += h->buffsize * bytesPerSlot;
+    }
 
     this->PrintMemoryDiagnostics(initialParticlesNum, preStepParticlesNum);
 
@@ -1624,6 +1641,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     auto diagnosticsStart = std::chrono::high_resolution_clock::now();
 
     size_t newParticlesNum = data.remaining.size();
+    this->endParticleCount_ = newParticlesNum;
     size_t leavingNumber = data.leavingCount;
 
     size_t totalSteps = this->allStepsCounter;

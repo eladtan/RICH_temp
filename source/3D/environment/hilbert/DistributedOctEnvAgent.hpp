@@ -42,7 +42,7 @@ public:
 
     inline int getOwner(const Vector3D &point) const override
     {
-        return this->getCellOwner(this->loadBalancer->convertor->xyz2d((*this->loadBalancer->indexing)(point)));
+        return this->loadBalancer->getOwner(point);
     };
 
     inline void onRebalance(void) override

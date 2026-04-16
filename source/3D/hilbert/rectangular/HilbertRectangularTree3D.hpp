@@ -1,19 +1,16 @@
 #ifndef HILBERT_TREE_3D
 #define HILBERT_TREE_3D
 
+#include "3D/hilbert/HilbertConvertor3D.hpp"
 #ifdef RICH_MPI
 
-#define DEBUG_MODE
-
-#ifdef DEBUG_MODE
-    #include <iostream>
-#endif // DEBUG_MODE
-
+#include <iostream>
 #include <vector>
 #include <boost/container/flat_set.hpp>
 #include <boost/container/small_vector.hpp>
 #include <mpi.h>
 #include "ds/utils/geometry.hpp"
+#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 #include "HilbertRectangularConvertor3D.hpp"
 
 #define DEFAULT_RANKS_IN_LEAVES 4
@@ -49,28 +46,22 @@ private:
     MPI_Comm comm;
     int rank, size;
     size_t depth;
-    #ifdef DEBUG_MODE
-        const HilbertConvertor3D *convertor;
-    #endif // DEBUG_MODE
+    const std::shared_ptr<HilbertConvertor3D> convertor;
 
-    void buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, size_t currentDepth, hilbert_index_t &current_d, const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
+    void buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, size_t currentDepth, hilbert_index_t &current_d, const std::shared_ptr<HilbertRectangularConvertor3D> &convertor, const std::vector<hilbert_index_t> &responsibilityRange);
     
-    void buildTree(const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange);
+    void buildTree(const std::shared_ptr<HilbertRectangularConvertor3D> &convertor, const std::vector<hilbert_index_t> &responsibilityRange);
 
-    #ifdef DEBUG_MODE
-        void printHelper(const Node *node, int tabs = 0) const;
-    #endif // DEBUG_MODE
+    void printHelper(const Node *node, int tabs = 0) const;
 
 public:
-    HilbertTree3D(const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange, const MPI_Comm &comm = MPI_COMM_WORLD): comm(comm)
+    HilbertTree3D(std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD)
+        : comm(comm), convertor(loadBalancer->getConvertor())
     {
         MPI_Comm_rank(this->comm, &this->rank);
         MPI_Comm_size(this->comm, &this->size);
-        #ifdef DEBUG_MODE
-            this->convertor = convertor;
-        #endif // DEBUG_MODE
         this->depth = 0;
-        this->buildTree(convertor, responsibilityRange);
+        this->buildTree(std::dynamic_pointer_cast<HilbertRectangularConvertor3D>(this->convertor), loadBalancer->getBoundaries());
     }
 
     ~HilbertTree3D();
@@ -87,9 +78,7 @@ public:
     template<typename U>
     std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_type>> getClosestFurthestPointsByRanks(const U &point) const;
 
-    #ifdef DEBUG_MODE
-        void print() const{this->printHelper(this->root);};
-    #endif // DEBUG_MODE
+    void print() const{this->printHelper(this->root);};
 
     std::vector<BoundingBox<Vector3D>> getRankBoundingBoxes(int _rank) const;
     
@@ -135,7 +124,6 @@ HilbertTree3D<max_ranks_per_leaf>::~HilbertTree3D()
     this->root = nullptr;
 }
 
-#ifdef DEBUG_MODE
 template<int max_ranks_per_leaf>
 void HilbertTree3D<max_ranks_per_leaf>::printHelper(const Node *node, int tabs) const
 {
@@ -178,10 +166,9 @@ void HilbertTree3D<max_ranks_per_leaf>::printHelper(const Node *node, int tabs) 
         this->printHelper(child, tabs + 1);
     }
 }
-#endif // DEUBG_MODE
 
 template<int max_ranks_per_leaf>
-void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, size_t currentDepth, hilbert_index_t &current_d, const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange)
+void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const typename HilbertRectangularConvertor3D::RecursionArguments &current_args, size_t currentDepth, hilbert_index_t &current_d, const std::shared_ptr<HilbertRectangularConvertor3D> &convertor, const std::vector<hilbert_index_t> &responsibilityRange)
 {
     using DirectionVector3D = HilbertRectangularConvertor3D::DirectionVector3D;
     using RecursionArguments = HilbertRectangularConvertor3D::RecursionArguments;
@@ -334,7 +321,7 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
 }
 
 template<int max_ranks_per_leaf>
-void HilbertTree3D<max_ranks_per_leaf>::buildTree(const HilbertRectangularConvertor3D *convertor, const std::vector<hilbert_index_t> &responsibilityRange)
+void HilbertTree3D<max_ranks_per_leaf>::buildTree(const std::shared_ptr<HilbertRectangularConvertor3D> &convertor, const std::vector<hilbert_index_t> &responsibilityRange)
 {
     using DirectionVector3D = HilbertRectangularConvertor3D::DirectionVector3D;
     using RecursionArguments = HilbertRectangularConvertor3D::RecursionArguments;
@@ -401,10 +388,8 @@ typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per
         eo.addEntry("Rank", rank);
         eo.addEntry("Sphere", sphere);
         eo.addEntry("Root Bounding Box", this->root->boundingBox);
-        #ifdef DEBUG_MODE
-            eo.addEntry("d of sphere center", this->convertor->xyz2d(sphere.center));
-            this->print();
-        #endif // DEBUG_MODE
+        eo.addEntry("d of sphere center", this->convertor->xyz2d(sphere.center));
+        this->print();
         throw eo;
     }
 

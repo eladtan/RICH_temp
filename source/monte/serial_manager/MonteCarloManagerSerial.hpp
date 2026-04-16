@@ -57,6 +57,12 @@ public:
 
     inline std::vector<size_t> &GetCellsStepsCounters(void){return this->cellsStepsCounters;};
 
+    inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
+
+    inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
+
+    inline size_t GetHandlerMemoryBytes(void) const {return 0;}
+
 private:
     const Grid &grid;
     size_t Ncells;
@@ -68,6 +74,8 @@ private:
     Tracker tracker;
     size_t myIDCounter;
     std::vector<size_t> cellsStepsCounters;
+    size_t startParticleCount_ = 0;
+    size_t endParticleCount_ = 0;
 
     struct
     {
@@ -434,8 +442,10 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
         p.steps = 0;
     }
 
+    size_t initialParticlesNum = this->particlesData.th_length;
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
+    this->startParticleCount_ = initialParticlesNum + newParticles1.size();
     
     this->cellsStepsCounters.assign(this->Ncells, 0);
 
@@ -459,6 +469,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     auto end = std::chrono::high_resolution_clock::now();
 
     std::vector<MCParticle> populationControlParticles = this->populationControl->activate(data.remaining);
+    this->endParticleCount_ = populationControlParticles.size();
     this->physics->postStep(populationControlParticles, fullDt);
 
     double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();

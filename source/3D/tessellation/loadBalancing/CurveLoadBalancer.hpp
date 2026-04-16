@@ -17,6 +17,10 @@ public:
     virtual ~CurveLoadBalancer() override = default;
 
     std::vector<curve_index_t> boundaries;
+    
+    virtual curve_index_t getCurveIndex(const Vector3D &point) const = 0;
+
+    int getOwner(const Vector3D &point) const override;
 };
 
 #endif // RICH_MPI

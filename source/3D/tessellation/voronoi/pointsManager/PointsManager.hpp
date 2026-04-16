@@ -98,6 +98,8 @@ public:
     virtual void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
 
     virtual std::shared_ptr<LoadBalancer> getLoadBalancer(void) = 0;
+    
+    virtual const std::shared_ptr<LoadBalancer> getLoadBalancer(void) const = 0;
 
     inline bool didRebalance(void) const{return this->hadRebalance;};
 

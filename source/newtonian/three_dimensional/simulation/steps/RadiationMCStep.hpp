@@ -64,6 +64,10 @@ public:
     
     inline std::vector<double> &getEradTimeAvg(void){return this->physics->getEradTimeAvg();};
 
+    inline const auto &getEgTimeAvg(void) const{return this->physics->getEgTimeAvg();};
+
+    inline auto &getEgTimeAvg(void){return this->physics->getEgTimeAvg();};
+
     #ifdef RICH_MPI
         inline void setCost(std::shared_ptr<CostCalculator3D> newCost){this->cost = newCost;};
 
@@ -81,6 +85,8 @@ public:
         void beforeLB(void) override;
 
         void afterLB(void) override;
+
+        inline std::vector<double> &getCellCosts(void){return this->cellCosts_;};
     #endif // RICH_MPI
 
 private:
@@ -98,6 +104,7 @@ private:
     #ifdef RICH_MPI
         ManagerType managerType;
         std::shared_ptr<CostCalculator3D> cost;
+        std::vector<double> cellCosts_;
     #endif // RICH_MPI
 };
 

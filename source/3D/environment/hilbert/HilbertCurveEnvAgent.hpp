@@ -22,8 +22,7 @@ public:
 
     virtual inline int getOwner(const Vector3D &point) const override
     {
-        // TODO: that's wrong
-        return this->getCellOwner(this->loadBalancer->convertor->xyz2d(point));
+        return this->loadBalancer->getOwner(point);
     };
 
     virtual void onExchange(const std::vector<Vector3D> &newPoints) override
@@ -36,7 +35,7 @@ public:
         this->CurveEnvironmentAgent::onRebalance();
     }
 
-    inline int getOrder() const{return this->loadBalancer->convertor->getOrder();};
+    inline int getOrder() const{return this->loadBalancer->getOrder();};
 };
 
 #endif // RICH_MPI

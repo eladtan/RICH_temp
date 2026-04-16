@@ -3,7 +3,7 @@
 #include "misc/memory_debug.hpp"
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
-     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
+     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0), currentBox(tess_.GetBoxCoordinates())
 {
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
@@ -179,12 +179,12 @@ void Simulation::step(void)
                 else
                 {
                     if(this->rank == 0) std::cout << "Load balance generated for first time" << std::endl;
-                    std::vector<double> weights = physics->getLoadBalanceWeights();
-                    std::vector<Vector3D> points = this->tess.getMeshPoints();
-                    points.resize(this->tess.GetPointNo());
-                    this->tess.BuildParallel(points, weights, true);
+                    // std::vector<double> weights = physics->getLoadBalanceWeights();
+                    // std::vector<Vector3D> points = this->tess.getMeshPoints();
+                    // points.resize(this->tess.GetPointNo());
+                    // this->tess.BuildParallel(points, weights, true);
                     firstTime = true;
-                    this->buildDataTransfer();
+                    // this->buildDataTransfer();
                 }
             }
 
@@ -207,6 +207,11 @@ void Simulation::step(void)
 
                     physics->beforeLB();
                     this->tess.Rebalance(weights);
+                    if(this->rank == 0)
+                    {
+                        std::cout << "Did rebalanced - load balance:" << std::endl;
+                        this->currentLoad->printInfo();
+                    }                
                     this->buildDataTransfer();
                     physics->afterLB();
 
@@ -239,6 +244,7 @@ void Simulation::step(void)
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI
+
         MEMORY_DEBUG_PRINT("After " + name);
         auto end = std::chrono::high_resolution_clock::now();
         double physicsTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
@@ -261,8 +267,29 @@ void Simulation::step(void)
                 physics->beforeLB();
                 std::vector<double> weights = physics->getLoadBalanceWeights();
                 this->tess.Rebalance(weights);
+                if(this->rank == 0)
+                {
+                    std::cout << "Rebalanced first time - load balance:" << std::endl;
+                    this->currentLoad->printInfo();
+                }            
                 this->buildDataTransfer();
                 physics->afterLB();
+            }
+        #endif // RICH_MPI
+
+        #ifdef RICH_MPI
+            std::pair<Vector3D, Vector3D> newBox = this->tess.GetBoxCoordinates();
+            if(newBox != this->currentBox)
+            {
+                this->currentBox = newBox;
+                for(auto [loadName, load] : this->loads)
+                {
+                    if(loadName == this->currentLB)
+                    {
+                        continue;
+                    }
+                    load->changeBox(this->currentBox);
+                }
             }
         #endif // RICH_MPI
 
@@ -328,6 +355,12 @@ void Simulation::setCurrentLoadBalance(const std::string &name)
     this->loads[name] = load;
     this->currentLoad = load;
     this->currentLB = name;
+
+    if(this->rank == 0)
+    {
+        std::cout << "Changed load balance:" << std::endl;
+        this->currentLoad->printInfo();
+    }
 }
 
 std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>> Simulation::GetLoads(void) const

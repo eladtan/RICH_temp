@@ -56,7 +56,7 @@ public:
         return normalize(Vector3D(x, y, z)) * units::clight;
     }
 
-    virtual Vector3D getNewScatterVelocity(ComputationalCell3D const& cell, MCParticle const& particle) const
+    virtual Vector3D getNewScatterVelocity(ComputationalCell3D const& cell, MCParticle& particle) const
     {
         return getRandomVelocity(cell);
     }

@@ -1,5 +1,6 @@
 #include "RadiationIMC.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include <iostream>
 
 namespace {
     inline void ClampFrequencyToBounds(double &frequency)
@@ -10,6 +11,18 @@ namespace {
     }
 
     constexpr double RW_PI = 3.14159265358979323846;
+    /*  — diagnostics commented out —
+    constexpr double DIAG_WEIGHT_CUTOFF_RW = 1e8;
+    constexpr double DIAG_RHO_MAX_RW = 0.01;
+    inline bool isDiagFreqRW(double freq, double weight, double rho, const OpacityCalculator &opacity)
+    {
+        if(weight < DIAG_WEIGHT_CUTOFF_RW) return false;
+        if(rho > DIAG_RHO_MAX_RW) return false;
+        size_t g = opacity.findGroup(freq);
+        return g == 15 || g == 16 || g == 18;
+    }
+    inline double freqToKeVRW(double freq) { return freq / units::kev; }
+    */
 }
 
 void RadiationIMC::precomputeRandomWalkData()
@@ -146,6 +159,22 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     if(!doRW)
         return false;
 
+    /* — diagnostics commented out —
+    if(this->multigroupOpacity && isDiagFreqRW(particle.frequency, particle.weight, cell.density, *this->opacity))
+    {
+        const char *evNames[] = {"LEAK", "CENSUS", "UPSCATTER"};
+        (void)evNames;
+        std::cerr << "[HF-RW-ENTRY] id=" << particle.id
+                  << " freq=" << freqToKeVRW(particle.frequency) << " keV"
+                  << " group=" << this->opacity->findGroup(particle.frequency)
+                  << " cell=" << cellIndex
+                  << " Ro=" << Ro << " sigmaT=" << sigmaT
+                  << " T=" << cell.temperature
+                  << " rho=" << cell.density
+                  << std::endl;
+    }
+    */
+
     Vector3D rwCenter = particle.location;
     Vector3D oldVelocity = particle.velocity;
     double oldWeight = particle.weight;
@@ -189,12 +218,19 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
         this->conserved[cellIndex].internal_energy += -rwExp * particle.weight;
     }
     if(rwAbsRate > 0)
+    {
         this->Erad_time_avg[cellIndex] += particle.weight * rwExp * (-1.0 / rwAbsRate);
+        if(this->withEgTimeAvg && this->multigroupOpacity)
+        {
+            size_t g = this->opacity->findGroup(particle.frequency);
+            this->Eg_time_avg[cellIndex][g] += particle.weight * rwExp * (-1.0 / rwAbsRate);
+        }
+    }
     particle.weight *= 1.0 + rwExp;
 
     particle.timeLeft -= dt;
 
-    if(particle.weight < particle.initialWeight * 1e-2)
+    if(particle.weight < particle.initialWeight * 1e-4)
     {
         functionality.change = MonteCarloParticleStatus::REMOVE;
         if(!this->noHydroFeedback)
@@ -279,13 +315,44 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
                 ComputationalCell3D::energyBoundaries[groupCutoff],
                 std::numeric_limits<double>::max());
         }
+        /* — diagnostics commented out —
+        if(isDiagFreqRW(particle.frequency, particle.weight, cell.density, *this->opacity))
+        {
+            std::cerr << "[HF-RW-UPSCATTER] id=" << particle.id
+                      << " freq=" << freqToKeVRW(particle.frequency) << " keV"
+                      << " group=" << this->opacity->findGroup(particle.frequency)
+                      << " cutoff=" << groupCutoff
+                      << " cdfCut=" << cdfAtCutoff << " cdfTot=" << cdfTotal
+                      << " cell=" << cellIndex
+                      << " T=" << cell.temperature
+                      << " rho=" << cell.density
+                      << std::endl;
+        }
+        */
     }
 
     if(this->withHydro && !this->MMC)
     {
+        double freqBeforeLT = particle.frequency;
+        (void)freqBeforeLT;
         LorentzTransformation(particle, -1 * cell.velocity);
         if(this->multigroupOpacity)
+        {
             ClampFrequencyToBounds(particle.frequency);
+            /* — diagnostics commented out —
+            bool isHighAfterLT = isDiagFreqRW(particle.frequency, particle.weight, cell.density, *this->opacity);
+            if(wasHighBefore || isHighAfterLT)
+            {
+                std::cerr << "[HF-RW-LORENTZ] id=" << particle.id
+                          << " freqBefore=" << freqToKeVRW(freqBeforeLT) << " keV"
+                          << " freqAfter=" << freqToKeVRW(particle.frequency) << " keV"
+                          << " groupAfter=" << this->opacity->findGroup(particle.frequency)
+                          << " cell=" << cellIndex
+                          << " rwEvent=" << rwEvent
+                          << std::endl;
+            }
+            */
+        }
         if(!this->diffusionPressureGradient && !this->noHydroFeedback)
             this->conserved[cellIndex].momentum += (oldWeight * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2;
     }

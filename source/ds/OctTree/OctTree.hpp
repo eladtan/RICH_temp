@@ -559,7 +559,7 @@ template<typename U>
 const T &OctTree<T>::GetContainingNodeValue(const U &point) const
 {
     const OctTreeNode *node = this->root;
-    while(not node->isLeaf)
+    while(node != nullptr && not node->isLeaf)
     {
         node = node->getChildContaining(point);
     }

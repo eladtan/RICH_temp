@@ -20,6 +20,12 @@ public:
 
     virtual std::vector<size_t> &GetCellsStepsCounters(void) = 0;
 
+    virtual size_t GetStartParticleCount(void) const = 0;
+
+    virtual size_t GetEndParticleCount(void) const = 0;
+
+    virtual size_t GetHandlerMemoryBytes(void) const = 0;
+
     virtual std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
 };
 
@@ -35,6 +41,12 @@ public:
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+
+    inline size_t GetStartParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetStartParticleCount();};
+
+    inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetEndParticleCount();};
+
+    inline size_t GetHandlerMemoryBytes(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
@@ -57,6 +69,12 @@ public:
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
+    inline size_t GetStartParticleCount(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
+
+    inline size_t GetEndParticleCount(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
+
+    inline size_t GetHandlerMemoryBytes(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
+
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
@@ -74,6 +92,12 @@ public:
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+
+    inline size_t GetStartParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
+
+    inline size_t GetEndParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
+
+    inline size_t GetHandlerMemoryBytes(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };

@@ -48,9 +48,6 @@ public:
 
     inline const std::vector<double> &getPlanckOpacities(void) const {return this->planckOpacities;}
 
-    size_t lastGenSlab = 0;
-    size_t lastGenVacuum = 0;
-
 private:    
     std::vector<Particle> generateParticles(double fullDt);
 

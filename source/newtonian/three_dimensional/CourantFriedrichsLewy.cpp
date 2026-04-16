@@ -71,10 +71,10 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	res *= cfl_;
 	double old_res = res;
 	res = 1.0 / std::max(source_.SuggestInverseTimeStep() / sourcecfl_, 1.0 / res);
-	double hydro_res = res;
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 #endif
+	double hydro_res = res;
 	if ((first_try_ && dt_first_ > 0) || (last_time_ == time && dt_first_ > 0))
 	{
 		res = std::min(res, dt_first_);
@@ -83,12 +83,12 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 			dt_first_ = -1;
 	}
 	int rank = 0;
-#ifdef RICH_MPI
-	double new_res = 0;
-	MPI_Allreduce(&res, &new_res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-	res = new_res;
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#endif
+// #ifdef RICH_MPI
+// 	double new_res = 0;
+// 	MPI_Allreduce(&res, &new_res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+// 	res = new_res;
+// 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+// #endif
 	last_time_ = time;
 	if (debug_)
 	{

@@ -18,6 +18,13 @@ public:
     void changeOrder(size_t order) override
     {
         this->order = order;
+}
+
+    void setBox(const Vector3D &ll, const Vector3D &ur)
+    {
+        this->ll = ll;
+        this->ur = ur;
+        this->length = this->ur - this->ll;
     }
     
     hilbert_index_t xyz2d(coord_t x, coord_t y, coord_t z) const override;

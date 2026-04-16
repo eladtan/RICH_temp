@@ -42,6 +42,8 @@ public:
 
     inline const std::vector<size_t> &GetAllRecvCounters() const {return this->recvCounters;};
 
+    inline size_t GetTotalMemoryBytes() const {return this->buffers.size() * this->buffersSize;};
+
 private:
     MPI_Comm comm;
     bool destroyed;

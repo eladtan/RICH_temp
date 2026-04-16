@@ -68,6 +68,8 @@ public:
 
   virtual std::shared_ptr<LoadBalancer> GetLoadBalancer(void) = 0;
 
+  virtual const std::shared_ptr<LoadBalancer> GetLoadBalancer(void) const = 0;
+
   virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) = 0;
 
   inline void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false)

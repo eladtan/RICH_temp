@@ -1,6 +1,7 @@
 #ifndef MC_PHYSICS_3D_HPP
 #define MC_PHYSICS_3D_HPP
 
+#include <array>
 #include <boost/math/special_functions/pow.hpp>
 #include "monte/physics/MonteCarloPhysics.hpp"
 #include "3D/elementary/Vector3D.hpp"
@@ -32,12 +33,17 @@ public:
     inline const std::vector<double> &getEradTimeAvg(void) const{return this->Erad_time_avg;}
     
     inline std::vector<double> &getEradTimeAvg(void){return this->Erad_time_avg;}
+
+    inline const std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void) const{return this->Eg_time_avg;}
+
+    inline std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void){return this->Eg_time_avg;}
     
 protected:    
     std::vector<Particle> generateParticles(double fullDt);
 
     std::vector<ComputationalCell3D> &cells;
     std::vector<double> Erad_time_avg;
+    std::vector<std::array<double, ENERGY_GROUPS_NUM>> Eg_time_avg;
     std::vector<Conserved3D> &conserved;
     std::shared_ptr<EquationOfState> eos;
     std::shared_ptr<OpacityCalculator> opacity;

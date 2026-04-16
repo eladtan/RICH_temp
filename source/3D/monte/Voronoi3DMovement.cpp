@@ -1,8 +1,12 @@
 #include "Voronoi3DMovement.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/environment/EnvironmentAgent.h"
+#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
+#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 #include "ds/DistributedOctTree/DistributedOctTree.hpp"
 #include "misc/universal_error.hpp"
+#include "mpi/mpi_commands.hpp"
+#include <bits/chrono.h>
 
 #define RADIUSES_FACTOR 2
 
@@ -167,10 +171,13 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    // MPI_Distribute(particles, MPI_COMM_WORLD);
+
     const std::shared_ptr<EnvironmentAgent> &envAgent = tess.GetEnvironmentAgent();
     std::vector<Particle3D> newParticles;
     std::vector<Serializer> senders(size);
 
+    auto start = std::chrono::high_resolution_clock::now();
     size_t sentCounter = 0;
     for(Particle3D &p : particles)
     {
@@ -183,13 +190,35 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
         {
             senders[approxOwner].insert(p);
             sentCounter++;
+            // if(sentCounter <= 10)
+            // {
+            //     const std::shared_ptr<LoadBalancer> lb = tess.GetLoadBalancer();
+            //     const HilbertLoadBalancer *hlb = dynamic_cast<const HilbertLoadBalancer*>(lb.get());
+            //     size_t b1 = (approxOwner == 0)? 0 : hlb->boundaries[std::min(approxOwner - 1, size - 1)];
+            //     size_t b2 = hlb->boundaries[std::min(approxOwner, size - 1)];
+            //     Vector3D b1_xyz = hlb->convertor->d2xyz(b1);
+            //     Vector3D b2_xyz = hlb->convertor->d2xyz(b2);
+            //     std::cout << "Rank " << rank << " wants to ask rank " << approxOwner << "(boundaries: b1: " << b1 << ", b1_xyz: " << b1_xyz << ", b2: " << b2 << ", b2_xyz: " << b2_xyz << "), particle location is " << p.location << ", its d is " << hlb->convertor->xyz2d(p.location) << std::endl;
+            // }
         }
     }
 
+    size_t Nparticles = particles.size();
     particles.clear();
     particles.shrink_to_fit();
-
+    auto end = std::chrono::high_resolution_clock::now();
+    double timeInLoop1 = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+    // std::cout << "[First movements] Rank " << rank << ", time in loop 1: " << timeInLoop1 << " (had " << Nparticles << " particles)" << std::endl;
+    MPI_Barrier(MPI_COMM_WORLD);
+    
+    start = std::chrono::high_resolution_clock::now();
     std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
+    end = std::chrono::high_resolution_clock::now();
+    double timeInExchange = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+    // std::cout << "[First movements] Rank " << rank << ", time in exchange: " << timeInExchange << std::endl;
+    MPI_Barrier(MPI_COMM_WORLD);
+    
+    start = std::chrono::high_resolution_clock::now();
     for(rank_t _rank = 0; _rank < size; _rank++)
     {
         const std::vector<Particle3D> &particlesFromRank = receiveValues[_rank];
@@ -198,6 +227,10 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
     particles = std::move(newParticles);
 
     MPI_Allreduce(MPI_IN_PLACE, &sentCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    end = std::chrono::high_resolution_clock::now();
+    double timeInLoop2 = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+    // std::cout << "[First movements] Rank " << rank << ", time in loop 2: " << timeInLoop2 << std::endl;
+
     if(rank == 0)
     {
         std::cout << "First inaccurate movements sent for " << sentCounter << " particles" << std::endl;
@@ -214,6 +247,8 @@ void FirstMovementsDistributed(
         FirstInaccurateMovements(tess, particles);
         return;
     }
+
+    // MPI_Distribute(particles, MPI_COMM_WORLD);
 
     rank_t rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -408,12 +443,15 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             }
             avgCellSize /= N;
         }
-        else
-        {
-            avgCellSize = abs(tess_ur - tess_ll);
-        }
+        double avgOfAvgCellSize = avgCellSize;
+        MPI_Allreduce(MPI_IN_PLACE, &avgOfAvgCellSize, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        avgOfAvgCellSize /= size;
         double initialRadius = avgCellSize * RADIUSES_FACTOR;
-
+        if(N == 0)
+        {
+            initialRadius = avgOfAvgCellSize * RADIUSES_FACTOR;
+        }
+        
         boost::container::flat_set<size_t> particlesLeft;
         std::vector<Particle3D> myParticles;
         std::vector<Particle3D> shouldExchangeParticles;
@@ -471,20 +509,20 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         particles.clear();
         particles.shrink_to_fit();
 
-        size_t numParticlesLeft = particlesLeft.size();
-        MPI_Allreduce(MPI_IN_PLACE, &numParticlesLeft, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-        if(verbose and rank == 0)
-        {
-            std::cout << "Number of particles left to determination: " << numParticlesLeft << std::endl;
-        }
-
-        FirstMovementsDistributed(tess, shouldExchangeParticles, distributedOctTree);
-
+        auto start4 = std::chrono::high_resolution_clock::now();
+        FirstInaccurateMovements(tess, shouldExchangeParticles);
+        // FirstMovementsDistributed(tess, shouldExchangeParticles, distributedOctTree);
+        auto end4 = std::chrono::high_resolution_clock::now();
+        double timeFirstMovements = std::chrono::duration_cast<std::chrono::duration<double>>(end4 - start4).count();
+        // std::cout << "Rank " << rank << ", time first movements: " << timeFirstMovements << std::endl;
+        MPI_Barrier(MPI_COMM_WORLD);
+        
         std::vector<Particle3D> newParticles = std::move(myParticles);
 
         particles = std::move(shouldExchangeParticles);
         std::vector<boost::container::flat_set<rank_t>> ranksTested;
 
+        auto start3 = std::chrono::high_resolution_clock::now();
         for(size_t i = 0; i < particles.size(); i++)
         {
             Particle3D &p = particles[i];
@@ -507,7 +545,18 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                 ranksTested.push_back({rank});
             }
         }
+        size_t numParticlesLeft = particlesLeft.size();
+        MPI_Allreduce(MPI_IN_PLACE, &numParticlesLeft, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        if(verbose and rank == 0)
+        {
+            std::cout << "Number of particles left to determination: " << numParticlesLeft << std::endl;
+        }
 
+        auto end3 = std::chrono::high_resolution_clock::now();
+        double timeRightBeforeLoop = std::chrono::duration_cast<std::chrono::duration<double>>(end3 - start3).count();
+        // std::cout << "Rank " << rank << ", time right before loop: " << timeRightBeforeLoop << std::endl;
+        MPI_Barrier(MPI_COMM_WORLD);
+        
         std::vector<double> radiuses(particles.size(), initialRadius);
         std::vector<std::vector<Particle3D>> sendValues(size);
         std::vector<std::vector<size_t>> sendIndicesCpy(size);
@@ -518,8 +567,19 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 
         START_TIMER_PREEMPTIVE("Main Loop");
 
+        auto loop_start = std::chrono::high_resolution_clock::now();
+        // std::cout << "Rank " << rank << " has " << particlesLeft.size() << " particles left to determine over " << N << " cells, with initial radius " << initialRadius << std::endl;
         while(true)
         {
+            double timeInTree = 0;
+            double timeInAlltoall1 = 0;
+            double timeInAlltoall2 = 0;
+            double timeInPreparation = 0;
+            double timeInMainLoop = 0;
+            double timeInEndLoop = 0;
+            size_t maxSendSize = 0;
+            bool stopPreparationLoop = false;
+
             iterations++;
             size_t localLeftParticles = particlesLeft.size();
             size_t globalLeftParticles;
@@ -531,10 +591,12 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             for(rank_t _rank = 0; _rank < size; _rank++)
             {
                 sendValues[_rank].clear();
+                sendValues[_rank].shrink_to_fit();
                 sendIndicesCpy[_rank].clear();
                 acknowledgementValues[_rank].clear();
             }
             
+            auto start2 = std::chrono::high_resolution_clock::now();
             for(size_t i : particlesLeft)
             {
                 Particle3D &p = particles[i];
@@ -554,7 +616,11 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                         eo.addEntry("Rank", rank);
                         throw eo;
                     }
+
+                    auto start = std::chrono::high_resolution_clock::now();
                     auto intersectingRanks = distributedOctTree.getIntersectingRanks(p.location, radiuses[i]);
+                    auto end = std::chrono::high_resolution_clock::now();
+                    timeInTree += std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
                     for(rank_t _rank : intersectingRanks)
                     {
                         if(ranksTested[i].find(_rank) == ranksTested[i].end())
@@ -562,6 +628,11 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                             // not tested yet
                             atLeastOneNew = true; 
                             sendValues[_rank].push_back(p);
+                            maxSendSize = std::max(maxSendSize, sendValues[_rank].size());
+                            if(maxSendSize > 1e5)
+                            {
+                                // stopPreparationLoop = true;
+                            }
                             sendIndicesCpy[_rank].push_back(i);
                             ranksTested[i].insert(_rank);
                         }
@@ -569,10 +640,24 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                     maxRanksTested = std::max(maxRanksTested, static_cast<rank_t>(ranksTested[i].size()));
                     radiuses[i] *= RADIUSES_FACTOR;
                 }
+                if(stopPreparationLoop)
+                {
+                    break;
+                }
             }
+            auto end2 = std::chrono::high_resolution_clock::now();
+            timeInPreparation += std::chrono::duration_cast<std::chrono::duration<double>>(end2 - start2).count();
+
+            // measure time of alltoall
+
+            auto start = std::chrono::high_resolution_clock::now();
             std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all(sendValues, MPI_COMM_WORLD);
+            auto end = std::chrono::high_resolution_clock::now();
+            timeInAlltoall1 += std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+
             assert(receiveValues.size() == size);
 
+            start = std::chrono::high_resolution_clock::now();
             if(octTree.getSize() > 0)
             {
                 for(rank_t _rank = 0; _rank < size; _rank++)
@@ -592,19 +677,53 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                     }
                 }
             }
+            end = std::chrono::high_resolution_clock::now();
+            timeInMainLoop += std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
+            start = std::chrono::high_resolution_clock::now();
             std::vector<std::vector<size_t>> acknowledgements = MPI_Iexchange_all_to_all(acknowledgementValues, MPI_COMM_WORLD);
+            end = std::chrono::high_resolution_clock::now();
+            timeInAlltoall2 += std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+
             assert(acknowledgements.size() == size);
 
+            start = std::chrono::high_resolution_clock::now();
+            std::vector<size_t> toErase;
             for(rank_t _rank = 0; _rank < size; _rank++)
             {
                 const std::vector<size_t> &rankAcknowledgements = acknowledgements[_rank];
                 for(size_t i : rankAcknowledgements)
                 {
-                    particlesLeft.erase(sendIndicesCpy[_rank][i]);
+                    toErase.push_back(sendIndicesCpy[_rank][i]);
                 }
             }
+            std::sort(toErase.begin(), toErase.end());
+            toErase.erase(std::unique(toErase.begin(), toErase.end()), toErase.end());
+
+            std::vector<size_t> remainingVec;
+            remainingVec.reserve(particlesLeft.size());
+            std::set_difference(particlesLeft.begin(), particlesLeft.end(),
+                        toErase.begin(), toErase.end(),
+                        std::back_inserter(remainingVec));
+            size_t prevSize = particlesLeft.size();
+            particlesLeft = boost::container::flat_set<size_t>(
+                boost::container::ordered_unique_range_t{},
+                remainingVec.begin(), remainingVec.end());
+
+            end = std::chrono::high_resolution_clock::now();
+            timeInEndLoop += std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
+            // std::cout << "Rank " << rank << " end loop: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count()
+            //           << "s, particlesLeft=" << particlesLeft.size()
+            //           << ", erased=" << (prevSize - particlesLeft.size()) << std::endl;
+
+            // MPI_Barrier(MPI_COMM_WORLD);
+            // std::cout << "Rank " << rank << " in iteration " << iterations << ", time in preparation: " << timeInPreparation << " (out of that, time in tree: " << timeInTree << "), time in alltoall1: " << timeInAlltoall1 << ", time in main loop: " << timeInMainLoop << 
+            //     ", time in alltoall2: " << timeInAlltoall2 << ", time in end loop: " << timeInEndLoop << std::endl;
         }
+
+        auto loop_end = std::chrono::high_resolution_clock::now();
+        double timeInLoop = std::chrono::duration_cast<std::chrono::duration<double>>(loop_end - loop_start).count();
+        // std::cout << "Rank " << rank << ", time in loop: " << timeInLoop << std::endl;
 
         if(rank == 0)
         {

@@ -92,6 +92,8 @@ public:
         std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>> GetLoads(void) const;
 
         inline const std::string &getCurrentLB() const{return this->currentLB;};
+
+        inline void setForceRebalanceSteps(size_t n){this->forceRebalanceSteps = n;};
     #endif // RICH_MPI
 
 private:
@@ -120,6 +122,8 @@ private:
 
     std::string currentLB;
     std::map<std::string, std::shared_ptr<LoadBalancer>> loads;
+    size_t forceRebalanceSteps = 0;
+    std::pair<Vector3D, Vector3D> currentBox;
 #endif // RICH_MPI
 };
 

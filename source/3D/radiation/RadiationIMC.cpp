@@ -138,8 +138,8 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     if(this->withEgTimeAvg && this->multigroupOpacity)
     {
         size_t g = this->opacity->findGroup(particle.frequency);
-        double contrib063f = particle.weight * expFactor2 * (-1/tmp2);
-        this->Eg_time_avg[cellIndex][g] += contrib063f;
+        double groupEradContrib = particle.weight * expFactor2 * (-1/tmp2);
+        this->Eg_time_avg[cellIndex][g] += groupEradContrib;
     }
     particle.weight *= 1 + expFactor1;
 
@@ -385,19 +385,12 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
         nPhotons[i] = std::max(this->newPhotonsPerCell, std::min(proportionalShare, this->newPhotonsPerCell * 20));
     }
 
-    this->lastGenSlab = 0;
-    this->lastGenVacuum = 0;
-
     for(size_t i = 0; i < Ncells; i++)
     {
         ComputationalCell3D &cell = this->cells[i];
         double energyToCreate = energyToCreateVec[i];
         double gamma = gammaVec[i];
 
-        if (this->planckOpacities[i] > 1.0)
-            this->lastGenSlab += nPhotons[i];
-        else
-            this->lastGenVacuum += nPhotons[i];
         if(!this->noHydroFeedback)
         {
             this->conserved[i].internal_energy -= energyToCreate;

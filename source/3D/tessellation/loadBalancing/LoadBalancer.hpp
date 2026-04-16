@@ -15,7 +15,13 @@ public:
 
     virtual void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) = 0;
 
+    virtual void changeBox(const std::pair<Vector3D, Vector3D> &newBox) = 0;
+    
+    virtual void printInfo(void) = 0;
+    
     virtual std::string getTypeName() const = 0;
+
+    virtual int getOwner(const Vector3D &point) const = 0;
 
     virtual ~LoadBalancer() = default;
 

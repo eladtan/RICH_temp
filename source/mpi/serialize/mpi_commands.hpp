@@ -7,6 +7,7 @@
 #include <mpi.h>
 #include "Serializer.hpp"
 #include "mpi/mpi_commands.hpp"
+#include "mpi/MPI_complex_dtype.hpp"
 #include "misc/universal_error.hpp"
 
 #define MPI_EXCHANGE_ALLTOALL_TAG 1039
@@ -14,86 +15,168 @@
 template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_Iexchange_all_to_all(std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
 {
-    rank_t size;
+    rank_t size, myRank;
     MPI_Comm_size(comm, &size);
-    std::vector<MPI_Request> requests(size);
-    std::vector<Serializer> senders(size);
-    for(rank_t i = 0; i < size; i++)
-    {
-        senders[i].insert_all(data[i]);
-        data[i] = Container<T, Ts...>(); // clear data (avoids memory exhaustion)
-        MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, i, MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
-    }
+    MPI_Comm_rank(comm, &myRank);
 
-    std::vector<Serializer> receivers(size);
-    for(rank_t i = 0; i < size; i++)
+    if constexpr (MPI_has_complex_dtype<T>::value)
     {
-        MPI_Status status;
-        MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
-        int count;
-        MPI_Get_count(&status, MPI_BYTE, &count);
-        receivers[status.MPI_SOURCE].resize(count);
-        MPI_Recv(receivers[status.MPI_SOURCE].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
-    }
+        // Native-dtype path: send T elements directly, count = number of elements
+        MPI_Datatype dtype = MPI_has_complex_dtype<T>::getDatatype();
 
-    if(not requests.empty())
-    {
+        std::vector<int> sendCounts(size), recvCounts(size);
+        for(rank_t i = 0; i < size; i++)
+            sendCounts[i] = static_cast<int>(data[i].size());
+        MPI_Alltoall(sendCounts.data(), 1, MPI_INT,
+                     recvCounts.data(), 1, MPI_INT, comm);
+
+        std::vector<MPI_Request> requests(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            MPI_Isend(data[i].data(), sendCounts[i], dtype, i,
+                      MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
+        }
+
+        std::vector<std::vector<T>> result(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            result[i].resize(static_cast<size_t>(recvCounts[i]));
+            MPI_Recv(result[i].data(), recvCounts[i], dtype, i,
+                     MPI_EXCHANGE_ALLTOALL_TAG, comm, MPI_STATUS_IGNORE);
+        }
+
         MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
-    }
-    senders.clear();
-    senders.shrink_to_fit();
+        for(rank_t i = 0; i < size; i++)
+            data[i] = Container<T, Ts...>();
 
-    std::vector<std::vector<T>> result(size);
-    for(rank_t i = 0; i < size; i++)
+        MPI_Barrier(comm);
+        return result;
+    }
+    else
     {
-        receivers[i].extract_all(result[i]);
-        receivers[i].reset();
-    }
+        std::vector<MPI_Request> requests(size);
+        std::vector<Serializer> senders(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            senders[i].insert_all(data[i]);
+            data[i] = Container<T, Ts...>();
+            MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, i, MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
+        }
 
-    MPI_Barrier(comm);
-    return result;
+        std::vector<Serializer> receivers(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            MPI_Status status;
+            MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
+            int count;
+            MPI_Get_count(&status, MPI_BYTE, &count);
+            receivers[status.MPI_SOURCE].resize(count);
+            MPI_Recv(receivers[status.MPI_SOURCE].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
+        }
+
+        if(not requests.empty())
+        {
+            MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
+        }
+        senders.clear();
+        senders.shrink_to_fit();
+
+        std::vector<std::vector<T>> result(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            receivers[i].extract_all(result[i]);
+            receivers[i].reset();
+        }
+
+        MPI_Barrier(comm);
+        return result;
+    }
 }
 
 template<typename T>
 std::vector<std::vector<T>> MPI_Iexchange_all_to_all_serializers(std::vector<Serializer> &senders, const MPI_Comm &comm)
 {
-    rank_t size;
+    rank_t size, myRank;
     MPI_Comm_size(comm, &size);
+    MPI_Comm_rank(comm, &myRank);
     assert(static_cast<rank_t>(senders.size()) == size);
 
-    std::vector<MPI_Request> requests(size);
-    for(rank_t i = 0; i < size; i++)
+    if constexpr (MPI_has_complex_dtype<T>::value)
     {
-        MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, i, MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
-    }
+        // Native-dtype path: deserialize into vectors, then send T elements directly
+        MPI_Datatype dtype = MPI_has_complex_dtype<T>::getDatatype();
 
-    std::vector<Serializer> receivers(size);
-    for(rank_t i = 0; i < size; i++)
-    {
-        MPI_Status status;
-        MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
-        int count;
-        MPI_Get_count(&status, MPI_BYTE, &count);
-        receivers[status.MPI_SOURCE].resize(count);
-        MPI_Recv(receivers[status.MPI_SOURCE].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
-    }
+        std::vector<std::vector<T>> sendVecs(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            senders[i].extract_all(sendVecs[i]);
+            senders[i].reset();
+        }
+        senders.clear();
+        senders.shrink_to_fit();
 
-    if(not requests.empty())
-    {
+        std::vector<int> sendCounts(size), recvCounts(size);
+        for(rank_t i = 0; i < size; i++)
+            sendCounts[i] = static_cast<int>(sendVecs[i].size());
+        MPI_Alltoall(sendCounts.data(), 1, MPI_INT,
+                     recvCounts.data(), 1, MPI_INT, comm);
+
+        std::vector<MPI_Request> requests(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            MPI_Isend(sendVecs[i].data(), sendCounts[i], dtype, i,
+                      MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
+        }
+
+        std::vector<std::vector<T>> result(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            result[i].resize(static_cast<size_t>(recvCounts[i]));
+            MPI_Recv(result[i].data(), recvCounts[i], dtype, i,
+                     MPI_EXCHANGE_ALLTOALL_TAG, comm, MPI_STATUS_IGNORE);
+        }
+
         MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
-    }
-    senders.clear();
-    senders.shrink_to_fit();
 
-    std::vector<std::vector<T>> result(size);
-    for(rank_t i = 0; i < size; i++)
+        MPI_Barrier(comm);
+        return result;
+    }
+    else
     {
-        receivers[i].extract_all(result[i]);
-        receivers[i].reset();
-    }
+        std::vector<MPI_Request> requests(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_BYTE, i, MPI_EXCHANGE_ALLTOALL_TAG, comm, &requests[i]);
+        }
 
-    MPI_Barrier(comm);
-    return result;
+        std::vector<Serializer> receivers(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            MPI_Status status;
+            MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
+            int count;
+            MPI_Get_count(&status, MPI_BYTE, &count);
+            receivers[status.MPI_SOURCE].resize(count);
+            MPI_Recv(receivers[status.MPI_SOURCE].getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
+        }
+
+        if(not requests.empty())
+        {
+            MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
+        }
+        senders.clear();
+        senders.shrink_to_fit();
+
+        std::vector<std::vector<T>> result(size);
+        for(rank_t i = 0; i < size; i++)
+        {
+            receivers[i].extract_all(result[i]);
+            receivers[i].reset();
+        }
+
+        MPI_Barrier(comm);
+        return result;
+    }
 }
 
 template<typename T, template<typename...> class Container, typename... Ts>
@@ -460,6 +543,86 @@ std::vector<std::vector<T>> MPI_Ask_data(const std::vector<rank_t> &corresponden
     }
 
     return resultByRanks;
+}
+
+template<typename T>
+void MPI_Distribute(std::vector<T> &data, const MPI_Comm &comm)
+{
+    static_assert(sizeof(size_t) == sizeof(unsigned long long),
+                  "MPI_UNSIGNED_LONG_LONG size mismatch with size_t");
+
+    rank_t rank, size;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
+    size_t localCount = data.size();
+    std::vector<size_t> counts(size);
+    MPI_Allgather(&localCount, 1, MPI_UNSIGNED_LONG_LONG,
+                  counts.data(), 1, MPI_UNSIGNED_LONG_LONG, comm);
+
+    size_t total = 0;
+    for (rank_t r = 0; r < size; r++)
+        total += counts[r];
+
+    if (total == 0) return;
+
+    size_t base = total / size;
+    size_t remainder = total % size;
+
+    std::vector<size_t> curPfx(size + 1, 0), tgtPfx(size + 1, 0);
+    for (rank_t r = 0; r < size; r++)
+    {
+        curPfx[r + 1] = curPfx[r] + counts[r];
+        tgtPfx[r + 1] = tgtPfx[r] + base + (static_cast<size_t>(r) < remainder ? 1 : 0);
+    }
+
+    size_t myStart = curPfx[rank];
+    size_t myEnd   = curPfx[rank + 1];
+
+    // Target ranges partition the global array, so local slices are non-overlapping.
+    // The keep range (r == rank) is never moved-from by a prior iteration.
+    std::vector<std::vector<T>> sendData(size);
+    size_t keepBegin = localCount, keepEnd = 0;
+
+    for (rank_t r = 0; r < size; r++)
+    {
+        size_t oStart = std::max(myStart, tgtPfx[r]);
+        size_t oEnd   = std::min(myEnd,   tgtPfx[r + 1]);
+        if (oStart >= oEnd) continue;
+
+        size_t lStart = oStart - myStart;
+        size_t lEnd   = oEnd   - myStart;
+        if (r == rank)
+        {
+            keepBegin = lStart;
+            keepEnd   = lEnd;
+        }
+        else
+        {
+            sendData[r].assign(
+                std::make_move_iterator(data.begin() + lStart),
+                std::make_move_iterator(data.begin() + lEnd));
+        }
+    }
+
+    std::vector<T> kept;
+    if (keepBegin < keepEnd)
+        kept.assign(
+            std::make_move_iterator(data.begin() + keepBegin),
+            std::make_move_iterator(data.begin() + keepEnd));
+
+    data.clear();
+    data.shrink_to_fit();
+
+    auto received = MPI_Iexchange_all_to_all(sendData, comm);
+
+    size_t targetCount = base + (static_cast<size_t>(rank) < remainder ? 1 : 0);
+    data = std::move(kept);
+    data.reserve(targetCount);
+    for (rank_t r = 0; r < size; r++)
+        data.insert(data.end(),
+            std::make_move_iterator(received[r].begin()),
+            std::make_move_iterator(received[r].end()));
 }
 
 #endif // RICH_MPI

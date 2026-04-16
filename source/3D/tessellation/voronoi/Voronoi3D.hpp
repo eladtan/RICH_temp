@@ -311,6 +311,8 @@ public:
     
   inline std::shared_ptr<LoadBalancer> GetLoadBalancer(void) override {return this->pointsManager->getLoadBalancer();};
 
+  inline const std::shared_ptr<LoadBalancer> GetLoadBalancer(void) const override {return this->pointsManager->getLoadBalancer();};
+
   void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) override;
   
   bool DidRebalance(void) const override;

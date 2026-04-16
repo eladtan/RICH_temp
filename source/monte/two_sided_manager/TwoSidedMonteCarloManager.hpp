@@ -40,6 +40,12 @@ public:
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) {return this->cellsStepsCounters;}
 
+    inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
+
+    inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
+
+    inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes_;}
+
     // todo: should return that?
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
     
@@ -95,6 +101,9 @@ private:
     size_t iteration;
     size_t myIDCounter;
     size_t currentStep;
+    size_t startParticleCount_ = 0;
+    size_t endParticleCount_ = 0;
+    size_t handlerMemoryBytes_ = 0;
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -618,6 +627,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
         size_t preStepParticlesNum = newParticles1.size();
+        this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
         int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
         // std::cout << "Rank " << this->rank_world << ", startingParticleNum is " << startingParticleNum << " = " << initialParticlesNum << " + " << preStepParticlesNum << std::endl;
 
@@ -679,6 +689,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
 
         size_t newParticlesNum = populationControlParticles.size();
+        this->endParticleCount_ = newParticlesNum;
         size_t leavingNumber = data.leavingCount;
 
         size_t totalSteps = this->allStepsCounter;
@@ -740,6 +751,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         assert(this->particles.empty());
         MPI_Barrier(this->comm_world);
 
+        this->handlerMemoryBytes_ = this->buffersManager->GetTotalMemoryBytes();
         this->buffersManager = nullptr; // TODO: good?
         // if(this->rank_world == 0)
         // std::cout << "====================================" << std::endl;
