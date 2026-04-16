@@ -41,7 +41,7 @@ public:
 
         void Reset(void);
 
-        std::vector<MCParticle> GetTrackParticleRoute(size_t id);
+        std::vector<MCParticle> GetTrackParticleRoute(size_t id) const;
 
         void ReportParticle(MCParticle &particle);
     
@@ -54,6 +54,8 @@ public:
     inline void resetTracker(void){this->tracker.Reset();};
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const{return this->cellsStepsCounters;};
+
+    inline std::vector<size_t> &GetCellsStepsCounters(void){return this->cellsStepsCounters;};
 
 private:
     const Grid &grid;
@@ -189,13 +191,14 @@ void MonteCarloManagerSerial<T, Grid>::Tracker::ReportParticle(MCParticle &parti
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::Tracker::GetTrackParticleRoute(size_t id)
+std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloManagerSerial<T, Grid>::Tracker::GetTrackParticleRoute(size_t id) const
 {
-    if(this->track.find(id) == this->track.end())
+    auto it = this->track.find(id);
+    if(it == this->track.end())
     {
         return std::vector<MCParticle>();
     }
-    return this->track[id];
+    return it->second;
 }
 template<typename T, typename Grid>
 void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::PutSelfParticles(std::vector<MCParticle> &&particles)
@@ -312,14 +315,24 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
         MCParticle &particle = this->particlesData.particles[particleIndex];
         while(true)
         {
+            const size_t traceStep = particle.steps;
             if(particle.on_track)
             {
-                this->tracker.ReportParticle(particle);
+                MCParticle trackedParticle = particle;
+                trackedParticle.steps = traceStep * 2;
+                this->tracker.ReportParticle(trackedParticle);
             }
             particle.steps++;
             this->cellsStepsCounters[particle.cellIndex]++;
     
             MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+
+            if(particle.on_track)
+            {
+                MCParticle trackedParticle = particle;
+                trackedParticle.steps = traceStep * 2 + 1;
+                this->tracker.ReportParticle(trackedParticle);
+            }
 
             #ifdef MC_TRACING_HISTORY
                 particle.recordHistory(particle.cellIndex, 0, static_cast<int>(functionality.change));
@@ -424,7 +437,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
     
-    this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
+    this->cellsStepsCounters.assign(this->Ncells, 0);
 
     MonteCarloStepFinalData data;
     // measure time

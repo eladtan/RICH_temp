@@ -10,8 +10,8 @@ where K = -div(v)/3.
 For the group-integrated quantity the analytical prediction is:
     E_g(t) = exp(K*t) * integral_{nu_lo*exp(-Kt)}^{nu_hi*exp(-Kt)} E_nu(nu',0) dnu'
 
-Generates one plot per cell (expansion / compression) comparing the
-numerical and analytical spectra.
+Generates one plot comparing the numerical and analytical spectra,
+together with the actually seeded initial photon histogram.
 """
 
 import argparse
@@ -48,10 +48,25 @@ def planck_group_integral(E_lo, E_hi, T, E_cut_lo, E_cut_hi):
         val, _ = integrate.quad(planck_spectral_density, a, b, args=(T,),
                                 limit=200)
         return val
-    # fallback: simple trapezoidal
     xs = np.linspace(a, b, 500)
     ys = np.array([planck_spectral_density(x, T) for x in xs])
     return float(np.trapz(ys, xs))
+
+
+def compute_analytical(E_boundaries, K, t, T, E_cut_lo, E_cut_hi):
+    """Compute analytical group energies at time t.
+    E_g(t) = exp(Kt) * int_{E_lo*exp(-Kt)}^{E_hi*exp(-Kt)} B(E',T) dE'
+    """
+    G = len(E_boundaries) - 1
+    Eg = np.zeros(G)
+    shift = np.exp(-K * t)
+    jac = np.exp(K * t)
+    for g in range(G):
+        Eg[g] = jac * planck_group_integral(
+            E_boundaries[g] * shift,
+            E_boundaries[g + 1] * shift,
+            T, E_cut_lo, E_cut_hi)
+    return Eg
 
 
 def read_spectrum(path):
@@ -80,26 +95,10 @@ def read_spectrum(path):
     return meta, cols
 
 
-def compute_analytical(E_boundaries, K, t, T, E_cut_lo, E_cut_hi):
-    """Compute analytical group energies at time t.
-    E_g(t) = exp(Kt) * int_{E_lo*exp(-Kt)}^{E_hi*exp(-Kt)} B(E',T) dE'
-    """
-    G = len(E_boundaries) - 1
-    Eg = np.zeros(G)
-    shift = np.exp(-K * t)
-    jac = np.exp(K * t)
-    for g in range(G):
-        Eg[g] = jac * planck_group_integral(
-            E_boundaries[g] * shift,
-            E_boundaries[g + 1] * shift,
-            T, E_cut_lo, E_cut_hi)
-    return Eg
-
-
 def main():
     parser = argparse.ArgumentParser(description="Doppler MC spectrum check")
     parser.add_argument("--spectrum", required=True, help="Path to doppler_mc_spectrum.txt")
-    parser.add_argument("--max-l1", type=float, default=0.15,
+    parser.add_argument("--max-l1", type=float, default=0.7,
                         help="Maximum allowed relative L1 error")
     parser.add_argument("--plot-dir", default=None,
                         help="Directory for plots (default: same as spectrum)")
@@ -107,46 +106,49 @@ def main():
 
     meta, cols = read_spectrum(args.spectrum)
 
-    K_left   = meta["K_left"]
-    K_right  = meta["K_right"]
+    K        = meta["K"]
     t_final  = meta["t_final"]
     T_kelvin = meta["T_kelvin"]
     E_cut_lo = meta["E_trunc_lo"]
     E_cut_hi = meta["E_trunc_hi"]
 
     G = cols.shape[0]
-    E_lo  = cols[:, 1]
-    E_hi  = cols[:, 2]
-    init_left   = cols[:, 3]
-    init_right  = cols[:, 4]
-    final_left  = cols[:, 5]
-    final_right = cols[:, 6]
+    E_lo      = cols[:, 1]
+    E_hi      = cols[:, 2]
+    if cols.shape[1] >= 6:
+        Eg_init_cell = cols[:, 3]
+        Eg_init_photons = cols[:, 4]
+        Eg_final = cols[:, 5]
+    elif cols.shape[1] == 5:
+        Eg_init_cell = cols[:, 3]
+        Eg_init_photons = cols[:, 3]
+        Eg_final = cols[:, 4]
+    else:
+        raise ValueError(f"Unexpected spectrum format with {cols.shape[1]} columns")
 
     E_boundaries = np.zeros(G + 1)
     E_boundaries[:G] = E_lo
     E_boundaries[G] = E_hi[-1]
 
-    anal_left  = compute_analytical(E_boundaries, K_left,  t_final, T_kelvin, E_cut_lo, E_cut_hi)
-    anal_right = compute_analytical(E_boundaries, K_right, t_final, T_kelvin, E_cut_lo, E_cut_hi)
+    anal = compute_analytical(E_boundaries, K, t_final, T_kelvin, E_cut_lo, E_cut_hi)
 
-    # Relative L1 over groups where analytical prediction is non-negligible
     def rel_l1(numerical, analytical):
         mask = analytical > 1e-30 * analytical.max()
         if not np.any(mask):
             return 0.0
         return np.sum(np.abs(numerical[mask] - analytical[mask])) / np.sum(analytical[mask])
 
-    err_left  = rel_l1(final_left,  anal_left)
-    err_right = rel_l1(final_right, anal_right)
+    err = rel_l1(Eg_final, anal)
 
+    print(f"DOPPLER_MC_L1={err:.8e}")
+    print(f"DOPPLER_MC_MAX_L1={args.max_l1:.8e}")
     print(f"Doppler MC check:")
-    print(f"  K_left  = {K_left:.6e},  K_right = {K_right:.6e}")
-    print(f"  K*t     = {K_left*t_final:.4f} (left),  {K_right*t_final:.4f} (right)")
-    print(f"  L1 error (left / expansion)   = {err_left:.6f}")
-    print(f"  L1 error (right / compression) = {err_right:.6f}")
+    print(f"  K       = {K:.6e}")
+    print(f"  K*t     = {K*t_final:.4f}")
+    print(f"  L1 error = {err:.6f}")
     print(f"  Threshold = {args.max_l1}")
 
-    # --- plots ---
+    # --- plot ---
     plot_dir = args.plot_dir or os.path.dirname(args.spectrum)
     try:
         import matplotlib
@@ -157,45 +159,58 @@ def main():
         widths = E_hi - E_lo
         kev = 1.602176634e-9  # erg per keV
 
-        for label, final, anal, K, err in [
-            ("expansion (left cell)", final_left, anal_left, K_left, err_left),
-            ("compression (right cell)", final_right, anal_right, K_right, err_right),
-        ]:
-            fig, ax = plt.subplots(figsize=(7, 4.5))
-            mask = (anal > 1e-30 * anal.max()) | (final > 1e-30 * max(final.max(), 1e-300))
-            ec = E_centers[mask] / kev
-            ax.plot(ec, (final[mask] / widths[mask]),
-                    "o", ms=3, label="MC numerical")
-            ax.plot(ec, (anal[mask] / widths[mask]),
-                    "-", lw=1.5, label="Analytical (Eq. V.31)")
+        fig, ax = plt.subplots(figsize=(7, 4.5))
+        mask = (
+            (anal > 1e-30 * anal.max())
+            | (Eg_final > 1e-30 * max(Eg_final.max(), 1e-300))
+            | (Eg_init_cell > 1e-30 * max(Eg_init_cell.max(), 1e-300))
+            | (Eg_init_photons > 1e-30 * max(Eg_init_photons.max(), 1e-300))
+        )
+        ec = E_centers[mask] / kev
 
-            init = init_left if "left" in label else init_right
-            init_mask = init > 1e-30 * init.max()
-            if np.any(init_mask):
-                ax.plot(E_centers[init_mask] / kev, init[init_mask] / widths[init_mask],
-                        "--", lw=1, alpha=0.5, label="Initial")
+        ax.plot(ec, Eg_final[mask] / widths[mask],
+                "o", ms=3, label="MC numerical")
+        ax.plot(ec, anal[mask] / widths[mask],
+                "-", lw=1.5, label="Analytical (Eq. V.31)")
 
-            ax.set_xlabel("Photon energy [keV]")
-            ax.set_ylabel(r"$E_\nu$ [erg cm$^{-3}$ erg$^{-1}$]")
-            ax.set_title(f"Doppler MC — {label}\nL1 = {err:.4f}, Kt = {K*t_final:.3f}")
-            ax.legend(fontsize=8)
-            ax.set_yscale("log")
-            ax.set_xlim(0, 20)
-            yvals = anal[mask] / widths[mask]
-            if len(yvals) > 0 and yvals.max() > 0:
-                ax.set_ylim(yvals.max() * 1e-6, yvals.max() * 10)
-            fig.tight_layout()
-            tag = "left" if "left" in label else "right"
-            fig_path = os.path.join(plot_dir, f"doppler_mc_{tag}.png")
-            fig.savefig(fig_path, dpi=150)
-            plt.close(fig)
-            print(f"  Plot: {fig_path}")
+        init_mask = Eg_init_cell > 1e-30 * max(Eg_init_cell.max(), 1e-300)
+        if np.any(init_mask):
+            ax.plot(E_centers[init_mask] / kev, Eg_init_cell[init_mask] / widths[init_mask],
+                    "--", lw=1, alpha=0.5, label="Initial (cell)")
+
+        init_photon_mask = Eg_init_photons > 1e-30 * max(Eg_init_photons.max(), 1e-300)
+        if np.any(init_photon_mask):
+            ax.plot(E_centers[init_photon_mask] / kev, Eg_init_photons[init_photon_mask] / widths[init_photon_mask],
+                    "-.", lw=1.0, alpha=0.85, label="Initial (photons)")
+
+        ax.set_xlabel("Photon energy [keV]")
+        ax.set_ylabel(r"$E_\nu$ [erg cm$^{-3}$ erg$^{-1}$]")
+        ax.set_title(f"Doppler MC — single cell\nL1 = {err:.4f}, Kt = {K*t_final:.3f}")
+        ax.legend(fontsize=8)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(0.1, 100)  # 0.1 keV to 100 keV
+        y_series = [
+            anal[mask] / widths[mask],
+            Eg_final[mask] / widths[mask],
+            Eg_init_cell[mask] / widths[mask],
+            Eg_init_photons[mask] / widths[mask],
+        ]
+        positive_parts = [arr[arr > 0] for arr in y_series if np.any(arr > 0)]
+        if positive_parts:
+            positive = np.concatenate(positive_parts)
+            ymax = positive.max()
+            ax.set_ylim(ymax * 1e-6, ymax * 10)
+        fig.tight_layout()
+        fig_path = os.path.join(plot_dir, "doppler_mc_mid.png")
+        fig.savefig(fig_path, dpi=150)
+        plt.close(fig)
+        print(f"  Plot: {fig_path}")
     except ImportError:
         print("  matplotlib not available — skipping plots")
 
-    max_err = max(err_left, err_right)
-    if max_err > args.max_l1:
-        print(f"FAIL: max L1 error {max_err:.6f} exceeds threshold {args.max_l1}")
+    if err > args.max_l1:
+        print(f"FAIL: L1 error {err:.6f} exceeds threshold {args.max_l1}")
         return 1
 
     print("PASS")

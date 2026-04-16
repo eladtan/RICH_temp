@@ -942,6 +942,207 @@ TESTS = [
         "plot_caption": "",
     },
     {
+        "id": "doppler_mc",
+        "title": "Doppler MC Frequency Shift (Single Cell, Velocity-Gradient Opacity)",
+        "description": (
+            "Doppler frequency shift of a truncated Planck photon spectrum in a "
+            "single-cell slab. A custom \\texttt{VelocityGradientOpacity} class "
+            "mimics a linear velocity gradient $v(x) = v_0 x / L$ by computing a "
+            "position-dependent virtual velocity at each scatter event and performing "
+            "Lorentz transforms internally. The cell itself has zero velocity. "
+            "Photons undergo pure scattering (no absorption or emission) and the "
+            "resulting spectral shift is compared to the analytical adiabatic "
+            "prediction from Eq.~V.31 of Giron et al.\\ (2026, arXiv:2601.05120).\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Doppler shift:} Verifies that Lorentz boosts during "
+            "scattering events produce the correct first-order frequency shift.\n"
+            "  \\item \\textbf{Multigroup MC:} Exercises the 100-group IMC solver "
+            "with frequency-dependent photon tracking.\n"
+            "  \\item \\textbf{Opacity-driven transforms:} Validates that the opacity "
+            "class can perform position-dependent Lorentz transforms at scatter events.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"1 cell, $x \in [0,\,50]$~cm, cell velocity zero, opacity mimics "
+            r"$v(x) = 2.5 \times 10^8\, x / 50$~cm/s, "
+            r"$\kappa_s = 40$~cm$^{-1}$, energy groups spanning 100~eV to 100~keV, "
+            r"$T = 1$~keV, $\rho = 1$~g/cm$^3$, truncated Planck spectrum "
+            r"$[1.12,\,8.12]$~keV, $t_{\mathrm{end}} = 2 \times 10^{-8}$~s, "
+            r"$\Delta t = 4 \times 10^{-10}$~s, $10^5$ photons seeded at left boundary."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics (noHydroFeedback), random walk disabled.",
+        "execution": "Serial (local).",
+        "pass_criteria": (
+            r"Relative $L_1$ error of the spectrum compared to the "
+            r"analytical adiabatic shift must be $\le 0.7$."
+        ),
+        "plots": ["doppler_mc_mid.png"],
+        "plot_caption": (
+            "Doppler MC single-cell spectrum: MC numerical (circles) vs.\\ "
+            "analytical adiabatic prediction (solid line), cell-averaged initial spectrum (dashed), "
+            "and the actually seeded photon histogram (dash-dot)."
+        ),
+    },
+    {
+        "id": "doppler_scatter_mc",
+        "title": "Doppler Scatter Benchmark (Homologous Flow, MC vs.\\ Diffusion)",
+        "description": (
+            "Scattering-only Doppler benchmark in a homologous flow. "
+            "A truncated Planck spectrum ($k_B T = 1$~keV, $0.5$--$3.0$~keV) is "
+            "injected from the left boundary of a 1D slab with linear velocity "
+            "$v(x) = Hx$, $H = 3 \\times 10^{-2}$~s$^{-1}$, through a purely "
+            "scattering medium ($\\kappa_s = 3 \\times 10^{-8}$~cm$^{-1}$, "
+            "$\\tau = 300$). The emergent comoving-frame spectrum at the right "
+            "boundary is measured by Monte Carlo and by multigroup diffusion "
+            "(with Doppler terms enabled), and the two are compared.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Doppler shift through scattering:} Verifies that "
+            "coherent isotropic scattering in the fluid frame plus Lorentz boosts "
+            "produces the correct frequency redistribution in a moving medium.\n"
+            "  \\item \\textbf{Boundary injection:} Exercises the boundary-source "
+            "pathway with Lambert cosine-law angular distribution and truncated "
+            "Planck frequency sampling.\n"
+            "  \\item \\textbf{MC--diffusion cross-validation:} Compares the Monte "
+            "Carlo emergent spectrum with the multigroup diffusion solver (Doppler "
+            "terms on) to verify consistency between the two radiation transport "
+            "methods.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"64 cells, $x \in [0,\,10^{10}]$~cm, $v(x) = 3 \times 10^{-2} x$~cm/s, "
+            r"$\kappa_s = 3 \times 10^{-8}$~cm$^{-1}$, $\tau = 300$, "
+            r"100 energy groups (100~eV to 100~keV), "
+            r"$k_B T_{\mathrm{src}} = 1$~keV, truncated Planck $[0.5,\,3.0]$~keV, "
+            r"$10^6$ injected packets from the left boundary."
+        ),
+        "boundary_conditions": (
+            "Left: Planck source at $T_{\\mathrm{src}}$, Lambert cosine-law "
+            "angular distribution $p(\\mu) = 2\\mu$. "
+            "Right: transparent (free escape). "
+            "Transverse (y,z): closed."
+        ),
+        "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics (noHydroFeedback).",
+        "execution": "MPI, 64~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Relative $L_1$ error between the MC comoving-frame emergent spectrum "
+            r"and the multigroup diffusion right-cell spectrum must be $\le 0.3$."
+        ),
+        "plots": ["doppler_scatter_comparison.png"],
+        "plot_caption": (
+            "Doppler scatter benchmark: MC emergent comoving spectrum (circles) vs.\\ "
+            "multigroup diffusion right-cell spectrum (solid line)."
+        ),
+    },
+    {
+        "id": "moving_slab_mc",
+        "title": "Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)",
+        "description": (
+            "Frequency-dependent moving slab benchmark from McClarren \\& Gentile "
+            "(2021), original vacuum variant. A slab of aluminum "
+            "($\\rho = 0.1$~g/cm$^3$, $L = 0.4$~cm, $T = 1$~keV) moves at "
+            "$v = 0.5994$~cm/ns ($\\approx 2\\%$ of $c$) toward a stationary "
+            "observer at $z_O = 12$~cm. The 124-group opacity table from the "
+            "2026 paper is used. At $t_O = 10$~ns the per-group radiation energy "
+            "density spectrum at the observer is compared to the semi-analytic "
+            "solution.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Material motion corrections:} Doppler shift and "
+            "relativistic path-length modification $L/(\\mu - \\beta)$.\n"
+            "  \\item \\textbf{Lagrangian mesh rebuild:} Manual mesh point "
+            "translation and Voronoi rebuild each time step.\n"
+            "  \\item \\textbf{Multigroup opacity:} 124-group frequency-dependent "
+            "absorption with thermal emission.\n"
+            "  \\item \\textbf{Transparent boundary tally:} Tallying escaping "
+            "photons at the observer plane.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"80 mesh points (20 slab + 60 vacuum), $x \in [0,\,12.1]$~cm, "
+            r"$\rho_{\mathrm{slab}} = 0.1$~g/cm$^3$, "
+            r"$T_{\mathrm{slab}} = 1$~keV, $v_{\mathrm{slab}} = 0.5994$~cm/ns, "
+            r"124 energy groups from 1~eV to 30~keV, "
+            r"$t_O = 10$~ns, adaptive $\Delta t$ from $10^{-3}$ to $0.1$~ns."
+        ),
+        "boundary_conditions": (
+            "Left: rigid (reflective). Right: transparent (photon tally at "
+            "$x = z_O$). Transverse (y,z): rigid."
+        ),
+        "mesh_movement": (
+            "Manual Lagrangian rebuild: slab mesh points translate at "
+            "$v_{\\mathrm{slab}}$ each step, vacuum points fixed, "
+            "Voronoi rebuilt, cell properties re-prescribed analytically."
+        ),
+        "execution": "Serial (local).",
+        "pass_criteria": (
+            r"Energy-weighted fractional error (Eq.~20 of the 2026 paper) "
+            r"must be $\le 0.30$."
+        ),
+        "plots": ["moving_slab_mc_comparison.png"],
+        "plot_caption": (
+            "Moving slab MC benchmark: MC simulation (circles) vs.\\ "
+            "semi-analytic solution (solid line). Log-log plot of per-group "
+            "radiation energy density."
+        ),
+    },
+    {
+        "id": "moving_slab_mc_32",
+        "title": "Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)",
+        "description": (
+            "32-group variant of the frequency-dependent moving slab benchmark "
+            "from McClarren \\& Gentile (2021), original vacuum variant. The "
+            "124-group aluminum opacity table is collapsed to 32 log-spaced "
+            "groups over [1~eV, 30~keV] using Planck weighting at $T = 1$~keV. "
+            "A slab of aluminum ($\\rho = 0.1$~g/cm$^3$, $L = 0.4$~cm, "
+            "$T = 1$~keV) moves at $v = 0.5994$~cm/ns ($\\approx 2\\%$ of $c$) "
+            "toward a stationary observer at $z_O = 12$~cm. At $t_O = 10$~ns "
+            "the per-group radiation energy density spectrum at the observer is "
+            "compared to the semi-analytic solution computed with the same "
+            "collapsed opacity.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Multigroup collapse:} Planck-weighted 124$\\to$32 "
+            "group opacity collapse.\n"
+            "  \\item \\textbf{Material motion corrections:} Doppler shift and "
+            "relativistic path-length modification.\n"
+            "  \\item \\textbf{Lagrangian mesh rebuild:} Manual mesh point "
+            "translation and Voronoi rebuild each time step.\n"
+            "  \\item \\textbf{Transparent boundary tally:} Tallying escaping "
+            "photons at the observer plane.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"80 mesh points (20 slab + 60 vacuum), $x \in [0,\,12.1]$~cm, "
+            r"$\rho_{\mathrm{slab}} = 0.1$~g/cm$^3$, "
+            r"$T_{\mathrm{slab}} = 1$~keV, $v_{\mathrm{slab}} = 0.5994$~cm/ns, "
+            r"32 energy groups (collapsed from 124) from 1~eV to 30~keV, "
+            r"$t_O = 10$~ns, adaptive $\Delta t$ from $10^{-3}$ to $0.1$~ns."
+        ),
+        "boundary_conditions": (
+            "Left: rigid (reflective). Right: transparent (photon tally at "
+            "$x = z_O$). Transverse (y,z): rigid."
+        ),
+        "mesh_movement": (
+            "Manual Lagrangian rebuild: slab mesh points translate at "
+            "$v_{\\mathrm{slab}}$ each step, vacuum points fixed, "
+            "Voronoi rebuilt, cell properties re-prescribed analytically."
+        ),
+        "execution": "Serial (local).",
+        "pass_criteria": (
+            r"Energy-weighted fractional error (Eq.~20 of the 2026 paper) "
+            r"must be $\le 0.30$."
+        ),
+        "plots": ["moving_slab_mc_32_comparison.png"],
+        "plot_caption": (
+            "Moving slab MC 32-group benchmark: MC simulation (circles) vs.\\ "
+            "semi-analytic solution (solid line). Log-log plot of per-group "
+            "radiation energy density using collapsed 32-group opacity."
+        ),
+    },
+    {
         "id": "yee_vortex_64",
         "title": "Yee Isentropic Vortex (64$\\times$64, Lagrangian)",
         "description": (
@@ -1711,6 +1912,60 @@ def _read_desmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
+def _read_doppler_mc_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "doppler_mc" / "doppler_mc_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("DOPPLER_MC_L1")
+    if val is not None:
+        passed = float(val) <= 0.15
+        rows.append(("Spectrum rel. $L_1$", val, "0.15", passed))
+    return rows
+
+
+def _read_doppler_scatter_mc_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "doppler_scatter_mc" / "doppler_scatter_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("DOPPLER_SCATTER_L1")
+    if val is not None:
+        passed = float(val) <= 0.3
+        rows.append(("MC--diffusion rel. $L_1$", val, "0.3", passed))
+    return rows
+
+
+def _read_moving_slab_mc_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "moving_slab_mc" / "moving_slab_mc_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("MOVING_SLAB_MC_FERROR")
+    if val is not None:
+        passed = float(val) <= 0.30
+        rows.append(("Energy-weighted $f$-error", val, "0.30", passed))
+    val_l1 = kv.get("MOVING_SLAB_MC_L1")
+    if val_l1 is not None:
+        rows.append(("Rel. $L_1$", val_l1, "--", True))
+    return rows
+
+
+def _read_moving_slab_mc_32_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "moving_slab_mc_32" / "moving_slab_mc_32_check.stdout.log")
+    if not kv:
+        return []
+    rows = []
+    val = kv.get("MOVING_SLAB_MC_32_FERROR")
+    if val is not None:
+        passed = float(val) <= 0.30
+        rows.append(("Energy-weighted $f$-error", val, "0.30", passed))
+    val_l1 = kv.get("MOVING_SLAB_MC_32_L1")
+    if val_l1 is not None:
+        rows.append(("Rel. $L_1$", val_l1, "--", True))
+    return rows
+
+
 def _read_yee_vortex_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
     kv = _parse_kv_equals(cases_dir / test_id / "vortex_check.stdout.log")
     if not kv:
@@ -1877,6 +2132,10 @@ METRIC_READERS: dict[str, object] = {
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
     "desmore2012_mc_serial": lambda cd: _read_desmore2012_mc_serial_metrics(cd),
+    "doppler_mc": lambda cd: _read_doppler_mc_metrics(cd),
+    "doppler_scatter_mc": lambda cd: _read_doppler_scatter_mc_metrics(cd),
+    "moving_slab_mc": lambda cd: _read_moving_slab_mc_metrics(cd),
+    "moving_slab_mc_32": lambda cd: _read_moving_slab_mc_32_metrics(cd),
     "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
     "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
     "cartesian_gauss_linear": lambda cd: _read_cartesian_gauss_linear_metrics(cd),
@@ -2298,6 +2557,10 @@ def _summary_table() -> str:
         ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
         ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
         ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
+        ("Doppler MC", "MPI", "16", "Eulerian", "Yes"),
+        ("Doppler Scatter (MC vs Diff)", "MPI", "64", "Eulerian", "Yes"),
+        ("Moving Slab MC", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
+        ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
         ("Yee Vortex ($64^2$)", "MPI", "8", "Lagrangian", "Yes"),
         ("Yee Vortex ($128^2$)", "MPI", "16", "Lagrangian", "No"),
         ("Cartesian LSQ Gradient", "Serial", "1", "Static", "No"),

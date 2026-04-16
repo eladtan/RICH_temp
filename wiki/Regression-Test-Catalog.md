@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 22 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 23 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -543,7 +543,164 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 
 ---
 
-## 17. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
+## 17. doppler_mc -- Doppler MC Frequency Shift (Single Cell, Velocity-Gradient Opacity)
+
+**Tags:** (none -- serial)
+
+### Physics
+Doppler frequency shift of a truncated Planck photon spectrum in a single-cell slab. A custom `VelocityGradientOpacity` class mimics a linear velocity gradient v(x) = v0 * x / width by computing a position-dependent virtual velocity at each scatter event and performing Lorentz transforms internally. The cell itself has zero velocity. Photons undergo pure scattering (no absorption/emission) and the resulting spectral shift is compared to the analytical adiabatic prediction from Eq. V.31 of arXiv:2601.05120.
+
+### Configuration
+- **Mesh:** 1 Eulerian cell, x in [0, 50] cm (optically thick, tau = 2000)
+- **EOS:** Ideal gas (irrelevant, no hydro feedback)
+- **Radiation:** 100-group IMC, energy groups from 100 eV to 100 keV, scattering opacity 40 cm^-1, no absorption
+- **Velocity:** Cell velocity = 0; opacity mimics linear gradient v0 = 2.5e8 cm/s at x = 50 cm (div(v) = 5e6 s^-1)
+- **Runtime:** 50 steps, dt = 4e-10 s (t_final = 2e-8 s)
+- **Photons:** 1e5 seeded at left boundary (x ~ 0) with Lambert cosine law and truncated Planck [1.12, 8.12] keV
+- **Execution:** Serial (local)
+- **Build flags:** `--energy_groups_num=100`
+
+### Output
+- `doppler_mc_spectrum.txt` -- initial cell spectrum, initial photon histogram, and final group energy densities
+- `doppler_mc_mid.png` -- comparison plot with analytical, initial-cell, and initial-photon spectra
+
+### Pass Criteria
+| Metric | Threshold | Override variable |
+|--------|-----------|-------------------|
+| Spectrum relative L1 | <= 0.7 | `DOPPLER_MC_MAX_L1` |
+
+---
+
+## 17b. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
+
+**Tags:** `mpi`
+
+### Physics
+Scattering-only Doppler benchmark in a homologous flow. A truncated Planck spectrum (kBT = 1 keV, 0.5--3.0 keV) is injected from the left boundary of a 1D slab with linear velocity v(x) = Hx (H = 3e-2 s^-1), through a purely scattering medium (kappa_sca = 3e-8 cm^-1, tau = 300). The emergent comoving-frame spectrum at the right boundary is measured by Monte Carlo and by multigroup diffusion (with Doppler terms enabled), and the two are compared.
+
+### Configuration
+- **Mesh:** 64 Eulerian cells, x in [0, 1e10] cm
+- **EOS:** Ideal gas (irrelevant, no hydro feedback)
+- **Radiation (MC):** 100-group IMC, energy groups from 100 eV to 100 keV, scattering opacity 3e-8 cm^-1, no absorption
+- **Radiation (Diffusion):** MultigroupDiffusion with Doppler on, flux limiter, same opacity
+- **Velocity:** Homologous gradient, v(x) = Hx, H = 3e-2 s^-1, v(L) = 3e8 cm/s = 0.01c
+- **Source:** 10^6 packets from left boundary, truncated Planck 0.5--3.0 keV at kBT = 1 keV, angular distribution p(mu) = 2*mu
+- **Execution:** MPI, 64 ranks, SLURM (bigrun, exclusive)
+- **Build flags:** `--energy_groups_num=100`
+
+### Output
+- `doppler_scatter_spectrum.txt` -- normalised MC and diffusion comoving-frame emergent spectra at x=L
+- `doppler_scatter_comparison.png` -- comparison plot of MC vs diffusion spectra
+
+### Pass Criteria
+| Metric | Threshold | Override variable |
+|--------|-----------|-------------------|
+| MC-vs-diffusion relative L1 | <= 0.3 | `DOPPLER_SCATTER_MC_MAX_L1` |
+
+---
+
+## 17c. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
+
+**Tags:** `serial`
+
+### Physics
+
+Frequency-dependent moving slab benchmark from McClarren & Gentile (2021), original vacuum variant. A slab of aluminum (rho=0.1 g/cm^3, L=0.4 cm, T=1 keV) moves at v=0.5994 cm/ns (~2% of c) toward a stationary observer at z_O=12 cm. The 124-group opacity table from the 2026 paper is used. At t_O=10 ns the per-group radiation energy density spectrum at the observer is compared to the semi-analytic solution.
+
+This test verifies material motion corrections (Doppler shift + relativistic path-length modification), manual Lagrangian mesh rebuild, multigroup frequency-dependent absorption with thermal emission, and transparent boundary tally.
+
+**Governing equations:** Radiative transfer (IMC Monte Carlo) with frequency-dependent opacity and material motion.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Domain | [0, 12.1] cm in x, thin y,z |
+| Mesh points | 80 (20 slab + 60 vacuum) |
+| EOS | Ideal gas (irrelevant, noHydroFeedback) |
+| Slab properties | rho=0.1 g/cm^3, T=1 keV, v=0.5994 cm/ns |
+| Vacuum properties | rho~0, T~0, v=0 |
+| Energy groups | 124 (aluminum table, 1 eV to 30 keV) |
+| Time stepping | Adaptive, dt from 1e-3 ns to 0.1 ns, ramp 1.1x |
+| End time | t_O = 10 ns |
+| Mesh motion | Manual Lagrangian rebuild each step |
+| Radiation | IMC, withHydro=true, MMC=false, noHydroFeedback=true |
+
+**Source:** `regression_tests/cases/moving_slab_mc/test.cpp`
+
+### Output
+
+`moving_slab_mc_spectrum.txt` -- per-group raw weight sums from transparent boundary tally
+
+### Validation
+
+Compared against the semi-analytic solution computed by `regression_tests/moving_slab_benchmark.py` (original_vacuum variant). The Python checker `regression_tests/lib/check_moving_slab_mc.py` converts raw tally data to E_rad (GJ/cm^3/keV) and computes the energy-weighted fractional error (Eq. 20 of the 2026 paper).
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Energy-weighted f-error | <= 0.30 | `MOVING_SLAB_MC_MAX_FERROR` |
+
+### References
+
+- McClarren, R. G. & Gentile, N. A. (2021). "Frequency-Dependent Material Motion Benchmarks for Radiative Transfer."
+- Gentile, N. A. & McClarren, R. G. (2026). "A Modified Frequency-Dependent Material Motion Benchmark for Thermal Radiative Transfer."
+
+---
+
+## 17d. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
+
+**Tags:** `serial`
+
+### Physics
+
+32-group variant of the frequency-dependent moving slab benchmark from McClarren & Gentile (2021), original vacuum variant. The 124-group aluminum opacity table is collapsed to 32 log-spaced groups over [1 eV, 30 keV] using Planck weighting at T=1 keV. A slab of aluminum (rho=0.1 g/cm^3, L=0.4 cm, T=1 keV) moves at v=0.5994 cm/ns (~2% of c) toward a stationary observer at z_O=12 cm. At t_O=10 ns the per-group radiation energy density spectrum at the observer is compared to the semi-analytic solution computed with the same collapsed opacity.
+
+This test verifies Planck-weighted multigroup collapse (124->32), material motion corrections, manual Lagrangian mesh rebuild, and transparent boundary tally with coarser energy resolution.
+
+**Governing equations:** Radiative transfer (IMC Monte Carlo) with frequency-dependent opacity and material motion.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Domain | [0, 12.1] cm in x, thin y,z |
+| Mesh points | 80 (20 slab + 60 vacuum) |
+| EOS | Ideal gas (irrelevant, noHydroFeedback) |
+| Slab properties | rho=0.1 g/cm^3, T=1 keV, v=0.5994 cm/ns |
+| Vacuum properties | rho~0, T~0, v=0 |
+| Energy groups | 32 (collapsed from 124-group aluminum table, Planck-weighted at 1 keV) |
+| newPhotonsPerCell | 10000 |
+| Time stepping | Adaptive, dt from 1e-3 ns to 0.1 ns, ramp 1.1x |
+| End time | t_O = 10 ns |
+| Mesh motion | Manual Lagrangian rebuild each step |
+| Radiation | IMC, withHydro=true, MMC=false, noHydroFeedback=true |
+
+**Source:** `regression_tests/cases/moving_slab_mc_32/test.cpp`
+
+### Output
+
+`moving_slab_mc_32_spectrum.txt` -- per-group collapsed opacities and time-averaged radiation energy density from transparent boundary tally
+
+### Validation
+
+Compared against the semi-analytic solution computed by `regression_tests/moving_slab_benchmark.py` (original_vacuum variant) using the same 32-group collapsed opacity. The Python checker `regression_tests/lib/check_moving_slab_mc_32.py` performs the collapse, converts raw tally data to E_rad (GJ/cm^3/keV) and computes the energy-weighted fractional error (Eq. 20 of the 2026 paper).
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| Energy-weighted f-error | <= 0.30 | `MOVING_SLAB_MC_32_MAX_FERROR` |
+
+### References
+
+- McClarren, R. G. & Gentile, N. A. (2021). "Frequency-Dependent Material Motion Benchmarks for Radiative Transfer."
+- Gentile, N. A. & McClarren, R. G. (2026). "A Modified Frequency-Dependent Material Motion Benchmark for Thermal Radiative Transfer."
+
+---
+
+## 18. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -592,7 +749,7 @@ The Python checker `regression_tests/lib/check_yee_vortex.py` computes the volum
 
 ---
 
-## 18. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
+## 19. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -627,7 +784,7 @@ Same as `yee_vortex_64`.
 
 ---
 
-## 19. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+## 20. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -652,7 +809,7 @@ Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D 
 
 ---
 
-## 20. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+## 21. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -676,7 +833,7 @@ Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mo
 
 ---
 
-## 21. spherical_collapse -- Spherical Collapse Symmetry
+## 22. spherical_collapse -- Spherical Collapse Symmetry
 
 **Tags:** `mpi`
 
@@ -708,7 +865,7 @@ A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Te
 
 ---
 
-## 22. spherical_collapse_hires -- Spherical Collapse (High Resolution)
+## 23. spherical_collapse_hires -- Spherical Collapse (High Resolution)
 
 **Tags:** `mpi`
 
@@ -741,7 +898,7 @@ High-resolution companion to `spherical_collapse`. Uses the same physics and set
 
 ---
 
-## 23. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+## 24. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
 
 **Tags:** `mpi`
 
@@ -778,7 +935,7 @@ The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the
 
 ---
 
-## 24. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+## 25. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -807,7 +964,7 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 25. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+## 26. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -906,6 +1063,10 @@ E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
+| `doppler_mc` | mpi | MC Doppler shift (32 cells, 100 eV-100 keV groups, no RW) | Analytical adiabatic shift | rel L1 <= 0.15 |
+| `doppler_scatter_mc` | mpi | MC vs diffusion Doppler scatter (tau=300, homologous flow) | MC-diffusion comparison | rel L1 <= 0.3 |
+| `moving_slab_mc` | serial | Freq-dependent moving slab (original vacuum, 124-group) | Semi-analytic solution | f-error <= 0.30 |
+| `moving_slab_mc_32` | serial | Freq-dependent moving slab (original vacuum, 32-group collapsed) | Semi-analytic solution (collapsed) | f-error <= 0.30 |
 | `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
 | `yee_vortex_128` | mpi | Isentropic vortex (128x128) | IC density comparison | L1 <= 0.05 |
 | `cartesian_gauss_linear` | serial | Cartesian interpolation | Exact face values | scalar error < 1e-6 |

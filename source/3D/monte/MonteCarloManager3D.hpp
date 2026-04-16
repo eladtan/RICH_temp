@@ -18,6 +18,8 @@ public:
 
     virtual const std::vector<size_t> &GetCellsStepsCounters(void) const = 0;
 
+    virtual std::vector<size_t> &GetCellsStepsCounters(void) = 0;
+
     virtual std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
 };
 
@@ -31,6 +33,8 @@ public:
                         const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition);
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+
+    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
@@ -51,6 +55,8 @@ public:
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
+    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
@@ -66,6 +72,8 @@ public:
                                 const MPI_Comm &comm = MPI_COMM_WORLD);
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+
+    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };

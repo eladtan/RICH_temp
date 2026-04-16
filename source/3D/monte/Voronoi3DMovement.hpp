@@ -16,6 +16,12 @@
     #include "3D/range/finders/utils/IndexedVector.hpp"
 #endif // RICH_MPI
 
+using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
+
+#ifdef RICH_MPI
+    #include "mpi/MPI_Particle3D_dtype.hpp"
+#endif // RICH_MPI
+
 void AssertLocations(const Tessellation3D &tess, const std::vector<Particle3D> &particles);
 
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs);

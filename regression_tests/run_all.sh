@@ -42,6 +42,99 @@ if [[ ! -d "${TESTS_DIR}" ]]; then
 fi
 source "${CHECKS_SCRIPT}"
 
+# ==================== Recheck helpers ====================
+# Find the newest regression_results/<timestamp>/<test_id>/ that has run logs.
+find_latest_regression_artifact_for_test() {
+    local test_id="$1"
+    local artifact_root="$2"
+    local ts_dir
+
+    if [[ ! -d "$artifact_root" ]]; then
+        return 1
+    fi
+    while IFS= read -r ts_dir; do
+        [[ -n "$ts_dir" ]] || continue
+        local case_dir="${ts_dir}/${test_id}"
+        if [[ -d "$case_dir" && -f "$case_dir/run.stdout.log" && -f "$case_dir/run.stderr.log" ]]; then
+            printf '%s\n' "$case_dir"
+            return 0
+        fi
+    done < <(find "$artifact_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | LC_ALL=C sort -r)
+    return 1
+}
+
+run_recheck_analysis_for_test() {
+    local test_id="$1"
+    local artifact_case
+    local def_file="${TESTS_DIR}/${test_id}.sh"
+    local run_dir_abs
+    local run_stdout
+    local run_stderr
+    local rc_stored
+
+    if ! artifact_case="$(find_latest_regression_artifact_for_test "${test_id}" "${ARTIFACT_ROOT}")"; then
+        echo "No regression artifact for test '${test_id}' under ${ARTIFACT_ROOT}." >&2
+        echo "Expected a timestamped directory containing ${test_id}/run.stdout.log and run.stderr.log." >&2
+        return 1
+    fi
+
+    if [[ ! -f "$def_file" ]]; then
+        echo "Missing test definition: ${def_file}" >&2
+        return 2
+    fi
+
+    local TEST_ID=""
+    local TAGS=""
+    local BUILD_TEST_NAME=""
+    local RUN_DIR_REL=""
+    local RUN_COMMAND=""
+    local CHECK_FUNCTION=""
+    local BUILD_ARGS=""
+    local RUN_MODE=""
+    local SLURM_NTASKS=""
+    local SLURM_PARTITION=""
+    local SLURM_EXCLUSIVE=""
+    local SLURM_NODES=""
+    local SLURM_TIME_LIMIT=""
+
+    # shellcheck source=/dev/null
+    source "${def_file}"
+
+    if [[ -z "${CHECK_FUNCTION}" || -z "${RUN_DIR_REL}" ]]; then
+        echo "Invalid test definition (need CHECK_FUNCTION and RUN_DIR_REL): ${def_file}" >&2
+        return 2
+    fi
+
+    run_dir_abs="${ROOT_DIR}/${RUN_DIR_REL}"
+    if [[ ! -d "$run_dir_abs" ]]; then
+        echo "Run directory does not exist: ${RUN_DIR_REL}" >&2
+        return 2
+    fi
+
+    run_stdout="${artifact_case}/run.stdout.log"
+    run_stderr="${artifact_case}/run.stderr.log"
+
+    if [[ -f "${artifact_case}/run_exit_code.txt" ]]; then
+        rc_stored="$(< "${artifact_case}/run_exit_code.txt")"
+        if [[ "$rc_stored" != "0" ]]; then
+            echo "${ORANGE}Warning: stored run exit code was ${rc_stored} (re-running analysis anyway).${NC}" >&2
+        fi
+    fi
+
+    echo "${BOLD}Recheck analysis for '${test_id}'${NC}"
+    echo "  Artifact:  ${artifact_case}"
+    echo "  Case data: ${run_dir_abs}"
+    echo
+
+    # Second argument is suite start epoch for staleness checks; use 0 to accept existing outputs.
+    if "${CHECK_FUNCTION}" "${run_dir_abs}" "0" "${run_stdout}" "${run_stderr}"; then
+        echo "${GREEN}CHECK PASS: ${REGRESSION_CHECK_MSG}${NC}"
+        return 0
+    fi
+    echo "${RED}CHECK FAIL: ${REGRESSION_CHECK_MSG}${NC}"
+    return 1
+}
+
 # ==================== Defaults ====================
 CONFIG=""
 CONFIG_EXPLICIT=0
@@ -50,6 +143,7 @@ KEEP_ARTIFACTS=0
 VERBOSE=0
 TEST_FILTER=""
 CLEAN_RESULTS=0
+RECHECK_MODE=0
 MODE="all"
 NPROC_OVERRIDE=""
 SLURM_PARTITION_OVERRIDE=""
@@ -92,6 +186,8 @@ Options:
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
   --verbose                Stream run output to terminal as well
+  --recheck                Re-run the CHECK step only for --test, using the newest
+                           regression_results/<timestamp>/<test>/ logs (no build/run)
   -h, --help               Show this help
 
 Modes:
@@ -107,6 +203,7 @@ Examples:
   ./regression_tests/run_all.sh --mode mpi --local
   ./regression_tests/run_all.sh --mode serial_then_mpi
   ./regression_tests/run_all.sh --test sod_1d --config gnuRelease
+  ./regression_tests/run_all.sh --recheck --test moving_slab_mc
   ./regression_tests/run_all.sh --clean-results
 EOF
 }
@@ -155,6 +252,10 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=1
             shift
             ;;
+        --recheck)
+            RECHECK_MODE=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -166,6 +267,27 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# ==================== Recheck-only (no build/run) ====================
+if [[ "${RECHECK_MODE}" -eq 1 ]]; then
+    if [[ "${CLEAN_RESULTS}" -eq 1 ]]; then
+        echo "--recheck cannot be combined with --clean-results" >&2
+        exit 2
+    fi
+    if [[ -z "${TEST_FILTER}" ]]; then
+        echo "--recheck requires --test <id>" >&2
+        exit 2
+    fi
+    if ! echo "${TEST_FILTER}" | grep -qE "^(${VALID_TEST_IDS})$"; then
+        echo "--test must be one of: ${VALID_TEST_IDS//|/, }" >&2
+        exit 2
+    fi
+    if [[ "${RUN_LOCAL}" -eq 1 || "${CONFIG_EXPLICIT}" -eq 1 || -n "${SLURM_PARTITION_OVERRIDE}" || -n "${NPROC_OVERRIDE}" ]]; then
+        echo "${ORANGE}Warning: --recheck ignores build/run options (--config, --local, --partition, --nproc, --mpi-np, --mode).${NC}" >&2
+    fi
+    run_recheck_analysis_for_test "${TEST_FILTER}"
+    exit $?
+fi
 
 # ==================== Validate arguments ====================
 case "${MODE}" in
@@ -365,6 +487,7 @@ declare -a ALL_RUN_MODES=()
 declare -a ALL_SLURM_NTASKS=()
 declare -a ALL_SLURM_PARTITIONS=()
 declare -a ALL_SLURM_EXCLUSIVES=()
+declare -a ALL_SLURM_NODES=()
 declare -a ALL_SLURM_TIME_LIMITS=()
 declare -a ALL_CASE_DIRS=()
 
@@ -382,6 +505,7 @@ load_test_definition() {
     local SLURM_NTASKS="32"
     local SLURM_PARTITION="bigrun"
     local SLURM_EXCLUSIVE="1"
+    local SLURM_NODES=""
     local SLURM_TIME_LIMIT="02:00:00"
 
     source "${def_file}"
@@ -417,6 +541,7 @@ load_test_definition() {
     ALL_SLURM_NTASKS+=("${SLURM_NTASKS}")
     ALL_SLURM_PARTITIONS+=("${SLURM_PARTITION}")
     ALL_SLURM_EXCLUSIVES+=("${SLURM_EXCLUSIVE}")
+    ALL_SLURM_NODES+=("${SLURM_NODES}")
     ALL_SLURM_TIME_LIMITS+=("${SLURM_TIME_LIMIT}")
     ALL_CASE_DIRS+=("${case_dir}")
     return 0
@@ -520,6 +645,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
     slurm_ntasks="${ALL_SLURM_NTASKS[$i]}"
     slurm_partition="${ALL_SLURM_PARTITIONS[$i]}"
     slurm_exclusive="${ALL_SLURM_EXCLUSIVES[$i]}"
+    slurm_nodes="${ALL_SLURM_NODES[$i]}"
     slurm_time_limit="${ALL_SLURM_TIME_LIMITS[$i]}"
     case_dir="${ALL_CASE_DIRS[$i]}"
 
@@ -610,6 +736,9 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             )
             if [[ "${slurm_exclusive}" == "1" ]]; then
                 sbatch_args+=(--exclusive)
+            fi
+            if [[ -n "${slurm_nodes}" ]]; then
+                sbatch_args+=(--nodes="${slurm_nodes}")
             fi
             "${sbatch_args[@]}" || run_rc=$?
         else

@@ -203,6 +203,111 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
         std::cout << "First inaccurate movements sent for " << sentCounter << " particles" << std::endl;
     }
 }
+
+void FirstMovementsDistributed(
+    const Tessellation3D &tess,
+    std::vector<Particle3D> &particles,
+    DistributedOctTree<IndexedVector3D> &distributedOctTree)
+{
+    if(distributedOctTree.getOctTree() == nullptr)
+    {
+        FirstInaccurateMovements(tess, particles);
+        return;
+    }
+
+    rank_t rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    std::vector<Particle3D> newParticles;
+    std::vector<Serializer> senders(size);
+    size_t sentCounter = 0;
+    size_t localN = tess.GetPointNo();
+
+    // Gather all mesh points globally for nearest-point routing (Voronoi property)
+    int localCount = static_cast<int>(localN);
+    std::vector<int> allCounts(size);
+    MPI_Allgather(&localCount, 1, MPI_INT, allCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    int totalPoints = 0;
+    std::vector<int> displacements(size);
+    for(rank_t r = 0; r < size; r++)
+    {
+        displacements[r] = totalPoints * 3;
+        totalPoints += allCounts[r];
+        allCounts[r] *= 3;
+    }
+
+    std::vector<double> localMeshPts(localN * 3);
+    for(size_t i = 0; i < localN; i++)
+    {
+        const Vector3D &pt = tess.GetMeshPoint(i);
+        localMeshPts[i * 3]     = pt.x;
+        localMeshPts[i * 3 + 1] = pt.y;
+        localMeshPts[i * 3 + 2] = pt.z;
+    }
+
+    std::vector<double> allMeshPts(totalPoints * 3);
+    MPI_Allgatherv(localMeshPts.data(), static_cast<int>(localN * 3), MPI_DOUBLE,
+                   allMeshPts.data(), allCounts.data(), displacements.data(), MPI_DOUBLE, MPI_COMM_WORLD);
+
+    // Build rank lookup: for each global mesh point index, which rank owns it
+    std::vector<rank_t> pointRank(totalPoints);
+    {
+        int idx = 0;
+        for(rank_t r = 0; r < size; r++)
+        {
+            int n = allCounts[r] / 3;
+            for(int j = 0; j < n; j++)
+                pointRank[idx++] = r;
+        }
+    }
+
+    // Route each particle to the rank owning its nearest mesh point
+    for(Particle3D &p : particles)
+    {
+        rank_t target = rank;
+        double bestDist2 = std::numeric_limits<double>::max();
+        for(int i = 0; i < totalPoints; i++)
+        {
+            double dx = p.location.x - allMeshPts[i * 3];
+            double dy = p.location.y - allMeshPts[i * 3 + 1];
+            double dz = p.location.z - allMeshPts[i * 3 + 2];
+            double d2 = dx * dx + dy * dy + dz * dz;
+            if(d2 < bestDist2)
+            {
+                bestDist2 = d2;
+                target = pointRank[i];
+            }
+        }
+        if(target == rank)
+        {
+            newParticles.push_back(p);
+        }
+        else
+        {
+            senders[target].insert(p);
+            sentCounter++;
+        }
+    }
+
+    particles.clear();
+    particles.shrink_to_fit();
+
+    std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
+
+    for(rank_t r = 0; r < size; r++)
+    {
+        newParticles.insert(newParticles.end(), receiveValues[r].cbegin(), receiveValues[r].cend());
+    }
+    particles = std::move(newParticles);
+
+    MPI_Allreduce(MPI_IN_PLACE, &sentCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if(rank == 0)
+    {
+        std::cout << "First distributed movements sent for " << sentCounter << " particles" << std::endl;
+    }
+}
 #endif // RICH_MPI
 
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs)
@@ -307,7 +412,7 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         {
             avgCellSize = abs(tess_ur - tess_ll);
         }
-        double initialRadius = avgCellSize;
+        double initialRadius = avgCellSize * RADIUSES_FACTOR;
 
         boost::container::flat_set<size_t> particlesLeft;
         std::vector<Particle3D> myParticles;
@@ -373,7 +478,7 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             std::cout << "Number of particles left to determination: " << numParticlesLeft << std::endl;
         }
 
-        FirstInaccurateMovements(tess, shouldExchangeParticles);
+        FirstMovementsDistributed(tess, shouldExchangeParticles, distributedOctTree);
 
         std::vector<Particle3D> newParticles = std::move(myParticles);
 
@@ -423,7 +528,6 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
             {
                 break;
             }
-
             for(rank_t _rank = 0; _rank < size; _rank++)
             {
                 sendValues[_rank].clear();
@@ -466,7 +570,6 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
                     radiuses[i] *= RADIUSES_FACTOR;
                 }
             }
-
             std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all(sendValues, MPI_COMM_WORLD);
             assert(receiveValues.size() == size);
 

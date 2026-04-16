@@ -209,6 +209,10 @@ The suite builds and validates these regression cases:
 | `gresho_lagrangian` | mpi | Gresho vortex with Lagrangian + RoundCells mesh, t_end=5 (Slurm, 8 tasks) |
 | `desmore2012_mc` | mpi | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup, no random walk (Slurm, 32 tasks) |
 | `desmore2012_mc_serial` | serial | Densmore 2012 heterogeneous step-opacity, MC IMC multigroup, with random walk (serial) |
+| `doppler_mc` | serial | Doppler frequency shift in single-cell velocity-gradient opacity with 100 eV to 100 keV groups, MC IMC multigroup (serial) |
+| `doppler_scatter_mc` | mpi | Scattering-only Doppler in homologous flow (tau=300), MC vs multigroup diffusion comparison (Slurm, 64 tasks) |
+| `moving_slab_mc` | serial | Frequency-dependent moving slab benchmark (original vacuum), 124-group aluminum opacity, Lagrangian mesh rebuild, compared to semi-analytic solution (serial) |
+| `moving_slab_mc_32` | serial | Frequency-dependent moving slab benchmark (original vacuum), 32-group collapsed opacity (Planck-weighted from 124-group at 1 keV), Lagrangian mesh rebuild, compared to semi-analytic solution (serial) |
 | `yee_vortex_64` | mpi | Yee isentropic vortex 64x64, Lagrangian + RoundCells, t_end=10 (Slurm, 8 tasks) |
 | `yee_vortex_128` | mpi | Yee isentropic vortex 128x128, Lagrangian + RoundCells, t_end=10 (Slurm, 16 tasks) |
 | `cartesian_gauss_linear` | serial | Cartesian LinearGauss3D LSQ gradient verification (linear field, machine precision) |
@@ -231,6 +235,10 @@ Acceptance checks are physics-based:
 - **Marshak wave 1-4**: non-equilibrium nonlinear Marshak wave benchmarks from Giron et al. (2026, arXiv:2601.05120). Grey diffusion (no flux limiter), 512-cell 1D, compared to self-similar analytical solutions from Krief & McClarren (2024) and Derei et al. (2024). Require relative L1 error below 1e-2 for both Tgas and Trad.
 - **Gresho vortex (Euler / Lagrangian)**: Gresho vortex in 3D with one cell in z. Azimuthal velocity profile at t=5 compared to initial condition (exact stationary solution). Require relative L1 error below 0.1 (Euler) / 0.05 (Lagrangian).
 - **Densmore 2012 MC (MPI, no RW)**: Heterogeneous step-opacity slab (sigma_0=10 for x<2, sigma_0=1000 for x>=2) with Planck source at 1 keV. Monte Carlo IMC with multigroup opacities, no random walk, 256 cells, 32 MPI ranks, run to t=1 ns. Gas temperature profile compared to digitized Figure 4 from Densmore et al. (2012). Require L1 error below 0.05 keV.
+- **Doppler MC**: Doppler frequency shift in a single-cell slab (width=50 cm) with a custom velocity-gradient opacity that mimics v(x)=v0*x/width (v0=2.5e8 cm/s), cell velocity zero, scattering opacity 40 cm^-1, 100 energy groups, 1e5 photons seeded at the left boundary with truncated Planck spectrum, 50 steps of dt=4e-10 s, serial. Spectrum compared to analytical adiabatic shift (Eq. V.31 of arXiv:2601.05120). Require relative L1 error below 0.15.
+- **Doppler scatter MC**: Scattering-only Doppler in a homologous flow. 10^6 photons injected from the left boundary (truncated Planck at 1 keV, 0.5--3.0 keV) into a 64-cell slab (L=1e10 cm) with v(x)=Hx (H=3e-2 s^-1), kappa_sca=3e-8 cm^-1 (tau=300), 100 energy groups, 64 MPI ranks. Emergent comoving-frame spectrum at x=L measured by MC and multigroup diffusion (Doppler on). Require relative L1 error between MC and diffusion below 0.3.
+- **Moving slab MC**: Frequency-dependent moving slab benchmark (McClarren & Gentile 2021, original vacuum variant). Aluminum slab (rho=0.1 g/cm^3, L=0.4 cm, T=1 keV) moves at v=0.5994 cm/ns (~2% c) toward observer at z_O=12 cm. 124-group opacity table from 2026 paper. Manual Lagrangian mesh rebuild each step: slab mesh points translate at v_slab, Voronoi rebuilt, cell properties re-prescribed. Transparent right boundary tally at observer plane. Per-group radiation energy density at t_O=10 ns compared to semi-analytic solution. Require energy-weighted fractional error below 0.30.
+- **Moving slab MC (32-group)**: Same moving slab benchmark as above but with the 124-group opacity collapsed to 32 log-spaced groups using Planck weighting at T=1 keV. The semi-analytic reference uses the same collapsed opacity. newPhotonsPerCell=1e4. Require energy-weighted fractional error below 0.30.
 - **Densmore 2012 MC (serial, RW)**: Same problem as above but serial with random walk enabled. Cross-validates the serial execution path and RW acceleration. Same L1 threshold.
 - **Yee isentropic vortex (64 / 128)**: stationary isentropic vortex (Yee et al. 1999) with beta=5, gamma=1.4, domain [-5,5]^2. Lagrangian + RoundCells mesh, run to t=10. Volume-weighted L1 density error vs analytical IC must be <= 0.05. Run at 64x64 and 128x128 to verify second-order convergence.
 - **Spherical collapse**: collapse a dense shell (0.9 < r < 1.0) on an Eulerian mesh built from replicated rounded sphere templates. Run until inward velocity at r=0.05 reaches 1. Require max angular scatter (std-dev/mean) of density and velocity across radial bins below 0.1.
@@ -250,6 +258,10 @@ You can tune tolerances with environment variables:
 - `MARSHAK_MAX_TGAS_REL_L1`, `MARSHAK_MAX_TRAD_REL_L1`
 - `GRESHO_EULER_MAX_L1`, `GRESHO_LAGRANGIAN_MAX_L1`
 - `DESMORE2012_MC_MAX_TGAS_L1`
+- `DOPPLER_MC_MAX_L1`
+- `DOPPLER_SCATTER_MC_MAX_L1`
+- `MOVING_SLAB_MC_MAX_FERROR`
+- `MOVING_SLAB_MC_32_MAX_FERROR`
 - `YEE_VORTEX_MAX_DENSITY_L1`
 - `COLLAPSE_MAX_DENSITY_SCATTER`, `COLLAPSE_MAX_VELOCITY_SCATTER`
 - `RT_MAX_GROWTH_RATE_REL_ERROR`
@@ -330,6 +342,7 @@ case the same config is used for both passes.
 - `--clean-results`: remove `regression_results/` and generated figure files under `regression_tests/`, then exit.
 - `--keep-artifacts`: keep per-test logs even when all tests pass.
 - `--verbose`: stream run output to terminal while also writing logs.
+- `--recheck`: re-run the Python/bash validation for a single test only. Requires `--test <id>`. Picks the **newest** `regression_results/<timestamp>/<test>/` directory that contains `run.stdout.log` and `run.stderr.log`, then runs the same `CHECK_FUNCTION` as a full suite run against the case output directory (no build, no simulation). Exits with an error if no matching artifact exists. Ignores `--mode`, `--config`, and other build/run options.
 
 ### Run a single regression test
 
@@ -350,6 +363,12 @@ You can combine with `--mode`, `--config`, `--verbose`, and `--keep-artifacts`. 
 
 ```shell
 ./regression_tests/run_all.sh --test sod_1d --config gnuDebugMPI --verbose
+```
+
+Re-run the analysis step only (after a previous suite run left artifacts under `regression_results/`):
+
+```shell
+./regression_tests/run_all.sh --recheck --test moving_slab_mc
 ```
 
 Clean all saved regression logs and generated figures:
@@ -383,6 +402,9 @@ Clean all saved regression logs and generated figures:
   - `regression_tests/cases/gresho_lagrangian/gresho_check.stderr.log` (Gresho Lagrangian check details)
   - `regression_tests/cases/desmore2012_mc/desmore2012_mc_check.stderr.log` (Densmore 2012 MC check details)
   - `regression_tests/cases/desmore2012_mc_serial/desmore2012_mc_serial_check.stderr.log` (Densmore 2012 MC serial check details)
+  - `regression_tests/cases/doppler_mc/doppler_mc_check.stdout.log` (Doppler MC check details)
+  - `regression_tests/cases/moving_slab_mc/moving_slab_mc_check.stdout.log` (Moving slab MC check details)
+  - `regression_tests/cases/moving_slab_mc_32/moving_slab_mc_32_check.stdout.log` (Moving slab MC 32-group check details)
   - `regression_tests/cases/yee_vortex_64/vortex_check.stderr.log` (Yee vortex 64x64 check details)
   - `regression_tests/cases/yee_vortex_128/vortex_check.stderr.log` (Yee vortex 128x128 check details)
   - `regression_tests/cases/spherical_collapse/collapse_metrics.txt` (Spherical collapse symmetry metrics)

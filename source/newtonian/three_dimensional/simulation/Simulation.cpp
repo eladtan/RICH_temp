@@ -155,7 +155,7 @@ void Simulation::step(void)
         if(this->rank == 0)
     #endif // RICH_MPI
     {
-        std::cout << "Cycle " << this->tracker.getCycle() << " at time " << this->tracker.getTime() << std::endl;
+        std::cout << "\nCycle " << this->tracker.getCycle() << " at time " << this->tracker.getTime() << std::endl;
     }
 
     for(std::shared_ptr<PhysicsStep> physics : this->physics)
@@ -188,7 +188,9 @@ void Simulation::step(void)
                 }
             }
 
-            if(physics->allowRebalance())
+            bool forceRebalance = this->forceRebalanceSteps > 0 && this->tracker.getCycle() < this->forceRebalanceSteps;
+            double rebalanceTime = 0;
+            if(physics->allowRebalance() || forceRebalance)
             {
                 if(this->rank == 0) std::cout << "allowRebalance=true, computing weights..." << std::endl;
                 std::vector<double> weights = physics->getLoadBalanceWeights();
@@ -201,13 +203,16 @@ void Simulation::step(void)
                 if(shouldRebalance)
                 {
                     if(this->rank == 0) std::cout << "Doing rebalance on LB " << LB << std::endl;
-                    // std::cout << "Rank " << this->rank << " weights: " << weights << std::endl;
+                    auto rebalanceStart = std::chrono::high_resolution_clock::now();
 
                     physics->beforeLB();
-                    // have new build
                     this->tess.Rebalance(weights);
                     this->buildDataTransfer();
                     physics->afterLB();
+
+                    MPI_Barrier(MPI_COMM_WORLD);
+                    rebalanceTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - rebalanceStart).count();
+                    if(this->rank == 0) std::cout << "Rebalance time: " << rebalanceTime << "s" << std::endl;
                 }
                 else
                 {
@@ -238,7 +243,11 @@ void Simulation::step(void)
         auto end = std::chrono::high_resolution_clock::now();
         double physicsTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
+        #ifdef RICH_MPI
+        if(this->rank == 0) std::cout << "Physics " << name << " time: " << (physicsTime + rebalanceTime) << " (step=" << physicsTime << "s, rebalance=" << rebalanceTime << "s)" << std::endl;
+        #else
         if(this->rank == 0) std::cout << "Physics " << name << " time: " << physicsTime << std::endl;
+        #endif
 
         double dt_suggest = physics->suggestTimeStep();
         next_time_step = std::min(next_time_step, dt_suggest);

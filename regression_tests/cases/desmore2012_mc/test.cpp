@@ -24,7 +24,7 @@
 #include "source/monte/population/Comb.hpp"
 #include "source/monte/boundary/SideTemperature.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
-#include "source/newtonian/three_dimensional/CostCalculator3D.hpp"
+#include "source/3D/radiation/IMCCostCalculator.hpp"
 
 namespace fs = std::filesystem;
 
@@ -273,6 +273,11 @@ int main(int argc, char *argv[])
 #endif
     );
     sim.addPhysics(mcStep);
+#ifdef RICH_MPI
+    mcStep->setCost(std::make_shared<IMCCostCalculator>(mcStep->getManager()));
+    sim.setForceRebalanceSteps(4);
+    sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
+#endif
     sim.SetTimeStep(dt);
 
     if(rank == 0)

@@ -18,6 +18,7 @@ struct RadiationIMCParameters
     double rwMinCellOpticalDepth = 25.0;
     double rwMinParticleOpticalDepth = 5.0;
     bool noHydroFeedback = false;
+    bool withEgTimeAvg = false;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
@@ -47,6 +48,9 @@ public:
 
     inline const std::vector<double> &getPlanckOpacities(void) const {return this->planckOpacities;}
 
+    size_t lastGenSlab = 0;
+    size_t lastGenVacuum = 0;
+
 private:    
     std::vector<Particle> generateParticles(double fullDt);
 
@@ -62,6 +66,7 @@ private:
     double rwMinCellOpticalDepth;
     double rwMinParticleOpticalDepth;
     bool noHydroFeedback;
+    bool withEgTimeAvg;
 
     std::unique_ptr<RandomWalk> randomWalk;
     std::vector<bool> rwCellEligible;

@@ -38,6 +38,8 @@ public:
 
     inline const std::vector<size_t> &GetCellsStepsCounters(void) const {return this->cellsStepsCounters;}
 
+    inline std::vector<size_t> &GetCellsStepsCounters(void) {return this->cellsStepsCounters;}
+
     // todo: should return that?
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
     
@@ -49,15 +51,15 @@ public:
         void Reset(void);
 
         #ifdef RICH_MPI
-            std::vector<MCParticle> GetLocalTrackParticleRoute(size_t id);
+            std::vector<MCParticle> GetLocalTrackParticleRoute(size_t id) const;
         #endif // RICH_MPI
 
-        std::vector<MCParticle> GetTrackParticleRoute(size_t id);
+        std::vector<MCParticle> GetTrackParticleRoute(size_t id) const;
 
         void ReportParticle(MCParticle &particle);
     
     private:
-        const MPI_Comm &comm;
+        MPI_Comm comm;
         boost::container::flat_map<size_t, std::vector<MCParticle>> track;
     };
 
@@ -113,7 +115,7 @@ TwoSidedMonteCarloManager<T, Grid>::TwoSidedMonteCarloManager(const Grid &grid, 
 
     this->myIDCounter = 0;
     this->currentStep = 0;
-    this->cellsStepsCounters = std::vector<size_t>(this->grid.GetPointNo(), 0);
+    this->cellsStepsCounters.assign(this->grid.GetPointNo(), 0);
 }
 
 template<typename T, typename Grid>
@@ -137,17 +139,18 @@ void TwoSidedMonteCarloManager<T, Grid>::Tracker::ReportParticle(MCParticle &par
 }
 
 template<typename T, typename Grid>
-std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::Tracker::GetLocalTrackParticleRoute(size_t id)
+std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::Tracker::GetLocalTrackParticleRoute(size_t id) const
 {
-    if(this->track.find(id) == this->track.end())
+    auto it = this->track.find(id);
+    if(it == this->track.end())
     {
         return std::vector<MCParticle>();
     }
-    return this->track[id];
+    return it->second;
 }
 
 template<typename T, typename Grid>
-std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::Tracker::GetTrackParticleRoute(size_t id)
+std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMonteCarloManager<T, Grid>::Tracker::GetTrackParticleRoute(size_t id) const
 {
     std::vector<MCParticle> local = this->GetLocalTrackParticleRoute(id);
     std::vector<MCParticle> global = MPI_All_cast(local, this->comm);
@@ -283,9 +286,12 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
             
             // std::cout << "Rank " << this->rank_world << " handles TH = " << i << ", which is index " << particleIndex << ", particle: " << particle << std::endl;
 
+            const size_t traceStep = particle.steps;
             if(particle.on_track)
             {
-                this->tracker.ReportParticle(particle);
+                MCParticle trackedParticle = particle;
+                trackedParticle.steps = traceStep * 2;
+                this->tracker.ReportParticle(trackedParticle);
             }
             particle.steps++;
             this->cellsStepsCounters[particle.cellIndex]++;
@@ -391,6 +397,13 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 particle.previousLocation = particle.location;
             #endif // MONTECARLO_DEBUG
             MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+
+            if(particle.on_track)
+            {
+                MCParticle trackedParticle = particle;
+                trackedParticle.steps = traceStep * 2 + 1;
+                this->tracker.ReportParticle(trackedParticle);
+            }
 
             // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
             if(debug)
@@ -569,7 +582,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         this->iteration = 0;
         this->allStepsCounter = 0;
         // this->neighbors = this->grid.GetDuplicatedProcs();    
-        this->cellsStepsCounters = std::vector<size_t>(this->Ncells, 0);
+        this->cellsStepsCounters.assign(this->Ncells, 0);
         MPI_Barrier(this->comm_world);
         
         size_t length = this->particles.size();
