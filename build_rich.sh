@@ -109,6 +109,9 @@ for arg in "${@:2}"; do
         --memory_debug)
             CMAKE_FLAGS+=" -DMEMORY_DEBUG=1 "
             ;;
+        --assert)
+            CMAKE_FLAGS+=" -DFORCE_ASSERT=1 "
+            ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
             ;;
@@ -153,7 +156,7 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 # ==================== Validate arguments ====================
 
 if [[ $# -lt 2 || -z "$TEST_NAME" ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--build-subdir=<name>] [--jobs=<N>]${NC}"
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--assert] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 

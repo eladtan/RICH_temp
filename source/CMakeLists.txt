@@ -224,7 +224,9 @@ target_link_libraries(
     ZLIB::ZLIB
     ${HDF5_LIBS} 
     ${VTK_LIBRARIES}
+    ${CMAKE_DL_LIBS}
 )
+target_link_options(${EXE_NAME} PRIVATE -rdynamic)
 
 if(DEFINED MPI)
     separate_arguments(mpi_compile_flags UNIX_COMMAND "${MPI_COMPILE_FLAGS}")
