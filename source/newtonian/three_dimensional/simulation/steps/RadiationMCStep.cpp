@@ -61,10 +61,6 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
         if(rank == 0)
             std::cout << "RadiationMCStep: generated " << this->particles.size() << " initial photon particles" << std::endl;
     }
-
-    #ifdef RICH_MPI
-        this->cellCosts_.assign(tess.GetPointNo(), 1.0);
-    #endif
 }
 
 std::vector<Particle3D> &RadiationMCStep::getParticles(void)
@@ -202,18 +198,6 @@ void RadiationMCStep::step(double dt)
     }
 
     this->suggested_dt = dt * std::min(1.25, 0.15 / max_diff);
-
-    #ifdef RICH_MPI
-    {
-        size_t Ncur = tess.GetPointNo();
-        this->cellCosts_.assign(Ncur, 1.0);
-        for(const auto &p : this->particles)
-        {
-            if(p.cellIndex < Ncur)
-                this->cellCosts_[p.cellIndex] += 1.0;
-        }
-    }
-    #endif // RICH_MPI
 }
 
 #ifdef RICH_MPI
@@ -234,8 +218,6 @@ void RadiationMCStep::step(double dt)
 
     std::vector<double> RadiationMCStep::getLoadBalanceWeights(void)
     {
-        if(!this->cellCosts_.empty())
-            return this->cellCosts_;
         return (this->cost)? this->cost->CalculateCost(this->tess, this->cells) : std::vector<double>(this->tess.GetPointNo(), 1.0);
     }
 
