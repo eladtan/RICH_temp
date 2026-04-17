@@ -1,6 +1,7 @@
 #ifndef BOUNDING_BOX_HPP
 #define BOUNDING_BOX_HPP
 
+#include <cmath>
 #ifdef USE_VCL_VECTORIZATION
     #include <vectorclass.h>
 #endif // USE_VCL_VECTORIZATION
@@ -10,6 +11,7 @@
 #endif // RICH_MPI
 
 #define DIM 3
+#define TOLERANCE 1e-12
 
 template<typename T>
 class BoundingBox
@@ -136,7 +138,8 @@ public:
         // need: other.ll[i] >= this->ll[i] and other.ur[i] <= this->ur[i] for all i
         for(int i = 0; i < DIM; i++)
         {
-            if((other.ll[i] < this->ll[i]) or (other.ur[i] > this->ur[i]))
+            double tolerance = std::abs(std::max(this->ll[i], other.ll[i]) - std::min(this->ur[i], other.ur[i])) * TOLERANCE;
+            if((this->ll[i] - other.ll[i] > tolerance) or (other.ur[i] - this->ur[i] > tolerance))
             {
                 return false;
             }
@@ -168,7 +171,8 @@ public:
             typename T::coord_type closestDistance = 0;
             for(int i = 0; i < DIM; i++)
             {
-                closestDistance += (point[i] - closestPoint[i]);
+                typename T::coord_type diff = point[i] - closestPoint[i];
+                closestDistance += diff * diff;
             }
             return closestDistance;
         #endif // USE_VCL_VECTORIZATION
