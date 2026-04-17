@@ -161,12 +161,7 @@ void UpdateNewCellsAfterExchange(const Tessellation3D &tess, std::vector<Particl
     UpdateNewCellsAfterExchange(tess, particles, chain);
 }
 
-#endif // RICH_MPI
-
-static size_t ResolveRemainingParticles(
-    const Tessellation3D &tess,
-    std::vector<Particle3D> &particles,
-    const OctTree<IndexedVector3D> &octTree)
+static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<Particle3D> &particles, const OctTree<IndexedVector3D> &octTree)
 {
     rank_t rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -342,7 +337,6 @@ static size_t ResolveRemainingParticles(
     return iterations;
 }
 
-#ifdef RICH_MPI
 void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D> &particles)
 {
     rank_t rank, size;
@@ -414,7 +408,7 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
         std::cout << "First inaccurate movements sent for " << sentCounter << " particles" << std::endl;
     }
 }
-
+#endif // RICH_MPI
 
 void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particles, const std::vector<size_t> &cellIDs)
 {
