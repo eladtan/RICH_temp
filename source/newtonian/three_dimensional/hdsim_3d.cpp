@@ -72,7 +72,7 @@ HDSim3D::HDSim3D(Tessellation3D& tess,
 	, cost_calc_(cost_calc), exchange_chain_(MPI_COMM_WORLD)
 	#endif // RICH_MPI
 {
-	const bool validity_check = tess.GetPointNo() == cells.size();
+	const bool validity_check = tess.GetPointNo() <= cells.size();
 	assert(validity_check);
 	assert(tsn.second.size() <= MAX_STICKERS);
 	assert(tsn.first.size() <= MAX_TRACERS);

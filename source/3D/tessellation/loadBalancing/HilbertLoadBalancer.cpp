@@ -158,7 +158,7 @@ void HilbertLoadBalancer::changeBox(const std::pair<Vector3D, Vector3D> &newBox)
 
     const Vector3D size_new = padded_ur - padded_ll;
 
-    if (boundaries.empty())
+    if(boundaries.empty())
     {
         convertor = std::make_shared<HilbertRectangularConvertor3D>(padded_ll, padded_ur, convertor->getOrder());
         return;

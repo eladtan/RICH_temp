@@ -200,7 +200,7 @@ std::pair<size_t, dt_t> MonteCarloParticle<T, Grid>::distanceToNearestFace(const
     bool crash = false;
     if(verbose)
     {
-        const std::pair<size_t, size_t> &neighbors = grid.GetFaceNeighbors(min_face);
+        // const std::pair<size_t, size_t> &neighbors = grid.GetFaceNeighbors(min_face);
         // size_t otherNeighbor = (neighbors.first == this->cellIndex)? neighbors.second : neighbors.first;
         if(not grid.IsPointInCell(this->location, this->cellIndex))
         {
