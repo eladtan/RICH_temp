@@ -167,7 +167,15 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     size_t N = tess.GetPointNo();
-    const auto &envAgent = tess.GetEnvironmentAgent();
+
+    auto [tess_ll, tess_ur] = tess.GetBoxCoordinates();
+    Vector3D tess_boxsize = tess_ur - tess_ll;
+    tess_ll -= 2.0 * EPSILON * tess_boxsize;
+    tess_ur += 2.0 * EPSILON * tess_boxsize;
+    OctTree<IndexedVector3D> wideTree(IndexedVector3D(tess_ll, std::numeric_limits<size_t>::max()), IndexedVector3D(tess_ur, std::numeric_limits<size_t>::max()));
+    for(size_t i = 0; i < N; i++)
+        wideTree.insert(IndexedVector3D(tess.GetMeshPoint(i), i));
+    DistributedOctTree<IndexedVector3D> distributedOctTree(&wideTree);
 
     double avgCellSize = 0;
     if(N > 0)
@@ -181,9 +189,7 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
     avgOfAvgCellSize /= size;
     double initialRadius = avgCellSize * RADIUSES_FACTOR;
     if(N == 0)
-    {
         initialRadius = avgOfAvgCellSize * RADIUSES_FACTOR;
-    }
 
     std::vector<Particle3D> resolvedParticles;
     boost::container::flat_set<size_t> particlesLeft;
@@ -269,7 +275,7 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
                     throw eo;
                 }
 
-                auto intersectingRanks = envAgent->getIntersectingRanks(p.location, radiuses[i]);
+                auto intersectingRanks = distributedOctTree.getIntersectingRanks(p.location, radiuses[i]);
                 for(rank_t _rank : intersectingRanks)
                 {
                     if(ranksTested[i].find(_rank) == ranksTested[i].end())
