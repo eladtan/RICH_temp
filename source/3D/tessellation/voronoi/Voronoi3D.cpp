@@ -1,6 +1,9 @@
+#include <optional>
 #include "Voronoi3D.hpp"
+#include "ds/utils/BoundingBox.hpp"
 #include "../../elementary/Mat33.hpp"
 #include "../utils/Predicates3D.hpp"
+#include "misc/universal_error.hpp"
 #include "misc/utils.hpp"
 #include "misc/io3D.hpp"
 #include "3D/GeometryCommon/Intersections.hpp"
@@ -1578,15 +1581,12 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetRemoteIndices(c
     }
     MPI_Alltoall(sentPointsNum.data(), 1, MPI_UNSIGNED_LONG_LONG, recvPointsNum.data(), 1, MPI_UNSIGNED_LONG_LONG, MPI_COMM_WORLD);
 
-    std::vector<size_t> newPointsOffsets(size,  0);
+    // Offsets must follow processesSend order (matching dataExchange output ordering)
+    std::vector<size_t> newPointsOffsets(size, 0);
     size_t currentOffset = selfIndex.size();
-    for(rank_t _rank = 0; _rank < size; _rank++)
+    for(size_t i = 0; i < sentProcs.size(); i++)
     {
-        if(_rank == rank)
-        {
-            newPointsOffsets[_rank] = 0;
-            continue;
-        }
+        rank_t _rank = sentProcs[i];
         newPointsOffsets[_rank] = currentOffset;
         currentOffset += recvPointsNum[_rank];
     }
@@ -1793,6 +1793,13 @@ void Voronoi3D::MockMesh(void)
         }
         assert(_rank != rank); // not me
         size_t idx = std::distance(newDuplicatedProcs.begin(), std::find(newDuplicatedProcs.begin(), newDuplicatedProcs.end(), _rank));
+        if(idx == newDuplicatedProcs.size())
+        {
+            UniversalError eo("Voronoi3D::MockMesh: received from an unexpected rank");
+            eo.addEntry("My rank", rank);
+            eo.addEntry("Received from rank", _rank);
+            throw eo;
+        }
         assert(idx != newDuplicatedProcs.size());
         std::vector<size_t> &NghostOfRank = newNghost[idx];
 
@@ -3678,7 +3685,7 @@ bool Voronoi3D::NearBoundary(std::size_t index) const
     return false;
 }
 
-bool Voronoi3D::IsPointInCell(const Vector3D &point, size_t cellIndex) const
+bool Voronoi3D::IsPointInCell(const Vector3D &point, size_t cellIndex, bool verbose) const
 {
     if(cellIndex >= this->Norg_)
     {
@@ -3688,16 +3695,77 @@ bool Voronoi3D::IsPointInCell(const Vector3D &point, size_t cellIndex) const
         eo.addEntry("Norg", this->Norg_);
         throw eo;
     }
+    std::optional<UniversalError> verboseInfo;
+    if(verbose)
+    {
+        verboseInfo.emplace("Voronoi3D::IsPointInCell verbose");
+        verboseInfo->addEntry("point", point);
+        verboseInfo->addEntry("cellIndex", cellIndex);
+        verboseInfo->addEntry("cellCenter", this->del_.points_[cellIndex]);
+
+        Vector3D cellLL(std::numeric_limits<double>::max());
+        Vector3D cellUR(std::numeric_limits<double>::lowest());
+        const std::vector<Vector3D> &vertices = this->GetFacePoints();
+        for(size_t faceIdx : this->FacesInCell_[cellIndex])
+        {
+            for(size_t vertIdx : this->GetAllPointsInFace()[faceIdx])
+            {
+                const Vector3D &v = vertices[vertIdx];
+                cellLL.x = std::min(cellLL.x, v.x);
+                cellLL.y = std::min(cellLL.y, v.y);
+                cellLL.z = std::min(cellLL.z, v.z);
+                cellUR.x = std::max(cellUR.x, v.x);
+                cellUR.y = std::max(cellUR.y, v.y);
+                cellUR.z = std::max(cellUR.z, v.z);
+            }
+        }
+        BoundingBox<Vector3D> cellBox(cellLL, cellUR);  
+        verboseInfo->addEntry("cellBBox", cellBox);
+        verboseInfo->addEntry("is point in bounding box of cell?", cellBox.contains(point)? "yes": "no");
+    }
+
+    double width = this->GetWidth(cellIndex);
     for(size_t faceIdx : this->FacesInCell_[cellIndex])
     {
         const Vector3D &p1 = this->del_.points_[this->GetFaceNeighbors(faceIdx).first];
         const Vector3D &p2 = this->del_.points_[this->GetFaceNeighbors(faceIdx).second];
         Vector3D normal = (this->GetFaceNeighbors(faceIdx).second == cellIndex)? p2 - p1 : p1 - p2;
         Vector3D p = (p1 + p2) * 0.5;
-        if(ScalarProd(normal, point - p) < 0)
+        double dot = ScalarProd(normal, point - p);
+        if(verboseInfo)
+        {
+            size_t neighbor = (this->GetFaceNeighbors(faceIdx).first == cellIndex)? this->GetFaceNeighbors(faceIdx).second : this->GetFaceNeighbors(faceIdx).first;
+            verboseInfo->addEntry("face " + std::to_string(faceIdx) + " neighbor", neighbor);
+            std::string neighborOwner = "???";
+            if(neighbor < this->Norg_)
+            {
+                neighborOwner = "me";
+            }
+            else
+            {
+                for(size_t i = 0; i < this->Nghost_.size(); i++)
+                {
+                    const std::vector<size_t> &ghosts = this->Nghost_[i];
+                    if(std::find(ghosts.begin(), ghosts.end(), neighbor) != ghosts.end())
+                    {
+                        neighborOwner = "rank " + std::to_string(this->duplicatedprocs_[i]);
+                        break;
+                    }
+                } 
+            }
+            verboseInfo->addEntry("face " + std::to_string(faceIdx) + ", neighbor " + std::to_string(neighbor) + " owner", neighborOwner);
+            verboseInfo->addEntry("face " + std::to_string(faceIdx) + " dot", dot);
+            verboseInfo->addEntry("face " + std::to_string(faceIdx) + " neighbor point", this->GetMeshPoint(neighbor));
+            verboseInfo->addEntry("face " + std::to_string(faceIdx) + " neighbor distance", abs(this->GetMeshPoint(neighbor) - point));
+        }
+        if(not verboseInfo and dot < -1e-12 * width)
         {
             return false;
         }
+    }
+    if(verboseInfo)
+    {
+        throw *verboseInfo;
     }
     return true;
 }

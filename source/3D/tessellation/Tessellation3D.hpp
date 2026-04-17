@@ -264,7 +264,7 @@ public:
   */
   virtual bool BoundaryFace(size_t index) const = 0;
 
-  virtual bool IsPointInCell(const Vector3D &point, size_t cellIndex) const = 0;
+  virtual bool IsPointInCell(const Vector3D &point, size_t cellIndex, bool verbose = false) const = 0;
 
   #ifdef RICH_MPI
     /*!

@@ -282,7 +282,7 @@ public:
 
   void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) override;
 
-  bool IsPointInCell(const Vector3D &point, size_t cellIndex) const override;
+  bool IsPointInCell(const Vector3D &point, size_t cellIndex, bool verbose = false) const override;
 
 #ifdef RICH_MPI
 
