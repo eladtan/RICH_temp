@@ -846,7 +846,7 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
         const OctTreeNode* node;
         typename T::coord_type distSquared;
         
-        bool operator>(const NodeDistancePair& other) const {
+        bool operator>(const NodeDistancePair &other) const {
             return distSquared > other.distSquared;
         }
     };
@@ -856,8 +856,8 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &po
     T closestPoint;
     typename T::coord_type closestDistanceSquared = std::numeric_limits<typename T::coord_type>::max();
 
-    // quick good guess
-    if(includeSelf)
+    // quick good guess (only when point is inside the tree's bounding box)
+    if(includeSelf and this->getRoot() != nullptr and this->getRoot()->boundingBox.contains(point))
     {
         const OctTreeNode* commonAncestor = this->tryFindParent(point);
         while(not commonAncestor->isLeaf)
