@@ -57,13 +57,6 @@ void MPI_exchange_data(const ExchangeChain &chain, std::vector<T> &data)
 
     std::vector<std::vector<T>> received = MPI_Exchange_all_to_all(toSend, MPI_COMM_WORLD);
 
-    bool hasReceivedData = false;
-    for(rank_t r = 0; r < worldSize; r++)
-        hasReceivedData |= !received[r].empty();
-
-    if(translationMap.empty() && !hasReceivedData)
-        return;
-
     data.clear();
     data.insert(data.end(), received[myRank].cbegin(), received[myRank].cend());
     for(rank_t r = 0; r < worldSize; r++)
