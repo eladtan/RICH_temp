@@ -16,6 +16,8 @@ using std::string;
 using std::vector;
 using std::pair;
 
+static constexpr size_t MAX_STACK_FRAMES = 64;
+
 /*! \brief Container for error reports
  */
 class UniversalError
@@ -76,6 +78,11 @@ public:
     this->fields_.emplace_back(name, value);
   }
 
+  void join(const UniversalError &other)
+  {
+    this->fields_.insert(this->fields_.end(), other.fields_.begin(), other.fields_.end());
+  }
+
   /*! \brief Prints the contents of the error
   \param eo The error object
   */
@@ -86,6 +93,9 @@ private:
   string err_msg_;
 
   std::vector<std::pair<std::string, PrintableAny>> fields_;
+
+  void *stack_frames_[MAX_STACK_FRAMES];
+  int stack_depth_;
 };
 
 void reportError(UniversalError const& eo, std::ostream& os = std::cout);
