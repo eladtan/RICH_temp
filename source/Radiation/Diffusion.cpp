@@ -78,18 +78,29 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     auto const N = tess.GetPointNo();
     
     sigma_planck.resize(N, 0.0);
+    sigma_planck.shrink_to_fit();
     sigma_s.resize(N, 0.0);
+    sigma_s.shrink_to_fit();
     fleck_factor.resize(N, 0.0);
+    fleck_factor.shrink_to_fit();
     D.resize(N, 0.0);
+    D.shrink_to_fit();
     R2.resize(N, 0.0);
+    R2.shrink_to_fit();
     cell_flux_limiter.resize(N, 0.0);
+    cell_flux_limiter.shrink_to_fit();
 
     new_Er.resize(N, 0.0);
+    new_Er.shrink_to_fit();
     new_Er_full.resize(N, 0.0);
+    new_Er_full.shrink_to_fit();
     old_Er.resize(N, 0.0);
+    old_Er.shrink_to_fit();
 
     cells_temp.resize(N);
+    cells_temp.shrink_to_fit();
     extensives_temp.resize(N);
+    extensives_temp.shrink_to_fit();
 
     for(std::size_t i=0; i < N; ++i){
         old_Er[i] = cells[i].Erad * cells[i].density;
@@ -394,8 +405,10 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     A_indeces.resize(Nlocal);
     R2.clear();
     R2.resize(Nlocal, 0);
+    R2.shrink_to_fit();
     cell_flux_limiter.clear();
     cell_flux_limiter.resize(Nlocal, 0);
+    cell_flux_limiter.shrink_to_fit();
 
     // Build the matrix
     for(size_t i = 0; i < Nlocal; ++i)

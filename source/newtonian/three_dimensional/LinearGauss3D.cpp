@@ -833,9 +833,10 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 			new_cells[j].velocity *= gamma;
 		}
 	}
-	// Prepare slopes
 	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+	rslopes_.shrink_to_fit();
 	naive_rslopes_.resize(CellNumber);
+	naive_rslopes_.shrink_to_fit();
 	Slope3D temp1(cells[0], cells[0], cells[0]);
 	ComputationalCell3D temp2(cells[0]);
 	ComputationalCell3D temp3(cells[0]);
@@ -884,9 +885,10 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 			new_cells[j].velocity *= gamma;
 		}
 	}
-	// Prepare slopes
 	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+	rslopes_.shrink_to_fit();
 	naive_rslopes_.resize(CellNumber);
+	naive_rslopes_.shrink_to_fit();
 	Slope3D temp1(cells[0], cells[0], cells[0]);
 	ComputationalCell3D temp2(cells[0]);
 	ComputationalCell3D temp3(cells[0]);
