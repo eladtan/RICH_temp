@@ -4,23 +4,26 @@ set(path_env $ENV{PATH})
 string(REPLACE ":" ";" path_env_list "${path_env}")
 
 if(NOT CGAL_DIRECTORY)
-    # Extract likely CGAL prefixes
-    set(CGAL_DIRECTORY "")
+    set(_cgal_prefixes "")
     foreach(dir IN LISTS path_env_list)
         if(dir MATCHES "/cgal")
             string(REGEX REPLACE "/bin" "" prefix "${dir}")
-            # if there is already a prefix - error, multiple CGAL installations
-            if(CGAL_DIRECTORY)
-                message(FATAL_ERROR "Multiple CGAL installations found in PATH: ${CGAL_DIRECTORY} and ${prefix}")
+            list(FIND _cgal_prefixes "${prefix}" _idx)
+            if(_idx EQUAL -1)
+                list(APPEND _cgal_prefixes "${prefix}")
+                message(STATUS "Found CGAL candidate: ${prefix}")
             endif()
-            message("Found CGAL installation at: ${prefix}")
-            # Add the prefix to the list
-            list(APPEND CGAL_DIRECTORY "${prefix}")
         endif()
     endforeach()
 
-    # if no CGAL_DIRECTORY found, error
-    if(NOT CGAL_DIRECTORY)
+    list(LENGTH _cgal_prefixes _cgal_count)
+
+    if(_cgal_count EQUAL 0)
         message("No CGAL installation found in PATH environment variable")
+    elseif(_cgal_count GREATER 1)
+        message(FATAL_ERROR "Multiple distinct CGAL installations found in PATH: ${_cgal_prefixes}")
+    else()
+        list(GET _cgal_prefixes 0 CGAL_DIRECTORY)
+        message(STATUS "Using CGAL: ${CGAL_DIRECTORY}")
     endif()
 endif()
