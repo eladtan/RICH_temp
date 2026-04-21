@@ -56,7 +56,7 @@ template<typename T, typename Grid>
 class MonteCarloManager
 {
     using MCParticle = MonteCarloParticle<T, Grid>;
-    using RankHandler = RankHandler<T, Grid>;
+    using RankHandler_t = ::RankHandler<T, Grid>;
 
 public:
     struct MonteCarloStepFinalData
@@ -127,7 +127,7 @@ private:
     std::vector<MPI_Comm> communicators;
     std::vector<rank_t> ranksOrder;
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
-    std::vector<RankHandler*> rankHandlers;
+    std::vector<RankHandler_t*> rankHandlers;
     T ll, ur;
     std::shared_ptr<MonteCarloPhysics<T, Grid>> physics;
     std::shared_ptr<PopulationControl<T, Grid>> populationControl;
@@ -189,7 +189,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     this->ranksOrder = GetRanksOrder(this->comm_world);
     this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
 
-    this->rankHandlers = std::vector<RankHandler*>(this->size_world, nullptr);
+    this->rankHandlers = std::vector<RankHandler_t*>(this->size_world, nullptr);
 
     auto reallocationFunction = [this](rank_t rank)
     {
@@ -240,7 +240,7 @@ void MonteCarloManager<T, Grid>::FreeHandlers(void)
 {
     auto freeHandler = [&](rank_t _rank)
     {
-        RankHandler *handler = this->rankHandlers[_rank];
+        RankHandler_t *handler = this->rankHandlers[_rank];
         if(handler != nullptr)
         {
             handler->Destroy();
@@ -255,13 +255,13 @@ void MonteCarloManager<T, Grid>::FreeHandlers(void)
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &particles)
 {
-    using index_t = typename RankHandler::index_t;
+    using index_t = typename RankHandler_t::index_t;
     if(particles.empty())
     {
         return;
     }
 
-    RankHandler *myHandler = this->rankHandlers[this->rank_world];
+    RankHandler_t *myHandler = this->rankHandlers[this->rank_world];
 
     // std::cout << "In add particles, handler size is " << myHandler->buffsize << ", particles size to add is " << particles.size() << std::endl;
 
@@ -380,7 +380,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector<MCParticle> &&particles)
 {
-    using index_t = typename RankHandler::index_t;
+    using index_t = typename RankHandler_t::index_t;
 
     #ifdef MONTECARLO_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
@@ -409,7 +409,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector
         return;
     }
 
-    RankHandler *handler = this->rankHandlers[this->rank_world];
+    RankHandler_t *handler = this->rankHandlers[this->rank_world];
 
     if(static_cast<size_t>(handler->av_length) < particlesNum)
     {
@@ -456,7 +456,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t fro
     #ifdef MONTECARLO_DEBUG
         boost::container::flat_map<size_t, rank_t> sentAndToWhom;
     #endif // MONTECARLO_DEBUG
-    RankHandler *currRankHandler = this->rankHandlers[fromRank];
+    RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
 
     for(size_t i = 0; i < num; i++)
     {
@@ -546,7 +546,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t fro
     for(const auto &[toRank, particles] : rankToParticles)
     {
         assert(toRank != this->rank_world); // can't send to self
-        RankHandler *remoteHandler = this->rankHandlers[toRank];
+        RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         assert(remoteHandler->peer_rank_world == toRank);
         #ifdef MONTECARLO_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
@@ -596,7 +596,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
     for(size_t i = 0; i < numRanks; i++)
     {
         const rank_t &fromRank = rankBuffers[i];
-        RankHandler *currRankHandler = this->rankHandlers[fromRank];
+        RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
         const std::vector<size_t> &myTHIndices = indicesInToHandle[i];
         size_t numToHandle = myTHIndices.size();
         const std::vector<rank_t> &myTransferRanks = transferRanks[i];
@@ -692,7 +692,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
     for(const auto &[toRank, particles] : rankToParticles)
     {
         assert(toRank != this->rank_world); // can't send to self
-        RankHandler *remoteHandler = this->rankHandlers[toRank];
+        RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         assert(remoteHandler->peer_rank_world == toRank);
         #ifdef MONTECARLO_DEBUG
         if(remoteHandler->peer_rank_world != toRank)
@@ -747,14 +747,14 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                 rank_t future_rank = this->neighbors[i + PREFETCH_DISTANCE];
 
                 // Prefetch the RankHandler *object (heap-allocated, likely scattered)
-                RankHandler *future_handler = this->rankHandlers[future_rank];
+                RankHandler_t *future_handler = this->rankHandlers[future_rank];
                 __builtin_prefetch(future_handler, 0, 1);                  // bring RankHandler into cache
                 __builtin_prefetch((const void*) &(future_handler->th_length), 0, 1);      // bring th_length into cache
             }
 
             // Access current handler
             rank_t _rank = this->neighbors[i];
-            RankHandler *handler = this->rankHandlers[_rank];
+            RankHandler_t *handler = this->rankHandlers[_rank];
 
             // Cache the dereferenced value to avoid repeated indirection
             int len = handler->th_length;
@@ -766,7 +766,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             }
         }
         {
-            RankHandler *handler = this->rankHandlers[this->rank_world];
+            RankHandler_t *handler = this->rankHandlers[this->rank_world];
             if(handler->th_length > 0)
             {
                 active_ranks.push_back(this->rank_world);
@@ -803,7 +803,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     for(size_t index = 0; index < activeRanksNum; index++)
     {
         rank_t _rank = active_ranks[index];
-        RankHandler *handler = this->rankHandlers[_rank];
+        RankHandler_t *handler = this->rankHandlers[_rank];
         volatile int &length = handler->th_length;
 
         transferParticlesVec.emplace_back();
@@ -1187,7 +1187,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     for(size_t i = 0; i < activeRanksNum; i++)
     {
         const rank_t &fromRank = active_ranks[i];
-        RankHandler *currRankHandler = this->rankHandlers[fromRank];
+        RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
         const std::vector<size_t> &myTHIndices = transferParticlesVec[i];
         const std::vector<rank_t> &myTransferRanks = transferToRanks[i];
         size_t numToTransfer = myTHIndices.size();
@@ -1212,7 +1212,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         {
             continue; // nothing to remove
         }
-        RankHandler *handler = this->rankHandlers[_rank];
+        RankHandler_t *handler = this->rankHandlers[_rank];
         handler->RemoveParticles(rankRemoveParticlesVec, rankRemoveParticlesVec.size());
     }
     active_ranks.swap(next_active_ranks);
@@ -1231,7 +1231,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::MonteCarloManager::ResetAllBuffers(void)
 {
-    for(RankHandler *handler : this->rankHandlers)
+    for(RankHandler_t *handler : this->rankHandlers)
     {
         if(handler != nullptr)
         {
@@ -1281,7 +1281,7 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(void)
             continue;
         if(particles.size() >= SEND_BUFFER_MIN_SIZE or cycleFull)
         {
-            RankHandler *remoteHandler = this->rankHandlers[toRank];
+            RankHandler_t *remoteHandler = this->rankHandlers[toRank];
             remoteHandler->TransferParticles(particles);
             particles.clear();
         }
@@ -1298,7 +1298,7 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
     {
         if(particles.empty())
             continue;
-        RankHandler *remoteHandler = this->rankHandlers[toRank];
+        RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         remoteHandler->TransferParticles(particles);
         particles.clear();
     }
@@ -1319,10 +1319,10 @@ bool MonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
 {
-    using index_t = typename RankHandler::index_t;
+    using index_t = typename RankHandler_t::index_t;
     const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(index_t);
     size_t localHandlerMemory = 0;
-    for(const RankHandler *h : this->rankHandlers)
+    for(const RankHandler_t *h : this->rankHandlers)
     {
         if(h == nullptr) continue;
         localHandlerMemory += h->buffsize * bytesPerSlot;
@@ -1349,7 +1349,7 @@ void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesN
         double selfTotal = 0, neighborTotal = 0, nonNeighborTotal = 0;
         for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
         {
-            const RankHandler *h = this->rankHandlers[r];
+            const RankHandler_t *h = this->rankHandlers[r];
             if(h == nullptr) continue;
             double handlerMB = h->buffsize * bytesPerSlot / (1024.0 * 1024.0);
             bool isSelf = (h->peer_rank_world == this->rank_world);
@@ -1408,7 +1408,7 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
         MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[this->rank_world]);
         MPI_Group_free(&group);
         MPI_Group_free(&worldGroup);
-        this->rankHandlers[this->rank_world] = new RankHandler(DEFAULT_BUFFER_SIZE, this->comm_world, this->communicators[this->rank_world], this->reallocationAgent, this->rdma_type);
+        this->rankHandlers[this->rank_world] = new RankHandler_t(DEFAULT_BUFFER_SIZE, this->comm_world, this->communicators[this->rank_world], this->reallocationAgent, this->rdma_type);
     }
 
     std::vector<rank_t> newNeighbors;
@@ -1432,7 +1432,7 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
             }
 
             this->communicators[rank] = pair_comm;
-            this->rankHandlers[rank] = new RankHandler(DEFAULT_BUFFER_SIZE, this->comm_world, pair_comm, this->reallocationAgent, this->rdma_type);
+            this->rankHandlers[rank] = new RankHandler_t(DEFAULT_BUFFER_SIZE, this->comm_world, pair_comm, this->reallocationAgent, this->rdma_type);
             if(this->rankHandlers[rank]->peer_rank_world != rank)
             {
                 UniversalError eo("Peer rank world does not match");
@@ -1514,7 +1514,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->cellsStepsCounters.assign(this->Ncells, 0);
     this->transfersCounter = 0;
 
-    for(RankHandler *handler : this->rankHandlers)
+    for(RankHandler_t *handler : this->rankHandlers)
     {
         if(handler == nullptr)
         {
@@ -1569,9 +1569,9 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     double addParticlesTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - addParticlesStart).count();
 
     {
-        const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(typename RankHandler::index_t);
+        const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(typename RankHandler_t::index_t);
         this->handlerMemoryBytes_ = 0;
-        for (const RankHandler *h : this->rankHandlers)
+        for (const RankHandler_t *h : this->rankHandlers)
             if (h != nullptr) this->handlerMemoryBytes_ += h->buffsize * bytesPerSlot;
     }
 
@@ -1658,7 +1658,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     double reallocationTime = 0, maxReallocationTime = 0;
     size_t totalReallocations = 0;
-    for(RankHandler *handler : this->rankHandlers)
+    for(RankHandler_t *handler : this->rankHandlers)
     {
         if(handler == nullptr)
         {
@@ -1691,7 +1691,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     std::cout.flush();
     MPI_Barrier(this->comm_world);
 
-    for(const RankHandler *handler : this->rankHandlers)
+    for(const RankHandler_t *handler : this->rankHandlers)
     {
         if(handler == nullptr)
         {

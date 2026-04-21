@@ -124,7 +124,7 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
         }
 
         #ifdef RICH_MPI
-            std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return p1->rank < p2->rank or (p1->rank == p2->rank and p1->id < p2->id);});
+            std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return (p1->rank) < (p2->rank) or ((p1->rank) == (p2->rank) and p1->id < p2->id);});
         #else // RICH_MPI
             std::sort(particlesInCells[i].begin(), particlesInCells[i].end(), [](const MCParticle *p1, const MCParticle *p2){return p1->id < p2->id;});
         #endif // RICH_MPI
