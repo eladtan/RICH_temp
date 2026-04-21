@@ -34,8 +34,8 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 	vector<Conserved3D> & extensives) const
 {
 	size_t N = tess.GetPointNo();
-	vector<Vector3D> acc;
-	acc_(tess, cells, fluxes, t, acc);
+	acc_buf_.clear();
+	acc_(tess, cells, fluxes, t, acc_buf_);
 	dt_ = 0;
 	size_t loc = 0;
 	int rank = 0;
@@ -44,7 +44,7 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 #endif
 	for (size_t i = 0; i < N; ++i)
 	{
-		double const res_temp = fastsqrt(fastabs(acc[i])/ tess.GetWidth(i));
+		double const res_temp = fastsqrt(fastabs(acc_buf_[i])/ tess.GetWidth(i));
 		if (res_temp > dt_)
 		{
 			dt_ = res_temp;
@@ -52,17 +52,16 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 		}
 		double volume = tess.GetVolume(i);
 		double Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-		extensives[i].momentum += volume*cells[i].density*acc[i]*dt;
-		if (mass_flux_ && (fastabs(acc[i])*tess.GetWidth(i)*cells[i].density)<(0.5*cells[i].pressure))
+		extensives[i].momentum += volume*cells[i].density*acc_buf_[i]*dt;
+		if (mass_flux_ && (fastabs(acc_buf_[i])*tess.GetWidth(i)*cells[i].density)<(0.5*cells[i].pressure))
 		{
-			double part0 = volume*cells[i].density*ScalarProd(point_velocities[i], acc[i]);
-			double part1 = 0.5*ScalarProd(MassFlux(tess, i, fluxes), acc[i]);
+			double part0 = volume*cells[i].density*ScalarProd(point_velocities[i], acc_buf_[i]);
+			double part1 = 0.5*ScalarProd(MassFlux(tess, i, fluxes), acc_buf_[i]);
 			extensives[i].energy += (part0+part1)*dt;
 		}
 		else
 		{
 			double Eknew = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-			//extensives[i].energy += volume * cells[i].density * ScalarProd(acc[i], cells[i].velocity) * dt;
 			extensives[i].energy += Eknew - Ek;
 		}
 	}
@@ -78,7 +77,7 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
     dt_ = max_data.val;
 #endif
     if(rank == max_data.mpi_id)
-        std::cout<<"ConservativeForce3D dt ID "<<cells[loc].ID<<" width "<< tess.GetWidth(loc)<<" r "<<fastabs(tess.GetMeshPoint(loc))<<" acc "<<fastabs(acc[loc])<<" next dt "<<dt_<<std::endl;
+        std::cout<<"ConservativeForce3D dt ID "<<cells[loc].ID<<" width "<< tess.GetWidth(loc)<<" r "<<fastabs(tess.GetMeshPoint(loc))<<" acc "<<fastabs(acc_buf_[loc])<<" next dt "<<dt_<<std::endl;
 
 }
 

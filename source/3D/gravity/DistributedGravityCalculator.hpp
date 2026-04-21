@@ -153,9 +153,7 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
                 this->gravityTree->addExternalValues(rankData);
             }
 
-            // erase memory of `rankData`
             rankData.clear();
-            rankData.shrink_to_fit();
         }
         this->gravityTree->calculateMasses(); // recalculate masses of tree (also recalculates the CMs)
     }

@@ -78,9 +78,6 @@ std::vector<std::vector<T>> MPI_Iexchange_all_to_all(std::vector<Container<T, Ts
         {
             MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
         }
-        senders.clear();
-        senders.shrink_to_fit();
-
         std::vector<std::vector<T>> result(size);
         for(rank_t i = 0; i < size; i++)
         {
@@ -112,8 +109,6 @@ std::vector<std::vector<T>> MPI_Iexchange_all_to_all_serializers(std::vector<Ser
             senders[i].extract_all(sendVecs[i]);
             senders[i].reset();
         }
-        senders.clear();
-        senders.shrink_to_fit();
 
         std::vector<int> sendCounts(size), recvCounts(size);
         for(rank_t i = 0; i < size; i++)
@@ -164,9 +159,6 @@ std::vector<std::vector<T>> MPI_Iexchange_all_to_all_serializers(std::vector<Ser
         {
             MPI_Waitall(static_cast<int>(size), requests.data(), MPI_STATUSES_IGNORE);
         }
-        senders.clear();
-        senders.shrink_to_fit();
-
         std::vector<std::vector<T>> result(size);
         for(rank_t i = 0; i < size; i++)
         {
@@ -196,9 +188,9 @@ std::vector<std::vector<T>> MPI_Iexchange_by_ranks(const std::vector<Container<T
     }
 
     std::vector<std::vector<T>> result(sendSize);
+    Serializer receiver;
     for(size_t i = 0; i < sendSize; i++)
     {
-        Serializer receiver;
         MPI_Status status;
         MPI_Probe(MPI_ANY_SOURCE, MPI_EXCHANGE_ALLTOALL_TAG, comm, &status);
         size_t index = std::distance(correspondents.begin(), std::find(correspondents.begin(), correspondents.end(), status.MPI_SOURCE));
@@ -215,6 +207,7 @@ std::vector<std::vector<T>> MPI_Iexchange_by_ranks(const std::vector<Container<T
         receiver.resize(count);
         MPI_Recv(receiver.getData(), count, MPI_BYTE, status.MPI_SOURCE, status.MPI_TAG, comm, MPI_STATUS_IGNORE);
         receiver.extract(result[index], 0);
+        receiver.reset();
     }
     if(not requests.empty())
     {
@@ -612,7 +605,6 @@ void MPI_Distribute(std::vector<T> &data, const MPI_Comm &comm)
             std::make_move_iterator(data.begin() + keepEnd));
 
     data.clear();
-    data.shrink_to_fit();
 
     auto received = MPI_Iexchange_all_to_all(sendData, comm);
 

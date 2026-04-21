@@ -45,9 +45,10 @@ inline std::tuple<std::vector<double>, std::vector<int>, std::vector<int>> Calcu
         int _rank = sentProc[i];
         const std::vector<T> &data = rankToData(_rank);
         size_t sendCounter = 0;
+        std::vector<double> serialized;
         for(const T &element : data)
         {
-            std::vector<double> serialized = element.serialize();
+            serialized = element.serialize();
             sendData.insert(sendData.end(), serialized.cbegin(), serialized.cend());
             sendCounter += serialized.size();
         }
@@ -85,10 +86,13 @@ inline void TranslateSerializableVector(std::vector<T> &result, const InputItera
 {
     size_t chunkSize = T().getChunkSize();
     result.reserve(result.size() + std::distance(first, last) / chunkSize);
+    std::vector<double> chunk;
+    chunk.reserve(chunkSize);
     for(auto it = first; it != last; it += chunkSize)
     {
+        chunk.assign(it, it + chunkSize);
         result.emplace_back();
-        result.back().unserialize(std::vector<double>(it, it + chunkSize));
+        result.back().unserialize(chunk);
     }
 }
 

@@ -614,9 +614,13 @@ SUITE_START_EPOCH="$(date +%s)"
 
 # ==================== Parallel build configuration ====================
 MAX_PARALLEL_BUILDS=4
+MAX_TOTAL_MAKE_JOBS=20
 TOTAL_CORES="${NPROC_OVERRIDE:-$(nproc)}"
 JOBS_PER_BUILD=$(( TOTAL_CORES / MAX_PARALLEL_BUILDS ))
 (( JOBS_PER_BUILD < 1 )) && JOBS_PER_BUILD=1
+MAX_JOBS_PER_BUILD=$(( MAX_TOTAL_MAKE_JOBS / MAX_PARALLEL_BUILDS ))
+(( MAX_JOBS_PER_BUILD < 1 )) && MAX_JOBS_PER_BUILD=1
+(( JOBS_PER_BUILD > MAX_JOBS_PER_BUILD )) && JOBS_PER_BUILD=$MAX_JOBS_PER_BUILD
 
 # FIFO-based semaphore to cap concurrent builds
 BUILD_FIFO="$(mktemp -u)"
@@ -630,7 +634,7 @@ done
 # ==========================================================================
 #  PHASE 1: BUILD & RUN (pipelined, max ${MAX_PARALLEL_BUILDS} concurrent builds)
 # ==========================================================================
-echo "${BOLD}=== BUILD & RUN PHASE (max ${MAX_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each) ===${NC}"
+echo "${BOLD}=== BUILD & RUN PHASE (max ${MAX_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each, ${MAX_TOTAL_MAKE_JOBS} total cap) ===${NC}"
 
 declare -A JOB_PIDS=()    # test_id -> PID
 declare -A JOB_INDICES=()  # test_id -> index into ALL_* arrays

@@ -918,4 +918,17 @@ double fastsqrt(double x);
 double Interpolate2DTable(double const x, double const y, std::vector<double> const& x_vec, std::vector<double> const& y_vec, std::vector<std::vector<double>> const& data,
         double const x_vec_high_slope = 0, size_t const slope_length = 7);
 
+/*! \brief Shrink a container only when its capacity exceeds its size by more than 25%.
+    Avoids reallocation churn when sizes are stable across timesteps.
+    Works with std::vector, boost::container::small_vector, and any container
+    that provides capacity(), size(), and shrink_to_fit().
+    \param v The container to conditionally shrink
+*/
+template<typename Container>
+inline void conditional_shrink(Container &v)
+{
+    if (v.capacity() > v.size() * 1.25)
+        v.shrink_to_fit();
+}
+
 #endif // UTILS_HPP

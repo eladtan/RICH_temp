@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 23 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 22 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -543,35 +543,7 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 
 ---
 
-## 17. doppler_mc -- Doppler MC Frequency Shift (Single Cell, Velocity-Gradient Opacity)
-
-**Tags:** (none -- serial)
-
-### Physics
-Doppler frequency shift of a truncated Planck photon spectrum in a single-cell slab. A custom `VelocityGradientOpacity` class mimics a linear velocity gradient v(x) = v0 * x / width by computing a position-dependent virtual velocity at each scatter event and performing Lorentz transforms internally. The cell itself has zero velocity. Photons undergo pure scattering (no absorption/emission) and the resulting spectral shift is compared to the analytical adiabatic prediction from Eq. V.31 of arXiv:2601.05120.
-
-### Configuration
-- **Mesh:** 1 Eulerian cell, x in [0, 50] cm (optically thick, tau = 2000)
-- **EOS:** Ideal gas (irrelevant, no hydro feedback)
-- **Radiation:** 100-group IMC, energy groups from 100 eV to 100 keV, scattering opacity 40 cm^-1, no absorption
-- **Velocity:** Cell velocity = 0; opacity mimics linear gradient v0 = 2.5e8 cm/s at x = 50 cm (div(v) = 5e6 s^-1)
-- **Runtime:** 50 steps, dt = 4e-10 s (t_final = 2e-8 s)
-- **Photons:** 1e5 seeded at left boundary (x ~ 0) with Lambert cosine law and truncated Planck [1.12, 8.12] keV
-- **Execution:** Serial (local)
-- **Build flags:** `--energy_groups_num=100`
-
-### Output
-- `doppler_mc_spectrum.txt` -- initial cell spectrum, initial photon histogram, and final group energy densities
-- `doppler_mc_mid.png` -- comparison plot with analytical, initial-cell, and initial-photon spectra
-
-### Pass Criteria
-| Metric | Threshold | Override variable |
-|--------|-----------|-------------------|
-| Spectrum relative L1 | <= 0.7 | `DOPPLER_MC_MAX_L1` |
-
----
-
-## 17b. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
+## 17. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
 
 **Tags:** `mpi`
 
@@ -599,7 +571,7 @@ Scattering-only Doppler benchmark in a homologous flow. A truncated Planck spect
 
 ---
 
-## 17c. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
+## 17b. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -649,7 +621,7 @@ Compared against the semi-analytic solution computed by `regression_tests/moving
 
 ---
 
-## 17d. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
+## 17c. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -993,56 +965,6 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 26. Doppler MC (`doppler_mc`)
-
-### Physics
-
-Monte Carlo Doppler frequency-shift validation. Two cells with different velocities create opposite velocity divergence; photons undergo Lorentz boosts during scattering, shifting the radiation spectrum. Validates MC Doppler against the analytical solution from Eq. V.31 of Giron et al. (2026, arXiv:2601.05120):
-
-E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
-
-### Configuration
-
-| Parameter | Value |
-|-----------|-------|
-| Cells | 2 (5x5x5 cm each) |
-| Cell 0 velocity | (0, 0, 0) cm/s (stationary) |
-| Cell 1 velocity | (10^9, 0, 0) cm/s |
-| Temperature | 1 keV |
-| Density | 1 g/cm^3 |
-| Energy groups | 100 (log-spaced, 0.1 eV -- 100 keV) |
-| Build args | `--energy_groups_num=100` |
-| Scattering opacity | 10 cm^-1 |
-| Absorption/Planck opacity | ~0 |
-| Initial spectrum | Truncated Planck (1.12--8.12 keV) |
-| Photons per cell | 10,000 |
-| Boundary | Rigid (specular reflection) |
-| Time | 40 ns, dt = 0.1 ns |
-| Hydro | Off (withHydro=true for Lorentz boosts, no evolution) |
-
-**Source:** `regression_tests/cases/doppler_mc/test.cpp`
-
-### Output
-
-`doppler_mc_spectrum.txt`: per-group initial and final radiation energy density for both cells, plus metadata (K values, time, velocity).
-
-### Validation
-
-`regression_tests/lib/check_doppler_mc.py` computes the analytical Doppler-shifted spectrum and compares via relative L1 norm over non-negligible groups. Generates two plots (`doppler_mc_left.png`, `doppler_mc_right.png`).
-
-### Pass Criteria
-
-| Metric | Threshold | Env Override |
-|--------|-----------|--------------|
-| Relative L1 (expansion cell) | <= 0.15 | `DOPPLER_MC_MAX_L1` |
-| Relative L1 (compression cell) | <= 0.15 | `DOPPLER_MC_MAX_L1` |
-
-### References
-
-- Giron, Krief, Stone, Steinberg (2026), arXiv:2601.05120, Section V.3.2, Eq. V.31
-
----
-
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -1063,7 +985,6 @@ E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
-| `doppler_mc` | mpi | MC Doppler shift (32 cells, 100 eV-100 keV groups, no RW) | Analytical adiabatic shift | rel L1 <= 0.15 |
 | `doppler_scatter_mc` | mpi | MC vs diffusion Doppler scatter (tau=300, homologous flow) | MC-diffusion comparison | rel L1 <= 0.3 |
 | `moving_slab_mc` | serial | Freq-dependent moving slab (original vacuum, 124-group) | Semi-analytic solution | f-error <= 0.30 |
 | `moving_slab_mc_32` | serial | Freq-dependent moving slab (original vacuum, 32-group collapsed) | Semi-analytic solution (collapsed) | f-error <= 0.30 |
@@ -1076,4 +997,3 @@ E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
 | `rayleigh_taylor_mpi` | mpi | RT instability | Growth rate | rel error <= 0.25 |
 | `eulerian_diffusion_freefree_suite` | mpi | Grey free-free diffusion | Profile comparison | All outputs valid |
 | `eulerian_diffusion_freefree_multigroup_suite` | mpi | MG free-free diffusion | Profile comparison | All outputs valid |
-| `doppler_mc` | serial | MC Doppler shift (100 groups) | Analytical Eq. V.31 | rel L1 <= 0.15 |

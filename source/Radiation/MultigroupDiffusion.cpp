@@ -1130,6 +1130,8 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
     auto const N = tess.GetPointNo();
     sigma_absorption_group.resize(N);
     sigma_scattering_group.resize(N);
+    std::vector<std::size_t> cooling_neighbors;
+    face_vec cooling_faces;
     for (std::size_t i=0; i < N; ++i) {
         double const Trad = std::pow(cells[i].Erad * cells[i].density / CG::radiation_constant, 0.25);
         double cv = eos_.dT2cv(cells[i].density * pow<3>(length_scale_) / mass_scale_, cells[i].temperature) * mass_scale_ / (pow<2>(time_scale_)*length_scale_);
@@ -1175,10 +1177,10 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
 
         if(cooling_time_limiter_on_)
         {
-            std::vector<std::size_t> neighbors;
-            face_vec faces;
-            tess.GetNeighbors(i, neighbors);
-            faces = tess.GetCellFaces(i);
+            tess.GetNeighbors(i, cooling_neighbors);
+            cooling_faces = tess.GetCellFaces(i);
+            auto &neighbors = cooling_neighbors;
+            auto &faces = cooling_faces;
 
             double div_v = 0;
             for(std::size_t j = 0; j < neighbors.size(); ++j)

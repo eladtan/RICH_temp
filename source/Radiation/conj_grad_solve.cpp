@@ -79,18 +79,27 @@ namespace CG
         return res;
     }
 
-    // Linear combination of vectors
+    void vector_rescale(std::vector<double> const& a, std::vector<double> const& b,
+        std::vector<double> &result)
+    {
+        size_t const N = a.size(); 
+        if(a.size() != b.size())
+            throw UniversalError("Sizes do not match in vector_rescale");
+        result.resize(N);
+        for(size_t i = 0; i < N; ++i)
+            result[i] = a[i] * b[i];
+    }
+
+    // Linear combination of vectors; safe when result aliases u or v
     void vec_lin_combo(double a, const std::vector<double> &u, double b, const std::vector<double> &v, 
         std::vector<double> &result)
     {
         if(u.size() != v.size())
             throw UniversalError("Unequal vector sizes in vec_lin_combo");
         size_t n = u.size();
-        result.resize(n, 0);
+        result.resize(n);
         for (size_t j = 0; j < n; j++)
-            result[j] = a * u[j];
-        for (size_t j = 0; j < n; j++)
-            result[j] += b * v[j];
+            result[j] = a * u[j] + b * v[j];
     }
 
     double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v) // need to pass it the buffer where to keep the result
@@ -311,8 +320,8 @@ namespace CG
         std::vector<double> sub_p(sub_r);
         sub_p.resize(Nlocal);
         sub_x.resize(Nlocal);
-        sub_p = vector_rescale(sub_p, M);
-        std::vector<double> result1, result2(Nlocal, 0), result3, p(sub_p), old_result2(Nlocal, 0);
+        vector_rescale(sub_p, M, sub_p);
+        std::vector<double> result2(Nlocal, 0), result3, p(sub_p), old_result2(Nlocal, 0);
         std::vector<double> old_x = sub_x;
         size_t Ntotal = Nlocal;
 #ifdef RICH_MPI
@@ -355,8 +364,7 @@ namespace CG
             alpha = sub_r_sqrd / (sub_p_by_ap + std::numeric_limits<double>::min() * 100);         
 
             // Next estimate of solution
-            vec_lin_combo(1.0, sub_x, alpha, sub_p, result1);
-            sub_x = result1;
+            vec_lin_combo(1.0, sub_x, alpha, sub_p, sub_x);
             if(i > 1 && i % 50 == 0)
             {
 #ifdef RICH_MPI
@@ -367,11 +375,10 @@ namespace CG
                 else
                     mat_times_vec(A, A_indeces, sub_x, sub_a_times_p);
                 sub_x.resize(Nlocal);
-                vec_lin_combo(1.0, b, -1.0, sub_a_times_p, result1);    
+                vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);    
             }
             else
-                vec_lin_combo(1.0, sub_r, -alpha, sub_a_times_p, result1);
-            sub_r = result1;
+                vec_lin_combo(1.0, sub_r, -alpha, sub_a_times_p, sub_r);
 
             max_data[0].val = 0;
             max_data[1].val = 0;
@@ -400,7 +407,7 @@ namespace CG
             MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif
             old_result2 = result2;
-            result2 = vector_rescale(sub_r, M);
+            vector_rescale(sub_r, M, result2);
             sub_r_sqrd = mpi_dot_product(sub_r, result2);
             // recall that we can't have a 'break' within an openmp parallel region, so end it here then all threads are merged, and the convergence is checked
             // Convergence test
@@ -433,8 +440,7 @@ namespace CG
             double const  Polak_Ribiere = mpi_dot_product(sub_r, result3);
             beta = std::max(0.0, Polak_Ribiere / sub_r_sqrd_old);       
             
-            vec_lin_combo(1.0, result2, beta, sub_p, result3);             // Next gradient
-            sub_p = result3;
+            vec_lin_combo(1.0, result2, beta, sub_p, sub_p);
             p = sub_p;
     #ifdef RICH_MPI
             MPI_exchange_data(tess, p, true);
@@ -553,13 +559,15 @@ namespace CG
         sub_p.resize(Nlocal);
         sub_x.resize(Nlocal);
         sub_r0.resize(Nlocal);
-        sub_p = vector_rescale(sub_p, M);
+        vector_rescale(sub_p, M, sub_p);
         std::vector<double> y(Nlocal, 0), z(Nlocal, 0), v(Nlocal, 0), h(Nlocal, 0), s(Nlocal, 0), t(Nlocal, 0);
+        std::vector<double> scratch_rescale1(Nlocal, 0), scratch_rescale2(Nlocal, 0);
         std::vector<double> old_x = sub_x;
         size_t Ntotal = Nlocal;
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
-        double const scale_b = mpi_dot_product(vector_rescale(b, M), b);
+        vector_rescale(b, M, scratch_rescale1);
+        double const scale_b = mpi_dot_product(scratch_rescale1, b);
         double sub_r_sqrd_old = 0, sub_p_by_ap = 0, alpha = 0, beta = 0;
         struct
         {
@@ -593,7 +601,8 @@ namespace CG
                 sub_r0 = sub_r;
                 sub_p = sub_r;
                 rho0 = mpi_dot_product(sub_r0, sub_r);
-                sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
+                vector_rescale(sub_r, M, scratch_rescale1);
+                sub_r_sqrd = mpi_dot_product(scratch_rescale1, sub_r);
             }
             if(std::abs(rho0) < std::numeric_limits<double>::min()*1e100){
                 if(rank == 0)
@@ -620,7 +629,7 @@ namespace CG
             }
             max_data[2].mpi_id = rank;
             max_data[0].mpi_id = rank;
-            y = vector_rescale(sub_p, M);
+            vector_rescale(sub_p, M, y);
 #ifdef RICH_MPI
             MPI_exchange_data(tess, y, true, slice);
 #endif
@@ -632,14 +641,16 @@ namespace CG
                 std::cout<<"alpha "<<alpha<<" sub_r0_v "<<sub_r0_v<<std::endl;
             vec_lin_combo(1.0, sub_x, alpha, y, h);
             vec_lin_combo(1.0, sub_r, -alpha, v, s);
-            z = vector_rescale(s, M);
+            vector_rescale(s, M, z);
 #ifdef RICH_MPI
             MPI_exchange_data(tess, z, true, slice);
 #endif
             matvec(z, t);
             z.resize(Nlocal);
-            double const up = mpi_dot_product(vector_rescale(t, M), vector_rescale(s, M));
-            double const down = mpi_dot_product(vector_rescale(t, M), vector_rescale(t, M));
+            vector_rescale(t, M, scratch_rescale1);
+            vector_rescale(s, M, scratch_rescale2);
+            double const up = mpi_dot_product(scratch_rescale1, scratch_rescale2);
+            double const down = mpi_dot_product(scratch_rescale1, scratch_rescale1);
             double w = std::abs(down) < std::numeric_limits<double>::min()*1e100 ? 0.0 : up / down;
             if(print)
                 std::cout<<"w "<<w<<" up "<<up<<" down "<<down<<std::endl;
@@ -658,7 +669,8 @@ namespace CG
             old_x = sub_x;
             vec_lin_combo(1.0, h, w, z, sub_x);
             vec_lin_combo(1.0, s, -w, t, sub_r);
-            sub_r_sqrd = mpi_dot_product(vector_rescale(sub_r, M), sub_r);
+            vector_rescale(sub_r, M, scratch_rescale1);
+            sub_r_sqrd = mpi_dot_product(scratch_rescale1, sub_r);
             
             error = sub_r_sqrd / scale_b;
             if(print)

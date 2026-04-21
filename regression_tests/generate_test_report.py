@@ -942,50 +942,6 @@ TESTS = [
         "plot_caption": "",
     },
     {
-        "id": "doppler_mc",
-        "title": "Doppler MC Frequency Shift (Single Cell, Velocity-Gradient Opacity)",
-        "description": (
-            "Doppler frequency shift of a truncated Planck photon spectrum in a "
-            "single-cell slab. A custom \\texttt{VelocityGradientOpacity} class "
-            "mimics a linear velocity gradient $v(x) = v_0 x / L$ by computing a "
-            "position-dependent virtual velocity at each scatter event and performing "
-            "Lorentz transforms internally. The cell itself has zero velocity. "
-            "Photons undergo pure scattering (no absorption or emission) and the "
-            "resulting spectral shift is compared to the analytical adiabatic "
-            "prediction from Eq.~V.31 of Giron et al.\\ (2026, arXiv:2601.05120).\n\n"
-            "\\textbf{Code and physics aspects verified:}\n"
-            "\\begin{itemize}\n"
-            "  \\item \\textbf{Doppler shift:} Verifies that Lorentz boosts during "
-            "scattering events produce the correct first-order frequency shift.\n"
-            "  \\item \\textbf{Multigroup MC:} Exercises the 100-group IMC solver "
-            "with frequency-dependent photon tracking.\n"
-            "  \\item \\textbf{Opacity-driven transforms:} Validates that the opacity "
-            "class can perform position-dependent Lorentz transforms at scatter events.\n"
-            "\\end{itemize}"
-        ),
-        "initial_conditions": (
-            r"1 cell, $x \in [0,\,50]$~cm, cell velocity zero, opacity mimics "
-            r"$v(x) = 2.5 \times 10^8\, x / 50$~cm/s, "
-            r"$\kappa_s = 40$~cm$^{-1}$, energy groups spanning 100~eV to 100~keV, "
-            r"$T = 1$~keV, $\rho = 1$~g/cm$^3$, truncated Planck spectrum "
-            r"$[1.12,\,8.12]$~keV, $t_{\mathrm{end}} = 2 \times 10^{-8}$~s, "
-            r"$\Delta t = 4 \times 10^{-10}$~s, $10^5$ photons seeded at left boundary."
-        ),
-        "boundary_conditions": "Rigid (reflective) walls on all faces.",
-        "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics (noHydroFeedback), random walk disabled.",
-        "execution": "Serial (local).",
-        "pass_criteria": (
-            r"Relative $L_1$ error of the spectrum compared to the "
-            r"analytical adiabatic shift must be $\le 0.7$."
-        ),
-        "plots": ["doppler_mc_mid.png"],
-        "plot_caption": (
-            "Doppler MC single-cell spectrum: MC numerical (circles) vs.\\ "
-            "analytical adiabatic prediction (solid line), cell-averaged initial spectrum (dashed), "
-            "and the actually seeded photon histogram (dash-dot)."
-        ),
-    },
-    {
         "id": "doppler_scatter_mc",
         "title": "Doppler Scatter Benchmark (Homologous Flow, MC vs.\\ Diffusion)",
         "description": (
@@ -1912,18 +1868,6 @@ def _read_desmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
-def _read_doppler_mc_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_equals(cases_dir / "doppler_mc" / "doppler_mc_check.stdout.log")
-    if not kv:
-        return []
-    rows = []
-    val = kv.get("DOPPLER_MC_L1")
-    if val is not None:
-        passed = float(val) <= 0.15
-        rows.append(("Spectrum rel. $L_1$", val, "0.15", passed))
-    return rows
-
-
 def _read_doppler_scatter_mc_metrics(cases_dir: Path) -> list[MetricRow]:
     kv = _parse_kv_equals(cases_dir / "doppler_scatter_mc" / "doppler_scatter_check.stdout.log")
     if not kv:
@@ -2132,7 +2076,6 @@ METRIC_READERS: dict[str, object] = {
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
     "desmore2012_mc_serial": lambda cd: _read_desmore2012_mc_serial_metrics(cd),
-    "doppler_mc": lambda cd: _read_doppler_mc_metrics(cd),
     "doppler_scatter_mc": lambda cd: _read_doppler_scatter_mc_metrics(cd),
     "moving_slab_mc": lambda cd: _read_moving_slab_mc_metrics(cd),
     "moving_slab_mc_32": lambda cd: _read_moving_slab_mc_32_metrics(cd),

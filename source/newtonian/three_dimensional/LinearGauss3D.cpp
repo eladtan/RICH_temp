@@ -79,7 +79,7 @@ namespace
 		vector<Vector3D> const& neighbor_centers,
 		vector<Vector3D> const& neigh_cm, Tessellation3D const& tess,
 		Slope3D &res, Slope3D &temp, size_t /*index*/, face_vec const& faces,
-		std::vector<Vector3D> c_ij,
+		std::vector<Vector3D> &c_ij,
 		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache)
 	{
 		size_t n = neighbor_centers.size();
@@ -688,7 +688,7 @@ namespace
 		vector<Vector3D> &neighbor_mesh_list,
 		vector<Vector3D> &neighbor_cm_list,
  string const& skip_key,
-		const std::vector<Vector3D> &c_ij, vector<ComputationalCell3D> &neighbor_list,
+		std::vector<Vector3D> &c_ij, vector<ComputationalCell3D> &neighbor_list,
 		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache, bool apply_principal_limit_flag)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
@@ -834,9 +834,9 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 		}
 	}
 	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
-	rslopes_.shrink_to_fit();
+	conditional_shrink(rslopes_);
 	naive_rslopes_.resize(CellNumber);
-	naive_rslopes_.shrink_to_fit();
+	conditional_shrink(naive_rslopes_);
 	Slope3D temp1(cells[0], cells[0], cells[0]);
 	ComputationalCell3D temp2(cells[0]);
 	ComputationalCell3D temp3(cells[0]);
@@ -886,9 +886,9 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 		}
 	}
 	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
-	rslopes_.shrink_to_fit();
+	conditional_shrink(rslopes_);
 	naive_rslopes_.resize(CellNumber);
-	naive_rslopes_.shrink_to_fit();
+	conditional_shrink(naive_rslopes_);
 	Slope3D temp1(cells[0], cells[0], cells[0]);
 	ComputationalCell3D temp2(cells[0]);
 	ComputationalCell3D temp3(cells[0]);

@@ -4,6 +4,7 @@
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 #include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 #include "misc/universal_error.hpp"
+#include "misc/utils.hpp"
 #include "mpi/mpi_commands.hpp"
 #include <bits/chrono.h>
 
@@ -114,7 +115,6 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
     }
 
     particles.clear();
-    particles.shrink_to_fit();
 
     std::vector<std::vector<Particle3D>> allNewParticles;
     {
@@ -133,6 +133,7 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
     MPI_Reduce((rank == 0)? MPI_IN_PLACE : &sentCounter, &sentCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce((rank == 0)? MPI_IN_PLACE : &receivedCounter, &receivedCounter, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
+    conditional_shrink(particles);
     MPI_Barrier(MPI_COMM_WORLD);
 }
 
@@ -240,7 +241,6 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
         for(rank_t _rank = 0; _rank < size; _rank++)
         {
             sendValues[_rank].clear();
-            sendValues[_rank].shrink_to_fit();
             sendIndicesCpy[_rank].clear();
             acknowledgementValues[_rank].clear();
         }
@@ -383,7 +383,6 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
 
     size_t Nparticles = particles.size();
     particles.clear();
-    particles.shrink_to_fit();
     auto end = std::chrono::high_resolution_clock::now();
     double timeInLoop1 = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     // std::cout << "[First movements] Rank " << rank << ", time in loop 1: " << timeInLoop1 << " (had " << Nparticles << " particles)" << std::endl;
@@ -553,7 +552,6 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
         }
 
         particles.clear();
-        particles.shrink_to_fit();
 
         FirstInaccurateMovements(tess, shouldExchangeParticles);
         MPI_Barrier(MPI_COMM_WORLD);

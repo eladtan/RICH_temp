@@ -7,6 +7,7 @@
 #include <vector>
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
+#include "misc/utils.hpp"
 
 /*!
 \brief Sends and revs data
@@ -65,6 +66,8 @@ inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells,
 			}
 		}
 	}
+	if(!ghost_or_sent)
+		conditional_shrink(cells);
 }
 
 template<class T>

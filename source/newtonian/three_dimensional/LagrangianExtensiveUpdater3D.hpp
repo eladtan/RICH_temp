@@ -20,9 +20,8 @@ public:
 		std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& interp_values) const override;
 private:
 	LagrangianFlux3D const& lflux_;
-  //EquationOfState const& eos_;
-  //	Ghost3D const& ghost_;
 	vector<pair<const ConditionExtensiveUpdater3D::Condition3D*, const ConditionExtensiveUpdater3D::Action3D*> >
 		const& sequence_;
+	mutable std::vector<Conserved3D> old_extensive_;
 };
 #endif //LEUPDATE_HPP3D

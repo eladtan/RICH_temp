@@ -1,5 +1,6 @@
 #include "Diffusion.hpp"
 #include "misc/memory_debug.hpp"
+#include "misc/utils.hpp"
 #include <boost/math/special_functions.hpp>
 
 #ifdef RICH_MPI
@@ -79,29 +80,29 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     auto const N = tess.GetPointNo();
     
     sigma_planck.resize(N, 0.0);
-    sigma_planck.shrink_to_fit();
+    conditional_shrink(sigma_planck);
     sigma_s.resize(N, 0.0);
-    sigma_s.shrink_to_fit();
+    conditional_shrink(sigma_s);
     fleck_factor.resize(N, 0.0);
-    fleck_factor.shrink_to_fit();
+    conditional_shrink(fleck_factor);
     D.resize(N, 0.0);
-    D.shrink_to_fit();
+    conditional_shrink(D);
     R2.resize(N, 0.0);
-    R2.shrink_to_fit();
+    conditional_shrink(R2);
     cell_flux_limiter.resize(N, 0.0);
-    cell_flux_limiter.shrink_to_fit();
+    conditional_shrink(cell_flux_limiter);
 
     new_Er.resize(N, 0.0);
-    new_Er.shrink_to_fit();
+    conditional_shrink(new_Er);
     new_Er_full.resize(N, 0.0);
-    new_Er_full.shrink_to_fit();
+    conditional_shrink(new_Er_full);
     old_Er.resize(N, 0.0);
-    old_Er.shrink_to_fit();
+    conditional_shrink(old_Er);
 
     cells_temp.resize(N);
-    cells_temp.shrink_to_fit();
+    conditional_shrink(cells_temp);
     extensives_temp.resize(N);
-    extensives_temp.shrink_to_fit();
+    conditional_shrink(extensives_temp);
 
     for(std::size_t i=0; i < N; ++i){
         old_Er[i] = cells[i].Erad * cells[i].density;
@@ -408,10 +409,10 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     A_indeces.resize(Nlocal);
     R2.clear();
     R2.resize(Nlocal, 0);
-    R2.shrink_to_fit();
+    conditional_shrink(R2);
     cell_flux_limiter.clear();
     cell_flux_limiter.resize(Nlocal, 0);
-    cell_flux_limiter.shrink_to_fit();
+    conditional_shrink(cell_flux_limiter);
 
     // Build the matrix
     for(size_t i = 0; i < Nlocal; ++i)

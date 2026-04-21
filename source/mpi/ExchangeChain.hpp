@@ -5,6 +5,7 @@
 
 #include "mpi_commands.hpp"
 #include "serialize/mpi_commands.hpp"
+#include "misc/utils.hpp"
 
 class ExchangeChain
 {
@@ -64,6 +65,7 @@ void MPI_exchange_data(const ExchangeChain &chain, std::vector<T> &data)
         if(r != myRank)
             data.insert(data.end(), received[r].cbegin(), received[r].cend());
     }
+    conditional_shrink(data);
 }
 
 #endif // RICH_MPI

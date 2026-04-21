@@ -295,9 +295,12 @@ namespace
 		size_t nremove = toremove.size();
 		size_t Norg = tess.GetPointNo();
 		vector<Plane> r_planes;
+		vector<vector<size_t> > ghosts(Nprocs);
+		vector<Vector3D> v_plane;
+		vector<double> d_plane;
 		for (size_t i = 0; i < nremove; ++i)
 		{
-			vector<vector<size_t> > ghosts(Nprocs);
+			for (auto &g : ghosts) g.clear();
 			tess.GetNeighbors(toremove[i], temp);
 			size_t Nneigh = temp.size();
 			bool added = false;
@@ -321,8 +324,8 @@ namespace
 			{
 				CreatePolyPlanes(tess, toremove[i], r_planes);
 				size_t nplanes = r_planes.size();
-				vector<Vector3D> v_plane(nplanes);
-				vector<double> d_plane(nplanes);
+				v_plane.resize(nplanes);
+				d_plane.resize(nplanes);
 				for (size_t j = 0; j < nplanes; ++j)
 				{
 					d_plane[j] = ScalarProd(r_planes[j].normal, r_planes[j].point);
@@ -390,6 +393,7 @@ namespace
 		changed_byouter.resize(ws);
 
 		vector<Plane> r_planes;
+		boost::container::flat_map<int, std::vector<size_t> > rank_to_indices;
 
 		for (size_t i = 0; i < refined_points.size(); ++i)
 		{
@@ -404,7 +408,7 @@ namespace
 			
 
 			// Group remote k=2 neighbors by rank
-			boost::container::flat_map<int, std::vector<size_t> > rank_to_indices;
+			rank_to_indices.clear();
 			for (const RemotePoint& rp : it->second)
 			{
 				if (rp.rank != myrank)

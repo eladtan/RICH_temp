@@ -73,6 +73,8 @@ Vector3D faceCenter(const Face &face);
 
 std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, bool print = false);
 
+void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, bool print = false);
+
 std::tuple<double, double, Vector3D> clipCells(const Tessellation3D &tess, size_t check_index, const std::vector<Face> &polyhedron, const Plane *vof = 0, bool print = false);
 
 std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly, const Plane *vof = 0, bool print = false);

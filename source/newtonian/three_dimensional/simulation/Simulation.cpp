@@ -3,7 +3,10 @@
 #include "misc/memory_debug.hpp"
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
-     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0), currentBox(tess_.GetBoxCoordinates())
+     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
+#ifdef RICH_MPI
+     , currentBox(tess_.GetBoxCoordinates())
+#endif // RICH_MPI
 {
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
@@ -128,6 +131,8 @@ double Simulation::GetTimeStep(void) const
 
     void Simulation::buildDataTransfer(const ExchangeChain &chain)
     {
+        if (chain.GetNorg() == 0)
+            return;
         for(MigrationBuffer &buff : this->migrationBuffers)
         {
             buff.transferChain(chain);
@@ -210,7 +215,8 @@ void Simulation::step(void)
                     if(this->rank == 0)
                     {
                         std::cout << "Did rebalanced - load balance:" << std::endl;
-                        this->currentLoad->printInfo();
+                        auto lb = this->tess.GetLoadBalancer();
+                        if (lb) lb->printInfo();
                     }                
                     this->buildDataTransfer();
                     physics->afterLB();
@@ -270,7 +276,8 @@ void Simulation::step(void)
                 if(this->rank == 0)
                 {
                     std::cout << "Rebalanced first time - load balance:" << std::endl;
-                    this->currentLoad->printInfo();
+                    auto lb = this->tess.GetLoadBalancer();
+                    if (lb) lb->printInfo();
                 }            
                 this->buildDataTransfer();
                 physics->afterLB();

@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 14 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 13 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -495,47 +495,6 @@ Same as `gresho_euler`.
 
 ---
 
-## 15. Doppler MC (`doppler_mc`)
-
-### Physics
-
-Monte Carlo Doppler frequency-shift validation. Two box-shaped cells (5x5x5 cm) with different velocities create opposite velocity divergence. Photons undergo Lorentz boosts during scattering, shifting the radiation spectrum. Validates against the analytical Doppler solution (Eq. V.31 of Giron et al. 2026, arXiv:2601.05120):
-
-E(nu, t) = E(nu * exp(-K*t), 0),  K = -div(v)/3
-
-### Configuration
-
-| Parameter | Value |
-|-----------|-------|
-| Cells | 2 |
-| Energy groups | 100 |
-| Build args | `--energy_groups_num=100` |
-| Scattering opacity | 10 cm^-1 |
-| Initial spectrum | Truncated Planck at 1 keV (1.12--8.12 keV) |
-| Time | 40 ns |
-
-**Source:** `regression_tests/cases/doppler_mc/test.cpp`
-
-### Output
-
-`doppler_mc_spectrum.txt`
-
-### Validation
-
-`check_doppler_mc.py` computes the analytical Doppler-shifted spectrum per cell and compares via relative L1 norm. Generates spectrum comparison plots.
-
-### Pass Criteria
-
-| Metric | Threshold | Environment Variable |
-|--------|-----------|---------------------|
-| Relative L1 error | <= 0.15 | `DOPPLER_MC_MAX_L1` |
-
-### References
-
-Giron, Krief, Stone, Steinberg (2026), arXiv:2601.05120, Section V.3.2
-
----
-
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -554,4 +513,3 @@ Giron, Krief, Stone, Steinberg (2026), arXiv:2601.05120, Section V.3.2
 | `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
-| `doppler_mc` | serial | MC Doppler shift (100 groups) | Analytical Eq. V.31 | rel L1 <= 0.15 |

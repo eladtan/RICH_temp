@@ -309,6 +309,52 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
     return result;
 }
 
+void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, bool print)
+{
+    result.clear();
+    Face bottom;
+    if(print)
+    {
+        std::cout << "Clipping plane " << plane << std::endl;
+    }
+    for(const Face &face : faces)
+    {
+        if(print)
+        {
+            std::cout << "Clipping face " << face << std::endl;
+        }
+        auto clipped = clipFace(face, plane, print);
+        if(print)
+        {
+            std::cout << "Clip result: " << clipped.first << ", " << clipped.second << std::endl;
+        }
+        if(clipped.first.vertices.size() >= 3)
+        {
+            Face clean = CleanFace(clipped.first);
+            clean = ConvexHullFace(clean);
+            clean = CleanFace(clean);
+            if(clean.vertices.size() > 2)
+            {
+                result.push_back(clean);
+            }
+        }
+        if(not clipped.second.vertices.empty())
+        {
+            bottom.vertices.insert(bottom.vertices.end(), clipped.second.vertices.begin(), clipped.second.vertices.end());
+        }
+    }
+    if(bottom.vertices.size() > 2)
+    {
+        Face bottom2 = CleanFace(bottom);
+        bottom2 = ConvexHullFace(bottom2);
+        bottom2 = CleanFace(bottom2);
+        if(bottom2.vertices.size() > 2)
+        {
+            result.push_back(CleanFace(bottom2));
+        }
+    }
+}
+
 double computeVolume(const std::vector<Face> &faces)
 {
     double volume = 0.0;
@@ -398,29 +444,31 @@ std::tuple<double, double, Vector3D> clipCells(const Tessellation3D &tess, size_
 
 std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly, const Plane *vof, bool print)
 {
-    std::vector<Face> clipped_poly(polyhedron);
+    std::vector<Face> buf_a(polyhedron), buf_b;
+    std::vector<Face> *src = &buf_a, *dst = &buf_b;
     if(print)
     {
         auto [volume, CM] = computeCM(polyhedron);
-        double volume1 = computeVolume(clipped_poly);
+        double volume1 = computeVolume(*src);
         std::cout << "Starting cell clip volume0 " << volume << " volume1 " << volume1 << std::endl;
     }
     const size_t Nplanes = other_poly.size();
     for(size_t i = 0; i < Nplanes; i++)
     {
-        clipped_poly = clipPolyhedron(clipped_poly, other_poly[i], print);
+        clipPolyhedron(*src, other_poly[i], *dst, print);
+        std::swap(src, dst);
         if(print)
         {
-            auto [volume, CM] = computeCM(clipped_poly);
+            auto [volume, CM] = computeCM(*src);
             std::cout << "Volume " << volume << " CM " << CM << std::endl;
             std::cout << "Clipped poly: " << std::endl;
-            for(const Face &face : clipped_poly)
+            for(const Face &face : *src)
             {
                 std::cout << face << std::endl;
             }
         }
     }
-    auto [volume, CM] = computeCM(clipped_poly);
+    auto [volume, CM] = computeCM(*src);
     double vof_volume = 0;
     if(vof != 0)
     {
@@ -428,16 +476,17 @@ std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedr
         {
             std::cout << "Starting vof clip" << std::endl;
         }
-        clipped_poly = clipPolyhedron(clipped_poly, *vof, print);
+        clipPolyhedron(*src, *vof, *dst, print);
+        std::swap(src, dst);
         if(print)
         {
             std::cout << "Clipped poly: " << std::endl;
-            for(const Face &face : clipped_poly)
+            for(const Face &face : *src)
             {
                 std::cout << face << std::endl;
             }
         }
-        auto [volume2, CM2] = computeCM(clipped_poly);
+        auto [volume2, CM2] = computeCM(*src);
         vof_volume = std::min(volume, volume2);
     }
     return {volume, vof_volume, CM};

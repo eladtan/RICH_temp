@@ -66,6 +66,7 @@ private:
 	const Acceleration3D& acc_;
 	const bool mass_flux_;
 	mutable double dt_;
+	mutable std::vector<Vector3D> acc_buf_;
 };
 
 #endif // CONSFORCE3D_HPP

@@ -37,6 +37,7 @@
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/SourceTerm3D.hpp"
 #include "source/3D/output/write3D.hpp"
+#include "source/3D/radiation/IMCCostCalculator.hpp"
 
 namespace fs = std::filesystem;
 
@@ -523,7 +524,9 @@ int main(int argc, char *argv[])
         sim.addPhysics(remeshStep);
         sim.addPhysics(mcStep);
 #ifdef RICH_MPI
-        sim.addMigrationBuffer(mcStep->getCellCosts());
+        mcStep->setCost(std::make_shared<IMCCostCalculator>(mcStep->getManager()));
+        sim.setForceRebalanceSteps(4);
+        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
         sim.PresetLoadBalance("remesh");
 #endif
 
