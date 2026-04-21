@@ -4,25 +4,27 @@ set(ld_lib_path $ENV{LD_LIBRARY_PATH})
 string(REPLACE ":" ";" ld_lib_path_list "${ld_lib_path}")
 
 if(NOT JSON_DIRECTORY)
-    # Extract likely JSON prefixes
-    set(JSON_DIRECTORY "")
+    set(_json_prefixes "")
     foreach(dir IN LISTS ld_lib_path_list)
         if(dir MATCHES "/jsoncpp")
             string(REGEX REPLACE "/lib(64)?$" "" prefix "${dir}")
-        # if there is already a prefix - error, multiple JSON installations
-            if(JSON_DIRECTORY)
-                message(FATAL_ERROR "Multiple JSON installations found in LD_LIBRARY_PATH: ${JSON_DIRECTORY} and ${prefix}")
+            list(FIND _json_prefixes "${prefix}" _idx)
+            if(_idx EQUAL -1)
+                list(APPEND _json_prefixes "${prefix}")
+                message(STATUS "Found jsoncpp candidate: ${prefix}")
             endif()
-            message(STATUS "Using json cpp: ${prefix}")
-            # Add the prefix to the list
-            list(APPEND JSON_DIRECTORY "${prefix}")
         endif()
     endforeach()
 
-    # if no JSON_DIRECTORY found, message that it compiles with no json
-    if(NOT JSON_DIRECTORY)
+    list(LENGTH _json_prefixes _json_count)
+
+    if(_json_count EQUAL 0)
         message("No JSON installation found in LD_LIBRARY_PATH environment variable")
+    elseif(_json_count GREATER 1)
+        message(FATAL_ERROR "Multiple distinct JSON installations found in LD_LIBRARY_PATH: ${_json_prefixes}")
     else()
+        list(GET _json_prefixes 0 JSON_DIRECTORY)
+        message(STATUS "Using json cpp: ${JSON_DIRECTORY}")
         set(JSONCPP_INCLUDE "${JSON_DIRECTORY}/include")
         set(JSONCPP_LIB_DIRECTORY "${JSON_DIRECTORY}/lib64")
     endif()
