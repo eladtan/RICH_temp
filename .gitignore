@@ -40,6 +40,11 @@ output_*
 *.so
 .cache
 .cursor/*
+!.cursor/skills/
+!.cursor/skills/rich-mpi/
+!.cursor/skills/rich-mpi/**
+!.cursor/skills/rich-self-gravity/
+!.cursor/skills/rich-self-gravity/**
 runs/clemon*
 runs/**/*.txt 
 /regression_results
