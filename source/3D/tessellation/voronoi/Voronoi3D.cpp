@@ -522,6 +522,7 @@ size_t Voronoi3D::SetPointTetras(void)
     boost::container::flat_set<size_t> const &empty_tetras = this->del_.empty_tetras_;
     std::vector<size_t> &newTetras = this->del_.newTetras_;
     PointTetras_.resize(this->Norg_);
+    PointTetras_.shrink_to_fit();
     // static vector<tetra_vec> tmpPointTetras;
 
     #ifdef USE_VCL_VECTORIZATION
@@ -805,6 +806,7 @@ void Voronoi3D::BuildInitialize(size_t num_points)
     // assert(num_points > 0);
     // Clear data
     PointTetras_.clear();
+    PointTetras_.shrink_to_fit();
     R_.clear();
     if(num_points > 0) R_.reserve(num_points * 11);
     tetra_centers_.clear();
@@ -812,17 +814,27 @@ void Voronoi3D::BuildInitialize(size_t num_points)
     // Voronoi Data
     del_.Clean();
     FacesInCell_.clear();
+    FacesInCell_.shrink_to_fit();
     PointsInFace_.clear();
+    PointsInFace_.shrink_to_fit();
     FaceNeighbors_.clear();
+    FaceNeighbors_.shrink_to_fit();
     CM_.clear();
+    CM_.shrink_to_fit();
     Face_CM_.clear();
+    Face_CM_.shrink_to_fit();
     volume_.clear();
+    volume_.shrink_to_fit();
     area_.clear();
+    area_.shrink_to_fit();
     Norg_ = num_points;
     #ifdef RICH_MPI
         duplicatedprocs_.clear();
+        duplicatedprocs_.shrink_to_fit();
         duplicated_points_.clear();
+        duplicated_points_.shrink_to_fit();
         Nghost_.clear();
+        Nghost_.shrink_to_fit();
     #endif // RICH_MPI
 }
 
@@ -1448,8 +1460,10 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
 
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
     this->R_.resize(this->del_.tetras_.size());
+    this->R_.shrink_to_fit();
     // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
+    this->tetra_centers_.shrink_to_fit();
     this->bigtet_ = SetPointTetras();
 
     // MPI_Barrier(MPI_COMM_WORLD);
@@ -1502,7 +1516,9 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     start = std::chrono::high_resolution_clock::now();
     
     CM_.resize(del_.points_.size());
+    CM_.shrink_to_fit();
     volume_.resize(Norg_);
+    volume_.shrink_to_fit();
 
     if(not activePoints.empty())
     {
@@ -1713,8 +1729,10 @@ void Voronoi3D::MockMesh(void)
     }
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
     this->R_.resize(this->del_.tetras_.size());
+    this->R_.shrink_to_fit();
     // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
+    this->tetra_centers_.shrink_to_fit();
     this->bigtet_ = SetPointTetras();
 
     this->UpdatePointsTree(new_points);
@@ -1813,8 +1831,10 @@ void Voronoi3D::MockMesh(void)
 
     this->del_.BuildExtra(buildExtra);
     this->R_.resize(this->del_.tetras_.size());
+    this->R_.shrink_to_fit();
     std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
+    this->tetra_centers_.shrink_to_fit();
     this->bigtet_ = this->SetPointTetras();
 
     this->duplicatedprocs_ = std::move(newDuplicatedProcs);
@@ -1822,7 +1842,9 @@ void Voronoi3D::MockMesh(void)
     this->Nghost_ = std::move(newNghost);
 
     CM_.resize(del_.points_.size());
+    CM_.shrink_to_fit();
     volume_.resize(Norg_);
+    volume_.shrink_to_fit();
 
     if(not new_points.empty())
     {
@@ -2363,7 +2385,9 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         this->SetGhostArray(alreadyRecvProcs, alreadyRecvPoints2);
         this->del_.BuildExtra(ghostPointsFromLastBuild);
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
+        this->R_.shrink_to_fit();
         this->tetra_centers_.resize(this->R_.size());
+        this->tetra_centers_.shrink_to_fit();
         this->bigtet_ = SetPointTetras();
         optPointsContainer.emplace(alreadySentProcs, alreadySentPoints2);
     }
@@ -2500,8 +2524,10 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
         auto start3 = std::chrono::high_resolution_clock::now();
 
         this->R_.resize(this->del_.tetras_.size(), RADIUS_UNINITIALIZED);
+        this->R_.shrink_to_fit();
         // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
         this->tetra_centers_.resize(this->R_.size());
+        this->tetra_centers_.shrink_to_fit();
         this->bigtet_ = SetPointTetras();
 
         auto end3 = std::chrono::high_resolution_clock::now();
@@ -2670,6 +2696,7 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     assert(points.size() > 0);
     // Clear data
     PointTetras_.clear();
+    PointTetras_.shrink_to_fit();
     R_.clear();
     R_.reserve(points.size());
     tetra_centers_.clear();
@@ -2677,17 +2704,27 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     del_.Clean();
     // Voronoi Data
     FacesInCell_.clear();
+    FacesInCell_.shrink_to_fit();
     PointsInFace_.clear();
+    PointsInFace_.shrink_to_fit();
     FaceNeighbors_.clear();
+    FaceNeighbors_.shrink_to_fit();
     CM_.clear();
+    CM_.shrink_to_fit();
     Face_CM_.clear();
+    Face_CM_.shrink_to_fit();
     volume_.clear();
+    volume_.shrink_to_fit();
     area_.clear();
+    area_.shrink_to_fit();
     Norg_ = points.size();
     #ifdef RICH_MPI
         duplicatedprocs_.clear();
+        duplicatedprocs_.shrink_to_fit();
         duplicated_points_.clear();
+        duplicated_points_.shrink_to_fit();
         Nghost_.clear();
+        Nghost_.shrink_to_fit();
     #endif // RICH_MPI
 
     std::vector<size_t> order = HilbertOrder3D(points);
@@ -2712,17 +2749,22 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     }
 
     R_.resize(del_.tetras_.size());
+    R_.shrink_to_fit();
     // std::fill(R_.begin(), R_.end(), RADIUS_UNINITIALIZED);
     tetra_centers_.resize(R_.size());
+    tetra_centers_.shrink_to_fit();
     bigtet_ = SetPointTetras();
 
     CM_.resize(Norg_);
+    CM_.shrink_to_fit();
     volume_.resize(Norg_, 0);
+    volume_.shrink_to_fit();
     // Create Voronoi
     BuildVoronoi(order);
 
     CalcAllCM();
     CM_.resize(del_.points_.size());
+    CM_.shrink_to_fit();
     for (std::size_t i = 0; i < FaceNeighbors_.size(); ++i)
         if (BoundaryFace(i))
             CalcRigidCM(i);
@@ -2843,8 +2885,10 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     }        
     // updates the radiuses array of the tetrahedra, as well as the lists for each point what tetras it belongs to
     this->R_.resize(this->del_.tetras_.size());
+    this->R_.shrink_to_fit();
     // std::fill(this->R_.begin(), this->R_.end(), RADIUS_UNINITIALIZED);
     this->tetra_centers_.resize(this->R_.size());
+    this->tetra_centers_.shrink_to_fit();
     this->bigtet_ = SetPointTetras();
     
     end = std::chrono::high_resolution_clock::now();
@@ -2918,7 +2962,9 @@ void Voronoi3D::BuildPartially(const std::vector<Vector3D> &allPoints, const std
     // std::vector<Vector3D>().swap(extra_points);
 
     CM_.resize(del_.points_.size());
+    CM_.shrink_to_fit();
     volume_.resize(Norg_);
+    volume_.shrink_to_fit();
 
     // Create Voronoi
     BuildVoronoi(order);
