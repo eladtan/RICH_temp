@@ -331,6 +331,33 @@ template <class T> vector<T> VectorValues
 	return result;
 }
 
+/*! \brief Reorder v in-place according to a permutation, so that v[i] = old_v[perm[i]].
+    Uses cycle-following with a bitvector for O(1) extra per element.
+    \param v The vector to reorder
+    \param perm Permutation array (not modified)
+ */
+template <class T>
+void ApplyPermutation(vector<T>& v, const vector<size_t>& perm)
+{
+	size_t N = v.size();
+	std::vector<bool> done(N, false);
+	for (size_t i = 0; i < N; ++i)
+	{
+		if (done[i] || perm[i] == i)
+			continue;
+		T temp = std::move(v[i]);
+		size_t j = i;
+		while (perm[j] != i)
+		{
+			v[j] = std::move(v[perm[j]]);
+			done[j] = true;
+			j = perm[j];
+		}
+		v[j] = std::move(temp);
+		done[j] = true;
+	}
+}
+
 /*! \brief Reverses the vector
   \param v Vector
  */
@@ -381,6 +408,21 @@ template <class T> vector<T> unique(vector<T> const& v)
 		else
 			res.push_back(*it);
 	return res;
+}
+
+template <class T> void unique_inplace(vector<T> &v)
+{
+	if (v.empty())
+		return;
+	auto last = std::unique(v.begin(), v.end());
+	v.erase(last, v.end());
+}
+
+template <class T> void RemoveList_inplace(vector<T> &v, vector<T> const&list)
+{
+	auto new_end = std::remove_if(v.begin(), v.end(),
+		[&list](const T &val){ return std::binary_search(list.begin(), list.end(), val); });
+	v.erase(new_end, v.end());
 }
 
 /*!

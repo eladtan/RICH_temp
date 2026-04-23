@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <malloc.h>
 #include <unistd.h>
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -105,12 +106,15 @@ inline void print_memory(const std::string& label)
     MPI_Allreduce(MPI_IN_PLACE, &sum_rss, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
     // Per-node memory: split communicator by shared-memory domain (= physical node)
-    MPI_Comm node_comm;
-    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL, &node_comm);
-
-    int node_rank, node_size;
-    MPI_Comm_rank(node_comm, &node_rank);
-    MPI_Comm_size(node_comm, &node_size);
+    // Cache the node communicator to avoid MPI resource leak from repeated split/free
+    static MPI_Comm node_comm = MPI_COMM_NULL;
+    static int node_rank = -1, node_size = -1;
+    if(node_comm == MPI_COMM_NULL)
+    {
+        MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank, MPI_INFO_NULL, &node_comm);
+        MPI_Comm_rank(node_comm, &node_rank);
+        MPI_Comm_size(node_comm, &node_size);
+    }
 
     double node_rss = rss_gb;
     MPI_Allreduce(MPI_IN_PLACE, &node_rss, 1, MPI_DOUBLE, MPI_SUM, node_comm);
@@ -179,7 +183,6 @@ inline void print_memory(const std::string& label)
         MPI_Send(node_info.data(), info_len, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
     }
 
-    MPI_Comm_free(&node_comm);
 #else
     if(rank == 0)
     {
@@ -189,12 +192,79 @@ inline void print_memory(const std::string& label)
     }
 #endif
 }
+#include <cstdio>
+inline void dump_malloc_info(const std::string &output_dir, int cycle)
+{
+    int rank = 0, world_size = 1;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+#endif
+
+    // Rank 0: write detailed XML
+    if(rank == 0)
+    {
+        std::string path = output_dir + "/malloc_info_" + std::to_string(cycle) + ".xml";
+        FILE *f = fopen(path.c_str(), "w");
+        if(f) { malloc_info(0, f); fclose(f); }
+    }
+
+    // All ranks: gather mallinfo2 stats via MPI_Reduce
+    struct mallinfo2 mi = mallinfo2();
+    double local[4];
+    local[0] = static_cast<double>(mi.arena);
+    local[1] = static_cast<double>(mi.uordblks);
+    local[2] = static_cast<double>(mi.fordblks);
+    local[3] = static_cast<double>(mi.hblkhd);
+
+    double sum_vals[4], max_vals[4];
+#ifdef RICH_MPI
+    MPI_Reduce(local, sum_vals, 4, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(local, max_vals, 4, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+#else
+    for(int i = 0; i < 4; ++i) { sum_vals[i] = local[i]; max_vals[i] = local[i]; }
+#endif
+
+    if(rank == 0)
+    {
+        std::string csv_path = output_dir + "/malloc_stats.csv";
+        bool need_header = true;
+        {
+            std::ifstream probe(csv_path, std::ios::ate);
+            if(probe.is_open() && probe.tellg() > 0)
+                need_header = false;
+        }
+        std::ofstream csv(csv_path, std::ios::app);
+        if(need_header)
+            csv << "cycle,nranks,"
+                << "sum_arena,sum_inuse,sum_free,sum_mmap,"
+                << "max_arena,max_inuse,max_free,max_mmap,"
+                << "r0_arena,r0_inuse,r0_free,r0_mmap\n";
+        csv << cycle << "," << world_size
+            << "," << static_cast<long long>(sum_vals[0])
+            << "," << static_cast<long long>(sum_vals[1])
+            << "," << static_cast<long long>(sum_vals[2])
+            << "," << static_cast<long long>(sum_vals[3])
+            << "," << static_cast<long long>(max_vals[0])
+            << "," << static_cast<long long>(max_vals[1])
+            << "," << static_cast<long long>(max_vals[2])
+            << "," << static_cast<long long>(max_vals[3])
+            << "," << static_cast<long long>(local[0])
+            << "," << static_cast<long long>(local[1])
+            << "," << static_cast<long long>(local[2])
+            << "," << static_cast<long long>(local[3])
+            << "\n";
+    }
+}
+
 } // namespace memory_debug
 
 #define MEMORY_DEBUG_PRINT(label) memory_debug::print_memory(label)
+#define MEMORY_DEBUG_MALLOC_INFO(dir, cycle) memory_debug::dump_malloc_info(dir, cycle)
 
 #else
 #define MEMORY_DEBUG_PRINT(label) ((void)0)
+#define MEMORY_DEBUG_MALLOC_INFO(dir, cycle) ((void)0)
 #endif // MEMORY_DEBUG
 
 #endif // MEMORY_DEBUG_HPP

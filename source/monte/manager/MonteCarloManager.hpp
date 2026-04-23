@@ -33,9 +33,11 @@ std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::fl
     boost::container::flat_set<rank_t> ranks;
 
     std::vector<size_t> allNeighboringGhosts;
+    std::vector<size_t> mc_neigh_buf;
     for(size_t i = 0; i < N; i++)
     {
-        for(size_t ghostIdx : tess.GetNeighbors(i))
+        tess.GetNeighbors(i, mc_neigh_buf);
+        for(size_t ghostIdx : mc_neigh_buf)
         {
             if(ghostIdx >= N)
             {

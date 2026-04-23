@@ -137,6 +137,10 @@ private:
   const ExtensiveUpdater3D& eu_;
   const	SourceTerm3D &source_;
   const ProgressTracker &pt_;
+  vector<Vector3D> point_vel_;
+  vector<Vector3D> face_vel_;
+  vector<Conserved3D> mid_extensives_;
+  vector<Conserved3D> fluxes_;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI

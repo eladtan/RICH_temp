@@ -102,8 +102,9 @@ namespace
 				}
 			}
 		}
-		indeces = MPI_exchange_data(tess.GetDuplicatedProcs(), indeces);
-		merit_send = MPI_exchange_data(tess.GetDuplicatedProcs(), merit_send);
+		const std::vector<int> &amr_dupProcs = tess.GetDuplicatedProcs();
+		indeces = MPI_exchange_data(amr_dupProcs, indeces);
+		merit_send = MPI_exchange_data(amr_dupProcs, merit_send);
 		for (size_t i = 0; i < nproc; ++i)
 		{
 			if (!indeces[i].empty())
@@ -345,9 +346,10 @@ namespace
 			}
 		}
 		// send/recv the data
-		nghost_index = MPI_exchange_data(tess.GetDuplicatedProcs(), nghost_index);
+		const std::vector<int> &amr_dupProcs2 = tess.GetDuplicatedProcs();
+		nghost_index = MPI_exchange_data(amr_dupProcs2, nghost_index);
 		duplicated_index = MPI_exchange_data(tess, duplicated_index);
-		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes);
+		planes = MPI_exchange_data(amr_dupProcs2, planes);
 		planes_d = MPI_exchange_data(tess, planes_d);
 		// convert the data
 		for (size_t i = 0; i < Nprocs; ++i)

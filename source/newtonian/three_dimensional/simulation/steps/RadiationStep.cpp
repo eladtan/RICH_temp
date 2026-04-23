@@ -1,5 +1,6 @@
 #include "RadiationStep.hpp"
 #include "misc/memory_debug.hpp"
+#include <malloc.h>
 
 RadiationStep::RadiationStep(Tessellation3D &tess, std::vector<ComputationalCell3D> &cells,
                     std::vector<Conserved3D> &extensives,
@@ -86,6 +87,7 @@ void RadiationStep::step(double dt)
 	this->suggested_dt = this->matrix_builder.calculate_dt(dt, this->tess, this->cells);
 
 	this->matrix_builder.poststep();
+	malloc_trim(0);
 	MEMORY_DEBUG_PRINT("radiation: after poststep");
 
 #ifdef RICH_MPI

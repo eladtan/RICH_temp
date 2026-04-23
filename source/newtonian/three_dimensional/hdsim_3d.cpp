@@ -1,5 +1,6 @@
 #include "hdsim_3d.hpp"
 #include "misc/memory_debug.hpp"
+#include <malloc.h>
 
 namespace
 {
@@ -186,44 +187,50 @@ void HDSim3D::timeAdvance2(void)
 #endif // RICH_MPI
 	MEMORY_DEBUG_PRINT("hydro: after MPI reset");
 	const double time = pt_.getTime();
-	vector<Vector3D> point_vel, face_vel;
-	pm_(tess_, cells_, time, point_vel);
+	pm_(tess_, cells_, time, point_vel_);
 #ifdef RICH_MPI
 	Vector3D vdummy;
-	MPI_exchange_data(tess_, point_vel, true);
+	MPI_exchange_data(tess_, point_vel_, true);
 #endif
 
-	CalcFaceVelocities(tess_, point_vel, face_vel);
-	double dt = tsc_(tess_, cells_, eos_, face_vel, time);
-	pm_.ApplyFix(tess_, cells_, time, dt, point_vel);
+	CalcFaceVelocities(tess_, point_vel_, face_vel_);
+	double dt = tsc_(tess_, cells_, eos_, face_vel_, time);
+	pm_.ApplyFix(tess_, cells_, time, dt, point_vel_);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess_, point_vel, true);
+	MPI_exchange_data(tess_, point_vel_, true);
 #endif
-	CalcFaceVelocities(tess_, point_vel, face_vel);
-	dt = tsc_(tess_, cells_, eos_, face_vel, time);
+	CalcFaceVelocities(tess_, point_vel_, face_vel_);
+	dt = tsc_(tess_, cells_, eos_, face_vel_, time);
 	MEMORY_DEBUG_PRINT("hydro: after CFL + face velocities");
-	vector<Conserved3D> fluxes;
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
-		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt);
+		fc_(fluxes_, tess_, face_vel_, cells_, extensive_, eos_, time, dt);
+	malloc_trim(0);
 	MEMORY_DEBUG_PRINT("hydro: after flux calc");
-	vector<Conserved3D> mid_extensives(extensive_);
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
+	mid_extensives_.assign(extensive_.begin(), extensive_.end());
+	mid_extensives_.resize(extensive_.size());
+	eu_(fluxes_, tess_, dt, cells_, mid_extensives_, time, face_vel_, face_values);
 	MEMORY_DEBUG_PRINT("hydro: after extensive update");
 	auto t1 = get_time();
-	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
+	source_(tess_, cells_, fluxes_, point_vel_, time, dt, mid_extensives_);
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
 	MEMORY_DEBUG_PRINT("hydro: after source terms");
+	malloc_trim(0);
 	if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
 		mesh.resize(tess_.GetPointNo());
 		vector<size_t> order = HilbertOrder3D(mesh);
-		mesh = VectorValues(mesh, order);
-		mid_extensives = VectorValues(mid_extensives, order);
-		extensive_ = VectorValues(extensive_, order);
-		cells_ = VectorValues(cells_, order);
-		point_vel = VectorValues(point_vel, order);
+		size_t Nlocal = order.size();
+		ApplyPermutation(mesh, order);
+		mid_extensives_.resize(Nlocal);
+		ApplyPermutation(mid_extensives_, order);
+		extensive_.resize(Nlocal);
+		ApplyPermutation(extensive_, order);
+		cells_.resize(Nlocal);
+		ApplyPermutation(cells_, order);
+		point_vel_.resize(Nlocal);
+		ApplyPermutation(point_vel_, order);
 #ifdef RICH_MPI
 		tess_.PreparePoints(mesh, order);
 #endif
@@ -232,45 +239,46 @@ void HDSim3D::timeAdvance2(void)
 	ComputationalCell3D cdummy;
 	if(pm_.MovedPoints())
 	{
-		MovePoints(tess_, point_vel, dt);
+		MovePoints(tess_, point_vel_, dt);
 		t1 = get_time();
 		#ifdef RICH_MPI
-			UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+			UpdateTessellation(tess_, point_vel_, dt, this->exchange_chain_);
 		#else // RICH_MPI
-			UpdateTessellation(tess_, point_vel, dt);
+			UpdateTessellation(tess_, point_vel_, dt);
 		#endif // RICH_MPI
 		t2 = get_time();
 		DisplayTime(t1, t2, "Voronoi build time ");
 #ifdef RICH_MPI
-		// Keep relevant points
-		MPI_exchange_data(tess_, mid_extensives, false);
+		MPI_exchange_data(tess_, mid_extensives_, false);
 		MPI_exchange_data(tess_, extensive_, false);
 		MPI_exchange_data(tess_, cells_, false);
-		MPI_exchange_data(tess_, point_vel, false);
-		MPI_exchange_data(tess_, point_vel, true);
+		MPI_exchange_data(tess_, point_vel_, false);
+		MPI_exchange_data(tess_, point_vel_, true);
 #endif
 	}
 	MEMORY_DEBUG_PRINT("hydro: after Voronoi rebuild");
+	malloc_trim(0);
 
-cu_(cells_, eos_, tess_, mid_extensives);
+cu_(cells_, eos_, tess_, mid_extensives_);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
 #endif
 MEMORY_DEBUG_PRINT("hydro: after cell update (1st half)");
 
-CalcFaceVelocities(tess_, point_vel, face_vel);
-face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt);
+CalcFaceVelocities(tess_, point_vel_, face_vel_);
+face_values = fc_(fluxes_, tess_, face_vel_, cells_, mid_extensives_, eos_, time + dt, dt);
 t1 = get_time();
-source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
+source_(tess_, cells_, fluxes_, point_vel_, time + dt, dt, mid_extensives_);
 t2 = get_time();
 DisplayTime(t1, t2, "Second source time ");
-eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
-ExtensiveAvg(extensive_, mid_extensives);
+eu_(fluxes_, tess_, dt, cells_, mid_extensives_, time + dt, face_vel_, face_values);
+ExtensiveAvg(extensive_, mid_extensives_);
 cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
 #endif
 MEMORY_DEBUG_PRINT("hydro: after cell update (2nd half)");
+malloc_trim(0);
 }
 
 void HDSim3D::timeAdvance(void)
@@ -358,12 +366,16 @@ void HDSim3D::timeAdvance3(void)
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
 		mesh.resize(tess_.GetPointNo());
 		vector<size_t> order = HilbertOrder3D(mesh);
-		mesh = VectorValues(mesh, order);
-		mid_extensives = VectorValues(mid_extensives, order);
-		extensive_ = VectorValues(extensive_, order);
-		cells_ = VectorValues(cells_, order);
-		point_vel = VectorValues(point_vel, order);
-		//du1 = VectorValues(du1, order);
+		size_t Nlocal = order.size();
+		ApplyPermutation(mesh, order);
+		mid_extensives.resize(Nlocal);
+		ApplyPermutation(mid_extensives, order);
+		extensive_.resize(Nlocal);
+		ApplyPermutation(extensive_, order);
+		cells_.resize(Nlocal);
+		ApplyPermutation(cells_, order);
+		point_vel.resize(Nlocal);
+		ApplyPermutation(point_vel, order);
 	}
 	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
@@ -466,11 +478,16 @@ void HDSim3D::timeAdvance33(void)
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
 		mesh.resize(tess_.GetPointNo());
 		vector<size_t> order = HilbertOrder3D(mesh);
-		mesh = VectorValues(mesh, order);
-		mid_extensives = VectorValues(mid_extensives, order);
-		extensive_ = VectorValues(extensive_, order);
-		cells_ = VectorValues(cells_, order);
-		point_vel = VectorValues(point_vel, order);
+		size_t Nlocal = order.size();
+		ApplyPermutation(mesh, order);
+		mid_extensives.resize(Nlocal);
+		ApplyPermutation(mid_extensives, order);
+		extensive_.resize(Nlocal);
+		ApplyPermutation(extensive_, order);
+		cells_.resize(Nlocal);
+		ApplyPermutation(cells_, order);
+		point_vel.resize(Nlocal);
+		ApplyPermutation(point_vel, order);
 	}
 	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
@@ -582,11 +599,16 @@ void HDSim3D::timeAdvance32(void)
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
 		mesh.resize(tess_.GetPointNo());
 		vector<size_t> order = HilbertOrder3D(mesh);
-		mesh = VectorValues(mesh, order);
-		mid_extensives = VectorValues(mid_extensives, order);
-		extensive_ = VectorValues(extensive_, order);
-		cells_ = VectorValues(cells_, order);
-		point_vel = VectorValues(point_vel, order);
+		size_t Nlocal = order.size();
+		ApplyPermutation(mesh, order);
+		mid_extensives.resize(Nlocal);
+		ApplyPermutation(mid_extensives, order);
+		extensive_.resize(Nlocal);
+		ApplyPermutation(extensive_, order);
+		cells_.resize(Nlocal);
+		ApplyPermutation(cells_, order);
+		point_vel.resize(Nlocal);
+		ApplyPermutation(point_vel, order);
 	}
 	MovePoints(tess_, point_vel, dt);
 
@@ -668,12 +690,16 @@ void HDSim3D::timeAdvance4(void)
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
 		mesh.resize(tess_.GetPointNo());
 		vector<size_t> order = HilbertOrder3D(mesh);
-		mesh = VectorValues(mesh, order);
-		mid_extensives = VectorValues(mid_extensives, order);
-		extensive_ = VectorValues(extensive_, order);
-		cells_ = VectorValues(cells_, order);
-		point_vel = VectorValues(point_vel, order);
-		//du1 = VectorValues(du1, order);
+		size_t Nlocal = order.size();
+		ApplyPermutation(mesh, order);
+		mid_extensives.resize(Nlocal);
+		ApplyPermutation(mid_extensives, order);
+		extensive_.resize(Nlocal);
+		ApplyPermutation(extensive_, order);
+		cells_.resize(Nlocal);
+		ApplyPermutation(cells_, order);
+		point_vel.resize(Nlocal);
+		ApplyPermutation(point_vel, order);
 	}
 	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());

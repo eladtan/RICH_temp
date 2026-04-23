@@ -11,12 +11,13 @@ RoundCells3D::RoundCells3D(const PointMotion3D& pm, const EquationOfState& eos,
 namespace
 {
 	void SlowDown(Vector3D &velocity, Tessellation3D const& tess, double R, size_t index, const vector<Vector3D> & velocities,
-		vector<char> const& nomove)
+		vector<char> const& nomove, vector<size_t> &neigh_buf)
 	{
 		if (nomove[index] == 1)
 			return;
 		Vector3D const& point = tess.GetMeshPoint(index);
-		vector<size_t> neigh = tess.GetNeighbors(index);
+		tess.GetNeighbors(index, neigh_buf);
+		vector<size_t> &neigh = neigh_buf;
 		size_t N = neigh.size();
 		size_t min_loc = 0;
 		double min_d = fastabs(point - tess.GetMeshPoint(neigh[0]));
@@ -104,7 +105,8 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	vector<size_t> neigh = tess.GetNeighbors(i);
+	tess.GetNeighbors(i, calc_dw_neigh_buf_);
+	vector<size_t> &neigh = calc_dw_neigh_buf_;
 	size_t N = neigh.size();
 	for (size_t j = 0; j < N; ++j)
 	{
@@ -115,7 +117,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		{
 #endif
 			cs = std::max(cs, eos_.dp2c(cells[neigh[j]].density, cells[neigh[j]].pressure,
-						    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
+					    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
 			cs = std::max(cs, fastabs(cells[neigh[j]].velocity));
 #ifdef RICH_DEBUG
 			if (!std::isfinite(cs))
@@ -142,7 +144,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	}
 #endif
 	velocity += chi_ * cs * (s - r) / std::max(R, d);
-	SlowDown(velocity, tess, R, i, velocities, nomove);
+	SlowDown(velocity, tess, R, i, velocities, nomove, slowdown_neigh_buf_);
 }
 
 void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, double dt, vector<ComputationalCell3D> const& cells,
@@ -154,7 +156,8 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	const double R = tess.GetWidth(i);
 	if (d < 0.9*eta_*R)
 		return;
-	vector<size_t> neigh = tess.GetNeighbors(i);
+	tess.GetNeighbors(i, calc_dw2_neigh_buf_);
+	vector<size_t> &neigh = calc_dw2_neigh_buf_;
 	size_t N = neigh.size();
 	double cs = 0;
 	double min_R = R;
@@ -199,7 +202,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 }
 	const double c_dt = std::max(std::max(dt_speed_*std::min(d, min_R) / dt, cs), min_dw_);
 	velocity += chi_ * c_dt*(s - r) / std::max(R, d);
-	SlowDown(velocity, tess, R, i, velocities, nomove);
+	SlowDown(velocity, tess, R, i, velocities, nomove, slowdown_neigh_buf_);
 }
 
 void RoundCells3D::operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
@@ -234,7 +237,7 @@ void RoundCells3D::operator()(const Tessellation3D& tess, const vector<Computati
 	}
 #ifndef RICH_MPI
 	for (size_t i = 0; i < n; ++i)
-		SlowDown(res[i], tess, tess.GetWidth(i), i, res, nomove);
+		SlowDown(res[i], tess, tess.GetWidth(i), i, res, nomove, slowdown_neigh_buf_);
 #endif
 }
 
@@ -297,7 +300,7 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 	}
 #ifdef RICH_MPI
 	for (size_t i = 0; i < n; ++i)
-		SlowDown(velocities[i], tess, tess.GetWidth(i), i, velocities, nomove);
+		SlowDown(velocities[i], tess, tess.GetWidth(i), i, velocities, nomove, slowdown_neigh_buf_);
 #endif
 	velocities.resize(n);
 	CorrectPointsOverShoot(velocities, dt, tess);

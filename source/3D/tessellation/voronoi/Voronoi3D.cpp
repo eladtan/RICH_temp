@@ -224,7 +224,9 @@ namespace
 #ifdef RICH_MPI
     vector<Vector3D> GetBoxNormals(Vector3D const &ll, Vector3D const &ur, vector<Face> const& box_faces_)
     {
-        const vector<Face> faces = box_faces_.empty() ? BuildBox(ll, ur) : box_faces_;
+        const bool need_build = box_faces_.empty();
+        const vector<Face> built_faces = need_build ? BuildBox(ll, ur) : vector<Face>();
+        const vector<Face> &faces = need_build ? built_faces : box_faces_;
         vector<Vector3D> res(faces.size());
         size_t N = res.size();
         for (size_t i = 0; i < N; ++i)
@@ -713,7 +715,9 @@ vector<Vector3D> Voronoi3D::CreateBoundaryPoints(vector<std::pair<std::size_t, s
     size_t Ncheck = to_duplicate.size();
     vector<std::pair<std::size_t, std::size_t>> to_add;
     to_add.reserve(Ncheck);
-    vector<Face> faces = box_faces_.empty() ? BuildBox(ll_, ur_) : box_faces_;
+    const bool need_build = box_faces_.empty();
+    const vector<Face> built_box = need_build ? BuildBox(ll_, ur_) : vector<Face>();
+    const vector<Face> &faces = need_build ? built_box : box_faces_;
     vector<Vector3D> res;
     bool first_time = past_duplicate.empty();
     if (first_time)
@@ -950,11 +954,13 @@ void Voronoi3D::FilterRealGhostPoints()
 
     // auto ifRecvCopyLambda = [&isNecessaryRecvPoint](const size_t &ghostPointIdx){return isNecessaryRecvPoint[ghostPointIdx];};
 
+    std::vector<size_t> neighbor_buf;
+    std::vector<size_t> newSend;
     for(size_t i = 0; i < this->duplicatedprocs_.size(); i++)
     {
         int _rank = this->duplicatedprocs_[i];
         this->real_duplicated_proc.push_back(_rank);
-        std::vector<size_t> newSend;
+        newSend.clear();
         // check for any original sent point, if it has neighbors that belong to rank `_rank`. If yes, the point is necessary to be sent
         for(const size_t &pointIdxInBuild : this->duplicated_points_[i])
         {
@@ -964,7 +970,8 @@ void Voronoi3D::FilterRealGhostPoints()
                 continue;
             }
             bool foundNeighbor = false;
-            for(const size_t &neighborIdx : this->GetNeighbors(pointIdxInBuild))
+            this->GetNeighbors(pointIdxInBuild, neighbor_buf);
+            for(const size_t &neighborIdx : neighbor_buf)
             {
                 if(std::find(this->Nghost_[i].cbegin(), this->Nghost_[i].cend(), neighborIdx) != this->Nghost_[i].cend())
                 {
@@ -1668,12 +1675,13 @@ void Voronoi3D::MockMesh(void)
     std::vector<Vector3D> allMirrors;
 
     size_t previousN = this->Norg_;
+    std::vector<size_t> neighbor_buf;
     for(size_t i = 0; i < previousN; i++)
     {
         // looking for previous point `i`
         const auto &[newOwner, newIndex] = whereNow.at(i);
-        const std::vector<size_t> &neighbors = this->GetNeighbors(i);
-        for(size_t neighbor : neighbors)
+        this->GetNeighbors(i, neighbor_buf);
+        for(size_t neighbor : neighbor_buf)
         {
             // looking for previous neighbor `neighbor`
             if(neighbor < previousN)
@@ -1924,20 +1932,16 @@ void Voronoi3D::Rebalance(const std::vector<double> &weights)
  * \author Maor Mizrachi
  * \brief Gets a point, its radius, a box and the normals to the box's faces, and returns the faces indices that the sphere (around `point`, in the given `radius`) intersects
 */
-std::vector<size_t> CheckToMirror(const Sphere<Vector3D> &sphere, const std::vector<Face> &box, const std::vector<Vector3D> &normals)
+void CheckToMirror(const Sphere<Vector3D> &sphere, const std::vector<Face> &box, const std::vector<Vector3D> &normals, std::vector<size_t> &facesItCuts)
 {
-    std::vector<size_t> facesItCuts;
-    // std::cout << "point = " << point << ", radius = " << radius << std::endl;
+    facesItCuts.clear();
     for(size_t i = 0; i < box.size(); i++)
     {
-        // check for intersecting the sphere with radius `radius` around `point`, with the `i`th face of `box`
         if(FaceSphereIntersections(box[i], sphere, normals[i]))
         {
-            // intersects! mirror the point
             facesItCuts.push_back(i);
         }
     }
-    return facesItCuts;
 }
 
 void Voronoi3D::UpdateCMs(void)
@@ -2127,13 +2131,13 @@ std::vector<std::pair<size_t, size_t>> MirrorPoints(const std::vector<QueryDataT
     static_assert(std::is_convertible<QueryDataType*, RangeQueryData*>::value, "MirrorPoints: QueryDataType must inherit 'RangeQueryData'");
 
     std::vector<std::pair<size_t, size_t>> mirroredPoints;
+    std::vector<size_t> facesItCuts;
     for(const QueryDataType &query : queries)
     {
-        // check for mirroring:
         Sphere<Vector3D> sphere(Vector3D(query.center), query.radius);
         size_t pointIdx = query.pointIdx;
 
-        std::vector<size_t> facesItCuts = CheckToMirror(sphere, box, normals);
+        CheckToMirror(sphere, box, normals, facesItCuts);
 
         for(const size_t &faceIdx : facesItCuts)
         {
@@ -3210,7 +3214,7 @@ void Voronoi3D::GetPointToCheck(std::size_t point, vector<unsigned char> const &
                 res.push_back(del_.tetras_[tetra].points[j]);
     }
     std::sort(res.begin(), res.end());
-    res = unique(res);
+    unique_inplace(res);
 }
 
 std::size_t Voronoi3D::GetFirstPointToCheck(void) const
@@ -3867,11 +3871,13 @@ bool Voronoi3D::CheckContinuityOfZone(void) const
     reached[0] = true;
     std::stack<std::size_t> stack;
     stack.push(0);
+    std::vector<std::size_t> neighbor_buf;
     while(not stack.empty())
     {
         size_t cell = stack.top();
         stack.pop();
-        for(const auto &neighbor : this->GetNeighbors(cell))
+        this->GetNeighbors(cell, neighbor_buf);
+        for(const auto &neighbor : neighbor_buf)
         {
             if(neighbor >= this->Norg_)
             {
@@ -3919,7 +3925,8 @@ void Voronoi3D::GetNeighborNeighbors(vector<std::size_t> &result, std::size_t po
 {
     result.clear();
     result.reserve(70);
-    vector<std::size_t> neigh = GetNeighbors(point);
+    vector<std::size_t> neigh;
+    GetNeighbors(point, neigh);
     result = neigh;
     std::size_t N = neigh.size();
     std::sort(neigh.begin(), neigh.end());
@@ -3928,13 +3935,13 @@ void Voronoi3D::GetNeighborNeighbors(vector<std::size_t> &result, std::size_t po
     {
         if (neigh[i] < Norg_)
         {
-            temp = GetNeighbors(neigh[i]);
+            GetNeighbors(neigh[i], temp);
             result.insert(result.end(), temp.begin(), temp.end());
         }
     }
     std::sort(result.begin(), result.end());
-    result = unique(result);
-    result = RemoveList(result, neigh);
+    unique_inplace(result);
+    RemoveList_inplace(result, neigh);
     RemoveVal(result, point);
 }
 

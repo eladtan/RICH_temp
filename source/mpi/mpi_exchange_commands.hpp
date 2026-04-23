@@ -39,13 +39,13 @@ inline std::tuple<std::vector<double>, std::vector<int>, std::vector<int>> Calcu
     std::vector<int> sendDisplacements;
     sendCounts.reserve(size);
     sendDisplacements.reserve(size);
+    std::vector<double> serialized;
     for(size_t i = 0; i < size; i++)
     {
         sendDisplacements.push_back((i == 0)? 0 : sendDisplacements.back() + sendCounts.back());
         int _rank = sentProc[i];
         const std::vector<T> &data = rankToData(_rank);
         size_t sendCounter = 0;
-        std::vector<double> serialized;
         for(const T &element : data)
         {
             serialized = element.serialize();
@@ -220,9 +220,10 @@ inline std::pair<std::vector<int>, std::vector<std::vector<size_t>>> PrepareSend
 {
     std::vector<int> sentProc;
     std::vector<std::vector<size_t>> sentIndices;
+    std::vector<int> owners;
     for(size_t i = 0; i < data.size(); i++)
     {
-        std::vector<int> owners = ownership(data[i]);
+        owners = ownership(data[i]);
         for(int owner : owners)
         {
             size_t index = std::distance(sentProc.cbegin(), std::find(sentProc.cbegin(), sentProc.cend(), owner));

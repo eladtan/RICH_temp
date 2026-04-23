@@ -77,7 +77,7 @@ namespace
 		double Et = cell.energy / cell.mass - 0.5*ScalarProd(Vcell, Vcell);
 		double div_V = 0;
 		Vector3D const r_i = tess.GetMeshPoint(index);
-		auto faces = tess.GetCellFaces(index);
+		const auto &faces = tess.GetCellFaces(index);
 		for (size_t i = 0; i < N; ++i)
 		{
 			size_t neighbor_j = neigh[i];

@@ -401,7 +401,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     size_t max_neigh = 0;
     // Find maximum number of neighbors and allocate data
     for(size_t i = 0; i < Nlocal; ++i)
-        max_neigh = std::max(max_neigh, tess.GetNeighbors(i).size());
+        max_neigh = std::max(max_neigh, tess.GetCellFaces(i).size());
     ++max_neigh;
     A.clear();
     A.resize(Nlocal);

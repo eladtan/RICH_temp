@@ -51,6 +51,9 @@ private:
 	const double min_dw_;
 	const double dt_speed_;
 	const vector<std::string> no_move_;
+	mutable vector<size_t> slowdown_neigh_buf_;
+	mutable vector<size_t> calc_dw_neigh_buf_;
+	mutable vector<size_t> calc_dw2_neigh_buf_;
 };
 
 #endif // ROUND_CELLS3D_HPP

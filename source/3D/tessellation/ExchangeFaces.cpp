@@ -7,10 +7,11 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ExchangeFaces(cons
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> faces_map;
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghosts_map = ExchangeGhosts(tess);
 
+    const std::vector<int> &dupProcs = tess.GetDuplicatedProcs();
     boost::container::flat_map<rank_t, size_t> ranksDupIndices;
-    for(size_t i = 0; i < tess.GetDuplicatedProcs().size(); ++i)
+    for(size_t i = 0; i < dupProcs.size(); ++i)
     {
-        ranksDupIndices.insert({tess.GetDuplicatedProcs()[i], i});
+        ranksDupIndices.insert({dupProcs[i], i});
     }
 
     struct NeighborsInfo

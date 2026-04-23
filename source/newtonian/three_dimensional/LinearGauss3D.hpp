@@ -69,6 +69,7 @@ private:
 	Ghost3D const& ghost_;
 	mutable vector<Slope3D> rslopes_;
 	mutable vector<Slope3D> naive_rslopes_;
+	mutable vector<ComputationalCell3D> new_cells_;
 	const bool slf_;
 	const double shockratio_;
 	const double diffusecoeff_;

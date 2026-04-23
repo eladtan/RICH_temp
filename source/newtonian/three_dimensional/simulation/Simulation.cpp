@@ -1,6 +1,7 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
 #include "misc/memory_debug.hpp"
+#include <malloc.h>
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
      tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
@@ -153,6 +154,7 @@ void Simulation::SetWallclockTime(double t)
 void Simulation::step(void)
 {
     MEMORY_DEBUG_PRINT("Simulation::step START cycle=" + std::to_string(this->tracker.getCycle()));
+    this->lastPhysicsTimes.clear();
     auto stepWallStart = std::chrono::high_resolution_clock::now();
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
@@ -241,6 +243,7 @@ void Simulation::step(void)
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
         std::cout.flush();
 
+        malloc_trim(0);
         MEMORY_DEBUG_PRINT("Before " + name);
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
@@ -256,9 +259,12 @@ void Simulation::step(void)
         double physicsTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
         #ifdef RICH_MPI
-        if(this->rank == 0) std::cout << "Physics " << name << " time: " << (physicsTime + rebalanceTime) << " (step=" << physicsTime << "s, rebalance=" << rebalanceTime << "s)" << std::endl;
+        double totalPhysicsTime = physicsTime + rebalanceTime;
+        if(this->rank == 0) std::cout << "Physics " << name << " time: " << totalPhysicsTime << " (step=" << physicsTime << "s, rebalance=" << rebalanceTime << "s)" << std::endl;
+        this->lastPhysicsTimes[name] = totalPhysicsTime;
         #else
         if(this->rank == 0) std::cout << "Physics " << name << " time: " << physicsTime << std::endl;
+        this->lastPhysicsTimes[name] = physicsTime;
         #endif
 
         double dt_suggest = physics->suggestTimeStep();

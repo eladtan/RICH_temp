@@ -593,11 +593,11 @@ void RadiationIMC::adjustExistingParticles(std::vector<Particle> &particles, dou
     size_t Ncells = this->grid.GetPointNo();
     std::vector<double> divV(Ncells, 0);
 
+    std::vector<size_t> neigh;
     for(size_t i = 0; i < Ncells; i++)
     {
-        std::vector<size_t> neigh;
         this->grid.GetNeighbors(i, neigh);
-        auto faces = this->grid.GetCellFaces(i);
+        const auto &faces = this->grid.GetCellFaces(i);
         Vector3D r_i = this->grid.GetMeshPoint(i);
         for(size_t j = 0; j < neigh.size(); j++)
         {

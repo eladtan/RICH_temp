@@ -10,11 +10,12 @@ template<typename Grid>
 boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const Grid &grid)
 {
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
-    std::vector<std::vector<size_t>> incoming = MPI_exchange_data(grid.GetDuplicatedProcs(), grid.GetDuplicatedPoints());
+    const std::vector<int> &dupProcs = grid.GetDuplicatedProcs();
+    std::vector<std::vector<size_t>> incoming = MPI_exchange_data(dupProcs, grid.GetDuplicatedPoints());
     const std::vector<std::vector<size_t>> &ghosts = grid.GetGhostIndeces();
     for(size_t i = 0; i < incoming.size(); i++)
     {
-        int _rank = grid.GetDuplicatedProcs()[i];
+        int _rank = dupProcs[i];
         for(size_t j = 0; j < incoming[i].size(); j++)
         {
             assert(incoming[i].size() == ghosts[i].size());

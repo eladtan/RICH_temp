@@ -21,14 +21,19 @@ template<typename T, typename Index_T = size_t>
 std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> &correspondents, const std::vector<T> &data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
 {
 	std::vector<MPI_Request> req(correspondents.size());
-	std::vector<Serializer> senders(correspondents.size());
+	static std::vector<Serializer> senders;
+	senders.resize(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
+		senders[i].reset();
 		senders[i].insert_all_indexed(data, indices[i], extent);
 		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
 
-	std::vector<Serializer> receivers(correspondents.size());
+	static std::vector<Serializer> receivers;
+	receivers.resize(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
+		receivers[i].reset();
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		MPI_Status status;
@@ -64,14 +69,19 @@ template<typename T>
 std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& correspondents, const std::vector<std::vector<T>>& data)
 {
 	std::vector<MPI_Request> req(correspondents.size());
-	std::vector<Serializer> senders(correspondents.size());
+	static std::vector<Serializer> senders;
+	senders.resize(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
+		senders[i].reset();
 		senders[i].insert_all(data[i]);
 		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
 
-	std::vector<Serializer> receivers(correspondents.size());
+	static std::vector<Serializer> receivers;
+	receivers.resize(correspondents.size());
+	for(size_t i = 0; i < correspondents.size(); ++i)
+		receivers[i].reset();
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
 		MPI_Status status;

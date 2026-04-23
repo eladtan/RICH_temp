@@ -325,7 +325,8 @@ namespace
 		double diffusecoeff, double shock_w,
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces, EquationOfState const& eos,
-		vector<Vector3D> const& face_cms_cache, bool apply_principal_limit_flag)
+		vector<Vector3D> const& face_cms_cache, bool apply_principal_limit_flag,
+		vector<double> &psi_buf)
 	{
 		ReplaceComputationalCell(cmax, cell);
 		ReplaceComputationalCell(cmin, cell);
@@ -394,7 +395,8 @@ namespace
 
 		ComputationalCell3D centroid_val = interp(cell, slope, face_cms_cache[0], cm, eos, false);
 		ComputationalCell3D dphi = centroid_val - cell;
-		vector<double> psi(6 + cell.tracers.size(), 1);
+		psi_buf.assign(6 + cell.tracers.size(), 1);
+		vector<double> &psi = psi_buf;
 		double psi_v1 = 1.0, psi_v2 = 1.0, psi_v3 = 1.0;
 		const size_t nedges = faces.size();
 		const double skipfactor = 1e-3;
@@ -689,7 +691,8 @@ namespace
 		vector<Vector3D> &neighbor_cm_list,
  string const& skip_key,
 		std::vector<Vector3D> &c_ij, vector<ComputationalCell3D> &neighbor_list,
-		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache, bool apply_principal_limit_flag)
+		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache, bool apply_principal_limit_flag,
+		vector<double>& psi_buf)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
 		GetNeighborMesh(tess, cell_index, neighbor_mesh_list, faces);
@@ -753,7 +756,7 @@ namespace
 						neighbor_list, pressure_ratio,
 						eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames));
 					blended_slope_limit(cell, tess.GetCellCM(cell_index), neighbor_list, res, temp2, temp3, temp4, temp5,
-						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache, apply_principal_limit_flag);
+						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache, apply_principal_limit_flag, psi_buf);
 				}
 				if(!std::isfinite( res.xderivative.density))
 				{
@@ -818,19 +821,19 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 	// Get ghost points
 	boost::container::flat_map<size_t, ComputationalCell3D> ghost_cells;
 	ghost_.operator()(tess, cells, time, ghost_cells);
-	// Copy ghost data into new cells vector
-	vector<ComputationalCell3D> new_cells(cells);
-	new_cells.resize(tess.GetTotalPointNumber());
+	// Reuse persistent buffer instead of allocating a new vector each call
+	new_cells_.assign(cells.begin(), cells.end());
+	new_cells_.resize(tess.GetTotalPointNumber());
 	for (boost::container::flat_map<size_t, ComputationalCell3D>::const_iterator it = ghost_cells.begin(); it !=
 		ghost_cells.end(); ++it)
-		new_cells[it->first] = it->second;
+		new_cells_[it->first] = it->second;
 	if (SR_)
 	{
-		size_t Nall = new_cells.size();
+		size_t Nall = new_cells_.size();
 		for (size_t j = 0; j < Nall; ++j)
 		{
-			double gamma = 1.0 / std::sqrt(1 - ScalarProd(new_cells[j].velocity, new_cells[j].velocity));
-			new_cells[j].velocity *= gamma;
+			double gamma = 1.0 / std::sqrt(1 - ScalarProd(new_cells_[j].velocity, new_cells_[j].velocity));
+			new_cells_[j].velocity *= gamma;
 		}
 	}
 	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
@@ -848,12 +851,13 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 	std::vector<Vector3D> c_ij;
 	vector<Vector3D> face_cms_cache;
 	vector<double> face_areas_cache;
+	vector<double> psi_buf0;
 	for (size_t i = 0; i < CellNumber; ++i)
 	{
-		calc_slope(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
+		calc_slope(tess, new_cells_, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache, apply_principal_limit_);
+			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf0);
 	}
 #ifdef RICH_MPI
 	// communicate ghost slopes
@@ -870,19 +874,19 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 	// Get ghost points
 	boost::container::flat_map<size_t, ComputationalCell3D> ghost_cells;
 	ghost_.operator()(tess, cells, time, ghost_cells);
-	// Copy ghost data into new cells vector
-	vector<ComputationalCell3D> new_cells(cells);
-	new_cells.resize(tess.GetTotalPointNumber());
+	// Reuse persistent buffer instead of allocating a new vector each call
+	new_cells_.assign(cells.begin(), cells.end());
+	new_cells_.resize(tess.GetTotalPointNumber());
 	for (boost::container::flat_map<size_t, ComputationalCell3D>::const_iterator it = ghost_cells.begin(); it !=
 		ghost_cells.end(); ++it)
-		new_cells[it->first] = it->second;
+		new_cells_[it->first] = it->second;
 	if (SR_)
 	{
-		size_t Nall = new_cells.size();
+		size_t Nall = new_cells_.size();
 		for (size_t j = 0; j < Nall; ++j)
 		{
-			double gamma = 1.0 / std::sqrt(1 - ScalarProd(new_cells[j].velocity, new_cells[j].velocity));
-			new_cells[j].velocity *= gamma;
+			double gamma = 1.0 / std::sqrt(1 - ScalarProd(new_cells_[j].velocity, new_cells_[j].velocity));
+			new_cells_[j].velocity *= gamma;
 		}
 	}
 	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
@@ -900,6 +904,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 	std::vector<Vector3D> c_ij;
 	vector<Vector3D> face_cms_cache;
 	vector<double> face_areas_cache;
+	vector<double> psi_buf;
 	
 	// Pre-compute all cell CMs once - avoid repeated lookups
 	vector<Vector3D> all_cell_cms(CellNumber);
@@ -916,16 +921,16 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 	bool energy_fix = energy_index < ComputationalCell3D::tracerNames.size();
 	for (size_t i = 0; i < CellNumber; ++i)
 	{
-		calc_slope(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
+		calc_slope(tess, new_cells_, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache, apply_principal_limit_);
+			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf);
 		face_vec const& faces = tess.GetCellFaces(i);
 		const size_t nloop = faces.size();
 		// Use pre-computed cell CM - avoid repeated lookups
 		const Vector3D& cell_cm = all_cell_cms[i];
 		// Get reference to source cell - avoid repeated indexing
-		const ComputationalCell3D& source_cell = new_cells[i];
+		const ComputationalCell3D& source_cell = new_cells_[i];
 		const Slope3D& cell_slope = rslopes_[i];
 		
 		for (size_t j = 0; j < nloop; ++j)
@@ -1027,7 +1032,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 		if (N0 > CellNumber)
 		{
 			cell_ref = &res[boundaryedges[i]].first;
-			ReplaceComputationalCell(*cell_ref, new_cells[N0]);
+			ReplaceComputationalCell(*cell_ref, new_cells_[N0]);
 			try
 			{
 #ifdef RICH_MPI
@@ -1068,14 +1073,14 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 			}
 			catch (UniversalError &eo)
 			{
-				eo.addEntry("old density", new_cells[N0].density);
-				eo.addEntry("old internal energy", new_cells[N0].internal_energy);
+				eo.addEntry("old density", new_cells_[N0].density);
+				eo.addEntry("old internal energy", new_cells_[N0].internal_energy);
 				eo.addEntry("Boundary Face", static_cast<double>(boundaryedges[i]));
 				eo.addEntry("Cell", static_cast<double>(N0));
-				eo.addEntry("Vx", new_cells[N0].velocity.x);
-				eo.addEntry("Vy", new_cells[N0].velocity.y);
-				eo.addEntry("Vz", new_cells[N0].velocity.z);
-				eo.addEntry("Cell id", static_cast<double>(new_cells[N0].ID));
+				eo.addEntry("Vx", new_cells_[N0].velocity.x);
+				eo.addEntry("Vy", new_cells_[N0].velocity.y);
+				eo.addEntry("Vz", new_cells_[N0].velocity.z);
+				eo.addEntry("Cell id", static_cast<double>(new_cells_[N0].ID));
 				eo.addEntry("Interpolated density",cell_ref->density);
 				eo.addEntry("Interpolated pressure",cell_ref->pressure);
 				eo.addEntry("Interpolated internal energy",cell_ref->internal_energy);
@@ -1089,12 +1094,12 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 				eo.addEntry("Cell CMy", tess.GetCellCM(N0).y);
 				eo.addEntry("Cell CMz", tess.GetCellCM(N0).z);
 				size_t N1 = tess.GetFaceNeighbors(boundaryedges[i]).second;
-				eo.addEntry("Other cell ID", static_cast<double>(new_cells[N1].ID));
+				eo.addEntry("Other cell ID", static_cast<double>(new_cells_[N1].ID));
 				eo.addEntry("Other Cell CMx", tess.GetCellCM(N1).x);
 				eo.addEntry("Other Cell CMy", tess.GetCellCM(N1).y);
 				eo.addEntry("Other Cell CMz", tess.GetCellCM(N1).z);
-				eo.addEntry("Other Cell density", new_cells[N1].density);
-				eo.addEntry("Other Cell pressure", new_cells[N1].pressure);
+				eo.addEntry("Other Cell density", new_cells_[N1].density);
+				eo.addEntry("Other Cell pressure", new_cells_[N1].pressure);
 				eo.addEntry("Slopex", rslopes_[N0].xderivative.density);
 				eo.addEntry("Slopey", rslopes_[N0].yderivative.density);
 				eo.addEntry("Slopez", rslopes_[N0].zderivative.density);
@@ -1118,7 +1123,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 		{
 			N0 = tess.GetFaceNeighbors(boundaryedges[i]).second;
 			cell_ref = &res[boundaryedges[i]].second;
-			ReplaceComputationalCell(*cell_ref, new_cells[N0]);
+			ReplaceComputationalCell(*cell_ref, new_cells_[N0]);
 			try
 			{
 #ifdef RICH_MPI
@@ -1159,14 +1164,14 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 			}
 			catch (UniversalError &eo)
 			{
-				eo.addEntry("old density", new_cells[N0].density);
-				eo.addEntry("old internal energy", new_cells[N0].internal_energy);
+				eo.addEntry("old density", new_cells_[N0].density);
+				eo.addEntry("old internal energy", new_cells_[N0].internal_energy);
 				eo.addEntry("Boundary Face", static_cast<double>(boundaryedges[i]));
 				eo.addEntry("Cell", static_cast<double>(N0));
-				eo.addEntry("Vx", new_cells[N0].velocity.x);
-				eo.addEntry("Vy", new_cells[N0].velocity.y);
-				eo.addEntry("Vz", new_cells[N0].velocity.z);
-				eo.addEntry("Cell id", static_cast<double>(new_cells[N0].ID));
+				eo.addEntry("Vx", new_cells_[N0].velocity.x);
+				eo.addEntry("Vy", new_cells_[N0].velocity.y);
+				eo.addEntry("Vz", new_cells_[N0].velocity.z);
+				eo.addEntry("Cell id", static_cast<double>(new_cells_[N0].ID));
 				eo.addEntry("Interpolated density",cell_ref->density);
 				eo.addEntry("Interpolated pressure",cell_ref->pressure);
 				eo.addEntry("Interpolated internal energy",cell_ref->internal_energy);
@@ -1180,12 +1185,12 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 				eo.addEntry("Cell CMy", tess.GetCellCM(N0).y);
 				eo.addEntry("Cell CMz", tess.GetCellCM(N0).z);
 				size_t N1 = tess.GetFaceNeighbors(boundaryedges[i]).first;
-				eo.addEntry("Other cell ID", static_cast<double>(new_cells[N1].ID));
+				eo.addEntry("Other cell ID", static_cast<double>(new_cells_[N1].ID));
 				eo.addEntry("Other Cell CMx", tess.GetCellCM(N1).x);
 				eo.addEntry("Other Cell CMy", tess.GetCellCM(N1).y);
 				eo.addEntry("Other Cell CMz", tess.GetCellCM(N1).z);
-				eo.addEntry("Other Cell density", new_cells[N1].density);
-				eo.addEntry("Other Cell pressure", new_cells[N1].pressure);
+				eo.addEntry("Other Cell density", new_cells_[N1].density);
+				eo.addEntry("Other Cell pressure", new_cells_[N1].pressure);
 #ifdef RICH_MPI
 				int rank = 0;
 				MPI_Comm_rank(MPI_COMM_WORLD, &rank);

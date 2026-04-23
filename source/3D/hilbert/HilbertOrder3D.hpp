@@ -52,7 +52,7 @@ public:
 
 private:
 	// Rotate a shape according to a given rotation scheme (in-place):
-	void RotateShape(int iShapeIndex, vector<int> vAxes);
+	void RotateShape(int iShapeIndex, vector<int> const& vAxes);
 	// Rotate a shape according to rotation index, and return the rotated shape:
 	void RotateShape(HilbertCurve3D_shape const & roShape, HilbertCurve3D_shape & roShapeOut, int iRotationIndex);
 	/*!
