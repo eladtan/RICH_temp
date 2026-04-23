@@ -8,6 +8,10 @@
 #include "GravityTree.hpp"
 #include "GravityTypes.h"
 
+#ifndef SKELETON_DEPTH
+#define SKELETON_DEPTH 2
+#endif
+
 class DistributedGravityCalculator
 {
 public:
@@ -30,15 +34,16 @@ private:
     double thetaSquared;
     bool quadrupole;
     GravityTree<Vector3D> *gravityTree;
-    std::vector<std::vector<GravityNodeData>> boundingBoxesOfRanks;
-    mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths; // used in the recursion. in the i`th vector, saves the relevant ranks for level i in the tree. 
+    std::vector<std::vector<GravityNodeData>> topNodesOfRanks;
+    mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths;
     mutable EnvironmentAgent::RanksSet tempRanks;
     const GravityTree<Vector3D>::Node *realRootOfGravityTree;
-
-    std::vector<std::vector<GravityNodeData>> calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const;
+    std::vector<int> prunedRanks;
+    boost::container::flat_set<int> prunedSet;
+    std::vector<MassedValue<Vector3D>> prunedSummaries;
 
     void getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const;
-    
+
     inline std::vector<std::vector<MassedValue<Vector3D>>> getSendList() const
     {
         std::vector<std::vector<MassedValue<Vector3D>>> result(this->size);
@@ -64,17 +69,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
     gravTree->build(massedPoints);
     this->gravityTree = gravTree;
     
-    this->relevantRanksByDepths.resize(this->gravityTree->getOctTree()->getDepth() + 1);
-    for(int _rank = 0; _rank < this->size; _rank++)
-    {
-        if(_rank != this->rank)
-        {
-            this->relevantRanksByDepths[0].insert(_rank);
-        }
-    }
-
-    // Currently, the gravity tree is a oct-tree of the entire space. However, this processor only controls over a subspace, so most of the children are null.
-    // We need to find the "real root", which is the first node that has more than 1 child.
+    // Find the "real root": the first node with more than 1 child
     this->realRootOfGravityTree = this->gravityTree->getOctTree()->getRoot();   
     while(true)
     {
@@ -83,169 +78,354 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
         for(const LocalNode *child : this->realRootOfGravityTree->children)
         {
             if(child == nullptr)
-            {
                 continue;
-            }
             if(nonNullChild == nullptr)
-            {
                 nonNullChild = child;
-            }
             else
             {
-                // found!
                 severalChildren = true;
                 break;
             }
-
         }
         if(severalChildren or (nonNullChild == nullptr))
-        {
             break;
-        }
         this->realRootOfGravityTree = nonNullChild;
     }
-    this->boundingBoxesOfRanks = this->calculateBoundingBoxesOfRanks(this->tess);
-}
 
-std::vector<std::vector<GravityNodeData>> DistributedGravityCalculator::calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const
-{
-    // first, find my LL and UR
-    Vector3D myLL(std::numeric_limits<double>::max()), myUR(std::numeric_limits<double>::lowest());
-    size_t N = tess.GetPointNo();
-    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
+    // Phase 2: Collect real root + children, Allgather across all ranks.
+    // Entry [0] is the root; entries [1..] are its non-null children.
+    std::vector<GravityNodeData> myTopNodes;
     {
-        Vector3D point = tess.GetMeshPoint(pointIdx);
-        for(int dim = 0; dim < 3; dim++)
+        GravityNodeData rootData;
+        rootData.boundingBox = this->realRootOfGravityTree->boundingBox;
+        rootData.CM = this->realRootOfGravityTree->value.CM;
+        rootData.mass = this->realRootOfGravityTree->value.mass;
+        rootData.Q = this->realRootOfGravityTree->value.Q;
+        myTopNodes.push_back(rootData);
+
+        if(!this->realRootOfGravityTree->isLeaf)
         {
-            myLL[dim] = std::min(myLL[dim], point[dim]);
-            myUR[dim] = std::max(myUR[dim], point[dim]);
+            for(size_t i = 0; i < CHILDREN; i++)
+            {
+                const LocalNode *child = this->realRootOfGravityTree->children[i];
+                if(child == nullptr)
+                    continue;
+                GravityNodeData childData;
+                childData.boundingBox = child->boundingBox;
+                childData.CM = child->value.CM;
+                childData.mass = child->value.mass;
+                childData.Q = child->value.Q;
+                myTopNodes.push_back(childData);
+            }
+        }
+    }
+    this->topNodesOfRanks = MPI_All_cast_by_ranks(myTopNodes, this->comm);
+
+    // Phase 3: Pruning decision. Walk local tree top-down to SKELETON_DEPTH
+    // against each remote rank's allgathered top nodes.
+    this->relevantRanksByDepths.resize(this->gravityTree->getOctTree()->getDepth() + 1);
+
+    for(int _rank = 0; _rank < this->size; _rank++)
+    {
+        if(_rank == this->rank)
+            continue;
+
+        bool needsExchange = false;
+        std::vector<std::pair<const LocalNode*, int>> nodeStack;
+        nodeStack.push_back({this->realRootOfGravityTree, 0});
+
+        while(!nodeStack.empty() && !needsExchange)
+        {
+            auto [node, depth] = nodeStack.back();
+            nodeStack.pop_back();
+            if(node == nullptr)
+                continue;
+
+            bool anyOpens = false;
+            for(const GravityNodeData &remote : this->topNodesOfRanks[_rank])
+            {
+                if(remote.boundingBox.contains(node->boundingBox))
+                {
+                    anyOpens = true;
+                    break;
+                }
+                Vector3D cp = remote.boundingBox.closestPoint(node->value.CM);
+                if(ShouldOpenBox(node->value.CM, node->boundingBox, cp, this->thetaSquared))
+                {
+                    anyOpens = true;
+                    break;
+                }
+            }
+
+            if(!anyOpens)
+                continue;
+
+            if(depth >= SKELETON_DEPTH || node->isLeaf)
+            {
+                needsExchange = true;
+            }
+            else
+            {
+                for(size_t i = 0; i < CHILDREN; i++)
+                    nodeStack.push_back({node->children[i], depth + 1});
+            }
+        }
+
+        if(needsExchange)
+        {
+            this->relevantRanksByDepths[0].insert(_rank);
+        }
+        else
+        {
+            this->prunedRanks.push_back(_rank);
+            const std::vector<GravityNodeData> &remoteNodes = this->topNodesOfRanks[_rank];
+            if(remoteNodes.size() > 1)
+            {
+                for(size_t i = 1; i < remoteNodes.size(); i++)
+                    this->prunedSummaries.emplace_back(remoteNodes[i].CM, remoteNodes[i].mass, remoteNodes[i].Q);
+            }
+            else if(!remoteNodes.empty())
+            {
+                this->prunedSummaries.emplace_back(remoteNodes[0].CM, remoteNodes[0].mass, remoteNodes[0].Q);
+            }
         }
     }
 
-    const LocalNode *gravityTreeRoot = this->realRootOfGravityTree;
-    GravityNodeData data;
-    data.boundingBox = gravityTreeRoot->boundingBox;
-    data.CM = gravityTreeRoot->value.CM;
-    data.mass = gravityTreeRoot->value.mass;
-    data.Q = gravityTreeRoot->value.Q;
+    // Phase 4: Pruning flag exchange. Tell each rank whether we pruned it
+    // so it can stop sending us detailed data and fall back to allgathered
+    // coarse data for our contribution instead.
+    {
+        std::vector<int> sendFlags(this->size, 0);
+        for(int r : this->prunedRanks)
+            sendFlags[r] = 1;
 
-    std::vector<GravityNodeData> myData = {data};
-    return MPI_All_cast_by_ranks(myData, this->comm);
+        std::vector<int> recvFlags(this->size, 0);
+        MPI_Alltoall(sendFlags.data(), 1, MPI_INT,
+                     recvFlags.data(), 1, MPI_INT, this->comm);
+
+        boost::container::flat_set<int> alreadyPruned(this->prunedRanks.begin(),
+                                                       this->prunedRanks.end());
+        for(int r = 0; r < this->size; r++)
+        {
+            if(recvFlags[r] == 0 || r == this->rank)
+                continue;
+            if(alreadyPruned.find(r) != alreadyPruned.end())
+                continue;
+
+            this->relevantRanksByDepths[0].erase(r);
+            this->prunedRanks.push_back(r);
+
+            const std::vector<GravityNodeData> &remoteNodes = this->topNodesOfRanks[r];
+            if(remoteNodes.size() > 1)
+            {
+                for(size_t i = 1; i < remoteNodes.size(); i++)
+                    this->prunedSummaries.emplace_back(remoteNodes[i].CM, remoteNodes[i].mass, remoteNodes[i].Q);
+            }
+            else if(!remoteNodes.empty())
+            {
+                this->prunedSummaries.emplace_back(remoteNodes[0].CM, remoteNodes[0].mass, remoteNodes[0].Q);
+            }
+        }
+
+        this->prunedSet = boost::container::flat_set<int>(this->prunedRanks.begin(),
+                                                           this->prunedRanks.end());
+    }
 }
 
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
 {
-    // insert relevant nodes
+#ifdef GRAVITY_PROFILE
+    double prof_t0 = MPI_Wtime();
+    double prof_t_sendList = 0, prof_t_exchange = 0, prof_t_insert = 0, prof_t_walk = 0;
+    size_t prof_totalSent = 0;
+    int prof_actualNeighbors = 0;
+#endif
+
+    // Build send list
+    std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
+
+#ifdef GRAVITY_PROFILE
+    prof_t_sendList = MPI_Wtime();
+    for(int r = 0; r < this->size; r++)
     {
-        std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks;
-        {
-            std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
-            insertToTreeByRanks = MPI_Exchange_all_to_all(sendList, this->comm);
-        }
-
-        size_t totalArrived = 0;
-        for(int _rank = 0; _rank < this->size; _rank++)
-        {
-            std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
-            totalArrived += rankData.size();
-            if(_rank != this->rank)
-            {
-                this->gravityTree->addExternalValues(rankData);
-            }
-
-            rankData.clear();
-        }
-        this->gravityTree->calculateMasses(); // recalculate masses of tree (also recalculates the CMs)
+        prof_totalSent += sendList[r].size();
+        if(!sendList[r].empty())
+            prof_actualNeighbors++;
     }
+#endif
 
-    // calculate the results, locally
+    // Exchange multipole data via sparse graph communicator
+    std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks = MPI_Exchange_sparse(sendList, this->comm);
+    sendList.clear();
+    sendList.shrink_to_fit();
+
+#ifdef GRAVITY_PROFILE
+    prof_t_exchange = MPI_Wtime();
+#endif
+
+    // Insert remote data: exchanged detailed data + allgathered coarse data
+    // for pruned ranks. Each rank's mass appears exactly once -- the prunedSet
+    // guard prevents detailed data from pruned ranks from being inserted.
+#ifdef GRAVITY_PROFILE
+    size_t totalArrived = 0;
+#endif
+    for(int _rank = 0; _rank < this->size; _rank++)
+    {
+        std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
+#ifdef GRAVITY_PROFILE
+        totalArrived += rankData.size();
+#endif
+        if(_rank != this->rank && this->prunedSet.find(_rank) == this->prunedSet.end())
+        {
+            this->gravityTree->addExternalValues(rankData);
+        }
+        rankData.clear();
+    }
+    insertToTreeByRanks.clear();
+    insertToTreeByRanks.shrink_to_fit();
+
+    this->gravityTree->addExternalValues(this->prunedSummaries);
+    this->gravityTree->calculateMasses();
+
+#ifdef GRAVITY_PROFILE
+    prof_t_insert = MPI_Wtime();
+#endif
+
+    // Tree walk: local + exchanged + pruned coarse data all in one tree
     std::vector<Vector3D> results;
+    results.reserve(points.size());
     for(const Vector3D &point : points)
     {
         results.emplace_back(this->gravityTree->gravity(point));
     }
+
+#ifdef GRAVITY_PROFILE
+    prof_t_walk = MPI_Wtime();
+
+    double phases[4] = {
+        prof_t_sendList - prof_t0,
+        prof_t_exchange - prof_t_sendList,
+        prof_t_insert - prof_t_exchange,
+        prof_t_walk - prof_t_insert
+    };
+    double phases_max[4], phases_min[4], phases_sum[4];
+    MPI_Allreduce(phases, phases_max, 4, MPI_DOUBLE, MPI_MAX, this->comm);
+    MPI_Allreduce(phases, phases_min, 4, MPI_DOUBLE, MPI_MIN, this->comm);
+    MPI_Allreduce(phases, phases_sum, 4, MPI_DOUBLE, MPI_SUM, this->comm);
+
+    unsigned long long sent_recv[2] = {
+        static_cast<unsigned long long>(prof_totalSent),
+        static_cast<unsigned long long>(totalArrived)
+    };
+    unsigned long long sent_recv_max[2], sent_recv_sum[2];
+    MPI_Allreduce(sent_recv, sent_recv_max, 2, MPI_UNSIGNED_LONG_LONG, MPI_MAX, this->comm);
+    MPI_Allreduce(sent_recv, sent_recv_sum, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm);
+
+    int neighbors_max = 0, neighbors_min = 0;
+    MPI_Allreduce(&prof_actualNeighbors, &neighbors_max, 1, MPI_INT, MPI_MAX, this->comm);
+    MPI_Allreduce(&prof_actualNeighbors, &neighbors_min, 1, MPI_INT, MPI_MIN, this->comm);
+
+    int pruned = static_cast<int>(this->prunedRanks.size());
+    int pruned_max = 0, pruned_min = 0;
+    double pruned_avg = 0;
+    MPI_Allreduce(&pruned, &pruned_max, 1, MPI_INT, MPI_MAX, this->comm);
+    MPI_Allreduce(&pruned, &pruned_min, 1, MPI_INT, MPI_MIN, this->comm);
+    {
+        double dp = static_cast<double>(pruned);
+        MPI_Allreduce(&dp, &pruned_avg, 1, MPI_DOUBLE, MPI_SUM, this->comm);
+        pruned_avg /= this->size;
+    }
+
+    if(this->rank == 0)
+    {
+        double invP = 1.0 / this->size;
+        std::cout << "[GRAVITY_PROFILE] sendList:  min=" << phases_min[0] << " max=" << phases_max[0] << " avg=" << phases_sum[0] * invP << "\n"
+                  << "[GRAVITY_PROFILE] exchange:  min=" << phases_min[1] << " max=" << phases_max[1] << " avg=" << phases_sum[1] * invP << "\n"
+                  << "[GRAVITY_PROFILE] insert:    min=" << phases_min[2] << " max=" << phases_max[2] << " avg=" << phases_sum[2] * invP << "\n"
+                  << "[GRAVITY_PROFILE] walk:      min=" << phases_min[3] << " max=" << phases_max[3] << " avg=" << phases_sum[3] * invP << "\n"
+                  << "[GRAVITY_PROFILE] sent_nodes: max=" << sent_recv_max[0] << " avg=" << sent_recv_sum[0] * invP
+                  << "  recv_nodes: max=" << sent_recv_max[1] << " avg=" << sent_recv_sum[1] * invP
+                  << "  max_neighbors=" << neighbors_max << " min_neighbors=" << neighbors_min << "/" << this->size << "\n"
+                  << "[GRAVITY_PROFILE] pruned_ranks: min=" << pruned_min << " max=" << pruned_max << " avg=" << pruned_avg << "/" << (this->size - 1) << "\n"
+                  << "[GRAVITY_PROFILE] prune_depth=" << SKELETON_DEPTH << "  pruned_tree_nodes=" << this->prunedSummaries.size() << "\n"
+                  << "[GRAVITY_PROFILE] local_cells=" << points.size() << std::endl;
+    }
+#endif
+
     return results;
 }
 
 void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const
 {
     if(localNode == nullptr)
+        return;
+    if(static_cast<size_t>(depth) >= this->relevantRanksByDepths.size())
     {
         return;
     }
 
     boost::container::flat_set<int> &relevantRanks = this->relevantRanksByDepths[depth];
-    
+
     if(localNode->isLeaf)
     {
-        // we need to send this node to the ranks that are relevant
         for(int _rank : relevantRanks)
+            result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
+        return;
+    }
+
+    if(static_cast<size_t>(depth + 1) >= this->relevantRanksByDepths.size())
+    {
+        this->relevantRanksByDepths.resize(static_cast<size_t>(depth + 2));
+    }
+    this->relevantRanksByDepths[depth + 1].clear();
+    bool someoneWantsToOpen = false;
+
+    for(int _rank : relevantRanks)
+    {
+        bool contained = std::any_of(this->topNodesOfRanks[_rank].begin(), this->topNodesOfRanks[_rank].end(),
+                                    [localNode](const GravityNodeData &remote)
+                                    {
+                                        return remote.boundingBox.contains(localNode->boundingBox);
+                                    });
+        bool shouldOpen = false;
+        if(contained)
+        {
+            if(this->tempRanks.empty())
+            {
+                double radius = localNode->boundingBox.getWidth() / this->theta;
+                this->tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, radius));
+            }
+            shouldOpen = (this->tempRanks.find(_rank) != this->tempRanks.end());
+        }
+        else
+        {
+            shouldOpen = std::any_of(this->topNodesOfRanks[_rank].begin(), this->topNodesOfRanks[_rank].end(),
+                                    [localNode, this](const GravityNodeData &remote)
+                                    {
+                                        return ShouldOpenBox(localNode->value.CM, localNode->boundingBox, remote.boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
+                                    });
+        }
+
+        if(shouldOpen)
+        {
+            someoneWantsToOpen = true;
+            this->relevantRanksByDepths[depth + 1].insert(_rank);
+        }
+        else
         {
             result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
         }
-        return;
     }
-    else
+
+    this->tempRanks.clear();
+
+    if(not someoneWantsToOpen)
+        return;
+
+    for(size_t i = 0; i < CHILDREN; i++)
     {
-        this->relevantRanksByDepths[depth + 1].clear();
-        bool someoneWantsToOpen = false;
-
-        for(int _rank : relevantRanks)
-        {
-            // check whether or not the rank `_rank` has a bounding box contained in `localNode`
-            bool contained = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
-                                        [localNode](const GravityNodeData &remote)
-                                        {
-                                            return remote.boundingBox.contains(localNode->boundingBox); // if local node is contained in `remote`'s bounding box
-                                        });
-            bool shouldOpen = false;
-            if(contained)
-            {
-                // check if sphere of radius `w/theta` centered at `localNode->value.CM` intersects with rank `_rank`
-                if(this->tempRanks.empty()) // may have been already calculated for another `_rank` value
-                {
-                    double radius = localNode->boundingBox.getWidth() / this->theta;
-                    this->tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, radius));
-                }
-                shouldOpen = (this->tempRanks.find(_rank) != this->tempRanks.end()); // if contained in a bounding box of remote, check if the remote really intersects with me
-            }
-            else
-            {
-                // if not contained in any bounding box, check if should be opened by the theta rule
-                shouldOpen = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
-                                        [localNode, this](const GravityNodeData &remote)
-                                        {
-                                            return ShouldOpenBox(localNode->value.CM, localNode->boundingBox, remote.boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
-                                        });
-            }
-
-            if(shouldOpen)
-            {
-                someoneWantsToOpen = true;
-                // we should open, add the rank to the recursive list
-                this->relevantRanksByDepths[depth + 1].insert(_rank);
-            }
-            else
-            {
-                // we need to send this node to this rank
-                result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
-            }
-        }
-
-        this->tempRanks.clear();
-
-        if(not someoneWantsToOpen)
-        {
-            return;
-        }
-        // else, call recursively to each one of my children
-        for(size_t i = 0; i < CHILDREN; i++)
-        {
-            if(localNode->children[i] != nullptr)
-            {
-                this->getSendListHelper(localNode->children[i], result, depth + 1);
-            }
-        }
+        if(localNode->children[i] != nullptr)
+            this->getSendListHelper(localNode->children[i], result, depth + 1);
     }
 }
 
