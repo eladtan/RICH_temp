@@ -10,8 +10,6 @@
 #include "mpi/mpi_commands.hpp"
 #endif
 
-using namespace H5;
-
 Snapshot::Snapshot(void) :
 	mesh_points(),
 	cells(),
@@ -33,37 +31,51 @@ namespace
 {
 
 	template<class T> vector<T> read_vector_from_hdf5
-		(const Group& file,
+		(hid_t group_id,
 			const string& caption,
-			const DataType& datatype)
+			hid_t datatype)
 	{
-		DataSet dataset = file.openDataSet(caption);
-		DataSpace filespace = dataset.getSpace();
+		hid_t dataset = H5Dopen2(group_id, caption.c_str(), H5P_DEFAULT);
+		hid_t filespace = H5Dget_space(dataset);
 		hsize_t dims_out[2];
-		filespace.getSimpleExtentDims(dims_out, nullptr);
+		H5Sget_simple_extent_dims(filespace, dims_out, nullptr);
 		const size_t NX = static_cast<size_t>(dims_out[0]);
 		vector<T> result(NX);
-		dataset.read(&result[0], datatype);
+		H5Dread(dataset, datatype, H5S_ALL, H5S_ALL, H5P_DEFAULT, &result[0]);
+		H5Sclose(filespace);
+		H5Dclose(dataset);
 		return result;
 	}
 
 	vector<double> read_double_vector_from_hdf5
-	(const Group& file, const string& caption)
+	(hid_t group_id, const string& caption)
 	{
-		return read_vector_from_hdf5<double>
-			(file,
-				caption,
-				PredType::NATIVE_DOUBLE);
+		return read_vector_from_hdf5<double>(group_id, caption, H5T_NATIVE_DOUBLE);
 	}
 
 	vector<int> read_int_vector_from_hdf5
-		(const Group& file,
+		(hid_t group_id,
 			const string& caption)
 	{
-		return read_vector_from_hdf5<int>
-			(file,
-				caption,
-				PredType::NATIVE_INT);
+		return read_vector_from_hdf5<int>(group_id, caption, H5T_NATIVE_INT);
+	}
+
+	herr_t count_objects_callback(hid_t /*group*/, const char * /*name*/, const H5L_info_t * /*info*/, void *op_data)
+	{
+		auto *count = static_cast<hsize_t*>(op_data);
+		(*count)++;
+		return 0;
+	}
+
+	struct NameCollector {
+		vector<string> names;
+	};
+
+	herr_t collect_names_callback(hid_t /*group*/, const char *name, const H5L_info_t * /*info*/, void *op_data)
+	{
+		auto *collector = static_cast<NameCollector*>(op_data);
+		collector->names.push_back(string(name));
+		return 0;
 	}
 }
 
@@ -234,17 +246,16 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 	bool const write_vtk, bool const write_vtu)
 {
 	ConvexHullData chd(sim.getTessellation());
-	H5File file(H5std_string(fname), H5F_ACC_TRUNC);
-	Group geometry = file.createGroup("/geometry");
-	Group gappendices = file.createGroup("/appendices");
-	Group hydrodynamic = file.createGroup("/hydrodynamic");
-	Group tracers = file.createGroup("/tracers");
-	Group stickers = file.createGroup("/stickers");
+	hid_t file = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+	hid_t geometry = H5Gcreate2(file, "/geometry", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	hid_t gappendices = H5Gcreate2(file, "/appendices", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	hid_t hydrodynamic = H5Gcreate2(file, "/hydrodynamic", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	hid_t tracers = H5Gcreate2(file, "/tracers", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+	hid_t stickers = H5Gcreate2(file, "/stickers", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 #ifdef RICH_MPI
-	Group mpi = file.createGroup("/mpi");
+	hid_t mpi = H5Gcreate2(file, "/mpi", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 #endif
 
-	// General
 	write_std_vector_to_hdf5
 		(file,
 			vector<double>(1, sim.getTime()),
@@ -254,7 +265,6 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 			vector<int>(1, sim.getCycle()),
 			"cycle");
 
-	// Geometry  
 	write_std_vector_to_hdf5
 		(geometry,
 			serial_generate
@@ -279,7 +289,6 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 		(geometry,
 			chd.nvert,
 			"n_vertices");
-	//MPI
 #ifdef RICH_MPI
 	write_std_vector_to_hdf5
 		(mpi,
@@ -295,7 +304,6 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 			"y_coordinate");
 #endif
 
-	// Hydrodynamic
 	write_std_vector_to_hdf5
 		(hydrodynamic,
 			serial_generate
@@ -325,23 +333,27 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 	for (size_t i = 0; i < Ntracers; ++i)
 	  write_std_vector_to_hdf5(tracers, serial_generate(TracerSlice(sim, i)), ComputationalCell::tracerNames[i]);
 
-	// Stickers
-	//	size_t Nstickers = sim.getAllCells().front().stickers.size();
 	const size_t Nstickers = ComputationalCell::stickerNames.size();
 	for (size_t i = 0; i < Nstickers; ++i)
 	  write_std_vector_to_hdf5(stickers, serial_generate(StickerSlice(sim, i)), ComputationalCell::stickerNames[i]);
 
-	// Appendices
 	for (size_t i = 0; i < appendices.size(); ++i)
 		write_std_vector_to_hdf5
 		(gappendices,
 			(*(appendices.at(i)))(sim),
 			appendices.at(i)->getName());
 
-	//////////////// write vtk/vtu files
+#ifdef RICH_MPI
+	H5Gclose(mpi);
+#endif
+	H5Gclose(stickers);
+	H5Gclose(tracers);
+	H5Gclose(hydrodynamic);
+	H5Gclose(gappendices);
+	H5Gclose(geometry);
+
 	if(write_vtk or write_vtu){
 		std::string const file_name_base = "sedov_"+std::to_string(sim.getCycle());
-		// make sure this does not create deep copies 
 		std::vector<double> const& density = serial_generate(CellsPropertyExtractor(sim, ThermalPropertyExtractor(&ComputationalCell::density)));
 		std::vector<double> const& pressure = serial_generate(CellsPropertyExtractor(sim, ThermalPropertyExtractor(&ComputationalCell::pressure)));
 		
@@ -349,18 +361,16 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 		std::vector<double> const& velocity_y = serial_generate(CellsPropertyExtractor(sim, CellVelocityComponentExtractor(&Vector2D::y)));
 		
 		std::vector<std::string> const cell_variable_names = {"density", "pressure"};
-		// NOTE! this list probably define deep copies - which is a stupid duplication of memory
 		std::vector<std::vector<double>> const cell_variables = {density, pressure};
 		
 		std::vector<std::string> const cell_vectors_names = {"velocity"};
-		// NOTE! this list probably define deep copies - which is a stupid duplication of memory
 		std::vector<std::vector<double>> const cell_vectors_x = {velocity_x};
 		std::vector<std::vector<double>> const cell_vectors_y = {velocity_y};
 		
 		std::vector<std::size_t> cells_num_vertices(chd.nvert.size());
 		for (size_t cell = 0; cell < chd.nvert.size(); ++cell){
 			std::size_t const num_vertices = static_cast<std::size_t>(chd.nvert[cell]);
-			assert(num_vertices == chd.nvert[cell]); //make sure it is an integer and no overflow from double->integer
+			assert(num_vertices == chd.nvert[cell]);
 			cells_num_vertices[cell] = num_vertices;
 		}
 
@@ -395,6 +405,8 @@ void write_snapshot_to_hdf5(hdsim const& sim, string const& fname,
 			);
 		}
 	}
+
+	H5Fclose(file);
 }
 
 Snapshot read_hdf5_snapshot
@@ -405,22 +417,17 @@ Snapshot read_hdf5_snapshot
 )
 {
 	Snapshot res;
-	H5File file(fname, H5F_ACC_RDONLY);
-	Group g_geometry = file.openGroup("geometry");
-	Group g_hydrodynamic = file.openGroup("hydrodynamic");
-	Group g_tracers = file.openGroup("tracers");
-	Group g_stickers = file.openGroup("stickers");
+	hid_t file = H5Fopen(fname.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+	hid_t g_geometry = H5Gopen2(file, "geometry", H5P_DEFAULT);
+	hid_t g_hydrodynamic = H5Gopen2(file, "hydrodynamic", H5P_DEFAULT);
+	hid_t g_tracers = H5Gopen2(file, "tracers", H5P_DEFAULT);
+	hid_t g_stickers = H5Gopen2(file, "stickers", H5P_DEFAULT);
 #ifdef RICH_MPI
-	Group mpi;
+	hid_t mpi = H5I_INVALID_HID;
 	if (!mpioverride)
-		mpi = file.openGroup("/mpi");
-#else
-	//	if (mpioverride)
-	//		mpioverride = true;
+		mpi = H5Gopen2(file, "/mpi", H5P_DEFAULT);
 #endif
 
-
-	// Mesh points
 	{
 		const vector<double> x =
 			read_double_vector_from_hdf5(g_geometry, "x_coordinate");
@@ -432,7 +439,6 @@ Snapshot read_hdf5_snapshot
 	}
 
 #ifdef RICH_MPI
-	// MPI
 	{
 		if (!mpioverride)
 		{
@@ -447,7 +453,6 @@ Snapshot read_hdf5_snapshot
 	}
 #endif
 
-	// Hydrodynamic
 	{
 		const vector<double> density =
 			read_double_vector_from_hdf5(g_hydrodynamic, "density");
@@ -458,25 +463,27 @@ Snapshot read_hdf5_snapshot
 		const vector<double> y_velocity =
 			read_double_vector_from_hdf5(g_hydrodynamic, "y_velocity");
 
-		vector<vector<double> > tracers(g_tracers.getNumObjs());
-		vector<string> tracernames(tracers.size());
-		for (hsize_t n = 0; n < g_tracers.getNumObjs(); ++n) 
+		NameCollector tracer_collector;
+		hsize_t tracer_idx = 0;
+		H5Literate(g_tracers, H5_INDEX_NAME, H5_ITER_INC, &tracer_idx, collect_names_callback, &tracer_collector);
+
+		vector<vector<double> > tracer_data(tracer_collector.names.size());
+		for (size_t n = 0; n < tracer_collector.names.size(); ++n) 
 		{
-			const H5std_string name = g_tracers.getObjnameByIdx(n);
-			tracernames[n] = name;
-			tracers[n]= read_double_vector_from_hdf5(g_tracers, name);
+			tracer_data[n] = read_double_vector_from_hdf5(g_tracers, tracer_collector.names[n]);
 		}
 
-		vector<vector<int> > stickers(g_stickers.getNumObjs());
-		vector<string> stickernames(stickers.size());
-		for (hsize_t n = 0; n < g_stickers.getNumObjs(); ++n) 
+		NameCollector sticker_collector;
+		hsize_t sticker_idx = 0;
+		H5Literate(g_stickers, H5_INDEX_NAME, H5_ITER_INC, &sticker_idx, collect_names_callback, &sticker_collector);
+
+		vector<vector<int> > sticker_data(sticker_collector.names.size());
+		for (size_t n = 0; n < sticker_collector.names.size(); ++n) 
 		{
-			const H5std_string name = g_stickers.getObjnameByIdx(n);
-			stickernames[n] = name;
-			stickers[n] =read_int_vector_from_hdf5(g_stickers, name);
+			sticker_data[n] = read_int_vector_from_hdf5(g_stickers, sticker_collector.names[n]);
 		}
-		res.tracerstickernames.first = tracernames;
-		res.tracerstickernames.second = stickernames;
+		res.tracerstickernames.first = tracer_collector.names;
+		res.tracerstickernames.second = sticker_collector.names;
 		res.cells.resize(density.size());
 		for (size_t i = 0; i < res.cells.size(); ++i) 
 		{
@@ -484,16 +491,13 @@ Snapshot read_hdf5_snapshot
 			res.cells.at(i).pressure = pressure.at(i);
 			res.cells.at(i).velocity.x = x_velocity.at(i);
 			res.cells.at(i).velocity.y = y_velocity.at(i);
-	//		res.cells.at(i).tracers.resize(tracernames.size());
-			for (size_t j = 0; j < tracernames.size(); ++j)
-				res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
-		//	res.cells.at(i).stickers.resize(stickernames.size());
-			for (size_t j = 0; j < stickernames.size(); ++j)
-				res.cells.at(i).stickers.at(j) = stickers.at(j).at(i)==1;
+			for (size_t j = 0; j < tracer_collector.names.size(); ++j)
+				res.cells.at(i).tracers.at(j) = tracer_data.at(j).at(i);
+			for (size_t j = 0; j < sticker_collector.names.size(); ++j)
+				res.cells.at(i).stickers.at(j) = sticker_data.at(j).at(i)==1;
 		}
 	}
 
-	// Misc
 	{
 		const vector<double> time =
 			read_double_vector_from_hdf5(file, "time");
@@ -502,6 +506,16 @@ Snapshot read_hdf5_snapshot
 			read_int_vector_from_hdf5(file, "cycle");
 		res.cycle = cycle.at(0);
 	}
+
+#ifdef RICH_MPI
+	if (!mpioverride)
+		H5Gclose(mpi);
+#endif
+	H5Gclose(g_stickers);
+	H5Gclose(g_tracers);
+	H5Gclose(g_hydrodynamic);
+	H5Gclose(g_geometry);
+	H5Fclose(file);
 
 	return res;
 }
@@ -513,7 +527,7 @@ void WriteDelaunay(Delaunay const& tri, string const& filename)
 	vector<int> facets;
 	size_t nfacets = tri.get_num_facet();
 
-	H5File file(H5std_string(filename), H5F_ACC_TRUNC);
+	hid_t file = H5Fcreate(filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 
 	for (size_t i = 0; i < cor.size(); ++i)
 	{
@@ -532,6 +546,7 @@ void WriteDelaunay(Delaunay const& tri, string const& filename)
 	write_std_vector_to_hdf5(file, y_cor, "y_coordinate");
 	write_std_vector_to_hdf5(file, vector<int>(1, static_cast<int>(tri.GetOriginalLength())), "point number");
 	write_std_vector_to_hdf5(file, facets, "triangles");
+	H5Fclose(file);
 }
 
 #ifdef RICH_MPI
@@ -544,7 +559,6 @@ Snapshot ReDistributeData(string const& filename, Tessellation const& proctess, 
 	double read_num =
 		static_cast<double>(snapshot_number)*1.0 /
 		static_cast<double>(ws);
-	// Read the data
 	int start = static_cast<int>
 		(floor
 			(static_cast<double>(rank)*read_num + 0.1));
@@ -582,7 +596,6 @@ Snapshot ReDistributeData(string const& filename, Tessellation const& proctess, 
 		if (!added)
 			throw UniversalError("Didn't find point in ReDistributeData");
 	}
-	// Send/Recv data
 	std::vector<std::vector<ComputationalCell>> cell_recv = MPI_exchange_data_indexed(std::vector<rank_t>(ws), snap.cells, indeces);
 	std::vector<std::vector<Vector2D>> mesh_recv = MPI_exchange_data_indexed(std::vector<rank_t>(ws), snap.mesh_points, indeces);
 
@@ -606,7 +619,6 @@ Snapshot ReDistributeData2(string const& filename, Tessellation const& proctess,
 {
 	int rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	// Read the data
 	Snapshot snap;
 	for (int i = 0; i < static_cast<int>(snapshot_number); ++i)
 	{
@@ -635,8 +647,8 @@ Snapshot ReDistributeData2(string const& filename, Tessellation const& proctess,
 void WriteTess(Tessellation const& tess, string const& fname)
 {
 	ConvexHullData chd(tess);
-	H5File file(H5std_string(fname), H5F_ACC_TRUNC);
-	Group geometry = file.createGroup("/geometry");
+	hid_t file = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+	hid_t geometry = H5Gcreate2(file, "/geometry", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 	write_std_vector_to_hdf5(geometry, serial_generate(MeshGeneratingPointCoordinate(tess, &Vector2D::x)),
 		"x_coordinate");
 	write_std_vector_to_hdf5(geometry, serial_generate(MeshGeneratingPointCoordinate(tess, &Vector2D::y)),
@@ -644,4 +656,6 @@ void WriteTess(Tessellation const& tess, string const& fname)
 	write_std_vector_to_hdf5(geometry, chd.xvert, "x_vertices");
 	write_std_vector_to_hdf5(geometry, chd.yvert, "y_vertices");
 	write_std_vector_to_hdf5(geometry, chd.nvert, "n_vertices");
+	H5Gclose(geometry);
+	H5Fclose(file);
 }

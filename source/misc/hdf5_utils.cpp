@@ -1,8 +1,6 @@
 #include "hdf5_utils.hpp"
 #include "utils.hpp"
 
-using namespace H5;
-
 HDF5Shortcut::HDF5Shortcut(const string& fname) :
 	fname_(fname), double_data_(), int_data_() {}
 
@@ -23,46 +21,33 @@ HDF5Shortcut& HDF5Shortcut::operator()(const string& field_name,
 }
 
 void write_std_vector_to_hdf5
-(const Group& file,
+(hid_t group_id,
 	const vector<double>& data,
 	const string& caption)
 {
-	FloatType datatype(PredType::NATIVE_DOUBLE);
-	datatype.setOrder(H5T_ORDER_LE);
-	write_std_vector_to_hdf5
-	(file,
-		data,
-		caption,
-		datatype);
+	write_std_vector_to_hdf5(group_id, data, caption, H5T_NATIVE_DOUBLE);
 }
 
 void write_std_vector_to_hdf5
-(const Group& file,
+(hid_t group_id,
 	const vector<int>& data,
 	const string& caption)
 {
-	IntType datatype(PredType::NATIVE_INT);
-	datatype.setOrder(H5T_ORDER_LE);
-	write_std_vector_to_hdf5
-	(file,
-		data,
-		caption,
-		datatype);
+	write_std_vector_to_hdf5(group_id, data, caption, H5T_NATIVE_INT);
 }
 
-void write_std_vector_to_hdf5(const Group& file, const vector<size_t>& data, const string& caption)
+void write_std_vector_to_hdf5(hid_t group_id, const vector<size_t>& data, const string& caption)
 {
-	IntType datatype(PredType::NATIVE_ULLONG);
-	datatype.setOrder(H5T_ORDER_LE);
-	write_std_vector_to_hdf5(file, data, caption, datatype);
+	write_std_vector_to_hdf5(group_id, data, caption, H5T_NATIVE_ULLONG);
 }
 
 
 HDF5Shortcut::~HDF5Shortcut(void)
 {
-	H5File file(H5std_string(fname_), H5F_ACC_TRUNC);
+	hid_t file = H5Fcreate(fname_.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 	for (size_t i = 0; i < double_data_.size(); ++i)
 		write_std_vector_to_hdf5(file, double_data_[i].second, double_data_[i].first);
 	for (size_t i = 0; i < int_data_.size(); ++i)
 		write_std_vector_to_hdf5(file, int_data_[i].second, int_data_[i].first);
+	H5Fclose(file);
 }

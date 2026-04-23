@@ -1,30 +1,24 @@
 #include "hdf5_diagnostics1d.hpp"
 
-using H5::PredType;
-using H5::DataSet;
-using H5::FloatType;
-using H5::DataSpace;
-using H5::H5File;
 using std::vector;
 
 namespace {
   void write_std_vector_to_hdf5
-  (H5File& file,
+  (hid_t file_id,
    vector<double> const& num_list,
    string const& caption)
   {
     hsize_t dimsf[1];
     dimsf[0] = num_list.size();
-    DataSpace dataspace(1, dimsf);
-    
-    FloatType datatype(PredType::NATIVE_DOUBLE);
-    datatype.setOrder(H5T_ORDER_LE);
+    hid_t dataspace = H5Screate_simple(1, dimsf, nullptr);
 
-    DataSet dataset = file.createDataSet(H5std_string(caption),
-					 datatype,
-					 dataspace);
+    hid_t dataset = H5Dcreate2(file_id, caption.c_str(), H5T_NATIVE_DOUBLE,
+                               dataspace, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
 
-    dataset.write(&num_list.front(), PredType::NATIVE_DOUBLE);
+    H5Dwrite(dataset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, &num_list.front());
+
+    H5Dclose(dataset);
+    H5Sclose(dataspace);
   }
 }
 
@@ -32,18 +26,14 @@ void diagnostics1d::write_snapshot_to_hdf5
 (hdsim1D const& sim,
  string const& fname)
 {
-  // Create file
-  H5File file(H5std_string(fname),
-	      H5F_ACC_TRUNC);
+  hid_t file = H5Fcreate(fname.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 
-  // Write time
   {
     vector<double> time_vector(1,0);
     time_vector[0] = sim.GetTime();
     write_std_vector_to_hdf5(file, time_vector, "time");
   }
 
-  // Write grid
   {
     vector<double> grid_vector(size_t(sim.GetCellNo()));
     for(size_t i=0;i<static_cast<size_t>(sim.GetCellNo());++i)
@@ -51,7 +41,6 @@ void diagnostics1d::write_snapshot_to_hdf5
     write_std_vector_to_hdf5(file, grid_vector, "grid");
   }
 
-  // Write Hydrodynamic variables
   {
     vector<double> density_vector(size_t(sim.GetCellNo()));
     vector<double> pressure_vector(size_t(sim.GetCellNo()));
@@ -68,4 +57,6 @@ void diagnostics1d::write_snapshot_to_hdf5
     write_std_vector_to_hdf5(file, x_velocity_vector, "x_velocity");
     write_std_vector_to_hdf5(file, y_velocity_vector, "y_velocity");
   }
+
+  H5Fclose(file);
 }
