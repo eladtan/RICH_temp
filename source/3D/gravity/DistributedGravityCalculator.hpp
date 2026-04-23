@@ -41,6 +41,7 @@ private:
     std::vector<int> prunedRanks;
     boost::container::flat_set<int> prunedSet;
     std::vector<MassedValue<Vector3D>> prunedSummaries;
+    std::vector<int> exchangeNeighbors;
 
     void getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const;
 
@@ -230,22 +231,24 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
         this->prunedSet = boost::container::flat_set<int>(this->prunedRanks.begin(),
                                                            this->prunedRanks.end());
     }
+
+    this->exchangeNeighbors.assign(this->relevantRanksByDepths[0].begin(),
+                                    this->relevantRanksByDepths[0].end());
 }
 
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
 {
 #ifdef GRAVITY_PROFILE
     double prof_t0 = MPI_Wtime();
-    double prof_t_sendList = 0, prof_t_exchange = 0, prof_t_insert = 0, prof_t_walk = 0;
     size_t prof_totalSent = 0;
     int prof_actualNeighbors = 0;
 #endif
 
-    // Build send list
+    // 1. Build send list
     std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
 
 #ifdef GRAVITY_PROFILE
-    prof_t_sendList = MPI_Wtime();
+    double prof_t_sendList = MPI_Wtime();
     for(int r = 0; r < this->size; r++)
     {
         prof_totalSent += sendList[r].size();
@@ -254,44 +257,22 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     }
 #endif
 
-    // Exchange multipole data via sparse graph communicator
-    std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks = MPI_Exchange_sparse(sendList, this->comm);
+    // 2. Insert pruned summaries into the local tree AFTER sendList is built
+    //    (so pruned pseudo-particles don't leak into the send lists) but
+    //    BEFORE the local walk (so the walk includes their contribution).
+    this->gravityTree->addExternalValues(this->prunedSummaries);
+    this->gravityTree->calculateMasses();
+
+    // 3. Start non-blocking sparse exchange (using precomputed neighbor list)
+    SparseExchangeHandle exchangeHandle = MPI_Iexchange_sparse_start(sendList, this->exchangeNeighbors, this->comm);
     sendList.clear();
     sendList.shrink_to_fit();
 
 #ifdef GRAVITY_PROFILE
-    prof_t_exchange = MPI_Wtime();
+    double prof_t_istart = MPI_Wtime();
 #endif
 
-    // Insert remote data: exchanged detailed data + allgathered coarse data
-    // for pruned ranks. Each rank's mass appears exactly once -- the prunedSet
-    // guard prevents detailed data from pruned ranks from being inserted.
-#ifdef GRAVITY_PROFILE
-    size_t totalArrived = 0;
-#endif
-    for(int _rank = 0; _rank < this->size; _rank++)
-    {
-        std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
-#ifdef GRAVITY_PROFILE
-        totalArrived += rankData.size();
-#endif
-        if(_rank != this->rank && this->prunedSet.find(_rank) == this->prunedSet.end())
-        {
-            this->gravityTree->addExternalValues(rankData);
-        }
-        rankData.clear();
-    }
-    insertToTreeByRanks.clear();
-    insertToTreeByRanks.shrink_to_fit();
-
-    this->gravityTree->addExternalValues(this->prunedSummaries);
-    this->gravityTree->calculateMasses();
-
-#ifdef GRAVITY_PROFILE
-    prof_t_insert = MPI_Wtime();
-#endif
-
-    // Tree walk: local + exchanged + pruned coarse data all in one tree
+    // 4. Walk local+pruned tree while exchange is in flight
     std::vector<Vector3D> results;
     results.reserve(points.size());
     for(const Vector3D &point : points)
@@ -300,18 +281,63 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     }
 
 #ifdef GRAVITY_PROFILE
-    prof_t_walk = MPI_Wtime();
+    double prof_t_localWalk = MPI_Wtime();
+#endif
 
-    double phases[4] = {
+    // 5. Wait for exchange to complete (overlapped with step 4)
+    std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks =
+        MPI_Iexchange_sparse_wait<MassedValue<Vector3D>>(exchangeHandle);
+
+#ifdef GRAVITY_PROFILE
+    double prof_t_wait = MPI_Wtime();
+    size_t totalArrived = 0;
+#endif
+
+    // 6. Build temporary tree from received data (non-pruned ranks only)
+    auto [ll, ur] = this->tess.GetBoxCoordinates();
+    GravityTree<Vector3D> remoteTree(ll, ur, this->theta, this->quadrupole);
+
+    for(int _rank = 0; _rank < this->size; _rank++)
+    {
+        std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
+#ifdef GRAVITY_PROFILE
+        totalArrived += rankData.size();
+#endif
+        if(_rank != this->rank && this->prunedSet.find(_rank) == this->prunedSet.end())
+        {
+            remoteTree.addExternalValues(rankData);
+        }
+        rankData.clear();
+    }
+    insertToTreeByRanks.clear();
+    insertToTreeByRanks.shrink_to_fit();
+    remoteTree.calculateMasses();
+
+#ifdef GRAVITY_PROFILE
+    double prof_t_remoteInsert = MPI_Wtime();
+#endif
+
+    // 7. Walk remote tree and add to results
+    for(size_t i = 0; i < points.size(); i++)
+    {
+        results[i] += remoteTree.gravity(points[i]);
+    }
+
+#ifdef GRAVITY_PROFILE
+    double prof_t_remoteWalk = MPI_Wtime();
+
+    double phases[6] = {
         prof_t_sendList - prof_t0,
-        prof_t_exchange - prof_t_sendList,
-        prof_t_insert - prof_t_exchange,
-        prof_t_walk - prof_t_insert
+        prof_t_istart - prof_t_sendList,
+        prof_t_localWalk - prof_t_istart,
+        prof_t_wait - prof_t_localWalk,
+        prof_t_remoteInsert - prof_t_wait,
+        prof_t_remoteWalk - prof_t_remoteInsert
     };
-    double phases_max[4], phases_min[4], phases_sum[4];
-    MPI_Allreduce(phases, phases_max, 4, MPI_DOUBLE, MPI_MAX, this->comm);
-    MPI_Allreduce(phases, phases_min, 4, MPI_DOUBLE, MPI_MIN, this->comm);
-    MPI_Allreduce(phases, phases_sum, 4, MPI_DOUBLE, MPI_SUM, this->comm);
+    double phases_max[6], phases_min[6], phases_sum[6];
+    MPI_Allreduce(phases, phases_max, 6, MPI_DOUBLE, MPI_MAX, this->comm);
+    MPI_Allreduce(phases, phases_min, 6, MPI_DOUBLE, MPI_MIN, this->comm);
+    MPI_Allreduce(phases, phases_sum, 6, MPI_DOUBLE, MPI_SUM, this->comm);
 
     unsigned long long sent_recv[2] = {
         static_cast<unsigned long long>(prof_totalSent),
@@ -339,10 +365,12 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     if(this->rank == 0)
     {
         double invP = 1.0 / this->size;
-        std::cout << "[GRAVITY_PROFILE] sendList:  min=" << phases_min[0] << " max=" << phases_max[0] << " avg=" << phases_sum[0] * invP << "\n"
-                  << "[GRAVITY_PROFILE] exchange:  min=" << phases_min[1] << " max=" << phases_max[1] << " avg=" << phases_sum[1] * invP << "\n"
-                  << "[GRAVITY_PROFILE] insert:    min=" << phases_min[2] << " max=" << phases_max[2] << " avg=" << phases_sum[2] * invP << "\n"
-                  << "[GRAVITY_PROFILE] walk:      min=" << phases_min[3] << " max=" << phases_max[3] << " avg=" << phases_sum[3] * invP << "\n"
+        std::cout << "[GRAVITY_PROFILE] sendList:     min=" << phases_min[0] << " max=" << phases_max[0] << " avg=" << phases_sum[0] * invP << "\n"
+                  << "[GRAVITY_PROFILE] istart:       min=" << phases_min[1] << " max=" << phases_max[1] << " avg=" << phases_sum[1] * invP << "\n"
+                  << "[GRAVITY_PROFILE] local_walk:   min=" << phases_min[2] << " max=" << phases_max[2] << " avg=" << phases_sum[2] * invP << "\n"
+                  << "[GRAVITY_PROFILE] wait:         min=" << phases_min[3] << " max=" << phases_max[3] << " avg=" << phases_sum[3] * invP << "\n"
+                  << "[GRAVITY_PROFILE] remote_ins:   min=" << phases_min[4] << " max=" << phases_max[4] << " avg=" << phases_sum[4] * invP << "\n"
+                  << "[GRAVITY_PROFILE] remote_walk:  min=" << phases_min[5] << " max=" << phases_max[5] << " avg=" << phases_sum[5] * invP << "\n"
                   << "[GRAVITY_PROFILE] sent_nodes: max=" << sent_recv_max[0] << " avg=" << sent_recv_sum[0] * invP
                   << "  recv_nodes: max=" << sent_recv_max[1] << " avg=" << sent_recv_sum[1] * invP
                   << "  max_neighbors=" << neighbors_max << " min_neighbors=" << neighbors_min << "/" << this->size << "\n"
