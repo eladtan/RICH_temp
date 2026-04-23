@@ -13,18 +13,19 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<Mat33<double>>
     {
-        static H5::CompType get()
+        static hid_t get()
         {
-            static H5::CompType type = []()
+            static hid_t type = []()
             {
                 Mat33<double> dummy;
                 size_t dataOffset = reinterpret_cast<const char*>(&dummy(0, 0))
                                   - reinterpret_cast<const char*>(&dummy);
 
-                H5::CompType t(sizeof(Mat33<double>));
+                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(Mat33<double>));
                 hsize_t dims[] = {3, 3};
-                H5::ArrayType arrType(H5::PredType::NATIVE_DOUBLE, 2, dims);
-                t.insertMember("data", dataOffset, arrType);
+                hid_t arrType = H5Tarray_create2(H5T_NATIVE_DOUBLE, 2, dims);
+                H5Tinsert(t, "data", dataOffset, arrType);
+                H5Tclose(arrType);
                 return t;
             }();
             return type;
@@ -37,18 +38,19 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<Mat44<double>>
     {
-        static H5::CompType get()
+        static hid_t get()
         {
-            static H5::CompType type = []()
+            static hid_t type = []()
             {
                 Mat44<double> dummy;
                 size_t dataOffset = reinterpret_cast<const char*>(&dummy(0, 0))
                                   - reinterpret_cast<const char*>(&dummy);
 
-                H5::CompType t(sizeof(Mat44<double>));
+                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(Mat44<double>));
                 hsize_t dims[] = {4, 4};
-                H5::ArrayType arrType(H5::PredType::NATIVE_DOUBLE, 2, dims);
-                t.insertMember("data", dataOffset, arrType);
+                hid_t arrType = H5Tarray_create2(H5T_NATIVE_DOUBLE, 2, dims);
+                H5Tinsert(t, "data", dataOffset, arrType);
+                H5Tclose(arrType);
                 return t;
             }();
             return type;

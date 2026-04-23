@@ -1,7 +1,6 @@
 #ifndef OUTPUT_WRITE_3D_HPP
 #define OUTPUT_WRITE_3D_HPP
 
-#include <H5Cpp.h>
 #include <string>
 #include <filesystem>
 #include "3D/tessellation/voronoi/Voronoi3D.hpp"
@@ -15,7 +14,6 @@
 #include "cellData.hpp"
 
 namespace fs = std::filesystem;
-using namespace H5;
 
 #ifdef RICH_MPI
 	#include <mpi.h>

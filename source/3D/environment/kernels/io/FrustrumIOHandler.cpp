@@ -19,13 +19,13 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<FrustrumState>
     {
-        static H5::CompType get()
+        static hid_t get()
         {
-            static H5::CompType type = []()
+            static hid_t type = []()
             {
-                H5::CompType t(sizeof(FrustrumState));
-                t.insertMember("P", HOFFSET(FrustrumState, P),
-                               HDF5Utils::CompTypeCreator<Mat44<double>>::get());
+                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(FrustrumState));
+                H5Tinsert(t, "P", HOFFSET(FrustrumState, P),
+                            HDF5Utils::CompTypeCreator<Mat44<double>>::get());
                 return t;
             }();
             return type;

@@ -20,15 +20,15 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<ReflectionState>
     {
-        static H5::CompType get()
+        static hid_t get()
         {
-            static H5::CompType type = []()
+            static hid_t type = []()
             {
-                H5::CompType t(sizeof(ReflectionState));
-                t.insertMember("reflectionVector", HOFFSET(ReflectionState, reflectionVector),
-                               HDF5Utils::CompTypeCreator<Vector3D>::get());
-                t.insertMember("factoredVec", HOFFSET(ReflectionState, factoredVec),
-                               HDF5Utils::CompTypeCreator<Vector3D>::get());
+                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(ReflectionState));
+                H5Tinsert(t, "reflectionVector", HOFFSET(ReflectionState, reflectionVector),
+                            HDF5Utils::CompTypeCreator<Vector3D>::get());
+                H5Tinsert(t, "factoredVec", HOFFSET(ReflectionState, factoredVec),
+                            HDF5Utils::CompTypeCreator<Vector3D>::get());
                 return t;
             }();
             return type;

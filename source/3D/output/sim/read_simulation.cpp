@@ -1,8 +1,6 @@
 #include "newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "3D/output/cellData.hpp"
 #include <filesystem>
-#include <thread>
-#include <chrono>
 #include "newtonian/three_dimensional/simulation/steps/io/HydroStepIOHandler.hpp"
 #include "newtonian/three_dimensional/simulation/steps/io/RadiationStepIOHandler.hpp"
 #include "newtonian/three_dimensional/simulation/steps/io/RadiationMCStepIOHandler.hpp"
@@ -18,32 +16,13 @@
     #include "3D/tessellation/voronoi/pointsManager/io/PointsManagerIOHandlerFactory.hpp"
     #include "3D/hilbert/io/RectangularConvertorIOHandler.hpp"
     #include "3D/hilbert/io/ConvertorIOHandlerFactory.hpp"
+    #include "utils/hdf5/HDF5ReaderParallel.hpp"
 #endif
 
 namespace fs = std::filesystem;
 
 namespace
 {
-    void openReader(HDF5Reader &reader, const std::string &filename)
-    {
-        for(int attempt = 1; attempt <= 50; ++attempt)
-        {
-            try
-            {
-                reader.Load(filename);
-                return;
-            }
-            catch(const H5::FileIException &)
-            {
-                if(attempt == 50)
-                {
-                    throw UniversalError("Failed to open HDF5 file after 50 attempts: " + filename);
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        }
-    }
-
     void readGeneralInfo(const HDF5Reader &reader, Simulation &sim)
     {
         BoundingBox<Vector3D> box;
@@ -114,13 +93,11 @@ namespace
         {
             std::vector<double> vols;
             reader.ReadElement(prefix + "/volumes", vols);
-            // tess.GetAllVolumes() = std::move(vols);
         }
         if(reader.Exists(prefix + "/CM"))
         {
             std::vector<Vector3D> cm;
             reader.ReadElement(prefix + "/CM", cm);
-            // tess.GetAllCM() = std::move(cm);
         }
 
 #ifdef RICH_MPI
@@ -184,58 +161,72 @@ void ReadSimulation(const std::string &filename,
                     #endif
                     )
 {
-    HDF5Reader globalReader;
-    openReader(globalReader, filename);
-    readGeneralInfo(globalReader, sim);
-
-    std::shared_ptr<HDF5Reader> dataReader;
-
     #ifdef RICH_MPI
     std::string currentLBName;
     if(parallel)
     {
-        currentLBName = readLoadBalancers(globalReader, sim);
-
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         int rank_to_read = (fake_rank >= 0) ? fake_rank : rank;
 
+        // Backward compatibility: detect old per-rank file format
         std::string dir = fs::path(filename).replace_extension("").string();
-        std::string rankFile = dir + "/" + std::to_string(rank_to_read) + ".h5";
-        if(!fs::exists(rankFile))
+        bool oldFormat = fs::exists(dir + "/0.h5");
+
+        if(oldFormat)
         {
-            throw UniversalError("ReadSimulation: rank file not found: " + rankFile);
+            std::string rankFile = dir + "/" + std::to_string(rank_to_read) + ".h5";
+            if(!fs::exists(rankFile))
+            {
+                throw UniversalError("ReadSimulation: rank file not found: " + rankFile);
+            }
+
+            HDF5Reader globalReader(filename);
+            readGeneralInfo(globalReader, sim);
+            currentLBName = readLoadBalancers(globalReader, sim);
+
+            HDF5Reader dataReader(rankFile);
+            readTessellation(dataReader, "/tess", sim);
+            readPhysicsGroups(dataReader, "", sim);
+            readPrivateInfo(dataReader, "", sim);
+        }
+        else
+        {
+            HDF5ReaderParallel preader(filename, MPI_COMM_WORLD);
+            HDF5Reader reader(preader.GetFileId());
+
+            readGeneralInfo(reader, sim);
+            currentLBName = readLoadBalancers(reader, sim);
+
+            std::string rankPrefix = "/rank" + std::to_string(rank_to_read);
+            readTessellation(reader, rankPrefix + "/tess", sim);
+            readPhysicsGroups(reader, rankPrefix, sim);
+            readPrivateInfo(reader, rankPrefix, sim);
         }
 
-        dataReader = std::make_shared<HDF5Reader>();
-        openReader(*dataReader, rankFile);
+        if(!currentLBName.empty())
+        {
+            auto loads = sim.GetLoads();
+            for(const auto &[name, lb] : loads)
+            {
+                if(name == currentLBName)
+                {
+                    sim.getTessellation().PresetLoadBalancer(lb);
+                    break;
+                }
+            }
+            sim.PresetLoadBalance(currentLBName);
+        }
     }
     else
     #endif
     {
-        dataReader = std::make_shared<HDF5Reader>();
-        openReader(*dataReader, filename);
+        HDF5Reader reader(filename);
+        readGeneralInfo(reader, sim);
+        readTessellation(reader, "/tess", sim);
+        readPhysicsGroups(reader, "", sim);
+        readPrivateInfo(reader, "", sim);
     }
 
-    readTessellation(*dataReader, "/tess", sim);
-
-    #ifdef RICH_MPI
-    if(parallel && !currentLBName.empty())
-    {
-        auto loads = sim.GetLoads();
-        for(const auto &[name, lb] : loads)
-        {
-            if(name == currentLBName)
-            {
-                sim.getTessellation().PresetLoadBalancer(lb);
-                break;
-            }
-        }
-        sim.PresetLoadBalance(currentLBName);
-    }
-    #endif
-
-    readPhysicsGroups(*dataReader, "", sim);
-    readPrivateInfo(*dataReader, "", sim);
     sim.recomputeMaxID();
 }
