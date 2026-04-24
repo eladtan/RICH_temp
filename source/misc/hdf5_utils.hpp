@@ -9,75 +9,79 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-#include <hdf5.h>
+#include <H5Cpp.h>
 
 using std::string;
 using std::vector;
 using std::pair;
+using H5::Group;
+using H5::PredType;
+using H5::DataSpace;
+using H5::DSetCreatPropList;
+using H5::DataSet;
+using H5::DataType;
 
 /*! \brief Master function for writing vectors to hdf5 files
-  \param group_id Group or file handle to write into
+  \param file Either an actual file or a group within a file
   \param data Data to be written
   \param caption Name of dataset
-  \param dt Data type id
+  \param dt Data type
  */
 template<class T> void write_std_vector_to_hdf5
-(hid_t group_id,
+(const Group& file,
  const vector<T>& data,
  const string& caption,
- hid_t dt)
+ const DataType& dt)
 {
   hsize_t dimsf[1];
   dimsf[0] = static_cast<hsize_t>(data.size());
-  hid_t dataspace = H5Screate_simple(1, dimsf, nullptr);
+  DataSpace dataspace(1, dimsf);
 
-  hid_t plist = H5Pcreate(H5P_DATASET_CREATE);
-  hsize_t chunk_size = dimsf[0];
-  if(chunk_size > 100000)
-    chunk_size = 100000;
-  if(chunk_size == 0)
-    chunk_size = 1;
-  H5Pset_chunk(plist, 1, &chunk_size);
-  H5Pset_deflate(plist, 6);
+  DSetCreatPropList plist;
+  if(dimsf[0]>100000)
+    dimsf[0] = 100000;
+  if (dimsf[0] == 0)
+	  dimsf[0] = 1;
+  plist.setChunk(1,dimsf);
+  plist.setDeflate(6);
 
-  hid_t dataset = H5Dcreate2(group_id, caption.c_str(), dt, dataspace,
-                             H5P_DEFAULT, plist, H5P_DEFAULT);
+  DataSet dataset = file.createDataSet
+    (H5std_string(caption),
+     dt,
+     dataspace,
+     plist);
   if(data.empty())
-    H5Dwrite(dataset, dt, H5S_ALL, H5S_ALL, H5P_DEFAULT, nullptr);
+    dataset.write(nullptr, dt);
   else
-    H5Dwrite(dataset, dt, H5S_ALL, H5S_ALL, H5P_DEFAULT, &data[0]);
-
-  H5Dclose(dataset);
-  H5Pclose(plist);
-  H5Sclose(dataspace);
+	dataset.write(&data[0],dt);
 }
 
 /*! \brief Writes floating point data to hdf5
-  \param group_id Group or file handle
+  \param file Either an actual file or a group within a file
   \param data Data to be written
   \param caption Name of dataset
  */
 void write_std_vector_to_hdf5
-(hid_t group_id,
+(const Group& file,
  const vector<double>& data,
  const string& caption);
 
 /*! \brief Writes integer data to hdf5
-  \param group_id Group or file handle
+  \param file Either an actual file or a group within a file
   \param data Data to be written
   \param caption Name of dataset
  */
 void write_std_vector_to_hdf5
-(hid_t group_id,
+(const Group& file,
  const vector<int>& data,
  const string& caption);
 
 /*! \brief Writes size_t data to hdf5
-  \param group_id Group or file handle
-  \param data Data to be written
-  \param caption Name of dataset
- */
-void write_std_vector_to_hdf5(hid_t group_id, const vector<size_t>& data, const string& caption);
+\param file Either an actual file or a group within a file
+\param data Data to be written
+\param caption Name of dataset
+*/
+void write_std_vector_to_hdf5(const Group& file, const vector<size_t>& data, const string& caption);
 
 //! \brief Facilitates writing hdf5 files
 class HDF5Shortcut

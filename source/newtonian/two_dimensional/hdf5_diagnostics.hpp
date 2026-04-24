@@ -6,7 +6,7 @@
 #ifndef HDF5_DIAG
 #define HDF5_DIAG 1
 
-#include <hdf5.h>
+#include <H5Cpp.h>
 #include <string>
 #include "hdsim2d.hpp"
 #include "../../misc/int2str.hpp"

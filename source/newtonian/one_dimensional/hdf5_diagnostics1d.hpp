@@ -3,7 +3,7 @@
   \author Almog Yalinewich
  */ 
 
-#include <hdf5.h>
+#include <H5Cpp.h>
 #include <string>
 #include "hdsim.hpp"
 
