@@ -34,7 +34,7 @@ public:
 
     void rebalance(const std::vector<Vector3D> &points, const std::vector<double> &weights = std::vector<double>()) override;
 
-    void setIndexing(std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing);
+    void setIndexing(std::shared_ptr<const Kernelization3D::IndexingKernel3D> const& indexing);
 
     std::shared_ptr<const Kernelization3D::IndexingKernel3D> getIndexing() const
     {
@@ -42,7 +42,7 @@ public:
         return this->pendingIndexing_;
     }
     
-    void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
+    void setLoadBalancer(std::shared_ptr<LoadBalancer> const& loadBalancer) override;
 
     std::shared_ptr<LoadBalancer> getLoadBalancer(void) override;
 

@@ -46,7 +46,7 @@ Extensive total_conserved(const hdsim& sim)
   return res;
 }
 
-vector<Vector2D> ReadVector2DFromFile(string filename)
+vector<Vector2D> ReadVector2DFromFile(string const& filename)
 {
   fstream myFile (filename.c_str(),ios::in | ios::binary);
   if(!myFile.good())
@@ -65,7 +65,7 @@ vector<Vector2D> ReadVector2DFromFile(string filename)
   return res;
 }
 
-void WriteVector2DToFile(vector<Vector2D> const& vec,string filename)
+void WriteVector2DToFile(vector<Vector2D> const& vec,string const& filename)
 {
   if(vec.empty())
     throw UniversalError("Attempted to write a vector of Vector2D to file with zero length");

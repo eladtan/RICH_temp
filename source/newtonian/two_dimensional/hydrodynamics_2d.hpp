@@ -107,7 +107,7 @@ double TimeStepForCell(Primitive const& cell,
 */
 vector<int> MoveMeshPoints(vector<Vector2D> const& pointvelocity,
 	double dt, Tessellation& tessellation, bool reorder,
-	vector<Vector2D> oldpoints = vector<Vector2D>());
+	vector<Vector2D> const& oldpoints = vector<Vector2D>());
 /*! \brief Move mesh points
   \param pointvelocity Velocities of all mesh points
   \param dt Time step
@@ -119,7 +119,7 @@ vector<int> MoveMeshPoints(vector<Vector2D> const& pointvelocity,
 */
 vector<int> MoveMeshPoints(vector<Vector2D> const& pointvelocity,
 	double dt, Tessellation& tessellation, Tessellation const& vproc, bool reorder,
-	vector<Vector2D> oldpoints = vector<Vector2D>());
+	vector<Vector2D> const& oldpoints = vector<Vector2D>());
 
 /*! \brief Calculates the intensive conserved variables
   \param tess Tessellation

@@ -233,16 +233,18 @@ namespace {
 }
 
 vector<int> MoveMeshPoints(vector<Vector2D> const& pointvelocity,
-	double dt, Tessellation& tessellation, bool reorder, vector<Vector2D> oldpoints)
+	double dt, Tessellation& tessellation, bool reorder, vector<Vector2D> const& oldpoints)
 {
+	vector<Vector2D> newpoints;
 	if (oldpoints.empty())
-		oldpoints = serial_generate(NewPointPosition(tessellation, pointvelocity, dt));
+		newpoints = serial_generate(NewPointPosition(tessellation, pointvelocity, dt));
 	else
 	{
-		for (size_t i = 0; i < oldpoints.size(); ++i)
-			oldpoints[i] += pointvelocity[i] * dt;
+		newpoints = oldpoints;
+		for (size_t i = 0; i < newpoints.size(); ++i)
+			newpoints[i] += pointvelocity[i] * dt;
 	}
-	vector<int> indeces = tessellation.Update(oldpoints, reorder);
+	vector<int> indeces = tessellation.Update(newpoints, reorder);
 	return indeces;
 }
 
@@ -250,16 +252,18 @@ vector<int> MoveMeshPoints(vector<Vector2D> const& pointvelocity,
 vector<int> MoveMeshPoints(vector<Vector2D> const& pointvelocity,
 	double dt, Tessellation& tessellation,
 	Tessellation const& vproc, bool reorder,
-	vector<Vector2D> oldpoints)
+	vector<Vector2D> const& oldpoints)
 {
+	vector<Vector2D> newpoints;
 	if (oldpoints.empty())
-		oldpoints = serial_generate(NewPointPosition(tessellation, pointvelocity, dt));
+		newpoints = serial_generate(NewPointPosition(tessellation, pointvelocity, dt));
 	else
 	{
-		for (size_t i = 0; i < oldpoints.size(); ++i)
-			oldpoints[i] += pointvelocity[i] * dt;
+		newpoints = oldpoints;
+		for (size_t i = 0; i < newpoints.size(); ++i)
+			newpoints[i] += pointvelocity[i] * dt;
 	}
-	vector<int> indeces = tessellation.Update(oldpoints, vproc, reorder);
+	vector<int> indeces = tessellation.Update(newpoints, vproc, reorder);
 	return indeces;
 }
 #endif // RICH_MPI

@@ -15,6 +15,6 @@ using std::vector;
   \param x Abscissa
   \return Ordinate
  */
-double horner(const vector<double> coef_list, double x);
+double horner(const vector<double>& coef_list, double x);
 
 #endif // HORNER_HPP

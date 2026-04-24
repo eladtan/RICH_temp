@@ -165,8 +165,8 @@ vector<int> VoronoiMesh::AddPointsAlongEdge(size_t point,vector<vector<int> > co
 	return toadd;
 }
 
-Vector2D VoronoiMesh::CalcFaceVelocity(Vector2D wl, Vector2D wr,Vector2D rL, Vector2D rR,
-	Vector2D f)const
+Vector2D VoronoiMesh::CalcFaceVelocity(Vector2D const& wl, Vector2D const& wr,Vector2D const& rL, Vector2D const& rR,
+	Vector2D const& f)const
 {
 	const Vector2D wprime = ScalarProd(wl-wr,f-(rR+rL)/2)*(rR-rL)/pow(abs(rR-rL),2);
 	return 0.5*(wl+wr) + wprime;
@@ -813,8 +813,8 @@ bool VoronoiMesh::CloseToBorder(int point,int &border)
 	return false;
 }
 
-vector<int> VoronoiMesh::GetBorderingCells(vector<int> const& copied,
-	vector<int> const& totest,int tocheck,vector<int> tempresult,int outer)
+void VoronoiMesh::GetBorderingCells(vector<int> const& copied,
+	vector<int> const& totest,int tocheck,vector<int>& tempresult,int outer)
 {
 	int border,test;
 	int olength=static_cast<int>(Tri.GetOriginalLength());
@@ -836,9 +836,8 @@ vector<int> VoronoiMesh::GetBorderingCells(vector<int> const& copied,
 				if(!binary_search(copied.begin(),copied.end(),test)&&
 					!binary_search(totest.begin(),totest.end(),test)&&
 					!binary_search(tempresult.begin(),tempresult.end(),test))
-					tempresult=GetBorderingCells(copied,totest,test,tempresult,outer);
+					GetBorderingCells(copied,totest,test,tempresult,outer);
 	}
-	return tempresult;
 }
 
 void VoronoiMesh::GetAdditionalBoundary(vector<vector<int> > &copied,
@@ -860,7 +859,7 @@ void VoronoiMesh::GetAdditionalBoundary(vector<vector<int> > &copied,
 			vector<int> toadd;
 			int outer=0;
 			if(CloseToBorder(totest[static_cast<size_t>(i)][static_cast<size_t>(j)],outer))
-				toadd=GetBorderingCells(copied[static_cast<size_t>(i)],totest[static_cast<size_t>(i)],totest[static_cast<size_t>(i)][static_cast<size_t>(j)],toadd,outer);
+				GetBorderingCells(copied[static_cast<size_t>(i)],totest[static_cast<size_t>(i)],totest[static_cast<size_t>(i)][static_cast<size_t>(j)],toadd,outer);
 			int nn=static_cast<int>(toadd.size());
 			for(int k=0;k<nn;++k)
 				neighbors[static_cast<size_t>(i)].push_back(toadd[static_cast<size_t>(k)]);

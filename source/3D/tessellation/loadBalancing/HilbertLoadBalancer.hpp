@@ -37,7 +37,7 @@ public:
 
     curve_index_t getCurveIndex(const Vector3D &point) const override;
 
-    void setIndexing(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing);
+    void setIndexing(const std::shared_ptr<const Kernelization3D::IndexingKernel3D>& indexing);
 
     inline std::shared_ptr<const Kernelization3D::IndexingKernel3D> getIndexing() const { return this->indexing; }
 

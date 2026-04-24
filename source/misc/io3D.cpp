@@ -15,7 +15,7 @@ void write_vec3d(std::vector<Vector3D> const & vec, std::string const & fname)
 	file_handle.close();
 }
 
-std::vector<Vector3D> read_vec3d(std::string fname)
+std::vector<Vector3D> read_vec3d(std::string const& fname)
 {
 	vector<Vector3D> res;
 	std::ifstream fh(fname.c_str(), std::ios::binary);
@@ -55,7 +55,7 @@ void write_vecint(std::vector<int> const & vec, std::string const & fname)
 	file_handle.close();
 }
 
-std::vector<size_t> read_vecst(std::string fname)
+std::vector<size_t> read_vecst(std::string const& fname)
 {
 	vector<size_t> res;
 	std::ifstream fh(fname.c_str(), std::ios::binary);
@@ -71,7 +71,7 @@ std::vector<size_t> read_vecst(std::string fname)
 	return res;
 }
 
-std::vector<int> read_vecint(std::string fname)
+std::vector<int> read_vecint(std::string const& fname)
 {
 	vector<int> res;
 	std::ifstream fh(fname.c_str(), std::ios::binary);

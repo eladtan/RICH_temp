@@ -610,7 +610,7 @@ size_t Delaunay::get_last_loc(void) const
   return last_loc;
 }
 
-void Delaunay::set_point(size_t index, Vector2D p)
+void Delaunay::set_point(size_t index, Vector2D const& p)
 {
   cor[index] = p;
 }

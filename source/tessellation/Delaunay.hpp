@@ -249,7 +249,7 @@ public:
     \param index The index of the point to change.
     \param p The new point to set.
   */
-  void set_point(size_t index, Vector2D p);
+  void set_point(size_t index, Vector2D const& p);
 
   /*! \brief Returns the area of the triangle. Negative result means the triangle isn't right handed.
     \param index The index to the facet

@@ -89,7 +89,7 @@ public:
     inline bool validate() const{if(this->octTree != nullptr) return this->validateHelper(this->octTree->getRoot()); return true;};
     #endif // DEBUG_MODE
 
-    std::vector<const DistributedOctTreeNode*> getValuesIf(const std::function<bool(const DistributedOctTreeNode*)> ifOpenFunction, const std::function<bool(const DistributedOctTreeNode*)> &ifAddValueFunction) const;
+    std::vector<const DistributedOctTreeNode*> getValuesIf(const std::function<bool(const DistributedOctTreeNode*)> &ifOpenFunction, const std::function<bool(const DistributedOctTreeNode*)> &ifAddValueFunction) const;
 
 private:
     OctTree<RankedValue> *octTree = nullptr;
@@ -654,7 +654,7 @@ std::vector<std::vector<direction_t>> DistributedOctTree<T, max_ranks_per_leaf>:
 
 template<typename T, int max_ranks_per_leaf>
 std::vector<const typename DistributedOctTree<T, max_ranks_per_leaf>::DistributedOctTreeNode*>
-    DistributedOctTree<T, max_ranks_per_leaf>::getValuesIf(const std::function<bool(const DistributedOctTreeNode*)> ifOpenFunction, const std::function<bool(const DistributedOctTreeNode*)> &ifAddValueFunction) const
+    DistributedOctTree<T, max_ranks_per_leaf>::getValuesIf(const std::function<bool(const DistributedOctTreeNode*)> &ifOpenFunction, const std::function<bool(const DistributedOctTreeNode*)> &ifAddValueFunction) const
 {
     std::vector<const DistributedOctTreeNode*> nodes = {this->octTree->getRoot()};
     nodes.reserve(this->getDepth() * CHILDREN);

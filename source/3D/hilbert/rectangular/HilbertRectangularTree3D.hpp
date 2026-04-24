@@ -89,7 +89,7 @@ public:
 
     std::vector<std::vector<BoundingBox<Vector3D>>> getBoundingBoxesOfRanks(void) const;
 
-    std::vector<const Node*> getValuesIf(const std::function<bool(const Node*)> ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const;
+    std::vector<const Node*> getValuesIf(const std::function<bool(const Node*)> &ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const;
 
     inline size_t getDepth() const{return this->depth;};
 
@@ -522,22 +522,22 @@ std::vector<std::vector<BoundingBox<Vector3D>>> HilbertTree3D<max_leaf_ranks>::g
 }
 
 template<int max_leaf_ranks>
-std::vector<const typename HilbertTree3D<max_leaf_ranks>::Node*> HilbertTree3D<max_leaf_ranks>::getValuesIf(const std::function<bool(const Node*)> ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const
+std::vector<const typename HilbertTree3D<max_leaf_ranks>::Node*> HilbertTree3D<max_leaf_ranks>::getValuesIf(const std::function<bool(const Node*)> &ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const
 {
     std::vector<const Node*> nodes = {this->root};
     // nodes.reserve(this->getDepth() * max_leaf_ranks);
 
-    std::vector<Node*> result;
+    std::vector<const Node*> result;
 
     while(not nodes.empty())
     {
         const Node *node = nodes.back();
-        nodes->pop_back();
+        nodes.pop_back();
         if(node == nullptr)
         {
             continue;
         }
-        if(node->isLeaf)
+        if(node->is_leaf)
         {
             if(ifAddValueFunction(node))
             {

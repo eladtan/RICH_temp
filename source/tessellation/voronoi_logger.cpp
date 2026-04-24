@@ -106,7 +106,7 @@ void BinLogger::output(VoronoiMesh const& v)
 	file_handle.close();
 }
 
-vector<Vector2D> BinLogger::read(string location)
+vector<Vector2D> BinLogger::read(string const& location)
 {
 	fstream myFile (location.c_str(),ios::in | ios::binary);
 	if(!myFile.good())

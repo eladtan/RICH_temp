@@ -181,7 +181,7 @@ void HilbertLoadBalancer::changeBox(const std::pair<Vector3D, Vector3D> &newBox)
     }
 }
 
-void HilbertLoadBalancer::setIndexing(const std::shared_ptr<const Kernelization3D::IndexingKernel3D> newIndexing)
+void HilbertLoadBalancer::setIndexing(const std::shared_ptr<const Kernelization3D::IndexingKernel3D>& newIndexing)
 {
     this->indexing = newIndexing;
     this->convertor = nullptr;

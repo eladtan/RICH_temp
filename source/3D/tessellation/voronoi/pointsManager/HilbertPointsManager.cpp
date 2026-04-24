@@ -107,7 +107,7 @@ void HilbertPointsManager::rebalance(const std::vector<Vector3D> &points, const 
     }
 }
 
-void HilbertPointsManager::setIndexing(std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing)
+void HilbertPointsManager::setIndexing(std::shared_ptr<const Kernelization3D::IndexingKernel3D> const& indexing)
 {
     this->customIndexingIsSet = true;
     if (this->loadBalancer != nullptr)
