@@ -60,11 +60,16 @@ namespace CG
         size_t const sub_num_rows = row_ptr.size() > 0 ? row_ptr.size() - 1 : 0;
         if(sub_num_rows == 0) return;
         result.resize(sub_num_rows, 0);
+        const double* __restrict__ val_ptr = values.data();
+        const size_t* __restrict__ col_ptr = col_idx.data();
+        const double* __restrict__ v_ptr = v.data();
+        double* __restrict__ res_ptr = result.data();
+        const size_t* __restrict__ rp = row_ptr.data();
         for (size_t i = 0; i < sub_num_rows; ++i) {
             double dot_prod = 0.0;
-            for (size_t k = row_ptr[i]; k < row_ptr[i + 1]; ++k)
-                dot_prod += values[k] * v[col_idx[k]];
-            result[i] = dot_prod;
+            for (size_t k = rp[i]; k < rp[i + 1]; ++k)
+                dot_prod += val_ptr[k] * v_ptr[col_ptr[k]];
+            res_ptr[i] = dot_prod;
         }
     }
 
@@ -86,8 +91,11 @@ namespace CG
         if(a.size() != b.size())
             throw UniversalError("Sizes do not match in vector_rescale");
         result.resize(N);
+        const double* a_ptr = a.data();
+        const double* __restrict__ b_ptr = b.data();
+        double* res_ptr = result.data();
         for(size_t i = 0; i < N; ++i)
-            result[i] = a[i] * b[i];
+            res_ptr[i] = a_ptr[i] * b_ptr[i];
     }
 
     // Linear combination of vectors; safe when result aliases u or v
@@ -134,10 +142,15 @@ namespace CG
         if(sub_u.size() != sub_v.size())
             throw UniversalError("Unequal vector sizes in vec_lin_combo");
         size_t length = sub_u.size();
+        const double* __restrict__ u_ptr = sub_u.data();
+        const double* __restrict__ v_ptr = sub_v.data();
 
         double sub_prod = 0.0;
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER) || defined(__GNUC__)
+#pragma omp simd reduction(+:sub_prod)
+#endif
         for (size_t i = 0; i < length; i++) {
-            sub_prod += sub_u[i] * sub_v[i];
+            sub_prod += u_ptr[i] * v_ptr[i];
         }
 #ifdef RICH_MPI
         // do a reduction over sub_prod to get the total dot product

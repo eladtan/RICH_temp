@@ -936,7 +936,7 @@ template<class S, class T> T& safe_retrieve
 \param x The value to calculate the sqrt of
 \return Sqrt(x)
 */
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 double fastsqrt(double x);

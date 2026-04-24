@@ -6,6 +6,7 @@
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "GravityTree.hpp"
+#include "FlatGravityTree.hpp"
 #include "GravityTypes.h"
 
 #ifndef SKELETON_DEPTH
@@ -272,12 +273,13 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     double prof_t_istart = MPI_Wtime();
 #endif
 
-    // 4. Walk local+pruned tree while exchange is in flight
+    // 4. Compile local tree to flat array and walk while exchange is in flight
+    FlatGravityTree localFlat(*this->gravityTree);
     std::vector<Vector3D> results;
     results.reserve(points.size());
     for(const Vector3D &point : points)
     {
-        results.emplace_back(this->gravityTree->gravity(point));
+        results.emplace_back(localFlat.gravity(point, true));
     }
 
 #ifdef GRAVITY_PROFILE
@@ -317,10 +319,11 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     double prof_t_remoteInsert = MPI_Wtime();
 #endif
 
-    // 7. Walk remote tree and add to results
+    // 7. Compile remote tree to flat array and walk
+    FlatGravityTree remoteFlat(remoteTree);
     for(size_t i = 0; i < points.size(); i++)
     {
-        results[i] += remoteTree.gravity(points[i]);
+        results[i] += remoteFlat.gravity(points[i], true);
     }
 
 #ifdef GRAVITY_PROFILE

@@ -270,7 +270,7 @@ namespace
             vtemp[i].z -= vtemp[i - 1].z;
         }
         vtemp[0] -= points[indeces[N - 1]];
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd reduction(max \
                                                      : R)
 #endif
@@ -424,12 +424,12 @@ namespace
         if (ScalarProd(CrossProduct(V1, V2), point - face_points[indeces[0]]) > 0)
         {
             const size_t Ninner = indeces.size();
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd early_exit
 #endif
             for (size_t j = 0; j < Ninner; ++j)
                 temp[j] = indeces[j];
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd early_exit
 #endif
             for (size_t i = 0; i < N; ++i)
@@ -440,7 +440,7 @@ namespace
     size_t NextLoopTetra(Tetrahedron const &cur_tetra, size_t last_tetra, size_t N0, size_t N1)
     {
         size_t i = 0;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
         for (; i < 4; i++)
@@ -460,7 +460,7 @@ namespace
     {
         //CM.Set(0.0, 0.0, 0.0);
         size_t Nloop = indeces.size();
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
         for (size_t i = 0; i < Nloop; i++)
@@ -479,7 +479,7 @@ namespace
             Atemp[i] = 0.3333333333333333 * 0.5 * fastsqrt(ScalarProd(temp3, temp3));
         }
         double x = 0, y = 0, z = 0;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma vector aligned
         //#pragma omp simd reduction(+:x, y, z, Area)
 #endif
@@ -753,7 +753,7 @@ double Voronoi3D::GetMaxRadius(const size_t &index) const
 {
     std::size_t N = PointTetras_[index].size();
     double res = 0;
-    #ifdef __INTEL_COMPILER
+    #if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
     #pragma ivdep
     #endif
     for(std::size_t i = 0; i < N; ++i)
@@ -771,7 +771,7 @@ double Voronoi3D::GetMinRadius(const size_t &index) const
 {
     std::size_t N = PointTetras_[index].size();
     double res = std::numeric_limits<double>::max();
-    #ifdef __INTEL_COMPILER
+    #if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
     #pragma ivdep
     #endif
     for(std::size_t i = 0; i < N; ++i)
@@ -2629,7 +2629,7 @@ void Voronoi3D::CalcAllCM(void)
         size_t N1 = FaceNeighbors_[i].second;
         size_t Npoints = PointsInFace_[i].size();
         vectemp.resize(Npoints);
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
         for (size_t j = 0; j < Npoints; ++j)
@@ -2658,7 +2658,7 @@ void Voronoi3D::CalcAllCM(void)
             CM_[N0] += vtemp;
         }
     }
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
     //#pragma vector aligned
 #pragma omp simd
 #endif
@@ -2745,7 +2745,7 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     vector<std::pair<size_t, size_t>> duplicate(6);
     for (size_t j = 0; j < toduplicate.size(); ++j)
     {
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd
 #endif
         for (size_t i = 0; i < 6; ++i)
@@ -3253,7 +3253,7 @@ vector<std::pair<std::size_t, std::size_t>> Voronoi3D::SerialFirstIntersections(
         double inv_max = 0;
         size_t max_loc = 0;
         size_t j = 0;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
         for (; j < Nfaces; ++j)
@@ -3481,7 +3481,7 @@ void Voronoi3D::GetTetraCM(std::array<Vector3D, 4> const &points, Vector3D &CM) 
 {
     double x = 0, y = 0, z = 0;
     //CM.Set(0, 0, 0);
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd reduction(+ \
                                                      : x, y, z)
 #endif
@@ -3681,7 +3681,7 @@ vector<std::size_t> Voronoi3D::GetNeighbors(std::size_t index) const
 {
     const size_t N = FacesInCell_[index].size();
     vector<size_t> res(N);
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd
 #endif
     for (size_t i = 0; i < N; ++i)
@@ -3696,7 +3696,7 @@ void Voronoi3D::GetNeighbors(size_t index, vector<size_t> &res) const
 {
     std::size_t N = FacesInCell_[index].size();
     res.resize(N);
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
     for (std::size_t i = 0; i < N; ++i)

@@ -213,7 +213,7 @@ namespace
 		double res = 1.0;
 		double p = cell.pressure;
 		size_t N = neigh.size();
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd reduction(min:res)
 #endif
 		for (size_t i = 0; i < N; i++)
@@ -373,7 +373,7 @@ namespace
 				cmin.velocity.y = std::min(cmin.velocity.y, cell_temp.velocity.y);
 				cmin.velocity.z = std::min(cmin.velocity.z, cell_temp.velocity.z);
 			}
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd
 #endif
 			for (size_t j = 0; j < ntracer; ++j)
@@ -651,7 +651,7 @@ namespace
 		slope.zderivative.internal_energy *= psi[5];
 		size_t counter = 6;
 		size_t N = slope.xderivative.tracers.size();
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
 		for (size_t k = 0; k < N; ++k)

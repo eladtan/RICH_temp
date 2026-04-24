@@ -16,7 +16,7 @@ namespace
 bool InsideBigTetra(Vector3D const& tocheck, vector<Vector3D> const& cor, size_t Norg)
 {
     int sum = 0;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd reduction(+:sum)
 #endif 
     for(size_t i = 0; i < 4; ++i) {
@@ -57,7 +57,7 @@ bool PlaneLineIntersection(std::array<Vector3D, 3> &plane, Vector3D const& A, Ve
 
 void GetOppositePoint(Tetrahedron const& tetra, std::size_t neighbor, size_t &res)
 {
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
     for(size_t i = 0; i < 4; i++)
@@ -69,7 +69,7 @@ void GetOppositePoint(Tetrahedron const& tetra, std::size_t neighbor, size_t &re
 
 void GetPointLocationInTetra(Tetrahedron const& tetra, std::size_t point, size_t &res)
 {
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
     for(size_t i = 0; i < 4; i++)
@@ -796,7 +796,7 @@ void Delaunay3D::ExactFlip(std::size_t tetra0, std::size_t tetra1, std::size_t p
 void Delaunay3D::FindFlip(std::size_t tetra0, std::size_t tetra1, std::size_t p, size_t p_loc, size_t other_point_loc)
 {
     size_t* tetcheck = tetras_[tetra0].points;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma ivdep
 #endif
     for(std::size_t i = 0; i < 3; ++i) {
