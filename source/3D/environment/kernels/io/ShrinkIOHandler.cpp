@@ -18,12 +18,12 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<ShrinkState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(ShrinkState));
-                H5Tinsert(t, "scale", HOFFSET(ShrinkState, scale), H5T_NATIVE_DOUBLE);
+                H5::CompType t(sizeof(ShrinkState));
+                t.insertMember("scale", HOFFSET(ShrinkState, scale), H5::PredType::NATIVE_DOUBLE);
                 return t;
             }();
             return type;

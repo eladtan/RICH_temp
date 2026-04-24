@@ -21,14 +21,14 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<RevedFrustrumState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(RevedFrustrumState));
-                H5Tinsert(t, "S", HOFFSET(RevedFrustrumState, S), HDF5Utils::CompTypeCreator<Vector3D>::get());
-                H5Tinsert(t, "h", HOFFSET(RevedFrustrumState, h), H5T_NATIVE_DOUBLE);
-                H5Tinsert(t, "ratio", HOFFSET(RevedFrustrumState, ratio), H5T_NATIVE_DOUBLE);
+                H5::CompType t(sizeof(RevedFrustrumState));
+                t.insertMember("S", HOFFSET(RevedFrustrumState, S), HDF5Utils::CompTypeCreator<Vector3D>::get());
+                t.insertMember("h", HOFFSET(RevedFrustrumState, h), H5::PredType::NATIVE_DOUBLE);
+                t.insertMember("ratio", HOFFSET(RevedFrustrumState, ratio), H5::PredType::NATIVE_DOUBLE);
                 return t;
             }();
             return type;

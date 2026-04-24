@@ -386,7 +386,7 @@ rm -f "$PROGRESS_STATE_FILE"
 # ==================== Final Status ====================
 
 if [[ $MAKE_EXIT_CODE -ne 0 ]]; then
-    if [[ $PROGRESS_DONE -le 2 ]]; then
+    if [[ $PROGRESS_DONE -eq 0 ]]; then
         echo
     fi
     echo -e "${FAIL}Make failed. See $MAKE_ERR${NC}"
@@ -397,7 +397,7 @@ else
         rm rich
     fi
     ln -s rich_$CONFIG rich
-    if [[ $PROGRESS_DONE -le 2 ]]; then
+    if [[ $PROGRESS_DONE -eq 0 ]]; then
         echo
     fi
     echo -e "${SUCCESS}Done!${NC}"

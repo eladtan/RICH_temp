@@ -19,13 +19,13 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<LinearState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(LinearState));
-                H5Tinsert(t, "transformation", HOFFSET(LinearState, transformation),
-                            HDF5Utils::CompTypeCreator<Mat33<double>>::get());
+                H5::CompType t(sizeof(LinearState));
+                t.insertMember("transformation", HOFFSET(LinearState, transformation),
+                               HDF5Utils::CompTypeCreator<Mat33<double>>::get());
                 return t;
             }();
             return type;

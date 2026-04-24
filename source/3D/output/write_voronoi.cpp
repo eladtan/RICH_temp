@@ -1,9 +1,5 @@
 #include "write3D.hpp"
 
-#ifdef RICH_MPI
-    #include "utils/hdf5/HDF5WriterParallel.hpp"
-#endif
-
 struct Voronoi_VTU_Output
 {
     std::vector<std::vector<double>> vtu_cell_variables;
@@ -45,6 +41,7 @@ Voronoi_VTU_Output WriteVoronoiHelper(HDF5Writer &writer, const std::string &pre
     for(size_t i = 0; i < dataStr.size(); ++i)
     {
         assert(dataStr[i].size() == namesStr[i].size());
+        // write_std_vector_to_hdf5(writegroup, data[i], names[i]); TODO: !!!
         vtu_cell_strings.push_back(dataStr[i]);
         vtu_cell_strings_names.push_back(namesStr[i]);
     }
@@ -112,6 +109,8 @@ Voronoi_VTU_Output WriteVoronoiHelper(HDF5Writer &writer, const std::string &pre
             FacesInCell.push_back(face[j]);
         }
     }
+    IntType datatype(PredType::NATIVE_ULLONG);
+    datatype.setOrder(H5T_ORDER_LE);
     writer.WriteElement(prefix + "/Number_of_faces_in_cell", Nfaces);
     writer.WriteElement(prefix + "/Faces_in_cell", FacesInCell);
     Npoints = tri.GetFacePoints().size();
@@ -140,56 +139,29 @@ Voronoi_VTU_Output WriteVoronoiHelper(HDF5Writer &writer, const std::string &pre
 }
 
 #if RICH_MPI
-namespace
-{
-    void writeBoxGlobal(HDF5Writer &writer, const Voronoi3D &tri)
+    void WriteVoronoiParallel(const Voronoi3D &tri, const std::string &filename,
+                            const std::vector<std::vector<double>> &data, const std::vector<std::string>& names,
+                            const std::vector<std::vector<std::string>> &dataStr, const std::vector<std::string>& namesStr,
+                            const std::vector<std::pair<std::string, double>> &scalar_values, bool write_vtu)
     {
-        std::vector<double> box(6);
-        box[0] = tri.GetBoxCoordinates().first.x;
-        box[1] = tri.GetBoxCoordinates().first.y;
-        box[2] = tri.GetBoxCoordinates().first.z;
-        box[3] = tri.GetBoxCoordinates().second.x;
-        box[4] = tri.GetBoxCoordinates().second.y;
-        box[5] = tri.GetBoxCoordinates().second.z;
-        writer.WriteElement("/Box", box);
-    }
-}
-
-void WriteVoronoiParallel(const Voronoi3D &tri, const std::string &filename,
-                        const std::vector<std::vector<double>> &data, const std::vector<std::string>& names,
-                        const std::vector<std::vector<std::string>> &dataStr, const std::vector<std::string>& namesStr,
-                        const std::vector<std::pair<std::string, double>> &scalar_values, bool write_vtu)
-{
-    int rank = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    HDF5WriterParallel pwriter(filename, MPI_COMM_WORLD);
-    HDF5Writer writer(pwriter.GetFileId());
-
-    if(rank == 0)
-    {
-        writeBoxGlobal(writer, tri);
-    }
-
-    std::string rankPrefix = pwriter.GetPrefix();
-    Voronoi_VTU_Output vtu = WriteVoronoiHelper(writer, rankPrefix, tri, data, names, dataStr, namesStr, write_vtu);
-    vtu.vtu_scalar_values = scalar_values;
-
-    writeVTU(filename, tri, vtu);
-}
-#endif // RICH_MPI
-
-void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
-                        const std::vector<std::vector<double>> &data, const std::vector<std::string>& names,
-                        const std::vector<std::vector<std::string>> &dataStr, const std::vector<std::string>& namesStr,
-                        const std::vector<std::pair<std::string, double>> &scalar_values, bool write_vtu)
-{
-    #ifdef RICH_MPI
         int rank = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int ws = 0;
 
-        HDF5WriterParallel pwriter(filename, MPI_COMM_WORLD);
-        HDF5Writer writer(pwriter.GetFileId());
+        fs::path path = fs::absolute(filename).parent_path();
+        std::string myFilePath;
+
+        fs::path ranks_files_path = path / fs::path(filename).filename().replace_extension();
+        if(not fs::exists(ranks_files_path))
+        {
+            fs::create_directory(ranks_files_path);
+        }
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &ws);
+        myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
+
+        // truncate my file and open it
+        HDF5Writer filewriter(myFilePath);
+        std::shared_ptr<HDF5Writer> globalFileWriter = (rank == 0) ? std::make_shared<HDF5Writer>(filename) : nullptr;
 
         if(rank == 0)
         {
@@ -200,14 +172,70 @@ void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
             box[3] = tri.GetBoxCoordinates().second.x;
             box[4] = tri.GetBoxCoordinates().second.y;
             box[5] = tri.GetBoxCoordinates().second.z;
-            writer.WriteElement("/Box", box);
+            globalFileWriter->WriteElement("/Box", box);
         }
 
-        std::string prefix = pwriter.GetPrefix();
-        Voronoi_VTU_Output vtu = WriteVoronoiHelper(writer, prefix, tri, data, names, dataStr, namesStr, write_vtu);
+        Voronoi_VTU_Output vtu = WriteVoronoiHelper(filewriter, "", tri, data, names, dataStr, namesStr, write_vtu);
         vtu.vtu_scalar_values = scalar_values;
+
+        writeVTU(filename, tri, vtu);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        // only rank 0 makes the shared file
+        if(rank == 0)
+        {
+            for(int _rank = 0; _rank < ws; _rank++)
+            {
+                // merge `_rank`'s file
+                std::string rankFile((ranks_files_path / std::to_string(_rank)).string() + ".h5");
+                globalFileWriter->AddExternalLink(rankFile, "/", "/rank" + std::to_string(_rank));
+            }
+        }
+    }
+#endif // RICH_MPI
+
+void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
+                        const std::vector<std::vector<double>> &data, const std::vector<std::string>& names,
+                        const std::vector<std::vector<std::string>> &dataStr, const std::vector<std::string>& namesStr,
+                        const std::vector<std::pair<std::string, double>> &scalar_values, bool write_vtu)
+{
+    #ifdef RICH_MPI
+        int rank = 0;
+        int ws = 0; // MPI_COMM_WORLD size
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &ws);
+    #endif
+
+    std::shared_ptr<HDF5Writer> filewriter = nullptr;
+
+    #ifdef RICH_MPI
+        if(rank == 0)
+        {
+        #endif // RICH_MPI
+            filewriter = std::make_shared<HDF5Writer>(filename);
+        #ifdef RICH_MPI
+        }
+    #endif // RICH_MPI
+
+    std::string prefix = "";
+
+    #ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+        int dummy = 0;
+        if(rank > 0)
+        {
+            MPI_Recv(&dummy, 1, MPI_INT, rank - 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            filewriter = std::make_shared<HDF5Writer>(filename, false /* don't truncate */);
+        }
+        prefix = "/rank" + std::to_string(rank);
     #else
-        HDF5Writer writer(filename);
+        prefix = "";
+    #endif
+
+    #ifdef RICH_MPI
+        if(rank == 0)
+        {
+    #endif // RICH_MPI
         std::vector<double> box(6);
         box[0] = tri.GetBoxCoordinates().first.x;
         box[1] = tri.GetBoxCoordinates().first.y;
@@ -215,12 +243,23 @@ void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
         box[3] = tri.GetBoxCoordinates().second.x;
         box[4] = tri.GetBoxCoordinates().second.y;
         box[5] = tri.GetBoxCoordinates().second.z;
-        writer.WriteElement("/Box", box);
+        filewriter->WriteElement("/Box", box);
+    #ifdef RICH_MPI
+        }
+    #endif // RICH_MPI
 
-        Voronoi_VTU_Output vtu = WriteVoronoiHelper(writer, "", tri, data, names, dataStr, namesStr, write_vtu);
-        vtu.vtu_scalar_values = scalar_values;
+    Voronoi_VTU_Output vtu = WriteVoronoiHelper(*filewriter, prefix, tri, data, names, dataStr, namesStr, write_vtu);
+    vtu.vtu_scalar_values = scalar_values;
+
+    filewriter->Close();
+    #ifdef RICH_MPI
+        if(rank < (ws - 1))
+        {
+            int dummy = 0;
+            MPI_Send(&dummy, 1, MPI_INT, rank + 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD);
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
     #endif
-
     writeVTU(filename, tri, vtu);
 }
 

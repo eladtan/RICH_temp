@@ -19,12 +19,12 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<MoveState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(MoveState));
-                H5Tinsert(t, "moveVec", HOFFSET(MoveState, moveVec), HDF5Utils::CompTypeCreator<Vector3D>::get());
+                H5::CompType t(sizeof(MoveState));
+                t.insertMember("moveVec", HOFFSET(MoveState, moveVec), HDF5Utils::CompTypeCreator<Vector3D>::get());
                 return t;
             }();
             return type;

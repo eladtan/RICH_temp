@@ -19,13 +19,13 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<RotationState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(RotationState));
-                H5Tinsert(t, "mat", HOFFSET(RotationState, mat),
-                            HDF5Utils::CompTypeCreator<Mat33<double>>::get());
+                H5::CompType t(sizeof(RotationState));
+                t.insertMember("mat", HOFFSET(RotationState, mat),
+                               HDF5Utils::CompTypeCreator<Mat33<double>>::get());
                 return t;
             }();
             return type;

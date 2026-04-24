@@ -19,12 +19,12 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<ScaleState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(ScaleState));
-                H5Tinsert(t, "scale", HOFFSET(ScaleState, scale), HDF5Utils::CompTypeCreator<Vector3D>::get());
+                H5::CompType t(sizeof(ScaleState));
+                t.insertMember("scale", HOFFSET(ScaleState, scale), HDF5Utils::CompTypeCreator<Vector3D>::get());
                 return t;
             }();
             return type;

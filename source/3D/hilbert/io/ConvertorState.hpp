@@ -20,14 +20,14 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<ConvertorState>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t type = []()
+            static H5::CompType type = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(ConvertorState));
-                H5Tinsert(t, "ll", HOFFSET(ConvertorState, ll), HDF5Utils::CompTypeCreator<Vector3D>::get());
-                H5Tinsert(t, "ur", HOFFSET(ConvertorState, ur), HDF5Utils::CompTypeCreator<Vector3D>::get());
-                H5Tinsert(t, "order", HOFFSET(ConvertorState, order), H5T_NATIVE_ULLONG);
+                H5::CompType t(sizeof(ConvertorState));
+                t.insertMember("ll", HOFFSET(ConvertorState, ll), HDF5Utils::CompTypeCreator<Vector3D>::get());
+                t.insertMember("ur", HOFFSET(ConvertorState, ur), HDF5Utils::CompTypeCreator<Vector3D>::get());
+                t.insertMember("order", HOFFSET(ConvertorState, order), H5::PredType::NATIVE_ULLONG);
                 return t;
             }();
             return type;

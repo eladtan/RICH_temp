@@ -4,6 +4,8 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "utils/hdf5/HDF5Helper.hpp"
 
+using namespace H5;
+
 namespace HDF5Utils
 {
     template<>
@@ -12,15 +14,15 @@ namespace HDF5Utils
     template<>
     struct CompTypeCreator<Vector3D>
     {
-        static hid_t get()
+        static H5::CompType get()
         {
-            static hid_t vtype = []()
+            static H5::CompType vtype = []()
             {
-                hid_t t = H5Tcreate(H5T_COMPOUND, sizeof(Vector3D));
-                H5Tinsert(t, "x", HOFFSET(Vector3D, x), H5T_NATIVE_DOUBLE);
-                H5Tinsert(t, "y", HOFFSET(Vector3D, y), H5T_NATIVE_DOUBLE);
-                H5Tinsert(t, "z", HOFFSET(Vector3D, z), H5T_NATIVE_DOUBLE);
-                return t;
+                H5::CompType vtype(sizeof(Vector3D));
+                vtype.insertMember("x", HOFFSET(Vector3D, x), H5::PredType::NATIVE_DOUBLE);
+                vtype.insertMember("y", HOFFSET(Vector3D, y), H5::PredType::NATIVE_DOUBLE);
+                vtype.insertMember("z", HOFFSET(Vector3D, z), H5::PredType::NATIVE_DOUBLE);
+                return vtype;
             }();
             return vtype;
         }

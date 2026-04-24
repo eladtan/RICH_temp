@@ -30,16 +30,3 @@ endif()
 
 set(HDF5_INCLUDE "${HDF5_DIRECTORY}/include")
 set(HDF5_LIB_DIRECTORY "${HDF5_DIRECTORY}/lib")
-
-if(DEFINED MPI)
-    include(CheckSymbolExists)
-    set(CMAKE_REQUIRED_INCLUDES ${HDF5_INCLUDE})
-    check_symbol_exists(H5_HAVE_PARALLEL "H5pubconf.h" HDF5_IS_PARALLEL)
-    if(NOT HDF5_IS_PARALLEL)
-        message(FATAL_ERROR
-            "MPI build requires HDF5 compiled with --enable-parallel.\n"
-            "Current HDF5: ${HDF5_DIRECTORY}\n"
-            "Rebuild HDF5 with: ./configure --enable-parallel CC=mpicc")
-    endif()
-    message(STATUS "HDF5 parallel support: enabled")
-endif()
