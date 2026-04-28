@@ -159,7 +159,7 @@ double Diffusion::calculate_dt(double const dt,
 		if(not to_calc)
 			continue;
 		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
-		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Er);
+		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (std::max(old_Er[i], cells[i].Erad * cells[i].density) + 0.02 * max_Er);
 		if(fleck_factor[i] < 0.4)
 			diff *= 0.2;
 		if(diff > max_diff)

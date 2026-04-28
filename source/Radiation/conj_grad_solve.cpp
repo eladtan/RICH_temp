@@ -766,9 +766,9 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                         max_data[2].val = 1;
                     }
                 }
-                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5))
+                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 4e-5))
                 {
-                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5);
+                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 4e-5);
                     max_loc0 = j;
                 }
             }
