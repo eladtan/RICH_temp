@@ -598,6 +598,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         std::vector<double> &sub_r0 = workspace.sub_r0;
         sub_p = sub_r;
         sub_r0 = sub_r;
+        std::vector<bool> fixed_negative_x(Nlocal, false);
         sub_p.resize(Nlocal);
         sub_x.resize(Nlocal);
         sub_r0.resize(Nlocal);
@@ -619,7 +620,8 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         t.assign(Nlocal, 0);
         scratch_rescale1.assign(Nlocal, 0);
         scratch_rescale2.assign(Nlocal, 0);
-        old_x = sub_x;
+        old_x = sub_x; 
+        std::vector<double> org_x = sub_x;
         size_t Ntotal = Nlocal;
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
@@ -746,20 +748,28 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
 #endif
             for(size_t j = 0; j < Nlocal; ++j)
             {
-                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5))))
+                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5))))
                 {
-                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 1e-5)));
+                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5)));
                     max_loc1 = j;
-                }
-                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9))
-                {
-                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + maxA[0] * 1e-9);
-                    max_loc0 = j;
                 }
                 if(sub_x[j] < -max_sub_x * 1e-10)
                 {
-                    max_loc2 = j;
-                    max_data[2].val = 1;
+                    if(i > 10 && not fixed_negative_x[j])
+                    {
+                        fixed_negative_x[j] = true;
+                        sub_x[j] = 0.5 * org_x[j];
+                    }
+                    else
+                    {
+                        max_loc2 = j;
+                        max_data[2].val = 1;
+                    }
+                }
+                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5))
+                {
+                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5);
+                    max_loc0 = j;
                 }
             }
 #ifdef RICH_MPI

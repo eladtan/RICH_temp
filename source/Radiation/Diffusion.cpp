@@ -247,7 +247,7 @@ bool Diffusion::step(double const tolerance,
 
     if(minErData.value < 0) {
         if(rank == minErData.rank) {
-            std::cout << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" "<<cells[min_index]<<std::endl;
+            std::cout << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" Er value "<<minErData.value<<" cell "<<cells[min_index]<<std::endl;
         }
 
         return false;
