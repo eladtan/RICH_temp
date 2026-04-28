@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iostream>
 #include <cmath>
+#include <tuple>
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 struct Plane
@@ -59,6 +60,23 @@ struct Plane
     }
 };
 
+struct ClipBounds
+{
+    Vector3D lower;
+    Vector3D upper;
+    bool valid;
+
+    ClipBounds(void): lower(Vector3D::max()), upper(Vector3D::min()), valid(false) {}
+};
+
+struct ClipWorkspace
+{
+    std::vector<Face> buf_a;
+    std::vector<Face> buf_b;
+    std::vector<Plane> planes;
+    Face bottom;
+};
+
 Vector3D computeCenter(const std::vector<Face> &faces);
 
 std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print = false);
@@ -71,13 +89,25 @@ double polygonArea(const Face &face);
 
 Vector3D faceCenter(const Face &face);
 
+ClipBounds computeBounds(const std::vector<Face> &faces);
+
+ClipBounds CreatePolyBounds(const Tessellation3D &tess, size_t cell_index);
+
 std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, bool print = false);
 
 void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, bool print = false);
 
+void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, ClipWorkspace &workspace, bool print = false);
+
 std::tuple<double, double, Vector3D> clipCells(const Tessellation3D &tess, size_t check_index, const std::vector<Face> &polyhedron, const Plane *vof = 0, bool print = false);
 
 std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly, const Plane *vof = 0, bool print = false);
+
+std::tuple<double, double, Vector3D> clipCells(const Tessellation3D &tess, size_t check_index, const std::vector<Face> &polyhedron,
+    ClipWorkspace &workspace, const ClipBounds *source_bounds = 0, const ClipBounds *target_bounds = 0, const Plane *vof = 0, bool print = false);
+
+std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly,
+    ClipWorkspace &workspace, const ClipBounds *source_bounds = 0, const ClipBounds *target_bounds = 0, const Plane *vof = 0, bool print = false);
 
 std::vector<Plane> CreatePolyPlanes(const Tessellation3D &tess, size_t cell_index);
 
