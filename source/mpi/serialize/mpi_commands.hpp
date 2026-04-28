@@ -12,6 +12,8 @@
 
 #define MPI_EXCHANGE_ALLTOALL_TAG 1039
 #define MPI_IEXCHANGE_SPARSE_TAG 1040
+#define MPI_FLAT_SPARSE_COUNT_TAG 1042
+#define MPI_FLAT_SPARSE_DATA_TAG 1043
 
 template<typename T, template<typename...> class Container, typename... Ts>
 std::vector<std::vector<T>> MPI_Iexchange_all_to_all(std::vector<Container<T, Ts...>> &data, const MPI_Comm &comm)
@@ -718,6 +720,126 @@ std::vector<std::vector<T>> MPI_Iexchange_sparse_wait(SparseExchangeHandle &h)
             h.recvBuf.extract(result[srcRank], static_cast<size_t>(h.recvDisplacements[i]),
                               static_cast<size_t>(h.recvCounts[i]));
         }
+    }
+
+    return result;
+}
+
+struct FlatSparseHandle
+{
+    std::vector<MPI_Request> countRequests;
+    std::vector<MPI_Request> payloadRequests;
+    std::vector<char> sendBuf;
+    std::vector<char> recvBuf;
+    std::vector<int> sendCounts;
+    std::vector<int> sendDisplacements;
+    std::vector<int> recvCounts;
+    std::vector<int> recvDisplacements;
+    std::vector<int> neighbors;
+    rank_t commSize;
+};
+
+template<typename T>
+FlatSparseHandle MPI_flat_sparse_pack_and_post_counts(
+    const std::vector<std::vector<T>> &data,
+    const std::vector<int> &neighbors,
+    const MPI_Comm &comm)
+{
+    FlatSparseHandle h;
+    MPI_Comm_size(comm, &h.commSize);
+    h.neighbors = neighbors;
+    int degree = static_cast<int>(neighbors.size());
+
+    constexpr size_t NODE_SIZE = T::FLAT_BYTE_SIZE;
+
+    h.sendCounts.resize(degree, 0);
+    h.sendDisplacements.resize(degree, 0);
+    size_t totalSend = 0;
+    for(int i = 0; i < degree; i++)
+    {
+        h.sendCounts[i] = static_cast<int>(data[neighbors[i]].size() * NODE_SIZE);
+        h.sendDisplacements[i] = static_cast<int>(totalSend);
+        totalSend += static_cast<size_t>(h.sendCounts[i]);
+    }
+
+    h.sendBuf.resize(totalSend);
+    for(int i = 0; i < degree; i++)
+    {
+        const auto &vec = data[neighbors[i]];
+        char *dst = h.sendBuf.data() + h.sendDisplacements[i];
+        for(size_t j = 0; j < vec.size(); j++)
+            vec[j].dumpFlat(dst + j * NODE_SIZE);
+    }
+
+    h.recvCounts.resize(degree);
+    h.countRequests.resize(2 * degree);
+    for(int i = 0; i < degree; i++)
+    {
+        MPI_Irecv(&h.recvCounts[i], 1, MPI_INT, neighbors[i],
+                  MPI_FLAT_SPARSE_COUNT_TAG, comm, &h.countRequests[i]);
+    }
+    for(int i = 0; i < degree; i++)
+    {
+        MPI_Isend(&h.sendCounts[i], 1, MPI_INT, neighbors[i],
+                  MPI_FLAT_SPARSE_COUNT_TAG, comm, &h.countRequests[degree + i]);
+    }
+
+    return h;
+}
+
+inline void MPI_flat_sparse_post_payload(FlatSparseHandle &h, const MPI_Comm &comm)
+{
+    int degree = static_cast<int>(h.neighbors.size());
+
+    if(!h.countRequests.empty())
+        MPI_Waitall(static_cast<int>(h.countRequests.size()),
+                    h.countRequests.data(), MPI_STATUSES_IGNORE);
+
+    h.recvDisplacements.resize(degree, 0);
+    size_t totalRecv = 0;
+    for(int i = 0; i < degree; i++)
+    {
+        h.recvDisplacements[i] = static_cast<int>(totalRecv);
+        totalRecv += static_cast<size_t>(h.recvCounts[i]);
+    }
+    h.recvBuf.resize(totalRecv);
+
+    h.payloadRequests.resize(2 * degree);
+    for(int i = 0; i < degree; i++)
+    {
+        MPI_Irecv(h.recvBuf.data() + h.recvDisplacements[i],
+                  h.recvCounts[i], MPI_BYTE, h.neighbors[i],
+                  MPI_FLAT_SPARSE_DATA_TAG, comm, &h.payloadRequests[i]);
+    }
+    for(int i = 0; i < degree; i++)
+    {
+        MPI_Isend(h.sendBuf.data() + h.sendDisplacements[i],
+                  h.sendCounts[i], MPI_BYTE, h.neighbors[i],
+                  MPI_FLAT_SPARSE_DATA_TAG, comm, &h.payloadRequests[degree + i]);
+    }
+}
+
+template<typename T>
+std::vector<std::vector<T>> MPI_flat_sparse_wait(FlatSparseHandle &h)
+{
+    if(!h.payloadRequests.empty())
+        MPI_Waitall(static_cast<int>(h.payloadRequests.size()),
+                    h.payloadRequests.data(), MPI_STATUSES_IGNORE);
+
+    constexpr size_t NODE_SIZE = T::FLAT_BYTE_SIZE;
+    int degree = static_cast<int>(h.neighbors.size());
+    std::vector<std::vector<T>> result(h.commSize);
+
+    for(int i = 0; i < degree; i++)
+    {
+        rank_t srcRank = h.neighbors[i];
+        size_t nBytes = static_cast<size_t>(h.recvCounts[i]);
+        if(nBytes == 0) continue;
+        size_t count = nBytes / NODE_SIZE;
+        result[srcRank].resize(count);
+        const char *src = h.recvBuf.data() + h.recvDisplacements[i];
+        for(size_t j = 0; j < count; j++)
+            result[srcRank][j].loadFlat(src + j * NODE_SIZE);
     }
 
     return result;

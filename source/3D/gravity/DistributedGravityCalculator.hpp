@@ -20,12 +20,17 @@ public:
 
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
 
+    double getWalkTime() const { return walkTime_; }
+    const std::vector<int> &getCellInteractions() const { return cellInteractions_; }
+
     inline ~DistributedGravityCalculator()
     {
         delete this->gravityTree;
     }
 
 private:
+    mutable double walkTime_ = 0;
+    mutable std::vector<int> cellInteractions_;
     using LocalNode = typename GravityTree<Vector3D>::Node;
 
     MPI_Comm comm;
@@ -59,6 +64,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
 {
     MPI_Comm_size(this->comm, &this->size);
     MPI_Comm_rank(this->comm, &this->rank);
+
     auto [ll, ur] = this->tess.GetBoxCoordinates();
     GravityTree<Vector3D> *gravTree = new GravityTree<Vector3D>(ll, ur, this->theta, this->quadrupole);
     std::vector<MassedPoint<Vector3D>> massedPoints;
@@ -70,7 +76,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
     }
     gravTree->build(massedPoints);
     this->gravityTree = gravTree;
-    
+
     // Find the "real root": the first node with more than 1 child
     this->realRootOfGravityTree = this->gravityTree->getOctTree()->getRoot();   
     while(true)
@@ -237,74 +243,47 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
                                     this->relevantRanksByDepths[0].end());
 }
 
+
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
 {
-#ifdef GRAVITY_PROFILE
-    double prof_t0 = MPI_Wtime();
-    size_t prof_totalSent = 0;
-    int prof_actualNeighbors = 0;
-#endif
-
-    // 1. Build send list
     std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
 
-#ifdef GRAVITY_PROFILE
-    double prof_t_sendList = MPI_Wtime();
-    for(int r = 0; r < this->size; r++)
-    {
-        prof_totalSent += sendList[r].size();
-        if(!sendList[r].empty())
-            prof_actualNeighbors++;
-    }
-#endif
-
-    // 2. Insert pruned summaries into the local tree AFTER sendList is built
-    //    (so pruned pseudo-particles don't leak into the send lists) but
-    //    BEFORE the local walk (so the walk includes their contribution).
-    this->gravityTree->addExternalValues(this->prunedSummaries);
-    this->gravityTree->calculateMasses();
-
-    // 3. Start non-blocking sparse exchange (using precomputed neighbor list)
-    SparseExchangeHandle exchangeHandle = MPI_Iexchange_sparse_start(sendList, this->exchangeNeighbors, this->comm);
+    // Stage 1: Flat-pack + post Isend/Irecv for counts (returns immediately)
+    FlatSparseHandle flatHandle = MPI_flat_sparse_pack_and_post_counts(sendList, this->exchangeNeighbors, this->comm);
     sendList.clear();
     sendList.shrink_to_fit();
 
-#ifdef GRAVITY_PROFILE
-    double prof_t_istart = MPI_Wtime();
-#endif
+    // Stage 2 (overlapped with count exchange):
+    // addPruned + calculateMasses, then compile + local walk
+    this->gravityTree->addExternalValues(this->prunedSummaries);
+    this->gravityTree->calculateMasses();
 
-    // 4. Compile local tree to flat array and walk while exchange is in flight
+    double walk_t0 = MPI_Wtime();
     FlatGravityTree localFlat(*this->gravityTree);
     std::vector<Vector3D> results;
     results.reserve(points.size());
-    for(const Vector3D &point : points)
+    this->cellInteractions_.assign(points.size(), 0);
+    for(size_t i = 0; i < points.size(); i++)
     {
-        results.emplace_back(localFlat.gravity(point, true));
+        int count = 0;
+        results.emplace_back(localFlat.gravity(points[i], true, count));
+        this->cellInteractions_[i] = count;
     }
+    this->walkTime_ = MPI_Wtime() - walk_t0;
 
-#ifdef GRAVITY_PROFILE
-    double prof_t_localWalk = MPI_Wtime();
-#endif
-
-    // 5. Wait for exchange to complete (overlapped with step 4)
+    // Stage 3: Waitall on counts + post payload sends/recvs
+    // Stage 4: Waitall on payload + flat-unpack
+    MPI_flat_sparse_post_payload(flatHandle, this->comm);
     std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks =
-        MPI_Iexchange_sparse_wait<MassedValue<Vector3D>>(exchangeHandle);
+        MPI_flat_sparse_wait<MassedValue<Vector3D>>(flatHandle);
 
-#ifdef GRAVITY_PROFILE
-    double prof_t_wait = MPI_Wtime();
-    size_t totalArrived = 0;
-#endif
-
-    // 6. Build temporary tree from received data (non-pruned ranks only)
+    // Build temporary tree from received data (non-pruned ranks only)
     auto [ll, ur] = this->tess.GetBoxCoordinates();
     GravityTree<Vector3D> remoteTree(ll, ur, this->theta, this->quadrupole);
 
     for(int _rank = 0; _rank < this->size; _rank++)
     {
         std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
-#ifdef GRAVITY_PROFILE
-        totalArrived += rankData.size();
-#endif
         if(_rank != this->rank && this->prunedSet.find(_rank) == this->prunedSet.end())
         {
             remoteTree.addExternalValues(rankData);
@@ -315,73 +294,16 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     insertToTreeByRanks.shrink_to_fit();
     remoteTree.calculateMasses();
 
-#ifdef GRAVITY_PROFILE
-    double prof_t_remoteInsert = MPI_Wtime();
-#endif
-
-    // 7. Compile remote tree to flat array and walk
+    // Compile remote tree to flat array and walk
+    double rwalk_t0 = MPI_Wtime();
     FlatGravityTree remoteFlat(remoteTree);
     for(size_t i = 0; i < points.size(); i++)
     {
-        results[i] += remoteFlat.gravity(points[i], true);
+        int count = 0;
+        results[i] += remoteFlat.gravity(points[i], true, count);
+        this->cellInteractions_[i] += count;
     }
-
-#ifdef GRAVITY_PROFILE
-    double prof_t_remoteWalk = MPI_Wtime();
-
-    double phases[6] = {
-        prof_t_sendList - prof_t0,
-        prof_t_istart - prof_t_sendList,
-        prof_t_localWalk - prof_t_istart,
-        prof_t_wait - prof_t_localWalk,
-        prof_t_remoteInsert - prof_t_wait,
-        prof_t_remoteWalk - prof_t_remoteInsert
-    };
-    double phases_max[6], phases_min[6], phases_sum[6];
-    MPI_Allreduce(phases, phases_max, 6, MPI_DOUBLE, MPI_MAX, this->comm);
-    MPI_Allreduce(phases, phases_min, 6, MPI_DOUBLE, MPI_MIN, this->comm);
-    MPI_Allreduce(phases, phases_sum, 6, MPI_DOUBLE, MPI_SUM, this->comm);
-
-    unsigned long long sent_recv[2] = {
-        static_cast<unsigned long long>(prof_totalSent),
-        static_cast<unsigned long long>(totalArrived)
-    };
-    unsigned long long sent_recv_max[2], sent_recv_sum[2];
-    MPI_Allreduce(sent_recv, sent_recv_max, 2, MPI_UNSIGNED_LONG_LONG, MPI_MAX, this->comm);
-    MPI_Allreduce(sent_recv, sent_recv_sum, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm);
-
-    int neighbors_max = 0, neighbors_min = 0;
-    MPI_Allreduce(&prof_actualNeighbors, &neighbors_max, 1, MPI_INT, MPI_MAX, this->comm);
-    MPI_Allreduce(&prof_actualNeighbors, &neighbors_min, 1, MPI_INT, MPI_MIN, this->comm);
-
-    int pruned = static_cast<int>(this->prunedRanks.size());
-    int pruned_max = 0, pruned_min = 0;
-    double pruned_avg = 0;
-    MPI_Allreduce(&pruned, &pruned_max, 1, MPI_INT, MPI_MAX, this->comm);
-    MPI_Allreduce(&pruned, &pruned_min, 1, MPI_INT, MPI_MIN, this->comm);
-    {
-        double dp = static_cast<double>(pruned);
-        MPI_Allreduce(&dp, &pruned_avg, 1, MPI_DOUBLE, MPI_SUM, this->comm);
-        pruned_avg /= this->size;
-    }
-
-    if(this->rank == 0)
-    {
-        double invP = 1.0 / this->size;
-        std::cout << "[GRAVITY_PROFILE] sendList:     min=" << phases_min[0] << " max=" << phases_max[0] << " avg=" << phases_sum[0] * invP << "\n"
-                  << "[GRAVITY_PROFILE] istart:       min=" << phases_min[1] << " max=" << phases_max[1] << " avg=" << phases_sum[1] * invP << "\n"
-                  << "[GRAVITY_PROFILE] local_walk:   min=" << phases_min[2] << " max=" << phases_max[2] << " avg=" << phases_sum[2] * invP << "\n"
-                  << "[GRAVITY_PROFILE] wait:         min=" << phases_min[3] << " max=" << phases_max[3] << " avg=" << phases_sum[3] * invP << "\n"
-                  << "[GRAVITY_PROFILE] remote_ins:   min=" << phases_min[4] << " max=" << phases_max[4] << " avg=" << phases_sum[4] * invP << "\n"
-                  << "[GRAVITY_PROFILE] remote_walk:  min=" << phases_min[5] << " max=" << phases_max[5] << " avg=" << phases_sum[5] * invP << "\n"
-                  << "[GRAVITY_PROFILE] sent_nodes: max=" << sent_recv_max[0] << " avg=" << sent_recv_sum[0] * invP
-                  << "  recv_nodes: max=" << sent_recv_max[1] << " avg=" << sent_recv_sum[1] * invP
-                  << "  max_neighbors=" << neighbors_max << " min_neighbors=" << neighbors_min << "/" << this->size << "\n"
-                  << "[GRAVITY_PROFILE] pruned_ranks: min=" << pruned_min << " max=" << pruned_max << " avg=" << pruned_avg << "/" << (this->size - 1) << "\n"
-                  << "[GRAVITY_PROFILE] prune_depth=" << SKELETON_DEPTH << "  pruned_tree_nodes=" << this->prunedSummaries.size() << "\n"
-                  << "[GRAVITY_PROFILE] local_cells=" << points.size() << std::endl;
-    }
-#endif
+    this->walkTime_ += MPI_Wtime() - rwalk_t0;
 
     return results;
 }
@@ -439,8 +361,20 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
 
         if(shouldOpen)
         {
-            someoneWantsToOpen = true;
-            this->relevantRanksByDepths[depth + 1].insert(_rank);
+            const Vector3D &remoteCM = this->topNodesOfRanks[_rank][0].CM;
+            double dx = localNode->value.CM.x - remoteCM.x;
+            double dy = localNode->value.CM.y - remoteCM.y;
+            double dz = localNode->value.CM.z - remoteCM.z;
+            double dist2 = dx*dx + dy*dy + dz*dz;
+            if(dist2 > 0 && localNode->boundingBox.getWidthSquared() < dist2 * this->thetaSquared)
+            {
+                result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
+            }
+            else
+            {
+                someoneWantsToOpen = true;
+                this->relevantRanksByDepths[depth + 1].insert(_rank);
+            }
         }
         else
         {
