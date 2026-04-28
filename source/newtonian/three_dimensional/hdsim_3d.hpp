@@ -124,7 +124,7 @@ public:
   #ifdef RICH_MPI
     std::shared_ptr<CostCalculator3D> cost_calc_;
   #endif // RICH_MPI
-  
+
 private:
   Tessellation3D& tess_;
   const EquationOfState& eos_;

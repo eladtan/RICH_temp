@@ -250,6 +250,10 @@ void Simulation::step(void)
         #endif // RICH_MPI
         auto start = std::chrono::high_resolution_clock::now();
         physics->step(dt);
+
+        double localTime = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - start).count();
+
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI
@@ -262,9 +266,11 @@ void Simulation::step(void)
         double totalPhysicsTime = physicsTime + rebalanceTime;
         if(this->rank == 0) std::cout << "Physics " << name << " time: " << totalPhysicsTime << " (step=" << physicsTime << "s, rebalance=" << rebalanceTime << "s)" << std::endl;
         this->lastPhysicsTimes[name] = totalPhysicsTime;
+        this->lastLocalPhysicsTimes[name] = localTime;
         #else
         if(this->rank == 0) std::cout << "Physics " << name << " time: " << physicsTime << std::endl;
         this->lastPhysicsTimes[name] = physicsTime;
+        this->lastLocalPhysicsTimes[name] = localTime;
         #endif
 
         double dt_suggest = physics->suggestTimeStep();

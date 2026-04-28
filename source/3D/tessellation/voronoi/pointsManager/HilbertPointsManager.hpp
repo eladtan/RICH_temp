@@ -42,7 +42,7 @@ public:
         return this->pendingIndexing_;
     }
     
-    void setLoadBalancer(std::shared_ptr<LoadBalancer> const& loadBalancer) override;
+    void setLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) override;
 
     std::shared_ptr<LoadBalancer> getLoadBalancer(void) override;
 

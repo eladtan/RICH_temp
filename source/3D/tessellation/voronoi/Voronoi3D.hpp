@@ -514,7 +514,7 @@ public:
     \param ghosts Ghost points
     \param toduplicate Indices of points to be duplicated
    */
-  void BuildNoBox(vector<Vector3D> const& points, vector<vector<Vector3D> > const& ghosts,vector<size_t> const& toduplicate) override;
+  void BuildNoBox(vector<Vector3D> const& points, vector<vector<Vector3D> > const& ghosts,vector<size_t> toduplicate) override;
 
   vector<double>& GetAllVolumes(void) override;
 

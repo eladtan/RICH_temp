@@ -1866,7 +1866,7 @@ void Voronoi3D::MockMesh(void)
     this->UpdateCMs();
 }
 
-void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> const& loadBalancer)
+void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
 {
     assert(this->pointsManager != nullptr);
     this->pointsManager->setLoadBalancer(loadBalancer);
@@ -2698,7 +2698,7 @@ std::pair<Vector3D, Vector3D> Voronoi3D::GetBoxCoordinates(void) const
     return std::pair<Vector3D, Vector3D>(ll_, ur_);
 }
 
-void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3D>> const &ghosts, vector<size_t> const& toduplicate)
+void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3D>> const &ghosts, vector<size_t> toduplicate)
 {
     assert(points.size() > 0);
     // Clear data
