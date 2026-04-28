@@ -2,6 +2,7 @@
 #include <limits>
 #include <vectorclass.h>
 #include "boost/math/special_functions/pow.hpp"
+#include "misc/memory_profile.hpp"
 
 using boost::math::pow;
 
@@ -279,7 +280,7 @@ namespace CG
         return (std::abs(a) < std::abs(b));
     }
 
-    std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
+std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution)  //total_iters is to store # of iters in it
     {
@@ -513,6 +514,15 @@ namespace CG
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution, bool &good_end)  //total_iters is to store # of iters in it
     {
+        BiCGSTABWorkspace workspace;
+        return BiCGSTAB(tolerance, total_iters, tess, cells, dt, matrix_builder, time, sub_x_solution, good_end, workspace);
+    }
+
+    std::vector<double> &BiCGSTAB(const double tolerance, int &total_iters,
+        Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution, bool &good_end, BiCGSTABWorkspace &workspace)  //total_iters is to store # of iters in it
+    {
+        MEMORY_PROFILE_SCOPE("diffusion BiCGSTAB");
         size_t slice = 1;
 #ifdef ENERGY_GROUPS_NUM
         slice = ENERGY_GROUPS_NUM;
@@ -530,15 +540,27 @@ namespace CG
     #endif
         int const max_iter = 10000;
 
-        mat A;
-        size_t_mat A_indeces;
-        std::vector<double> b;
-        std::vector<double> sub_x; // this is for the initial guess
-        matrix_builder.BuildMatrix(tess, A, A_indeces, cells, dt, b, sub_x, time);
-        std::vector<size_t> A_row_ptr, A_col_idx;
-        std::vector<double> A_values;
+        mat &A = workspace.A;
+        size_t_mat &A_indeces = workspace.A_indeces;
+        std::vector<double> &b = workspace.b;
+        std::vector<double> &sub_x = workspace.sub_x; // this is for the initial guess
+        A.clear();
+        A_indeces.clear();
+        b.clear();
+        sub_x.clear();
+        {
+            MEMORY_PROFILE_SCOPE("diffusion matrix build");
+            matrix_builder.BuildMatrix(tess, A, A_indeces, cells, dt, b, sub_x, time);
+        }
+        std::vector<size_t> &A_row_ptr = workspace.A_row_ptr;
+        std::vector<size_t> &A_col_idx = workspace.A_col_idx;
+        std::vector<double> &A_values = workspace.A_values;
+        A_row_ptr.clear();
+        A_col_idx.clear();
+        A_values.clear();
         build_crs(A, A_indeces, A_row_ptr, A_col_idx, A_values);
-        std::vector<double> M; // The preconditioner
+        std::vector<double> &M = workspace.M; // The preconditioner
+        M.clear();
         if(use_crs_matvec)
             build_M_crs(A_row_ptr, A_col_idx, A_values, M);
         else
@@ -550,8 +572,12 @@ namespace CG
             else
                 mat_times_vec(A, A_indeces, in, out);
         };
-        std::vector<double> r_old, sub_a_times_p;
-        std::vector<double> sub_r;
+        std::vector<double> &r_old = workspace.r_old;
+        std::vector<double> &sub_a_times_p = workspace.sub_a_times_p;
+        std::vector<double> &sub_r = workspace.sub_r;
+        r_old.clear();
+        sub_a_times_p.clear();
+        sub_r.clear();
 #ifdef RICH_MPI
         MPI_exchange_data(tess, sub_x, true, slice);
 #endif
@@ -568,14 +594,32 @@ namespace CG
 #endif
         vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);  
         double rho0 = mpi_dot_product(sub_r, sub_r);  
-        std::vector<double> sub_p(sub_r), sub_r0(sub_r);
+        std::vector<double> &sub_p = workspace.sub_p;
+        std::vector<double> &sub_r0 = workspace.sub_r0;
+        sub_p = sub_r;
+        sub_r0 = sub_r;
         sub_p.resize(Nlocal);
         sub_x.resize(Nlocal);
         sub_r0.resize(Nlocal);
         vector_rescale(sub_p, M, sub_p);
-        std::vector<double> y(Nlocal, 0), z(Nlocal, 0), v(Nlocal, 0), h(Nlocal, 0), s(Nlocal, 0), t(Nlocal, 0);
-        std::vector<double> scratch_rescale1(Nlocal, 0), scratch_rescale2(Nlocal, 0);
-        std::vector<double> old_x = sub_x;
+        std::vector<double> &y = workspace.y;
+        std::vector<double> &z = workspace.z;
+        std::vector<double> &v = workspace.v;
+        std::vector<double> &h = workspace.h;
+        std::vector<double> &s = workspace.s;
+        std::vector<double> &t = workspace.t;
+        std::vector<double> &scratch_rescale1 = workspace.scratch_rescale1;
+        std::vector<double> &scratch_rescale2 = workspace.scratch_rescale2;
+        std::vector<double> &old_x = workspace.old_x;
+        y.assign(Nlocal, 0);
+        z.assign(Nlocal, 0);
+        v.assign(Nlocal, 0);
+        h.assign(Nlocal, 0);
+        s.assign(Nlocal, 0);
+        t.assign(Nlocal, 0);
+        scratch_rescale1.assign(Nlocal, 0);
+        scratch_rescale2.assign(Nlocal, 0);
+        old_x = sub_x;
         size_t Ntotal = Nlocal;
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;

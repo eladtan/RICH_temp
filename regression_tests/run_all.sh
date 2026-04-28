@@ -198,7 +198,7 @@ Modes:
   serial           Run tests tagged "serial" (default config: gnuRelease)
   mpi              Run tests tagged "mpi"    (default config: gnuReleaseMPI)
   all              Run all tests             (default config: gnuReleaseMPI)
-  serial_then_mpi  Run serial tests first (gnuRelease), then MPI tests (gnuReleaseMPI)
+  serial_then_mpi  Run serial (gnuRelease) and MPI (gnuReleaseMPI) tests in parallel
 
 Examples:
   ./regression_tests/run_all.sh --mode serial
@@ -310,9 +310,10 @@ case "${MODE}" in
         ;;
 esac
 
-# serial_then_mpi: re-invoke ourselves twice and merge results
+# serial_then_mpi: launch both passes in parallel so a long-running serial
+# test does not delay the MPI pass.
 if [[ "${MODE}" == "serial_then_mpi" ]]; then
-    echo "${BOLD}=== serial_then_mpi: running serial pass ===${NC}"
+    echo "${BOLD}=== serial_then_mpi: launching serial and MPI passes in parallel ===${NC}"
     passthrough_args=()
     [[ "${KEEP_ARTIFACTS}" -eq 1 ]]            && passthrough_args+=(--keep-artifacts)
     [[ "${VERBOSE}" -eq 1 ]]                   && passthrough_args+=(--verbose)
@@ -328,23 +329,26 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
         serial_config="gnuRelease"
         mpi_config="gnuReleaseMPI"
     elif [[ "${CONFIG}" == *MPI* ]]; then
-        # Derive the serial config by stripping "MPI" from the config name
         serial_config="${CONFIG//MPI/}"
         echo "  Derived serial config: ${serial_config} (from ${CONFIG})"
     else
         serial_config="${CONFIG}"
     fi
 
-    serial_rc=0
+    echo "${BOLD}--- serial pass (background) ---${NC}"
     "${BASH_SOURCE[0]}" --mode serial --config "${serial_config}" \
-        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" || serial_rc=$?
+        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" &
+    serial_pid=$!
 
-    echo
-    echo "${BOLD}=== serial_then_mpi: running MPI pass ===${NC}"
-
-    mpi_rc=0
+    echo "${BOLD}--- MPI pass (background) ---${NC}"
     "${BASH_SOURCE[0]}" --mode mpi --config "${mpi_config}" \
-        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" || mpi_rc=$?
+        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" &
+    mpi_pid=$!
+
+    serial_rc=0
+    wait "${serial_pid}" || serial_rc=$?
+    mpi_rc=0
+    wait "${mpi_pid}" || mpi_rc=$?
 
     echo
     if [[ ${serial_rc} -eq 0 && ${mpi_rc} -eq 0 ]]; then
@@ -535,6 +539,11 @@ load_test_definition() {
         return 2  # skipped, not an error
     fi
 
+    # Skip manual-only tests unless explicitly selected with --test
+    if [[ " ${TAGS} " == *" manual "* && "${TEST_ID}" != "${TEST_FILTER}" ]]; then
+        return 2
+    fi
+
     # Filter by --mode using TAGS
     if [[ -z "${TAGS}" ]]; then
         TAGS="serial"  # default to serial if no tags
@@ -603,15 +612,9 @@ if [[ "${NO_EXCLUSIVE}" -eq 1 ]]; then
     done
 fi
 
-# Capture loaded modules so SLURM jobs can reproduce the environment.
-# LOADEDMODULES is a colon-separated list maintained by Lmod.
-SLURM_MODULE_RESTORE="ml restore 2024_new"
-if [[ -n "${LOADEDMODULES:-}" ]]; then
-    _saved_modules="${LOADEDMODULES//:/ }"
-    SLURM_MODULE_SETUP="${SLURM_MODULE_RESTORE} && ml load ${_saved_modules}"
-else
-    SLURM_MODULE_SETUP="${SLURM_MODULE_RESTORE}"
-fi
+# Do not alter modules inside SLURM jobs. The submit environment and the
+# explicit variables below define the run environment.
+SLURM_MODULE_SETUP="true"
 
 # ==================== Print header ====================
 mkdir -p "${RUN_ARTIFACT_DIR}"

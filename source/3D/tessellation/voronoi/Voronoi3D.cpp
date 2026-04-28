@@ -810,7 +810,6 @@ void Voronoi3D::BuildInitialize(size_t num_points)
     // assert(num_points > 0);
     // Clear data
     PointTetras_.clear();
-    PointTetras_.shrink_to_fit();
     R_.clear();
     if(num_points > 0) R_.reserve(num_points * 11);
     tetra_centers_.clear();
@@ -818,27 +817,17 @@ void Voronoi3D::BuildInitialize(size_t num_points)
     // Voronoi Data
     del_.Clean();
     FacesInCell_.clear();
-    FacesInCell_.shrink_to_fit();
     PointsInFace_.clear();
-    PointsInFace_.shrink_to_fit();
     FaceNeighbors_.clear();
-    FaceNeighbors_.shrink_to_fit();
     CM_.clear();
-    CM_.shrink_to_fit();
     Face_CM_.clear();
-    Face_CM_.shrink_to_fit();
     volume_.clear();
-    volume_.shrink_to_fit();
     area_.clear();
-    area_.shrink_to_fit();
     Norg_ = num_points;
     #ifdef RICH_MPI
         duplicatedprocs_.clear();
-        duplicatedprocs_.shrink_to_fit();
         duplicated_points_.clear();
-        duplicated_points_.shrink_to_fit();
         Nghost_.clear();
-        Nghost_.shrink_to_fit();
     #endif // RICH_MPI
 }
 
@@ -2698,12 +2687,42 @@ std::pair<Vector3D, Vector3D> Voronoi3D::GetBoxCoordinates(void) const
     return std::pair<Vector3D, Vector3D>(ll_, ur_);
 }
 
+void Voronoi3D::ReleaseMemory(void)
+{
+    release_container_memory(PointTetras_);
+    release_container_memory(R_);
+    release_container_memory(tetra_centers_);
+    release_container_memory(FacesInCell_);
+    release_container_memory(PointsInFace_);
+    release_container_memory(FaceNeighbors_);
+    release_container_memory(all_CM);
+    release_container_memory(CM_);
+    release_container_memory(Face_CM_);
+    release_container_memory(volume_);
+    release_container_memory(area_);
+    release_container_memory(box_faces_);
+    release_container_memory(allMyPoints);
+    release_container_memory(allPointsWeights);
+    release_container_memory(radiuses);
+    release_container_memory(indicesInAllMyPoints);
+    del_.ReleaseMemory();
+#ifdef RICH_MPI
+    release_container_memory(sentprocs_);
+    release_container_memory(sentpoints_);
+    release_container_memory(duplicatedprocs_);
+    release_container_memory(duplicated_points_);
+    release_container_memory(real_duplicated_proc);
+    release_container_memory(real_duplicated_points);
+    release_container_memory(Nghost_);
+    release_container_memory(self_index_);
+#endif
+}
+
 void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3D>> const &ghosts, vector<size_t> toduplicate)
 {
     assert(points.size() > 0);
     // Clear data
     PointTetras_.clear();
-    PointTetras_.shrink_to_fit();
     R_.clear();
     R_.reserve(points.size());
     tetra_centers_.clear();
@@ -2711,27 +2730,17 @@ void Voronoi3D::BuildNoBox(vector<Vector3D> const &points, vector<vector<Vector3
     del_.Clean();
     // Voronoi Data
     FacesInCell_.clear();
-    FacesInCell_.shrink_to_fit();
     PointsInFace_.clear();
-    PointsInFace_.shrink_to_fit();
     FaceNeighbors_.clear();
-    FaceNeighbors_.shrink_to_fit();
     CM_.clear();
-    CM_.shrink_to_fit();
     Face_CM_.clear();
-    Face_CM_.shrink_to_fit();
     volume_.clear();
-    volume_.shrink_to_fit();
     area_.clear();
-    area_.shrink_to_fit();
     Norg_ = points.size();
     #ifdef RICH_MPI
         duplicatedprocs_.clear();
-        duplicatedprocs_.shrink_to_fit();
         duplicated_points_.clear();
-        duplicated_points_.shrink_to_fit();
         Nghost_.clear();
-        Nghost_.shrink_to_fit();
     #endif // RICH_MPI
 
     std::vector<size_t> order = HilbertOrder3D(points);

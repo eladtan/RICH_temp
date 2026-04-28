@@ -10,6 +10,7 @@
 #include <stack>
 #include <queue>
 #include <algorithm>
+#include <new>
 
 #ifdef DEBUG_MODE
 #include <iostream>
@@ -43,7 +44,91 @@ public:
     {
         friend class OctTree;
 
+        struct FreeSlot
+        {
+            FreeSlot *next;
+        };
+
+        class NodePool
+        {
+        public:
+            NodePool(): free_list_(nullptr){}
+
+            ~NodePool()
+            {
+                for(size_t i = 0; i < this->blocks_.size(); ++i)
+                    ::operator delete(this->blocks_[i]);
+            }
+
+            void *allocate(size_t size)
+            {
+                if(this->free_list_ == nullptr)
+                    this->addBlock(size);
+                FreeSlot *slot = this->free_list_;
+                this->free_list_ = slot->next;
+                return slot;
+            }
+
+            void deallocate(void *ptr, size_t size)
+            {
+                if(ptr == nullptr)
+                    return;
+                (void) size;
+                FreeSlot *slot = static_cast<FreeSlot*>(ptr);
+                slot->next = this->free_list_;
+                this->free_list_ = slot;
+            }
+
+        private:
+            void addBlock(size_t slot_size)
+            {
+                const size_t block_nodes = 4096;
+                void *block = ::operator new(slot_size * block_nodes);
+                try
+                {
+                    this->blocks_.push_back(block);
+                }
+                catch(...)
+                {
+                    ::operator delete(block);
+                    throw;
+                }
+                char *cursor = static_cast<char*>(block);
+                for(size_t i = 0; i < block_nodes; ++i)
+                {
+                    FreeSlot *slot = reinterpret_cast<FreeSlot*>(cursor + i * slot_size);
+                    slot->next = this->free_list_;
+                    this->free_list_ = slot;
+                }
+            }
+
+            FreeSlot *free_list_;
+            std::vector<void*> blocks_;
+        };
+
+        static NodePool &nodePool()
+        {
+            static NodePool pool;
+            return pool;
+        }
+
     public:
+        static void *operator new(size_t size)
+        {
+            static_assert(sizeof(OctTreeNode) >= sizeof(FreeSlot), "OctTreeNode must fit a free-list pointer");
+            return nodePool().allocate(size);
+        }
+
+        static void operator delete(void *ptr) noexcept
+        {
+            nodePool().deallocate(ptr, sizeof(OctTreeNode));
+        }
+
+        static void operator delete(void *ptr, size_t size) noexcept
+        {
+            nodePool().deallocate(ptr, size);
+        }
+
         inline OctTreeNode(const T &ll, const T &ur): isLeaf(false), value((ll + ur)/2), boundingBox(BoundingBox<Raw_type>(ll, ur)), parent(nullptr), height(0), depth(0)
         {
             for(int i = 0; i < CHILDREN; i++)
@@ -1046,4 +1131,3 @@ std::vector<std::pair<T, typename T::coord_type>> OctTree<T>::getKClosestPoints(
 }
 
 #endif // _OCTTREE_HPP
-

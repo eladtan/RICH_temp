@@ -8,6 +8,7 @@
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
 #include "misc/utils.hpp"
+#include "misc/memory_profile.hpp"
 
 /*!
 \brief Sends and revs data
@@ -18,6 +19,7 @@
 template<class T>
 inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells, bool ghost_or_sent, const size_t extent = 1, const T *example_cell = nullptr)
 {
+	MEMORY_PROFILE_SCOPE("MPI exchange");
 	T default_cell_storage{};
 	if(example_cell == nullptr)
 	{

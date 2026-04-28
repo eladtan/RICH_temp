@@ -56,12 +56,21 @@ namespace
 }
 
 std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > ConditionActionFlux1::operator()(vector<Conserved3D> &fluxes, const Tessellation3D& tess, const vector<Vector3D>& face_velocities,
-												   const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& /*extensives*/, const EquationOfState& eos,
+													   const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& /*extensives*/, const EquationOfState& eos,
 	const double time, const double /*dt*/) const
+{
+	vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values;
+	this->Calculate(fluxes, tess, face_velocities, cells, vector<Conserved3D>(), eos, time, 0, face_values);
+	return face_values;
+}
+
+void ConditionActionFlux1::Calculate(vector<Conserved3D> &fluxes, const Tessellation3D& tess, const vector<Vector3D>& face_velocities,
+													   const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& /*extensives*/, const EquationOfState& eos,
+	const double time, const double /*dt*/, std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values) const
 {
 	for (size_t i = 0; i < sequence_.size(); ++i)
 		sequence_[i].second->Reset();
-	vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values;
+	face_values.clear();
 	interp_(tess, cells, time, face_values);
 	fluxes.resize(tess.GetTotalFacesNumber());
 	size_t Nloop = fluxes.size();
@@ -105,7 +114,6 @@ std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > ConditionActio
 		}
 		choose_action(i, tess, cells, eos, face_velocities[i], sequence_, fluxes[i], time, face_values[i]);
 	}
-	return face_values;
 }
 
 ConditionActionFlux1::Condition3D::~Condition3D(void) {}

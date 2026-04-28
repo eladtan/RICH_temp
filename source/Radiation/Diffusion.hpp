@@ -180,6 +180,7 @@ public:
     mutable std::vector<double> old_T;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
+    mutable CG::BiCGSTABWorkspace cg_workspace_;
     bool const cooling_time_limiter_on_;
 };
 

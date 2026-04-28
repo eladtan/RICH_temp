@@ -70,6 +70,9 @@ public:
 
   //! \brief Clear data
   void Clean(void);
+
+  //! \brief Clear data and release retained buffers
+  void ReleaseMemory(void);
 private:
   void InsertPoint(std::size_t index);
   std::size_t Walk(std::size_t point, std::size_t first_guess);

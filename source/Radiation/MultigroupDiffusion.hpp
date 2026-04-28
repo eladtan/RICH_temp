@@ -129,6 +129,7 @@ public:
     mutable std::vector<double> Gammas; // fleck_factor = 1.0 / (1.0 + c*dt*beta*Gamma)
     mutable std::vector<bool> use_n_zero; // flag for cells that need to use n=0 due to negative fleck factor
     mutable std::vector<double> compton_limiter_scale_; // per-cell Compton coupling reduction factor from cooling-time limiter (1.0 = no reduction)
+    mutable CG::BiCGSTABWorkspace cg_workspace_;
 
 private:
     bool const protections_on_; // flag whether to use Elad's protections on the amount of change allowed per time step (should not be on when running tests...)

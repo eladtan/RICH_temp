@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 TEST_ID="spherical_collapse_hires"
-TAGS="mpi"
+TAGS="mpi manual"
 BUILD_TEST_NAME="regression_tests/cases/spherical_collapse_hires"
 BUILD_ARGS="--high-res"
 RUN_DIR_REL="regression_tests/cases/spherical_collapse_hires"

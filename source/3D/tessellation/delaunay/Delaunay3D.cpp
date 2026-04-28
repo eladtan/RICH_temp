@@ -1084,12 +1084,18 @@ bool Delaunay3D::CheckCorrect(void)
 void Delaunay3D::Clean(void)
 {
     tetras_.clear();
-    tetras_.shrink_to_fit();
     points_.clear();
-    points_.shrink_to_fit();
     empty_tetras_.clear();
     changed_tetras_.clear();
-    changed_tetras_.shrink_to_fit();
     newTetras_.clear();
-    newTetras_.shrink_to_fit();
+}
+
+void Delaunay3D::ReleaseMemory(void)
+{
+    Clean();
+    release_container_memory(tetras_);
+    release_container_memory(points_);
+    release_container_memory(empty_tetras_);
+    release_container_memory(changed_tetras_);
+    release_container_memory(newTetras_);
 }

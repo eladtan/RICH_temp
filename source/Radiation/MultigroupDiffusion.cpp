@@ -1,6 +1,7 @@
 #include "Diffusion.hpp" // for CalcSingleFluxLimiter and FleckFactor
 #include "MultigroupDiffusion.hpp"
 #include "misc/memory_debug.hpp"
+#include "misc/memory_profile.hpp"
 // TODO: make a units namespace used by all the program 
 #include "CMMC/src/units/units.hpp"
 #include "CMMC/src/planck_integral/planck_integral.hpp"
@@ -14,6 +15,14 @@ void fill_zero(std::vector<double>& vec) {
 void fill_zero(std::vector<std::vector<double>>& mat) {
     for (std::vector<double>& row : mat) {
         std::fill(row.begin(), row.end(), 0.0);
+    }
+}
+
+void resize_group_matrix(std::vector<std::vector<double>>& mat, std::size_t cells) {
+    mat.resize(ENERGY_GROUPS_NUM);
+    for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+        mat[g].resize(cells);
+        std::fill(mat[g].begin(), mat[g].end(), 0.0);
     }
 }
 
@@ -127,11 +136,12 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
                                   std::vector<ComputationalCell3D> const& cells) const {
+    MEMORY_PROFILE_SCOPE("multigroup diffusion prestep");
     auto const N = tess.GetPointNo();
 
-    sigma_absorption_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
-    sigma_scattering_group = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
-    planck_integal_group   = std::vector<std::vector<double>>(ENERGY_GROUPS_NUM, std::vector<double>(N, 0.0));
+    resize_group_matrix(sigma_absorption_group, N);
+    resize_group_matrix(sigma_scattering_group, N);
+    resize_group_matrix(planck_integal_group, N);
 
     new_Eg.resize(N, 0.0);
     new_Eg_full.resize(N, 0.0);
@@ -191,7 +201,7 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
 }
 
 bool MultigroupDiffusion::poststep() const {
-    std::vector<ComputationalCell3D>().swap(cells_cgs);
+    cells_cgs.clear();
 
     return true;
 }
@@ -341,7 +351,7 @@ bool MultigroupDiffusion::step(double const tolerance,
 
     std::size_t tot_iters = 0;
     bool good_end = false;
-    new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full, good_end);
+    new_Eg = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Eg_full, good_end, cg_workspace_);
     MEMORY_DEBUG_PRINT("multigroup: after BiCGSTAB");
     if (not good_end)
         return false;
@@ -361,6 +371,7 @@ bool MultigroupDiffusion::step(double const tolerance,
 
 double  MultigroupDiffusion::get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const
 {
+    MEMORY_PROFILE_SCOPE("multigroup diffusion step");
     if (g == 0 or (g + 1) == ENERGY_GROUPS_NUM) {
         return 0.0;
     }

@@ -62,6 +62,11 @@ if(DEFINED MEMORY_DEBUG)
     add_definitions("-DMEMORY_DEBUG")
 endif()
 
+if(DEFINED MEMORY_PROFILE)
+    message(STATUS "Memory Profile Mode Enabled")
+    add_definitions("-DMEMORY_PROFILE")
+endif()
+
 # if build is Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions("-DDEBUG")

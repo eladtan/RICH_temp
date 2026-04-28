@@ -280,6 +280,8 @@ public:
 
   size_t GetBuildGeneration(void) const override { return buildGeneration_; }
 
+  void ReleaseMemory(void);
+
   void BuildPartially(const std::vector<Vector3D> &allPoints, const std::vector<size_t> &indicesToBuild) override;
 
   bool IsPointInCell(const Vector3D &point, size_t cellIndex, bool verbose = false) const override;

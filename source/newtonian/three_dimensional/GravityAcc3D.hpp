@@ -8,6 +8,7 @@
 #endif // RICH_MPI
 
 #include "newtonian/three_dimensional/ConservativeForce3D.hpp"
+#include "misc/memory_profile.hpp"
 
 class GravityAcceleration3D : public Acceleration3D
 {
@@ -19,37 +20,42 @@ public:
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& fluxes, const double time, vector<Vector3D> &acc) const
     {
-        std::vector<Vector3D> points = tess.GetAllCM();
-        points.resize(tess.GetPointNo());
-        std::vector<gravity_result_t> masses;
-        masses.reserve(points.size());
-        for(size_t cellIdx = 0; cellIdx < points.size(); cellIdx++)
-        {
-            masses.push_back((cells[cellIdx].density) * (tess.GetVolume(cellIdx)));
-        }
-        std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
+        (void) fluxes;
+        (void) time;
+        MEMORY_PROFILE_SCOPE("gravity source");
 
         size_t N = tess.GetPointNo();
-
+        this->points_.resize(N);
+        this->masses_.resize(N);
+        for(size_t cellIdx = 0; cellIdx < N; cellIdx++)
+        {
+            this->points_[cellIdx] = tess.GetCellCM(cellIdx);
+            this->masses_[cellIdx] = (cells[cellIdx].density) * (tess.GetVolume(cellIdx));
+        }
         #ifdef RICH_MPI
-            DistributedGravityCalculator agent(tess, masses, this->theta, this->quadrupole);
-            acc = agent.getAcceleration(points);
+            DistributedGravityCalculator agent(tess, this->masses_, this->theta, this->quadrupole);
+            acc = agent.getAcceleration(this->points_);
             lastWalkTime_ = agent.getWalkTime();
             lastCellInteractions_ = agent.getCellInteractions();
         #else // RICH_MPI
+            std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
-            std::vector<MassedPoint<Vector3D>> massedPoints;
+            this->massed_points_.clear();
+            this->massed_points_.reserve(N);
             for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                massedPoints.emplace_back(MassedPoint<Vector3D>(points[pointIdx], masses[pointIdx]));
+                this->massed_points_.emplace_back(MassedPoint<Vector3D>(this->points_[pointIdx], this->masses_[pointIdx]));
             }
-            gravTree.build(massedPoints);
+            {
+                MEMORY_PROFILE_SCOPE("gravity tree build");
+                gravTree.build(this->massed_points_);
+            }
             
             double wt0 = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-            acc.clear();
+            acc.resize(N);
             for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
             {
-                acc.push_back(gravTree.gravity(points[pointIdx]));
+                acc[pointIdx] = gravTree.gravity(this->points_[pointIdx]);
             }
             lastWalkTime_ = std::chrono::duration<double>(std::chrono::high_resolution_clock::now().time_since_epoch()).count() - wt0;
         #endif // RICH_MPI
@@ -63,6 +69,11 @@ private:
     bool quadrupole;
     mutable double lastWalkTime_;
     mutable std::vector<int> lastCellInteractions_;
+    mutable std::vector<Vector3D> points_;
+    mutable std::vector<gravity_result_t> masses_;
+    #ifndef RICH_MPI
+        mutable std::vector<MassedPoint<Vector3D>> massed_points_;
+    #endif // RICH_MPI
 };
 
 #endif // GRAVITY_ACC_3D_HPP

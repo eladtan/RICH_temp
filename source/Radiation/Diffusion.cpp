@@ -1,5 +1,6 @@
 #include "Diffusion.hpp"
 #include "misc/memory_debug.hpp"
+#include "misc/memory_profile.hpp"
 #include "misc/utils.hpp"
 #include <boost/math/special_functions.hpp>
 
@@ -77,6 +78,7 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
 
 bool Diffusion::prestep(Tessellation3D const& tess,
                         std::vector<ComputationalCell3D> const& cells) const {
+    MEMORY_PROFILE_SCOPE("diffusion prestep");
     auto const N = tess.GetPointNo();
     
     sigma_planck.resize(N, 0.0);
@@ -121,8 +123,8 @@ bool Diffusion::prestep(Tessellation3D const& tess,
 }
 
 bool Diffusion::poststep() const {    
-    std::vector<ComputationalCell3D>().swap(cells_temp);
-    std::vector<Conserved3D>().swap(extensives_temp);
+    cells_temp.clear();
+    extensives_temp.clear();
 
     return false;
 }
@@ -196,9 +198,10 @@ bool Diffusion::step(double const tolerance,
                      int& total_iters, 
                      Tessellation3D const& tess, 
                      std::vector<ComputationalCell3D>& cells,
-                     std::vector<Conserved3D>& extensives,
-                     double const dt,
-                     double const time) const {
+                      std::vector<Conserved3D>& extensives,
+                      double const dt,
+                      double const time) const {
+    MEMORY_PROFILE_SCOPE("diffusion step");
     
     int rank = 0;
 #ifdef RICH_MPI
@@ -210,7 +213,7 @@ bool Diffusion::step(double const tolerance,
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
-    new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end);
+    new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end, cg_workspace_);
     MEMORY_DEBUG_PRINT("diffusion: after BiCGSTAB");
     if(not good_end)
         return false;

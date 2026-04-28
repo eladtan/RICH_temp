@@ -1,6 +1,7 @@
 #include "hdsim_3d.hpp"
 #include "misc/memory_debug.hpp"
 #include <malloc.h>
+#include "misc/memory_profile.hpp"
 
 namespace
 {
@@ -141,14 +142,17 @@ namespace
 	}
 
 	#ifdef RICH_MPI
-		void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, ExchangeChain &chain, std::vector<Vector3D> const* orgpoints = nullptr)
+		void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, ExchangeChain &chain, vector<Vector3D> &points, std::vector<Vector3D> const* orgpoints = nullptr)
 	#else // RICH_MPI
-		void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr)
+		void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, vector<Vector3D> &points, std::vector<Vector3D> const* orgpoints = nullptr)
 	#endif // RICH_MPI
 	{
-		vector<Vector3D> points;
+		MEMORY_PROFILE_SCOPE("tessellation rebuild");
 		if (orgpoints == nullptr)
-			points = tess.getMeshPoints();
+		{
+			const vector<Vector3D> &mesh = tess.getMeshPoints();
+			points.assign(mesh.begin(), mesh.end());
+		}
 		else
 			points = *orgpoints;
 		points.resize(tess.GetPointNo());
@@ -182,36 +186,44 @@ namespace
 
 void HDSim3D::timeAdvance2(void)
 {
+	MEMORY_PROFILE_SCOPE("hydro timeAdvance2");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
 	MEMORY_DEBUG_PRINT("hydro: after MPI reset");
 	const double time = pt_.getTime();
-	pm_(tess_, cells_, time, point_vel_);
+	vector<Vector3D> &point_vel = this->point_vel_scratch_;
+	vector<Vector3D> &face_vel = this->face_vel_scratch_;
+	vector<Conserved3D> &fluxes = this->fluxes_scratch_;
+	vector<Conserved3D> &mid_extensives = this->mid_extensives_scratch_;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values = this->face_values_scratch_;
+	point_vel.clear();
+	face_vel.clear();
+	fluxes.clear();
+	face_values.clear();
+	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	Vector3D vdummy;
-	MPI_exchange_data(tess_, point_vel_, true);
+	MPI_exchange_data(tess_, point_vel, true);
 #endif
 
-	CalcFaceVelocities(tess_, point_vel_, face_vel_);
-	double dt = tsc_(tess_, cells_, eos_, face_vel_, time);
-	pm_.ApplyFix(tess_, cells_, time, dt, point_vel_);
+	CalcFaceVelocities(tess_, point_vel, face_vel);
+	double dt = tsc_(tess_, cells_, eos_, face_vel, time);
+	pm_.ApplyFix(tess_, cells_, time, dt, point_vel);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess_, point_vel_, true);
+	MPI_exchange_data(tess_, point_vel, true);
 #endif
-	CalcFaceVelocities(tess_, point_vel_, face_vel_);
-	dt = tsc_(tess_, cells_, eos_, face_vel_, time);
+	CalcFaceVelocities(tess_, point_vel, face_vel);
+	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	MEMORY_DEBUG_PRINT("hydro: after CFL + face velocities");
-	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
-		fc_(fluxes_, tess_, face_vel_, cells_, extensive_, eos_, time, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
 	malloc_trim(0);
 	MEMORY_DEBUG_PRINT("hydro: after flux calc");
-	mid_extensives_.assign(extensive_.begin(), extensive_.end());
-	mid_extensives_.resize(extensive_.size());
-	eu_(fluxes_, tess_, dt, cells_, mid_extensives_, time, face_vel_, face_values);
+	mid_extensives = extensive_;
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
 	MEMORY_DEBUG_PRINT("hydro: after extensive update");
 	auto t1 = get_time();
-	source_(tess_, cells_, fluxes_, point_vel_, time, dt, mid_extensives_);
+	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
 	MEMORY_DEBUG_PRINT("hydro: after source terms");
@@ -223,14 +235,14 @@ void HDSim3D::timeAdvance2(void)
 		vector<size_t> order = HilbertOrder3D(mesh);
 		size_t Nlocal = order.size();
 		ApplyPermutation(mesh, order);
-		mid_extensives_.resize(Nlocal);
-		ApplyPermutation(mid_extensives_, order);
+		mid_extensives.resize(Nlocal);
+		ApplyPermutation(mid_extensives, order);
 		extensive_.resize(Nlocal);
 		ApplyPermutation(extensive_, order);
 		cells_.resize(Nlocal);
 		ApplyPermutation(cells_, order);
-		point_vel_.resize(Nlocal);
-		ApplyPermutation(point_vel_, order);
+		point_vel.resize(Nlocal);
+		ApplyPermutation(point_vel, order);
 #ifdef RICH_MPI
 		tess_.PreparePoints(mesh, order);
 #endif
@@ -239,40 +251,40 @@ void HDSim3D::timeAdvance2(void)
 	ComputationalCell3D cdummy;
 	if(pm_.MovedPoints())
 	{
-		MovePoints(tess_, point_vel_, dt);
+		MovePoints(tess_, point_vel, dt);
 		t1 = get_time();
 		#ifdef RICH_MPI
-			UpdateTessellation(tess_, point_vel_, dt, this->exchange_chain_);
+			UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_);
 		#else // RICH_MPI
-			UpdateTessellation(tess_, point_vel_, dt);
+			UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 		#endif // RICH_MPI
 		t2 = get_time();
 		DisplayTime(t1, t2, "Voronoi build time ");
 #ifdef RICH_MPI
-		MPI_exchange_data(tess_, mid_extensives_, false);
+		MPI_exchange_data(tess_, mid_extensives, false);
 		MPI_exchange_data(tess_, extensive_, false);
 		MPI_exchange_data(tess_, cells_, false);
-		MPI_exchange_data(tess_, point_vel_, false);
-		MPI_exchange_data(tess_, point_vel_, true);
+		MPI_exchange_data(tess_, point_vel, false);
+		MPI_exchange_data(tess_, point_vel, true);
 #endif
 	}
 	MEMORY_DEBUG_PRINT("hydro: after Voronoi rebuild");
 	malloc_trim(0);
 
-cu_(cells_, eos_, tess_, mid_extensives_);
+cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
 #endif
 MEMORY_DEBUG_PRINT("hydro: after cell update (1st half)");
 
-CalcFaceVelocities(tess_, point_vel_, face_vel_);
-face_values = fc_(fluxes_, tess_, face_vel_, cells_, mid_extensives_, eos_, time + dt, dt);
+CalcFaceVelocities(tess_, point_vel, face_vel);
+fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 t1 = get_time();
-source_(tess_, cells_, fluxes_, point_vel_, time + dt, dt, mid_extensives_);
+source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
 t2 = get_time();
 DisplayTime(t1, t2, "Second source time ");
-eu_(fluxes_, tess_, dt, cells_, mid_extensives_, time + dt, face_vel_, face_values);
-ExtensiveAvg(extensive_, mid_extensives_);
+eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
+ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
@@ -283,13 +295,21 @@ malloc_trim(0);
 
 void HDSim3D::timeAdvance(void)
 {
+	MEMORY_PROFILE_SCOPE("hydro timeAdvance");
 	MEMORY_DEBUG_PRINT("hydro1: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
 	const double time = pt_.getTime();
 
-	vector<Vector3D> point_vel, face_vel;
+	vector<Vector3D> &point_vel = this->point_vel_scratch_;
+	vector<Vector3D> &face_vel = this->face_vel_scratch_;
+	vector<Conserved3D> &fluxes = this->fluxes_scratch_;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values = this->face_values_scratch_;
+	point_vel.clear();
+	face_vel.clear();
+	fluxes.clear();
+	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	Vector3D vdummy;
@@ -302,18 +322,16 @@ void HDSim3D::timeAdvance(void)
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	vector<Conserved3D> fluxes;
-	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
-		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, extensive_);
 	eu_(fluxes, tess_, dt, cells_, extensive_, time, face_vel, face_values);
 	if(pm_.MovedPoints())
 	{
 	MovePoints(tess_, point_vel, dt);
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt);
+		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
 
 	#ifdef RICH_MPI
@@ -334,13 +352,25 @@ void HDSim3D::timeAdvance(void)
 
 void HDSim3D::timeAdvance3(void)
 {
+	MEMORY_PROFILE_SCOPE("hydro timeAdvance3");
 	MEMORY_DEBUG_PRINT("hydro3: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
 	const double time = pt_.getTime();
 
-	vector<Vector3D> point_vel, face_vel;
+	vector<Vector3D> &point_vel = this->point_vel_scratch_;
+	vector<Vector3D> &face_vel = this->face_vel_scratch_;
+	vector<Vector3D> &oldpoints = this->oldpoints_scratch_;
+	vector<Conserved3D> &fluxes = this->fluxes_scratch_;
+	vector<Conserved3D> &mid_extensives = this->mid_extensives_scratch_;
+	vector<Conserved3D> &u1 = this->u1_scratch_;
+	vector<Conserved3D> &u2 = this->u2_scratch_;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values = this->face_values_scratch_;
+	point_vel.clear();
+	face_vel.clear();
+	fluxes.clear();
+	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -354,10 +384,8 @@ void HDSim3D::timeAdvance3(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
-	vector<Conserved3D> fluxes;
-	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
-		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt);
-	vector<Conserved3D> mid_extensives(extensive_);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt, face_values);
+	mid_extensives = extensive_;
 	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, 0.5 * dt, mid_extensives);
 
@@ -377,13 +405,13 @@ void HDSim3D::timeAdvance3(void)
 		point_vel.resize(Nlocal);
 		ApplyPermutation(point_vel, order);
 	}
-	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
+	oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt * 0.5);
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->exchange_chain_);
+		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->exchange_chain_, this->tessellation_points_scratch_);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, 0.5 * dt);
+		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -395,7 +423,7 @@ void HDSim3D::timeAdvance3(void)
 	MPI_exchange_data(tess_, oldpoints, false);
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
-	std::vector<Conserved3D> u1 = mid_extensives;
+	u1 = mid_extensives;
 	cu_(cells_, eos_, tess_, mid_extensives);
 
 
@@ -404,16 +432,16 @@ void HDSim3D::timeAdvance3(void)
 #endif
 
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, 2 * dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, 2 * dt, face_values);
 	//mid_extensives = extensive_;
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, 2 * dt,  mid_extensives);
 	eu_(fluxes, tess_, 2 * dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
 	mid_extensives = mid_extensives - 3 * (u1 - extensive_);
 
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_, &oldpoints);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -425,7 +453,7 @@ void HDSim3D::timeAdvance3(void)
 	MPI_exchange_data(tess_, point_vel, false);
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
-	std::vector<Conserved3D> u2 = mid_extensives;
+	u2 = mid_extensives;
 	cu_(cells_, eos_, tess_, mid_extensives);
 
 
@@ -433,7 +461,7 @@ void HDSim3D::timeAdvance3(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt / 6);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt / 6, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt / 6,  mid_extensives);
 	eu_(fluxes, tess_, dt / 6, cells_, mid_extensives, time + dt, face_vel, face_values);
 	extensive_ = mid_extensives - (1.0 / 3.0) * (2 * u2 + extensive_) + u1;
@@ -446,13 +474,23 @@ void HDSim3D::timeAdvance3(void)
 
 void HDSim3D::timeAdvance33(void)
 {
+	MEMORY_PROFILE_SCOPE("hydro timeAdvance33");
 	MEMORY_DEBUG_PRINT("hydro33: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
 	const double time = pt_.getTime();
 
-	vector<Vector3D> point_vel, face_vel;
+	vector<Vector3D> &point_vel = this->point_vel_scratch_;
+	vector<Vector3D> &face_vel = this->face_vel_scratch_;
+	vector<Vector3D> &oldpoints = this->oldpoints_scratch_;
+	vector<Conserved3D> &fluxes = this->fluxes_scratch_;
+	vector<Conserved3D> &mid_extensives = this->mid_extensives_scratch_;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values = this->face_values_scratch_;
+	point_vel.clear();
+	face_vel.clear();
+	fluxes.clear();
+	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -466,10 +504,8 @@ void HDSim3D::timeAdvance33(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
-	vector<Conserved3D> fluxes;
-	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values = 
-		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt);
-	vector<Conserved3D> mid_extensives(extensive_);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
+	mid_extensives = extensive_;
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 
@@ -489,13 +525,13 @@ void HDSim3D::timeAdvance33(void)
 		point_vel.resize(Nlocal);
 		ApplyPermutation(point_vel, order);
 	}
-	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
+	oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt);
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt);
+		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -514,16 +550,16 @@ void HDSim3D::timeAdvance33(void)
 #endif
 
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 	//mid_extensives = extensive_;
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
 	mid_extensives = 0.25 * mid_extensives + 0.75 * extensive_;
 
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt / 2, this->exchange_chain_, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt / 2, this->exchange_chain_, this->tessellation_points_scratch_, &oldpoints);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt / 2, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt / 2, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -541,15 +577,15 @@ void HDSim3D::timeAdvance33(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, dt, mid_extensives);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
 	extensive_ = 0.33333333333333333333333 * (2 * mid_extensives + extensive_);
 
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_, &oldpoints);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
 
 #ifdef RICH_MPI
@@ -567,13 +603,23 @@ void HDSim3D::timeAdvance33(void)
 
 void HDSim3D::timeAdvance32(void)
 {
+	MEMORY_PROFILE_SCOPE("hydro timeAdvance32");
 	MEMORY_DEBUG_PRINT("hydro32: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
 	const double time = pt_.getTime();
 
-	vector<Vector3D> point_vel, face_vel;
+	vector<Vector3D> &point_vel = this->point_vel_scratch_;
+	vector<Vector3D> &face_vel = this->face_vel_scratch_;
+	vector<Conserved3D> &fluxes = this->fluxes_scratch_;
+	vector<Conserved3D> &mid_extensives = this->mid_extensives_scratch_;
+	vector<Conserved3D> &u1 = this->u1_scratch_;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values = this->face_values_scratch_;
+	point_vel.clear();
+	face_vel.clear();
+	fluxes.clear();
+	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -587,10 +633,8 @@ void HDSim3D::timeAdvance32(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
-	vector<Conserved3D> fluxes;
-	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values =
-		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt);
-	vector<Conserved3D> mid_extensives(extensive_);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt, face_values);
+	mid_extensives = extensive_;
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 
@@ -613,9 +657,9 @@ void HDSim3D::timeAdvance32(void)
 	MovePoints(tess_, point_vel, dt);
 
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt);
+		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
 
 	#ifdef RICH_MPI
@@ -626,7 +670,7 @@ void HDSim3D::timeAdvance32(void)
 	MPI_exchange_data(tess_, point_vel, false);
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
-	std::vector<Conserved3D> u1 = mid_extensives;
+	u1 = mid_extensives;
 	cu_(cells_, eos_, tess_, mid_extensives);
 
 #ifdef RICH_MPI
@@ -634,7 +678,7 @@ void HDSim3D::timeAdvance32(void)
 #endif
 
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
 	mid_extensives = 0.5 * (mid_extensives + extensive_);
@@ -644,7 +688,7 @@ void HDSim3D::timeAdvance32(void)
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
 	//extensive_ = 0.333333333333333333*(extensive_ + u1 + mid_extensives);
@@ -658,13 +702,26 @@ void HDSim3D::timeAdvance32(void)
 
 void HDSim3D::timeAdvance4(void)
 {
+	MEMORY_PROFILE_SCOPE("hydro timeAdvance4");
 	MEMORY_DEBUG_PRINT("hydro4: start");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
 #endif // RICH_MPI
 	const double time = pt_.getTime();
 
-	vector<Vector3D> point_vel, face_vel;
+	vector<Vector3D> &point_vel = this->point_vel_scratch_;
+	vector<Vector3D> &face_vel = this->face_vel_scratch_;
+	vector<Vector3D> &oldpoints = this->oldpoints_scratch_;
+	vector<Conserved3D> &fluxes = this->fluxes_scratch_;
+	vector<Conserved3D> &mid_extensives = this->mid_extensives_scratch_;
+	vector<Conserved3D> &du1 = this->u1_scratch_;
+	vector<Conserved3D> &du2 = this->u2_scratch_;
+	vector<Conserved3D> &du3 = this->u3_scratch_;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values = this->face_values_scratch_;
+	point_vel.clear();
+	face_vel.clear();
+	fluxes.clear();
+	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -678,10 +735,8 @@ void HDSim3D::timeAdvance4(void)
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
-	vector<Conserved3D> fluxes;
-	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values =
-		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt);
-	vector<Conserved3D> mid_extensives(extensive_);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt, face_values);
+	mid_extensives = extensive_;
 	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, 0.5 * dt, mid_extensives);
 
@@ -701,13 +756,13 @@ void HDSim3D::timeAdvance4(void)
 		point_vel.resize(Nlocal);
 		ApplyPermutation(point_vel, order);
 	}
-	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
+	oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt * 0.5);
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->exchange_chain_);
+		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->exchange_chain_, this->tessellation_points_scratch_);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, 0.5 * dt);
+		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
 
 #ifdef RICH_MPI
@@ -721,14 +776,14 @@ void HDSim3D::timeAdvance4(void)
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	cu_(cells_, eos_, tess_, mid_extensives);
-	std::vector<Conserved3D> du1 = mid_extensives - extensive_;
+	du1 = mid_extensives - extensive_;
 
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, 0.5 * dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, 0.5 * dt, face_values);
 	//mid_extensives = extensive_;
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, 0.5 * dt, mid_extensives);
 	mid_extensives = mid_extensives - du1;
@@ -737,17 +792,17 @@ void HDSim3D::timeAdvance4(void)
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
-	std::vector<Conserved3D> du2 = mid_extensives - extensive_;
+	du2 = mid_extensives - extensive_;
 
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, dt);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, dt, mid_extensives);
 	mid_extensives = mid_extensives - du2;
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
 
 	#ifdef RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_, &oldpoints);
 	#else // RICH_MPI
-		UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
 
 #ifdef RICH_MPI
@@ -762,13 +817,13 @@ void HDSim3D::timeAdvance4(void)
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	cu_(cells_, eos_, tess_, mid_extensives);
-	std::vector<Conserved3D> du3 = mid_extensives - extensive_;
+	du3 = mid_extensives - extensive_;
 
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
-	face_values = fc_(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt / 6);
+	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt / 6, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt / 6,  mid_extensives);
 	mid_extensives = mid_extensives - du3;
 	eu_(fluxes, tess_, dt / 6, cells_, mid_extensives, time + dt, face_vel, face_values);
