@@ -148,6 +148,8 @@ MODE="all"
 NPROC_OVERRIDE=""
 SLURM_PARTITION_OVERRIDE=""
 RUN_LOCAL=0
+SEQUENTIAL=0
+NO_EXCLUSIVE=0
 
 ARTIFACT_ROOT="${ROOT_DIR}/regression_results"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -182,6 +184,8 @@ Options:
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
   --partition <name>       Override SLURM partition for all MPI tests (default per-test, usually bigrun)
   --local                  Run MPI tests locally via mpirun instead of submitting through SLURM
+  --sequential              Run tests one at a time instead of in parallel
+  --no-exclusive            Do not pass --exclusive to SLURM (allow node sharing)
   --clean-results          Delete regression_results, generated figures, and run artifacts from cases, then exit
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
@@ -238,6 +242,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --local)
             RUN_LOCAL=1
+            shift
+            ;;
+        --sequential)
+            SEQUENTIAL=1
+            shift
+            ;;
+        --no-exclusive)
+            NO_EXCLUSIVE=1
             shift
             ;;
         --nproc)
@@ -308,6 +320,8 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
     [[ -n "${NPROC_OVERRIDE}" ]]               && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
     [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]     && passthrough_args+=(--partition "${SLURM_PARTITION_OVERRIDE}")
     [[ "${RUN_LOCAL}" -eq 1 ]]                 && passthrough_args+=(--local)
+    [[ "${SEQUENTIAL}" -eq 1 ]]                && passthrough_args+=(--sequential)
+    [[ "${NO_EXCLUSIVE}" -eq 1 ]]              && passthrough_args+=(--no-exclusive)
 
     mpi_config="${CONFIG}"
     if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
@@ -583,6 +597,21 @@ if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
         ALL_SLURM_PARTITIONS[$i]="${SLURM_PARTITION_OVERRIDE}"
     done
 fi
+if [[ "${NO_EXCLUSIVE}" -eq 1 ]]; then
+    for i in "${!ALL_SLURM_EXCLUSIVES[@]}"; do
+        ALL_SLURM_EXCLUSIVES[$i]="0"
+    done
+fi
+
+# Capture loaded modules so SLURM jobs can reproduce the environment.
+# LOADEDMODULES is a colon-separated list maintained by Lmod.
+SLURM_MODULE_RESTORE="ml restore 2024_new"
+if [[ -n "${LOADEDMODULES:-}" ]]; then
+    _saved_modules="${LOADEDMODULES//:/ }"
+    SLURM_MODULE_SETUP="${SLURM_MODULE_RESTORE} && ml load ${_saved_modules}"
+else
+    SLURM_MODULE_SETUP="${SLURM_MODULE_RESTORE}"
+fi
 
 # ==================== Print header ====================
 mkdir -p "${RUN_ARTIFACT_DIR}"
@@ -603,6 +632,7 @@ if [[ "${MODE}" != "serial" ]]; then
     fi
 fi
 echo "  Cores:     ${NPROC_OVERRIDE:-$(nproc)} (override with --nproc)"
+echo "  SLURM env: ${SLURM_MODULE_SETUP}"
 echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
 echo
 
@@ -725,7 +755,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
         run_rc=0
         if [[ "${run_mode}" == "slurm" ]]; then
             local_escaped_run_cmd="${run_cmd//\'/\'\\\'\'}"
-            sbatch_wrap_cmd="ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
+            sbatch_wrap_cmd="${SLURM_MODULE_SETUP} && ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
             sbatch_args=(
                 sbatch
                 --wait
@@ -761,6 +791,10 @@ for i in "${!ALL_TEST_IDS[@]}"; do
         exit "${run_rc}"
     ) &
     JOB_PIDS["${test_id}"]=$!
+
+    if [[ "${SEQUENTIAL}" -eq 1 ]]; then
+        wait "${JOB_PIDS[${test_id}]}"
+    fi
 done
 
 echo
