@@ -208,14 +208,14 @@ namespace CG
             }
             else
             {
-                if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] >= 0)
+                if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] >= 0 && sub_x[k] > 0)
                 {
                     sum_dx += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
                     sum_dx_sign += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
                     dx_vec[k%slice] += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
                     sub_x_solution[k] = std::abs(sub_x[k]) * 0.5;
                 }
-                if(sub_x_solution[k] > std::abs(sub_x[k]) * 2)
+                if(sub_x_solution[k] > std::abs(sub_x[k]) * 2 && sub_x[k] > 0)
                 {
                     sum_dx += cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
                     sum_dx_sign -= cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
