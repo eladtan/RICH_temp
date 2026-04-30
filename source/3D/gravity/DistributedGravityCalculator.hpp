@@ -2,6 +2,7 @@
 #define DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 
 #ifdef RICH_MPI
+#include <limits>
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
@@ -335,11 +336,7 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
 
     for(int _rank : relevantRanks)
     {
-        bool contained = std::any_of(this->topNodesOfRanks[_rank].begin(), this->topNodesOfRanks[_rank].end(),
-                                    [localNode](const GravityNodeData &remote)
-                                    {
-                                        return remote.boundingBox.contains(localNode->boundingBox);
-                                    });
+        bool contained = this->topNodesOfRanks[_rank][0].boundingBox.contains(localNode->boundingBox);
         bool shouldOpen = false;
         if(contained)
         {
@@ -352,23 +349,34 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
         }
         else
         {
-            shouldOpen = std::any_of(this->topNodesOfRanks[_rank].begin(), this->topNodesOfRanks[_rank].end(),
-                                    [localNode, this](const GravityNodeData &remote)
-                                    {
-                                        return ShouldOpenBox(localNode->value.CM, localNode->boundingBox, remote.boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
-                                    });
+            shouldOpen = ShouldOpenBox(localNode->value.CM, localNode->boundingBox,
+                this->topNodesOfRanks[_rank][0].boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
         }
 
         if(shouldOpen)
         {
-            const Vector3D &remoteCM = this->topNodesOfRanks[_rank][0].CM;
-            double dx = localNode->value.CM.x - remoteCM.x;
-            double dy = localNode->value.CM.y - remoteCM.y;
-            double dz = localNode->value.CM.z - remoteCM.z;
-            double dist2 = dx*dx + dy*dy + dz*dz;
-            if(dist2 > 0 && localNode->boundingBox.getWidthSquared() < dist2 * this->thetaSquared)
+            if(contained)
             {
-                result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
+                double minDist2 = this->topNodesOfRanks[_rank][0].boundingBox.distanceSquared(localNode->value.CM);
+                if(minDist2 == 0 && this->topNodesOfRanks[_rank].size() > 1)
+                {
+                    minDist2 = std::numeric_limits<double>::max();
+                    for(size_t ri = 1; ri < this->topNodesOfRanks[_rank].size(); ri++)
+                    {
+                        double d2 = this->topNodesOfRanks[_rank][ri].boundingBox.distanceSquared(localNode->value.CM);
+                        if(d2 == 0) { minDist2 = 0; break; }
+                        minDist2 = std::min(minDist2, d2);
+                    }
+                }
+                if(minDist2 > 0 && localNode->boundingBox.getWidthSquared() < minDist2 * this->thetaSquared)
+                {
+                    result[_rank].emplace_back(localNode->value.CM, localNode->value.mass, localNode->value.Q);
+                }
+                else
+                {
+                    someoneWantsToOpen = true;
+                    this->relevantRanksByDepths[depth + 1].insert(_rank);
+                }
             }
             else
             {
