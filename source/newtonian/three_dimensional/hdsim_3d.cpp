@@ -1,4 +1,5 @@
 #include "hdsim_3d.hpp"
+#include "CourantFriedrichsLewy.hpp"
 #include "misc/memory_debug.hpp"
 #include <malloc.h>
 #include "misc/memory_profile.hpp"
@@ -214,6 +215,8 @@ void HDSim3D::timeAdvance2(void)
 	MPI_exchange_data(tess_, point_vel, true);
 #endif
 	CalcFaceVelocities(tess_, point_vel, face_vel);
+	if (auto* cfl = dynamic_cast<CourantFriedrichsLewy*>(&tsc_))
+		cfl->SetPointVelocities(&point_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	MEMORY_DEBUG_PRINT("hydro: after CFL + face velocities");
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);

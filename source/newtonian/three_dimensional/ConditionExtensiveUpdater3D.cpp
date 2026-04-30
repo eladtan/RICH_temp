@@ -168,7 +168,8 @@ void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, 
 				std::cout << "Face " << temp[j] << " neigh " << N0 << "," << N1 << " mass=" << fluxes[temp[j]].mass * Area <<
 					" energy= " << fluxes[temp[j]].energy * Area << " Etherm= " << dEtherm1 << " momentum= " << abs(fluxes[temp[j]].momentum) * Area <<
 					" Area*dt " << Area << " normal " << normalf.x << "," << normalf.y << "," << normalf.z <<
-					" face velocity "<<edge_velocities[temp[j]].x<<","<< edge_velocities[temp[j]].y<<","<< edge_velocities[temp[j]].z<< std::endl;
+					" face velocity "<<edge_velocities[temp[j]].x<<","<< edge_velocities[temp[j]].y<<","<< edge_velocities[temp[j]].z<<
+					" point0 "<<tess.GetMeshPoint(N0)<<" point1 "<<tess.GetMeshPoint(N1)<< std::endl;
 				eo.addEntry("Face", static_cast<double>(temp[j]));
 				eo.addEntry("Face neigh 0", static_cast<double>(tess.GetFaceNeighbors(temp[j]).first));
 				eo.addEntry("Face neigh 1", static_cast<double>(tess.GetFaceNeighbors(temp[j]).second));

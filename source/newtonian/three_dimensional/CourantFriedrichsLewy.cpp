@@ -113,8 +113,16 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 					std::cout<<"p1="<<p1.x<<","<<p1.y<<","<<p1.z<<" p2="<<p2.x<<","<<p2.y<<","<<p2.z<<std::endl;
 					p1 = cells[tess.GetFaceNeighbors(faces[j]).first].velocity;
 					p2 = cells[tess.GetFaceNeighbors(faces[j]).second].velocity;
-					std::cout<<"v1="<<p1.x<<","<<p1.y<<","<<p1.z<<" v2="<<p2.x<<","<<p2.y<<","<<p2.z<<
-					" A "<<tess.GetArea(faces[j])<<std::endl;
+					std::cout<<"v1="<<p1.x<<","<<p1.y<<","<<p1.z<<" |v1|="<<fastabs(p1)
+					<<" v2="<<p2.x<<","<<p2.y<<","<<p2.z<<" |v2|="<<fastabs(p2)
+					<<" A "<<tess.GetArea(faces[j])<<std::endl;
+					if (point_velocities_)
+					{
+						size_t n1 = tess.GetFaceNeighbors(faces[j]).first;
+						size_t n2 = tess.GetFaceNeighbors(faces[j]).second;
+						if (n1 < point_velocities_->size() && n2 < point_velocities_->size())
+							std::cout<<"pv1="<<(*point_velocities_)[n1]<<" pv2="<<(*point_velocities_)[n2]<<std::endl;
+					}
 				}
 				double cell_effective_radius = std::min(tess.GetWidth(loc), tess.GetVolume(loc) / max_face_area);
 				std::cout<<"cell_effective_radius "<<cell_effective_radius<<std::endl;

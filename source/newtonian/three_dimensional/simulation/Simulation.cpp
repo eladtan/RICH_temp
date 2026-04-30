@@ -242,6 +242,7 @@ void Simulation::step(void)
         double dt = this->tsc->GetTimeStep();
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
         std::cout.flush();
+        double dt_before = dt;
 
         malloc_trim(0);
         MEMORY_DEBUG_PRINT("Before " + name);
@@ -250,6 +251,10 @@ void Simulation::step(void)
         #endif // RICH_MPI
         auto start = std::chrono::high_resolution_clock::now();
         physics->step(dt);
+
+        double dt_actual = this->tsc->GetTimeStep();
+        if(this->rank == 0 && dt_actual != dt_before)
+            std::cout << "Hydro dt actually used: " << dt_actual << " (requested: " << dt_before << ")" << std::endl;
 
         double localTime = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - start).count();
@@ -320,7 +325,10 @@ void Simulation::step(void)
     }
     
     this->tracker.updateCycle();
-    this->tracker.updateTime(this->tsc->GetTimeStep());
+    double dt_used = this->tsc->GetTimeStep();
+    if(this->rank == 0)
+        std::cout << "Advancing time by dt=" << dt_used << ", next suggested dt=" << next_time_step << std::endl;
+    this->tracker.updateTime(dt_used);
 
     this->tsc->SetTimeStep(next_time_step);
 

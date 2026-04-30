@@ -23,12 +23,13 @@ public:
 	\param eta eta parameter in equation 63
 	\param cold Switch for cold flows
 	\param min_dw The minimum magnitude for the cell' velocity scale
-	\param no_move List of stickers not to move the cells for
 	\param dt_speed The speed in units of radius/dt
+	\param no_move List of stickers not to move the cells for
+	\param max_velocity The maximum velocity that dw can have
 	*/
 	RoundCells3D(const PointMotion3D& pm, const EquationOfState& eos,
 		double chi = 1.25, double eta = 0.02, bool cold = false,double min_dw=0,double dt_speed=0.01,
-		const vector<std::string>& no_move=vector<std::string>());
+		const vector<std::string>& no_move=vector<std::string>(), double max_velocity=1e100);
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		double time, vector<Vector3D> &res) const override;
@@ -51,6 +52,7 @@ private:
 	const double min_dw_;
 	const double dt_speed_;
 	const vector<std::string> no_move_;
+	const double max_velocity_;
 	mutable vector<size_t> slowdown_neigh_buf_;
 	mutable vector<size_t> calc_dw_neigh_buf_;
 	mutable vector<size_t> calc_dw2_neigh_buf_;
