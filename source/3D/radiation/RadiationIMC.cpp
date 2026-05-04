@@ -376,6 +376,8 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     #endif
 
     size_t totalParticles = globalTotalCells * this->newPhotonsPerCell * 10;
+    newParticles.reserve(totalParticles);
+
     std::vector<size_t> nPhotons(Ncells);
     for(size_t i = 0; i < Ncells; i++)
     {
@@ -457,9 +459,12 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
     assert(this->conserved.size() >= this->grid.GetPointNo());
 
     size_t Ncells = this->grid.GetPointNo();
-    this->factorFleck = std::vector<double>(Ncells);
-    this->planckOpacities = std::vector<double>(Ncells);
-    this->Erad_time_avg = std::vector<double>(Ncells, 0);
+    this->factorFleck.resize(Ncells);
+    std::fill(this->factorFleck.begin(), this->factorFleck.end(), 0);
+    this->planckOpacities.resize(Ncells);
+    std::fill(this->planckOpacities.begin(), this->planckOpacities.end(), 0);
+    this->Erad_time_avg.resize(Ncells);
+    std::fill(this->Erad_time_avg.begin(), this->Erad_time_avg.end(), 0);
     if(this->withEgTimeAvg && this->multigroupOpacity)
     {
         std::array<double, ENERGY_GROUPS_NUM> zeros{};
