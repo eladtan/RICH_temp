@@ -9,6 +9,7 @@
 #include "utils/balance/balance.hpp"
 #include "utils/balance/weightedBalance.hpp"
 #include "utils/balance/weightedBalance2.hpp"
+#include "utils/balance/weightedBalance3.hpp"
 #include "ds/OctTree/OctTree.hpp"
 #include "3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
 
