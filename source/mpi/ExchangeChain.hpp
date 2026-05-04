@@ -47,6 +47,11 @@ void MPI_exchange_data(const ExchangeChain &chain, std::vector<T> &data)
     MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
     MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
 
+    if(chain.GetNorg() == 0)
+    {
+        return;
+    }
+    
     const ExchangeChain::RankTransferMap &translationMap = chain.GetTranslationMap();
 
     std::vector<std::vector<T>> toSend(worldSize);
