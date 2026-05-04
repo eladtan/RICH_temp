@@ -9,7 +9,17 @@
 template<typename Grid>
 boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostMap(const Grid &grid)
 {
-    boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
+    static const Tessellation3D *cachedGrid = nullptr;
+    static size_t cachedBuildGeneration = SIZE_MAX;
+    static boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ranks_ghost_map;
+    
+    if(grid.GetBuildGeneration() == cachedBuildGeneration and cachedGrid == &grid)
+    {
+        return ranks_ghost_map;
+    }
+    cachedGrid = &grid;
+    cachedBuildGeneration = grid.GetBuildGeneration();
+    ranks_ghost_map.clear();
     std::vector<std::vector<size_t>> incoming = MPI_exchange_data(grid.GetDuplicatedProcs(), grid.GetDuplicatedPoints());
     const std::vector<std::vector<size_t>> &ghosts = grid.GetGhostIndeces();
     for(size_t i = 0; i < incoming.size(); i++)
