@@ -1,7 +1,6 @@
 #include "hdsim_3d.hpp"
 #include "CourantFriedrichsLewy.hpp"
 #include "misc/memory_debug.hpp"
-#include <malloc.h>
 #include "misc/memory_profile.hpp"
 
 namespace
@@ -220,7 +219,6 @@ void HDSim3D::timeAdvance2(void)
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	MEMORY_DEBUG_PRINT("hydro: after CFL + face velocities");
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
-	malloc_trim(0);
 	MEMORY_DEBUG_PRINT("hydro: after flux calc");
 	mid_extensives = extensive_;
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
@@ -230,7 +228,6 @@ void HDSim3D::timeAdvance2(void)
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
 	MEMORY_DEBUG_PRINT("hydro: after source terms");
-	malloc_trim(0);
 	if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
 	{
 		vector<Vector3D>& mesh = tess_.accessMeshPoints();
@@ -272,8 +269,6 @@ void HDSim3D::timeAdvance2(void)
 #endif
 	}
 	MEMORY_DEBUG_PRINT("hydro: after Voronoi rebuild");
-	malloc_trim(0);
-
 cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
@@ -293,7 +288,6 @@ cu_(cells_, eos_, tess_, extensive_);
 MPI_exchange_data(tess_, cells_, true);
 #endif
 MEMORY_DEBUG_PRINT("hydro: after cell update (2nd half)");
-malloc_trim(0);
 }
 
 void HDSim3D::timeAdvance(void)

@@ -746,6 +746,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
 #ifdef RICH_MPI
             MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+            bool any_fixed_local = false;
             for(size_t j = 0; j < Nlocal; ++j)
             {
                 if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5))))
@@ -755,10 +756,11 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                 }
                 if(sub_x[j] < -max_sub_x * 1e-10)
                 {
-                    if(i > 10 && not fixed_negative_x[j])
+                    if(i > 20 && not fixed_negative_x[j])
                     {
                         fixed_negative_x[j] = true;
                         sub_x[j] = 0.5 * org_x[j];
+                        any_fixed_local = true;
                     }
                     else
                     {
@@ -771,6 +773,27 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 4e-5);
                     max_loc0 = j;
                 }
+            }
+            int any_fixed_global = any_fixed_local ? 1 : 0;
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, &any_fixed_global, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+            if(any_fixed_global)
+            {
+#ifdef RICH_MPI
+                MPI_exchange_data(tess, sub_x, true, slice);
+#endif
+                matvec(sub_x, sub_a_times_p);
+                sub_x.resize(Nlocal);
+                vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
+                sub_r.resize(Nlocal);
+                sub_r0 = sub_r;
+                sub_p = sub_r;
+                rho0 = mpi_dot_product(sub_r0, sub_r);
+                vector_rescale(sub_r, M, scratch_rescale1);
+                sub_r_sqrd = mpi_dot_product(scratch_rescale1, sub_r);
+                error = sub_r_sqrd / scale_b;
+                continue;
             }
 #ifdef RICH_MPI
             MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);

@@ -1,8 +1,6 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
 #include "misc/memory_debug.hpp"
-#include <malloc.h>
-
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
      tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
 #ifdef RICH_MPI
@@ -244,7 +242,6 @@ void Simulation::step(void)
         std::cout.flush();
         double dt_before = dt;
 
-        malloc_trim(0);
         MEMORY_DEBUG_PRINT("Before " + name);
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
