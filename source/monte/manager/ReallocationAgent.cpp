@@ -56,7 +56,7 @@ rank_t ReallocationAgent::ShouldReallocate(void)
     if(not this->incoming.empty())
     {
         rank_t toHandle = NO_RANK;
-        std::vector<std::pair<rank_t, double>>::iterator it;
+        auto it = this->incoming.end();
 
         if(this->waitingFor != NO_RANK)
         {
@@ -64,8 +64,22 @@ rank_t ReallocationAgent::ShouldReallocate(void)
             {
                 return p.first == this->waitingFor;
             });
+            if(it == this->incoming.end())
+            {
+                // While waiting for a specific peer, only preempt that wait for a
+                // lower-priority peer. This rank ordering breaks reallocation
+                // cycles such as A waits for B, B waits for C, C waits for A.
+                it = std::find_if(this->incoming.begin(), this->incoming.end(), [this](const std::pair<rank_t, double> &p)
+                {
+                    return p.first < this->waitingFor;
+                });
+                if(it == this->incoming.end())
+                {
+                    return NO_RANK;
+                }
+            }
         }
-        if(this->waitingFor == NO_RANK or it == this->incoming.end())
+        else
         {
             it = this->incoming.begin();
         }
