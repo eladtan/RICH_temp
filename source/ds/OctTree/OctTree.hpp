@@ -584,6 +584,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point, OctTreeN
     {
         UniversalError eo("OctTree: Value is outside the bounding box of the OctTree");
         eo.addEntry("Point", point);
+        eo.addEntry("Bounding box", this->getRoot()->boundingBox);
         throw eo;
     }
 
