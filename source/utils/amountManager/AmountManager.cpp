@@ -5,9 +5,11 @@
 #define INCREASE_TAG 9918
 #define DONE_TAG 9919
 #define VERIFY_TAG 9920
+#define VERIFY_RESULT_TAG 9921
 
-AmountManager::AmountManager(MPI_Comm comm)
-    : comm(comm), cyclesWaiting(0), globalNum(0), tempNum(0), done(false), verify(false)
+AmountManager::AmountManager(MPI_Comm comm, size_t flushInterval)
+    : comm(comm), cyclesWaiting(0), flushInterval(flushInterval), globalNum(0), tempNum(0), outgoingNum(0),
+      childVerifyResult1(0), childVerifyResult2(0), localVerifyRecorded(false), localVerifyOk(false), verify(false), done(false)
 {
     MPI_Comm_rank(this->comm, &this->rank);
     MPI_Comm_size(this->comm, &this->size);
@@ -20,6 +22,9 @@ AmountManager::AmountManager(MPI_Comm comm)
     this->request2 = MPI_REQUEST_NULL;
     this->parentDoneRequest = MPI_REQUEST_NULL;
     this->parentVerifyRequest = MPI_REQUEST_NULL;
+    this->outgoingRequest = MPI_REQUEST_NULL;
+    this->childVerifyRequest1 = MPI_REQUEST_NULL;
+    this->childVerifyRequest2 = MPI_REQUEST_NULL;
 
     if(this->child1 < this->size)
     {
@@ -60,12 +65,36 @@ void AmountManager::Increase(counter_t n)
     this->tempNum += n;
 }
 
+void AmountManager::FlushToParent(void)
+{
+    if(this->rank == 0 || this->tempNum == 0)
+        return;
+
+    if(this->outgoingRequest != MPI_REQUEST_NULL)
+        return;
+
+    this->outgoingNum = this->tempNum;
+    this->tempNum = 0;
+    MPI_Isend(&this->outgoingNum, 1, MPI_LONG_LONG, this->parent, INCREASE_TAG, this->comm, &this->outgoingRequest);
+    this->cyclesWaiting = 0;
+}
+
 void AmountManager::Progress(void)
 {
     this->CheckVerify();
     this->CheckDone();
     MPI_Status status;
     int flag;
+
+    if(this->outgoingRequest != MPI_REQUEST_NULL)
+    {
+        MPI_Test(&this->outgoingRequest, &flag, MPI_STATUS_IGNORE);
+        if(flag)
+        {
+            this->outgoingNum = 0;
+            this->outgoingRequest = MPI_REQUEST_NULL;
+        }
+    }
 
     MPI_Test(&this->request1, &flag, &status);
     if(this->child1 < this->size and flag)
@@ -90,10 +119,11 @@ void AmountManager::Progress(void)
     else
     {
         this->cyclesWaiting++;
-        if(this->cyclesWaiting % 30 == 0 and this->tempNum != 0)
+        bool urgent = (this->tempNum < 0);
+        bool intervalElapsed = (this->cyclesWaiting >= this->flushInterval) && (this->tempNum != 0);
+        if(urgent || intervalElapsed)
         {
-            MPI_Send(&this->tempNum, 1, MPI_LONG_LONG, this->parent, INCREASE_TAG, this->comm);
-            this->tempNum = 0;
+            this->FlushToParent();
         }
     }
 
@@ -127,6 +157,16 @@ void AmountManager::AskChildrenVerify(void)
     {
         return;
     }
+    this->ResetVerifyAttempt();
+    this->verify = true;
+    if(this->child1 < this->size)
+    {
+        MPI_Irecv(&this->childVerifyResult1, 1, MPI_INT, this->child1, VERIFY_RESULT_TAG, this->comm, &this->childVerifyRequest1);
+    }
+    if(this->child2 < this->size)
+    {
+        MPI_Irecv(&this->childVerifyResult2, 1, MPI_INT, this->child2, VERIFY_RESULT_TAG, this->comm, &this->childVerifyRequest2);
+    }
     if(this->child1 < this->size)
     {
         MPI_Send(MPI_BOTTOM, 0, MPI_INT, this->child1, VERIFY_TAG, this->comm);
@@ -135,20 +175,90 @@ void AmountManager::AskChildrenVerify(void)
     {
         MPI_Send(MPI_BOTTOM, 0, MPI_INT, this->child2, VERIFY_TAG, this->comm);
     }
-    this->verify = true;
+}
+
+void AmountManager::ResetVerifyAttempt(void)
+{
+    this->childVerifyResult1 = 0;
+    this->childVerifyResult2 = 0;
+    this->localVerifyRecorded = false;
+    this->localVerifyOk = false;
+    this->childVerifyRequest1 = MPI_REQUEST_NULL;
+    this->childVerifyRequest2 = MPI_REQUEST_NULL;
+}
+
+bool AmountManager::ChildVerifyResultsReady(void)
+{
+    int flag;
+    if(this->child1 < this->size && this->childVerifyRequest1 != MPI_REQUEST_NULL)
+    {
+        MPI_Test(&this->childVerifyRequest1, &flag, MPI_STATUS_IGNORE);
+        if(!flag)
+        {
+            return false;
+        }
+    }
+    if(this->child2 < this->size && this->childVerifyRequest2 != MPI_REQUEST_NULL)
+    {
+        MPI_Test(&this->childVerifyRequest2, &flag, MPI_STATUS_IGNORE);
+        if(!flag)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void AmountManager::FinishVerifyAttempt(bool subtreeOk)
+{
+    if(this->rank == 0)
+    {
+        if(subtreeOk)
+        {
+            this->MarkChildrenDone();
+        }
+        this->verify = false;
+        this->ResetVerifyAttempt();
+        return;
+    }
+
+    MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, this->parent, VERIFY_TAG, this->comm, &this->parentVerifyRequest);
+    int result = subtreeOk ? 1 : 0;
+    MPI_Send(&result, 1, MPI_INT, this->parent, VERIFY_RESULT_TAG, this->comm);
+    this->verify = false;
+    this->ResetVerifyAttempt();
 }
 
 void AmountManager::Verify(bool ok)
 {
     if(this->verify)
     {
-        MPI_Allreduce(MPI_IN_PLACE, &ok, 1, MPI_CXX_BOOL, MPI_LAND, this->comm);
-        if(ok)
+        const bool currentLocalOk = ok && !this->HasPending() && (this->rank != 0 || this->globalNum == 0);
+        if(!this->localVerifyRecorded)
         {
-            this->done = true;
+            this->localVerifyOk = currentLocalOk;
+            this->localVerifyRecorded = true;
         }
-        this->verify = false;
-        MPI_Irecv(MPI_BOTTOM, 0, MPI_INT, this->parent, VERIFY_TAG, this->comm, &this->parentVerifyRequest);
+        else
+        {
+            this->localVerifyOk = this->localVerifyOk && currentLocalOk;
+        }
+
+        if(!this->ChildVerifyResultsReady())
+        {
+            return;
+        }
+
+        bool subtreeOk = this->localVerifyOk;
+        if(this->child1 < this->size)
+        {
+            subtreeOk = subtreeOk && (this->childVerifyResult1 != 0);
+        }
+        if(this->child2 < this->size)
+        {
+            subtreeOk = subtreeOk && (this->childVerifyResult2 != 0);
+        }
+        this->FinishVerifyAttempt(subtreeOk);
     }
 }
 
@@ -208,6 +318,18 @@ AmountManager::~AmountManager()
     if(this->parentVerifyRequest != MPI_REQUEST_NULL)
     {
         MPI_Cancel(&this->parentVerifyRequest);
+    }
+    if(this->childVerifyRequest1 != MPI_REQUEST_NULL)
+    {
+        MPI_Cancel(&this->childVerifyRequest1);
+    }
+    if(this->childVerifyRequest2 != MPI_REQUEST_NULL)
+    {
+        MPI_Cancel(&this->childVerifyRequest2);
+    }
+    if(this->outgoingRequest != MPI_REQUEST_NULL)
+    {
+        MPI_Wait(&this->outgoingRequest, MPI_STATUS_IGNORE);
     }
 }
 
