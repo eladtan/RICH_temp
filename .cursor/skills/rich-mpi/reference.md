@@ -77,41 +77,6 @@ Uses `GetDuplicatedProcs()` and delegates to the correspondent-based
 
 **File:** `mpi/serialize/mpi_commands.hpp`
 
-### `MPI_Iexchange_all_to_all`
-
-```cpp
-template<typename T, template<typename...> class Container, typename... Ts>
-std::vector<std::vector<T>> MPI_Iexchange_all_to_all(
-    std::vector<Container<T, Ts...>> &data,
-    const MPI_Comm &comm);
-```
-
-Two code paths depending on `MPI_has_complex_dtype<T>::value`:
-- **Native dtype path** (`true`): `MPI_Alltoall` for counts, then
-  `MPI_Isend`/`MPI_Recv` using the registered `MPI_Datatype` directly.
-  Clears each `data[i]` after send. Ends with barrier.
-- **Serializer path** (`false`): `Serializer::insert_all` per rank,
-  `MPI_Isend` (`MPI_BYTE`). `MPI_Probe(MPI_ANY_SOURCE)` + `MPI_Recv`
-  for each rank. `MPI_Waitall` + `MPI_Barrier`.
-- Tag: `MPI_EXCHANGE_ALLTOALL_TAG = 1039`.
-
-### `MPI_Iexchange_all_to_all_serializers`
-
-```cpp
-template<typename T>
-std::vector<std::vector<T>> MPI_Iexchange_all_to_all_serializers(
-    std::vector<Serializer> &senders,
-    const MPI_Comm &comm);
-```
-
-Accepts pre-packed `Serializer` buffers. For native dtype types, extracts
-vectors first then uses the native send path.
-
-### `MPI_Iexchange_by_ranks`
-
-Same as `MPI_Iexchange_all_to_all` but only with a subset of ranks
-(`correspondents` parameter).
-
 ### `MPI_Exchange_all_to_all`
 
 ```cpp
@@ -124,7 +89,7 @@ std::vector<std::vector<T>> MPI_Exchange_all_to_all(
 - Single `Serializer` for all outgoing data.
 - `MPI_Alltoall` for byte counts, `MPI_Alltoallv` for payload (`MPI_BYTE`).
 - More efficient than `Iexchange` for true all-to-all patterns.
-- No final barrier (unlike `MPI_Iexchange_all_to_all`).
+- No final barrier (unlike `MPI_Exchange_by_ranks`).
 
 ### `MPI_Exchange_by_ownership_by_ranks` / `MPI_Exchange_by_ownership`
 
@@ -177,9 +142,8 @@ std::vector<std::vector<T>> MPI_Ask_data(
 
 `MPI_has_complex_dtype<T>` (default `std::false_type`) can be specialized to
 `std::true_type` for types that register a custom `MPI_Datatype` via
-`MPI_Type_create_struct`. When specialized, `MPI_Iexchange_all_to_all` and
-`MPI_Iexchange_all_to_all_serializers` use the native datatype instead of
-`Serializer` + `MPI_BYTE`.
+`MPI_Type_create_struct`. When specialized, `MPI_Exchange_by_ranks` uses
+the native datatype instead of `Serializer` + `MPI_BYTE`.
 
 Currently `Particle3D` is the only type with a native dtype specialization.
 
@@ -316,7 +280,7 @@ Delaunay, then calls `BringGhostPointsToBuild(MPI_COMM_WORLD)`, then
 | Gravity | `QuadrupoleGravity3D.cpp` | `MPI_Allreduce MPI_SUM` / `MPI_Barrier` | Multipole moments |
 | Gravity | `MonopoleSelfGravity3D.cpp` | `MPI_Allreduce MPI_SUM` / `MPI_Barrier` | Monopole sums |
 | Gravity (tree) | `DistributedGravityCalculator.hpp` | `MPI_All_cast_by_ranks` + `MPI_Exchange_all_to_all` | Tree data exchange |
-| MC transport | `Voronoi3DMovement.cpp` | `MPI_Iexchange_all_to_all_serializers` | Particle redistribution |
+| MC transport | `Voronoi3DMovement.cpp` | `MPI_Exchange_all_to_all_serializers` | Particle redistribution |
 | MC transport | `Voronoi3DMovement.cpp` | `MPI_Reduce MPI_SUM` / `MPI_Barrier` | Diagnostics |
 | MC manager (two-sided) | `BuffersManager` | `MPI_Isend` / `MPI_Irecv` | Async particle transfer |
 | MC manager (RMA) | `MonteCarloManager` / `RMAFactory` | `MPI_Win_create` / `MPI_Put` / `MPI_Win_flush` | One-sided particle transfer |

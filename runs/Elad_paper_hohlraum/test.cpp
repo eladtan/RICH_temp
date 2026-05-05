@@ -1,4 +1,5 @@
 #include <mpi.h>
+#include <unistd.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -25,8 +26,6 @@
 #include "3D/output/MC/read_write_particles.hpp"
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 #include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
-#include "utils/hdf5/HDF5Writer.hpp"
-#include "utils/hdf5/HDF5Reader.hpp"
 
 #include "3D/radiation/RadiationIMC.hpp"
 #include "monte/population/Comb.hpp"
@@ -74,24 +73,35 @@ public:
 
     std::vector<double> CalculateCost(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells) const override
     {
-        // const std::vector<double> &factorFlecks = physics->getFactorFleck();
-        // const std::vector<double> &planckOpacities = physics->getPlanckOpacities();
         size_t N = tess.GetPointNo();
-        // weights.resize(N, 1.0);
-        // double weight = static_cast<double>(manager.GetStepCounter()) / N;
-        // for(size_t j = 0; j < N; j++)
-        // {
-        //     // weights[j] = std::max(1., planckOpacities[j] * tess.GetWidth(j) * (1 - factorFlecks[j]));
-        //     weights[j] = weight;
-        // }
-        std::vector<double> weights(N, 0.01);
+        std::vector<double> weights(N, 50);
         const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
-        assert(counters.size() == N);
-
-        for(size_t j = 0; j < N; j++)
+        const std::vector<size_t> &particleCounts = manager->GetBeginningParticleCount();
+        const bool useCounters = counters.size() == N;
+        const bool useParticleCounts = particleCounts.size() == N;
+        if(!useCounters || !useParticleCounts)
         {
-            weights[j] = static_cast<double>(counters[j]);
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            if(rank == 0)
+                std::cout << "WARNING: CalculateCost size mismatch: N=" << N
+                          << " counters=" << counters.size()
+                          << " particleCounts=" << particleCounts.size() << std::endl;
         }
+
+        constexpr double particleWeight = 10.0;
+        for(size_t i = 0; i < N; i++)
+        {
+            if(useParticleCounts)
+            {
+                weights[i] += particleWeight * static_cast<double>(particleCounts[i]);
+            }
+            if(useCounters)
+            {
+                weights[i] += counters[i];
+            }
+        }
+
         return weights;
     }
 
@@ -114,7 +124,7 @@ static vector<Vector3D> RandCylindar(std::size_t PointNum, double Rin, double Ro
         ran[0] = dist(generator);
         ran[1] = dist(generator);
         ran[2] = dist(generator);
-        double r = ran[0] * (Rout - Rin) + Rin;
+        double r = std::sqrt(ran[0] * (Rout * Rout - Rin * Rin) + Rin * Rin);
         point.z = r * std::sin(2 * M_PI * ran[1]);
         point.y = r * std::cos(2 * M_PI * ran[1]);
         point.x = ran[2] * (Xmax - Xmin) + Xmin;
@@ -122,7 +132,7 @@ static vector<Vector3D> RandCylindar(std::size_t PointNum, double Rin, double Ro
     }
     return res;
 }
-    
+
 bool isMaterial(double x, double r)
 {
     // Left wall
@@ -140,7 +150,7 @@ bool isMaterial(double x, double r)
     return false;
 }
 
-std::vector<ComputationalCell3D> Initialize(Voronoi3D &tess, const EquationOfState &eos, double delta, double T_init, bool mode2d)
+std::vector<ComputationalCell3D> Initialize(Voronoi3D &tess, const EquationOfState &eos, size_t N_base, double T_init, bool mode2d)
 {
     // --- Fresh start: generate ring mesh ---
     auto [ll, ur] = tess.GetBoxCoordinates();
@@ -150,22 +160,23 @@ std::vector<ComputationalCell3D> Initialize(Voronoi3D &tess, const EquationOfSta
     MPI_Comm_size(MPI_COMM_WORLD, &ws);
 
     double domainVol = (ur.x - ll.x) * (ur.y - ll.y) * (ur.z - ll.z);
-    size_t N_base = static_cast<size_t>(domainVol / (delta * delta * delta));
 
     std::vector<Vector3D> points;
     if(rank == 0)
     {
         points = RandRectangular(N_base, ll, ur);
-
+        
         if(!mode2d)
         {
-            double dx = 0.01;
+            double dx = 0.02;
             size_t gridFactor = 4;
             size_t Np = N_base * gridFactor;
 
             auto pts = RandCylindar(Np, 0.45, 0.45 + dx, 0.10, 0.15);
             points.insert(points.end(), pts.begin(), pts.end());
             pts = RandCylindar(Np, 0.45, 0.45 + dx, 0.55, 0.95);
+            points.insert(points.end(), pts.begin(), pts.end());
+            pts = RandCylindar(2 * Np, 0, 0.45, 0.55, 0.95);
             points.insert(points.end(), pts.begin(), pts.end());
 
             pts = RandCylindar(Np, 0.60, 0.60 + dx, 0.10, 1.40);
@@ -174,27 +185,27 @@ std::vector<ComputationalCell3D> Initialize(Voronoi3D &tess, const EquationOfSta
             pts = RandCylindar(Np, 0.65, 0.65 + dx, 0.10, 1.40);
             points.insert(points.end(), pts.begin(), pts.end());
 
-            pts = RandCylindar(Np, 0, 0.65, 0.10, 0.10 + dx);
+            pts = RandCylindar(Np, 0, 0.65, 0.10-dx/2, 0.10 + dx);
             points.insert(points.end(), pts.begin(), pts.end());
-            pts = RandCylindar(Np, 0, 0.45, 0.15, 0.15 + dx);
+            pts = RandCylindar(Np, 0, 0.45, 0.15-dx, 0.15 + dx/2);
             points.insert(points.end(), pts.begin(), pts.end());
-            pts = RandCylindar(Np, 0, 0.45, 0.55, 0.55 + dx);
+            pts = RandCylindar(Np, 0, 0.45, 0.55-dx, 0.55 + dx/2);
             points.insert(points.end(), pts.begin(), pts.end());
-            pts = RandCylindar(Np, 0, 0.45, 0.95, 0.95 + dx);
+            pts = RandCylindar(Np, 0, 0.45, 0.95-dx/2, 0.95 + dx);
             points.insert(points.end(), pts.begin(), pts.end());
-            pts = RandCylindar(Np, 0, 0.65, 1.35, 1.35 + dx);
+            pts = RandCylindar(Np, 0, 0.65, 1.35-dx/2, 1.35 + dx);
             points.insert(points.end(), pts.begin(), pts.end());
-            pts = RandCylindar(Np, 0, 0.65, 1.40, 1.40 + dx);
+            pts = RandCylindar(Np, 0, 0.65, 1.40-dx/2, 1.40 + dx);
             points.insert(points.end(), pts.begin(), pts.end());
         }
 
         std::cout << "Generated " << points.size() << " points"
-                    << " (N_base=" << N_base << "), delta=" << delta << " cm"
+                    << " (N_base=" << N_base << ")"
                     << std::endl;
         if(static_cast<rank_t>(points.size()) < ws)
         {
             std::cerr << "ERROR: only " << points.size() << " cells for " << ws
-                        << " MPI ranks. Reduce delta." << std::endl;
+                        << " MPI ranks. Reduce N_base." << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
@@ -264,13 +275,13 @@ struct CellData : public Serializable
     bool operator<(const CellData &o) const { return x < o.x; }
 };
 
-void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells, const std::string &filename, double time_ns, double delta, bool mode2d)
+void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells, const std::string &filename, double time_ns, size_t N_base, bool mode2d)
 {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     const double r_line = 0.05;
-    const double r_tol  = delta;
+    const double r_tol  = 0.03;
     size_t nPts = tess.GetPointNo();
     std::vector<CellData> cellData;
     for(size_t i = 0; i < nPts; i++)
@@ -301,7 +312,7 @@ void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> 
 void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells, const std::shared_ptr<MonteCarloRadiationPhysics3D> &physics, const std::string &filename)
 {
     size_t nPts = tess.GetPointNo();
-    std::vector<double> temps(nPts), tKeV(nPts), tr0(nPts), tr1(nPts), erads(nPts);
+    std::vector<double> temps(nPts), tKeV(nPts), tr0(nPts), tr1(nPts), erads(nPts), volumes(nPts);
     for(size_t i = 0; i < nPts; i++)
     {
         temps[i] = cells[i].temperature;
@@ -309,10 +320,17 @@ void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cel
         tr0[i]   = cells[i].tracers[0];
         tr1[i]   = cells[i].tracers[1];
         erads[i] = cells[i].Erad;
+        volumes[i] = tess.GetVolume(i);
     }
     WriteVoronoiVTKOnly(tess, filename,
-                        {temps, tKeV, tr0, tr1, erads, physics->getEradTimeAvg()},
-                        {"Temperature_K", "Temperature_keV", "Material", "Vacuum", "Erad", "Erad_time_avg"});
+                        {temps, tKeV, tr0, tr1, erads, physics->getEradTimeAvg(), volumes},
+                        {"Temperature_K", "Temperature_keV", "Material", "Vacuum", "Erad", "Erad_time_avg", "Volume"});
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    if(rank == 0)
+    {
+        std::cout << "Wrote " << filename << std::endl;
+    }
 }
 
 int main(int argc, char *argv[])
@@ -326,29 +344,58 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ws);
 
+    {
+        char hostname[MPI_MAX_PROCESSOR_NAME];
+        int name_len;
+        MPI_Get_processor_name(hostname, &name_len);
+        std::cerr << "Rank " << rank << "/" << ws
+                  << " on " << hostname
+                  << " pid=" << getpid() << std::endl;
+    }
+
     if(rank == 0 and argc < 2)
     {
         std::cerr << "Usage: " << argv[0]
-                  << " <delta_cm> [new_per_cell] [max_per_cell] [--2d] [--resume <dump_number>]"
+                  << " <N_base> [new_per_cell] [max_per_cell] [--2d] [--p2p] [--ibv] [--mpi-rma]"
+                  << " [--hold-small-idle-flushes]"
+                  << " [--resume <dump_number>]"
                   << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
   try
   {
-    double delta = std::stod(argv[1]);
-    size_t newPhotonsPerCell = 10;
+    size_t N_base = std::stoul(argv[1]);
+    size_t newPhotonsPerCell = 5;
     size_t minPhotonsPerCell = 15;
     bool mode2d = false;
     int resumeDump = -1;
 
     bool resumeAuto = false;
+    bool useP2P = false;
+    bool useIBV = false;
+    bool useMpiRma = false;
+    bool holdSmallIdleFlushes = false;
     std::vector<std::string> positionalArgs;
     for(int a = 2; a < argc; a++)
     {
         std::string arg(argv[a]);
         if(arg == "--2d")
             mode2d = true;
+        else if(arg == "--p2p")
+            useP2P = true;
+        else if(arg == "--ibv")
+            useIBV = true;
+        else if(arg == "--mpi-rma")
+            useMpiRma = true;
+        else if(arg == "--hold-small-idle-flushes")
+            holdSmallIdleFlushes = true;
+        else if(arg == "--idle-flush-holdoff")
+        {
+            if(rank == 0)
+                std::cerr << "--idle-flush-holdoff was removed; the holdoff value is now internal/adaptive." << std::endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
         else if(arg == "--resume")
         {
             if(a + 1 < argc and argv[a + 1][0] != '-')
@@ -370,7 +417,8 @@ int main(int argc, char *argv[])
         minPhotonsPerCell = std::stoul(positionalArgs[1]);
     }
 
-    const std::string outputDir = "/home/maorm/shared/Hohlraum/delta_" + std::to_string(delta) + "/size_" + std::to_string(ws);
+    const std::string hohlraumDir = useP2P ? "Hohlraum_P2P" : "Hohlraum";
+    const std::string outputDir = "/leonardo_work/EUHPC_D35_204/" + hohlraumDir + "/N_base_" + std::to_string(N_base) + "/size_" + std::to_string(ws);
     char prefixBuf[256];
     std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_%d_", argv[1], ws);
     const std::string prefix = outputDir + "/" + prefixBuf;
@@ -385,8 +433,8 @@ int main(int argc, char *argv[])
     const double T_boundary_keV = 1.0;
     const double T_boundary     = T_boundary_keV * units::kev_kelvin;   // Kelvin
     const double T_init         = 300.0;                                 // Kelvin
-    const double dt             = 1e-11;                                 // seconds
-    const double t_final        = 10e-9;                                 // 10 ns
+    const double dt             = 1e-11 / (std::pow(ws / (static_cast<double>(5 * 112)), 0.333333333));                                 // seconds
+    const double t_final        = 1e-9;                                 // 2.5 ns
     const size_t iterations     = static_cast<size_t>(t_final / dt + 0.5);
     constexpr size_t boundaryPhotonsPerCell = 1000;
     constexpr size_t dumpInterval = 25;
@@ -397,7 +445,7 @@ int main(int argc, char *argv[])
     // landing exactly on a boundary face with zero distance to all faces).
     const double Lx = 1.4, Ly = 0.65;
     const double Lz = mode2d ? 1.0 : 0.65;
-    const double pad = 2 * delta;
+    const double pad = 2 * 0.03;
     Vector3D ll(0, -(Ly + pad), mode2d ? 0.0 : -(Lz + pad));
     Vector3D ur(Lx + pad, Ly + pad, mode2d ? 2.0 : (Lz + pad));
 
@@ -429,6 +477,7 @@ int main(int argc, char *argv[])
     Voronoi3D tess(ll, ur);
     std::vector<ComputationalCell3D> initialCells;
     size_t startCycle = 0;
+    
     double simTime = 0;
     size_t dumpCount = 0;
 
@@ -436,7 +485,7 @@ int main(int argc, char *argv[])
 
     if(resumeDump < 0)
     {
-        initialCells = Initialize(tess, eos, delta, T_init, mode2d);
+        initialCells = Initialize(tess, eos, N_base, T_init, mode2d);
     }
 
     // --- Simulation ---
@@ -465,19 +514,36 @@ int main(int argc, char *argv[])
     std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, params);
 
+    size_t comb_factor = 6;
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, minPhotonsPerCell, 4);
+        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, minPhotonsPerCell, comb_factor);
+
+    MonteCarloConfig monteCarloConfig;
+    monteCarloConfig.holdSmallIdleFlushes = holdSmallIdleFlushes;
+    if(rank == 0)
+    {
+        std::cout << "Hohlraum MonteCarloConfig: holdSmallIdleFlushes=" << monteCarloConfig.holdSmallIdleFlushes
+                  << ", smallIdleFlushHoldoffCycles=" << monteCarloConfig.GetSmallIdleFlushHoldoffCycles()
+                  << std::endl;
+    }
 
     std::vector<Particle3D> initialParticles;
     auto mcStep = std::make_shared<RadiationMCStep>(
         tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, 0, withHydro
         #ifdef RICH_MPI
-            , RadiationMCStep::ManagerType::AUTO_RDMA
+            , useMpiRma ? RadiationMCStep::ManagerType::MPI_RMA
+                        : (useP2P ? RadiationMCStep::ManagerType::P2P
+                                  : (useIBV ? RadiationMCStep::ManagerType::IBV_RDMA
+                                            : RadiationMCStep::ManagerType::AUTO_RDMA))
+            , nullptr
+            , monteCarloConfig
         #endif
     );
     sim.addPhysics(mcStep);
     #ifdef RICH_MPI
         mcStep->setCost(std::make_shared<HohlraumCostCalculator>(mcStep->getManager(), physics));
+        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
+        sim.addMigrationBuffer(mcStep->getManager()->GetBeginningParticleCount());
     #endif // RICH_MPI
 
     sim.SetTimeStep(dt);
@@ -510,7 +576,7 @@ int main(int argc, char *argv[])
             if(cells[i].tracers[0] > 0.5) nMaterial++;
             else nVacuum++;
         }
-        std::cout << "Hohlraum (" << (mode2d ? "2D" : "3D") << "): delta=" << delta
+        std::cout << "Hohlraum (" << (mode2d ? "2D" : "3D") << "): N_base=" << N_base
                   << " cm, cells=" << N
                   << ", material=" << nMaterial
                   << ", vacuum=" << nVacuum
@@ -524,17 +590,16 @@ int main(int argc, char *argv[])
                   << std::endl;
     }
 
-    WriteSimulation(sim, prefix + "latest_sim.h5");
+    // WriteSimulation(sim, prefix + "latest_sim.h5");
 
-    // if(resumeDump < 0)
-    // {
-    //     WriteVTK(tess, cells, physics, prefix + "init.vtu");
-    // }
+    if(resumeDump < 0)
+    {
+        // WriteVTK(tess, cells, physics, prefix + "init.vtu");
+    }
     
     // --- Main time-stepping loop ---
     auto startWall = std::chrono::high_resolution_clock::now();
     double computeTotal = 0;
-    size_t cycle = startCycle;
     size_t stepsSinceLastDump = 0;
 
     while(simTime < t_final)
@@ -545,7 +610,6 @@ int main(int argc, char *argv[])
         double computeSec = std::chrono::duration<double>(stepEnd - stepStart).count();
         computeTotal += computeSec;
 
-        cycle++;
         stepsSinceLastDump++;
         simTime = sim.GetTime();
         sim.SetTimeStep(dt);
@@ -560,7 +624,7 @@ int main(int argc, char *argv[])
             int etaSec = static_cast<int>(eta) % 60;
             int totalMin = static_cast<int>(computeTotal) / 60;
             int totalSec = static_cast<int>(computeTotal) % 60;
-            std::cout << "Cycle " << cycle
+            std::cout << "Cycle " << sim.GetCycle()
                       << "  t=" << simTime * 1e9 << " ns"
                       << " (" << pct << "%)"
                       << "  step=" << computeSec << "s"
@@ -577,7 +641,7 @@ int main(int argc, char *argv[])
             std::snprintf(buf, sizeof(buf), "%s%05zu.pvtu", prefix.c_str(), dumpCount);
             // WriteVTK(tess, cells, physics, buf);
 
-            WriteSimulation(sim, prefix + "latest_sim.h5");
+            // WriteSimulation(sim, prefix + "latest_sim.h5");
             if(rank == 0)
             {
                 std::cout << "Wrote simulation: " << prefix << "latest_sim.h5" << std::endl;
@@ -585,7 +649,7 @@ int main(int argc, char *argv[])
 
             double t_ns = simTime * 1e9;
             std::snprintf(buf, sizeof(buf), "%s%05zu.txt", prefix.c_str(), dumpCount);
-            WriteProfile(tess, cells, buf, t_ns, delta, mode2d);
+            WriteProfile(tess, cells, buf, t_ns, N_base, mode2d);
 
             dumpCount++;
         }
@@ -599,9 +663,9 @@ int main(int argc, char *argv[])
                   << ", I/O: " << wallSec - computeTotal << "s)" << std::endl;
 
     // --- Final output ---
-    WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, delta, mode2d);
-    WriteVTK(tess, cells, physics, prefix + "final.vtu");
-    WriteSimulation(sim, prefix + "latest_sim.h5");
+    WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base, mode2d);
+    // WriteVTK(tess, cells, physics, prefix + "final.vtu");
+    // WriteSimulation(sim, prefix + "latest_sim.h5");
   }
   catch(const UniversalError &e)
   {

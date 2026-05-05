@@ -21,7 +21,8 @@ def parse_args():
                         help="Plot only the max selected cycle plus an ideal strong-scaling reference line")
     parser.add_argument("--sum", type=int, nargs="?", const=0, default=None,
                         help="Sum cycle times and plot with strong scaling. "
-                             "No value: sum all cycles. --sum=X: sum only the last X steps.")
+                             "No value: sum all cycles (only runs reaching max). "
+                             "--sum=X: sum the last X common cycles (all runs).")
     parser.add_argument("--no-rebalances", action="store_true",
                         help="With --sum, exclude rebalance cycles (11, 21, ..., 101, ..., 1001, ...)")
     parser.add_argument("--fit-A", action="store_true",
@@ -82,29 +83,23 @@ def find_latest_files(directory, include_p2p=False):
 def parse_cycle_times(filepath, loop_times=False):
     """Parse cycle lines and return dict mapping cycle_number -> time_seconds.
     If loop_times is True, extract MC loop elapsed times from 'Elapsed: X seconds' lines
-    instead of MC physics times from 'Physics radiation-mc time: X' lines."""
+    instead of step times from the progress line 'Cycle N ... step=Xs'."""
     if loop_times:
         return _parse_loop_times(filepath)
-    cycle_at_re = re.compile(r"^Cycle\s+(\d+)\s+at\s+time\s+")
-    physics_re = re.compile(r"^Physics radiation-mc time:\s+([\d.]+)")
+    progress_re = re.compile(r"^Cycle\s+(\d+)\s+t=.*\bstep=([\d.]+)s")
     cycle_times = {}
-    current_cycle = None
     with open(filepath, "r") as f:
         for line in f:
-            m = cycle_at_re.match(line)
+            m = progress_re.match(line)
             if m:
-                current_cycle = int(m.group(1))
-                continue
-            m = physics_re.match(line)
-            if m and current_cycle is not None:
-                cycle_times[current_cycle] = float(m.group(1))
-                current_cycle = None
+                cycle_times[int(m.group(1))] = float(m.group(2))
     return cycle_times
 
 
 def _parse_loop_times(filepath):
     """Parse MC loop elapsed times, returning dict mapping cycle_number -> elapsed_seconds.
-    Associates each 'Elapsed: X seconds' line with the most recent 'Cycle N at time' line."""
+    The 'Elapsed: X seconds' line after 'Cycle N at time' belongs to the step reported
+    on the 'Cycle N+1' progress line, so we attribute it to cycle N+1."""
     cycle_at_re = re.compile(r"^Cycle\s+(\d+)\s+at\s+time\s+")
     elapsed_re = re.compile(r"^Elapsed:\s+([\d.]+)\s+seconds")
     cycle_times = {}
@@ -117,17 +112,17 @@ def _parse_loop_times(filepath):
                 continue
             m = elapsed_re.match(line)
             if m and current_cycle is not None:
-                cycle_times[current_cycle] = float(m.group(1))
+                cycle_times[current_cycle + 1] = float(m.group(1))
     return cycle_times
 
 
 def pick_default_cycles(max_common_cycle, num_curves=5):
     """Pick num_curves evenly spaced cycles up to max_common_cycle,
-    avoiding cycles divisible by 10 (decrease by 1 in that case)."""
+    avoiding rebalance cycles (c%10==1, c>1; decrease by 1 in that case)."""
     cycles = []
     for i in range(1, num_curves + 1):
         c = round(max_common_cycle * i / num_curves)
-        if c % 10 == 0:
+        if c > 1 and c % 10 == 1:
             c -= 1
         if c < 1:
             c = 1
@@ -144,8 +139,8 @@ def fit_strong_scaling_A(nprocs_arr, times_arr):
 
 
 def adjust_cycle(c):
-    """If cycle is divisible by 10, decrease by 1."""
-    if c % 10 == 0:
+    """If cycle is a rebalance cycle (c%10==1, c>1), decrease by 1."""
+    if c > 1 and c % 10 == 1:
         c -= 1
     return max(c, 1)
 
@@ -233,44 +228,45 @@ def main():
     nprocs_list = sorted(all_cycle_data.keys())
 
     if args.sum is not None:
-        overall_max = max(max_cycles_per_rank.values())
-        qualifying = sorted(
-            n for n, mc in max_cycles_per_rank.items() if mc == overall_max
-        )
-        if not qualifying:
-            print("No processors reached the overall max cycle.", file=sys.stderr)
-            sys.exit(1)
-
         last_n = args.sum
         if last_n > 0:
-            first_cycle = overall_max - last_n + 1
+            sum_max = max_common_cycle
+            qualifying = sorted(all_cycle_data.keys())
+            first_cycle = sum_max - last_n + 1
             if first_cycle < 1:
                 first_cycle = 1
-                last_n = overall_max
+                last_n = sum_max
         else:
+            sum_max = max(max_cycles_per_rank.values())
+            qualifying = sorted(
+                n for n, mc in max_cycles_per_rank.items() if mc == sum_max
+            )
+            if not qualifying:
+                print("No processors reached the overall max cycle.", file=sys.stderr)
+                sys.exit(1)
             first_cycle = 1
-            last_n = overall_max
+            last_n = sum_max
 
-        is_rebalance = lambda c: c > 1 and (c - 1) % 10 == 0
+        is_rebalance = lambda c: c > 1 and c % 10 == 1
 
         skip_label = ""
         if args.no_rebalances:
             skip_label = ", excl. rebalances"
 
-        print(f"Summing cycles {first_cycle}..{overall_max}{skip_label}")
-        print(f"Processors that reached cycle {overall_max}: {qualifying}")
+        print(f"Summing cycles {first_cycle}..{sum_max}{skip_label}")
+        print(f"Qualifying processors: {qualifying}")
         print()
 
         sum_times = []
         for nprocs in qualifying:
             ct = all_cycle_data[nprocs]
             total = sum(
-                ct[c] for c in range(first_cycle, overall_max + 1)
+                ct[c] for c in range(first_cycle, sum_max + 1)
                 if c in ct and not (args.no_rebalances and is_rebalance(c))
             )
             sum_times.append(total)
 
-        range_label = f"cycles {first_cycle}\u2013{overall_max}"
+        range_label = f"cycles {first_cycle}\u2013{sum_max}"
         rdma_label = "RDMA" if p2p_cycle_data else None
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.plot(qualifying, sum_times, "o-",
@@ -291,14 +287,14 @@ def main():
         if p2p_cycle_data:
             p2p_max_cycles = {n: max(ct.keys()) for n, ct in p2p_cycle_data.items()}
             p2p_qualifying = sorted(
-                n for n, mc in p2p_max_cycles.items() if mc >= overall_max
+                n for n, mc in p2p_max_cycles.items() if mc >= sum_max
             )
             if p2p_qualifying:
                 p2p_sum = []
                 for nprocs in p2p_qualifying:
                     ct = p2p_cycle_data[nprocs]
                     total = sum(
-                        ct[c] for c in range(first_cycle, overall_max + 1)
+                        ct[c] for c in range(first_cycle, sum_max + 1)
                         if c in ct and not (args.no_rebalances and is_rebalance(c))
                     )
                     p2p_sum.append(total)
@@ -314,13 +310,18 @@ def main():
                         label=f"P2P strong scaling {fit_label} (B={B:.0f})")
 
         def print_scaling_diff(label, nprocs_list, times_list, A_val):
+            n_ref = nprocs_list[0]
+            t_ref = times_list[0]
             print(f"\n{label} — deviation from ideal scaling (A={A_val:.0f}):")
-            print(f"  {'Procs':>8}  {'Actual':>10}  {'Ideal':>10}  {'Diff':>10}  {'Diff%':>8}")
+            print(f"  {'Procs':>8}  {'Actual':>10}  {'Ideal':>10}  {'Diff':>10}  {'Diff%':>8}  {'Speedup':>8}  {'Expected':>8}  {'Effic%':>7}")
             for n, t in zip(nprocs_list, times_list):
                 ideal = A_val / n
                 diff = t - ideal
                 pct = diff / ideal * 100
-                print(f"  {n:>8}  {t:>10.3f}  {ideal:>10.3f}  {diff:>+10.3f}  {pct:>+7.1f}%")
+                speedup = t_ref / t
+                expected = n / n_ref
+                efficiency = speedup / expected * 100
+                print(f"  {n:>8}  {t:>10.3f}  {ideal:>10.3f}  {diff:>+10.3f}  {pct:>+7.1f}%  {speedup:>8.2f}  {expected:>8.2f}  {efficiency:>6.1f}%")
 
         if args.optimal:
             lbl = "RDMA" if p2p_cycle_data else "Strong scaling"
@@ -537,13 +538,18 @@ def main():
                         label=f"P2P strong scaling {fit_label} (B={B:.0f})")
 
         def print_scaling_diff(label, nprocs_list, times_list, A_val):
+            n_ref = nprocs_list[0]
+            t_ref = times_list[0]
             print(f"\n{label} — deviation from ideal scaling (A={A_val:.0f}):")
-            print(f"  {'Procs':>8}  {'Actual':>10}  {'Ideal':>10}  {'Diff':>10}  {'Diff%':>8}")
+            print(f"  {'Procs':>8}  {'Actual':>10}  {'Ideal':>10}  {'Diff':>10}  {'Diff%':>8}  {'Speedup':>8}  {'Expected':>8}  {'Effic%':>7}")
             for n, t in zip(nprocs_list, times_list):
                 ideal = A_val / n
                 diff = t - ideal
                 pct = diff / ideal * 100
-                print(f"  {n:>8}  {t:>10.3f}  {ideal:>10.3f}  {diff:>+10.3f}  {pct:>+7.1f}%")
+                speedup = t_ref / t
+                expected = n / n_ref
+                efficiency = speedup / expected * 100
+                print(f"  {n:>8}  {t:>10.3f}  {ideal:>10.3f}  {diff:>+10.3f}  {pct:>+7.1f}%  {speedup:>8.2f}  {expected:>8.2f}  {efficiency:>6.1f}%")
 
         if opt_nprocs:
             lbl = "RDMA" if p2p_cycle_data else "Strong scaling"

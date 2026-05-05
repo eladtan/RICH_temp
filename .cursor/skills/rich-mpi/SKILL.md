@@ -29,8 +29,7 @@ Data exchange between ranks is handled by templated free functions (not a
 wrapper class). The three main paths are:
 
 - **`Serializer`-based** (byte buffers, `MPI_BYTE`): `MPI_exchange_data_indexed`,
-  `MPI_Iexchange_all_to_all`, `MPI_Exchange_all_to_all`
-  (in `source/mpi/serialize/mpi_commands.hpp`).
+  `MPI_Exchange_all_to_all` (in `source/mpi/serialize/mpi_commands.hpp`).
 - **Native MPI datatype fast path**: types that specialize
   `MPI_has_complex_dtype<T>` (e.g. `Particle3D` via `MPI_Particle3D_dtype.hpp`)
   bypass the `Serializer` and use `MPI_Type_create_struct` +
@@ -70,7 +69,7 @@ wrapper class). The three main paths are:
    position, radius, CM, weight, `participating` flag, and `indexInAllPoints`)
    between ranks during rebalancing. It delegates to `PointsManager::pointsExchange`,
    which calls `dataExchange` from `utils/exchange/exchange.hpp` (ultimately
-   uses `MPI_Iexchange_all_to_all`).
+   uses `MPI_Exchange_all_to_all`).
 
 **Note:** `ParMETISPointsManager` exists in the tree but is entirely commented
 out. Only the Hilbert path is active.
@@ -247,7 +246,7 @@ class Serializable {
 
 `MPI_has_complex_dtype<T>` (default `false_type`) can be specialized to
 `true_type` for types that define a custom `MPI_Datatype`. When specialized,
-`MPI_Iexchange_all_to_all` skips the `Serializer` and sends/receives using
+`MPI_Exchange_by_ranks` skips the `Serializer` and sends/receives using
 the native MPI datatype directly. Example: `MPI_Particle3D_dtype.hpp`
 registers `Particle3D` with `MPI_Type_create_struct`.
 
@@ -334,7 +333,7 @@ Both inherit from the abstract `MonteCarloManager3D` interface.
   map to get `(new_rank, new_cell_index)`.
 - Particles staying local go to `selfParticles`.
 - Others are bucketed into `particlesToProcessors[rank]`.
-- `MPI_Iexchange_all_to_all_serializers` ships them (Serializer-based).
+- `MPI_Exchange_all_to_all_serializers` ships them (Serializer-based).
 - `MPI_Reduce` on rank 0 for sent/received counters.
 
 ### Runtime particle exchange
