@@ -4,7 +4,7 @@
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 #include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
 #include "misc/universal_error.hpp"
-#include "mpi/mpi_commands.hpp"
+#include "mpi/serialize/mpi_commands.hpp"
 #include <bits/chrono.h>
 
 #define RADIUSES_FACTOR 2
@@ -119,7 +119,7 @@ void TransferParticlesWithTranslationMap(const Tessellation3D &tess, std::vector
     std::vector<std::vector<Particle3D>> allNewParticles;
     {
         START_TIMER_PREEMPTIVE("Particles Exchange");
-        allNewParticles = MPI_Iexchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
+        allNewParticles = MPI_Exchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
     }
 
     size_t receivedCounter = 0;
@@ -290,7 +290,7 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
             }
         }
 
-        std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all(sendValues, MPI_COMM_WORLD);
+        std::vector<std::vector<Particle3D>> receiveValues = MPI_Exchange_all_to_all_sparse(sendValues, MPI_COMM_WORLD);
         assert(receiveValues.size() == size);
 
         if(octTree.getSize() > 0)
@@ -319,7 +319,7 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
             }
         }
 
-        std::vector<std::vector<size_t>> acknowledgements = MPI_Iexchange_all_to_all(acknowledgementValues, MPI_COMM_WORLD);
+        std::vector<std::vector<size_t>> acknowledgements = MPI_Exchange_all_to_all_sparse(acknowledgementValues, MPI_COMM_WORLD);
         assert(acknowledgements.size() == size);
 
         std::vector<size_t> toErase;
@@ -390,7 +390,7 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
     MPI_Barrier(MPI_COMM_WORLD);
     
     start = std::chrono::high_resolution_clock::now();
-    std::vector<std::vector<Particle3D>> receiveValues = MPI_Iexchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
+    std::vector<std::vector<Particle3D>> receiveValues = MPI_Exchange_all_to_all_serializers<Particle3D>(senders, MPI_COMM_WORLD);
     end = std::chrono::high_resolution_clock::now();
     double timeInExchange = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
     // std::cout << "[First movements] Rank " << rank << ", time in exchange: " << timeInExchange << std::endl;

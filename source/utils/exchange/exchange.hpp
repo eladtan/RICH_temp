@@ -132,7 +132,7 @@ ExchangeAnswer<T> dataExchange(const std::vector<T> &data, const ExchangeDetermi
     }
     
     
-    std::vector<std::vector<T>> incomingData = MPI_Iexchange_all_to_all(dataByProcesses, comm);
+    std::vector<std::vector<T>> incomingData = MPI_Exchange_all_to_all(dataByProcesses, comm);
     
     // ensure symmetry:
     for(rank_t _rank = 0; _rank < size; _rank++)

@@ -912,7 +912,22 @@ std::tuple<std::vector<Vector3D>, std::vector<std::vector<size_t>>, std::vector<
         }
     }
 
-    std::vector<std::vector<Vector3D>> recvPoints = MPI_Iexchange_all_to_all(sentPoints, comm);
+    bool hasAnythingToSend = false;
+    for(int _rank = 0; _rank < size && !hasAnythingToSend; _rank++)
+        hasAnythingToSend = !sentPoints[_rank].empty();
+
+    int globalHasData = 0;
+    int localHasData = hasAnythingToSend ? 1 : 0;
+    MPI_Allreduce(&localHasData, &globalHasData, 1, MPI_INT, MPI_MAX, comm);
+
+    if(globalHasData == 0)
+    {
+        return std::tuple(std::vector<Vector3D>{},
+                          sentPointsIndices,
+                          std::vector<std::vector<size_t>>(size));
+    }
+
+    std::vector<std::vector<Vector3D>> recvPoints = MPI_Exchange_all_to_all_sparse(sentPoints, comm);
 
     std::vector<Vector3D> ghostPoints;
     std::vector<std::vector<size_t>> recvPointsIndices(size);
@@ -1509,6 +1524,7 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
     }
 
     START_TIMER_PREEMPTIVE("Bringing ghosts");
+
     this->BringGhostPointsToBuild(MPI_COMM_WORLD);
 
     START_TIMER_PREEMPTIVE("Building voronoi");
@@ -1566,7 +1582,7 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostInfo(const
         }
     }
 
-    std::vector<std::vector<std::pair<rank_t, size_t>>> received = MPI_Iexchange_all_to_all(toSend, MPI_COMM_WORLD);
+    std::vector<std::vector<std::pair<rank_t, size_t>>> received = MPI_Exchange_sparse_by_rank(toSend, MPI_COMM_WORLD);
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghostsInfo;
     for(size_t i = 0; i < duplicatedProcs.size(); i++)
     {
@@ -1660,9 +1676,19 @@ void Voronoi3D::MockMesh(void)
     }
     
     // now find what ghosts should be sent
-    std::vector<std::vector<boost::container::flat_set<size_t>>> askToSend(size, std::vector<boost::container::flat_set<size_t>>(size)); // [sender][receiver][points...]
+    using GhostAsk = std::pair<rank_t, size_t>; // receiver rank, point index on sender
+    std::vector<std::vector<GhostAsk>> askToSend(size); // [sender][(receiver, point)...]
     std::vector<std::vector<Vector3D>> mirrorsToSend(size);
     std::vector<Vector3D> allMirrors;
+
+    auto addAskToSend = [&](rank_t sender, rank_t receiver, size_t pointIndex)
+    {
+        if(sender == receiver)
+        {
+            return;
+        }
+        askToSend[sender].emplace_back(receiver, pointIndex);
+    };
 
     size_t previousN = this->Norg_;
     for(size_t i = 0; i < previousN; i++)
@@ -1677,7 +1703,7 @@ void Voronoi3D::MockMesh(void)
             {
                 // original point and neighbor are both local
                 const auto &[neighborNewOwner, neighborNewIndex] = whereNow.at(neighbor);
-                askToSend[neighborNewOwner][newOwner].insert(neighborNewIndex);
+                addAskToSend(neighborNewOwner, newOwner, neighborNewIndex);
             }
             else
             {
@@ -1688,7 +1714,7 @@ void Voronoi3D::MockMesh(void)
                 {
                     // neighbor is a ghost
                     const auto &[neighborNewOwner, neighborNewIndex] = it->second;
-                    askToSend[neighborNewOwner][newOwner].insert(neighborNewIndex);
+                    addAskToSend(neighborNewOwner, newOwner, neighborNewIndex);
                 }
                 else
                 {
@@ -1735,12 +1761,46 @@ void Voronoi3D::MockMesh(void)
     this->tetra_centers_.shrink_to_fit();
     this->bigtet_ = SetPointTetras();
 
-    this->UpdatePointsTree(new_points);
-    this->UpdateRadiuses(new_points);
-    this->UpdateRangeFinder();
+#ifdef TIMING
+    auto _prof = [&](const char *label, double localTime)
+    {
+        struct { double val; int rank; } localIn{localTime, rank}, globalMax;
+        MPI_Allreduce(&localIn, &globalMax, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+        double globalSum = 0;
+        MPI_Allreduce(&localTime, &globalSum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        if(rank == 0)
+            std::cout << label << ": max=" << globalMax.val << "s (rank " << globalMax.rank
+                      << "), avg=" << globalSum / size << "s" << std::endl;
+    };
+    auto _t0 = std::chrono::high_resolution_clock::now();
+    auto _t1 = _t0;
+#endif
 
+    this->UpdatePointsTree(new_points);
+
+#ifdef TIMING
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
+    this->UpdateRadiuses(new_points);
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("UpdateRadiuses", std::chrono::duration<double>(_t1 - _t0).count());
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
+    this->UpdateRangeFinder();
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("UpdateRangeFinder", std::chrono::duration<double>(_t1 - _t0).count());
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
     size_t countMirrors = 0;
-    for(const std::vector<Vector3D> &incomingMirrors : MPI_Iexchange_all_to_all(mirrorsToSend, MPI_COMM_WORLD))
+    auto _mirrorsResult = MPI_Exchange_sparse_by_rank(mirrorsToSend, MPI_COMM_WORLD, MPI_EXCHANGE_SPARSE_TAG + 1);
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("MirrorsExchange", std::chrono::duration<double>(_t1 - _t0).count());
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
+    for(const auto &[_senderRank, incomingMirrors] : _mirrorsResult)
     {
         if(this->Norg_ > 0)
         {
@@ -1748,53 +1808,72 @@ void Voronoi3D::MockMesh(void)
             countMirrors += incomingMirrors.size();
         }
     }
-
-    std::vector<std::vector<std::vector<size_t>>> askToSendVectors(size, std::vector<std::vector<size_t>>(size));
-    for(rank_t _rank = 0; _rank < size; _rank++)
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("BuildExtra(mirrors)", std::chrono::duration<double>(_t1 - _t0).count());
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
+    for(std::vector<GhostAsk> &asksForSender : askToSend)
     {
-        for(rank_t _rank2 = 0; _rank2 < size; _rank2++)
+        if(asksForSender.size() > 1)
         {
-            askToSendVectors[_rank][_rank2] = std::vector<size_t>(askToSend[_rank][_rank2].begin(), askToSend[_rank][_rank2].end());
+            std::sort(asksForSender.begin(), asksForSender.end());
+            asksForSender.erase(std::unique(asksForSender.begin(), asksForSender.end()), asksForSender.end());
         }
     }
-    std::vector<std::vector<std::vector<size_t>>> whatIshouldSend = MPI_Iexchange_all_to_all(askToSendVectors, MPI_COMM_WORLD);
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("BuildAskToSend", std::chrono::duration<double>(_t1 - _t0).count());
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
+    std::vector<std::pair<rank_t, std::vector<GhostAsk>>> whatIshouldSend =
+        MPI_Exchange_sparse_by_rank(askToSend, MPI_COMM_WORLD, MPI_EXCHANGE_SPARSE_TAG + 2);
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("AskToSendExchange", std::chrono::duration<double>(_t1 - _t0).count());
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
     std::vector<std::vector<Vector3D>> whatIShouldSendToRanks(size);
 
     std::vector<rank_t> newDuplicatedProcs;
     std::vector<std::vector<size_t>> newDuplicatedPoints;
-    std::vector<boost::container::flat_set<size_t>> sentToProcessors(size);
+    boost::container::flat_map<rank_t, boost::container::flat_set<size_t>> sentToProcessors;
+    boost::container::flat_map<rank_t, size_t> procsToIndices;
 
-    for(const std::vector<std::vector<size_t>> &sendInfo : whatIshouldSend)
+    for(const auto &[_requestingRank, sendInfo] : whatIshouldSend)
     {
-        for(rank_t _rank = 0; _rank < size; _rank++)
+        for(const auto &[_rank, pointIdx] : sendInfo)
         {
-            if(sendInfo[_rank].empty())
-            {
-                continue;
-            }
             if(_rank == rank)
             {
                 continue;
             }
-            size_t idx = std::distance(newDuplicatedProcs.begin(), std::find(newDuplicatedProcs.begin(), newDuplicatedProcs.end(), _rank));
-            if(idx == newDuplicatedProcs.size())
+            auto it = procsToIndices.find(_rank);
+            size_t idx = newDuplicatedProcs.size();
+            if(it == procsToIndices.end())
             {
                 newDuplicatedProcs.push_back(_rank);
                 newDuplicatedPoints.emplace_back();
+                procsToIndices[_rank] = idx;
+            }
+            else
+            {
+                idx = it->second;
             }
             std::vector<size_t> &newDuplicatedPointsOfRank = newDuplicatedPoints[idx];
 
-            for(size_t pointIdx : sendInfo[_rank])
+            boost::container::flat_set<size_t> &sentToRank = sentToProcessors[_rank];
+            if(sentToRank.insert(pointIdx).second)
             {
-                if(sentToProcessors[_rank].find(pointIdx) == sentToProcessors[_rank].end())
-                {
-                    sentToProcessors[_rank].insert(pointIdx);
-                    whatIShouldSendToRanks[_rank].push_back(new_points[pointIdx]);
-                    newDuplicatedPointsOfRank.push_back(pointIdx);
-                }
+                whatIShouldSendToRanks[_rank].push_back(new_points[pointIdx]);
+                newDuplicatedPointsOfRank.push_back(pointIdx);
             }
         }
     }
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("BuildSendToRanks", std::chrono::duration<double>(_t1 - _t0).count());
+#endif
 
     // todo: first build delaunay
     size_t currentIndex = this->del_.points_.size();
@@ -1802,10 +1881,18 @@ void Voronoi3D::MockMesh(void)
 
     std::vector<std::vector<size_t>> newNghost(newDuplicatedProcs.size());
 
-    std::vector<std::vector<Vector3D>> receivedByRanks = MPI_Iexchange_all_to_all(whatIShouldSendToRanks, MPI_COMM_WORLD);
-    for(rank_t _rank = 0; _rank < size; _rank++)
+#ifdef TIMING
+    _t0 = std::chrono::high_resolution_clock::now();
+#endif
+    std::vector<std::pair<rank_t, std::vector<Vector3D>>> receivedByRanks =
+        MPI_Exchange_sparse_by_rank(whatIShouldSendToRanks, MPI_COMM_WORLD, MPI_EXCHANGE_SPARSE_TAG + 3);
+#ifdef TIMING
+    _t1 = std::chrono::high_resolution_clock::now();
+    _prof("FinalPointsExchange", std::chrono::duration<double>(_t1 - _t0).count());
+#endif
+    for(const auto &[_rank, receivedFromRank] : receivedByRanks)
     {
-        if(receivedByRanks[_rank].empty())
+        if(receivedFromRank.empty())
         {
             continue;
         }
@@ -1821,7 +1908,7 @@ void Voronoi3D::MockMesh(void)
         assert(idx != newDuplicatedProcs.size());
         std::vector<size_t> &NghostOfRank = newNghost[idx];
 
-        for(const Vector3D &point : receivedByRanks[_rank])
+        for(const Vector3D &point : receivedFromRank)
         {
             buildExtra.push_back(point);
             NghostOfRank.push_back(currentIndex);
@@ -2327,10 +2414,14 @@ Voronoi3D::DetermineNextIterationPoints(size_t iterations,
     int rank = 0, size = 1;
     #ifdef RICH_MPI
     const bool serialMode = (this->pointsManager == nullptr); // TODO: fix - wrong!
-    if (!serialMode)
+    if(!serialMode)
     {
         MPI_Comm_rank(comm, &rank);
         MPI_Comm_size(comm, &size);
+    }
+    else
+    {
+        std::cout << "In serial mode" << std::endl;
     }
     #endif // RICH_MPI
 
