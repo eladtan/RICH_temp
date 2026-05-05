@@ -62,6 +62,11 @@ if(DEFINED MEMORY_DEBUG)
     add_definitions("-DMEMORY_DEBUG")
 endif()
 
+if(DEFINED TIMING)
+    message(STATUS "Timing Mode Enabled")
+    add_definitions("-DTIMING")
+endif()
+
 # if build is Debug
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions("-DDEBUG")
