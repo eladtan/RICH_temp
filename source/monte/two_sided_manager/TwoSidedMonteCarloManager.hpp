@@ -14,8 +14,8 @@
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "utils/amountManager/AmountManager.hpp"
 #include "BuffersManager.hpp"
+#include "monte/manager/MonteCarloConfig.hpp"
 
-#define MONTECARLO_EPSILON 1e-8
 #define PARTICLES_TAG 8817
 #define RECV_BUFFER_MAX_SIZE 1000
 #define SEND_BUFFER_DISPATCH_MIN_SIZE 500
@@ -43,6 +43,10 @@ public:
     inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
 
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
+
+    inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount_;}
+
+    inline std::vector<size_t> &GetBeginningParticleCount(void) {return this->beginningParticleCount_;}
 
     inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes_;}
 
@@ -103,6 +107,7 @@ private:
     size_t currentStep;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
+    std::vector<size_t> beginningParticleCount_;
     size_t handlerMemoryBytes_ = 0;
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
@@ -628,6 +633,10 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
         size_t preStepParticlesNum = newParticles1.size();
         this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
+
+        this->beginningParticleCount_.assign(this->Ncells, 0);
+        for(const auto &p : this->particles) this->beginningParticleCount_[p.cellIndex]++;
+
         int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
         // std::cout << "Rank " << this->rank_world << ", startingParticleNum is " << startingParticleNum << " = " << initialParticlesNum << " + " << preStepParticlesNum << std::endl;
 

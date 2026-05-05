@@ -18,6 +18,7 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                 #ifdef RICH_MPI
                                     , ManagerType managerType
                                     , std::shared_ptr<CostCalculator3D> cost
+                                    , const MonteCarloConfig &monteCarloConfig
                                 #endif // RICH_MPI
                             ) : tess(tess), cells(cells), extensives(extensives), particles(particles), popControl(popControl), boundaryCond(boundaryCond), physics(physics), withHydro(withHydro)
                                 #ifdef RICH_MPI
@@ -40,7 +41,7 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                     type = RDMA_Type::MPI_RMA;
                 else
                     type = RDMA_Type::AUTO_RDMA;
-                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, DEFAULT_BUFFER_SIZE, MPI_COMM_WORLD, type);
+                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, type);
                 break;
             }
             case ManagerType::P2P:
@@ -116,11 +117,15 @@ void RadiationMCStep::step(double dt)
 
     auto postManagerStart = std::chrono::high_resolution_clock::now();
 
-    double max_Erad = N > 0 ? *std::max_element(old_Erad.begin(), old_Erad.end()) : std::numeric_limits<double>::lowest();
-    double max_temperature = N > 0 ? *std::max_element(old_temperature.begin(), old_temperature.end()) : std::numeric_limits<double>::lowest();
+    double reductionArray[2] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest()};
+
+    double &max_Erad = reductionArray[0];
+    max_Erad = N > 0 ? *std::max_element(old_Erad.begin(), old_Erad.end()) : std::numeric_limits<double>::lowest();
+    double &max_temperature = reductionArray[1];
+    max_temperature = N > 0 ? *std::max_element(old_temperature.begin(), old_temperature.end()) : std::numeric_limits<double>::lowest();
+
     #ifdef RICH_MPI
-        MPI_Allreduce(MPI_IN_PLACE, &max_Erad, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        MPI_Allreduce(MPI_IN_PLACE, &max_temperature, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, reductionArray, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     #endif
 
     double max_Erad_diff = std::numeric_limits<double>::min() * 100;
@@ -185,10 +190,12 @@ void RadiationMCStep::step(double dt)
     double radiationStepTotal = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - radiationStepStart).count();
 
     #ifdef RICH_MPI
-        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &preManagerTime, &preManagerTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &managerTime, &managerTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &postManagerTime, &postManagerTime, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &radiationStepTotal, &radiationStepTotal, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+        double reductionArray2[4] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest()};
+        reductionArray2[0] = preManagerTime;
+        reductionArray2 [1] = managerTime;
+        reductionArray2[2] = postManagerTime;
+        reductionArray2[3] = radiationStepTotal;
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : reductionArray2, reductionArray2, 4, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     #endif
     if(rank == 0)
     {

@@ -8,9 +8,9 @@
 #include "monte/physics/MonteCarloPhysics.hpp"
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
+#include "monte/manager/MonteCarloConfig.hpp"
 #include "utils/debug/vtune.h" // TODO: remove
 
-#define MONTECARLO_EPSILON 1e-8
 #define SERIAL_REALLOCATION_FACTOR 2
 
 template<typename T, typename Grid>
@@ -61,6 +61,10 @@ public:
 
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
 
+    inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount_;}
+
+    inline std::vector<size_t> &GetBeginningParticleCount(void) {return this->beginningParticleCount_;}
+
     inline size_t GetHandlerMemoryBytes(void) const {return 0;}
 
 private:
@@ -76,6 +80,7 @@ private:
     std::vector<size_t> cellsStepsCounters;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
+    std::vector<size_t> beginningParticleCount_;
 
     struct
     {
@@ -446,7 +451,14 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
     this->startParticleCount_ = initialParticlesNum + newParticles1.size();
-    
+
+    this->beginningParticleCount_.assign(this->Ncells, 0);
+    for(size_t i = 0; i < this->particlesData.th_length; i++)
+    {
+        size_t particleIndex = this->particlesData.th[i];
+        this->beginningParticleCount_[this->particlesData.particles[particleIndex].cellIndex]++;
+    }
+
     this->cellsStepsCounters.assign(this->Ncells, 0);
 
     MonteCarloStepFinalData data;

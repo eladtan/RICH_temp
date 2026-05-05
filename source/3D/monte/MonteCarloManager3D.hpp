@@ -20,9 +20,19 @@ public:
 
     virtual std::vector<size_t> &GetCellsStepsCounters(void) = 0;
 
+    virtual const std::vector<size_t> &GetCellsParticleCounters(void) const
+    {
+        static const std::vector<size_t> empty;
+        return empty;
+    }
+
     virtual size_t GetStartParticleCount(void) const = 0;
 
     virtual size_t GetEndParticleCount(void) const = 0;
+
+    virtual const std::vector<size_t> &GetBeginningParticleCount(void) const = 0;
+
+    virtual std::vector<size_t> &GetBeginningParticleCount(void) = 0;
 
     virtual size_t GetHandlerMemoryBytes(void) const = 0;
 
@@ -46,6 +56,10 @@ public:
 
     inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetEndParticleCount();};
 
+    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
+
+    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
+
     inline size_t GetHandlerMemoryBytes(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
@@ -61,7 +75,7 @@ public:
     RDMAMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
                         const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
                         const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
-                        size_t bufferSizes = DEFAULT_BUFFER_SIZE,
+                        const MonteCarloConfig &config = MonteCarloConfig(),
                         const MPI_Comm &comm = MPI_COMM_WORLD,
                         RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
 
@@ -69,9 +83,15 @@ public:
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
+    inline const std::vector<size_t> &GetCellsParticleCounters(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetCellsParticleCounters();};
+
     inline size_t GetStartParticleCount(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
 
     inline size_t GetEndParticleCount(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
+
+    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
+
+    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return MonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
 
     inline size_t GetHandlerMemoryBytes(void) const override{return MonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
 
@@ -96,6 +116,10 @@ public:
     inline size_t GetStartParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
 
     inline size_t GetEndParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
+
+    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
+
+    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
 
     inline size_t GetHandlerMemoryBytes(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
 

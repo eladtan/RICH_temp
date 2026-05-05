@@ -39,6 +39,7 @@ public:
                     #ifdef RICH_MPI
                         , ManagerType managerType = ManagerType::AUTO_RDMA
                         , std::shared_ptr<CostCalculator3D> cost = nullptr
+                        , const MonteCarloConfig &monteCarloConfig = MonteCarloConfig()
                     #endif // RICH_MPI
                 );
 
