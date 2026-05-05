@@ -100,9 +100,7 @@ void ForEachRankSync(const MPI_Comm &comm, const std::vector<rank_t> &order, con
     MPI_Barrier(comm);
 }
 
-struct RoundInfo { rank_t partner = -1; int split_color = MPI_UNDEFINED; int key = 0; };
-
-static std::pair<std::vector<RoundInfo>, int> BuildEdgeSchedule(const MPI_Comm &comm, const std::vector<rank_t> &new_neighbors)
+static std::pair<std::vector<rank_t>, int> BuildEdgeSchedule(const MPI_Comm &comm, const std::vector<rank_t> &new_neighbors)
 {
     rank_t rank, size;
     MPI_Comm_rank(comm, &rank);
@@ -142,7 +140,6 @@ static std::pair<std::vector<RoundInfo>, int> BuildEdgeSchedule(const MPI_Comm &
     if(num_edges == 0)
         return {{}, 0};
 
-    // Greedy edge coloring: at most 2*Delta - 1 colors
     std::vector<std::vector<bool>> vertex_used(static_cast<size_t>(size));
     std::vector<int> edge_color(num_edges);
     int num_colors = 0;
@@ -171,60 +168,73 @@ static std::pair<std::vector<RoundInfo>, int> BuildEdgeSchedule(const MPI_Comm &
         num_colors = std::max(num_colors, c + 1);
     }
 
-    std::vector<RoundInfo> my_rounds(static_cast<size_t>(num_colors));
+    std::vector<rank_t> my_rounds(static_cast<size_t>(num_colors), -1);
     for(size_t i = 0; i < num_edges; i++)
     {
         auto [u, v] = edges[i];
         int c = edge_color[i];
         if(rank == u)
-        {
-            my_rounds[static_cast<size_t>(c)] = {v, static_cast<int>(i), 0};
-        }    
+            my_rounds[static_cast<size_t>(c)] = v;
         else if(rank == v)
-        {
-            my_rounds[static_cast<size_t>(c)] = {u, static_cast<int>(i), 1};
-        }
+            my_rounds[static_cast<size_t>(c)] = u;
     }
 
     return {std::move(my_rounds), num_colors};
 }
 
 void ForEachRankSyncByList(const MPI_Comm &comm, const std::vector<rank_t> &new_neighbors,
-                           const std::function<void(rank_t, MPI_Comm)> &func, bool withBarrier)
+                           const std::function<void(rank_t, MPI_Comm)> &func, bool /*withBarrier*/)
 {
     auto [my_rounds, num_colors] = BuildEdgeSchedule(comm, new_neighbors);
 
+    if(num_colors == 0)
+        return;
+
+    rank_t rank;
+    MPI_Comm_rank(comm, &rank);
+
+    MPI_Group world_group;
+    MPI_Comm_group(comm, &world_group);
+
+    // Edge coloring guarantees each rank has at most one pair per round,
+    // so using the round number as tag satisfies MPI's requirement that
+    // concurrent MPI_Comm_create_group calls involving the same process
+    // use different tags.  No global barrier is needed: the blocking
+    // MPI_Comm_create_group call itself synchronizes the two endpoints.
     for(int c = 0; c < num_colors; c++)
     {
-        if(withBarrier)
+        rank_t partner = my_rounds[static_cast<size_t>(c)];
+        if(partner >= 0)
         {
-            MPI_Barrier(comm);
-        }
-        const RoundInfo &info = my_rounds[static_cast<size_t>(c)];
+            rank_t pair_ranks[2] = {std::min(rank, partner), std::max(rank, partner)};
+            MPI_Group pair_group;
+            MPI_Group_incl(world_group, 2, pair_ranks, &pair_group);
 
-        MPI_Comm pair_comm;
-        MPI_Comm_split(comm, info.split_color, info.key, &pair_comm);
+            MPI_Comm pair_comm;
+            MPI_Comm_create_group(comm, pair_group, c, &pair_comm);
+            MPI_Group_free(&pair_group);
 
-        if(info.partner >= 0)
-        {
-            func(info.partner, pair_comm);
+            if(pair_comm != MPI_COMM_NULL)
+            {
+                func(partner, pair_comm);
+            }
         }
     }
+
+    MPI_Group_free(&world_group);
 }
 
 void ForEachRankSyncByList(const MPI_Comm &comm, const std::vector<rank_t> &new_neighbors,
-                           const std::function<void(rank_t)> &func, bool withBarrier)
+                           const std::function<void(rank_t)> &func, bool /*withBarrier*/)
 {
     auto [my_rounds, num_colors] = BuildEdgeSchedule(comm, new_neighbors);
 
     for(int c = 0; c < num_colors; c++)
     {
-        if(withBarrier) MPI_Barrier(comm);
-
-        const RoundInfo &info = my_rounds[static_cast<size_t>(c)];
-        if(info.partner >= 0)
+        rank_t partner = my_rounds[static_cast<size_t>(c)];
+        if(partner >= 0)
         {
-            func(info.partner);
+            func(partner);
         }
     }
 }
