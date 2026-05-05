@@ -32,9 +32,9 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
     #ifdef RICH_MPI
         rank_t rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        std::mt19937_64 gen((873 * rank) + particles.size());
+        static std::mt19937_64 gen((873 * rank) + particles.size());
     #else // RICH_MPI
-        std::mt19937_64 gen(particles.size());
+        static std::mt19937_64 gen(particles.size());
     #endif // RICH_MPI
 
     std::vector<MCParticle> result;
