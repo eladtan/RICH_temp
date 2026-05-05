@@ -15,16 +15,18 @@
 #include "ReallocationAgent.hpp"
 #include "utils/debug/SmartTimer.hpp"
 #include "misc/memory_debug.hpp"
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <initializer_list>
+#include <iostream>
+#include <limits>
 #include <memory>
 #include <random>
+#include <stdexcept>
+#include <vector>
 #include <mpi.h>
-
-#define MONTECARLO_EPSILON 1e-8
-#define DEFAULT_BUFFER_SIZE 500
-#define MONTECARLO_CHANGE_TAG 1280
-#define SHRINK_BUFFERS_CYCLE 50
-#define SEND_BUFFER_MIN_SIZE 200
-#define SEND_BUFFER_MIN_CYCLES 100
+#include "MonteCarloConfig.hpp"
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -52,6 +54,65 @@ std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::fl
     return std::vector<rank_t>(ranks.cbegin(), ranks.cend());
 }
 
+#ifdef TIMING
+namespace MonteCarloTimingDetail
+{
+    struct Section
+    {
+        const char *name;
+        double seconds;
+    };
+
+    inline double SecondsSince(const std::chrono::high_resolution_clock::time_point &start)
+    {
+        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
+    }
+
+    inline void PrintTimingBreakdown(const MPI_Comm &comm, rank_t rank, const char *label, std::initializer_list<Section> sections)
+    {
+        rank_t size = 1;
+        MPI_Comm_size(comm, &size);
+
+        std::vector<const char*> names;
+        std::vector<double> localSeconds;
+        names.reserve(sections.size());
+        localSeconds.reserve(sections.size());
+        for(const Section &section : sections)
+        {
+            names.push_back(section.name);
+            localSeconds.push_back(section.seconds);
+        }
+
+        std::vector<double> maxSeconds(localSeconds.size(), 0);
+        std::vector<double> sumSeconds(localSeconds.size(), 0);
+        MPI_Reduce(localSeconds.data(), maxSeconds.data(), static_cast<int>(localSeconds.size()), MPI_DOUBLE, MPI_MAX, 0, comm);
+        MPI_Reduce(localSeconds.data(), sumSeconds.data(), static_cast<int>(localSeconds.size()), MPI_DOUBLE, MPI_SUM, 0, comm);
+
+        if(rank == 0)
+        {
+            std::cout << label << " (max/avg): ";
+            for(size_t i = 0; i < localSeconds.size(); i++)
+            {
+                if(i > 0)
+                {
+                    std::cout << ", ";
+                }
+                std::cout << names[i] << "=" << maxSeconds[i] << "/" << sumSeconds[i] / size << "s";
+            }
+            std::cout << std::endl;
+        }
+    }
+}
+
+enum class SendFlushReason
+{
+    Threshold,
+    IdleDrain,
+    VerifyDrain,
+    FinalDrain
+};
+#endif // TIMING
+
 template<typename T, typename Grid>
 class MonteCarloManager
 {
@@ -68,7 +129,7 @@ public:
     MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
                     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
-                    size_t bufferSizes = DEFAULT_BUFFER_SIZE,
+                    const MonteCarloConfig &config = MonteCarloConfig(),
                     const MPI_Comm &comm = MPI_COMM_WORLD, RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
 
     ~MonteCarloManager();
@@ -85,14 +146,20 @@ public:
 
     inline std::vector<size_t> &GetCellsStepsCounters(void) {return this->cellsStepsCounters;}
 
-    inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
+    inline const std::vector<size_t> &GetCellsParticleCounters(void) const {return this->cellsParticleCounters;}
 
-    inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
+    inline size_t GetStartParticleCount(void) const {return this->startParticleCount;}
 
-    inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes_;}
+    inline size_t GetEndParticleCount(void) const {return this->endParticleCount;}
+
+    inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount;}
+
+    inline std::vector<size_t> &GetBeginningParticleCount(void) {return this->beginningParticleCount;}
+
+    inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes;}
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, dt_t fullDt);
-    
+
     class Tracker
     {
     public:
@@ -107,7 +174,7 @@ public:
         std::vector<MCParticle> GetTrackParticleRoute(size_t id) const;
 
         void ReportParticle(MCParticle &particle);
-    
+
     private:
         MPI_Comm comm;
         boost::container::flat_map<size_t, std::vector<MCParticle>> track;
@@ -119,6 +186,7 @@ public:
 
 private:
     const Grid &grid;
+    MonteCarloConfig config;
     MPI_Comm comm_world;
     rank_t rank_world, size_world;
     size_t Ncells;
@@ -140,17 +208,38 @@ private:
     size_t transfersCounter;
     std::vector<rank_t> neighbors;
     std::vector<size_t> cellsStepsCounters;
+    std::vector<size_t> cellsParticleCounters;
     size_t iteration;
     size_t dynamicallyAdded;
     RDMA_Type rdma_type;
     size_t lastBuildGeneration;
-    size_t startParticleCount_ = 0;
-    size_t endParticleCount_ = 0;
-    size_t handlerMemoryBytes_ = 0;
+    size_t startParticleCount = 0;
+    size_t endParticleCount = 0;
+    std::vector<size_t> beginningParticleCount;
+    size_t handlerMemoryBytes = 0;
+    #ifdef TIMING
+    double pureComputeTime = 0;
+    size_t sendBufferFlushCalls = 0;
+    size_t sendBufferFlushedParticles = 0;
+    size_t sendBufferPeakRanks = 0;
+    size_t sendBufferPeakParticles = 0;
+    size_t sendBufferFlushThresholdCalls = 0;
+    size_t sendBufferFlushIdleDrainCalls = 0;
+    size_t sendBufferFlushVerifyDrainCalls = 0;
+    size_t sendBufferFlushFinalDrainCalls = 0;
+    size_t sendBufferThresholdParticles = 0;
+    size_t sendBufferIdleDrainParticles = 0;
+    size_t sendBufferVerifyDrainParticles = 0;
+    size_t sendBufferFinalDrainParticles = 0;
+    size_t sendBufferMaxBatchParticles = 0;
+    size_t sendBufferMinNonzeroBatchParticles = 0;
+    size_t sendBufferIdleHoldoffSkips = 0;
+    size_t sendBufferIdleHoldoffPendingParticles = 0;
+    #endif // TIMING
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> sendBuffers;
     size_t sendBufferCycleCounter;
-    
+
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
     void PutSelfParticles(std::vector<MCParticle> &&particles);
@@ -161,23 +250,56 @@ private:
 
     void AddParticles(const std::vector<MCParticle> &particles);
 
-    void ResetAllBuffers(void); 
+    void ResetAllBuffers(void);
 
-    void ShrinkAllBuffers(void);
+    void ShrinkBuffers(void);
 
-    void FlushSendBuffers(void);
+    #ifdef TIMING
+    void FlushSendBuffers(bool flushSmallBuffers, double &transferTime);
+
+    void FlushAllSendBuffers(SendFlushReason reason = SendFlushReason::FinalDrain);
+    #else
+    void FlushSendBuffers(bool flushSmallBuffers);
 
     void FlushAllSendBuffers(void);
+    #endif // TIMING
 
     bool AllSendBuffersEmpty(void) const;
 
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
+
+    #ifdef TIMING
+    void RecordSendBufferFlush(size_t flushedParticles, SendFlushReason reason);
+
+    void PrintTransferDiagnostics(double elapsed, double flushScanTime, double flushTransferTime) const;
+
+    struct PrepareHandlersTiming
+    {
+        double oldNeighborSet = 0;
+        double neighborList = 0;
+        double selfHandler = 0;
+        double findNewNeighbors = 0;
+        double newNeighborAllreduce = 0;
+        double createHandlers = 0;
+        double handlerCtorRma = 0;
+        double handlerCtorMutex = 0;
+        double handlerCtorReset = 0;
+        double handlerCtorPeerInfo = 0;
+        double handlerCtorTotal = 0;
+        double resetBuffers = 0;
+        double total = 0;
+        int localNewNeighbors = 0;
+        int globalNewNeighbors = 0;
+    };
+
+    PrepareHandlersTiming lastPrepareHandlersTiming;
+    #endif // TIMING
 };
 
 template<typename T, typename Grid>
-MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl, 
-                                            const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, size_t bufferSizes, const MPI_Comm &comm, RDMA_Type rdma_type):
-    grid(grid), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm), rdma_type(rdma_type)
+MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
+                                            const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, const MonteCarloConfig &config, const MPI_Comm &comm, RDMA_Type rdma_type):
+    grid(grid), config(config), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm), rdma_type(rdma_type)
 {
     this->myIDCounter = 0;
     this->currentStep = 0;
@@ -193,7 +315,9 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
 
     auto reallocationFunction = [this](rank_t rank)
     {
-        this->rankHandlers[rank]->Reallocate(BUFFER_REALLOCATION_FACTOR);
+        RankHandler_t *handler = this->rankHandlers[rank];
+        double factor = this->config.bufferReallocationFactor;
+        handler->Reallocate(factor);
     };
 
     this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction);
@@ -203,6 +327,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
         std::cout << "Done initializing MonteCarloManager" << std::endl;
     }
     this->cellsStepsCounters.assign(this->grid.GetPointNo(), 0);
+    this->cellsParticleCounters.assign(this->grid.GetPointNo(), 0);
     this->lastBuildGeneration = std::numeric_limits<size_t>::max();
     this->sendBufferCycleCounter = 0;
 }
@@ -244,11 +369,11 @@ void MonteCarloManager<T, Grid>::FreeHandlers(void)
         if(handler != nullptr)
         {
             handler->Destroy();
-            delete handler;    
+            delete handler;
         }
         this->rankHandlers[_rank] = nullptr;
     };
-    
+
     ForEachRankSync(this->comm_world, this->ranksOrder, freeHandler);
 }
 
@@ -267,7 +392,7 @@ void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &par
 
     if(myHandler->av_length < particles.size())
     {
-        double factor = std::max<double>(BUFFER_REALLOCATION_FACTOR, std::ceil(static_cast<double>(particles.size() + myHandler->buffsize) / static_cast<double>(myHandler->buffsize)));
+        double factor = std::max<double>(this->config.bufferReallocationFactor, std::ceil(static_cast<double>(particles.size() + myHandler->buffsize) / static_cast<double>(myHandler->buffsize)));
         myHandler->Reallocate(factor);
         assert(myHandler->av_length >= particles.size());
     }
@@ -378,7 +503,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector<MCParticle> &&particles)
+void MonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&particles)
 {
     using index_t = typename RankHandler_t::index_t;
 
@@ -413,7 +538,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector
 
     if(static_cast<size_t>(handler->av_length) < particlesNum)
     {
-        double factor = std::max<double>(BUFFER_REALLOCATION_FACTOR, std::ceil(static_cast<double>(particlesNum) / static_cast<double>(handler->buffsize)));
+        double factor = std::max<double>(this->config.bufferReallocationFactor, std::ceil(static_cast<double>(particlesNum) / static_cast<double>(handler->buffsize)));
         handler->Reallocate(factor);
     }
 
@@ -442,7 +567,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::PutSelfParticles(std::vector
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
+void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
 {
     if(indicesInToHandle.empty())
     {
@@ -487,11 +612,11 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t fro
                 throw eo;
             }
         #endif // MONTECARLO_DEBUG
-        MCParticle &particle = currRankHandler->particles[particleIdx];        
+        MCParticle &particle = currRankHandler->particles[particleIdx];
         particle.sent = false; // reset
 
-        // std::cout << "Rank " << this->rank_world << " transfers particle TH = " << indexInToHandle << ", particle index " << particleIdx << " (particle: " << particle << ") to rank " << toRank << std::endl; 
-        
+        // std::cout << "Rank " << this->rank_world << " transfers particle TH = " << indexInToHandle << ", particle index " << particleIdx << " (particle: " << particle << ") to rank " << toRank << std::endl;
+
         if(toRank == this->rank_world)
         {
             UniversalError eo("Trying to transfer particle to the same rank");
@@ -575,7 +700,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(rank_t fro
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks)
+void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks)
 {
     if(indicesInToHandle.empty())
     {
@@ -589,7 +714,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
     #ifdef MONTECARLO_DEBUG
         boost::container::flat_map<std::pair<rank_t, size_t>, rank_t> sentAndToWhom;
     #endif // MONTECARLO_DEBUG
-    
+
     assert(rankBuffers.size() == indicesInToHandle.size());
 
     size_t numRanks = rankBuffers.size();
@@ -632,11 +757,11 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
                     throw eo;
                 }
             #endif // MONTECARLO_DEBUG
-            MCParticle &particle = currRankHandler->particles[particleIdx];        
+            MCParticle &particle = currRankHandler->particles[particleIdx];
             particle.sent = false; // reset
 
-            // std::cout << "Rank " << this->rank_world << " transfers particle TH = " << indexInToHandle << ", particle index " << particleIdx << " (particle: " << particle << ") to rank " << toRank << std::endl; 
-            
+            // std::cout << "Rank " << this->rank_world << " transfers particle TH = " << indexInToHandle << ", particle index " << particleIdx << " (particle: " << particle << ") to rank " << toRank << std::endl;
+
             if(toRank == this->rank_world)
             {
                 UniversalError eo("Trying to transfer particle to the same rank");
@@ -720,7 +845,7 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
 }
 
 template<typename T, typename Grid>
-bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFinalData &stepData)
+bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
 {
     static std::vector<rank_t> active_ranks;
     static std::vector<rank_t> next_active_ranks;
@@ -731,7 +856,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
 
     // static std::uniform_real_distribution<double> dist(0, 1);
     // static std::mt19937 re(this->rank_world);
-    
+
     next_active_ranks.clear();
     if(active_ranks.empty())
     {
@@ -756,12 +881,18 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             rank_t _rank = this->neighbors[i];
             RankHandler_t *handler = this->rankHandlers[_rank];
 
-            // Cache the dereferenced value to avoid repeated indirection
             int len = handler->th_length;
 
-            // Only proceed if there's work to do
             if(len)
             {
+                if(len < 0 || len > static_cast<int>(handler->buffsize))
+                {
+                    std::cerr << "HandleAll: corrupt th_length=" << len
+                              << " for neighbor rank " << _rank << " (my rank " << this->rank_world
+                              << ", buffsize=" << handler->buffsize
+                              << ", iteration=" << this->iteration << ")" << std::endl;
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+                }
                 active_ranks.push_back(_rank);
             }
         }
@@ -781,7 +912,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     {
         removeParticlesVec[rankIndex].push_back(particleTH);
     };
-    
+
     auto transferParticle = [&](size_t rankIndex, size_t particleTH, rank_t toRank)
     {
         assert(toRank != this->rank_world); // can't send to self
@@ -800,25 +931,53 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     transferToRanks.clear();
     removeParticlesVec.clear();
 
+    #ifdef TIMING
+    auto computeLoopStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
+
     for(size_t index = 0; index < activeRanksNum; index++)
     {
         rank_t _rank = active_ranks[index];
         RankHandler_t *handler = this->rankHandlers[_rank];
-        volatile int &length = handler->th_length;
+        int length = handler->th_length;
 
         transferParticlesVec.emplace_back();
         transferToRanks.emplace_back();
         removeParticlesVec.emplace_back();
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
-            handler->LockSelfBuffer();
-        #endif // ADVANCED_MONTECARLO_DEBUG
-                
+        // struct SelfBufferLockGuard
+        // {
+        //     explicit SelfBufferLockGuard(RankHandler_t *handler): handler(handler)
+        //     {
+        //         this->handler->LockSelfBuffer();
+        //     }
+
+        //     ~SelfBufferLockGuard()
+        //     {
+        //         this->handler->UnlockSelfBuffer();
+        //     }
+
+        //     RankHandler_t *handler;
+        // } selfBufferLock(handler);
+
         for(int i = 0; i < length; i++)
         {
-            assert(i < handler->buffsize);
+            if(i >= static_cast<int>(handler->buffsize))
+            {
+                std::cerr << "HandleAll: th index " << i << " >= buffsize " << handler->buffsize
+                          << " for rank " << _rank << " (my rank " << this->rank_world
+                          << ", th_length=" << length << ", iteration=" << this->iteration << ")" << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
             size_t particleIndex = handler->th[i];
-            assert(particleIndex < handler->buffsize);
+            if(particleIndex >= handler->buffsize)
+            {
+                std::cerr << "HandleAll: particleIndex " << particleIndex << " >= buffsize " << handler->buffsize
+                          << " for rank " << _rank << " (my rank " << this->rank_world
+                          << ", th[" << i << "]=" << particleIndex
+                          << ", th_length=" << length << ", iteration=" << this->iteration << ")" << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
             MCParticle &particle = handler->particles[particleIndex];
             bool debug = false; // (particle.rank == 5 and particle.id == 518987);
 
@@ -842,7 +1001,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                 particle.lastSeenRank = this->rank_world;
                 particle.lastSeenIndex = i;
                 #endif // MONTECARLO_DEBUG
-    
+
                 isEmpty = false;
                 while(true)
                 {
@@ -851,9 +1010,9 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     // {
                     //     continue;
                     // }
-                    
+
                     // std::cout << "Rank " << this->rank_world << " handles TH = " << i << ", which is index " << particleIndex << ", particle: " << particle << std::endl;
-    
+
                     const size_t traceStep = particle.steps;
                     if(particle.on_track)
                     {
@@ -863,9 +1022,9 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     }
                     particle.steps++;
                     this->cellsStepsCounters[particle.cellIndex]++;
-                    
+
                     // std::cout << "Rank " << this->rank_world << " handles particle " << particle.id << " of rank " << particle.rank << ", step " << particle.steps << std::endl;
-    
+
                     #ifdef MONTECARLO_DEBUG
                     if(particle.cellIndex >= this->Ncells)
                     {
@@ -878,7 +1037,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     }
                     if(particle.removedFromRank)
                     {
-                        continue; 
+                        continue;
                         UniversalError eo("Particle was removed from rank, but still in the list");
                         eo.addEntry("Particle", particle);
                         eo.addEntry("Rank", this->rank_world);
@@ -901,8 +1060,8 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             eo.addEntry("Particle Index In This Rank", particleIndex);
                             eo.addEntry("The Particle TH In Last Rank", particle.particleTHInLastRank);
                             eo.addEntry("Particle TH In This Rank", i);
-                            eo.addEntry("New Cell Index Should Be", particle.cellIndex); 
-                            eo.addEntry("New Cell Value Should Be", particle.newCellValue); 
+                            eo.addEntry("New Cell Index Should Be", particle.cellIndex);
+                            eo.addEntry("New Cell Value Should Be", particle.newCellValue);
                             throw eo;
                         }
                         particle.checkedHere = true;
@@ -926,7 +1085,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                 eo.addEntry("Particle", particle);
                                 eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
                                 eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
-                                eo.addEntry("New Cell Value Should Be", particle.newCellValue); 
+                                eo.addEntry("New Cell Value Should Be", particle.newCellValue);
                                 eo.addEntry("Declared Cell Index", particle.cellIndex);
                                 eo.addEntry("Declared Cell", declaredCell);
                                 eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
@@ -947,7 +1106,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
                             eo.addEntry("Particle Previous Location", particle.previousLocation);
                             eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
-                            eo.addEntry("New Cell Value Should Be", particle.newCellValue);                        
+                            eo.addEntry("New Cell Value Should Be", particle.newCellValue);
                             eo.addEntry("Declared Cell Index", particle.cellIndex);
                             eo.addEntry("Declared Cell", declaredCell);
                             eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
@@ -964,7 +1123,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             throw eo;
                         }
                     }
-                    
+
                     prevLoc = particle.location;
                     particle.previousLocation = particle.location;
                     #endif // MONTECARLO_DEBUG
@@ -986,20 +1145,20 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     #ifdef MC_TRACING_HISTORY
                         particle.recordHistory(particle.cellIndex, static_cast<int>(this->rank_world), static_cast<int>(functionality.change));
                     #endif // MC_TRACING_HISTORY
-    
+
                     // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
                     if(debug)
                     {
                         std::cout << "Particle " << particle << ", functionality is " << functionality.change << std::endl;
                     }
-    
+
                     if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
                     {
                         size_t nextCellIndex = functionality.nextCellIndex;
-    
+
                         assert(nextCellIndex != particle.cellIndex);
                         assert(particle.timeLeft >= 0);
-        
+
                         if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                         {
                             // local neighbor
@@ -1074,9 +1233,9 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                     eo.addEntry("Status", status);
                                     throw eo;
                                 }
-                                break;    
+                                break;
                             }
-    
+
                             particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                             auto [otherRank, neighborIndexInRank] = it->second;
                             #ifdef MONTECARLO_DEBUG
@@ -1108,7 +1267,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             particle.particleTHInLastRank = i;
                             particle.nextRank = otherRank;
                             particle.sent = true;
-                            
+
                             if(particle.nextRank == this->rank_world)
                             {
                                 UniversalError eo("Particle is going to be sent to the same rank");
@@ -1120,7 +1279,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                             }
                             #endif // MONTECARLO_DEBUG
                             particle.cellIndex = neighborIndexInRank;
-    
+
                             #ifdef MONTECARLO_DEBUG
                             if(not TransferParticlesVecOfRank.empty())
                             {
@@ -1142,9 +1301,9 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                 }
                             }
                             #endif // MONTECARLO_DEBUG
-    
+
                             transferParticle(index, i, otherRank);
-                            break; 
+                            break;
                         }
                     }
                     else if(functionality.change == MonteCarloParticleStatus::REMOVE)
@@ -1167,22 +1326,64 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
             {
                 eo.addEntry("Particle TH index", i);
                 eo.addEntry("Particle index", particleIndex);
+                eo.addEntry("Handler rank buffer", _rank);
+                eo.addEntry("Handler TH length", handler->th_length);
+                eo.addEntry("Handler AV length", handler->av_length);
+                eo.addEntry("Handler buffer size", handler->buffsize);
+                int particleIndexAVPosition = -1;
+                int handlerAVLength = handler->av_length;
+                if(handlerAVLength >= 0)
+                {
+                    for(int avIndex = 0; avIndex < handlerAVLength; avIndex++)
+                    {
+                        if(handler->av[avIndex] == particleIndex)
+                        {
+                            particleIndexAVPosition = avIndex;
+                            break;
+                        }
+                    }
+                }
+                eo.addEntry("Particle index AV position", particleIndexAVPosition);
+                int duplicateParticleIndex = -1;
+                int duplicateTHFirst = -1;
+                int duplicateTHSecond = -1;
+                int handlerTHLength = handler->th_length;
+                if(handlerTHLength >= 0)
+                {
+                    static thread_local std::vector<int> seenTHIndex;
+                    seenTHIndex.assign(handler->buffsize, -1);
+                    for(int thIndex = 0; thIndex < handlerTHLength; thIndex++)
+                    {
+                        size_t thParticleIndex = handler->th[thIndex];
+                        if(thParticleIndex >= handler->buffsize)
+                        {
+                            continue;
+                        }
+                        if(seenTHIndex[thParticleIndex] >= 0)
+                        {
+                            duplicateParticleIndex = static_cast<int>(thParticleIndex);
+                            duplicateTHFirst = seenTHIndex[thParticleIndex];
+                            duplicateTHSecond = thIndex;
+                            break;
+                        }
+                        seenTHIndex[thParticleIndex] = thIndex;
+                    }
+                }
+                eo.addEntry("Duplicate TH particle index", duplicateParticleIndex);
+                eo.addEntry("Duplicate TH first index", duplicateTHFirst);
+                eo.addEntry("Duplicate TH second index", duplicateTHSecond);
                 throw eo;
             }
             this->reallocationAgent->HandleAllWaitingReallocations();
         }
-        
-        if(length > 0)
-        {
-            next_active_ranks.push_back(_rank);
-        }
-        
+
         this->reallocationAgent->HandleAllWaitingReallocations();
 
-        #ifdef ADVANCED_MONTECARLO_DEBUG
-            handler->UnlockSelfBuffer();
-        #endif // ADVANCED_MONTECARLO_DEBUG
     }
+
+    #ifdef TIMING
+    this->pureComputeTime += MonteCarloTimingDetail::SecondsSince(computeLoopStart);
+    #endif // TIMING
 
     for(size_t i = 0; i < activeRanksNum; i++)
     {
@@ -1215,6 +1416,16 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         RankHandler_t *handler = this->rankHandlers[_rank];
         handler->RemoveParticles(rankRemoveParticlesVec, rankRemoveParticlesVec.size());
     }
+
+    for(size_t i = 0; i < activeRanksNum; i++)
+    {
+        rank_t _rank = active_ranks[i];
+        RankHandler_t *handler = this->rankHandlers[_rank];
+        if(handler->th_length > 0)
+        {
+            next_active_ranks.push_back(_rank);
+        }
+    }
     active_ranks.swap(next_active_ranks);
 
     bool toReturn = isEmpty and particlesToAdd.empty();
@@ -1229,79 +1440,365 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MonteCarloManager::ResetAllBuffers(void)
+void MonteCarloManager<T, Grid>::ResetAllBuffers(void)
 {
-    for(RankHandler_t *handler : this->rankHandlers)
+    auto resetHandler = [this](rank_t rank)
     {
+        if(rank < 0 or rank >= static_cast<rank_t>(this->rankHandlers.size()))
+        {
+            return;
+        }
+        RankHandler_t *handler = this->rankHandlers[rank];
         if(handler != nullptr)
         {
             handler->Reset();
+        }
+    };
+
+    resetHandler(this->rank_world);
+    for(rank_t rank : this->neighbors)
+    {
+        if(rank != this->rank_world)
+        {
+            resetHandler(rank);
         }
     }
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MonteCarloManager::ShrinkAllBuffers(void)
+void MonteCarloManager<T, Grid>::ShrinkBuffers(void)
 {
     std::vector<rank_t> shrinkList;
+    boost::container::flat_set<rank_t> neighbors(this->neighbors.cbegin(), this->neighbors.cend());
     for(rank_t r = 0; r < static_cast<rank_t>(this->rankHandlers.size()); r++)
     {
-        if(r != this->rank_world and this->rankHandlers[r] != nullptr and this->rankHandlers[r]->buffsize > MINIMAL_BUFF_SIZE)
+        if(r != this->rank_world and this->rankHandlers[r] != nullptr and this->rankHandlers[r]->buffsize > this->config.minimalBuffSize)
         {
-            shrinkList.push_back(r);
+            if(neighbors.find(r) == neighbors.end())
+            {
+                // no longer neighbor
+                shrinkList.push_back(r);
+            }
         }
     }
+    const size_t localOriginalRequested = shrinkList.size();
+    double shrinkPercent = this->config.shrinkPercent;
+    shrinkPercent = std::max(0.0, std::min(1.0, shrinkPercent));
+    if(not shrinkList.empty() and shrinkPercent < 1.0)
+    {
+        size_t shrinkBudget = 0;
+        if(shrinkPercent > 0.0)
+        {
+            shrinkBudget = std::max<size_t>(
+                1,
+                static_cast<size_t>(std::ceil(shrinkPercent * static_cast<double>(shrinkList.size()))));
+        }
+        if(shrinkBudget < shrinkList.size())
+        {
+            shrinkList.resize(shrinkBudget);
+        }
+    }
+
+    std::vector<std::vector<rank_t>> shrinkRequests(this->size_world);
+    for(rank_t r : shrinkList)
+    {
+        shrinkRequests[r].push_back(this->rank_world);
+    }
+
+    std::vector<std::pair<rank_t, std::vector<rank_t>>> incomingShrinkRequests =
+        MPI_Exchange_sparse_by_rank(shrinkRequests, this->comm_world, MPI_EXCHANGE_SPARSE_TAG + 20);
+
+    boost::container::flat_set<rank_t> shrinkCandidates(shrinkList.cbegin(), shrinkList.cend());
+    for(const auto &[requestingRank, ignoredPayload] : incomingShrinkRequests)
+    {
+        (void)ignoredPayload;
+        shrinkCandidates.insert(requestingRank);
+    }
+
+    std::vector<std::vector<rank_t>> shrinkConfirmations(this->size_world);
+    size_t candidatesWithoutHandler = 0;
+    for(rank_t r : shrinkCandidates)
+    {
+        if(r == this->rank_world)
+        {
+            continue;
+        }
+
+        if(this->rankHandlers[r] != nullptr)
+        {
+            shrinkConfirmations[r].push_back(this->rank_world);
+        }
+        else
+        {
+            candidatesWithoutHandler++;
+        }
+    }
+
+    std::vector<std::pair<rank_t, std::vector<rank_t>>> incomingShrinkConfirmations =
+        MPI_Exchange_sparse_by_rank(shrinkConfirmations, this->comm_world, MPI_EXCHANGE_SPARSE_TAG + 21);
+
+    boost::container::flat_set<rank_t> confirmedByPeer;
+    for(const auto &[confirmingRank, ignoredPayload] : incomingShrinkConfirmations)
+    {
+        (void)ignoredPayload;
+        confirmedByPeer.insert(confirmingRank);
+    }
+
+    std::vector<rank_t> shrinkPartners;
+    shrinkPartners.reserve(shrinkCandidates.size());
+    size_t missingPeerConfirmation = 0;
+    for(rank_t r : shrinkCandidates)
+    {
+        if(r == this->rank_world)
+        {
+            continue;
+        }
+
+        if(this->rankHandlers[r] == nullptr)
+        {
+            continue;
+        }
+
+        if(confirmedByPeer.find(r) == confirmedByPeer.end())
+        {
+            missingPeerConfirmation++;
+            continue;
+        }
+
+        shrinkPartners.push_back(r);
+    }
+
+    std::sort(shrinkPartners.begin(), shrinkPartners.end());
+
+    #ifdef TIMING
+    {
+        size_t localRequested = shrinkList.size();
+        size_t localCandidates = shrinkCandidates.size();
+        size_t localPartners = shrinkPartners.size();
+        size_t localWithoutHandler = candidatesWithoutHandler;
+        size_t localMissingConfirmation = missingPeerConfirmation;
+
+        size_t maxOriginalRequested = localOriginalRequested, sumOriginalRequested = localOriginalRequested;
+        size_t maxRequested = localRequested, sumRequested = localRequested;
+        size_t maxCandidates = localCandidates, sumCandidates = localCandidates;
+        size_t maxPartners = localPartners, sumPartners = localPartners;
+        size_t totalWithoutHandler = localWithoutHandler;
+        size_t totalMissingConfirmation = localMissingConfirmation;
+
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxOriginalRequested, &maxOriginalRequested, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumOriginalRequested, &sumOriginalRequested, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxRequested, &maxRequested, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumRequested, &sumRequested, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxCandidates, &maxCandidates, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumCandidates, &sumCandidates, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxPartners, &maxPartners, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumPartners, &sumPartners, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &totalWithoutHandler, &totalWithoutHandler, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &totalMissingConfirmation, &totalMissingConfirmation, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+
+        if(this->rank_world == 0)
+        {
+            std::cout << "ShrinkBuffers: originalRequested total=" << sumOriginalRequested
+                      << ", localMax=" << maxOriginalRequested
+                      << ", shrinkPercent=" << shrinkPercent
+                      << ", requested total=" << sumRequested
+                      << ", localMax=" << maxRequested
+                      << ", candidates total=" << sumCandidates
+                      << ", localMax=" << maxCandidates
+                      << ", partners total=" << sumPartners
+                      << ", localMax=" << maxPartners
+                      << ", withoutHandler=" << totalWithoutHandler
+                      << ", missingConfirmation=" << totalMissingConfirmation
+                      << std::endl;
+        }
+    }
+    #else
+    (void)localOriginalRequested;
+    (void)candidatesWithoutHandler;
+    (void)missingPeerConfirmation;
+    #endif // TIMING
 
     auto shrinkBuffer = [this](rank_t _rank)
     {
         double factor;
         if(std::find(this->neighbors.cbegin(), this->neighbors.cend(), _rank) != this->neighbors.cend())
         {
-            factor = BUFFER_SHRINK_NEIGHBOR_FACTOR;
-        }    
+            factor = this->config.bufferShrinkNeighborFactor;
+        }
         else
         {
-            factor = BUFFER_SHRINK_FACTOR;
+            factor = this->config.bufferShrinkFactor;
         }
         this->rankHandlers[_rank]->requestedFactor = factor;
         this->rankHandlers[_rank]->Reallocate(factor);
     };
-    ForEachRankSyncByList(this->comm_world, shrinkList, shrinkBuffer);
+
+    for(rank_t r : shrinkPartners)
+    {
+        shrinkBuffer(r);
+    }
 }
 
+#ifdef TIMING
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::FlushSendBuffers(void)
+void MonteCarloManager<T, Grid>::RecordSendBufferFlush(size_t flushedParticles, SendFlushReason reason)
 {
-    this->sendBufferCycleCounter++;
-    bool cycleFull = this->sendBufferCycleCounter >= SEND_BUFFER_MIN_CYCLES;
-
-    for(auto &[toRank, particles] : this->sendBuffers)
+    this->sendBufferFlushCalls++;
+    this->sendBufferFlushedParticles += flushedParticles;
+    this->sendBufferMaxBatchParticles = std::max(this->sendBufferMaxBatchParticles, flushedParticles);
+    if(flushedParticles > 0)
     {
-        if(particles.empty())
-            continue;
-        if(particles.size() >= SEND_BUFFER_MIN_SIZE or cycleFull)
+        if(this->sendBufferMinNonzeroBatchParticles == 0)
         {
-            RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-            remoteHandler->TransferParticles(particles);
-            particles.clear();
+            this->sendBufferMinNonzeroBatchParticles = flushedParticles;
+        }
+        else
+        {
+            this->sendBufferMinNonzeroBatchParticles = std::min(this->sendBufferMinNonzeroBatchParticles, flushedParticles);
         }
     }
 
-    if(cycleFull)
+    switch(reason)
+    {
+        case SendFlushReason::Threshold:
+            this->sendBufferFlushThresholdCalls++;
+            this->sendBufferThresholdParticles += flushedParticles;
+            break;
+        case SendFlushReason::IdleDrain:
+            this->sendBufferFlushIdleDrainCalls++;
+            this->sendBufferIdleDrainParticles += flushedParticles;
+            break;
+        case SendFlushReason::VerifyDrain:
+            this->sendBufferFlushVerifyDrainCalls++;
+            this->sendBufferVerifyDrainParticles += flushedParticles;
+            break;
+        case SendFlushReason::FinalDrain:
+            this->sendBufferFlushFinalDrainCalls++;
+            this->sendBufferFinalDrainParticles += flushedParticles;
+            break;
+    }
+}
+#endif // TIMING
+
+#ifdef TIMING
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers, double &transferTime)
+#else
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
+#endif // TIMING
+{
+    #ifdef TIMING
+    size_t pendingParticles = 0;
+    size_t pendingRanks = this->sendBuffers.size();
+    #else
+    size_t pendingRanks = this->sendBuffers.size();
+    #endif // TIMING
+
+    if(pendingRanks > 0)
+    {
+        this->sendBufferCycleCounter++;
+    }
+    else
+    {
         this->sendBufferCycleCounter = 0;
+    }
+
+    bool allowIdleDrain = flushSmallBuffers;
+    bool heldIdleDrain = false;
+    if(flushSmallBuffers and this->config.holdSmallIdleFlushes)
+    {
+        size_t holdoffCycles = std::max<size_t>(1, this->config.GetSmallIdleFlushHoldoffCycles());
+        allowIdleDrain = this->sendBufferCycleCounter >= holdoffCycles;
+    }
+
+    for(auto it = this->sendBuffers.begin(); it != this->sendBuffers.end();)
+    {
+        rank_t toRank = it->first;
+        std::vector<MCParticle> &particles = it->second;
+        if(particles.empty())
+        {
+            it = this->sendBuffers.erase(it);
+            continue;
+        }
+
+        #ifdef TIMING
+        pendingParticles += particles.size();
+        #endif // TIMING
+        bool thresholdFlush = particles.size() >= this->config.sendBufferMinSize;
+        if(thresholdFlush or allowIdleDrain)
+        {
+            RankHandler_t *remoteHandler = this->rankHandlers[toRank];
+            #ifdef TIMING
+            size_t flushedParticles = particles.size();
+            auto transferStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
+            remoteHandler->TransferParticles(particles);
+            #ifdef TIMING
+            transferTime += MonteCarloTimingDetail::SecondsSince(transferStart);
+            #endif // TIMING
+            this->transfersCounter++;
+            #ifdef TIMING
+            this->RecordSendBufferFlush(flushedParticles, thresholdFlush ? SendFlushReason::Threshold : SendFlushReason::IdleDrain);
+            #endif // TIMING
+            it = this->sendBuffers.erase(it);
+            continue;
+        }
+        if(flushSmallBuffers)
+        {
+            heldIdleDrain = true;
+        }
+        ++it;
+    }
+    #ifdef TIMING
+    if(heldIdleDrain)
+    {
+        this->sendBufferIdleHoldoffSkips++;
+        this->sendBufferIdleHoldoffPendingParticles += pendingParticles;
+    }
+    if(this->sendBuffers.empty())
+    {
+        this->sendBufferCycleCounter = 0;
+    }
+    this->sendBufferPeakRanks = std::max(this->sendBufferPeakRanks, pendingRanks);
+    this->sendBufferPeakParticles = std::max(this->sendBufferPeakParticles, pendingParticles);
+    #else
+    (void)heldIdleDrain;
+    #endif // TIMING
 }
 
+#ifdef TIMING
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::FlushAllSendBuffers(SendFlushReason reason)
+#else
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
+#endif // TIMING
 {
+    #ifdef TIMING
+    size_t pendingParticles = 0;
+    size_t pendingRanks = this->sendBuffers.size();
+    #endif // TIMING
     for(auto &[toRank, particles] : this->sendBuffers)
     {
         if(particles.empty())
             continue;
+        #ifdef TIMING
+        pendingParticles += particles.size();
+        size_t flushedParticles = particles.size();
+        #endif // TIMING
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         remoteHandler->TransferParticles(particles);
-        particles.clear();
+        this->transfersCounter++;
+        #ifdef TIMING
+        this->RecordSendBufferFlush(flushedParticles, reason);
+        #endif // TIMING
     }
+    #ifdef TIMING
+    this->sendBufferPeakRanks = std::max(this->sendBufferPeakRanks, pendingRanks);
+    this->sendBufferPeakParticles = std::max(this->sendBufferPeakParticles, pendingParticles);
+    #endif // TIMING
+    this->sendBuffers.clear();
     this->sendBufferCycleCounter = 0;
 }
 
@@ -1315,6 +1812,203 @@ bool MonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
     }
     return true;
 }
+
+#ifdef TIMING
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::PrintTransferDiagnostics(double elapsed, double flushScanTime, double flushTransferTime) const
+{
+    if(this->config.transferDiagnosticsLevel == MonteCarloTransferDiagnosticsLevel::Off)
+    {
+        return;
+    }
+    size_t every = std::max<size_t>(1, this->config.transferDiagnosticsEveryNSteps);
+    if(this->currentStep % every != 0)
+    {
+        return;
+    }
+
+    enum CountIndex
+    {
+        FlushCalls,
+        FlushedParticles,
+        ThresholdCalls,
+        IdleDrainCalls,
+        VerifyDrainCalls,
+        FinalDrainCalls,
+        ThresholdParticles,
+        IdleDrainParticles,
+        VerifyDrainParticles,
+        FinalDrainParticles,
+        IdleHoldoffSkips,
+        IdleHoldoffPendingParticles,
+        MaxBatchParticles,
+        PeakPendingRanks,
+        PeakPendingParticles,
+        TransferCalls,
+        RemoteLockCalls,
+        TransferReallocationRequests,
+        TransferCallsWithReallocation,
+        ContiguousPutCalls,
+        ScatterPutCalls,
+        ContiguousParticles,
+        ScatterParticles,
+        TransferCallsWithContiguousAllocation,
+        TransferCallsWithoutContiguousAllocation,
+        CountIndexSize
+    };
+
+    std::array<unsigned long long, CountIndexSize> localCounts{};
+    localCounts[FlushCalls] = static_cast<unsigned long long>(this->sendBufferFlushCalls);
+    localCounts[FlushedParticles] = static_cast<unsigned long long>(this->sendBufferFlushedParticles);
+    localCounts[ThresholdCalls] = static_cast<unsigned long long>(this->sendBufferFlushThresholdCalls);
+    localCounts[IdleDrainCalls] = static_cast<unsigned long long>(this->sendBufferFlushIdleDrainCalls);
+    localCounts[VerifyDrainCalls] = static_cast<unsigned long long>(this->sendBufferFlushVerifyDrainCalls);
+    localCounts[FinalDrainCalls] = static_cast<unsigned long long>(this->sendBufferFlushFinalDrainCalls);
+    localCounts[ThresholdParticles] = static_cast<unsigned long long>(this->sendBufferThresholdParticles);
+    localCounts[IdleDrainParticles] = static_cast<unsigned long long>(this->sendBufferIdleDrainParticles);
+    localCounts[VerifyDrainParticles] = static_cast<unsigned long long>(this->sendBufferVerifyDrainParticles);
+    localCounts[FinalDrainParticles] = static_cast<unsigned long long>(this->sendBufferFinalDrainParticles);
+    localCounts[IdleHoldoffSkips] = static_cast<unsigned long long>(this->sendBufferIdleHoldoffSkips);
+    localCounts[IdleHoldoffPendingParticles] = static_cast<unsigned long long>(this->sendBufferIdleHoldoffPendingParticles);
+    localCounts[MaxBatchParticles] = static_cast<unsigned long long>(this->sendBufferMaxBatchParticles);
+    localCounts[PeakPendingRanks] = static_cast<unsigned long long>(this->sendBufferPeakRanks);
+    localCounts[PeakPendingParticles] = static_cast<unsigned long long>(this->sendBufferPeakParticles);
+
+    enum TimeIndex
+    {
+        ManagerFlushScan,
+        ManagerFlushTransfer,
+        HandlerTransferTotal,
+        HandlerLockWait,
+        HandlerReallocationWait,
+        HandlerAvailReserve,
+        HandlerAvailIndexGet,
+        HandlerParticlePut,
+        HandlerTHLengthGet,
+        HandlerTHPut,
+        HandlerTHLengthPublish,
+        HandlerAVLengthFlush,
+        HandlerUnlock,
+        TimeIndexSize
+    };
+
+    std::array<double, TimeIndexSize> localTimes{};
+    localTimes[ManagerFlushScan] = flushScanTime;
+    localTimes[ManagerFlushTransfer] = flushTransferTime;
+
+    for(const RankHandler_t *handler : this->rankHandlers)
+    {
+        if(handler == nullptr)
+        {
+            continue;
+        }
+        localCounts[TransferCalls] += static_cast<unsigned long long>(handler->transferCallsThisStep);
+        localCounts[RemoteLockCalls] += static_cast<unsigned long long>(handler->remoteLockCallsThisStep);
+        localCounts[TransferReallocationRequests] += static_cast<unsigned long long>(handler->transferReallocationRequestsThisStep);
+        localCounts[TransferCallsWithReallocation] += static_cast<unsigned long long>(handler->transferCallsWithReallocationThisStep);
+        localCounts[ContiguousPutCalls] += static_cast<unsigned long long>(handler->contiguousParticlePutsThisStep);
+        localCounts[ScatterPutCalls] += static_cast<unsigned long long>(handler->scatterParticlePutsThisStep);
+        localCounts[ContiguousParticles] += static_cast<unsigned long long>(handler->contiguousParticlesThisStep);
+        localCounts[ScatterParticles] += static_cast<unsigned long long>(handler->scatterParticlesThisStep);
+        localCounts[TransferCallsWithContiguousAllocation] += static_cast<unsigned long long>(handler->transferCallsWithContiguousAllocationThisStep);
+        localCounts[TransferCallsWithoutContiguousAllocation] += static_cast<unsigned long long>(handler->transferCallsWithoutContiguousAllocationThisStep);
+
+        localTimes[HandlerTransferTotal] += handler->transferTotalTimeThisStep;
+        localTimes[HandlerLockWait] += handler->transferLockWaitTimeThisStep;
+        localTimes[HandlerReallocationWait] += handler->transferReallocationWaitTimeThisStep;
+        localTimes[HandlerAvailReserve] += handler->transferAvailReserveTimeThisStep;
+        localTimes[HandlerAvailIndexGet] += handler->transferAvailIndexGetTimeThisStep;
+        localTimes[HandlerParticlePut] += handler->transferParticlePutTimeThisStep;
+        localTimes[HandlerTHLengthGet] += handler->transferTHLengthGetTimeThisStep;
+        localTimes[HandlerTHPut] += handler->transferTHPutTimeThisStep;
+        localTimes[HandlerTHLengthPublish] += handler->transferTHLengthPublishTimeThisStep;
+        localTimes[HandlerAVLengthFlush] += handler->transferAVLengthFlushTimeThisStep;
+        localTimes[HandlerUnlock] += handler->transferUnlockTimeThisStep;
+    }
+
+    std::array<unsigned long long, CountIndexSize> sumCounts{};
+    std::array<unsigned long long, CountIndexSize> maxCounts{};
+    MPI_Reduce(localCounts.data(), sumCounts.data(), CountIndexSize, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce(localCounts.data(), maxCounts.data(), CountIndexSize, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+
+    std::array<double, TimeIndexSize> sumTimes{};
+    std::array<double, TimeIndexSize> maxTimes{};
+    MPI_Reduce(localTimes.data(), sumTimes.data(), TimeIndexSize, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce(localTimes.data(), maxTimes.data(), TimeIndexSize, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+
+    auto [maxTransferRank, maxTransferTime] = MPI_Max_loc(localTimes[HandlerTransferTotal], this->comm_world);
+    auto [maxParticlePutRank, maxParticlePutTime] = MPI_Max_loc(localTimes[HandlerParticlePut], this->comm_world);
+    auto [maxLockRank, maxLockTime] = MPI_Max_loc(localTimes[HandlerLockWait], this->comm_world);
+    auto [maxReallocationRank, maxReallocationTime] = MPI_Max_loc(localTimes[HandlerReallocationWait], this->comm_world);
+    auto [maxFlushFractionRank, maxFlushFraction] = MPI_Max_loc(elapsed > 0 ? flushTransferTime / elapsed : 0, this->comm_world);
+
+    if(this->rank_world != 0)
+    {
+        return;
+    }
+
+    double particlesPerFlush = sumCounts[FlushCalls] > 0
+        ? static_cast<double>(sumCounts[FlushedParticles]) / static_cast<double>(sumCounts[FlushCalls])
+        : 0;
+    unsigned long long totalMovedParticles = sumCounts[ContiguousParticles] + sumCounts[ScatterParticles];
+    double scatterFraction = totalMovedParticles > 0
+        ? static_cast<double>(sumCounts[ScatterParticles]) / static_cast<double>(totalMovedParticles)
+        : 0;
+
+    auto avgTime = [this, &sumTimes](TimeIndex idx)
+    {
+        return sumTimes[idx] / this->size_world;
+    };
+
+    std::cout << "Transfer diagnostics: flush calls sum/localMax=" << sumCounts[FlushCalls] << "/" << maxCounts[FlushCalls]
+              << ", particles sum=" << sumCounts[FlushedParticles]
+              << ", particlesPerFlush=" << particlesPerFlush
+              << ", maxBatch localMax=" << maxCounts[MaxBatchParticles]
+              << ", pending ranks/particles peak=" << maxCounts[PeakPendingRanks] << "/" << maxCounts[PeakPendingParticles]
+              << std::endl;
+    std::cout << "Transfer diagnostics reasons: calls threshold/idle/verify/final="
+              << sumCounts[ThresholdCalls] << "/" << sumCounts[IdleDrainCalls] << "/"
+              << sumCounts[VerifyDrainCalls] << "/" << sumCounts[FinalDrainCalls]
+              << ", particles threshold/idle/verify/final="
+              << sumCounts[ThresholdParticles] << "/" << sumCounts[IdleDrainParticles] << "/"
+              << sumCounts[VerifyDrainParticles] << "/" << sumCounts[FinalDrainParticles]
+              << ", idleHoldoff skips/pendingParticles=" << sumCounts[IdleHoldoffSkips]
+              << "/" << sumCounts[IdleHoldoffPendingParticles]
+              << std::endl;
+    std::cout << "Transfer diagnostics puts: contiguous/scatter calls="
+              << sumCounts[ContiguousPutCalls] << "/" << sumCounts[ScatterPutCalls]
+              << ", contiguous/scatter particles=" << sumCounts[ContiguousParticles] << "/" << sumCounts[ScatterParticles]
+              << ", scatterFraction=" << scatterFraction
+              << ", transfer calls contiguousAllocation yes/no="
+              << sumCounts[TransferCallsWithContiguousAllocation] << "/"
+              << sumCounts[TransferCallsWithoutContiguousAllocation]
+              << ", transfer calls sum/localMax=" << sumCounts[TransferCalls] << "/" << maxCounts[TransferCalls]
+              << ", remote locks sum/localMax=" << sumCounts[RemoteLockCalls] << "/" << maxCounts[RemoteLockCalls]
+              << ", realloc requests sum/localMax=" << sumCounts[TransferReallocationRequests] << "/" << maxCounts[TransferReallocationRequests]
+              << ", transfer calls with realloc sum/localMax=" << sumCounts[TransferCallsWithReallocation] << "/" << maxCounts[TransferCallsWithReallocation]
+              << std::endl;
+    std::cout << "Transfer diagnostics timing (max/avg): managerScan=" << maxTimes[ManagerFlushScan] << "/" << avgTime(ManagerFlushScan)
+              << "s, managerTransfer=" << maxTimes[ManagerFlushTransfer] << "/" << avgTime(ManagerFlushTransfer)
+              << "s, handlerTransfer=" << maxTimes[HandlerTransferTotal] << "/" << avgTime(HandlerTransferTotal)
+              << "s, lock=" << maxTimes[HandlerLockWait] << "/" << avgTime(HandlerLockWait)
+              << "s, reallocWait=" << maxTimes[HandlerReallocationWait] << "/" << avgTime(HandlerReallocationWait)
+              << "s, reserve=" << maxTimes[HandlerAvailReserve] << "/" << avgTime(HandlerAvailReserve)
+              << "s, avGet=" << maxTimes[HandlerAvailIndexGet] << "/" << avgTime(HandlerAvailIndexGet)
+              << "s, particlePut=" << maxTimes[HandlerParticlePut] << "/" << avgTime(HandlerParticlePut)
+              << "s, thGet=" << maxTimes[HandlerTHLengthGet] << "/" << avgTime(HandlerTHLengthGet)
+              << "s, thPut=" << maxTimes[HandlerTHPut] << "/" << avgTime(HandlerTHPut)
+              << "s, thPublish=" << maxTimes[HandlerTHLengthPublish] << "/" << avgTime(HandlerTHLengthPublish)
+              << "s, avFlush=" << maxTimes[HandlerAVLengthFlush] << "/" << avgTime(HandlerAVLengthFlush)
+              << "s, unlock=" << maxTimes[HandlerUnlock] << "/" << avgTime(HandlerUnlock)
+              << "s" << std::endl;
+    std::cout << "Transfer diagnostics max ranks: handlerTransfer=" << maxTransferRank << "(" << maxTransferTime
+              << "s), particlePut=" << maxParticlePutRank << "(" << maxParticlePutTime
+              << "s), lock=" << maxLockRank << "(" << maxLockTime
+              << "s), reallocWait=" << maxReallocationRank << "(" << maxReallocationTime
+              << "s), sameRankFlushTransferFraction=" << maxFlushFractionRank << "(" << maxFlushFraction << ")"
+              << std::endl;
+}
+#endif // TIMING
 
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
@@ -1393,24 +2087,45 @@ void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesN
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::PrepareHandlers(void)
 {
+    #ifdef TIMING
+    PrepareHandlersTiming timing;
+    auto totalStart = std::chrono::high_resolution_clock::now();
+    auto sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
+
     boost::container::flat_set<rank_t> oldNeighbors(this->neighbors.cbegin(), this->neighbors.cend());
+
+    #ifdef TIMING
+    timing.oldNeighborSet = MonteCarloTimingDetail::SecondsSince(sectionStart);
+
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
+    #ifdef TIMING
+    timing.neighborList = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    #endif // TIMING
 
     // Self handler: 1-process communicator, no coordination needed
+    #ifdef TIMING
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     if(this->rankHandlers[this->rank_world] == nullptr)
     {
-        MPI_Group worldGroup;
-        MPI_Comm_group(this->comm_world, &worldGroup);
-        MPI_Group group;
-        int ranks[1] = {this->rank_world};
-        int tag = this->rank_world * this->size_world + this->rank_world;
-        MPI_Group_incl(worldGroup, 1, ranks, &group);
-        MPI_Comm_create_group(this->comm_world, group, tag, &this->communicators[this->rank_world]);
-        MPI_Group_free(&group);
-        MPI_Group_free(&worldGroup);
-        this->rankHandlers[this->rank_world] = new RankHandler_t(DEFAULT_BUFFER_SIZE, this->comm_world, this->communicators[this->rank_world], this->reallocationAgent, this->rdma_type);
+        MPI_Comm_dup(MPI_COMM_SELF, &this->communicators[this->rank_world]);
+        this->rankHandlers[this->rank_world] = new RankHandler_t(this->config.initialBufferSize, this->comm_world, this->communicators[this->rank_world], this->reallocationAgent, this->rdma_type, this->config.minimalBuffSize);
+        #ifdef TIMING
+        timing.handlerCtorRma += this->rankHandlers[this->rank_world]->constructionRmaTime;
+        timing.handlerCtorMutex += this->rankHandlers[this->rank_world]->constructionMutexTime;
+        timing.handlerCtorReset += this->rankHandlers[this->rank_world]->constructionResetTime;
+        timing.handlerCtorPeerInfo += this->rankHandlers[this->rank_world]->constructionPeerInfoTime;
+        timing.handlerCtorTotal += this->rankHandlers[this->rank_world]->constructionTotalTime;
+        #endif // TIMING
     }
+    #ifdef TIMING
+    timing.selfHandler = MonteCarloTimingDetail::SecondsSince(sectionStart);
 
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     std::vector<rank_t> newNeighbors;
     for(rank_t rank : this->neighbors)
     {
@@ -1419,12 +2134,29 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
             newNeighbors.push_back(rank);
         }
     }
+    #ifdef TIMING
+    timing.findNewNeighbors = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    #endif // TIMING
 
     int numNewNeighbors = newNeighbors.size();
+    #ifdef TIMING
+    timing.localNewNeighbors = numNewNeighbors;
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     MPI_Allreduce(MPI_IN_PLACE, &numNewNeighbors, 1, MPI_INT, MPI_SUM, this->comm_world);
+    #ifdef TIMING
+    timing.newNeighborAllreduce = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.globalNewNeighbors = numNewNeighbors;
+    #endif // TIMING
+
     if(numNewNeighbors > 0)
     {
+        #ifdef TIMING
+        sectionStart = std::chrono::high_resolution_clock::now();
+        auto createHandler = [this, &timing](rank_t rank, MPI_Comm pair_comm)
+        #else
         auto createHandler = [this](rank_t rank, MPI_Comm pair_comm)
+        #endif // TIMING
         {
             if(this->rankHandlers[rank] != nullptr)
             {
@@ -1432,68 +2164,140 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
             }
 
             this->communicators[rank] = pair_comm;
-            this->rankHandlers[rank] = new RankHandler_t(DEFAULT_BUFFER_SIZE, this->comm_world, pair_comm, this->reallocationAgent, this->rdma_type);
+            this->rankHandlers[rank] = new RankHandler_t(this->config.initialBufferSize, this->comm_world, pair_comm, this->reallocationAgent, this->rdma_type, this->config.minimalBuffSize);
+            #ifdef TIMING
+            timing.handlerCtorRma += this->rankHandlers[rank]->constructionRmaTime;
+            timing.handlerCtorMutex += this->rankHandlers[rank]->constructionMutexTime;
+            timing.handlerCtorReset += this->rankHandlers[rank]->constructionResetTime;
+            timing.handlerCtorPeerInfo += this->rankHandlers[rank]->constructionPeerInfoTime;
+            timing.handlerCtorTotal += this->rankHandlers[rank]->constructionTotalTime;
+            #endif // TIMING
             if(this->rankHandlers[rank]->peer_rank_world != rank)
             {
                 UniversalError eo("Peer rank world does not match");
                 eo.addEntry("Rank", rank);
                 eo.addEntry("Peer Rank World", this->rankHandlers[rank]->peer_rank_world);
                 throw eo;
-            }    
+            }
         };
         ForEachRankSyncByList(this->comm_world, newNeighbors, createHandler);
+        #ifdef TIMING
+        timing.createHandlers = MonteCarloTimingDetail::SecondsSince(sectionStart);
+        #endif // TIMING
     }
 
+    #ifdef TIMING
     if(this->rank_world == 0)
     {
         std::cout << "Number of new neighbors: " << numNewNeighbors << std::endl;
     }
+
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->ResetAllBuffers();
+    #ifdef TIMING
+    timing.resetBuffers = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.total = MonteCarloTimingDetail::SecondsSince(totalStart);
+    this->lastPrepareHandlersTiming = timing;
+    #endif // TIMING
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::MonteCarloManager::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 {
     // if(this->Ncells != this->grid.GetPointNo())
     // {
     //     std::cout << "Changed grid for rank " << this->rank_world << ": " << this->Ncells << " -> " << this->grid.GetPointNo() <<  std::endl;
     // }
+    #ifdef TIMING
     auto managerStepStart = std::chrono::high_resolution_clock::now();
-
     START_TIMER_PREEMPTIVE("Initialization");
 
     auto initStart = std::chrono::high_resolution_clock::now();
+    double initGridMetaTime = 0;
+    double initPrepareHandlersTime = 0;
+    double initClearSendBuffersTime = 0;
+    double initShrinkBuffersTime = 0;
+    double initPutSelfParticlesTime = 0;
+    double initUpdateGridDataTime = 0;
+    double initPreStepTime = 0;
+    double initResetParticleStateTime = 0;
+    double initAddParticlesTime = 0;
+    double initBarrierTime = 0;
+    double amountManagerTime = 0;
+    double memoryDiagnosticsTime = 0;
+    double endStepShrinkBuffersTime = 0;
+
+    auto sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
+
     this->Ncells = this->grid.GetPointNo();
     this->ranks_ghost_map = GetGhostMap(this->grid);
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
-    
+
+    #ifdef TIMING
+    initGridMetaTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->PrepareHandlers();
-    this->ResetAllBuffers();
+
+    #ifdef TIMING
+    initPrepareHandlersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->sendBuffers.clear();
     this->sendBufferCycleCounter = 0;
+
+    #ifdef TIMING
+    initClearSendBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    #endif // TIMING
 
     bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());
     if(didRebalance)
     {
+        #ifdef TIMING
         if(this->rank_world == 0)
         {
             std::cout << "Doing shrink because of rebalance" << std::endl;
         }
-        this->ShrinkAllBuffers();
+        sectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
+        this->ShrinkBuffers();
+        #ifdef TIMING
+        initShrinkBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+        #endif // TIMING
     }
     this->lastBuildGeneration = this->grid.GetBuildGeneration();
 
     size_t initialParticlesNum = particleList.size();
+    this->cellsParticleCounters.assign(this->Ncells, 0);
+    for(const auto &p : particleList) this->cellsParticleCounters[p.cellIndex]++;
+    #ifdef TIMING
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->PutSelfParticles(std::move(particleList));
+    #ifdef TIMING
+    initPutSelfParticlesTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
 
     START_TIMER_PREEMPTIVE("Prestep");
 
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->physics->updateGridData();
+
+    #ifdef TIMING
+    initUpdateGridDataTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
     std::chrono::high_resolution_clock::time_point preStepStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
+
+    #ifdef TIMING
     std::chrono::high_resolution_clock::time_point preStepEnd = std::chrono::high_resolution_clock::now();
 
     double preStepSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(preStepEnd - preStepStart).count();
+    initPreStepTime = preStepSeconds;
     auto [maxPreStepRank, maxPreStepTime] = MPI_Max_loc(preStepSeconds, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepSeconds, &preStepSeconds, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
 
@@ -1501,27 +2305,58 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     {
         std::cout << "Prestep time: avg=" << preStepSeconds / this->size_world << "s, max=" << maxPreStepTime << "s (rank " << maxPreStepRank << ")" << std::endl;
     }
+    #endif // TIMING
 
     size_t preStepParticlesNum = newParticles1.size();
-    this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
+    for(const auto &p : newParticles1) this->cellsParticleCounters[p.cellIndex]++;
+    this->startParticleCount = initialParticlesNum + preStepParticlesNum;
+    this->beginningParticleCount = this->cellsParticleCounters;
 
     this->resetTracker();
     this->currentStep++;
     this->iteration = 0;
     this->allStepsCounter = 0;
     this->dynamicallyAdded = 0;
-    // this->neighbors = this->grid.GetDuplicatedProcs();    
+    // this->neighbors = this->grid.GetDuplicatedProcs();
     this->cellsStepsCounters.assign(this->Ncells, 0);
     this->transfersCounter = 0;
 
+    #ifdef TIMING
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     for(RankHandler_t *handler : this->rankHandlers)
     {
         if(handler == nullptr)
         {
             continue;
         }
+        #ifdef TIMING
         handler->reallocationTime = 0;
         handler->reallocationsThisStep = 0;
+        handler->peakBufferUsage = 0;
+        handler->transferCallsThisStep = 0;
+        handler->contiguousParticlePutsThisStep = 0;
+        handler->contiguousParticlesThisStep = 0;
+        handler->scatterParticlePutsThisStep = 0;
+        handler->scatterParticlesThisStep = 0;
+        handler->transferCallsWithContiguousAllocationThisStep = 0;
+        handler->transferCallsWithoutContiguousAllocationThisStep = 0;
+        handler->transferReallocationRequestsThisStep = 0;
+        handler->transferCallsWithReallocationThisStep = 0;
+        handler->remoteLockCallsThisStep = 0;
+        handler->transferTotalTimeThisStep = 0;
+        handler->transferLockWaitTimeThisStep = 0;
+        handler->transferReallocationWaitTimeThisStep = 0;
+        handler->transferAvailReserveTimeThisStep = 0;
+        handler->transferAvailIndexGetTimeThisStep = 0;
+        handler->transferParticlePutTimeThisStep = 0;
+        handler->transferTHLengthGetTimeThisStep = 0;
+        handler->transferTHPutTimeThisStep = 0;
+        handler->transferTHLengthPublishTimeThisStep = 0;
+        handler->transferAVLengthFlushTimeThisStep = 0;
+        handler->transferUnlockTimeThisStep = 0;
+        #endif // TIMING
+
         int length = handler->th_length;
         for(int i = 0; i < length; i++)
         {
@@ -1543,68 +2378,189 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             p.steps = 0;
         }
     }
+    #ifdef TIMING
+    initResetParticleStateTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
 
     auto addParticlesStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     {
+        #ifdef TIMING
         START_TIMER("Adding Particles");
+        #endif // TIMING
         this->AddParticles(newParticles1);
         std::vector<MCParticle>().swap(newParticles1);
     }
+    #ifdef TIMING
+    initAddParticlesTime = MonteCarloTimingDetail::SecondsSince(addParticlesStart);
 
+    sectionStart = std::chrono::high_resolution_clock::now();
     MPI_Barrier(this->comm_world);
+    initBarrierTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
     double initTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - initStart).count();
+    #else
+    MPI_Barrier(this->comm_world);
+    #endif // TIMING
 
     size_t numParticles = initialParticlesNum + preStepParticlesNum;
+    #ifdef TIMING
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+
+    {
+        int localParticleCount = static_cast<int>(initialParticlesNum + preStepParticlesNum);
+        auto [maxParticleRank, maxParticleCount] = MPI_Max_loc(localParticleCount, this->comm_world);
+        if(this->rank_world == 0)
+        {
+            std::cout << "Particles per rank: avg=" << static_cast<double>(numParticles) / this->size_world
+                      << ", max=" << maxParticleCount << " (rank " << maxParticleRank << ")" << std::endl;
+        }
+    }
+    #endif // TIMING
 
     int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
 
     this->localDecrementAmount = 0;
+    #ifdef TIMING
+    this->pureComputeTime = 0;
+    this->sendBufferFlushCalls = 0;
+    this->sendBufferFlushedParticles = 0;
+    this->sendBufferPeakRanks = 0;
+    this->sendBufferPeakParticles = 0;
+    this->sendBufferFlushThresholdCalls = 0;
+    this->sendBufferFlushIdleDrainCalls = 0;
+    this->sendBufferFlushVerifyDrainCalls = 0;
+    this->sendBufferFlushFinalDrainCalls = 0;
+    this->sendBufferThresholdParticles = 0;
+    this->sendBufferIdleDrainParticles = 0;
+    this->sendBufferVerifyDrainParticles = 0;
+    this->sendBufferFinalDrainParticles = 0;
+    this->sendBufferMaxBatchParticles = 0;
+    this->sendBufferMinNonzeroBatchParticles = 0;
+    this->sendBufferIdleHoldoffSkips = 0;
+    this->sendBufferIdleHoldoffPendingParticles = 0;
 
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     AmountManager amountManager(this->comm_world);
     amountManager.Initialize(startingParticleNum);
+    #ifdef TIMING
+    amountManagerTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    #endif // TIMING
 
     MonteCarloStepFinalData data;
     size_t numOfCounterDecrementations = 0;
-    double addParticlesTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - addParticlesStart).count();
+    #ifdef TIMING
+    double addParticlesTime = initAddParticlesTime;
+    #endif // TIMING
 
     {
         const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(typename RankHandler_t::index_t);
-        this->handlerMemoryBytes_ = 0;
-        for (const RankHandler_t *h : this->rankHandlers)
-            if (h != nullptr) this->handlerMemoryBytes_ += h->buffsize * bytesPerSlot;
+        this->handlerMemoryBytes = 0;
+        for(const RankHandler_t *h : this->rankHandlers)
+        {
+            if(h != nullptr)
+            {
+                this->handlerMemoryBytes += h->buffsize * bytesPerSlot;
+            }
+        }
     }
 
+    #ifdef TIMING
+    sectionStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->PrintMemoryDiagnostics(initialParticlesNum, preStepParticlesNum);
+    #ifdef TIMING
+    memoryDiagnosticsTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
 
     auto start = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
 
     const bool &verify = amountManager.GetVerifyRef();
     const bool &done = amountManager.GetDoneRef();
+    #ifdef TIMING
+    double mainReallocationPollTime = 0;
+    double mainHandleAllTime = 0;
+    double mainFlushSendBuffersTime = 0;
+    double mainFlushSendScanTime = 0;
+    double mainFlushSendTransferTime = 0;
+    double mainAmountDecreaseTime = 0;
+    double mainAmountProgressTime = 0;
+    double mainVerifyTime = 0;
+    double mainExitBarrierTime = 0;
+    size_t mainVerifyCount = 0;
+    size_t mainAmountProgressCalls = 0;
+    #endif // TIMING
 
     MEMORY_DEBUG_PRINT("Before main loop in MCM");
+    #ifdef TIMING
     START_TIMER_PREEMPTIVE("Main Loop");
+    #endif // TIMING
+
+    auto loopStart = std::chrono::high_resolution_clock::now();
     try
     {
         while(not done)
         {
+            #ifdef TIMING
+            auto mainLoopSectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
             this->reallocationAgent->HandleAllWaitingReallocations();
-            this->HandleAll(data);
+            #ifdef TIMING
+            mainReallocationPollTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
 
-            this->FlushSendBuffers();
+            mainLoopSectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
+            bool localWorkDone = this->HandleAll(data);
+            #ifdef TIMING
+            mainHandleAllTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
 
+            mainLoopSectionStart = std::chrono::high_resolution_clock::now();
+            double flushTransferTime = 0;
+            this->FlushSendBuffers(localWorkDone, flushTransferTime);
+            double flushTotalTime = MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+            mainFlushSendBuffersTime += flushTotalTime;
+            mainFlushSendTransferTime += flushTransferTime;
+            mainFlushSendScanTime += std::max(0.0, flushTotalTime - flushTransferTime);
+            #else
+            this->FlushSendBuffers(localWorkDone);
+            #endif // TIMING
+
+            #ifdef TIMING
+            mainLoopSectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
             amountManager.Decrease(this->localDecrementAmount);
             this->localDecrementAmount = 0;
+            #ifdef TIMING
+            mainAmountDecreaseTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+            #endif // TIMING
 
-            amountManager.Progress();
-            
+            size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
+            if(this->iteration % amountProgressMinCycles == 0)
+            {
+                #ifdef TIMING
+                mainLoopSectionStart = std::chrono::high_resolution_clock::now();
+                #endif // TIMING
+                amountManager.Progress();
+                #ifdef TIMING
+                mainAmountProgressTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+                mainAmountProgressCalls++;
+                #endif // TIMING
+            }
+
             if(verify)
             {
+                #ifdef TIMING
+                mainVerifyCount++;
+                mainLoopSectionStart = std::chrono::high_resolution_clock::now();
+                this->FlushAllSendBuffers(SendFlushReason::VerifyDrain);
+                #else
                 this->FlushAllSendBuffers();
+                #endif // TIMING
                 this->reallocationAgent->HandleAllWaitingReallocations();
-                bool ok = amountManager.GetPendingValue() == 0
-                          and this->AllSendBuffersEmpty();
+                bool ok = this->AllSendBuffersEmpty();
                 amountManager.Verify(ok);
+                #ifdef TIMING
+                mainVerifyTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+                #endif // TIMING
             }
 
             this->iteration++;
@@ -1616,15 +2572,115 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         throw;
     }
 
+    auto loopEnd = std::chrono::high_resolution_clock::now();
+    double loopTime = std::chrono::duration_cast<std::chrono::duration<double>>(loopEnd - loopStart).count();
+    double localStepCount = 0;
+    for(size_t counter : this->cellsStepsCounters)
+    {
+        localStepCount += static_cast<double>(counter);
+    }
+    double avgSteps = localStepCount;
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &avgSteps, &avgSteps, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
+    avgSteps /= this->size_world;
+    double maxSteps = localStepCount;
+    MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &maxSteps, &maxSteps, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "Loop time: " << loopTime << " seconds, max steps: " << maxSteps << ", avg steps: " << avgSteps << std::endl;
+    }
+
+    #ifdef TIMING
+    sectionStart = std::chrono::high_resolution_clock::now();
     MPI_Barrier(this->comm_world);
+    mainExitBarrierTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
-   
+
+    {
+        size_t myNumSteps = 0;
+        for(size_t counter : this->cellsStepsCounters)
+        {
+            myNumSteps += counter;
+        }
+        double localCompute = this->pureComputeTime;
+        struct { double val; int rank; } myCompute, maxCompute;
+        myCompute.val = localCompute;
+        myCompute.rank = this->rank_world;
+        MPI_Allreduce(&myCompute, &maxCompute, 1, MPI_DOUBLE_INT, MPI_MAXLOC, this->comm_world);
+        double avgCompute = localCompute;
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &avgCompute, &avgCompute, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
+
+        struct { long val; int rank; } myParticles, minParticles, maxParticles;
+        myParticles.val = static_cast<long>(this->startParticleCount);
+        myParticles.rank = this->rank_world;
+        MPI_Allreduce(&myParticles, &minParticles, 1, MPI_LONG_INT, MPI_MINLOC, this->comm_world);
+        MPI_Allreduce(&myParticles, &maxParticles, 1, MPI_LONG_INT, MPI_MAXLOC, this->comm_world);
+
+        struct { long val; int rank; } mySteps, minSteps, maxSteps;
+        mySteps.val = static_cast<long>(myNumSteps);
+        mySteps.rank = this->rank_world;
+        MPI_Allreduce(&mySteps, &minSteps, 1, MPI_LONG_INT, MPI_MINLOC, this->comm_world);
+        MPI_Allreduce(&mySteps, &maxSteps, 1, MPI_LONG_INT, MPI_MAXLOC, this->comm_world);
+
+        size_t steps_maxComputeRank = myNumSteps;
+        MPI_Bcast(&steps_maxComputeRank, 1, MPI_UNSIGNED_LONG_LONG, maxCompute.rank, this->comm_world);
+        size_t steps_minParticlesRank = myNumSteps;
+        MPI_Bcast(&steps_minParticlesRank, 1, MPI_UNSIGNED_LONG_LONG, minParticles.rank, this->comm_world);
+        size_t steps_maxParticlesRank = myNumSteps;
+        MPI_Bcast(&steps_maxParticlesRank, 1, MPI_UNSIGNED_LONG_LONG, maxParticles.rank, this->comm_world);
+
+        size_t particles_maxComputeRank = this->startParticleCount;
+        MPI_Bcast(&particles_maxComputeRank, 1, MPI_UNSIGNED_LONG_LONG, maxCompute.rank, this->comm_world);
+        size_t particles_minStepsRank = this->startParticleCount;
+        MPI_Bcast(&particles_minStepsRank, 1, MPI_UNSIGNED_LONG_LONG, minSteps.rank, this->comm_world);
+        size_t particles_maxStepsRank = this->startParticleCount;
+        MPI_Bcast(&particles_maxStepsRank, 1, MPI_UNSIGNED_LONG_LONG, maxSteps.rank, this->comm_world);
+
+        size_t myCells = this->Ncells;
+        size_t cells_minParticlesRank = myCells;
+        MPI_Bcast(&cells_minParticlesRank, 1, MPI_UNSIGNED_LONG_LONG, minParticles.rank, this->comm_world);
+        size_t cells_maxParticlesRank = myCells;
+        MPI_Bcast(&cells_maxParticlesRank, 1, MPI_UNSIGNED_LONG_LONG, maxParticles.rank, this->comm_world);
+        size_t cells_maxComputeRank = myCells;
+        MPI_Bcast(&cells_maxComputeRank, 1, MPI_UNSIGNED_LONG_LONG, maxCompute.rank, this->comm_world);
+        size_t cells_minStepsRank = myCells;
+        MPI_Bcast(&cells_minStepsRank, 1, MPI_UNSIGNED_LONG_LONG, minSteps.rank, this->comm_world);
+        size_t cells_maxStepsRank = myCells;
+        MPI_Bcast(&cells_maxStepsRank, 1, MPI_UNSIGNED_LONG_LONG, maxSteps.rank, this->comm_world);
+
+        double compute_minParticlesRank = localCompute;
+        MPI_Bcast(&compute_minParticlesRank, 1, MPI_DOUBLE, minParticles.rank, this->comm_world);
+        double compute_maxParticlesRank = localCompute;
+        MPI_Bcast(&compute_maxParticlesRank, 1, MPI_DOUBLE, maxParticles.rank, this->comm_world);
+        double compute_minStepsRank = localCompute;
+        MPI_Bcast(&compute_minStepsRank, 1, MPI_DOUBLE, minSteps.rank, this->comm_world);
+        double compute_maxStepsRank = localCompute;
+        MPI_Bcast(&compute_maxStepsRank, 1, MPI_DOUBLE, maxSteps.rank, this->comm_world);
+
+        if(this->rank_world == 0)
+        {
+            std::cout << "Pure particle compute time: max=" << maxCompute.val << "s (rank " << maxCompute.rank << ", " << particles_maxComputeRank << " particles), avg=" << avgCompute / this->size_world << "s" << std::endl;
+            std::cout << "Step counts: "
+                      << "least-particles rank " << minParticles.rank << " (" << minParticles.val << " particles, " << steps_minParticlesRank << " steps, " << cells_minParticlesRank << " cells, " << compute_minParticlesRank << "s compute), "
+                      << "most-particles rank " << maxParticles.rank << " (" << maxParticles.val << " particles, " << steps_maxParticlesRank << " steps, " << cells_maxParticlesRank << " cells, " << compute_maxParticlesRank << "s compute), "
+                      << "max-compute rank " << maxCompute.rank << " (" << particles_maxComputeRank << " particles, " << steps_maxComputeRank << " steps, " << cells_maxComputeRank << " cells, " << maxCompute.val << "s compute)"
+                      << std::endl;
+            std::cout << "Step extremes: "
+                      << "min-steps rank " << minSteps.rank << " (" << minSteps.val << " steps, " << particles_minStepsRank << " particles, " << cells_minStepsRank << " cells, " << compute_minStepsRank << "s compute), "
+                      << "max-steps rank " << maxSteps.rank << " (" << maxSteps.val << " steps, " << particles_maxStepsRank << " particles, " << cells_maxStepsRank << " cells, " << compute_maxStepsRank << "s compute)"
+                      << std::endl;
+        }
+    }
+    #endif // TIMING
+
+    #ifdef TIMING
     START_TIMER_PREEMPTIVE("Boundary Condition");
 
     MPI_Barrier(this->comm_world);
     start = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     data.remaining = this->populationControl->activate(data.remaining);
+    #ifdef TIMING
     MPI_Barrier(this->comm_world);
     end = std::chrono::high_resolution_clock::now();
     double populationControlTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
@@ -1632,16 +2688,20 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     START_TIMER_PREEMPTIVE("Poststep");
     MPI_Barrier(this->comm_world);
     start = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     this->physics->postStep(data.remaining, fullDt);
+    #ifdef TIMING
     MPI_Barrier(this->comm_world);
     end = std::chrono::high_resolution_clock::now();
     double postStepTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
     START_TIMER_PREEMPTIVE("Diagnostics");
     auto diagnosticsStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
 
     size_t newParticlesNum = data.remaining.size();
-    this->endParticleCount_ = newParticlesNum;
+    this->endParticleCount = newParticlesNum;
+    #ifdef TIMING
     size_t leavingNumber = data.leavingCount;
 
     size_t totalSteps = this->allStepsCounter;
@@ -1668,7 +2728,9 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         totalReallocations += handler->reallocationsThisStep;
     }
 
-    // std::cout << "leavingNumber = " << leavingNumber << " and newParticlesNum = " << newParticlesNum << std::endl; 
+    double localReallocationTime = reallocationTime;
+
+    // std::cout << "leavingNumber = " << leavingNumber << " and newParticlesNum = " << newParticlesNum << std::endl;
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &initialParticlesNum, &initialParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &preStepParticlesNum, &preStepParticlesNum, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &leavingNumber, &leavingNumber, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
@@ -1690,6 +2752,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     }
     std::cout.flush();
     MPI_Barrier(this->comm_world);
+    #endif // TIMING
 
     for(const RankHandler_t *handler : this->rankHandlers)
     {
@@ -1706,21 +2769,30 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             throw eo;
         }
     }
-    
+
     if(not didRebalance)
     {
-        if(this->currentStep > 0 and this->currentStep % SHRINK_BUFFERS_CYCLE == 0)
+        if(this->currentStep > 0 and this->config.shrinkBuffersCycle > 0 and this->currentStep % this->config.shrinkBuffersCycle == 0)
         {
+            #ifdef TIMING
             if(this->rank_world == 0)
             {
-                std::cout << "Doing shrink becuase of step number (currentStep=" << this->currentStep << ", SHRINK_BUFFERS_CYCLE=" << SHRINK_BUFFERS_CYCLE << ")" << std::endl;
+                std::cout << "Doing shrink becuase of step number (currentStep=" << this->currentStep << ", shrinkBuffersCycle=" << this->config.shrinkBuffersCycle << ")" << std::endl;
             }
-            this->ShrinkAllBuffers();
+            sectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
+            this->ShrinkBuffers();
+            #ifdef TIMING
+            endStepShrinkBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+            #endif // TIMING
         }
     }
 
+    #ifdef TIMING
     double diagnosticsTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - diagnosticsStart).count();
     double managerTotalTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStepStart).count();
+    double localInitTime = initTime;
+    double localManagerTotalTime = managerTotalTime;
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &initTime, &initTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &addParticlesTime, &addParticlesTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
     MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &diagnosticsTime, &diagnosticsTime, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
@@ -1734,6 +2806,213 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                   << "s, diagnostics=" << diagnosticsTime << "s, total=" << managerTotalTime
                   << "s, previously accounted=" << accounted << "s" << std::endl;
     }
+
+    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Main loop detail",
+        {
+            {"pollRealloc", mainReallocationPollTime},
+            {"handleAll", mainHandleAllTime},
+            {"flushSends", mainFlushSendBuffersTime},
+            {"flushScan", mainFlushSendScanTime},
+            {"flushTransfer", mainFlushSendTransferTime},
+            {"amountDecrease", mainAmountDecreaseTime},
+            {"amountProgress", mainAmountProgressTime},
+            {"verify", mainVerifyTime},
+            {"exitBarrier", mainExitBarrierTime},
+            {"total", elapsed}
+        });
+
+    {
+        unsigned long long localIterations = static_cast<unsigned long long>(this->iteration);
+        unsigned long long maxIterations = localIterations;
+        unsigned long long sumIterations = localIterations;
+        unsigned long long localVerifyCount = static_cast<unsigned long long>(mainVerifyCount);
+        unsigned long long sumVerifyCount = localVerifyCount;
+        unsigned long long localAmountProgressCalls = static_cast<unsigned long long>(mainAmountProgressCalls);
+        unsigned long long maxAmountProgressCalls = localAmountProgressCalls;
+        unsigned long long sumAmountProgressCalls = localAmountProgressCalls;
+        unsigned long long localFlushCalls = static_cast<unsigned long long>(this->sendBufferFlushCalls);
+        unsigned long long maxFlushCalls = localFlushCalls;
+        unsigned long long sumFlushCalls = localFlushCalls;
+        unsigned long long localFlushedParticles = static_cast<unsigned long long>(this->sendBufferFlushedParticles);
+        unsigned long long sumFlushedParticles = localFlushedParticles;
+        unsigned long long localContiguousPutCalls = 0;
+        unsigned long long localScatterPutCalls = 0;
+        unsigned long long localContiguousPutParticles = 0;
+        unsigned long long localScatterPutParticles = 0;
+        unsigned long long localTransferCallsWithContiguousAllocation = 0;
+        unsigned long long localTransferCallsWithoutContiguousAllocation = 0;
+        for(const RankHandler_t *h : this->rankHandlers)
+        {
+            if(h == nullptr)
+            {
+                continue;
+            }
+            localContiguousPutCalls += static_cast<unsigned long long>(h->contiguousParticlePutsThisStep);
+            localScatterPutCalls += static_cast<unsigned long long>(h->scatterParticlePutsThisStep);
+            localContiguousPutParticles += static_cast<unsigned long long>(h->contiguousParticlesThisStep);
+            localScatterPutParticles += static_cast<unsigned long long>(h->scatterParticlesThisStep);
+            localTransferCallsWithContiguousAllocation += static_cast<unsigned long long>(h->transferCallsWithContiguousAllocationThisStep);
+            localTransferCallsWithoutContiguousAllocation += static_cast<unsigned long long>(h->transferCallsWithoutContiguousAllocationThisStep);
+        }
+        unsigned long long sumContiguousPutCalls = localContiguousPutCalls;
+        unsigned long long sumScatterPutCalls = localScatterPutCalls;
+        unsigned long long sumContiguousPutParticles = localContiguousPutParticles;
+        unsigned long long sumScatterPutParticles = localScatterPutParticles;
+        unsigned long long sumTransferCallsWithContiguousAllocation = localTransferCallsWithContiguousAllocation;
+        unsigned long long sumTransferCallsWithoutContiguousAllocation = localTransferCallsWithoutContiguousAllocation;
+        unsigned long long localPeakRanks = static_cast<unsigned long long>(this->sendBufferPeakRanks);
+        unsigned long long maxPeakRanks = localPeakRanks;
+        unsigned long long localPeakParticles = static_cast<unsigned long long>(this->sendBufferPeakParticles);
+        unsigned long long maxPeakParticles = localPeakParticles;
+
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxIterations, &maxIterations, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumIterations, &sumIterations, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumVerifyCount, &sumVerifyCount, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxAmountProgressCalls, &maxAmountProgressCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumAmountProgressCalls, &sumAmountProgressCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxFlushCalls, &maxFlushCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumFlushCalls, &sumFlushCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumFlushedParticles, &sumFlushedParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumContiguousPutCalls, &sumContiguousPutCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumScatterPutCalls, &sumScatterPutCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumContiguousPutParticles, &sumContiguousPutParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumScatterPutParticles, &sumScatterPutParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumTransferCallsWithContiguousAllocation, &sumTransferCallsWithContiguousAllocation, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &sumTransferCallsWithoutContiguousAllocation, &sumTransferCallsWithoutContiguousAllocation, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxPeakRanks, &maxPeakRanks, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+        MPI_Reduce(this->rank_world == 0 ? MPI_IN_PLACE : &maxPeakParticles, &maxPeakParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, this->comm_world);
+
+        if(this->rank_world == 0)
+        {
+            std::cout << "Main loop counts: iterations max/avg=" << maxIterations << "/" << static_cast<double>(sumIterations) / this->size_world
+                      << ", verify total=" << sumVerifyCount
+                      << ", amountProgress calls total/localMax=" << sumAmountProgressCalls << "/" << maxAmountProgressCalls
+                      << ", sendFlush calls total/localMax=" << sumFlushCalls << "/" << maxFlushCalls
+                      << ", particlesFlushed total=" << sumFlushedParticles
+                      << ", contiguous/scatter put calls=" << sumContiguousPutCalls << "/" << sumScatterPutCalls
+                      << ", contiguous/scatter particles=" << sumContiguousPutParticles << "/" << sumScatterPutParticles
+                      << ", transfer calls contiguousAllocation yes/no=" << sumTransferCallsWithContiguousAllocation
+                      << "/" << sumTransferCallsWithoutContiguousAllocation
+                      << ", sendBuffer pending ranks peak=" << maxPeakRanks
+                      << ", pending particles peak=" << maxPeakParticles
+                      << std::endl;
+        }
+    }
+
+    this->PrintTransferDiagnostics(elapsed, mainFlushSendScanTime, mainFlushSendTransferTime);
+
+    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Init detail",
+        {
+            {"gridMeta", initGridMetaTime},
+            {"prepareHandlers", initPrepareHandlersTime},
+            {"clearSendBuffers", initClearSendBuffersTime},
+            {"shrinkBuffers", initShrinkBuffersTime},
+            {"putSelfParticles", initPutSelfParticlesTime},
+            {"updateGridData", initUpdateGridDataTime},
+            {"preStep", initPreStepTime},
+            {"resetParticleState", initResetParticleStateTime},
+            {"addParticles", initAddParticlesTime},
+            {"initBarrier", initBarrierTime},
+            {"total", localInitTime}
+        });
+
+    const PrepareHandlersTiming &prepareTiming = this->lastPrepareHandlersTiming;
+    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "PrepareHandlers detail",
+        {
+            {"oldNeighborSet", prepareTiming.oldNeighborSet},
+            {"neighborList", prepareTiming.neighborList},
+            {"selfHandler", prepareTiming.selfHandler},
+            {"findNewNeighbors", prepareTiming.findNewNeighbors},
+            {"newNeighborAllreduce", prepareTiming.newNeighborAllreduce},
+            {"createHandlers", prepareTiming.createHandlers},
+            {"resetBuffers", prepareTiming.resetBuffers},
+            {"total", prepareTiming.total}
+        });
+
+    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Handler constructor detail",
+        {
+            {"rmaCreate", prepareTiming.handlerCtorRma},
+            {"mutexCreate", prepareTiming.handlerCtorMutex},
+            {"reset", prepareTiming.handlerCtorReset},
+            {"peerInfo", prepareTiming.handlerCtorPeerInfo},
+            {"total", prepareTiming.handlerCtorTotal}
+        });
+
+    int maxLocalNewNeighbors = 0;
+    int sumLocalNewNeighbors = 0;
+    int localNewNeighbors = prepareTiming.localNewNeighbors;
+    MPI_Reduce(&localNewNeighbors, &maxLocalNewNeighbors, 1, MPI_INT, MPI_MAX, 0, this->comm_world);
+    MPI_Reduce(&localNewNeighbors, &sumLocalNewNeighbors, 1, MPI_INT, MPI_SUM, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "PrepareHandlers counts: newNeighborsTotal=" << prepareTiming.globalNewNeighbors
+                  << ", localMax=" << maxLocalNewNeighbors
+                  << ", localAvg=" << static_cast<double>(sumLocalNewNeighbors) / this->size_world
+                  << std::endl;
+    }
+
+    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Pre/post-main detail",
+        {
+            {"amountManager", amountManagerTime},
+            {"memoryDiagnostics", memoryDiagnosticsTime},
+            {"endStepShrinkBuffers", endStepShrinkBuffersTime},
+            {"managerTotal", localManagerTotalTime}
+        });
+
+    {
+        MonteCarloConfig::StepStats adaptStats;
+        unsigned long long globalSendFlushCalls = static_cast<unsigned long long>(this->sendBufferFlushCalls);
+        unsigned long long globalSendFlushedParticles = static_cast<unsigned long long>(this->sendBufferFlushedParticles);
+        unsigned long long globalSendIdleDrainFlushCalls = static_cast<unsigned long long>(this->sendBufferFlushIdleDrainCalls);
+        unsigned long long globalSendIdleDrainFlushedParticles = static_cast<unsigned long long>(this->sendBufferIdleDrainParticles);
+        unsigned long long globalMaxPendingSendBufferParticles = static_cast<unsigned long long>(this->sendBufferPeakParticles);
+        double globalFlushTransferTime = mainFlushSendTransferTime;
+        double globalElapsedTime = elapsed;
+        MPI_Allreduce(MPI_IN_PLACE, &globalSendFlushCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm_world);
+        MPI_Allreduce(MPI_IN_PLACE, &globalSendFlushedParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm_world);
+        MPI_Allreduce(MPI_IN_PLACE, &globalSendIdleDrainFlushCalls, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm_world);
+        MPI_Allreduce(MPI_IN_PLACE, &globalSendIdleDrainFlushedParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, this->comm_world);
+        MPI_Allreduce(MPI_IN_PLACE, &globalMaxPendingSendBufferParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, this->comm_world);
+        MPI_Allreduce(MPI_IN_PLACE, &globalFlushTransferTime, 1, MPI_DOUBLE, MPI_SUM, this->comm_world);
+        MPI_Allreduce(MPI_IN_PLACE, &globalElapsedTime, 1, MPI_DOUBLE, MPI_SUM, this->comm_world);
+        adaptStats.totalReallocationTime = localReallocationTime;
+        adaptStats.totalReallocations = totalReallocations;
+        adaptStats.mainLoopTime = elapsed;
+        adaptStats.totalIterations = this->iteration;
+        adaptStats.totalTransfers = this->transfersCounter;
+        adaptStats.totalSendFlushCalls = static_cast<size_t>(globalSendFlushCalls);
+        adaptStats.totalSendFlushedParticles = static_cast<size_t>(globalSendFlushedParticles);
+        adaptStats.totalSendIdleDrainFlushCalls = static_cast<size_t>(globalSendIdleDrainFlushCalls);
+        adaptStats.totalSendIdleDrainFlushedParticles = static_cast<size_t>(globalSendIdleDrainFlushedParticles);
+        adaptStats.avgFlushTransferFraction = globalElapsedTime > 0 ? globalFlushTransferTime / globalElapsedTime : 0;
+        adaptStats.maxPendingSendBufferParticles = static_cast<size_t>(globalMaxPendingSendBufferParticles);
+        size_t maxPeak = 0;
+        size_t handlerCount = 0;
+        for(RankHandler_t *h : this->rankHandlers)
+        {
+            if(h == nullptr)
+            {
+                continue;
+            }
+            handlerCount++;
+            maxPeak = std::max(maxPeak, h->peakBufferUsage);
+            h->peakBufferUsage = 0;
+        }
+        adaptStats.numHandlers = handlerCount;
+        adaptStats.peakBufferUsage = maxPeak;
+        this->config.Adapt(adaptStats, this->rank_world);
+
+        unsigned long long syncShrinkCycle = this->config.shrinkBuffersCycle;
+        MPI_Allreduce(MPI_IN_PLACE, &syncShrinkCycle, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, this->comm_world);
+        this->config.shrinkBuffersCycle = static_cast<size_t>(syncShrinkCycle);
+        unsigned long long syncSendBufferMinSize = static_cast<unsigned long long>(this->config.sendBufferMinSize);
+        MPI_Bcast(&syncSendBufferMinSize, 1, MPI_UNSIGNED_LONG_LONG, 0, this->comm_world);
+        this->config.sendBufferMinSize = static_cast<size_t>(syncSendBufferMinSize);
+        unsigned long long syncSmallIdleFlushHoldoffCycles = static_cast<unsigned long long>(this->config.GetSmallIdleFlushHoldoffCycles());
+        MPI_Bcast(&syncSmallIdleFlushHoldoffCycles, 1, MPI_UNSIGNED_LONG_LONG, 0, this->comm_world);
+        this->config.SyncSmallIdleFlushHoldoffCycles(static_cast<size_t>(syncSmallIdleFlushHoldoffCycles));
+    }
+    #endif // TIMING
 
     return data.remaining;
 }
