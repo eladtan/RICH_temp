@@ -6,7 +6,13 @@
 #include <vector>
 #include <memory>
 #include <iostream>
+#ifdef TIMING
 #include <chrono>
+#endif // TIMING
+#include <cstdint>
+#include <cstring>
+#include <algorithm>
+#include <utility>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
 #include "utils/rma-helpers/DistributedMutex.hpp"
@@ -14,11 +20,8 @@
 #include "ReallocationAgent.hpp"
 #include "utils/rma/RMAFactory.hpp"
 #include "misc/memory_debug.hpp"
+#include "MonteCarloConfig.hpp"
 
-#define BUFFER_REALLOCATION_FACTOR 1.5 // 1.618033 // golden ratio
-#define MINIMAL_BUFF_SIZE 50
-#define BUFFER_SHRINK_FACTOR 0.1
-#define BUFFER_SHRINK_NEIGHBOR_FACTOR 0.5
 #define MPI_INDEX_T MPI_UINT32_T
 
 template<typename T, typename Grid>
@@ -28,7 +31,8 @@ public:
     using index_t = uint32_t;
     using MCParticle = MonteCarloParticle<T, Grid>;
 
-    RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
+    RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA,
+                size_t minimalBuffSize = 50);
     
     ~RankHandler();
     
@@ -78,10 +82,42 @@ public:
         }
     }
 
+    double requestedFactor;
+    #ifdef TIMING
     double reallocationTime;
     size_t reallocationsThisStep;
     size_t reallocationsTotal;
-    double requestedFactor;
+    size_t peakBufferUsage;
+    size_t transferCallsThisStep;
+    size_t contiguousParticlePutsThisStep;
+    size_t contiguousParticlesThisStep;
+    size_t scatterParticlePutsThisStep;
+    size_t scatterParticlesThisStep;
+    size_t transferCallsWithContiguousAllocationThisStep;
+    size_t transferCallsWithoutContiguousAllocationThisStep;
+    size_t transferReallocationRequestsThisStep;
+    size_t transferCallsWithReallocationThisStep;
+    size_t remoteLockCallsThisStep;
+    double transferTotalTimeThisStep;
+    double transferLockWaitTimeThisStep;
+    double transferReallocationWaitTimeThisStep;
+    double transferAvailReserveTimeThisStep;
+    double transferAvailIndexGetTimeThisStep;
+    double transferParticlePutTimeThisStep;
+    double transferTHLengthGetTimeThisStep;
+    double transferTHPutTimeThisStep;
+    double transferTHLengthPublishTimeThisStep;
+    double transferAVLengthFlushTimeThisStep;
+    double transferUnlockTimeThisStep;
+    #endif // TIMING
+    size_t minimalBuffSize;
+    #ifdef TIMING
+    double constructionRmaTime;
+    double constructionMutexTime;
+    double constructionResetTime;
+    double constructionPeerInfoTime;
+    double constructionTotalTime;
+    #endif // TIMING
 
 private:
     std::unique_ptr<RemoteMemoryAgent<MCParticle>> particles_agent;
@@ -103,12 +139,28 @@ private:
 };
 
 template<typename T, typename Grid>
-RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type):
+RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type,
+                                  size_t minimalBuffSize):
     comm_world(comm_world), comm(private_comm), buffsize(buffsize),
     av_length_storage(0), th_length_storage(0),
     av_length(av_length_storage), th_length(th_length_storage),
-    rdma_type(rdma_type), destroyed(false), reallocationAgent(reallocationAgent), reallocationsTotal(0)
+    rdma_type(rdma_type), destroyed(false), reallocationAgent(reallocationAgent),
+    minimalBuffSize(minimalBuffSize)
 {
+    #ifdef TIMING
+    auto constructorStart = std::chrono::high_resolution_clock::now();
+    auto secondsSince = [](const std::chrono::high_resolution_clock::time_point &start)
+    {
+        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
+    };
+
+    this->constructionRmaTime = 0;
+    this->constructionMutexTime = 0;
+    this->constructionResetTime = 0;
+    this->constructionPeerInfoTime = 0;
+    this->constructionTotalTime = 0;
+    #endif // TIMING
+
     assert(private_comm != MPI_COMM_NULL);
 
     MPI_Comm_rank(this->comm_world, &this->rank_world);
@@ -120,40 +172,92 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
     assert(this->rank_internal == 0 or this->rank_internal == 1);
     
     this->requestedFactor = 1;
-    
+    #ifdef TIMING
+    this->reallocationTime = 0;
+    this->reallocationsThisStep = 0;
+    this->reallocationsTotal = 0;
+    this->peakBufferUsage = 0;
+    this->transferCallsThisStep = 0;
+    this->contiguousParticlePutsThisStep = 0;
+    this->contiguousParticlesThisStep = 0;
+    this->scatterParticlePutsThisStep = 0;
+    this->scatterParticlesThisStep = 0;
+    this->transferCallsWithContiguousAllocationThisStep = 0;
+    this->transferCallsWithoutContiguousAllocationThisStep = 0;
+    this->transferReallocationRequestsThisStep = 0;
+    this->transferCallsWithReallocationThisStep = 0;
+    this->remoteLockCallsThisStep = 0;
+    this->transferTotalTimeThisStep = 0;
+    this->transferLockWaitTimeThisStep = 0;
+    this->transferReallocationWaitTimeThisStep = 0;
+    this->transferAvailReserveTimeThisStep = 0;
+    this->transferAvailIndexGetTimeThisStep = 0;
+    this->transferParticlePutTimeThisStep = 0;
+    this->transferTHLengthGetTimeThisStep = 0;
+    this->transferTHPutTimeThisStep = 0;
+    this->transferTHLengthPublishTimeThisStep = 0;
+    this->transferAVLengthFlushTimeThisStep = 0;
+    this->transferUnlockTimeThisStep = 0;
+    #endif // TIMING
+
     if(this->size_internal > 1)
     {
         this->other_rank = 1 - this->rank_internal;
 
+        #ifdef TIMING
+        auto sectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
         this->av_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
         this->th_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
         this->av_length_agent = RMAFactory::CreateOver<int>(this->rdma_type, &this->av_length_storage, 1, this->comm);
         this->th_length_agent = RMAFactory::CreateOver<int>(this->rdma_type, &this->th_length_storage, 1, this->comm);
+        #ifdef TIMING
+        this->constructionRmaTime = secondsSince(sectionStart);
+        #endif // TIMING
 
         this->particles = this->particles_agent->GetLocalPointer();
         this->av = this->av_agent->GetLocalPointer();
         this->th = this->th_agent->GetLocalPointer();
         
         // initialize mutexes
+        #ifdef TIMING
+        sectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         std::shared_ptr<DistributedMutex> rank0Mutex = std::make_shared<DistributedMutex>(comm, 0, this->rdma_type);
         std::shared_ptr<DistributedMutex> rank1Mutex = std::make_shared<DistributedMutex>(comm, 1, this->rdma_type);
         this->localTHMutex = (this->rank_internal == 0)? rank0Mutex : rank1Mutex;
         this->remoteTHMutex = (this->rank_internal == 0)? rank1Mutex : rank0Mutex;
+        #ifdef TIMING
+        this->constructionMutexTime = secondsSince(sectionStart);
 
+        sectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->Reset();
         MPI_Barrier(this->comm);
+        #ifdef TIMING
+        this->constructionResetTime = secondsSince(sectionStart);
+        #endif // TIMING
     }
     else
     {
         this->other_rank = 0;
+        #ifdef TIMING
+        auto sectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->particles = new MCParticle[this->buffsize];
         this->av = new index_t[this->buffsize];
         this->th = new index_t[this->buffsize];
         this->av_length_storage = static_cast<int>(this->buffsize);
         std::iota(this->av, this->av + this->buffsize, 0);
+        #ifdef TIMING
+        this->constructionRmaTime = secondsSince(sectionStart);
+        #endif // TIMING
     }
 
+    #ifdef TIMING
+    auto peerInfoStart = std::chrono::high_resolution_clock::now();
+    #endif // TIMING
     if(this->size_internal > 1)
     {
         MPI_Sendrecv(&this->buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, &this->peer_buffsize, 1, MPI_UNSIGNED_LONG_LONG, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
@@ -187,6 +291,10 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
     }
 
     MPI_Barrier(this->comm);
+    #ifdef TIMING
+    this->constructionPeerInfoTime = secondsSince(peerInfoStart);
+    this->constructionTotalTime = secondsSince(constructorStart);
+    #endif // TIMING
 }
 
 template<typename T, typename Grid>
@@ -472,6 +580,10 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
     #ifdef MONTECARLO_DEBUG
     boost::container::flat_map<size_t, size_t> indicesMap;
     #endif // MONTECARLO_DEBUG
+    static thread_local std::vector<index_t> freedIndices;
+    freedIndices.clear();
+    freedIndices.reserve(num);
+
     for(int i = static_cast<int>(num) - 1; i >= 0; i--)
     {
         const size_t &toHandleIndex = indicesInToHandle[i];
@@ -504,11 +616,27 @@ void RankHandler<T, Grid>::RemoveParticles(const std::vector<size_t> &indicesInT
             throw eo;
         }
         #endif // MONTECARLO_DEBUG
-        this->av[av_length++] = particleIdx;
+        freedIndices.push_back(particleIdx);
         this->th[toHandleIndex] = this->th[--th_length];
         this->th[th_length] = inf;
         assert(th_length >= 0);
-    }   
+    }
+
+    std::sort(freedIndices.begin(), freedIndices.end());
+    if(static_cast<size_t>(av_length) + freedIndices.size() > this->buffsize)
+    {
+        UniversalError eo("RankHandler::RemoveParticles: insufficient AV capacity while appending freed slots");
+        eo.addEntry("My Rank", this->rank_world);
+        eo.addEntry("Peer Rank", this->peer_rank_world);
+        eo.addEntry("AV Length", av_length);
+        eo.addEntry("Freed Slots", freedIndices.size());
+        eo.addEntry("Buffer Size", this->buffsize);
+        throw eo;
+    }
+    for(index_t particleIdx : freedIndices)
+    {
+        this->av[av_length++] = particleIdx;
+    }
 
     #ifdef ADVANCED_MONTECARLO_DEBUG
     try
@@ -537,8 +665,10 @@ void RankHandler<T, Grid>::Reallocate(double factor)
 
     static constexpr index_t inf = std::numeric_limits<index_t>::max();
     
+    #ifdef TIMING
     this->reallocationsThisStep++;
     this->reallocationsTotal++;
+    #endif // TIMING
 
     double requestedFactorSelf;
     MPI_Sendrecv(&this->requestedFactor, 1, MPI_DOUBLE, this->other_rank, 0, &requestedFactorSelf, 1, MPI_DOUBLE, this->other_rank, 0, this->comm, MPI_STATUS_IGNORE);
@@ -560,8 +690,8 @@ void RankHandler<T, Grid>::Reallocate(double factor)
         }
     }
     size_t peerNewBuffSize = std::ceil(this->peer_buffsize * factor);
-    newBuffSize = std::max<size_t>(newBuffSize, MINIMAL_BUFF_SIZE);
-    peerNewBuffSize = std::max<size_t>(peerNewBuffSize, MINIMAL_BUFF_SIZE);
+    newBuffSize = std::max<size_t>(newBuffSize, this->minimalBuffSize);
+    peerNewBuffSize = std::max<size_t>(peerNewBuffSize, this->minimalBuffSize);
 
     this->buffsize = newBuffSize;
 
@@ -688,10 +818,25 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
     {
         return;
     }
+    #ifdef TIMING
+    this->transferCallsThisStep++;
+    auto transferTotalStart = std::chrono::high_resolution_clock::now();
+    auto secondsSince = [](const std::chrono::high_resolution_clock::time_point &start)
+    {
+        return std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count();
+    };
+    #endif // TIMING
 
     if(this->size_internal > 1)
     {
+        #ifdef TIMING
+        auto transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->remoteTHMutex->Lock();
+        #ifdef TIMING
+        this->transferLockWaitTimeThisStep += secondsSince(transferSectionStart);
+        this->remoteLockCallsThisStep++;
+        #endif // TIMING
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
             try
@@ -705,7 +850,12 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             }
         #endif // ADVANCED_MONTECARLO_DEBUG
 
+        #ifdef ADVANCED_MONTECARLO_DEBUG
         size_t reallocationsCounter = 0;
+        #endif // ADVANCED_MONTECARLO_DEBUG
+        #ifdef TIMING
+        size_t reallocationRequestsForThisTransfer = 0;
+        #endif // TIMING
         auto getAvailableLength = [&](void)
         {
             int availLength;
@@ -718,106 +868,274 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             }
             else
             {
+                #ifdef ADVANCED_MONTECARLO_DEBUG
                 reallocationsCounter++;
+                #endif // ADVANCED_MONTECARLO_DEBUG
             }
             assert(availLength >= 0);
             return availLength;
         };
 
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         int availLength = getAvailableLength();
-        auto start = std::chrono::high_resolution_clock::now();
+        #ifdef TIMING
+        this->transferAvailReserveTimeThisStep += secondsSince(transferSectionStart);
+        auto reallocationStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         while(availLength < Np)
         {
             size_t peerUsed = this->peer_buffsize - static_cast<size_t>(availLength);
             this->requestedFactor = static_cast<double>(peerUsed + Np) /
                                     static_cast<double>(this->peer_buffsize) * 1.5;
 
+            #ifdef TIMING
+            transferSectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
             this->remoteTHMutex->Unlock();
+            #ifdef TIMING
+            this->transferUnlockTimeThisStep += secondsSince(transferSectionStart);
+            this->transferReallocationRequestsThisStep++;
+            reallocationRequestsForThisTransfer++;
+            #endif // TIMING
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
+            #ifdef TIMING
+            transferSectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
             this->remoteTHMutex->Lock();
+            #ifdef TIMING
+            this->transferLockWaitTimeThisStep += secondsSince(transferSectionStart);
+            this->remoteLockCallsThisStep++;
+            transferSectionStart = std::chrono::high_resolution_clock::now();
+            #endif // TIMING
             availLength = getAvailableLength();
+            #ifdef TIMING
+            this->transferAvailReserveTimeThisStep += secondsSince(transferSectionStart);
+            #endif // TIMING
         }
         assert(availLength >= Np);
-        auto end = std::chrono::high_resolution_clock::now();
-        this->reallocationTime += std::chrono::duration<double>(end - start).count();
+        #ifdef TIMING
+        auto reallocationEnd = std::chrono::high_resolution_clock::now();
+        double reallocationSeconds = std::chrono::duration<double>(reallocationEnd - reallocationStart).count();
+        if(reallocationRequestsForThisTransfer > 0)
+        {
+            this->reallocationTime += reallocationSeconds;
+            this->transferReallocationWaitTimeThisStep += reallocationSeconds;
+            this->transferCallsWithReallocationThisStep++;
+        }
+        #endif // TIMING
 
         std::vector<index_t> availIndices(Np);
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->av_agent->Get(availIndices.data(), Np, this->other_rank, availLength - Np);
+        #ifdef TIMING
+        this->transferAvailIndexGetTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
 
         #ifdef MONTECARLO_DEBUG
-            boost::container::flat_map<index_t, size_t> availIndicesMap;
-            for(size_t i = 0; i < Np; i++)
+        boost::container::flat_map<index_t, size_t> availIndicesMap;
+        for(size_t i = 0; i < Np; i++)
+        {
+            index_t availIndex = availIndices[i];
+            if(availIndicesMap.find(availIndex) != availIndicesMap.end())
             {
-                index_t availIndex = availIndices[i];
-                if(availIndicesMap.find(availIndex) != availIndicesMap.end())
-                {
-                    UniversalError eo("RankHandler<T, Grid>::TransferParticles: duplication in available Index");
-                    eo.addEntry("Available Index", availIndex);
-                    eo.addEntry("Already in Index", availIndicesMap[availIndex]);
-                    eo.addEntry("Index", i);
-                    eo.addEntry("Rank", this->rank_world);
-                    eo.addEntry("Peer Rank", this->peer_rank_world);
-                    throw eo;
-                }
-                availIndicesMap.insert({availIndex, i});
-                assert(availIndex < this->peer_buffsize);
-                if(particles[i].nextRank != this->peer_rank_world)
-                {
-                    UniversalError eo("RankHandler<T, Grid>::TransferParticles: Particle will not be sent to the expected rank");
-                    eo.addEntry("Particle", particles[i]);
-                    eo.addEntry("Origin", this->rank_world);
-                    eo.addEntry("Expected Rank", particles[i].nextRank);
-                    eo.addEntry("Next Rank", this->peer_rank_world);
-                    throw eo;
-                }
+                UniversalError eo("RankHandler<T, Grid>::TransferParticles: duplication in available Index");
+                eo.addEntry("Available Index", availIndex);
+                eo.addEntry("Already in Index", availIndicesMap[availIndex]);
+                eo.addEntry("Index", i);
+                eo.addEntry("Rank", this->rank_world);
+                eo.addEntry("Peer Rank", this->peer_rank_world);
+                throw eo;
             }
+            availIndicesMap.insert({availIndex, i});
+            assert(availIndex < this->peer_buffsize);
+            if(particles[i].nextRank != this->peer_rank_world)
+            {
+                UniversalError eo("RankHandler<T, Grid>::TransferParticles: Particle will not be sent to the expected rank");
+                eo.addEntry("Particle", particles[i]);
+                eo.addEntry("Origin", this->rank_world);
+                eo.addEntry("Expected Rank", particles[i].nextRank);
+                eo.addEntry("Next Rank", this->peer_rank_world);
+                throw eo;
+            }
+        }
         #endif // MONTECARLO_DEBUG
 
         assert(this->other_rank != this->rank_internal);
-        this->particles_agent->PutScatter(particles.data(), availIndices.data(), Np, this->other_rank);
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
+        static thread_local std::vector<std::pair<index_t, size_t>> orderedTargets;
+        static thread_local std::vector<MCParticle> orderedParticles;
+        static thread_local std::vector<index_t> orderedIndices;
+        static thread_local std::vector<MCParticle> scatteredParticles;
+        static thread_local std::vector<index_t> scatteredIndices;
+
+        orderedTargets.resize(Np);
+        orderedParticles.clear();
+        orderedIndices.clear();
+        scatteredParticles.clear();
+        scatteredIndices.clear();
+        orderedParticles.reserve(Np);
+        orderedIndices.reserve(Np);
+        scatteredParticles.reserve(Np);
+        scatteredIndices.reserve(Np);
+
+        for(size_t i = 0; i < Np; i++)
+        {
+            orderedTargets[i] = std::make_pair(availIndices[i], i);
+        }
+        std::sort(orderedTargets.begin(), orderedTargets.end());
+
+        for(size_t i = 0; i < Np; i++)
+        {
+            orderedIndices.push_back(orderedTargets[i].first);
+            orderedParticles.push_back(particles[orderedTargets[i].second]);
+        }
+
+        size_t runStart = 0;
+        bool usedContiguousAllocation = false;
+        while(runStart < Np)
+        {
+            size_t runEnd = runStart + 1;
+            while(runEnd < Np and orderedIndices[runEnd] == orderedIndices[runEnd - 1] + 1)
+            {
+                runEnd++;
+            }
+
+            size_t runLength = runEnd - runStart;
+            if(runLength > 1)
+            {
+                this->particles_agent->Put(orderedParticles.data() + runStart,
+                                          runLength,
+                                          this->other_rank,
+                                          orderedIndices[runStart],
+                                          false);
+                #ifdef TIMING
+                this->contiguousParticlePutsThisStep++;
+                this->contiguousParticlesThisStep += runLength;
+                #endif // TIMING
+                usedContiguousAllocation = true;
+            }
+            else
+            {
+                scatteredParticles.push_back(orderedParticles[runStart]);
+                scatteredIndices.push_back(orderedIndices[runStart]);
+            }
+
+            runStart = runEnd;
+        }
+
+        if(not scatteredParticles.empty())
+        {
+            this->particles_agent->PutScatter(scatteredParticles.data(),
+                                             scatteredIndices.data(),
+                                             scatteredParticles.size(),
+                                             this->other_rank,
+                                             false);
+            #ifdef TIMING
+            this->scatterParticlePutsThisStep++;
+            this->scatterParticlesThisStep += scatteredParticles.size();
+            #endif // TIMING
+        }
+
+        #ifdef TIMING
+        if(usedContiguousAllocation)
+        {
+            this->transferCallsWithContiguousAllocationThisStep++;
+        }
+        else
+        {
+            this->transferCallsWithoutContiguousAllocationThisStep++;
+        }
+        #else
+        (void)usedContiguousAllocation;
+        #endif // TIMING
+
+        this->particles_agent->Flush(this->other_rank);
+        #ifdef TIMING
+        this->transferParticlePutTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
 
         int toHandleLength;
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->th_length_agent->Get(&toHandleLength, 1, this->other_rank, 0);
+        #ifdef TIMING
+        this->transferTHLengthGetTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
         assert(toHandleLength >= 0);
         assert(toHandleLength < static_cast<int>(this->peer_buffsize));
 
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, false);
 
-        int newThLength = toHandleLength + static_cast<int>(Np);
-        this->th_length_agent->Put(&newThLength, 1, this->other_rank, 0, false);
+        this->th_agent->Flush(this->other_rank);
+        #ifdef TIMING
+        this->transferTHPutTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
 
         // Explicit flush points:
         // 1) commit available-length reservation
         // 2) commit TH payload
         // 3) publish new TH length
         // Keep these before validation/unlock so remote state is consistent.
-        this->av_length_agent->Flush(this->other_rank);
-        this->th_agent->Flush(this->other_rank);
+        int newThLength = toHandleLength + static_cast<int>(Np);
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
+        this->th_length_agent->Put(&newThLength, 1, this->other_rank, 0, false);
         this->th_length_agent->Flush(this->other_rank);
+        #ifdef TIMING
+        this->transferTHLengthPublishTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
+
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
+        this->av_length_agent->Flush(this->other_rank);
+        #ifdef TIMING
+        this->transferAVLengthFlushTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
-            try
-            {
-                ValidateRemoteArraysContents();
-            }
-            catch(UniversalError &eo)
-            {
-                eo.addEntry("Where", std::string("RankHandler<T, Grid>::TransferParticles - after transfer"));
-                eo.addEntry("Transfer Amount", Np);
-                eo.addEntry("AV Indices", availIndices);
-                eo.addEntry("Expected TH length", toHandleLength + Np);
-                eo.addEntry("Expected AV length", availLength);
-                eo.addEntry("Reallocations Counter", reallocationsCounter);
-                throw eo;
-            }
+        try
+        {
+            ValidateRemoteArraysContents();
+        }
+        catch(UniversalError &eo)
+        {
+            eo.addEntry("Where", std::string("RankHandler<T, Grid>::TransferParticles - after transfer"));
+            eo.addEntry("Transfer Amount", Np);
+            eo.addEntry("AV Indices", availIndices);
+            eo.addEntry("Expected TH length", toHandleLength + Np);
+            eo.addEntry("Expected AV length", availLength);
+            eo.addEntry("Reallocations Counter", reallocationsCounter);
+            throw eo;
+        }
         #endif // ADVANCED_MONTECARLO_DEBUG
 
-            // release remote mutex
+        // release remote mutex
+        #ifdef TIMING
+        transferSectionStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
         this->remoteTHMutex->Unlock();
-
+        #ifdef TIMING
+        this->transferUnlockTimeThisStep += secondsSince(transferSectionStart);
+        #endif // TIMING
     }
     else
     {
+        #ifdef TIMING
+        this->contiguousParticlePutsThisStep++;
+        this->contiguousParticlesThisStep += Np;
+        #endif // TIMING
         for(size_t i = 0; i < Np; i++)
         {
             assert(this->av_length > 0);
@@ -836,7 +1154,13 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             this->th[this->th_length++] = availIndex;
             assert(this->th_length < static_cast<int>(this->buffsize));
         }
+        #ifdef TIMING
+        this->peakBufferUsage = std::max(this->peakBufferUsage, static_cast<size_t>(this->th_length));
+        #endif // TIMING
     }
+    #ifdef TIMING
+    this->transferTotalTimeThisStep += secondsSince(transferTotalStart);
+    #endif // TIMING
 }
 
 #endif // RICH_MPI
