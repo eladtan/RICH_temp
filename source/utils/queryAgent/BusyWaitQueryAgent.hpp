@@ -313,7 +313,7 @@ QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>:
     this->requests.clear();
     _queryBatchInfo queriesBatch;
     #ifdef TIMING
-        queriesBatch.beginClockTime std::chrono::system_clock::now();
+        queriesBatch.beginClockTime = std::chrono::system_clock::now();
     #endif // TIMING
 
     queriesBatch.queriesAnswers.reserve(originalQueriesNum);

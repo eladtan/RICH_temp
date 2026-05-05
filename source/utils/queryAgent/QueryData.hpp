@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <vector>
 
+#ifdef TIMING
+#include <chrono>
+#endif // TIMING
+
 #ifdef RICH_MPI
 #include "mpi/serialize/Serializer.hpp"
 #endif // RICH_MPI
@@ -59,9 +63,10 @@ struct QueryBatchInfo
     std::vector<AnswerType> result;
     std::vector<std::vector<AnswerType>> dataByRanks;
     #ifdef TIMING
-        std::chrono::_V2::system_clock::time_point beginClockTime; 
-        double finishSubmittingTime;
-        double receivedAllTime;
+        std::chrono::system_clock::time_point beginClockTime;
+        double finishSubmittingTime = 0;
+        double receivedAllTime = 0;
+        double finishTime = 0;
     #endif // TIMING
 };
 

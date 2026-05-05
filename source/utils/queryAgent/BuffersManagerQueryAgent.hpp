@@ -95,7 +95,7 @@ private:
     void sendQuery(const QueryInfo<QueryData, AnswerType> &query);
     void rearrangeResult(_queryBatchInfo &queriesBatch);
 
-    void sendFinish(void);
+    void sendFinish(_queryBatchInfo &queriesBatch);
 };
 
 template<typename QueryData, typename AnswerType>
@@ -126,7 +126,7 @@ void BuffersManagerQueryAgent<QueryData, AnswerType>::receiveAnswers(_queryBatch
 
     if(this->finishedMyQueries and this->shouldReceiveInTotal == this->receivedUntilNow)
     {
-        this->sendFinish();
+        this->sendFinish(batch);
     }
 }
 
@@ -162,10 +162,10 @@ void BuffersManagerQueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo
 }
 
 template<typename QueryData, typename AnswerType>
-void BuffersManagerQueryAgent<QueryData, AnswerType>::sendFinish(void)
+void BuffersManagerQueryAgent<QueryData, AnswerType>::sendFinish(_queryBatchInfo &queriesBatch)
 {
     #ifdef TIMING
-        std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+        std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
         queriesBatch.receivedAllTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
     #endif // TIMING
 
@@ -223,7 +223,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
     size_t originalQueriesNum = queries.size();
     _queryBatchInfo queriesBatch;
     #ifdef TIMING
-        queriesBatch.beginClockTime std::chrono::system_clock::now();
+        queriesBatch.beginClockTime = std::chrono::system_clock::now();
     #endif // TIMING
 
     queriesBatch.queriesAnswers.reserve(originalQueriesNum);
@@ -242,9 +242,9 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
     // if doesn't have any queries, send a finish message
     if(this->finishedMyQueries)
     {
-        this->sendFinish();
+        this->sendFinish(queriesBatch);
         #ifdef TIMING
-            std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+            std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
             queriesBatch.finishSubmittingTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
         #endif // TIMING
     }
@@ -262,7 +262,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
             if(queriesInfo.size() == originalQueriesNum)
             {
                 #ifdef TIMING
-                    std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+                    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
                     queriesBatch.finishSubmittingTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
                 #endif // TIMING
 
@@ -270,7 +270,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
                 // if had several queries, but no communication was needed, send a finish message
                 if(this->shouldReceiveInTotal == this->receivedUntilNow)
                 {
-                    this->sendFinish();
+                    this->sendFinish(queriesBatch);
                 }
             }
         }
@@ -299,7 +299,7 @@ QueryBatchInfo<QueryData, AnswerType> BuffersManagerQueryAgent<QueryData, Answer
     }
 
     #ifdef TIMING
-        std::chrono::_V2::system_clock::time_point now = std::chrono::system_clock::now();
+        std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
         queriesBatch.finishTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
     #endif // TIMING
 
