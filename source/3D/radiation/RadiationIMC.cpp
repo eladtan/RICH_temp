@@ -382,7 +382,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     for(size_t i = 0; i < Ncells; i++)
     {
         size_t proportionalShare = (globalTotalEnergy > 0)
-            ? static_cast<size_t>(energyToCreateVec[i] / globalTotalEnergy * totalParticles)
+            ? std::llround(energyToCreateVec[i] / globalTotalEnergy * totalParticles)
             : this->newPhotonsPerCell;
         nPhotons[i] = std::max(this->newPhotonsPerCell, std::min(proportionalShare, this->newPhotonsPerCell * 20));
     }

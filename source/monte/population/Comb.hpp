@@ -86,13 +86,13 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
         MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     #endif // RICH_MPI
 
-    Ntotal = static_cast<size_t>(Ntotal * this->Nmin * this->totalParticlesFactor);
+    Ntotal = std::llround(Ntotal * this->Nmin * this->totalParticlesFactor);
 
     std::uniform_real_distribution<double> dist(0, 1);
 
     for(size_t i = 0; i < Ncells; i++)
     {
-        size_t NinCell = std::min(this->Nmin * 20, std::max(this->Nmin, static_cast<size_t>(Ntotal * weights[i] / totalWeight)));
+        size_t NinCell = std::min(this->Nmin * 20, std::max<size_t>(this->Nmin, std::llround(Ntotal * weights[i] / totalWeight)));
         if(particlesInCells[i].size() <= NinCell)
         {
             double weight_ideal = weights[i] / NinCell;
@@ -101,7 +101,7 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
                 if(particle->weight > 2 * weight_ideal)
                 {
                     MCParticle particleCpy = *particle;
-                    size_t Nsplit = static_cast<size_t>(std::ceil(particle->weight / weight_ideal));
+                    size_t Nsplit = std::ceil(particle->weight / weight_ideal);
                     double weight_split = particle->weight / Nsplit;
                     particleCpy.weight = weight_split;
                     particleCpy.id = std::numeric_limits<size_t>::max(); // reset id, it will be set later
