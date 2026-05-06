@@ -1582,7 +1582,7 @@ boost::container::flat_map<size_t, std::pair<rank_t, size_t>> GetGhostInfo(const
         }
     }
 
-    std::vector<std::vector<std::pair<rank_t, size_t>>> received = MPI_Exchange_sparse_by_rank(toSend, MPI_COMM_WORLD);
+    std::vector<std::vector<std::pair<rank_t, size_t>>> received = MPI_Exchange_all_to_all_sparse(toSend, MPI_COMM_WORLD);
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghostsInfo;
     for(size_t i = 0; i < duplicatedProcs.size(); i++)
     {
