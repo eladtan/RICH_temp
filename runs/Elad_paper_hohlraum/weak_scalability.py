@@ -27,14 +27,28 @@ def parse_args():
                         help="Sum cycle times up to max common simulation time. "
                              "No value: sum all cycles. --sum=X: use the last X "
                              "reference-run time points to define the summation window.")
+    parser.add_argument("--sum-T", type=float, default=None, dest="sum_T",
+                        help="Average cycle times over the last X seconds of simulation "
+                             "time for each file independently (e.g. --sum-T=1e-10 for "
+                             "the last 0.1 ns). Shows a table with average time per "
+                             "cycle, particles, ideal time, and efficiency.")
     parser.add_argument("--no-rebalances", action="store_true",
-                        help="With --sum, exclude rebalance cycles (11, 21, ..., 101, ..., 1001, ...)")
+                        help="With --sum/--sum-T, exclude rebalance cycles (11, 21, ..., 101, ..., 1001, ...)")
+    parser.add_argument("--no-peaks", action="store_true",
+                        help="With --sum/--sum-T, discard cycles whose time exceeds "
+                             "1.4x the initial average (remove outlier peaks)")
+    parser.add_argument("--show-times", action="store_true",
+                        help="With --sum/--sum-T, show per-cycle running times in the table")
     parser.add_argument("--efficiency", action="store_true",
                         help="Plot weak scaling efficiency T_ref / T(N) vs. processor count")
     parser.add_argument("--per-particle", action="store_true",
                         help="Divide each cycle's time by particles per rank (total particles / nprocs)")
+    parser.add_argument("--p2p", action="store_true",
+                        help="Include P2P files (hohlraum_P2P_*) as additional data")
     parser.add_argument("--loop-times", action="store_true",
                         help="Use MC loop elapsed times ('Elapsed: X seconds') instead of step times")
+    parser.add_argument("--base", type=int, default=None,
+                        help="Use X ranks as the baseline reference instead of the minimum")
     parser.add_argument("--tasks-per-node", type=int, default=112,
                         help="Tasks per node (default: 112, for Leonardo dcgp)")
     parser.add_argument("--output", type=str, default=None,
@@ -46,18 +60,37 @@ def parse_args():
     return parser.parse_args()
 
 
-def find_latest_files(directory):
-    """Find the latest .out file for each processor count (highest job number).
-    Returns dict {nprocs: filepath}."""
+def is_finished(filepath):
+    """Check if a simulation output file completed (has 'Total wall time:' line)."""
+    with open(filepath, "rb") as f:
+        try:
+            f.seek(-4096, 2)
+        except OSError:
+            f.seek(0)
+        tail = f.read().decode("utf-8", errors="replace")
+    return "Total wall time:" in tail
+
+
+def find_latest_files(directory, include_p2p=False):
+    """Find the latest *finished* .out file for each processor count (highest job number).
+    Returns (regular_dict, p2p_dict) where each is {nprocs: filepath}.
+    p2p_dict is empty if include_p2p is False."""
     pattern = os.path.join(directory, "hohlraum_*_n*.out")
     files = glob.glob(pattern)
 
     regular_re = re.compile(r"hohlraum_(\d+)_n(\d+)\.out$")
+    p2p_re = re.compile(r"hohlraum_P2P_(\d+)_n(\d+)\.out$")
 
     rank_files = defaultdict(list)
+    p2p_rank_files = defaultdict(list)
     for f in files:
         basename = os.path.basename(f)
-        if "P2P" in basename:
+        m = p2p_re.search(basename)
+        if m:
+            if include_p2p:
+                job_id = int(m.group(1))
+                nprocs = int(m.group(2))
+                p2p_rank_files[nprocs].append((job_id, f))
             continue
         m = regular_re.search(basename)
         if m:
@@ -65,11 +98,17 @@ def find_latest_files(directory):
             nprocs = int(m.group(2))
             rank_files[nprocs].append((job_id, f))
 
-    latest = {}
-    for nprocs, entries in rank_files.items():
-        entries.sort(key=lambda x: x[0], reverse=True)
-        latest[nprocs] = entries[0][1]
-    return latest
+    def pick_latest_finished(rf):
+        latest = {}
+        for nprocs, entries in rf.items():
+            entries.sort(key=lambda x: x[0], reverse=True)
+            for _, filepath in entries:
+                if is_finished(filepath):
+                    latest[nprocs] = filepath
+                    break
+        return latest
+
+    return pick_latest_finished(rank_files), pick_latest_finished(p2p_rank_files)
 
 
 def parse_nbase(filepath):
@@ -91,7 +130,7 @@ def parse_cycle_times(filepath, loop_times=False):
     progress_re = re.compile(
         r"^Cycle\s+(\d+)\s+t=([\d.eE+-]+)\s+ns.*\bstep=([\d.eE+-]+)s")
     cycle_at_re = re.compile(r"^Cycle\s+(\d+)\s+at\s+time\s+([\d.eE+-]+)")
-    elapsed_re = re.compile(r"^Elapsed:\s+([\d.]+)\s+seconds")
+    elapsed_re = re.compile(r"^(?:Elapsed|Loop time):\s+([\d.]+)\s+seconds")
 
     sim_times = {}
     step_times = {}
@@ -128,7 +167,7 @@ def parse_particle_counts(filepath):
     """Parse total particle counts per cycle from 'Starting with N' lines.
     Returns {cycle: starting_particle_count}."""
     cycle_at_re = re.compile(r"^Cycle\s+(\d+)\s+at\s+time\s+")
-    starting_re = re.compile(r"^Starting with (\d+)\.")
+    starting_re = re.compile(r"^Start(?:ing|ed) with (\d+)\.")
     counts = {}
     current_cycle = None
     with open(filepath, "r") as f:
@@ -256,24 +295,26 @@ def print_table(file_info):
 
 def print_times_table(selected_times, nprocs_list, cycle_data,
                       skip_rebalances=False, particle_data=None,
-                      per_particle=False):
+                      per_particle=False, ref_nprocs=None):
     """Print a table: rows = simulation times, columns = proc counts,
     cells = matched cycle number and step time."""
+    if ref_nprocs is None:
+        ref_nprocs = nprocs_list[0]
     col_time = "Sim time (ns)"
     proc_headers = [str(n) for n in nprocs_list]
 
     rows = []
     for target_time in selected_times:
         row = [f"{target_time:.4f}"]
-        ref_match = find_cycle_at_time(cycle_data[nprocs_list[0]], target_time,
+        ref_match = find_cycle_at_time(cycle_data[ref_nprocs], target_time,
                                        skip_rebalances)
         ref_val = None
         if ref_match:
             ref_val = ref_match[2]
             if per_particle and particle_data:
-                pc = particle_data.get(nprocs_list[0], {}).get(ref_match[0])
+                pc = particle_data.get(ref_nprocs, {}).get(ref_match[0])
                 if pc:
-                    ref_val /= (pc / nprocs_list[0])
+                    ref_val /= (pc / ref_nprocs)
         for nprocs in nprocs_list:
             match = find_cycle_at_time(cycle_data[nprocs], target_time,
                                        skip_rebalances)
@@ -316,6 +357,117 @@ def print_times_table(selected_times, nprocs_list, cycle_data,
     print(sep)
 
 
+def analyze_sum_T(nprocs_list, cycle_data, files_dict, particle_data,
+                  delta_t, no_rebalances, tasks_per_node, no_peaks=False):
+    """Compute per-run averages over the last delta_t ns of simulation time.
+    Returns a list of result dicts, one per nprocs."""
+    is_rebalance = lambda c: c > 1 and c % 10 == 1
+    results = []
+    for nprocs in nprocs_list:
+        ct = cycle_data[nprocs]
+        filepath = files_dict[nprocs]
+        pc = particle_data.get(nprocs, {})
+        nodes = nprocs / tasks_per_node
+
+        sorted_cycles = sorted(ct.keys())
+        if len(sorted_cycles) > 1:
+            sorted_cycles = sorted_cycles[:-1]
+        else:
+            continue
+
+        t_max = max(ct[c][0] for c in sorted_cycles)
+        t_start = t_max - delta_t
+
+        selected = []
+        for c in sorted_cycles:
+            sim_time, wall_time = ct[c]
+            if sim_time >= t_start - 1e-12:
+                if no_rebalances and is_rebalance(c):
+                    continue
+                selected.append((c, wall_time))
+
+        if not selected:
+            continue
+
+        if no_peaks:
+            preliminary_avg = np.mean([wt for _, wt in selected])
+            threshold = 1.4 * preliminary_avg
+            selected = [(c, wt) for c, wt in selected if wt <= threshold]
+            if not selected:
+                continue
+
+        avg_time = np.mean([wt for _, wt in selected])
+
+        part_counts = [pc.get(c, 0) for c, _ in selected]
+        valid_parts = [p for p in part_counts if p > 0]
+        avg_particles = np.mean(valid_parts) if valid_parts else 0
+
+        cycle_range = f"{selected[0][0]}..{selected[-1][0]}"
+
+        results.append({
+            'nprocs': nprocs,
+            'nodes': nodes,
+            'filename': os.path.basename(filepath),
+            'cycle_range': cycle_range,
+            'count': len(selected),
+            'avg_time': avg_time,
+            'avg_particles': avg_particles,
+            'cycle_times': [(c, wt) for c, wt in selected],
+        })
+    return results
+
+
+def print_sum_T_table(results, ref_avg_time, show_times=False):
+    """Print the --sum-T results table with ideal time, deviation, efficiency."""
+    headers = ["Ranks", "Nodes", "File", "Cycles", "#",
+               "Avg time (s)", "Avg particles", "Ideal (s)",
+               "Deviation (s)", "Efficiency (%)"]
+    right_align = {0, 1, 3, 4, 5, 6, 7, 8, 9}
+    if show_times:
+        headers.append("Cycle times (s)")
+        right_align.add(10)
+
+    rows = []
+    for r in results:
+        deviation = r['avg_time'] - ref_avg_time
+        efficiency = (ref_avg_time / r['avg_time'] * 100
+                      if r['avg_time'] > 0 else 0)
+        row = (
+            str(r['nprocs']),
+            f"{r['nodes']:.0f}",
+            r['filename'],
+            r['cycle_range'],
+            str(r['count']),
+            f"{r['avg_time']:.3f}",
+            f"{r['avg_particles']:.0f}",
+            f"{ref_avg_time:.3f}",
+            f"{deviation:+.3f}",
+            f"{efficiency:.1f}",
+        )
+        if show_times:
+            times_str = " ".join(f"{wt:.2f}" for _, wt in r['cycle_times'])
+            row = row + (times_str,)
+        rows.append(row)
+
+    w = [max(len(h), max(len(r[i]) for r in rows))
+         for i, h in enumerate(headers)]
+    sep = "+-" + "-+-".join("-" * wi for wi in w) + "-+"
+    header_line = "| " + " | ".join(
+        h.rjust(wi) if i in right_align else h.ljust(wi)
+        for i, (h, wi) in enumerate(zip(headers, w))
+    ) + " |"
+
+    print(sep)
+    print(header_line)
+    print(sep)
+    for r in rows:
+        print("| " + " | ".join(
+            r[i].rjust(w[i]) if i in right_align else r[i].ljust(w[i])
+            for i in range(len(headers))
+        ) + " |")
+    print(sep)
+
+
 def print_weak_scaling_table(nprocs_list, times_list, t_ref, tasks_per_node):
     print(f"\nWeak scaling analysis (T_ref = {t_ref:.3f}s at {nprocs_list[0]} procs):")
     print(f"  {'Procs':>8}  {'Nodes':>6}  {'Time':>10}  {'Ideal':>10}  "
@@ -336,13 +488,14 @@ def main():
     if args.ignore:
         ignore_set = {int(x.strip()) for x in args.ignore.split(",")}
 
-    all_files = find_latest_files(args.dir)
+    all_files, p2p_all_files = find_latest_files(args.dir, include_p2p=args.p2p)
     if not all_files:
         print("No matching .out files found.", file=sys.stderr)
         sys.exit(1)
 
     for ign in ignore_set:
         all_files.pop(ign, None)
+        p2p_all_files.pop(ign, None)
 
     weak_files, nbase_per_node = detect_weak_scaling_runs(all_files, args.tasks_per_node)
     if not weak_files or len(weak_files) < 2:
@@ -352,24 +505,26 @@ def main():
             print(f"  Only found 1 run: {list(weak_files.keys())[0]} procs", file=sys.stderr)
         sys.exit(1)
 
-    cycle_data = {}
-    particle_data = {}
-    file_info = {}
-    for nprocs in sorted(weak_files.keys()):
-        filepath = weak_files[nprocs]
-        ct = parse_cycle_times(filepath, loop_times=args.loop_times)
-        nbase = parse_nbase(filepath)
-        nodes = nprocs / args.tasks_per_node
-        pc = parse_particle_counts(filepath)
-        if not ct:
-            print(f"Warning: no cycle data in {filepath}, skipping.", file=sys.stderr)
-            continue
-        cycle_data[nprocs] = ct
-        particle_data[nprocs] = pc
-        max_cycle = max(ct.keys())
-        max_time = max(st for st, _ in ct.values())
-        max_particles = max(pc.values()) if pc else 0
-        file_info[nprocs] = (filepath, max_cycle, nbase, nodes, max_time, max_particles)
+    def load_weak_scaling_data(files_dict):
+        cd, pd, fi = {}, {}, {}
+        for nprocs in sorted(files_dict.keys()):
+            filepath = files_dict[nprocs]
+            ct = parse_cycle_times(filepath, loop_times=args.loop_times)
+            nbase = parse_nbase(filepath)
+            nodes = nprocs / args.tasks_per_node
+            pc = parse_particle_counts(filepath)
+            if not ct:
+                print(f"Warning: no cycle data in {filepath}, skipping.", file=sys.stderr)
+                continue
+            cd[nprocs] = ct
+            pd[nprocs] = pc
+            max_cycle = max(ct.keys())
+            max_time = max(st for st, _ in ct.values())
+            max_particles = max(pc.values()) if pc else 0
+            fi[nprocs] = (filepath, max_cycle, nbase, nodes, max_time, max_particles)
+        return cd, pd, fi
+
+    cycle_data, particle_data, file_info = load_weak_scaling_data(weak_files)
 
     if not cycle_data:
         print("No cycle data found in any weak-scaling file.", file=sys.stderr)
@@ -380,8 +535,28 @@ def main():
     print_table(file_info)
     print()
 
+    p2p_weak_files, p2p_cycle_data, p2p_particle_data = {}, {}, {}
+    p2p_nprocs_list = []
+    if p2p_all_files:
+        p2p_weak_files, _ = detect_weak_scaling_runs(p2p_all_files, args.tasks_per_node)
+        if p2p_weak_files:
+            p2p_cycle_data, p2p_particle_data, p2p_file_info = \
+                load_weak_scaling_data(p2p_weak_files)
+            if p2p_cycle_data:
+                p2p_nprocs_list = sorted(p2p_cycle_data.keys())
+                print("P2P runs:")
+                print_table(p2p_file_info)
+                print()
+
     nprocs_list = sorted(cycle_data.keys())
-    ref_nprocs = nprocs_list[0]
+    if args.base is not None:
+        if args.base not in cycle_data:
+            print(f"Error: --base={args.base} not found in available runs: {nprocs_list}",
+                  file=sys.stderr)
+            sys.exit(1)
+        ref_nprocs = args.base
+    else:
+        ref_nprocs = nprocs_list[0]
     ref_data = cycle_data[ref_nprocs]
 
     max_time_per_run = {n: max(st for st, _ in ct.values())
@@ -391,6 +566,103 @@ def main():
     print(f"Max common simulation time: {max_common_time:.4f} ns")
 
     is_rebalance = lambda c: c > 1 and c % 10 == 1
+
+    # --sum-T mode: average over last X seconds of each file's simulation time
+    if args.sum_T is not None:
+        delta_t = args.sum_T * 1e9  # convert seconds to nanoseconds
+        skip_label = ", excl. rebalances" if args.no_rebalances else ""
+        time_label = "MC loop time" if args.loop_times else "Step time"
+        rdma_label = "RDMA " if p2p_nprocs_list else ""
+
+        results = analyze_sum_T(nprocs_list, cycle_data, weak_files,
+                                particle_data, delta_t,
+                                args.no_rebalances, args.tasks_per_node,
+                                no_peaks=args.no_peaks)
+        if not results:
+            print("No valid data for --sum-T analysis.", file=sys.stderr)
+            sys.exit(1)
+
+        ref_result = next((r for r in results if r['nprocs'] == ref_nprocs),
+                          results[0])
+        ref_avg_time = ref_result['avg_time']
+
+        print(f"\nAveraging {rdma_label}{time_label.lower()} over the last "
+              f"{args.sum_T:.2e} s ({delta_t:.4f} ns) of each run{skip_label}")
+        print(f"Reference: {ref_result['nprocs']} procs, "
+              f"avg {time_label.lower()} = {ref_avg_time:.3f}s")
+        print()
+        print_sum_T_table(results, ref_avg_time, show_times=args.show_times)
+
+        qualifying = [r['nprocs'] for r in results]
+        efficiencies = [ref_avg_time / r['avg_time'] * 100
+                        if r['avg_time'] > 0 else 0 for r in results]
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(qualifying, efficiencies, "o-",
+                label=f"{rdma_label}Efficiency (last {args.sum_T:.2e} s{skip_label})",
+                markersize=6)
+        for x, y, r in zip(qualifying, efficiencies, results):
+            ax.annotate(f"{r['avg_time']:.2f}s", (x, y),
+                        textcoords="offset points", xytext=(0, 8),
+                        ha="center", va="bottom", fontsize=7)
+
+        p2p_results = []
+        if p2p_nprocs_list and p2p_weak_files:
+            p2p_results = analyze_sum_T(
+                p2p_nprocs_list, p2p_cycle_data, p2p_weak_files,
+                p2p_particle_data, delta_t,
+                args.no_rebalances, args.tasks_per_node,
+                no_peaks=args.no_peaks)
+            if p2p_results:
+                p2p_ref_result = next(
+                    (r for r in p2p_results if r['nprocs'] == ref_nprocs),
+                    p2p_results[0])
+                p2p_ref_avg = p2p_ref_result['avg_time']
+                print(f"\nP2P — averaging {time_label.lower()} over the last "
+                      f"{args.sum_T:.2e} s ({delta_t:.4f} ns){skip_label}")
+                print(f"Reference: {p2p_ref_result['nprocs']} procs, "
+                      f"avg {time_label.lower()} = {p2p_ref_avg:.3f}s")
+                print()
+                print_sum_T_table(p2p_results, p2p_ref_avg,
+                                  show_times=args.show_times)
+
+                p2p_qualifying = [r['nprocs'] for r in p2p_results]
+                p2p_efficiencies = [
+                    p2p_ref_avg / r['avg_time'] * 100
+                    if r['avg_time'] > 0 else 0 for r in p2p_results]
+                ax.plot(p2p_qualifying, p2p_efficiencies, "s--", color="red",
+                        label=f"P2P Efficiency (last {args.sum_T:.2e} s{skip_label})",
+                        markersize=6)
+                for x, y, r in zip(p2p_qualifying, p2p_efficiencies, p2p_results):
+                    ax.annotate(f"{r['avg_time']:.2f}s", (x, y),
+                                textcoords="offset points", xytext=(0, -12),
+                                ha="center", va="top", fontsize=7, color="red")
+
+        ax.axhline(100, color="gray", linestyle="--", linewidth=0.8,
+                   label="Ideal (100%)")
+        ax.set_xlabel("Number of processors")
+        ax.set_ylabel("Weak scaling efficiency (%)")
+        ax.set_ylim(bottom=50)
+        ax.set_title(f"Weak scaling efficiency (last {args.sum_T:.2e} s{skip_label})")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_xscale("log", base=2)
+        all_ticks = sorted(set(qualifying) |
+                           set(r['nprocs'] for r in p2p_results))
+        ax.set_xticks(all_ticks)
+        ax.set_xticklabels([str(n) for n in all_ticks], rotation=90)
+        secax = ax.secondary_xaxis("top",
+                                   functions=(lambda x: x / args.tasks_per_node,
+                                              lambda x: x * args.tasks_per_node))
+        secax.set_xlabel("Number of nodes")
+
+        plt.tight_layout()
+        out = args.output or "weak_scalability_sum_T.png"
+        plt.savefig(out, dpi=150)
+        print(f"\nSaved {out}")
+        if args.show:
+            plt.show()
+        return
 
     # --sum mode
     if args.sum is not None:
@@ -420,12 +692,14 @@ def main():
 
         sum_times = []
         sum_ncycles = []
+        sum_cycle_times = []
 
         for nprocs in qualifying:
             ct = cycle_data[nprocs]
             if nprocs not in end_cycles:
                 sum_times.append(0.0)
                 sum_ncycles.append(0)
+                sum_cycle_times.append([])
                 continue
             end_cycle = end_cycles[nprocs]
 
@@ -445,6 +719,11 @@ def main():
                     and not (args.no_rebalances and is_rebalance(cycle))
                 ]
 
+            if args.no_peaks and matching:
+                preliminary_avg = np.mean([st for _, st in matching])
+                threshold = 1.4 * preliminary_avg
+                matching = [(c, st) for c, st in matching if st <= threshold]
+
             if args.per_particle:
                 pc_data = particle_data.get(nprocs, {})
                 total = sum(st / (pc_data[c] / nprocs) for c, st in matching
@@ -453,6 +732,7 @@ def main():
                 total = sum(st for _, st in matching)
             sum_times.append(total)
             sum_ncycles.append(len(matching))
+            sum_cycle_times.append(matching)
 
         if last_n > 0:
             print(f"Summing last {last_n} cycles before t={max_common_time:.4f} ns"
@@ -463,8 +743,11 @@ def main():
         print()
 
         sum_headers = ["Procs", "Nodes", "Summed cycles", "Count", "Total (s)"]
+        if args.show_times:
+            sum_headers.append("Cycle times (s)")
         sum_rows = []
-        for nprocs, total, nc in zip(qualifying, sum_times, sum_ncycles):
+        for nprocs, total, nc, ctimes in zip(qualifying, sum_times,
+                                             sum_ncycles, sum_cycle_times):
             nodes = nprocs / args.tasks_per_node
             ec = end_cycles.get(nprocs, "?")
             if last_n > 0:
@@ -472,8 +755,12 @@ def main():
                 cr = f"{sc}..{ec}"
             else:
                 cr = f"1..{ec}"
-            sum_rows.append((str(nprocs), f"{nodes:.0f}", cr,
-                             str(nc), f"{total:.3f}"))
+            row = (str(nprocs), f"{nodes:.0f}", cr,
+                   str(nc), f"{total:.3f}")
+            if args.show_times:
+                times_str = " ".join(f"{st:.2f}" for _, st in ctimes)
+                row = row + (times_str,)
+            sum_rows.append(row)
         sw = [max(len(h), max(len(r[i]) for r in sum_rows))
               for i, h in enumerate(sum_headers)]
         ssep = "+-" + "-+-".join("-" * wi for wi in sw) + "-+"
@@ -490,7 +777,8 @@ def main():
 
         range_label = (f"last {last_n} cycles" if last_n > 0
                        else f"all cycles up to t={max_common_time:.2f} ns")
-        t_ref = sum_times[0]
+        ref_idx = qualifying.index(ref_nprocs) if ref_nprocs in qualifying else 0
+        t_ref = sum_times[ref_idx]
 
         efficiencies = [t_ref / t * 100 for t in sum_times]
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -552,7 +840,8 @@ def main():
     print_times_table(selected_times, nprocs_list, cycle_data,
                       skip_rebalances=args.no_rebalances,
                       particle_data=particle_data,
-                      per_particle=args.per_particle)
+                      per_particle=args.per_particle,
+                      ref_nprocs=ref_nprocs)
     print()
 
     if args.efficiency:
@@ -576,7 +865,8 @@ def main():
             print("No data for efficiency plot.", file=sys.stderr)
             sys.exit(1)
 
-        t_ref = eff_times[0]
+        ref_idx = eff_nprocs.index(ref_nprocs) if ref_nprocs in eff_nprocs else 0
+        t_ref = eff_times[ref_idx]
         efficiencies = [t_ref / t * 100 for t in eff_times]
 
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -655,7 +945,9 @@ def main():
                 opt_nprocs.append(nprocs)
                 opt_times.append(step_time)
         if opt_nprocs:
-            t_ref = opt_times[0]
+            ref_idx = (opt_nprocs.index(ref_nprocs)
+                       if ref_nprocs in opt_nprocs else 0)
+            t_ref = opt_times[ref_idx]
             ax.axhline(t_ref, color="gray", linestyle="--", linewidth=0.8,
                         label=f"Ideal (T = {t_ref:.2f}s)")
             print_weak_scaling_table(opt_nprocs, opt_times, t_ref,

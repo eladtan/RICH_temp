@@ -34,6 +34,7 @@
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
+#include "utils/debug/cleanNode.hpp"
 
 namespace fs = std::filesystem;
 
@@ -352,6 +353,16 @@ int main(int argc, char *argv[])
                   << " on " << hostname
                   << " pid=" << getpid() << std::endl;
     }
+
+#ifdef RICH_MPI
+    try { ensureCleanNode(); }
+    catch(const UniversalError &e)
+    {
+        std::cerr << "=== UniversalError (cleanNode) on rank " << rank << " ===" << std::endl;
+        reportError(e, std::cerr);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+#endif
 
     if(rank == 0 and argc < 2)
     {
