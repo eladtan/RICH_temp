@@ -55,8 +55,7 @@ public:
     index_t *th;
 
 private:
-    int av_length_storage;
-    int th_length_storage;
+    int lengths_storage[2]; // [0] = av_length, [1] = th_length
 public:
     volatile int &av_length;
     volatile int &th_length;
@@ -123,8 +122,7 @@ private:
     std::unique_ptr<RemoteMemoryAgent<MCParticle>> particles_agent;
     std::unique_ptr<RemoteMemoryAgent<index_t>> av_agent;
     std::unique_ptr<RemoteMemoryAgent<index_t>> th_agent;
-    std::unique_ptr<RemoteMemoryAgent<int>> av_length_agent;
-    std::unique_ptr<RemoteMemoryAgent<int>> th_length_agent;
+    std::unique_ptr<RemoteMemoryAgent<int>> lengths_agent;
     std::shared_ptr<DistributedMutex> localTHMutex;
     std::shared_ptr<DistributedMutex> remoteTHMutex;
     RDMA_Type rdma_type;
@@ -142,8 +140,8 @@ template<typename T, typename Grid>
 RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, const MPI_Comm &private_comm, std::shared_ptr<ReallocationAgent> &reallocationAgent, RDMA_Type rdma_type,
                                   size_t minimalBuffSize):
     comm_world(comm_world), comm(private_comm), buffsize(buffsize),
-    av_length_storage(0), th_length_storage(0),
-    av_length(av_length_storage), th_length(th_length_storage),
+    lengths_storage{0, 0},
+    av_length(lengths_storage[0]), th_length(lengths_storage[1]),
     rdma_type(rdma_type), destroyed(false), reallocationAgent(reallocationAgent),
     minimalBuffSize(minimalBuffSize)
 {
@@ -210,8 +208,7 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
         this->particles_agent = RMAFactory::Create<MCParticle>(this->rdma_type, this->buffsize, this->comm);
         this->av_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
         this->th_agent = RMAFactory::Create<index_t>(this->rdma_type, this->buffsize, this->comm);
-        this->av_length_agent = RMAFactory::CreateOver<int>(this->rdma_type, &this->av_length_storage, 1, this->comm);
-        this->th_length_agent = RMAFactory::CreateOver<int>(this->rdma_type, &this->th_length_storage, 1, this->comm);
+        this->lengths_agent = RMAFactory::CreateOver<int>(this->rdma_type, this->lengths_storage, 2, this->comm);
         #ifdef TIMING
         this->constructionRmaTime = secondsSince(sectionStart);
         #endif // TIMING
@@ -248,7 +245,7 @@ RankHandler<T, Grid>::RankHandler(size_t buffsize, const MPI_Comm &comm_world, c
         this->particles = new MCParticle[this->buffsize];
         this->av = new index_t[this->buffsize];
         this->th = new index_t[this->buffsize];
-        this->av_length_storage = static_cast<int>(this->buffsize);
+        this->lengths_storage[0] = static_cast<int>(this->buffsize);
         std::iota(this->av, this->av + this->buffsize, 0);
         #ifdef TIMING
         this->constructionRmaTime = secondsSince(sectionStart);
@@ -320,8 +317,7 @@ void RankHandler<T, Grid>::Destroy(void)
         this->particles_agent->Free();
         this->av_agent->Free();
         this->th_agent->Free();
-        this->av_length_agent->Free();
-        this->th_length_agent->Free();
+        this->lengths_agent->Free();
         MPI_Group_free(&this->group_world);
         MPI_Group_free(&this->group_internal);
         DistributedMutex *mutex1 = (this->rank_internal == 0)? this->localTHMutex.get() : this->remoteTHMutex.get();
@@ -451,17 +447,16 @@ void RankHandler<T, Grid>::ValidateRemoteArraysContents(void)
     static std::vector<index_t> remoteAV;
     static std::vector<index_t> remoteTH;
 
-    int av_length;
-    this->av_length_agent->Get(&av_length, 1, this->other_rank, 0);
+    int lengths[2];
+    this->lengths_agent->Get(lengths, 2, this->other_rank, 0);
+    int av_length = lengths[0];
+    int th_length = lengths[1];
 
     if(remoteAV.size() < static_cast<size_t>(av_length))
     {
         remoteAV.resize(av_length);
     }
     this->av_agent->Get(remoteAV.data(), av_length, this->other_rank, 0);
-
-    int th_length;
-    this->th_length_agent->Get(&th_length, 1, this->other_rank, 0);
 
     if(remoteTH.size() < static_cast<size_t>(th_length))
     {
@@ -856,17 +851,13 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         #ifdef TIMING
         size_t reallocationRequestsForThisTransfer = 0;
         #endif // TIMING
+        int remoteLengths[2];
         auto getAvailableLength = [&](void)
         {
-            int availLength;
-            this->av_length_agent->Get(&availLength, 1, this->other_rank, 0);
+            this->lengths_agent->Get(remoteLengths, 2, this->other_rank, 0);
+            int availLength = remoteLengths[0];
             assert(availLength <= static_cast<int>(this->peer_buffsize));
-            if(availLength >= static_cast<int>(Np))
-            {
-                int newAvail = availLength - static_cast<int>(Np);
-                this->av_length_agent->Put(&newAvail, 1, this->other_rank, 0, false);
-            }
-            else
+            if(availLength < static_cast<int>(Np))
             {
                 #ifdef ADVANCED_MONTECARLO_DEBUG
                 reallocationsCounter++;
@@ -926,7 +917,8 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         }
         #endif // TIMING
 
-        std::vector<index_t> availIndices(Np);
+        static thread_local std::vector<index_t> availIndices;
+        availIndices.resize(Np);
         #ifdef TIMING
         transferSectionStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
@@ -971,18 +963,15 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         static thread_local std::vector<std::pair<index_t, size_t>> orderedTargets;
         static thread_local std::vector<MCParticle> orderedParticles;
         static thread_local std::vector<index_t> orderedIndices;
-        static thread_local std::vector<MCParticle> scatteredParticles;
-        static thread_local std::vector<index_t> scatteredIndices;
+        using PutBatchEntry = typename RemoteMemoryAgent<MCParticle>::PutBatchEntry;
+        static thread_local std::vector<PutBatchEntry> batchEntries;
 
         orderedTargets.resize(Np);
         orderedParticles.clear();
         orderedIndices.clear();
-        scatteredParticles.clear();
-        scatteredIndices.clear();
+        batchEntries.clear();
         orderedParticles.reserve(Np);
         orderedIndices.reserve(Np);
-        scatteredParticles.reserve(Np);
-        scatteredIndices.reserve(Np);
 
         for(size_t i = 0; i < Np; i++)
         {
@@ -1007,13 +996,10 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             }
 
             size_t runLength = runEnd - runStart;
+            batchEntries.push_back({runStart, orderedIndices[runStart], runLength});
+
             if(runLength > 1)
             {
-                this->particles_agent->Put(orderedParticles.data() + runStart,
-                                          runLength,
-                                          this->other_rank,
-                                          orderedIndices[runStart],
-                                          false);
                 #ifdef TIMING
                 this->contiguousParticlePutsThisStep++;
                 this->contiguousParticlesThisStep += runLength;
@@ -1022,25 +1008,21 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             }
             else
             {
-                scatteredParticles.push_back(orderedParticles[runStart]);
-                scatteredIndices.push_back(orderedIndices[runStart]);
+                #ifdef TIMING
+                this->scatterParticlesThisStep++;
+                #endif // TIMING
             }
 
             runStart = runEnd;
         }
 
-        if(not scatteredParticles.empty())
-        {
-            this->particles_agent->PutScatter(scatteredParticles.data(),
-                                             scatteredIndices.data(),
-                                             scatteredParticles.size(),
-                                             this->other_rank,
-                                             false);
-            #ifdef TIMING
-            this->scatterParticlePutsThisStep++;
-            this->scatterParticlesThisStep += scatteredParticles.size();
-            #endif // TIMING
-        }
+        #ifdef TIMING
+        this->scatterParticlePutsThisStep += (batchEntries.empty() ? 0 : 1);
+        #endif // TIMING
+
+        this->particles_agent->PutBatch(orderedParticles.data(), Np,
+                                        batchEntries.data(), batchEntries.size(),
+                                        this->other_rank, false);
 
         #ifdef TIMING
         if(usedContiguousAllocation)
@@ -1059,13 +1041,9 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->transferParticlePutTimeThisStep += secondsSince(transferSectionStart);
         #endif // TIMING
 
-        int toHandleLength;
+        int toHandleLength = remoteLengths[1];
         #ifdef TIMING
-        transferSectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
-        this->th_length_agent->Get(&toHandleLength, 1, this->other_rank, 0);
-        #ifdef TIMING
-        this->transferTHLengthGetTimeThisStep += secondsSince(transferSectionStart);
+        this->transferTHLengthGetTimeThisStep += 0;
         #endif // TIMING
         assert(toHandleLength >= 0);
         assert(toHandleLength < static_cast<int>(this->peer_buffsize));
@@ -1078,13 +1056,14 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->transferTHPutTimeThisStep += secondsSince(transferSectionStart);
         #endif // TIMING
 
-        // Publishing th_length is the signaled fence for all previous writes on
-        // this RC QP: particle payloads, TH entries, and AV reservation.
-        int newThLength = toHandleLength + static_cast<int>(Np);
+        // Publishing both lengths is the signaled fence for all previous writes
+        // on this RC QP: particle payloads, TH entries, and AV reservation.
+        int newLengths[2] = {availLength - static_cast<int>(Np),
+                             toHandleLength + static_cast<int>(Np)};
         #ifdef TIMING
         transferSectionStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
-        this->th_length_agent->Put(&newThLength, 1, this->other_rank, 0, true);
+        this->lengths_agent->Put(newLengths, 2, this->other_rank, 0, true);
         #ifdef TIMING
         this->transferTHLengthPublishTimeThisStep += secondsSince(transferSectionStart);
         this->transferAVLengthFlushTimeThisStep += 0;
@@ -1100,8 +1079,8 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             eo.addEntry("Where", std::string("RankHandler<T, Grid>::TransferParticles - after transfer"));
             eo.addEntry("Transfer Amount", Np);
             eo.addEntry("AV Indices", availIndices);
-            eo.addEntry("Expected TH length", toHandleLength + Np);
-            eo.addEntry("Expected AV length", availLength);
+            eo.addEntry("Expected TH length", newLengths[1]);
+            eo.addEntry("Expected AV length", newLengths[0]);
             eo.addEntry("Reallocations Counter", reallocationsCounter);
             throw eo;
         }
