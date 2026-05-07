@@ -221,7 +221,7 @@ void HDSim3D::timeAdvance2(void)
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
 	MEMORY_DEBUG_PRINT("hydro: after flux calc");
 	mid_extensives = extensive_;
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	MEMORY_DEBUG_PRINT("hydro: after extensive update");
 	auto t1 = get_time();
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
@@ -281,7 +281,7 @@ t1 = get_time();
 source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
 t2 = get_time();
 DisplayTime(t1, t2, "Second source time ");
-eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
+eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
 ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
@@ -321,7 +321,7 @@ void HDSim3D::timeAdvance(void)
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, extensive_);
-	eu_(fluxes, tess_, dt, cells_, extensive_, time, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, extensive_, time, face_vel, point_vel, face_values);
 	if(pm_.MovedPoints())
 	{
 	MovePoints(tess_, point_vel, dt);
@@ -383,7 +383,7 @@ void HDSim3D::timeAdvance3(void)
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt, face_values);
 	mid_extensives = extensive_;
-	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, face_values);
+	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, 0.5 * dt, mid_extensives);
 
 	if (pt_.getCycle() % 10 == 0)
@@ -432,7 +432,7 @@ void HDSim3D::timeAdvance3(void)
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, 2 * dt, face_values);
 	//mid_extensives = extensive_;
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, 2 * dt,  mid_extensives);
-	eu_(fluxes, tess_, 2 * dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
+	eu_(fluxes, tess_, 2 * dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, point_vel, face_values);
 	mid_extensives = mid_extensives - 3 * (u1 - extensive_);
 
 	#ifdef RICH_MPI
@@ -460,7 +460,7 @@ void HDSim3D::timeAdvance3(void)
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt / 6, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt / 6,  mid_extensives);
-	eu_(fluxes, tess_, dt / 6, cells_, mid_extensives, time + dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt / 6, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
 	extensive_ = mid_extensives - (1.0 / 3.0) * (2 * u2 + extensive_) + u1;
 	cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
@@ -503,7 +503,7 @@ void HDSim3D::timeAdvance33(void)
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
 	mid_extensives = extensive_;
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 
 	if (pt_.getCycle() % 10 == 0)
@@ -550,7 +550,7 @@ void HDSim3D::timeAdvance33(void)
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 	//mid_extensives = extensive_;
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
 	mid_extensives = 0.25 * mid_extensives + 0.75 * extensive_;
 
 	#ifdef RICH_MPI
@@ -576,7 +576,7 @@ void HDSim3D::timeAdvance33(void)
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, dt, mid_extensives);
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, point_vel, face_values);
 	extensive_ = 0.33333333333333333333333 * (2 * mid_extensives + extensive_);
 
 	#ifdef RICH_MPI
@@ -632,7 +632,7 @@ void HDSim3D::timeAdvance32(void)
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt, face_values);
 	mid_extensives = extensive_;
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 
 	if (pt_.getCycle() % 10 == 0)
@@ -677,7 +677,7 @@ void HDSim3D::timeAdvance32(void)
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
 	mid_extensives = 0.5 * (mid_extensives + extensive_);
 	cu_(cells_, eos_, tess_, mid_extensives);
 
@@ -687,7 +687,7 @@ void HDSim3D::timeAdvance32(void)
 	CalcFaceVelocities(tess_, point_vel, face_vel);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
 	//extensive_ = 0.333333333333333333*(extensive_ + u1 + mid_extensives);
 	extensive_ = 0.333333333333333333 * (extensive_ + u1 + mid_extensives);
 	cu_(cells_, eos_, tess_, extensive_);
@@ -734,7 +734,7 @@ void HDSim3D::timeAdvance4(void)
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, 0.5 * dt, face_values);
 	mid_extensives = extensive_;
-	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, face_values);
+	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, 0.5 * dt, mid_extensives);
 
 	if (pt_.getCycle() % 10 == 0)
@@ -784,7 +784,7 @@ void HDSim3D::timeAdvance4(void)
 	//mid_extensives = extensive_;
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, 0.5 * dt, mid_extensives);
 	mid_extensives = mid_extensives - du1;
-	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
+	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, point_vel, face_values);
 	cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
@@ -794,7 +794,7 @@ void HDSim3D::timeAdvance4(void)
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + 0.5 * dt, dt, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + 0.5 * dt, dt, mid_extensives);
 	mid_extensives = mid_extensives - du2;
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt, cells_, mid_extensives, time + 0.5 * dt, face_vel, point_vel, face_values);
 
 	#ifdef RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, this->tessellation_points_scratch_, &oldpoints);
@@ -823,7 +823,7 @@ void HDSim3D::timeAdvance4(void)
 	fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt / 6, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time + dt, dt / 6,  mid_extensives);
 	mid_extensives = mid_extensives - du3;
-	eu_(fluxes, tess_, dt / 6, cells_, mid_extensives, time + dt, face_vel, face_values);
+	eu_(fluxes, tess_, dt / 6, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
 	extensive_ = mid_extensives + (1.0 / 6.0) * (2 * du1 + 4 * du2 + 2 * du3);
 	cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI

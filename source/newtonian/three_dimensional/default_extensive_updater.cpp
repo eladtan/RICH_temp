@@ -7,8 +7,9 @@ DefaultExtensiveUpdater::DefaultExtensiveUpdater(void){}
 
 void DefaultExtensiveUpdater::operator()(const vector<Conserved3D>& fluxes, const Tessellation3D& tess,
 	const double dt, const vector<ComputationalCell3D>& cells, vector<Conserved3D>& extensives, double /*time*/,
-					 std::vector<Vector3D> const& /*face_vel*/,
-					 std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& /*interp_values*/) const
+				 std::vector<Vector3D> const& /*face_vel*/,
+				 const vector<Vector3D>& /*point_velocities*/,
+				 std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& /*interp_values*/) const
 {
 	size_t N = tess.GetPointNo();
 	size_t Nfluxes = fluxes.size();
