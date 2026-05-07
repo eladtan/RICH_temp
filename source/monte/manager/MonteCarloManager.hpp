@@ -1128,6 +1128,13 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                     particle.previousLocation = particle.location;
                     #endif // MONTECARLO_DEBUG
 
+                    if(particle.sent)
+                    {
+                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                            MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+                        particle.sent = false;
+                    }
+
                     if(debug)
                     {
                         std::cout << "Before running particle step, particle is " << particle << std::endl;
@@ -1266,7 +1273,6 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                             particle.particleIndexInLastRank = particleIndex;
                             particle.particleTHInLastRank = i;
                             particle.nextRank = otherRank;
-                            particle.sent = true;
 
                             if(particle.nextRank == this->rank_world)
                             {
@@ -1278,6 +1284,7 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                                 throw eo;
                             }
                             #endif // MONTECARLO_DEBUG
+                            particle.sent = true;
                             particle.cellIndex = neighborIndexInRank;
 
                             #ifdef MONTECARLO_DEBUG
