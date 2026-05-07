@@ -318,8 +318,7 @@ std::vector<std::vector<T>> MPI_Exchange_by_ranks(const std::vector<Container<T,
     }
 
     std::vector<std::vector<T>> result(correspondents.size());
-    std::vector<std::pair<rank_t, std::vector<T>>> sparseResult =
-        MPI_Exchange_sparse_by_rank(dataByRank, comm, MPI_EXCHANGE_ALLTOALL_TAG);
+    std::vector<std::pair<rank_t, std::vector<T>>> sparseResult = MPI_Exchange_sparse_by_rank(dataByRank, comm, MPI_EXCHANGE_ALLTOALL_TAG);
     for(auto &[_senderRank, values] : sparseResult)
     {
         auto it = std::find(correspondents.cbegin(), correspondents.cend(), _senderRank);
