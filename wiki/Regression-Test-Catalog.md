@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 22 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 29 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -191,7 +191,45 @@ The bash checker `check_amr_random_case` verifies that the maximum drift (change
 
 ---
 
-## 5. voronoi_volume -- Voronoi Volume Sum Accuracy
+## 5. amr_distributed_clip -- Distributed AMR clipCells Conservation
+
+**Tags:** `mpi`
+
+### Physics
+
+Tests the distributed `clipCells` load-balancing feature, which offloads AMR clip work from busy ranks to idle ranks. A highly imbalanced scenario is constructed: only 4 ranks refine cells and 5 ranks remove cells, while the remaining 55 ranks are idle. The test verifies that total mass and total energy are conserved after the AMR step.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Initial state | Uniform gas: rho = 1, internal energy = 2.5 |
+| Total points | 2 x 10^5 |
+| Refine ranks | 4 ranks, ~500 cells each |
+| Remove ranks | 5 ranks, ~500 cells each |
+| SLURM (MPI) | 64 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/amr_distributed_clip/test.cpp`
+
+### Output
+
+`amr_distributed_clip_metrics.txt` -- fields: `mass_before`, `mass_after`, `energy_before`, `energy_after`, `mass_reldiff`, `energy_reldiff`, `threshold`, `pass`
+
+### Validation
+
+The bash checker `check_amr_distributed_clip_case` verifies that the relative change in total mass and total energy stays below the threshold.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| `mass_reldiff` | <= 1e-6 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` |
+| `energy_reldiff` | <= 1e-6 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` |
+| `pass` field | Must be `1` | -- |
+
+---
+
+## 6. voronoi_volume -- Voronoi Volume Sum Accuracy
 
 **Tags:** `serial`, `mpi`
 
@@ -226,7 +264,7 @@ The bash checker `check_voronoi_volume_case` verifies the relative error between
 
 ---
 
-## 6. lane_self_gravity -- Lane-Emden with Self-Gravity
+## 7. lane_self_gravity -- Lane-Emden with Self-Gravity
 
 **Tags:** `mpi`
 
@@ -274,7 +312,7 @@ The bash checker `check_lane_self_gravity_case` verifies that the mean density d
 
 ---
 
-## 7. mach2_diffusion -- Mach 2 Radiative Shock (Grey Diffusion)
+## 8. mach2_diffusion -- Mach 2 Radiative Shock (Grey Diffusion)
 
 **Tags:** `mpi`
 
@@ -321,7 +359,7 @@ Compared against the NLTE analytical radiative shock solution from `analysis_fil
 
 ---
 
-## 8. mach2_multigroup -- Mach 2 Radiative Shock (32-Group Diffusion)
+## 9. mach2_multigroup -- Mach 2 Radiative Shock (32-Group Diffusion)
 
 **Tags:** `mpi`
 
@@ -358,7 +396,7 @@ Same as `mach2_diffusion`.
 
 ---
 
-## 9-12. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
+## 10-13. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
 
 **Tags:** `serial`
 
@@ -416,7 +454,7 @@ Relative L1 errors are computed for both Tgas and Trad.
 
 ---
 
-## 13. gresho_euler -- Gresho Vortex (Eulerian Mesh)
+## 14. gresho_euler -- Gresho Vortex (Eulerian Mesh)
 
 **Tags:** `serial`
 
@@ -459,7 +497,7 @@ The Python checker `regression_tests/lib/check_gresho_profile.py` computes the v
 
 ---
 
-## 14. gresho_lagrangian -- Gresho Vortex (Lagrangian Mesh)
+## 15. gresho_lagrangian -- Gresho Vortex (Lagrangian Mesh)
 
 **Tags:** `mpi`
 
@@ -495,7 +533,7 @@ Same as `gresho_euler`.
 
 ---
 
-## 15. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
+## 16. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
 
 **Tags:** `mpi`
 
@@ -520,7 +558,7 @@ Densmore et al. (2012) heterogeneous step-opacity slab problem: optically thin (
 
 ---
 
-## 16. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
+## 17. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
 
 **Tags:** `serial`
 
@@ -543,7 +581,7 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 
 ---
 
-## 17. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
+## 18. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
 
 **Tags:** `mpi`
 
@@ -571,7 +609,7 @@ Scattering-only Doppler benchmark in a homologous flow. A truncated Planck spect
 
 ---
 
-## 17b. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
+## 19. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -621,7 +659,7 @@ Compared against the semi-analytic solution computed by `regression_tests/moving
 
 ---
 
-## 17c. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
+## 20. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -672,7 +710,7 @@ Compared against the semi-analytic solution computed by `regression_tests/moving
 
 ---
 
-## 18. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
+## 21. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -721,7 +759,7 @@ The Python checker `regression_tests/lib/check_yee_vortex.py` computes the volum
 
 ---
 
-## 19. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
+## 22. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -756,7 +794,7 @@ Same as `yee_vortex_64`.
 
 ---
 
-## 20. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+## 23. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -781,7 +819,7 @@ Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D 
 
 ---
 
-## 21. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+## 24. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -805,7 +843,7 @@ Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mo
 
 ---
 
-## 22. spherical_collapse -- Spherical Collapse Symmetry
+## 25. spherical_collapse -- Spherical Collapse Symmetry
 
 **Tags:** `mpi`
 
@@ -837,7 +875,7 @@ A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Te
 
 ---
 
-## 23. spherical_collapse_hires -- Spherical Collapse (High Resolution)
+## 26. spherical_collapse_hires -- Spherical Collapse (High Resolution)
 
 **Tags:** `mpi`
 
@@ -870,7 +908,7 @@ High-resolution companion to `spherical_collapse`. Uses the same physics and set
 
 ---
 
-## 24. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+## 27. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
 
 **Tags:** `mpi`
 
@@ -907,7 +945,7 @@ The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the
 
 ---
 
-## 25. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+## 28. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -936,7 +974,7 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 26. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+## 29. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -973,6 +1011,7 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `sedov_3d_mpi` | mpi | 3D blast wave | Sedov-Taylor ODE | rel L1 <= 0.30 |
 | `till_compton` | serial | Compton equilibration | Temperature convergence | |Tgas-Trad| < 1% |
 | `amr_random` | serial, mpi | AMR conservation | Extensive drift | drift <= 1e-8 (serial) |
+| `amr_distributed_clip` | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
 | `voronoi_volume` | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
 | `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
 | `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |

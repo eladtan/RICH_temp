@@ -54,6 +54,7 @@ regression_tests/
 │   ├── sedov_3d_mpi.sh
 │   ├── till_compton.sh
 │   ├── amr_random.sh
+│   ├── amr_distributed_clip.sh
 │   ├── voronoi_volume.sh
 │   ├── lane_self_gravity.sh
 │   ├── mach2_diffusion.sh

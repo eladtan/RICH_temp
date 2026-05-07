@@ -172,6 +172,7 @@ Sod 1D & Serial & 1 & Eulerian & Yes \\
 Sedov 3D & MPI & 128 & Lagrangian & Yes \\
 Till Compton & Serial & 1 & Lagrangian & Yes \\
 AMR Random & Serial + MPI & 1 / 64 & Lagrangian + AMR & No \\
+AMR Distributed Clip & MPI & 64 & Lagrangian + AMR & No \\
 Voronoi Volume & Serial + MPI & 1 / 64 & Static & No \\
 Lane--Emden & MPI & 64 & Lagrangian & Yes \\
 Mach 2 Gray & MPI & 8 & Eulerian & Yes \\
@@ -449,6 +450,46 @@ Max drift & 5.7666948993784217e-09 & 9.9999999999999995e-07 & {\color{green!60!b
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsection*{Plots}
+\textit{This test does not produce comparison plots.}
+
+\newpage
+
+\section{AMR Distributed Clip Conservation}
+\label{sec:amr_distributed_clip}
+
+\subsection*{Description}
+This test validates the distributed \texttt{clipCells} load-balancing feature introduced to speed up AMR steps when most MPI ranks are idle. A strongly imbalanced scenario is constructed: out of 64~ranks, only 4~refine cells and 5~remove cells, while the remaining 55~ranks have no AMR work. The feature offloads excess \texttt{clipCells} computations from busy ranks to idle ranks via MPI collective communication.
+
+\textbf{Code and physics aspects verified:}
+\begin{itemize}
+  \item \textbf{Mass conservation:} Total mass (sum of $\rho \cdot V$ over all cells) must not change during AMR.
+  \item \textbf{Energy conservation:} Total energy (internal + kinetic, summed over all cells) must not change during AMR.
+  \item \textbf{Distributed clip correctness:} Geometry packing/unpacking, task redistribution across ranks, and result collection must reproduce the same conserved-variable updates as the local sequential path.
+  \item \textbf{Cross-rank consistency:} Cells near MPI domain boundaries that are refined or removed must have their extensive quantities correctly exchanged and applied across ranks.
+\end{itemize}
+
+\textbf{Importance:} The distributed clip feature changes which rank computes each \texttt{clipCells} call, but must not alter the numerical result. This test catches bugs in geometry serialization, task assignment, and result mapping that would manifest as conservation errors.
+
+\subsection*{Initial Conditions}
+The domain is a cube $[-1,\,1]^3$ with $2 \times 10^5$ random Voronoi points. The gas is uniform and at rest: $\rho = 1$, $e_{\mathrm{int}} = 2.5$, $\mathbf{v} = 0$.
+
+\subsection*{Boundary Conditions}
+Rigid (reflective) walls on all faces.
+
+\subsection*{Mesh Movement}
+Lagrangian with cell rounding. AMR refines ${\sim}500$ cells on each of 4~ranks and removes ${\sim}500$ cells on each of 5~ranks (deterministic random selection).
+
+\subsection*{Execution}
+MPI only: 64~CPUs via SLURM (partition \texttt{bigrun}, exclusive).
+
+\subsection*{Pass Criteria}
+After the AMR step, the relative change in total mass and total energy must satisfy:
+\begin{itemize}
+  \item $\texttt{mass\_reldiff} \le 10^{-6}$.
+  \item $\texttt{energy\_reldiff} \le 10^{-6}$.
+\end{itemize}
 
 \subsection*{Plots}
 \textit{This test does not produce comparison plots.}

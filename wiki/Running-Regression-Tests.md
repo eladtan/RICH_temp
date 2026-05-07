@@ -82,6 +82,7 @@ Available test IDs:
 | `sod_1d` | serial |
 | `till_compton` | serial |
 | `amr_random` | serial, mpi |
+| `amr_distributed_clip` | mpi |
 | `voronoi_volume` | serial, mpi |
 | `marshak_wave_1` | serial |
 | `marshak_wave_2` | serial |
@@ -195,6 +196,7 @@ You can tune pass/fail thresholds via environment variables:
 | `SEDOV_MAX_VELOCITY_REL_L1` | `0.30` | sedov_3d_mpi |
 | `AMR_RANDOM_MAX_DRIFT_SERIAL` | `1e-8` | amr_random (serial) |
 | `AMR_RANDOM_MAX_DRIFT_MPI` | `1e-6` | amr_random (MPI) |
+| `AMR_DISTRIBUTED_CLIP_THRESHOLD` | `1e-6` | amr_distributed_clip |
 | `VORONOI_VOLUME_MAX_REL_ERROR` | `1e-10` | voronoi_volume |
 | `LANE_GRAVITY_MAX_METRIC` | `4e-2` | lane_self_gravity |
 | `MACH2_MAX_DENSITY_REL_L1` | `0.025` | mach2_diffusion, mach2_multigroup |

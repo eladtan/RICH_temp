@@ -197,6 +197,7 @@ The suite builds and validates these regression cases:
 | `till_compton` | serial | Till Compton test (case 3) |
 | `sedov_3d_mpi` | mpi | 3D MPI Sedov explosion (Slurm, 128 tasks) |
 | `amr_random` | serial, mpi | AMR random refine/remove |
+| `amr_distributed_clip` | mpi | Distributed AMR clip conservation (64 tasks) |
 | `voronoi_volume` | serial, mpi | Voronoi volume accuracy |
 | `lane_self_gravity` | mpi | Lane-Emden self-gravity equilibrium (Slurm, 64 tasks) |
 | `mach2_diffusion` | mpi | Mach 2 radiative shock, single-group diffusion (Slurm, 8 tasks) |
@@ -226,6 +227,7 @@ Acceptance checks are physics-based:
 - **Sedov**: compare radial density/pressure/velocity profiles to the exact Sedov-Taylor ODE profile (`analytic/sedov_taylor.py`).
 - **Till**: require final gas and radiation temperatures to agree within **1%**.
 - **AMR random**: enforce `max_drift` below threshold (serial: 1e-8, MPI: 1e-6).
+- **AMR distributed clip**: enforce `mass_reldiff` and `energy_reldiff` below 1e-6 (MPI, 64 tasks).
 - **Voronoi volume**: enforce `rel_error < 1e-10`.
 - **Lane self-gravity**: evolve a Lane-Emden n=3/2 star with tree self-gravity to t=5; require `|mean(density - density_initial)| < 4e-2`.
 - **Mach2 diffusion / multigroup**: run a Mach 2 radiative shock to t=0.01, gather MPI-distributed profiles, and compare density, gas temperature, and radiation temperature against the analytical NLTE radiative shock solution (`analysis_files/radiative_shock/nlte_radiative_shock.py`). Require relative L1 error below 2.5% for density, gas temperature, and radiation temperature.

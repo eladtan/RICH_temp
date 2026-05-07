@@ -1203,3 +1203,60 @@ check_moving_slab_mc_32_case() {
     set_check_msg "Moving slab MC 32-group spectrum comparison passed"
     return 0
 }
+
+check_amr_distributed_clip_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/amr_distributed_clip_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale amr_distributed_clip_metrics.txt"
+        return 1
+    fi
+
+    local mass_reldiff energy_reldiff threshold pass_flag
+    mass_reldiff=$(awk '$1 == "mass_reldiff" { print $2 }' "$metrics_file")
+    energy_reldiff=$(awk '$1 == "energy_reldiff" { print $2 }' "$metrics_file")
+    threshold=$(awk '$1 == "threshold" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$mass_reldiff" || -z "$energy_reldiff" || -z "$threshold" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse AMR distributed clip metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$mass_reldiff"; then
+        set_check_msg "mass_reldiff is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$energy_reldiff"; then
+        set_check_msg "energy_reldiff is not finite"
+        return 1
+    fi
+
+    local expected_threshold="${AMR_DISTRIBUTED_CLIP_THRESHOLD:-1e-6}"
+
+    if ! awk -v d="$mass_reldiff" -v t="$expected_threshold" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "mass_reldiff exceeds threshold (${mass_reldiff} > ${expected_threshold})"
+        return 1
+    fi
+
+    if ! awk -v d="$energy_reldiff" -v t="$expected_threshold" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "energy_reldiff exceeds threshold (${energy_reldiff} > ${expected_threshold})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "amr_distributed_clip test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "AMR distributed clip conservation check passed (mass_reldiff=${mass_reldiff}, energy_reldiff=${energy_reldiff})"
+    return 0
+}

@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 13 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 29 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -191,7 +191,45 @@ The bash checker `check_amr_random_case` verifies that the maximum drift (change
 
 ---
 
-## 5. voronoi_volume -- Voronoi Volume Sum Accuracy
+## 5. amr_distributed_clip -- Distributed AMR clipCells Conservation
+
+**Tags:** `mpi`
+
+### Physics
+
+Tests the distributed `clipCells` load-balancing feature, which offloads AMR clip work from busy ranks to idle ranks. A highly imbalanced scenario is constructed: only 4 ranks refine cells and 5 ranks remove cells, while the remaining 55 ranks are idle. The test verifies that total mass and total energy are conserved after the AMR step.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Initial state | Uniform gas: rho = 1, internal energy = 2.5 |
+| Total points | 2 x 10^5 |
+| Refine ranks | 4 ranks, ~500 cells each |
+| Remove ranks | 5 ranks, ~500 cells each |
+| SLURM (MPI) | 64 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/amr_distributed_clip/test.cpp`
+
+### Output
+
+`amr_distributed_clip_metrics.txt` -- fields: `mass_before`, `mass_after`, `energy_before`, `energy_after`, `mass_reldiff`, `energy_reldiff`, `threshold`, `pass`
+
+### Validation
+
+The bash checker `check_amr_distributed_clip_case` verifies that the relative change in total mass and total energy stays below the threshold.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| `mass_reldiff` | <= 1e-6 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` |
+| `energy_reldiff` | <= 1e-6 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` |
+| `pass` field | Must be `1` | -- |
+
+---
+
+## 6. voronoi_volume -- Voronoi Volume Sum Accuracy
 
 **Tags:** `serial`, `mpi`
 
@@ -226,7 +264,7 @@ The bash checker `check_voronoi_volume_case` verifies the relative error between
 
 ---
 
-## 6. lane_self_gravity -- Lane-Emden with Self-Gravity
+## 7. lane_self_gravity -- Lane-Emden with Self-Gravity
 
 **Tags:** `mpi`
 
@@ -274,7 +312,7 @@ The bash checker `check_lane_self_gravity_case` verifies that the mean density d
 
 ---
 
-## 7. mach2_diffusion -- Mach 2 Radiative Shock (Grey Diffusion)
+## 8. mach2_diffusion -- Mach 2 Radiative Shock (Grey Diffusion)
 
 **Tags:** `mpi`
 
@@ -321,7 +359,7 @@ Compared against the NLTE analytical radiative shock solution from `analysis_fil
 
 ---
 
-## 8. mach2_multigroup -- Mach 2 Radiative Shock (32-Group Diffusion)
+## 9. mach2_multigroup -- Mach 2 Radiative Shock (32-Group Diffusion)
 
 **Tags:** `mpi`
 
@@ -358,7 +396,7 @@ Same as `mach2_diffusion`.
 
 ---
 
-## 9-12. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
+## 10-13. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
 
 **Tags:** `serial`
 
@@ -416,7 +454,7 @@ Relative L1 errors are computed for both Tgas and Trad.
 
 ---
 
-## 13. gresho_euler -- Gresho Vortex (Eulerian Mesh)
+## 14. gresho_euler -- Gresho Vortex (Eulerian Mesh)
 
 **Tags:** `serial`
 
@@ -459,7 +497,7 @@ The Python checker `regression_tests/lib/check_gresho_profile.py` computes the v
 
 ---
 
-## 14. gresho_lagrangian -- Gresho Vortex (Lagrangian Mesh)
+## 15. gresho_lagrangian -- Gresho Vortex (Lagrangian Mesh)
 
 **Tags:** `mpi`
 
@@ -503,6 +541,7 @@ Same as `gresho_euler`.
 | `sedov_3d_mpi` | mpi | 3D blast wave | Sedov-Taylor ODE | rel L1 <= 0.30 |
 | `till_compton` | serial | Compton equilibration | Temperature convergence | |Tgas-Trad| < 1% |
 | `amr_random` | serial, mpi | AMR conservation | Extensive drift | drift <= 1e-8 (serial) |
+| `amr_distributed_clip` | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
 | `voronoi_volume` | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
 | `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
 | `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
