@@ -1055,7 +1055,6 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         (void)usedContiguousAllocation;
         #endif // TIMING
 
-        this->particles_agent->Flush(this->other_rank);
         #ifdef TIMING
         this->transferParticlePutTimeThisStep += secondsSince(transferSectionStart);
         #endif // TIMING
@@ -1075,33 +1074,20 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         transferSectionStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
         this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, false);
-
-        this->th_agent->Flush(this->other_rank);
         #ifdef TIMING
         this->transferTHPutTimeThisStep += secondsSince(transferSectionStart);
         #endif // TIMING
 
-        // Explicit flush points:
-        // 1) commit available-length reservation
-        // 2) commit TH payload
-        // 3) publish new TH length
-        // Keep these before validation/unlock so remote state is consistent.
+        // Publishing th_length is the signaled fence for all previous writes on
+        // this RC QP: particle payloads, TH entries, and AV reservation.
         int newThLength = toHandleLength + static_cast<int>(Np);
         #ifdef TIMING
         transferSectionStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
-        this->th_length_agent->Put(&newThLength, 1, this->other_rank, 0, false);
-        this->th_length_agent->Flush(this->other_rank);
+        this->th_length_agent->Put(&newThLength, 1, this->other_rank, 0, true);
         #ifdef TIMING
         this->transferTHLengthPublishTimeThisStep += secondsSince(transferSectionStart);
-        #endif // TIMING
-
-        #ifdef TIMING
-        transferSectionStart = std::chrono::high_resolution_clock::now();
-        #endif // TIMING
-        this->av_length_agent->Flush(this->other_rank);
-        #ifdef TIMING
-        this->transferAVLengthFlushTimeThisStep += secondsSince(transferSectionStart);
+        this->transferAVLengthFlushTimeThisStep += 0;
         #endif // TIMING
 
         #ifdef ADVANCED_MONTECARLO_DEBUG
