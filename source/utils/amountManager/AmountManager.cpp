@@ -7,6 +7,20 @@
 #define VERIFY_TAG 9920
 #define VERIFY_RESULT_TAG 9921
 
+namespace
+{
+    void CancelAndWait(MPI_Request &request)
+    {
+        if(request == MPI_REQUEST_NULL)
+        {
+            return;
+        }
+        MPI_Cancel(&request);
+        MPI_Wait(&request, MPI_STATUS_IGNORE);
+        request = MPI_REQUEST_NULL;
+    }
+}
+
 AmountManager::AmountManager(MPI_Comm comm, size_t flushInterval)
     : comm(comm), cyclesWaiting(0), flushInterval(flushInterval), globalNum(0), tempNum(0), outgoingNum(0),
       childVerifyResult1(0), childVerifyResult2(0), localVerifyRecorded(false), localVerifyOk(false), verify(false), done(false)
@@ -303,34 +317,17 @@ void AmountManager::CheckDone(void)
 
 AmountManager::~AmountManager()
 {
-    if(this->request1 != MPI_REQUEST_NULL)
-    {
-        MPI_Cancel(&this->request1);
-    }
-    if(this->request2 != MPI_REQUEST_NULL)
-    {
-        MPI_Cancel(&this->request2);
-    }
-    if(this->parentDoneRequest != MPI_REQUEST_NULL)
-    {
-        MPI_Cancel(&this->parentDoneRequest);
-    }
-    if(this->parentVerifyRequest != MPI_REQUEST_NULL)
-    {
-        MPI_Cancel(&this->parentVerifyRequest);
-    }
-    if(this->childVerifyRequest1 != MPI_REQUEST_NULL)
-    {
-        MPI_Cancel(&this->childVerifyRequest1);
-    }
-    if(this->childVerifyRequest2 != MPI_REQUEST_NULL)
-    {
-        MPI_Cancel(&this->childVerifyRequest2);
-    }
     if(this->outgoingRequest != MPI_REQUEST_NULL)
     {
         MPI_Wait(&this->outgoingRequest, MPI_STATUS_IGNORE);
+        this->outgoingRequest = MPI_REQUEST_NULL;
     }
+    CancelAndWait(this->request1);
+    CancelAndWait(this->request2);
+    CancelAndWait(this->parentDoneRequest);
+    CancelAndWait(this->parentVerifyRequest);
+    CancelAndWait(this->childVerifyRequest1);
+    CancelAndWait(this->childVerifyRequest2);
 }
 
 #endif // RICH_MPI
