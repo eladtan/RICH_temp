@@ -406,6 +406,12 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                 }
             }
             #endif // MONTECARLO_DEBUG
+            if(particle.sent)
+            {
+                particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                    MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+                particle.sent = false;
+            }
             T prevLoc = particle.location;
             #ifdef MONTECARLO_DEBUG
                 particle.previousLocation = particle.location;
@@ -528,8 +534,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                     particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
                     particle.particleIndexInLastRank = i;
                     particle.nextRank = otherRank;
-                    particle.sent = true;
-                    
+
                     if(particle.nextRank == this->rank_world)
                     {
                         UniversalError eo("Particle is going to be sent to the same rank");
@@ -540,6 +545,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
                         throw eo;
                     }
                     #endif // MONTECARLO_DEBUG
+                    particle.sent = true;
                     particle.cellIndex = neighborIndexInRank;
 
                     transferParticle(i, otherRank);
@@ -571,6 +577,7 @@ bool TwoSidedMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &step
     {        
         this->localDecrementAmount -= particlesToAdd.size();
         this->PutSelfParticles(particlesToAdd.data(), particlesToAdd.size());
+        particlesToAdd.clear();
     }
     return (length == 0);
 }
@@ -662,7 +669,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
                                         // std::cout << "Rank " << this->rank_world << " is here, got " << newValuesCount << " new particles from rank " << fromRank << "." << std::endl;
                                         this->PutSelfParticles(newValues, newValuesCount);
                                     };
-        this->buffersManager = std::make_shared<BuffersManager<MCParticle>>(this->comm_world, receiveCallback, PARTICLES_TAG, RECV_BUFFER_MAX_SIZE * sizeof(MCParticle), SEND_BUFFER_DISPATCH_MIN_SIZE * sizeof(MCParticle), SEND_BUFFER_DISPATCH_MIN_CYCLES, this->size_world);
+        this->buffersManager = std::make_shared<BuffersManager<MCParticle>>(this->comm_world, receiveCallback, PARTICLES_TAG, RECV_BUFFER_MAX_SIZE * sizeof(MCParticle), SEND_BUFFER_DISPATCH_MIN_SIZE * sizeof(MCParticle), SEND_BUFFER_DISPATCH_MIN_CYCLES, this->size_world, this->grid.GetDuplicatedProcs());
 
         bool printed = false; // todo remove
     
@@ -696,6 +703,21 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
 
         double seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
         // std::cout << "Rank " << this->rank_world << " is outside of step() loop, in " << seconds << " seconds (" << numParticles << " particles)" << std::endl;
+
+        double localStepCount = 0;
+        for(size_t counter : this->cellsStepsCounters)
+        {
+            localStepCount += static_cast<double>(counter);
+        }
+        double avgSteps = localStepCount;
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &avgSteps, &avgSteps, 1, MPI_DOUBLE, MPI_SUM, 0, this->comm_world);
+        avgSteps /= this->size_world;
+        double maxStepsDouble = localStepCount;
+        MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &maxStepsDouble, &maxStepsDouble, 1, MPI_DOUBLE, MPI_MAX, 0, this->comm_world);
+        if(this->rank_world == 0)
+        {
+            std::cout << "Loop time: " << seconds << " seconds, max steps: " << maxStepsDouble << ", avg steps: " << avgSteps << std::endl;
+        }
 
         size_t newParticlesNum = populationControlParticles.size();
         this->endParticleCount_ = newParticlesNum;
