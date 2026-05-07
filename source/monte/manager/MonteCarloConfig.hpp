@@ -18,15 +18,15 @@ enum class MonteCarloTransferDiagnosticsLevel
 struct MonteCarloConfig
 {
 private:
-    static constexpr size_t defaultSendBufferMinSize = 200;
-    static constexpr size_t sendBufferMinSizeMin = 200;
-    static constexpr size_t sendBufferMinSizeMax = 5000;
-    static constexpr size_t sendBufferTargetParticlesPerFlush = 1024;
+    static constexpr size_t defaultSendBufferMinSize = 500;
+    static constexpr size_t sendBufferMinSizeMin = 500;
+    static constexpr size_t sendBufferMinSizeMax = 8000;
+    static constexpr size_t sendBufferTargetParticlesPerFlush = 2048;
     static constexpr double sendBufferHighTransferFraction = 0.20;
     static constexpr double sendBufferLowTransferFraction = 0.08;
 
-    static constexpr size_t smallIdleFlushHoldoffCyclesMin = 32;
-    static constexpr size_t smallIdleFlushHoldoffCyclesMax = 512;
+    static constexpr size_t smallIdleFlushHoldoffCyclesMin = 128;
+    static constexpr size_t smallIdleFlushHoldoffCyclesMax = 2048;
     static constexpr double smallIdleFlushHighCallFraction = 0.80;
     static constexpr double smallIdleFlushLowCallFraction = 0.50;
     static constexpr size_t smallIdleFlushPendingSoftLimitFactor = 512;
