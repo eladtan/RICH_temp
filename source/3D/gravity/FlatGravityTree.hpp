@@ -37,14 +37,7 @@ public:
 
     Vector3D gravity(const Vector3D &point, bool rootContainsPoint) const
     {
-        int dummy;
-        return gravity(point, rootContainsPoint, dummy);
-    }
-
-    Vector3D gravity(const Vector3D &point, bool rootContainsPoint, int &interactions) const
-    {
         Vector3D result;
-        interactions = 0;
         if(this->nodes.empty())
             return result;
 
@@ -106,7 +99,6 @@ public:
             }
             else
             {
-                interactions++;
                 result += CalculateLeafGravityContribution(n, point, this->quadrupole);
             }
         }

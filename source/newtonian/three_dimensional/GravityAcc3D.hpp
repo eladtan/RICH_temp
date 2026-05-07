@@ -16,7 +16,6 @@ public:
     GravityAcceleration3D(double theta, bool quadrupole = false, double G = 1): theta(theta), quadrupole(quadrupole), G(G), lastWalkTime_(0){};
 
     double getLastWalkTime() const { return lastWalkTime_; }
-    const std::vector<int> &getLastCellInteractions() const { return lastCellInteractions_; }
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& fluxes, const double time, vector<Vector3D> &acc) const
     {
@@ -36,7 +35,6 @@ public:
             DistributedGravityCalculator agent(tess, this->masses_, this->theta, this->quadrupole);
             acc = agent.getAcceleration(this->points_);
             lastWalkTime_ = agent.getWalkTime();
-            lastCellInteractions_ = agent.getCellInteractions();
         #else // RICH_MPI
             std::pair<Vector3D, Vector3D> boundaries = tess.GetBoxCoordinates();
             GravityTree<Vector3D> gravTree(boundaries.first, boundaries.second, this->theta, this->quadrupole);
@@ -68,7 +66,6 @@ private:
     double theta, G;
     bool quadrupole;
     mutable double lastWalkTime_;
-    mutable std::vector<int> lastCellInteractions_;
     mutable std::vector<Vector3D> points_;
     mutable std::vector<gravity_result_t> masses_;
     #ifndef RICH_MPI

@@ -3,6 +3,7 @@
 
 #ifdef RICH_MPI
 #include <limits>
+#include <algorithm>
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
@@ -11,7 +12,7 @@
 #include "GravityTypes.h"
 
 #ifndef SKELETON_DEPTH
-#define SKELETON_DEPTH 2
+#define SKELETON_DEPTH 3
 #endif
 
 class DistributedGravityCalculator
@@ -22,7 +23,6 @@ public:
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
 
     double getWalkTime() const { return walkTime_; }
-    const std::vector<int> &getCellInteractions() const { return cellInteractions_; }
 
     inline ~DistributedGravityCalculator()
     {
@@ -31,7 +31,6 @@ public:
 
 private:
     mutable double walkTime_ = 0;
-    mutable std::vector<int> cellInteractions_;
     using LocalNode = typename GravityTree<Vector3D>::Node;
 
     MPI_Comm comm;
@@ -43,19 +42,22 @@ private:
     GravityTree<Vector3D> *gravityTree;
     std::vector<std::vector<GravityNodeData>> topNodesOfRanks;
     mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths;
-    mutable EnvironmentAgent::RanksSet tempRanks;
     const GravityTree<Vector3D>::Node *realRootOfGravityTree;
     std::vector<int> prunedRanks;
     boost::container::flat_set<int> prunedSet;
     std::vector<MassedValue<Vector3D>> prunedSummaries;
     std::vector<int> exchangeNeighbors;
 
-    void getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const;
+    void getSendListHelper(const LocalNode *localNode,
+                           std::vector<std::vector<MassedValue<Vector3D>>> &result,
+                           const boost::container::flat_set<int> &relevantRanks) const;
+
+    std::vector<int> getActiveExchangeNeighbors(const std::vector<std::vector<MassedValue<Vector3D>>> &sendList) const;
 
     inline std::vector<std::vector<MassedValue<Vector3D>>> getSendList() const
     {
         std::vector<std::vector<MassedValue<Vector3D>>> result(this->size);
-        this->getSendListHelper(this->realRootOfGravityTree, result, 0);
+        this->getSendListHelper(this->realRootOfGravityTree, result, this->relevantRanksByDepths[0]);
         return result;
     }
 };
@@ -151,8 +153,11 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
                 continue;
 
             bool anyOpens = false;
-            for(const GravityNodeData &remote : this->topNodesOfRanks[_rank])
+            const std::vector<GravityNodeData> &remoteNodes = this->topNodesOfRanks[_rank];
+            size_t firstRemoteNode = remoteNodes.size() > 1 ? 1 : 0;
+            for(size_t ri = firstRemoteNode; ri < remoteNodes.size(); ri++)
             {
+                const GravityNodeData &remote = remoteNodes[ri];
                 if(remote.boundingBox.contains(node->boundingBox))
                 {
                     anyOpens = true;
@@ -248,9 +253,11 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
 {
     std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
+    std::vector<int> activeExchangeNeighbors = this->getActiveExchangeNeighbors(sendList);
 
     // Stage 1: Flat-pack + post Isend/Irecv for counts (returns immediately)
-    FlatSparseHandle flatHandle = MPI_flat_sparse_pack_and_post_counts(sendList, this->exchangeNeighbors, this->comm);
+    FlatSparseHandle flatHandle = MPI_flat_sparse_pack_and_post_counts(sendList, activeExchangeNeighbors, this->comm);
+
     sendList.clear();
     sendList.shrink_to_fit();
 
@@ -263,12 +270,9 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     FlatGravityTree localFlat(*this->gravityTree);
     std::vector<Vector3D> results;
     results.reserve(points.size());
-    this->cellInteractions_.assign(points.size(), 0);
     for(size_t i = 0; i < points.size(); i++)
     {
-        int count = 0;
-        results.emplace_back(localFlat.gravity(points[i], true, count));
-        this->cellInteractions_[i] = count;
+        results.emplace_back(localFlat.gravity(points[i], true));
     }
     this->walkTime_ = MPI_Wtime() - walk_t0;
 
@@ -300,25 +304,48 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     FlatGravityTree remoteFlat(remoteTree);
     for(size_t i = 0; i < points.size(); i++)
     {
-        int count = 0;
-        results[i] += remoteFlat.gravity(points[i], true, count);
-        this->cellInteractions_[i] += count;
+        results[i] += remoteFlat.gravity(points[i], true);
     }
     this->walkTime_ += MPI_Wtime() - rwalk_t0;
 
     return results;
 }
 
-void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode, std::vector<std::vector<MassedValue<Vector3D>>> &result, int depth) const
+std::vector<int> DistributedGravityCalculator::getActiveExchangeNeighbors(
+    const std::vector<std::vector<MassedValue<Vector3D>>> &sendList) const
+{
+    std::vector<int> sendFlags(this->size, 0);
+    std::vector<int> recvFlags(this->size, 0);
+
+    for(int r : this->exchangeNeighbors)
+    {
+        if(r != this->rank && !sendList[r].empty())
+            sendFlags[r] = 1;
+    }
+
+    MPI_Alltoall(sendFlags.data(), 1, MPI_INT,
+                 recvFlags.data(), 1, MPI_INT, this->comm);
+
+    std::vector<int> result;
+    result.reserve(this->exchangeNeighbors.size());
+    for(int r : this->exchangeNeighbors)
+    {
+        if(r != this->rank && (sendFlags[r] != 0 || recvFlags[r] != 0))
+            result.push_back(r);
+    }
+    return result;
+}
+
+void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
+    std::vector<std::vector<MassedValue<Vector3D>>> &result,
+    const boost::container::flat_set<int> &relevantRanks) const
 {
     if(localNode == nullptr)
         return;
-    if(static_cast<size_t>(depth) >= this->relevantRanksByDepths.size())
+    if(relevantRanks.empty())
     {
         return;
     }
-
-    boost::container::flat_set<int> &relevantRanks = this->relevantRanksByDepths[depth];
 
     if(localNode->isLeaf)
     {
@@ -327,12 +354,9 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
         return;
     }
 
-    if(static_cast<size_t>(depth + 1) >= this->relevantRanksByDepths.size())
-    {
-        this->relevantRanksByDepths.resize(static_cast<size_t>(depth + 2));
-    }
-    this->relevantRanksByDepths[depth + 1].clear();
-    bool someoneWantsToOpen = false;
+    boost::container::flat_set<int> ranksToOpen;
+    EnvironmentAgent::RanksSet tempRanks;
+    bool tempRanksReady = false;
 
     for(int _rank : relevantRanks)
     {
@@ -340,33 +364,48 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
         bool shouldOpen = false;
         if(contained)
         {
-            if(this->tempRanks.empty())
+            if(!tempRanksReady)
             {
                 double radius = localNode->boundingBox.getWidth() / this->theta;
-                this->tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, radius));
+                tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, radius));
+                tempRanksReady = true;
             }
-            shouldOpen = (this->tempRanks.find(_rank) != this->tempRanks.end());
+            shouldOpen = (tempRanks.find(_rank) != tempRanks.end());
         }
         else
         {
-            shouldOpen = ShouldOpenBox(localNode->value.CM, localNode->boundingBox,
-                this->topNodesOfRanks[_rank][0].boundingBox.closestPoint(localNode->value.CM), this->thetaSquared);
+            const std::vector<GravityNodeData> &remoteNodes = this->topNodesOfRanks[_rank];
+            size_t firstRemoteNode = remoteNodes.size() > 1 ? 1 : 0;
+            Vector3D closestRemotePoint;
+            double minDist2 = std::numeric_limits<double>::max();
+            for(size_t ri = firstRemoteNode; ri < remoteNodes.size(); ri++)
+            {
+                Vector3D cp = remoteNodes[ri].boundingBox.closestPoint(localNode->value.CM);
+                Vector3D diff = cp - localNode->value.CM;
+                double d2 = diff.x * diff.x + diff.y * diff.y + diff.z * diff.z;
+                if(d2 < minDist2)
+                {
+                    minDist2 = d2;
+                    closestRemotePoint = cp;
+                }
+            }
+            shouldOpen = minDist2 < std::numeric_limits<double>::max() &&
+                ShouldOpenBox(localNode->value.CM, localNode->boundingBox,
+                    closestRemotePoint, this->thetaSquared);
         }
 
         if(shouldOpen)
         {
             if(contained)
             {
-                double minDist2 = this->topNodesOfRanks[_rank][0].boundingBox.distanceSquared(localNode->value.CM);
-                if(minDist2 == 0 && this->topNodesOfRanks[_rank].size() > 1)
+                const std::vector<GravityNodeData> &remoteNodes = this->topNodesOfRanks[_rank];
+                size_t firstRemoteNode = remoteNodes.size() > 1 ? 1 : 0;
+                double minDist2 = std::numeric_limits<double>::max();
+                for(size_t ri = firstRemoteNode; ri < remoteNodes.size(); ri++)
                 {
-                    minDist2 = std::numeric_limits<double>::max();
-                    for(size_t ri = 1; ri < this->topNodesOfRanks[_rank].size(); ri++)
-                    {
-                        double d2 = this->topNodesOfRanks[_rank][ri].boundingBox.distanceSquared(localNode->value.CM);
-                        if(d2 == 0) { minDist2 = 0; break; }
-                        minDist2 = std::min(minDist2, d2);
-                    }
+                    double d2 = remoteNodes[ri].boundingBox.distanceSquared(localNode->value.CM);
+                    if(d2 == 0) { minDist2 = 0; break; }
+                    minDist2 = std::min(minDist2, d2);
                 }
                 if(minDist2 > 0 && localNode->boundingBox.getWidthSquared() < minDist2 * this->thetaSquared)
                 {
@@ -374,14 +413,12 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
                 }
                 else
                 {
-                    someoneWantsToOpen = true;
-                    this->relevantRanksByDepths[depth + 1].insert(_rank);
+                    ranksToOpen.insert(_rank);
                 }
             }
             else
             {
-                someoneWantsToOpen = true;
-                this->relevantRanksByDepths[depth + 1].insert(_rank);
+                ranksToOpen.insert(_rank);
             }
         }
         else
@@ -390,15 +427,13 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
         }
     }
 
-    this->tempRanks.clear();
-
-    if(not someoneWantsToOpen)
+    if(ranksToOpen.empty())
         return;
 
     for(size_t i = 0; i < CHILDREN; i++)
     {
         if(localNode->children[i] != nullptr)
-            this->getSendListHelper(localNode->children[i], result, depth + 1);
+            this->getSendListHelper(localNode->children[i], result, ranksToOpen);
     }
 }
 
