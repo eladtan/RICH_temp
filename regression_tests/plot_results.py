@@ -965,7 +965,9 @@ def plot_eulerian_diffusion_freefree_1d(root: Path, out_dir: Path) -> bool:
 
 
 def plot_spherical_collapse(root: Path, out_dir: Path) -> bool:
-    """xy-plane scatter plots of density and internal energy from collapse_xy_slice.txt."""
+    """xy-plane interpolated plots of density and internal energy from collapse_xy_slice.txt."""
+    from scipy.interpolate import griddata
+
     case_dir = root / "regression_tests" / "cases" / "spherical_collapse"
     slice_file = case_dir / "collapse_xy_slice.txt"
     if not slice_file.exists():
@@ -982,37 +984,40 @@ def plot_spherical_collapse(root: Path, out_dir: Path) -> bool:
         print("  [spherical_collapse] empty slice file")
         return False
 
+    box = 1.1
+    mask = (np.abs(x) <= box) & (np.abs(y) <= box)
+    x, y, rho, ie = x[mask], y[mask], rho[mask], ie[mask]
+
+    ngrid = 512
+    xi = np.linspace(-box, box, ngrid)
+    yi = np.linspace(-box, box, ngrid)
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+
+    rho_grid = griddata((x, y), rho, (xi_grid, yi_grid), method="linear")
+    ie_grid = griddata((x, y), ie, (xi_grid, yi_grid), method="linear")
+
     plt = _get_plt()
-    from matplotlib.colors import LogNorm
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    rho_pos = rho[rho > 0]
-    rho_floor = rho_pos.min() if len(rho_pos) > 0 else 1e-6
-    sc = ax.scatter(x, y, c=rho, s=1.0, marker=".", edgecolors="none",
-                    norm=LogNorm(vmin=rho_floor, vmax=rho.max()), cmap="inferno")
-    cbar = fig.colorbar(sc, ax=ax, shrink=0.9, pad=0.02)
+    im = ax.imshow(rho_grid, extent=[-box, box, -box, box], origin="lower", cmap="inferno")
+    cbar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02)
     cbar.set_label(r"$\rho$", fontsize=12)
     ax.set_xlabel("x", fontsize=11)
     ax.set_ylabel("y", fontsize=11)
     ax.set_title("Density — $z \\approx 0$ slice (final)", fontsize=12)
     ax.set_aspect("equal")
-    ax.set_facecolor("black")
     fig.tight_layout()
     _save_fig(fig, out_dir, "collapse_xy_density")
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    ie_pos = ie[ie > 0]
-    ie_floor = ie_pos.min() if len(ie_pos) > 0 else 1e-8
-    sc = ax.scatter(x, y, c=ie, s=1.0, marker=".", edgecolors="none",
-                    norm=LogNorm(vmin=ie_floor, vmax=ie.max()), cmap="magma")
-    cbar = fig.colorbar(sc, ax=ax, shrink=0.9, pad=0.02)
+    im = ax.imshow(ie_grid, extent=[-box, box, -box, box], origin="lower", cmap="magma")
+    cbar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02)
     cbar.set_label(r"$e_{\mathrm{int}}$", fontsize=12)
     ax.set_xlabel("x", fontsize=11)
     ax.set_ylabel("y", fontsize=11)
     ax.set_title("Internal energy — $z \\approx 0$ slice (final)", fontsize=12)
     ax.set_aspect("equal")
-    ax.set_facecolor("black")
     fig.tight_layout()
     _save_fig(fig, out_dir, "collapse_xy_internal_energy")
     plt.close(fig)
