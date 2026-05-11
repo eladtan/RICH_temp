@@ -100,6 +100,7 @@ namespace
 		size_t nproc = duplicated_indeces.size();
 		vector<vector<size_t> > indeces(nproc);
 		vector<vector<double> > merit_send(nproc);
+		vector<vector<size_t> > local_cells_sent(nproc);
 		vector<size_t> neigh_tmp;
 		for (size_t i = 0; i < N; ++i)
 		{
@@ -123,13 +124,43 @@ namespace
 					{
 						indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
 						merit_send[k].push_back(merits[i]);
+						local_cells_sent[k].push_back(candidates[i]);
 					}
 				}
 			}
 		}
+
+		// Build adjacency among candidates sent to the same remote rank.
+		// The receiving rank cannot compute this because GetNeighbors is
+		// unavailable for ghost cells (FacesInCell_ only covers local cells).
+		vector<vector<size_t> > adj_send(nproc);
+		for (size_t k = 0; k < nproc; ++k)
+		{
+			size_t M = local_cells_sent[k].size();
+			if (M < 2)
+				continue;
+			std::unordered_map<size_t, size_t> cell_to_batch;
+			for (size_t m = 0; m < M; ++m)
+				cell_to_batch[local_cells_sent[k][m]] = m;
+			for (size_t m = 0; m < M; ++m)
+			{
+				tess.GetNeighbors(local_cells_sent[k][m], neigh_tmp);
+				for (size_t j = 0; j < neigh_tmp.size(); ++j)
+				{
+					std::unordered_map<size_t, size_t>::const_iterator it2 = cell_to_batch.find(neigh_tmp[j]);
+					if (it2 != cell_to_batch.end() && it2->second > m)
+					{
+						adj_send[k].push_back(m);
+						adj_send[k].push_back(it2->second);
+					}
+				}
+			}
+		}
+
 		const std::vector<int> &amr_dupProcs = tess.GetDuplicatedProcs();
 		indeces = MPI_exchange_data(amr_dupProcs, indeces);
 		merit_send = MPI_exchange_data(amr_dupProcs, merit_send);
+		adj_send = MPI_exchange_data(amr_dupProcs, adj_send);
 		for (size_t i = 0; i < nproc; ++i)
 		{
 			if (!indeces[i].empty())
@@ -145,9 +176,8 @@ namespace
 		size_t Nall = all_candidates.size();
 		std::unordered_set<size_t> candidate_set(all_candidates.begin(), all_candidates.end());
 
-		// Pre-build adjacency between candidates using GetNeighbors on local cells only
-		// (ghost cells don't support GetNeighbors; the symmetric relationship is captured
-		// from the local side since if L neighbors G, then G neighbors L)
+		// Build adjacency from local cells' GetNeighbors (captures local-local
+		// and local-ghost edges; ghost-ghost edges are added below from exchange)
 		std::unordered_map<size_t, vector<size_t> > candidate_adj;
 		vector<size_t> neigh;
 		for (size_t k = 0; k < Nall; ++k)
@@ -168,6 +198,20 @@ namespace
 				}
 			}
 		}
+
+#ifdef RICH_MPI
+		// Add ghost-ghost edges from the exchanged adjacency data
+		for (size_t i = 0; i < nproc; ++i)
+		{
+			for (size_t p = 0; p + 1 < adj_send[i].size(); p += 2)
+			{
+				size_t ghost_a = indeces[i][adj_send[i][p]];
+				size_t ghost_b = indeces[i][adj_send[i][p + 1]];
+				candidate_adj[ghost_a].push_back(ghost_b);
+				candidate_adj[ghost_b].push_back(ghost_a);
+			}
+		}
+#endif
 
 		// Sort by merit descending; break ties by cell index ascending
 		vector<size_t> order(Nall);
@@ -1262,6 +1306,18 @@ namespace
 		DistributeAndComputeClips(packed_tasks, task_info.size(), org_volumes, results, MPI_COMM_WORLD);
 
 		std::vector<double> total_dv(Nrefine, 0.0);
+		// Per refined cell: track which old cells were already checked (the 1-ring)
+		std::vector<boost::container::flat_set<size_t> > checked(Nrefine);
+		std::vector<std::stack<size_t> > tocheck(Nrefine);
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			checked[i].insert(ToRefine[i]);
+			oldtess.GetNeighbors(ToRefine[i], neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
+				if (neigh[j] < Norg2)
+					checked[i].insert(neigh[j]);
+		}
+
 		for (const ClipResultEntry &e : results)
 		{
 			size_t ri = task_info[e.task_id].refine_idx;
@@ -1271,6 +1327,52 @@ namespace
 				interp.GetSlopes()[old_cell], oldtess.GetCellCM(old_cell), e.clip_CM);
 			extensives[old_cell] -= toadd;
 			extensives[Norg2 + ri] += toadd;
+			// Seed expansion from this cell's neighbors
+			oldtess.GetNeighbors(old_cell, neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
+				if (!checked[ri].count(neigh[j]))
+					tocheck[ri].push(neigh[j]);
+		}
+
+		// Local flood-fill beyond the 1-ring for each refined cell
+		ClipWorkspace clip_workspace;
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			if (tocheck[i].empty())
+				continue;
+			double org_volume = tess.GetVolume(Norg + i);
+			CreatePolyFaces(tess, Norg + i, polyhedron);
+			ClipBounds source_bounds = computeBounds(polyhedron);
+
+			std::unordered_map<size_t, std::vector<Plane> > plane_cache;
+			std::unordered_map<size_t, ClipBounds> bounds_cache;
+			while (!tocheck[i].empty())
+			{
+				size_t cur_check = tocheck[i].top();
+				tocheck[i].pop();
+				if (checked[i].count(cur_check))
+					continue;
+				checked[i].insert(cur_check);
+				if (cur_check >= Norg2)
+					continue;
+
+				const ClipBounds target_bounds = CachedPolyBounds(oldtess, cur_check, bounds_cache);
+				const std::vector<Plane> &cur_planes = CachedPolyPlanes(oldtess, cur_check, plane_cache);
+				auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, cur_planes, clip_workspace,
+					&source_bounds, &target_bounds, nullptr, false);
+
+				if (dv > org_volume * 1e-10)
+				{
+					total_dv[i] += dv;
+					Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv,
+						interp.GetSlopes()[cur_check], oldtess.GetCellCM(cur_check), clip_CM);
+					extensives[cur_check] -= toadd;
+					extensives[Norg2 + i] += toadd;
+					oldtess.GetNeighbors(cur_check, neigh);
+					for (size_t j = 0; j < neigh.size(); ++j)
+						tocheck[i].push(neigh[j]);
+				}
+			}
 		}
 
 		for (size_t i = 0; i < Nrefine; ++i)
@@ -1301,16 +1403,34 @@ namespace
 		size_t Nrefine = ToRefine.size();
 
 		std::vector<size_t> boundary_refine_indices;
+		std::vector<size_t> neigh_neigh;
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
 			oldtess.GetNeighbors(ToRefine[i], temp);
-			bool has_ghost = false;
+			bool has_ghost_k2 = false;
 			for (size_t j = 0; j < temp.size(); ++j)
 			{
 				if (temp[j] >= Norg && !oldtess.IsPointOutsideBox(temp[j]))
-				{ has_ghost = true; break; }
+				{
+					has_ghost_k2 = true;
+					break;
+				}
+				if (temp[j] < Norg)
+				{
+					oldtess.GetNeighbors(temp[j], neigh_neigh);
+					for (size_t k = 0; k < neigh_neigh.size(); ++k)
+					{
+						if (neigh_neigh[k] >= Norg && !oldtess.IsPointOutsideBox(neigh_neigh[k]))
+						{
+							has_ghost_k2 = true;
+							break;
+						}
+					}
+					if (has_ghost_k2)
+						break;
+				}
 			}
-			if (has_ghost)
+			if (has_ghost_k2)
 				boundary_refine_indices.push_back(i);
 		}
 
@@ -1319,13 +1439,13 @@ namespace
 		for (size_t idx : boundary_refine_indices)
 			boundary_cells.push_back(ToRefine[idx]);
 
-		PointsToNeighborsMap k1_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 1, true, MPI_COMM_WORLD);
+		PointsToNeighborsMap k2_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 2, true, MPI_COMM_WORLD);
 
 		std::vector<size_t> refined_points, ToRefine_for_send;
 		for (size_t idx : boundary_refine_indices)
 		{
-			auto it = k1_neighbors.find(ToRefine[idx]);
-			if (it != k1_neighbors.end())
+			auto it = k2_neighbors.find(ToRefine[idx]);
+			if (it != k2_neighbors.end())
 			{
 				bool has_remote = false;
 				for (const RemotePoint& rp : it->second)
@@ -1342,7 +1462,7 @@ namespace
 		std::vector<std::vector<std::vector<size_t> > > neigh_index;
 		std::vector<std::vector<double> > planes_flat;
 		std::vector<std::vector<size_t> > changed_byouter;
-		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k1_neighbors,
+		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k2_neighbors,
 			neigh_index, planes_flat, n_planes, changed_byouter);
 
 		struct MpiRefineTaskInfo
@@ -1445,16 +1565,34 @@ namespace
 		size_t Nrefine = ToRefine.size();
 
 		std::vector<size_t> boundary_refine_indices;
+		std::vector<size_t> neigh_neigh;
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
 			oldtess.GetNeighbors(ToRefine[i], temp);
-			bool has_ghost = false;
+			bool has_ghost_k2 = false;
 			for (size_t j = 0; j < temp.size(); ++j)
 			{
 				if (temp[j] >= Norg && !oldtess.IsPointOutsideBox(temp[j]))
-				{ has_ghost = true; break; }
+				{
+					has_ghost_k2 = true;
+					break;
+				}
+				if (temp[j] < Norg)
+				{
+					oldtess.GetNeighbors(temp[j], neigh_neigh);
+					for (size_t k = 0; k < neigh_neigh.size(); ++k)
+					{
+						if (neigh_neigh[k] >= Norg && !oldtess.IsPointOutsideBox(neigh_neigh[k]))
+						{
+							has_ghost_k2 = true;
+							break;
+						}
+					}
+					if (has_ghost_k2)
+						break;
+				}
 			}
-			if (has_ghost)
+			if (has_ghost_k2)
 				boundary_refine_indices.push_back(i);
 		}
 
@@ -1463,14 +1601,14 @@ namespace
 		for (size_t idx : boundary_refine_indices)
 			boundary_cells.push_back(ToRefine[idx]);
 
-		PointsToNeighborsMap k1_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 1, true, MPI_COMM_WORLD);
+		PointsToNeighborsMap k2_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 2, true, MPI_COMM_WORLD);
 
 		std::vector<size_t> refined_points;
 		std::vector<size_t> ToRefine_for_send;
 		for (size_t idx : boundary_refine_indices)
 		{
-			auto it = k1_neighbors.find(ToRefine[idx]);
-			if (it != k1_neighbors.end())
+			auto it = k2_neighbors.find(ToRefine[idx]);
+			if (it != k2_neighbors.end())
 			{
 				bool has_remote = false;
 				for (const RemotePoint& rp : it->second)
@@ -1493,7 +1631,7 @@ namespace
 		std::vector<std::vector<std::vector<size_t> > > neigh_index;
 		std::vector < std::vector<double> > planes;
 		std::vector<std::vector<size_t> > changed_byouter;
-		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k1_neighbors,
+		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k2_neighbors,
 			neigh_index, planes, n_planes, changed_byouter);
 
 		// Step 5: Find the intersections

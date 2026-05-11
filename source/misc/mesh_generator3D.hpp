@@ -15,6 +15,29 @@
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
 
+struct SphericalShellMeshOptions
+{
+	Vector3D center = Vector3D(0, 0, 0);
+	double inner_radius = 0.05;
+	double outer_radius = 1.1;
+	size_t angular_edge_count = 41;
+	size_t surface_iterations = 100;
+	size_t guard_shell_count = 2;
+	double radial_spacing_fraction = 0.0;
+	double exterior_spacing_factor = 2.0;
+	bool fill_inner_core = true;
+	bool fill_outer_box = true;
+};
+
+struct SphericalShellMeshDiagnostics
+{
+	double active_shell_volume_cv_max = 0.0;
+	double active_shell_volume_ratio_max = 0.0;
+	double guard_shell_volume_ratio_max = 0.0;
+	size_t active_shell_count = 0;
+	size_t guard_shell_count = 0;
+};
+
 /*! \brief Generates a cartesian mesh
 \param nx Number of points along the x axis
 \param ny Number of points along the y axis
@@ -111,6 +134,18 @@ std::vector<Vector3D> CubedSphereSurface(double const Radius, size_t const N_per
  */
 std::vector<Vector3D> RandSphereSurfaceRounded(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0), size_t const Niterations = 100);
 
+/*! \brief Radial bin edges used by GenerateSphericalShellMesh3D active shells */
+std::vector<double> SphericalShellMeshActiveBinEdges(SphericalShellMeshOptions const& options);
+
+/*! \brief Generate a deterministic spherical shell mesh with guard shells */
+std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D const& ur,
+	SphericalShellMeshOptions const& options,
+	SphericalShellMeshDiagnostics* diagnostics = nullptr);
+
+/*! \brief Measure per-shell cell-volume uniformity for a generated spherical shell mesh */
+SphericalShellMeshDiagnostics MeasureSphericalShellMesh3D(Tessellation3D const& tess,
+	SphericalShellMeshOptions const& options);
+
 /*! \brief Generate random points on a sphere surface
   \param Radius Radius of the sphere
   \param PointNum Number of points to generate
@@ -120,4 +155,3 @@ std::vector<Vector3D> RandSphereSurfaceRounded(double const Radius, size_t const
 std::vector<Vector3D> RandSphereSurface(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0));
 
 #endif //MESHGENERATOR3D_HPP
-

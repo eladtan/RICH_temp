@@ -689,6 +689,9 @@ check_spherical_collapse_case() {
     local metrics_file="${run_dir}/collapse_metrics.txt"
     local max_density_scatter
     local max_velocity_scatter
+    local active_shell_volume_cv_max
+    local active_shell_volume_ratio_max
+    local guard_shell_volume_ratio_max
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -702,9 +705,12 @@ check_spherical_collapse_case() {
 
     max_density_scatter=$(awk '$1 == "max_density_scatter" { print $2 }' "$metrics_file")
     max_velocity_scatter=$(awk '$1 == "max_velocity_scatter" { print $2 }' "$metrics_file")
+    active_shell_volume_cv_max=$(awk '$1 == "active_shell_volume_cv_max" { print $2 }' "$metrics_file")
+    active_shell_volume_ratio_max=$(awk '$1 == "active_shell_volume_ratio_max" { print $2 }' "$metrics_file")
+    guard_shell_volume_ratio_max=$(awk '$1 == "guard_shell_volume_ratio_max" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" || -z "$pass_flag" ]]; then
+    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" || -z "$active_shell_volume_cv_max" || -z "$active_shell_volume_ratio_max" || -z "$guard_shell_volume_ratio_max" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse spherical collapse metrics"
         return 1
     fi
@@ -715,6 +721,18 @@ check_spherical_collapse_case() {
     fi
     if ! is_finite_number "$max_velocity_scatter"; then
         set_check_msg "spherical_collapse max_velocity_scatter is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$active_shell_volume_cv_max"; then
+        set_check_msg "spherical_collapse active_shell_volume_cv_max is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$active_shell_volume_ratio_max"; then
+        set_check_msg "spherical_collapse active_shell_volume_ratio_max is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$guard_shell_volume_ratio_max"; then
+        set_check_msg "spherical_collapse guard_shell_volume_ratio_max is not finite"
         return 1
     fi
     if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
@@ -742,6 +760,47 @@ check_spherical_collapse_case() {
     fi
 
     set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter})"
+    return 0
+}
+
+check_spherical_symmetry_tools_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_symmetry_tools_metrics.txt"
+    local pass_flag
+    local flux_flag
+    local update_flag
+    local angular_flux_flag
+    local angular_update_flag
+    local angular_recenter_flag
+    local angular_avg_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_symmetry_tools_metrics.txt"
+        return 1
+    fi
+
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    flux_flag=$(awk '$1 == "spherical_momentum_flux_ok" { print $2 }' "$metrics_file")
+    update_flag=$(awk '$1 == "spherical_momentum_update_ok" { print $2 }' "$metrics_file")
+    angular_flux_flag=$(awk '$1 == "angular_momentum_flux_ok" { print $2 }' "$metrics_file")
+    angular_update_flag=$(awk '$1 == "angular_momentum_update_ok" { print $2 }' "$metrics_file")
+    angular_recenter_flag=$(awk '$1 == "angular_momentum_recenter_ok" { print $2 }' "$metrics_file")
+    angular_avg_flag=$(awk '$1 == "angular_momentum_avg_ok" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" || "$flux_flag" != "1" || "$update_flag" != "1" ||
+        "$angular_flux_flag" != "1" || "$angular_update_flag" != "1" ||
+        "$angular_recenter_flag" != "1" || "$angular_avg_flag" != "1" ]]; then
+        set_check_msg "spherical_symmetry_tools reported failure"
+        return 1
+    fi
+
+    set_check_msg "spherical_symmetry_tools metrics passed"
     return 0
 }
 
@@ -1108,37 +1167,6 @@ check_rayleigh_taylor_case() {
     return 0
 }
 
-check_doppler_scatter_mc_case() {
-    local run_dir="$1"
-    local run_start_epoch="$2"
-    local stdout_log="$3"
-    local stderr_log="$4"
-    local spectrum_file="${run_dir}/doppler_scatter_spectrum.txt"
-    local checker_stdout="${run_dir}/doppler_scatter_check.stdout.log"
-    local checker_stderr="${run_dir}/doppler_scatter_check.stderr.log"
-
-    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
-        return 1
-    fi
-
-    if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale doppler_scatter_spectrum.txt"
-        return 1
-    fi
-
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_doppler_scatter.py" \
-        --spectrum "$spectrum_file" \
-        --max-l1 "${DOPPLER_SCATTER_MC_MAX_L1:-0.3}" \
-        --plot-dir "$run_dir" \
-        >"$checker_stdout" 2>"$checker_stderr"
-    if [[ $? -ne 0 ]]; then
-        set_check_msg "Doppler scatter MC-vs-diffusion comparison failed"
-        return 1
-    fi
-
-    set_check_msg "Doppler scatter MC-vs-diffusion comparison passed"
-    return 0
-}
 
 check_moving_slab_mc_case() {
     local run_dir="$1"

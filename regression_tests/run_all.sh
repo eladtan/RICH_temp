@@ -43,7 +43,9 @@ fi
 source "${CHECKS_SCRIPT}"
 
 # ==================== Recheck helpers ====================
-# Find the newest regression_results/<timestamp>/<test_id>/ that has run logs.
+# Find the newest regression_results/<timestamp>/[<mode>/]<test_id>/ that has run logs.
+# Searches both the flat layout (<timestamp>/<test_id>) and the serial_then_mpi
+# layout (<timestamp>/{serial,mpi}/<test_id>), returning the most recent match.
 find_latest_regression_artifact_for_test() {
     local test_id="$1"
     local artifact_root="$2"
@@ -54,6 +56,15 @@ find_latest_regression_artifact_for_test() {
     fi
     while IFS= read -r ts_dir; do
         [[ -n "$ts_dir" ]] || continue
+        # Check serial_then_mpi layout: <timestamp>/{serial,mpi}/<test_id>
+        for mode_sub in serial mpi; do
+            local case_dir="${ts_dir}/${mode_sub}/${test_id}"
+            if [[ -d "$case_dir" && -f "$case_dir/run.stdout.log" && -f "$case_dir/run.stderr.log" ]]; then
+                printf '%s\n' "$case_dir"
+                return 0
+            fi
+        done
+        # Check flat layout: <timestamp>/<test_id>
         local case_dir="${ts_dir}/${test_id}"
         if [[ -d "$case_dir" && -f "$case_dir/run.stdout.log" && -f "$case_dir/run.stderr.log" ]]; then
             printf '%s\n' "$case_dir"
@@ -154,6 +165,7 @@ NO_EXCLUSIVE=0
 ARTIFACT_ROOT="${ROOT_DIR}/regression_results"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_ARTIFACT_DIR="${ARTIFACT_ROOT}/${TIMESTAMP}"
+ARTIFACT_DIR_OVERRIDE=""
 
 # ==================== Result arrays ====================
 declare -a RESULT_NAMES=()
@@ -268,6 +280,10 @@ while [[ $# -gt 0 ]]; do
             RECHECK_MODE=1
             shift
             ;;
+        --_artifact-dir)
+            ARTIFACT_DIR_OVERRIDE="${2:-}"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -279,6 +295,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Apply artifact directory override (used by serial_then_mpi to isolate passes)
+if [[ -n "${ARTIFACT_DIR_OVERRIDE}" ]]; then
+    RUN_ARTIFACT_DIR="${ARTIFACT_DIR_OVERRIDE}"
+fi
 
 # ==================== Recheck-only (no build/run) ====================
 if [[ "${RECHECK_MODE}" -eq 1 ]]; then
@@ -311,7 +332,8 @@ case "${MODE}" in
 esac
 
 # serial_then_mpi: launch both passes in parallel so a long-running serial
-# test does not delay the MPI pass.
+# test does not delay the MPI pass.  Each pass writes to its own artifact
+# subdirectory (serial/ and mpi/) to prevent clobbering.
 if [[ "${MODE}" == "serial_then_mpi" ]]; then
     echo "${BOLD}=== serial_then_mpi: launching serial and MPI passes in parallel ===${NC}"
     passthrough_args=()
@@ -335,14 +357,25 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
         serial_config="${CONFIG}"
     fi
 
+    serial_artifact_dir="${RUN_ARTIFACT_DIR}/serial"
+    mpi_artifact_dir="${RUN_ARTIFACT_DIR}/mpi"
+    mkdir -p "${serial_artifact_dir}" "${mpi_artifact_dir}"
+
+    echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
+    echo "    serial → ${serial_artifact_dir}"
+    echo "    mpi    → ${mpi_artifact_dir}"
+
+    # Children must always keep artifacts; the parent handles final cleanup.
     echo "${BOLD}--- serial pass (background) ---${NC}"
     "${BASH_SOURCE[0]}" --mode serial --config "${serial_config}" \
-        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" &
+        --mpi-np "${MPI_NP}" --_artifact-dir "${serial_artifact_dir}" \
+        --keep-artifacts "${passthrough_args[@]}" &
     serial_pid=$!
 
     echo "${BOLD}--- MPI pass (background) ---${NC}"
     "${BASH_SOURCE[0]}" --mode mpi --config "${mpi_config}" \
-        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" &
+        --mpi-np "${MPI_NP}" --_artifact-dir "${mpi_artifact_dir}" \
+        --keep-artifacts "${passthrough_args[@]}" &
     mpi_pid=$!
 
     serial_rc=0
@@ -353,6 +386,10 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
     echo
     if [[ ${serial_rc} -eq 0 && ${mpi_rc} -eq 0 ]]; then
         echo "${GREEN}serial_then_mpi: all passes succeeded.${NC}"
+        if [[ "${KEEP_ARTIFACTS}" -eq 0 ]]; then
+            rm -rf "${RUN_ARTIFACT_DIR}"
+            echo "Removed success artifacts (use --keep-artifacts to retain logs)."
+        fi
         exit 0
     else
         echo "${RED}serial_then_mpi: failures detected (serial=${serial_rc}, mpi=${mpi_rc}).${NC}"

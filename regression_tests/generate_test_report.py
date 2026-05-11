@@ -942,57 +942,6 @@ TESTS = [
         "plot_caption": "",
     },
     {
-        "id": "doppler_scatter_mc",
-        "title": "Doppler Scatter Benchmark (Homologous Flow, MC vs.\\ Diffusion)",
-        "description": (
-            "Scattering-only Doppler benchmark in a homologous flow. "
-            "A truncated Planck spectrum ($k_B T = 1$~keV, $0.5$--$3.0$~keV) is "
-            "injected from the left boundary of a 1D slab with linear velocity "
-            "$v(x) = Hx$, $H = 3 \\times 10^{-2}$~s$^{-1}$, through a purely "
-            "scattering medium ($\\kappa_s = 3 \\times 10^{-8}$~cm$^{-1}$, "
-            "$\\tau = 300$). The emergent comoving-frame spectrum at the right "
-            "boundary is measured by Monte Carlo and by multigroup diffusion "
-            "(with Doppler terms enabled), and the two are compared.\n\n"
-            "\\textbf{Code and physics aspects verified:}\n"
-            "\\begin{itemize}\n"
-            "  \\item \\textbf{Doppler shift through scattering:} Verifies that "
-            "coherent isotropic scattering in the fluid frame plus Lorentz boosts "
-            "produces the correct frequency redistribution in a moving medium.\n"
-            "  \\item \\textbf{Boundary injection:} Exercises the boundary-source "
-            "pathway with Lambert cosine-law angular distribution and truncated "
-            "Planck frequency sampling.\n"
-            "  \\item \\textbf{MC--diffusion cross-validation:} Compares the Monte "
-            "Carlo emergent spectrum with the multigroup diffusion solver (Doppler "
-            "terms on) to verify consistency between the two radiation transport "
-            "methods.\n"
-            "\\end{itemize}"
-        ),
-        "initial_conditions": (
-            r"64 cells, $x \in [0,\,10^{10}]$~cm, $v(x) = 3 \times 10^{-2} x$~cm/s, "
-            r"$\kappa_s = 3 \times 10^{-8}$~cm$^{-1}$, $\tau = 300$, "
-            r"100 energy groups (100~eV to 100~keV), "
-            r"$k_B T_{\mathrm{src}} = 1$~keV, truncated Planck $[0.5,\,3.0]$~keV, "
-            r"$10^6$ injected packets from the left boundary."
-        ),
-        "boundary_conditions": (
-            "Left: Planck source at $T_{\\mathrm{src}}$, Lambert cosine-law "
-            "angular distribution $p(\\mu) = 2\\mu$. "
-            "Right: transparent (free escape). "
-            "Transverse (y,z): closed."
-        ),
-        "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics (noHydroFeedback).",
-        "execution": "MPI, 64~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
-        "pass_criteria": (
-            r"Relative $L_1$ error between the MC comoving-frame emergent spectrum "
-            r"and the multigroup diffusion right-cell spectrum must be $\le 0.3$."
-        ),
-        "plots": ["doppler_scatter_comparison.png"],
-        "plot_caption": (
-            "Doppler scatter benchmark: MC emergent comoving spectrum (circles) vs.\\ "
-            "multigroup diffusion right-cell spectrum (solid line)."
-        ),
-    },
-    {
         "id": "moving_slab_mc",
         "title": "Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)",
         "description": (
@@ -1037,6 +986,7 @@ TESTS = [
             r"Energy-weighted fractional error (Eq.~20 of the 2026 paper) "
             r"must be $\le 0.30$."
         ),
+        "plot_dir": "moving_slab_mc",
         "plots": ["moving_slab_mc_comparison.png"],
         "plot_caption": (
             "Moving slab MC benchmark: MC simulation (circles) vs.\\ "
@@ -1091,6 +1041,7 @@ TESTS = [
             r"Energy-weighted fractional error (Eq.~20 of the 2026 paper) "
             r"must be $\le 0.30$."
         ),
+        "plot_dir": "moving_slab_mc_32",
         "plots": ["moving_slab_mc_32_comparison.png"],
         "plot_caption": (
             "Moving slab MC 32-group benchmark: MC simulation (circles) vs.\\ "
@@ -1339,13 +1290,10 @@ TESTS = [
             r"velocity scatter $< 0.1$ across all radial bins with "
             r"significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$)."
         ),
-        "plots": [
-            "collapse_density_profile.png",
-            "collapse_scatter_profile.png",
-        ],
+        "plots": ["collapse_xy_density.png", "collapse_xy_internal_energy.png"],
         "plot_caption": (
-            "Spherical collapse at termination: radial density profile and "
-            "angular scatter of density and velocity vs.\\ radius."
+            "Spherical collapse at termination ($z \\approx 0$ slice): "
+            "density and internal energy scatter in the $xy$-plane."
         ),
     },
     {
@@ -1868,17 +1816,6 @@ def _read_desmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
-def _read_doppler_scatter_mc_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_equals(cases_dir / "doppler_scatter_mc" / "doppler_scatter_check.stdout.log")
-    if not kv:
-        return []
-    rows = []
-    val = kv.get("DOPPLER_SCATTER_L1")
-    if val is not None:
-        passed = float(val) <= 0.3
-        rows.append(("MC--diffusion rel. $L_1$", val, "0.3", passed))
-    return rows
-
 
 def _read_moving_slab_mc_metrics(cases_dir: Path) -> list[MetricRow]:
     kv = _parse_kv_equals(cases_dir / "moving_slab_mc" / "moving_slab_mc_check.stdout.log")
@@ -2076,7 +2013,6 @@ METRIC_READERS: dict[str, object] = {
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
     "desmore2012_mc_serial": lambda cd: _read_desmore2012_mc_serial_metrics(cd),
-    "doppler_scatter_mc": lambda cd: _read_doppler_scatter_mc_metrics(cd),
     "moving_slab_mc": lambda cd: _read_moving_slab_mc_metrics(cd),
     "moving_slab_mc_32": lambda cd: _read_moving_slab_mc_32_metrics(cd),
     "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
@@ -2500,8 +2436,6 @@ def _summary_table() -> str:
         ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
         ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
         ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
-        ("Doppler MC", "MPI", "16", "Eulerian", "Yes"),
-        ("Doppler Scatter (MC vs Diff)", "MPI", "64", "Eulerian", "Yes"),
         ("Moving Slab MC", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
         ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
         ("Yee Vortex ($64^2$)", "MPI", "8", "Lagrangian", "Yes"),

@@ -194,9 +194,11 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
 int main(void)
 {
     int rank = 0;
+    int nprocs = 1;
 #ifdef RICH_MPI
     MPI_Init(NULL, NULL);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 #endif
 
     double box_half = 1.55;
@@ -382,6 +384,51 @@ int main(void)
     WriteSnapshot3D(sim, "snap_final.h5");
     if (rank == 0)
         std::cout << "Wrote snap_final.h5" << std::endl;
+
+    {
+        size_t const N = sim.getTessellation().GetPointNo();
+        double const box_half = R_OUTER * 1.5;
+        double const z_tol = box_half / static_cast<double>(N_CUBE_EDGE);
+        std::vector<double> local_x, local_y, local_rho, local_ie;
+        for (size_t i = 0; i < N; ++i) {
+            Vector3D const cm = sim.getTessellation().GetCellCM(i);
+            if (std::abs(cm.z) > z_tol)
+                continue;
+            local_x.push_back(cm.x);
+            local_y.push_back(cm.y);
+            local_rho.push_back(sim.getCells()[i].density);
+            local_ie.push_back(sim.getCells()[i].internal_energy);
+        }
+#ifdef RICH_MPI
+        int local_count = static_cast<int>(local_x.size());
+        std::vector<int> counts(nprocs), displs(nprocs);
+        MPI_Gather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+        if (rank == 0) {
+            displs[0] = 0;
+            for (int p = 1; p < nprocs; ++p)
+                displs[p] = displs[p - 1] + counts[p - 1];
+        }
+        int total = (rank == 0) ? (displs[nprocs - 1] + counts[nprocs - 1]) : 0;
+        std::vector<double> all_x(total), all_y(total), all_rho(total), all_ie(total);
+        MPI_Gatherv(local_x.data(), local_count, MPI_DOUBLE, all_x.data(), counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(local_y.data(), local_count, MPI_DOUBLE, all_y.data(), counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(local_rho.data(), local_count, MPI_DOUBLE, all_rho.data(), counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gatherv(local_ie.data(), local_count, MPI_DOUBLE, all_ie.data(), counts.data(), displs.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#else
+        std::vector<double>& all_x = local_x;
+        std::vector<double>& all_y = local_y;
+        std::vector<double>& all_rho = local_rho;
+        std::vector<double>& all_ie = local_ie;
+#endif
+        if (rank == 0) {
+            std::ofstream sf("collapse_xy_slice.txt");
+            sf << std::scientific << std::setprecision(10);
+            for (size_t i = 0; i < all_x.size(); ++i)
+                sf << all_x[i] << " " << all_y[i] << " " << all_rho[i] << " " << all_ie[i] << "\n";
+            sf.close();
+            std::cout << "Wrote collapse_xy_slice.txt (" << all_x.size() << " cells)" << std::endl;
+        }
+    }
 
     if (rank == 0) {
         int pass = (max_rho_scatter < 0.1 && max_vr_scatter < 0.1) ? 1 : 0;

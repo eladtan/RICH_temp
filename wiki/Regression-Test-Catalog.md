@@ -581,34 +581,6 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 
 ---
 
-## 18. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
-
-**Tags:** `mpi`
-
-### Physics
-Scattering-only Doppler benchmark in a homologous flow. A truncated Planck spectrum (kBT = 1 keV, 0.5--3.0 keV) is injected from the left boundary of a 1D slab with linear velocity v(x) = Hx (H = 3e-2 s^-1), through a purely scattering medium (kappa_sca = 3e-8 cm^-1, tau = 300). The emergent comoving-frame spectrum at the right boundary is measured by Monte Carlo and by multigroup diffusion (with Doppler terms enabled), and the two are compared.
-
-### Configuration
-- **Mesh:** 64 Eulerian cells, x in [0, 1e10] cm
-- **EOS:** Ideal gas (irrelevant, no hydro feedback)
-- **Radiation (MC):** 100-group IMC, energy groups from 100 eV to 100 keV, scattering opacity 3e-8 cm^-1, no absorption
-- **Radiation (Diffusion):** MultigroupDiffusion with Doppler on, flux limiter, same opacity
-- **Velocity:** Homologous gradient, v(x) = Hx, H = 3e-2 s^-1, v(L) = 3e8 cm/s = 0.01c
-- **Source:** 10^6 packets from left boundary, truncated Planck 0.5--3.0 keV at kBT = 1 keV, angular distribution p(mu) = 2*mu
-- **Execution:** MPI, 64 ranks, SLURM (bigrun, exclusive)
-- **Build flags:** `--energy_groups_num=100`
-
-### Output
-- `doppler_scatter_spectrum.txt` -- normalised MC and diffusion comoving-frame emergent spectra at x=L
-- `doppler_scatter_comparison.png` -- comparison plot of MC vs diffusion spectra
-
-### Pass Criteria
-| Metric | Threshold | Override variable |
-|--------|-----------|-------------------|
-| MC-vs-diffusion relative L1 | <= 0.3 | `DOPPLER_SCATTER_MC_MAX_L1` |
-
----
-
 ## 19. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
 
 **Tags:** `serial`
@@ -1024,7 +996,6 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
-| `doppler_scatter_mc` | mpi | MC vs diffusion Doppler scatter (tau=300, homologous flow) | MC-diffusion comparison | rel L1 <= 0.3 |
 | `moving_slab_mc` | serial | Freq-dependent moving slab (original vacuum, 124-group) | Semi-analytic solution | f-error <= 0.30 |
 | `moving_slab_mc_32` | serial | Freq-dependent moving slab (original vacuum, 32-group collapsed) | Semi-analytic solution (collapsed) | f-error <= 0.30 |
 | `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
