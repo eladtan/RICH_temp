@@ -945,21 +945,6 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
         transferToRanks.emplace_back();
         removeParticlesVec.emplace_back();
 
-        // struct SelfBufferLockGuard
-        // {
-        //     explicit SelfBufferLockGuard(RankHandler_t *handler): handler(handler)
-        //     {
-        //         this->handler->LockSelfBuffer();
-        //     }
-
-        //     ~SelfBufferLockGuard()
-        //     {
-        //         this->handler->UnlockSelfBuffer();
-        //     }
-
-        //     RankHandler_t *handler;
-        // } selfBufferLock(handler);
-
         for(int i = 0; i < length; i++)
         {
             if(i >= static_cast<int>(handler->buffsize))
@@ -1381,11 +1366,10 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                 eo.addEntry("Duplicate TH second index", duplicateTHSecond);
                 throw eo;
             }
-            this->reallocationAgent->HandleAllWaitingReallocations();
+            // this->reallocationAgent->HandleAllWaitingReallocations();
         }
 
-        this->reallocationAgent->HandleAllWaitingReallocations();
-
+        // this->reallocationAgent->HandleAllWaitingReallocations();
     }
 
     #ifdef TIMING
@@ -1733,7 +1717,10 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         pendingParticles += particles.size();
         #endif // TIMING
         bool thresholdFlush = particles.size() >= this->config.sendBufferMinSize;
-        if(thresholdFlush or allowIdleDrain)
+        bool idleFlush = allowIdleDrain &&
+            (particles.size() >= this->config.sendBufferMinIdleDrainSize ||
+             this->sendBufferCycleCounter >= this->config.sendBufferIdleDrainPatienceCycles);
+        if(thresholdFlush or idleFlush)
         {
             RankHandler_t *remoteHandler = this->rankHandlers[toRank];
             #ifdef TIMING
@@ -2502,6 +2489,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     START_TIMER_PREEMPTIVE("Main Loop");
     #endif // TIMING
 
+    const size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
     auto loopStart = std::chrono::high_resolution_clock::now();
     try
     {
@@ -2540,7 +2528,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             mainAmountDecreaseTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
             #endif // TIMING
 
-            size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
             if(this->iteration % amountProgressMinCycles == 0)
             {
                 #ifdef TIMING

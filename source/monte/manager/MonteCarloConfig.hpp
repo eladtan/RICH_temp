@@ -34,17 +34,19 @@ private:
     size_t smallIdleFlushHoldoffCycles = smallIdleFlushHoldoffCyclesMin;
 
 public:
-    size_t initialBufferSize          = 500;
+    size_t initialBufferSize          = 5000;
     size_t shrinkBuffersCycle         = 50;
     size_t sendBufferMinSize          = defaultSendBufferMinSize;
     size_t amountProgressMinCycles    = 16;
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;
     size_t minimalBuffSize            = 50;
-    double bufferShrinkFactor         = 0.1;
+    double bufferShrinkFactor         = 0.5;
     double bufferShrinkNeighborFactor = 0.5;
     double shrinkPercent              = 0.25;
     bool holdSmallIdleFlushes = false;
+    size_t sendBufferMinIdleDrainSize = 1;
+    size_t sendBufferIdleDrainPatienceCycles = 4096;
     MonteCarloTransferDiagnosticsLevel transferDiagnosticsLevel = MonteCarloTransferDiagnosticsLevel::StepSummary;
 
     size_t GetSmallIdleFlushHoldoffCycles(void) const
