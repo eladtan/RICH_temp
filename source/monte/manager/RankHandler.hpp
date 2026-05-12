@@ -918,6 +918,9 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         #endif // TIMING
 
         static thread_local std::vector<index_t> availIndices;
+        static thread_local uint32_t availIndices_lkey = 0;
+        static thread_local uint64_t availIndices_reg_handle = 0;
+        static thread_local const index_t *availIndices_reg_ptr = nullptr;
         availIndices.resize(Np);
         #ifdef TIMING
         transferSectionStart = std::chrono::high_resolution_clock::now();
@@ -965,6 +968,9 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         static thread_local std::vector<index_t> orderedIndices;
         using PutBatchEntry = typename RemoteMemoryAgent<MCParticle>::PutBatchEntry;
         static thread_local std::vector<PutBatchEntry> batchEntries;
+        static thread_local uint32_t orderedParticles_lkey = 0;
+        static thread_local uint64_t orderedParticles_reg_handle = 0;
+        static thread_local const MCParticle *orderedParticles_reg_ptr = nullptr;
 
         orderedTargets.resize(Np);
         orderedParticles.clear();
@@ -1020,9 +1026,22 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         this->scatterParticlePutsThisStep += (batchEntries.empty() ? 0 : 1);
         #endif // TIMING
 
+        if(orderedParticles.data() != orderedParticles_reg_ptr)
+        {
+            if(orderedParticles_reg_handle)
+            {
+                this->particles_agent->DeregisterExternalSource(orderedParticles_reg_handle);
+            }
+            auto reg = this->particles_agent->RegisterExternalSource(
+                orderedParticles.data(), orderedParticles.capacity() * sizeof(MCParticle));
+            orderedParticles_lkey = reg.lkey;
+            orderedParticles_reg_handle = reg.handle;
+            orderedParticles_reg_ptr = orderedParticles.data();
+        }
+
         this->particles_agent->PutBatch(orderedParticles.data(), Np,
                                         batchEntries.data(), batchEntries.size(),
-                                        this->other_rank, false);
+                                        this->other_rank, false, orderedParticles_lkey);
 
         #ifdef TIMING
         if(usedContiguousAllocation)
@@ -1048,22 +1067,46 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
         assert(toHandleLength >= 0);
         assert(toHandleLength < static_cast<int>(this->peer_buffsize));
 
+        // For MPI RMA each agent has a separate MPI_Win; flushes on one
+        // window do not cover another — flush particles and lengths explicitly.
+        // For IBV all agents share one RC QP with FIFO completion ordering,
+        // so the TH drain confirms PutBatch, and the Unlock CAS drain
+        // confirms the lengths Put.
+        RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
+                                 ? RMAFactory::ResolveAutoRDMA()
+                                 : this->rdma_type;
+        bool is_mpi = (resolved == RDMA_Type::MPI_RMA);
+
+        if(is_mpi)
+        {
+            this->particles_agent->Flush(this->other_rank);
+        }
+
         #ifdef TIMING
         transferSectionStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
-        this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, false);
+        if(availIndices.data() != availIndices_reg_ptr)
+        {
+            if(availIndices_reg_handle)
+            {
+                this->th_agent->DeregisterExternalSource(availIndices_reg_handle);
+            }
+            auto reg = this->th_agent->RegisterExternalSource(
+                availIndices.data(), availIndices.capacity() * sizeof(index_t));
+            availIndices_lkey = reg.lkey;
+            availIndices_reg_handle = reg.handle;
+            availIndices_reg_ptr = availIndices.data();
+        }
+        this->th_agent->Put(availIndices.data(), Np, this->other_rank, toHandleLength, true, availIndices_lkey);
         #ifdef TIMING
         this->transferTHPutTimeThisStep += secondsSince(transferSectionStart);
         #endif // TIMING
-
-        // Publishing both lengths is the signaled fence for all previous writes
-        // on this RC QP: particle payloads, TH entries, and AV reservation.
         int newLengths[2] = {availLength - static_cast<int>(Np),
                              toHandleLength + static_cast<int>(Np)};
         #ifdef TIMING
         transferSectionStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
-        this->lengths_agent->Put(newLengths, 2, this->other_rank, 0, true);
+        this->lengths_agent->Put(newLengths, 2, this->other_rank, 0, is_mpi);
         #ifdef TIMING
         this->transferTHLengthPublishTimeThisStep += secondsSince(transferSectionStart);
         this->transferAVLengthFlushTimeThisStep += 0;
