@@ -1,20 +1,33 @@
 #ifdef RICH_MPI
 
 #include "ReallocationAgent.hpp"
+#include <algorithm>
+#include <cassert>
+#include <stdexcept>
 
 #define ASK_REALLOCATION_TAG 553
 #define ANSWER_REALLOCATION_TAG 554
+#define ASYNC_REALLOCATION_REQUEST_TAG 555
+#define ASYNC_REALLOCATION_METADATA_TAG 556
 
 static const rank_t NO_RANK = -1;
 
-ReallocationAgent::ReallocationAgent(const MPI_Comm &comm, const std::function<void(rank_t)> &reallocationFunction)
-    : comm(comm), reallocationFunction(reallocationFunction)
+ReallocationAgent::ReallocationAgent(const MPI_Comm &comm, const ReallocationFunction &reallocationFunction,
+                                     const LocalReallocationFunction &localReallocationFunction,
+                                     const MetadataUpdateFunction &metadataUpdateFunction)
+    : comm(comm), reallocationFunction(reallocationFunction),
+      localReallocationFunction(localReallocationFunction), metadataUpdateFunction(metadataUpdateFunction),
+      incomingAsyncRequest(MPI_REQUEST_NULL)
 {
     MPI_Comm_rank(this->comm, &this->rank);
     MPI_Comm_size(this->comm, &this->size);
     MPI_Barrier(this->comm);
     this->waitingFor = NO_RANK;
     MPI_Irecv(&this->incomingData, 1, MPI_DOUBLE, MPI_ANY_SOURCE, ASK_REALLOCATION_TAG, this->comm, &this->incomingRequest);
+    if(this->AsyncEnabled())
+    {
+        MPI_Irecv(&this->incomingAsyncFactor, 1, MPI_DOUBLE, MPI_ANY_SOURCE, ASYNC_REALLOCATION_REQUEST_TAG, this->comm, &this->incomingAsyncRequest);
+    }
 }
 
 ReallocationAgent::~ReallocationAgent()
@@ -22,6 +35,10 @@ ReallocationAgent::~ReallocationAgent()
     if(this->incomingRequest != MPI_REQUEST_NULL)
     {
         MPI_Cancel(&this->incomingRequest);
+    }
+    if(this->incomingAsyncRequest != MPI_REQUEST_NULL)
+    {
+        MPI_Cancel(&this->incomingAsyncRequest);
     }
 }
 
@@ -160,6 +177,138 @@ void ReallocationAgent::RequestReallocation(rank_t fromRank)
             this->HandleWaitingReallocations();
         }
     }
+}
+
+bool ReallocationAgent::AsyncEnabled(void) const
+{
+    return static_cast<bool>(this->localReallocationFunction) and static_cast<bool>(this->metadataUpdateFunction);
+}
+
+void ReallocationAgent::ProgressAsyncSends(void)
+{
+    for(auto it = this->pendingFactorSends.begin(); it != this->pendingFactorSends.end();)
+    {
+        int flag = 0;
+        MPI_Test(&it->request, &flag, MPI_STATUS_IGNORE);
+        if(flag)
+        {
+            it = this->pendingFactorSends.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    for(auto it = this->pendingMetadataSends.begin(); it != this->pendingMetadataSends.end();)
+    {
+        int flag = 0;
+        MPI_Test(&it->request, &flag, MPI_STATUS_IGNORE);
+        if(flag)
+        {
+            it = this->pendingMetadataSends.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+void ReallocationAgent::RequestReallocationAsync(rank_t toRank, double factor)
+{
+    if(not this->AsyncEnabled())
+    {
+        throw std::runtime_error("ReallocationAgent::RequestReallocationAsync called without async callbacks");
+    }
+    if(this->pendingReallocRanks.find(toRank) != this->pendingReallocRanks.end())
+    {
+        return;
+    }
+
+    this->pendingReallocRanks.insert(toRank);
+    this->pendingFactorSends.push_back({toRank, factor, MPI_REQUEST_NULL});
+    PendingFactorSend &send = this->pendingFactorSends.back();
+    MPI_Isend(&send.factor, 1, MPI_DOUBLE, toRank, ASYNC_REALLOCATION_REQUEST_TAG, this->comm, &send.request);
+}
+
+void ReallocationAgent::HandleIncomingAsyncRequests(void)
+{
+    if(not this->AsyncEnabled() or this->incomingAsyncRequest == MPI_REQUEST_NULL)
+    {
+        return;
+    }
+
+    while(true)
+    {
+        int flag = 0;
+        MPI_Status status;
+        MPI_Test(&this->incomingAsyncRequest, &flag, &status);
+        if(not flag)
+        {
+            break;
+        }
+
+        rank_t fromRank = status.MPI_SOURCE;
+        double factor = this->incomingAsyncFactor;
+
+        MPI_Irecv(&this->incomingAsyncFactor, 1, MPI_DOUBLE, MPI_ANY_SOURCE, ASYNC_REALLOCATION_REQUEST_TAG, this->comm, &this->incomingAsyncRequest);
+
+        ReallocationMetadata metadata = this->localReallocationFunction(fromRank, factor);
+        this->pendingMetadataSends.push_back({fromRank, metadata, MPI_REQUEST_NULL});
+        PendingMetadataSend &send = this->pendingMetadataSends.back();
+        MPI_Isend(&send.metadata, static_cast<int>(sizeof(ReallocationMetadata)), MPI_BYTE, fromRank, ASYNC_REALLOCATION_METADATA_TAG, this->comm, &send.request);
+    }
+}
+
+void ReallocationAgent::CheckMetadataUpdates(void)
+{
+    if(not this->AsyncEnabled() or this->pendingReallocRanks.empty())
+    {
+        return;
+    }
+
+    while(true)
+    {
+        int flag = 0;
+        MPI_Status status;
+        MPI_Iprobe(MPI_ANY_SOURCE, ASYNC_REALLOCATION_METADATA_TAG, this->comm, &flag, &status);
+        if(not flag)
+        {
+            break;
+        }
+
+        ReallocationMetadata metadata;
+        rank_t fromRank = status.MPI_SOURCE;
+        MPI_Recv(&metadata, static_cast<int>(sizeof(ReallocationMetadata)), MPI_BYTE, fromRank, ASYNC_REALLOCATION_METADATA_TAG, this->comm, MPI_STATUS_IGNORE);
+        this->metadataUpdateFunction(fromRank, metadata);
+        this->pendingReallocRanks.erase(fromRank);
+    }
+}
+
+void ReallocationAgent::ProgressAsyncReallocations(void)
+{
+    if(not this->AsyncEnabled())
+    {
+        return;
+    }
+
+    this->ProgressAsyncSends();
+    this->CheckMetadataUpdates();
+    this->HandleIncomingAsyncRequests();
+    this->ProgressAsyncSends();
+}
+
+bool ReallocationAgent::IsPendingReallocation(rank_t rank) const
+{
+    return this->pendingReallocRanks.find(rank) != this->pendingReallocRanks.end();
+}
+
+bool ReallocationAgent::HasPendingAsyncReallocations(void) const
+{
+    return (not this->pendingReallocRanks.empty()) or
+           (not this->pendingFactorSends.empty()) or
+           (not this->pendingMetadataSends.empty());
 }
 
 #endif // RICH_MPI

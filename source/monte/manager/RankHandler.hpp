@@ -12,6 +12,10 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <numeric>
+#include <stdexcept>
 #include <utility>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
@@ -36,7 +40,7 @@ public:
     
     ~RankHandler();
     
-    void TransferParticles(const std::vector<MCParticle> &particles);
+    bool TransferParticles(const std::vector<MCParticle> &particles);
 
     void RemoveParticles(const std::vector<size_t> &indicesInToHandle, size_t num);
 
@@ -63,6 +67,12 @@ public:
     std::shared_ptr<ReallocationAgent> &reallocationAgent;
     
     void Reallocate(double factor);
+
+    ReallocationMetadata LocalReallocate(double factor);
+
+    void UpdatePeerRemoteInfo(const ReallocationMetadata &metadata);
+
+    bool UsesAsyncReallocation(void) const;
 
     // todo: necessary?
     inline void LockSelfBuffer(void)
@@ -806,12 +816,121 @@ void RankHandler<T, Grid>::Reallocate(double factor)
 }
 
 template<typename T, typename Grid>
-void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &particles)
+bool RankHandler<T, Grid>::UsesAsyncReallocation(void) const
+{
+    if(this->size_internal <= 1)
+    {
+        return false;
+    }
+    RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
+                             ? RMAFactory::ResolveAutoRDMA()
+                             : this->rdma_type;
+    return resolved == RDMA_Type::IBV_RDMA;
+}
+
+template<typename T, typename Grid>
+ReallocationMetadata RankHandler<T, Grid>::LocalReallocate(double factor)
+{
+    if(not this->UsesAsyncReallocation())
+    {
+        throw std::runtime_error("RankHandler::LocalReallocate is only supported for the IBV RMA backend");
+    }
+
+    memory_debug::check_system_memory("RankHandler::LocalReallocate");
+
+    static constexpr index_t inf = std::numeric_limits<index_t>::max();
+
+    #ifdef TIMING
+    auto reallocationStart = std::chrono::high_resolution_clock::now();
+    this->reallocationsThisStep++;
+    this->reallocationsTotal++;
+    #endif // TIMING
+
+    this->LockSelfBuffer();
+    bool locked = true;
+    try
+    {
+        factor = std::max(factor, 1.0);
+        size_t oldBuffSize = this->buffsize;
+        size_t newBuffSize = std::ceil(static_cast<double>(this->buffsize) * factor);
+        newBuffSize = std::max<size_t>(newBuffSize, this->minimalBuffSize);
+        if(newBuffSize <= this->buffsize)
+        {
+            newBuffSize = this->buffsize + 1;
+        }
+
+        bool noParticles = (this->th_length == 0);
+        this->buffsize = newBuffSize;
+
+        RemoteBufferInfo particlesInfo = this->particles_agent->LocalResize(this->buffsize);
+        RemoteBufferInfo avInfo = this->av_agent->LocalResize(this->buffsize);
+        RemoteBufferInfo thInfo = this->th_agent->LocalResize(this->buffsize);
+        RemoteBufferInfo lengthsInfo = this->lengths_agent->GetLocalRemoteInfo();
+
+        this->particles = this->particles_agent->GetLocalPointer();
+        this->av = this->av_agent->GetLocalPointer();
+        this->th = this->th_agent->GetLocalPointer();
+
+        if(noParticles)
+        {
+            std::iota(this->av, this->av + this->buffsize, 0);
+            this->av_length = static_cast<int>(this->buffsize);
+            this->th_length = 0;
+            std::fill(this->th, this->th + this->buffsize, inf);
+        }
+        else
+        {
+            size_t difference = this->buffsize - oldBuffSize;
+            std::memmove(this->av + difference, this->av, oldBuffSize * sizeof(index_t));
+            std::iota(this->av, this->av + difference, static_cast<index_t>(oldBuffSize));
+            std::fill(this->th + oldBuffSize, this->th + this->buffsize, inf);
+            this->av_length += static_cast<int>(difference);
+        }
+
+        #ifdef ADVANCED_MONTECARLO_DEBUG
+            this->ValidateArraysContents();
+        #endif // ADVANCED_MONTECARLO_DEBUG
+
+        this->UnlockSelfBuffer();
+        locked = false;
+
+        #ifdef TIMING
+        this->reallocationTime += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - reallocationStart).count();
+        #endif // TIMING
+
+        return {particlesInfo, avInfo, thInfo, lengthsInfo, this->buffsize};
+    }
+    catch(...)
+    {
+        if(locked)
+        {
+            this->UnlockSelfBuffer();
+        }
+        throw;
+    }
+}
+
+template<typename T, typename Grid>
+void RankHandler<T, Grid>::UpdatePeerRemoteInfo(const ReallocationMetadata &metadata)
+{
+    if(this->size_internal <= 1)
+    {
+        return;
+    }
+    this->particles_agent->UpdateRemoteInfo(this->other_rank, metadata.particles);
+    this->av_agent->UpdateRemoteInfo(this->other_rank, metadata.av);
+    this->th_agent->UpdateRemoteInfo(this->other_rank, metadata.th);
+    this->lengths_agent->UpdateRemoteInfo(this->other_rank, metadata.lengths);
+    this->peer_buffsize = metadata.new_buffsize;
+}
+
+template<typename T, typename Grid>
+bool RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &particles)
 {
     size_t Np = particles.size();
     if(particles.empty())
     {
-        return;
+        return true;
     }
     #ifdef TIMING
     this->transferCallsThisStep++;
@@ -890,6 +1009,16 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
             this->transferReallocationRequestsThisStep++;
             reallocationRequestsForThisTransfer++;
             #endif // TIMING
+            if(this->UsesAsyncReallocation())
+            {
+                this->reallocationAgent->RequestReallocationAsync(this->peer_rank_world, this->requestedFactor);
+                this->requestedFactor = 1;
+                #ifdef TIMING
+                this->transferCallsWithReallocationThisStep++;
+                this->transferTotalTimeThisStep += secondsSince(transferTotalStart);
+                #endif // TIMING
+                return false;
+            }
             this->reallocationAgent->RequestReallocation(this->peer_rank_world);
             #ifdef TIMING
             transferSectionStart = std::chrono::high_resolution_clock::now();
@@ -1169,6 +1298,7 @@ void RankHandler<T, Grid>::TransferParticles(const std::vector<MCParticle> &part
     #ifdef TIMING
     this->transferTotalTimeThisStep += secondsSince(transferTotalStart);
     #endif // TIMING
+    return true;
 }
 
 #endif // RICH_MPI

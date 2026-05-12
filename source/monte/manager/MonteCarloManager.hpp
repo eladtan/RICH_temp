@@ -254,6 +254,10 @@ private:
 
     void ShrinkBuffers(void);
 
+    bool UsesAsyncReallocation(void) const;
+
+    void ProgressReallocations(void);
+
     #ifdef TIMING
     void FlushSendBuffers(bool flushSmallBuffers, double &transferTime);
 
@@ -320,7 +324,28 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
         handler->Reallocate(factor);
     };
 
-    this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction);
+    auto localReallocationFunction = [this](rank_t rank, double factor) -> ReallocationMetadata
+    {
+        RankHandler_t *handler = this->rankHandlers[rank];
+        if(handler == nullptr)
+        {
+            throw std::runtime_error("MonteCarloManager: received async reallocation request for a missing handler");
+        }
+        return handler->LocalReallocate(factor);
+    };
+
+    auto metadataUpdateFunction = [this](rank_t rank, const ReallocationMetadata &metadata)
+    {
+        RankHandler_t *handler = this->rankHandlers[rank];
+        if(handler == nullptr)
+        {
+            throw std::runtime_error("MonteCarloManager: received async reallocation metadata for a missing handler");
+        }
+        handler->UpdatePeerRemoteInfo(metadata);
+    };
+
+    this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction,
+                                                                  localReallocationFunction, metadataUpdateFunction);
 
     if(this->rank_world == 0)
     {
@@ -458,6 +483,28 @@ MonteCarloManager<T, Grid>::~MonteCarloManager()
     {
         this->FreeHandlers();
         this->ClearCommunicator();
+    }
+}
+
+template<typename T, typename Grid>
+bool MonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
+{
+    RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
+                             ? RMAFactory::ResolveAutoRDMA()
+                             : this->rdma_type;
+    return resolved == RDMA_Type::IBV_RDMA;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::ProgressReallocations(void)
+{
+    if(this->UsesAsyncReallocation())
+    {
+        this->reallocationAgent->ProgressAsyncReallocations();
+    }
+    else
+    {
+        this->reallocationAgent->HandleAllWaitingReallocations();
     }
 }
 
@@ -694,8 +741,13 @@ void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::v
             }
         }
         #endif // MONTECARLO_DEBUG
-        remoteHandler->TransferParticles(particles);
-        this->reallocationAgent->HandleAllWaitingReallocations();
+        bool transferred = remoteHandler->TransferParticles(particles);
+        if(not transferred)
+        {
+            std::vector<MCParticle> &buffer = this->sendBuffers[toRank];
+            buffer.insert(buffer.end(), particles.begin(), particles.end());
+        }
+        this->ProgressReallocations();
     }
 }
 
@@ -840,7 +892,13 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
             }
         }
         #endif // MONTECARLO_DEBUG
-        remoteHandler->TransferParticles(particles);
+        bool transferred = remoteHandler->TransferParticles(particles);
+        if(not transferred)
+        {
+            std::vector<MCParticle> &buffer = this->sendBuffers[toRank];
+            buffer.insert(buffer.end(), particles.begin(), particles.end());
+        }
+        this->ProgressReallocations();
     }
 }
 
@@ -1697,6 +1755,7 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 
     bool allowIdleDrain = flushSmallBuffers;
     bool heldIdleDrain = false;
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
     if(flushSmallBuffers and this->config.holdSmallIdleFlushes)
     {
         size_t holdoffCycles = std::max<size_t>(1, this->config.GetSmallIdleFlushHoldoffCycles());
@@ -1712,10 +1771,14 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
             it = this->sendBuffers.erase(it);
             continue;
         }
-
         #ifdef TIMING
         pendingParticles += particles.size();
         #endif // TIMING
+        if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
+        {
+            ++it;
+            continue;
+        }
         bool thresholdFlush = particles.size() >= this->config.sendBufferMinSize;
         bool idleFlush = allowIdleDrain &&
             (particles.size() >= this->config.sendBufferMinIdleDrainSize ||
@@ -1727,10 +1790,16 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
             size_t flushedParticles = particles.size();
             auto transferStart = std::chrono::high_resolution_clock::now();
             #endif // TIMING
-            remoteHandler->TransferParticles(particles);
+            bool transferred = remoteHandler->TransferParticles(particles);
             #ifdef TIMING
             transferTime += MonteCarloTimingDetail::SecondsSince(transferStart);
             #endif // TIMING
+            if(not transferred)
+            {
+                this->ProgressReallocations();
+                ++it;
+                continue;
+            }
             this->transfersCounter++;
             #ifdef TIMING
             this->RecordSendBufferFlush(flushedParticles, thresholdFlush ? SendFlushReason::Threshold : SendFlushReason::IdleDrain);
@@ -1773,27 +1842,47 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
     size_t pendingParticles = 0;
     size_t pendingRanks = this->sendBuffers.size();
     #endif // TIMING
-    for(auto &[toRank, particles] : this->sendBuffers)
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+    for(auto it = this->sendBuffers.begin(); it != this->sendBuffers.end();)
     {
+        rank_t toRank = it->first;
+        std::vector<MCParticle> &particles = it->second;
         if(particles.empty())
+        {
+            it = this->sendBuffers.erase(it);
             continue;
+        }
         #ifdef TIMING
         pendingParticles += particles.size();
         size_t flushedParticles = particles.size();
         #endif // TIMING
+        if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
+        {
+            ++it;
+            continue;
+        }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-        remoteHandler->TransferParticles(particles);
+        bool transferred = remoteHandler->TransferParticles(particles);
+        if(not transferred)
+        {
+            this->ProgressReallocations();
+            ++it;
+            continue;
+        }
         this->transfersCounter++;
         #ifdef TIMING
         this->RecordSendBufferFlush(flushedParticles, reason);
         #endif // TIMING
+        it = this->sendBuffers.erase(it);
     }
     #ifdef TIMING
     this->sendBufferPeakRanks = std::max(this->sendBufferPeakRanks, pendingRanks);
     this->sendBufferPeakParticles = std::max(this->sendBufferPeakParticles, pendingParticles);
     #endif // TIMING
-    this->sendBuffers.clear();
-    this->sendBufferCycleCounter = 0;
+    if(this->sendBuffers.empty())
+    {
+        this->sendBufferCycleCounter = 0;
+    }
 }
 
 template<typename T, typename Grid>
@@ -2490,15 +2579,25 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     #endif // TIMING
 
     const size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+    const size_t reallocationProgressMinCycles = usesAsyncReallocation
+        ? std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles)
+        : 1;
     auto loopStart = std::chrono::high_resolution_clock::now();
     try
     {
         while(not done)
         {
+            bool shouldProgressReallocations = (not usesAsyncReallocation) or
+                (this->iteration % reallocationProgressMinCycles == 0) or
+                this->reallocationAgent->HasPendingAsyncReallocations();
             #ifdef TIMING
             auto mainLoopSectionStart = std::chrono::high_resolution_clock::now();
             #endif // TIMING
-            this->reallocationAgent->HandleAllWaitingReallocations();
+            if(shouldProgressReallocations)
+            {
+                this->ProgressReallocations();
+            }
             #ifdef TIMING
             mainReallocationPollTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
 
@@ -2549,8 +2648,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 #else
                 this->FlushAllSendBuffers();
                 #endif // TIMING
-                this->reallocationAgent->HandleAllWaitingReallocations();
-                bool ok = this->AllSendBuffersEmpty();
+                this->ProgressReallocations();
+                bool ok = this->AllSendBuffersEmpty() and not this->reallocationAgent->HasPendingAsyncReallocations();
                 amountManager.Verify(ok);
                 #ifdef TIMING
                 mainVerifyTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
