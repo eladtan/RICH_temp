@@ -163,6 +163,7 @@ int main(int argc, char* argv[])
         .comptonDebugParityCheck = false,
         .comptonDiagnostics = true,
         .comptonMatrixSamples = 2000000,
+        .comptonTransportMode = ComptonTransportMode::DeterministicSegment,
     };
 
     auto physics = std::make_shared<RadiationIMC>(

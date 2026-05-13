@@ -128,10 +128,22 @@ namespace {
         }
         return true;
     }
+
+    const char *ComptonTransportModeName(ComptonTransportMode mode)
+    {
+        switch(mode)
+        {
+            case ComptonTransportMode::FReducedEvents:
+                return "FReducedEvents";
+            case ComptonTransportMode::DeterministicSegment:
+                return "DeterministicSegment";
+        }
+        return "Unknown";
+    }
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonDiagnostics(parameters.comptonDiagnostics), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonDiagnostics(parameters.comptonDiagnostics), comptonMatrixSamples(parameters.comptonMatrixSamples), comptonTransportMode(parameters.comptonTransportMode)
 {
     if(this->withCompton && this->withRandomWalk)
     {
@@ -212,7 +224,13 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     double effectiveAbsorptionOpacity = this->withCompton
         ? this->comptonData[cellIndex].baseEffectiveOpacity[group]
         : (1 - this->factorFleck[cellIndex]) * absorptionOpacity;
-    double implicitComptonOpacity = (this->withCompton && group < ENERGY_GROUPS_NUM)
+    bool const deterministicComptonSegment =
+        this->withCompton &&
+        this->comptonTransportMode == ComptonTransportMode::DeterministicSegment &&
+        group < ENERGY_GROUPS_NUM;
+    double implicitComptonOpacity = (this->withCompton &&
+                                     this->comptonTransportMode == ComptonTransportMode::FReducedEvents &&
+                                     group < ENERGY_GROUPS_NUM)
         ? this->comptonData[cellIndex].comptonOutRate[group]
         : 0.0;
     double eventOpacity = elasticScatteringOpacity + effectiveAbsorptionOpacity + implicitComptonOpacity;
@@ -319,6 +337,13 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         this->Eg_time_avg[cellIndex][g] += integratedForTally;
     }
     particle.weight *= 1 + expFactor1;
+    if(deterministicComptonSegment && dt > 0.0)
+    {
+        Vector3D const oldVelocity = particle.velocity;
+        this->applyComptonDeterministicSegment(
+            cellIndex, cell, group, dt, dopplerShift, oldVelocity, particle);
+        group = this->opacity->findGroup(particle.frequency);
+    }
 
     if(std::abs(particle.weight) < particle.initialWeight * 1e-3)
     {
@@ -1122,6 +1147,7 @@ void RadiationIMC::buildComptonSources(double fullDt, ComptonCellData &cd)
 void RadiationIMC::buildComptonEventData(size_t cellIndex, ComptonCellData &cd)
 {
     (void)cellIndex;
+    ZeroGroupMatrix(cd.segmentKernel);
     ZeroGroupMatrix(cd.residualKernel);
 
     for(size_t h = 0; h < ENERGY_GROUPS_NUM; h++)
@@ -1151,6 +1177,7 @@ void RadiationIMC::buildComptonEventData(size_t cellIndex, ComptonCellData &cd)
             double const Ktarget_hg = cd.S[h][g]
                 + cd.betaCdtF * (cd.M[g] * cd.Lambda[h]
                 - cd.absorptionOpacity[h] * kgbg);
+            cd.segmentKernel[h][g] = Ktarget_hg;
             double Kevent_hg;
             if(h == g)
             {
@@ -1164,7 +1191,10 @@ void RadiationIMC::buildComptonEventData(size_t cellIndex, ComptonCellData &cd)
                                    / this->comptonGroupCenters[h];
                 Kevent_hg = N_hg * (f * ratio + (1.0 - f));
             }
-            cd.residualKernel[h][g] = Ktarget_hg - Kevent_hg;
+            if(this->comptonTransportMode == ComptonTransportMode::DeterministicSegment)
+                cd.residualKernel[h][g] = 0.0;
+            else
+                cd.residualKernel[h][g] = Ktarget_hg - Kevent_hg;
         }
     }
 }
@@ -1198,7 +1228,11 @@ void RadiationIMC::validateComptonParity(size_t cellIndex, const ComptonCellData
                 double const ratio = this->comptonGroupCenters[g] / this->comptonGroupCenters[h];
                 Kevent_hg = N_hg * (cd.fleck * ratio + (1.0 - cd.fleck));
             }
-            double const sum = Kevent_hg + cd.residualKernel[h][g] + Hbase_hg;
+            double const sampledOrSegment_hg =
+                (this->comptonTransportMode == ComptonTransportMode::DeterministicSegment)
+                ? cd.segmentKernel[h][g]
+                : Kevent_hg;
+            double const sum = sampledOrSegment_hg + cd.residualKernel[h][g] + Hbase_hg;
             maxDecompDiff = std::max(maxDecompDiff, std::abs(sum - Ktotal_hg));
             maxKtotalAbs = std::max(maxKtotalAbs, std::abs(Ktotal_hg));
         }
@@ -1210,7 +1244,7 @@ void RadiationIMC::validateComptonParity(size_t cellIndex, const ComptonCellData
     double const tolerance = 1e-12 * std::max(maxKtotalAbs, 1.0);
     if(maxDecompDiff > tolerance)
     {
-        UniversalError eo("Compton operator decomposition parity failed: Kevent+Kres+Hbase != Ktotal");
+        UniversalError eo("Compton operator decomposition parity failed: active transport kernel+Kres+Hbase != Ktotal");
         eo.addEntry("Cell index", static_cast<double>(cellIndex));
         eo.addEntry("Max decomp diff", maxDecompDiff);
         eo.addEntry("Max |Ktotal|", maxKtotalAbs);
@@ -1298,6 +1332,154 @@ void RadiationIMC::applyComptonScatterEvent(size_t cellIndex, const Computationa
     ++this->comptonImplicitEventCount;
 }
 
+void RadiationIMC::applyComptonDeterministicSegment(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, double dt, double dopplerShift, const Vector3D &oldVelocity, Particle &particle)
+{
+    if(sourceGroup >= ENERGY_GROUPS_NUM || dt <= 0.0 || particle.weight <= 0.0)
+        return;
+
+    ComptonCellData const &cd = this->comptonData[cellIndex];
+    double const localDt = dt * dopplerShift;
+    if(localDt <= 0.0)
+        return;
+
+    GroupMatrix segmentMatrix{};
+    GroupArray rhs{};
+    GroupArray outgoing{};
+    for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+    {
+        rhs[g] = 0.0;
+        outgoing[g] = 0.0;
+        for(size_t h = 0; h < ENERGY_GROUPS_NUM; h++)
+        {
+            segmentMatrix[g][h] = ((g == h) ? 1.0 : 0.0) -
+                localDt * units::clight * cd.segmentKernel[h][g];
+        }
+    }
+    rhs[sourceGroup] = particle.weight;
+
+    SolverDiagnostics diag;
+    if(!SolveComptonGroupSystem(segmentMatrix, rhs, outgoing, diag))
+    {
+        UniversalError eo("Failed to solve deterministic Compton segment system");
+        eo.addEntry("Cell index", static_cast<double>(cellIndex));
+        eo.addEntry("Source group", static_cast<double>(sourceGroup));
+        eo.addEntry("Segment dt", dt);
+        eo.addEntry("Doppler shift", dopplerShift);
+        eo.addEntry("Fleck", cd.fleck);
+        eo.addEntry("Gamma", cd.Gamma);
+        eo.addEntry("Upsilon", cd.Upsilon);
+        eo.addEntry("Min pivot", diag.minPivot);
+        eo.addEntry("Max coefficient", diag.maxCoeff);
+        throw eo;
+    }
+
+    double positiveSum = 0.0;
+    double signedSum = 0.0;
+    double negativeCorrection = 0.0;
+    double minOutgoing = std::numeric_limits<double>::infinity();
+    for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+    {
+        double const value = outgoing[g];
+        signedSum += value;
+        minOutgoing = std::min(minOutgoing, value);
+        if(value > 0.0)
+            positiveSum += value;
+        else
+            negativeCorrection += -value;
+    }
+
+    if(!(positiveSum > 0.0) || !std::isfinite(positiveSum))
+    {
+        UniversalError eo("Deterministic Compton segment produced no positive packet energy");
+        eo.addEntry("Cell index", static_cast<double>(cellIndex));
+        eo.addEntry("Source group", static_cast<double>(sourceGroup));
+        eo.addEntry("Incoming weight", particle.weight);
+        eo.addEntry("Signed outgoing sum", signedSum);
+        eo.addEntry("Positive outgoing sum", positiveSum);
+        eo.addEntry("Negative correction", negativeCorrection);
+        eo.addEntry("Minimum outgoing component", minOutgoing);
+        eo.addEntry("Segment dt", dt);
+        eo.addEntry("Fleck", cd.fleck);
+        throw eo;
+    }
+
+    size_t targetGroup = sourceGroup;
+    double const draw = this->dist(this->re) * positiveSum;
+    double cumulative = 0.0;
+    for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+    {
+        if(outgoing[g] <= 0.0)
+            continue;
+        cumulative += outgoing[g];
+        if(draw <= cumulative)
+        {
+            targetGroup = g;
+            break;
+        }
+    }
+
+    double const oldWeight = particle.weight;
+    double const newWeight = positiveSum;
+    double const materialDeposit = oldWeight - newWeight;
+    particle.weight = newWeight;
+    particle.frequency = this->frequencyForComptonGroup(targetGroup);
+
+    if(!this->noHydroFeedback)
+    {
+        this->conserved[cellIndex].internal_energy += materialDeposit;
+        this->conserved[cellIndex].energy += materialDeposit;
+        if(this->withHydro && !this->diffusionPressureGradient)
+        {
+            this->conserved[cellIndex].momentum +=
+                (oldWeight - newWeight) * oldVelocity * units::inv_clight2;
+        }
+        if(this->conserved[cellIndex].internal_energy < 0.0)
+        {
+            UniversalError eo("Negative internal energy after deterministic Compton segment");
+            eo.addEntry("Cell index", static_cast<double>(cellIndex));
+            eo.addEntry("Source group", static_cast<double>(sourceGroup));
+            eo.addEntry("Target group", static_cast<double>(targetGroup));
+            eo.addEntry("Material deposit", materialDeposit);
+            eo.addEntry("Internal energy", this->conserved[cellIndex].internal_energy);
+            eo.addEntry("Incoming weight", oldWeight);
+            eo.addEntry("Outgoing packet weight", newWeight);
+            eo.addEntry("Signed outgoing sum", signedSum);
+            eo.addEntry("Negative correction", negativeCorrection);
+            eo.addEntry("Segment dt", dt);
+            eo.addEntry("Temperature", cell.temperature);
+            eo.addEntry("Density", cell.density);
+            eo.addEntry("Fleck", cd.fleck);
+            eo.addEntry("Gamma", cd.Gamma);
+            eo.addEntry("Upsilon", cd.Upsilon);
+            throw eo;
+        }
+    }
+
+    this->comptonImplicitMaterialExchange += materialDeposit;
+    this->comptonImplicitMaterialExchangeAbs += std::abs(materialDeposit);
+    this->comptonImplicitMaterialExchangeBySourceGroup[sourceGroup] += materialDeposit;
+    this->comptonImplicitMaterialExchangeAbsBySourceGroup[sourceGroup] += std::abs(materialDeposit);
+    this->comptonImplicitMaterialExchangeByTargetGroup[targetGroup] += materialDeposit;
+    this->comptonImplicitMaterialExchangeAbsByTargetGroup[targetGroup] += std::abs(materialDeposit);
+    this->comptonSegmentNegativeCorrection += negativeCorrection;
+    this->comptonSegmentNegativeCorrectionAbs += std::abs(negativeCorrection);
+    ++this->comptonSegmentUpdateCount;
+
+    double const depositAbs = std::abs(materialDeposit);
+    if(depositAbs > this->comptonMaxSegmentDepositAbs)
+    {
+        this->comptonMaxSegmentDepositAbs = depositAbs;
+        this->comptonMaxSegmentDeposit = materialDeposit;
+        this->comptonMaxSegmentOldWeight = oldWeight;
+        this->comptonMaxSegmentNewWeight = newWeight;
+        this->comptonMaxSegmentDt = dt;
+        this->comptonMaxSegmentNegativeCorrection = negativeCorrection;
+        this->comptonMaxSegmentCell = cellIndex;
+        this->comptonMaxSegmentSourceGroup = sourceGroup;
+        this->comptonMaxSegmentTargetGroup = targetGroup;
+    }
+}
+
 void RadiationIMC::resetComptonDiagnostics()
 {
     this->comptonSourceMaterialExchange = 0.0;
@@ -1327,6 +1509,7 @@ void RadiationIMC::resetComptonDiagnostics()
     this->comptonImplicitMaterialExchangeAbsByTargetGroup.fill(0.0);
     this->comptonMaxCdtComptonOutRate = 0.0;
     this->comptonMaxCdtBaseEffectiveOpacity = 0.0;
+    this->comptonMaxCdtSegmentKernel = 0.0;
     this->comptonMaxCdtResidualKernel = 0.0;
     this->comptonMaxCdtFleckAbsorptionOpacity = 0.0;
     this->comptonMaxCdtPlanckOpacity = 0.0;
@@ -1366,6 +1549,18 @@ void RadiationIMC::resetComptonDiagnostics()
     this->comptonMaxEventCell = std::numeric_limits<size_t>::max();
     this->comptonMaxEventSourceGroup = std::numeric_limits<size_t>::max();
     this->comptonMaxEventTargetGroup = std::numeric_limits<size_t>::max();
+    this->comptonSegmentUpdateCount = 0;
+    this->comptonSegmentNegativeCorrection = 0.0;
+    this->comptonSegmentNegativeCorrectionAbs = 0.0;
+    this->comptonMaxSegmentDepositAbs = 0.0;
+    this->comptonMaxSegmentDeposit = 0.0;
+    this->comptonMaxSegmentOldWeight = 0.0;
+    this->comptonMaxSegmentNewWeight = 0.0;
+    this->comptonMaxSegmentDt = 0.0;
+    this->comptonMaxSegmentNegativeCorrection = 0.0;
+    this->comptonMaxSegmentCell = std::numeric_limits<size_t>::max();
+    this->comptonMaxSegmentSourceGroup = std::numeric_limits<size_t>::max();
+    this->comptonMaxSegmentTargetGroup = std::numeric_limits<size_t>::max();
     this->comptonMinGroupEnergy = std::numeric_limits<double>::infinity();
     this->comptonMaxGroupEnergy = -std::numeric_limits<double>::infinity();
     this->comptonMinFleck = std::numeric_limits<double>::infinity();
@@ -1410,6 +1605,7 @@ void RadiationIMC::printComptonDiagnostics()
     GroupArray implicitMaterialExchangeAbsByTargetGroup = this->comptonImplicitMaterialExchangeAbsByTargetGroup;
     double maxCdtComptonOutRate = this->comptonMaxCdtComptonOutRate;
     double maxCdtBaseEffectiveOpacity = this->comptonMaxCdtBaseEffectiveOpacity;
+    double maxCdtSegmentKernel = this->comptonMaxCdtSegmentKernel;
     double maxCdtResidualKernel = this->comptonMaxCdtResidualKernel;
     double maxCdtFleckAbsorptionOpacity = this->comptonMaxCdtFleckAbsorptionOpacity;
     double maxCdtPlanckOpacity = this->comptonMaxCdtPlanckOpacity;
@@ -1426,6 +1622,9 @@ void RadiationIMC::printComptonDiagnostics()
     double maxUpsilon = this->comptonMaxUpsilon;
     size_t nZeroFallbackCount = this->comptonNZeroFallbackCount;
     size_t implicitEventCount = this->comptonImplicitEventCount;
+    size_t segmentUpdateCount = this->comptonSegmentUpdateCount;
+    double segmentNegativeCorrection = this->comptonSegmentNegativeCorrection;
+    double segmentNegativeCorrectionAbs = this->comptonSegmentNegativeCorrectionAbs;
     int rank = 0;
 
     #ifdef RICH_MPI
@@ -1457,6 +1656,7 @@ void RadiationIMC::printComptonDiagnostics()
     MPI_Allreduce(MPI_IN_PLACE, implicitMaterialExchangeAbsByTargetGroup.data(), ENERGY_GROUPS_NUM, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxCdtComptonOutRate, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxCdtBaseEffectiveOpacity, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &maxCdtSegmentKernel, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxCdtResidualKernel, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxCdtFleckAbsorptionOpacity, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxCdtPlanckOpacity, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -1473,6 +1673,9 @@ void RadiationIMC::printComptonDiagnostics()
     MPI_Allreduce(MPI_IN_PLACE, &maxUpsilon, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &nZeroFallbackCount, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &implicitEventCount, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &segmentUpdateCount, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &segmentNegativeCorrection, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &segmentNegativeCorrectionAbs, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
     if(rank == 0)
@@ -1500,6 +1703,7 @@ void RadiationIMC::printComptonDiagnostics()
         auto const topBtotal = maxAbsGroup(sourceBtotalEnergyByGroup);
         std::cout << "Compton diagnostics:"
                   << " implicit_events=" << implicitEventCount
+                  << " segment_updates=" << segmentUpdateCount
                   << " source_material_exchange=" << sourceMaterialExchange
                   << " continuous_material_exchange=" << continuousMaterialExchange
                   << " event_material_exchange=" << implicitMaterialExchange
@@ -1510,6 +1714,8 @@ void RadiationIMC::printComptonDiagnostics()
                   << " event_abs_exchange=" << implicitMaterialExchangeAbs
                   << " residual_abs_exchange=" << residualMaterialExchangeAbs
                   << " removal_abs_exchange=" << removalMaterialExchangeAbs
+                  << " segment_negative_correction=" << segmentNegativeCorrection
+                  << " segment_negative_correction_abs=" << segmentNegativeCorrectionAbs
                   << " residual_radiation_delta=" << residualRadiationDelta
                   << " source_Bpos=" << sourceBposEnergy
                   << " source_Bres=" << sourceBresEnergy
@@ -1518,6 +1724,7 @@ void RadiationIMC::printComptonDiagnostics()
                   << " total_radiation_energy=" << totalRadiationEnergy
                   << " max_cdt_compton_out=" << maxCdtComptonOutRate
                   << " max_cdt_base_effective=" << maxCdtBaseEffectiveOpacity
+                  << " max_cdt_segment_kernel=" << maxCdtSegmentKernel
                   << " max_cdt_residual_kernel=" << maxCdtResidualKernel
                   << " max_cdt_fleck_absorption=" << maxCdtFleckAbsorptionOpacity
                   << " max_cdt_planck_opacity=" << maxCdtPlanckOpacity
@@ -1586,6 +1793,14 @@ void RadiationIMC::printComptonDiagnostics()
                   << " event_new_weight=" << this->comptonMaxEventNewWeight
                   << " event_ratio=" << this->comptonMaxEventRatio
                   << " event_fleck=" << this->comptonMaxEventFleck
+                  << " segment_cell=" << this->comptonMaxSegmentCell
+                  << " segment_source_group=" << this->comptonMaxSegmentSourceGroup
+                  << " segment_target_group=" << this->comptonMaxSegmentTargetGroup
+                  << " segment_deposit=" << this->comptonMaxSegmentDeposit
+                  << " segment_old_weight=" << this->comptonMaxSegmentOldWeight
+                  << " segment_new_weight=" << this->comptonMaxSegmentNewWeight
+                  << " segment_dt=" << this->comptonMaxSegmentDt
+                  << " segment_negative_correction=" << this->comptonMaxSegmentNegativeCorrection
                   << std::endl;
     }
     this->resetComptonDiagnostics();
@@ -1799,6 +2014,9 @@ void RadiationIMC::precomputeComptonData(double fullDt)
                 this->comptonMaxCdtBaseEffectiveOpacity, cdtDiag * data.baseEffectiveOpacity[h]);
             for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
             {
+                this->comptonMaxCdtSegmentKernel = std::max(
+                    this->comptonMaxCdtSegmentKernel,
+                    std::abs(cdtDiag * data.segmentKernel[h][g]));
                 this->comptonMaxCdtResidualKernel = std::max(
                     this->comptonMaxCdtResidualKernel,
                     std::abs(cdtDiag * data.residualKernel[h][g]));
@@ -2198,6 +2416,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
         os << "\t" << "Compton debug parity check: " << parameters.comptonDebugParityCheck << std::endl;
         os << "\t" << "Compton diagnostics: " << parameters.comptonDiagnostics << std::endl;
         os << "\t" << "Compton matrix samples: " << parameters.comptonMatrixSamples << std::endl;
+        os << "\t" << "Compton transport mode: " << ComptonTransportModeName(parameters.comptonTransportMode) << std::endl;
     }
     if(parameters.withRandomWalk)
     {

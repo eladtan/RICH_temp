@@ -10,6 +10,12 @@
 #include "RandomWalk.hpp"
 #include "Radiation/CMMC/src/compton_matrix_mc.hpp"
 
+enum class ComptonTransportMode
+{
+    FReducedEvents,
+    DeterministicSegment
+};
+
 struct RadiationIMCParameters
 {
     size_t newPhotonsPerCell;
@@ -28,6 +34,7 @@ struct RadiationIMCParameters
     bool comptonDebugParityCheck = false;
     bool comptonDiagnostics = false;
     size_t comptonMatrixSamples = 200000;
+    ComptonTransportMode comptonTransportMode = ComptonTransportMode::DeterministicSegment;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
@@ -80,6 +87,7 @@ public:
         GroupMatrix dtau_dUm{};
         GroupMatrix S{};
         GroupMatrix dSdUm{};
+        GroupMatrix segmentKernel{};
         GroupMatrix residualKernel{};
     };
 
@@ -118,6 +126,7 @@ private:
     void buildComptonEventData(size_t cellIndex, ComptonCellData &cd);
     void buildComptonSources(double fullDt, ComptonCellData &cd);
     void applyComptonScatterEvent(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, const Vector3D &oldVelocity, double oldWeight, double dopplerShift, Particle &particle);
+    void applyComptonDeterministicSegment(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, double dt, double dopplerShift, const Vector3D &oldVelocity, Particle &particle);
     void applyComptonResidualCorrection(double fullDt);
     void reconcileComptonParticles(std::vector<Particle> &particles);
     void resetComptonDiagnostics();
@@ -151,6 +160,7 @@ private:
     bool comptonDebugParityCheck;
     bool comptonDiagnostics;
     size_t comptonMatrixSamples;
+    ComptonTransportMode comptonTransportMode;
     double comptonSourceMaterialExchange = 0.0;
     double comptonContinuousMaterialExchange = 0.0;
     double comptonImplicitMaterialExchange = 0.0;
@@ -178,6 +188,7 @@ private:
     GroupArray comptonImplicitMaterialExchangeAbsByTargetGroup{};
     double comptonMaxCdtComptonOutRate = 0.0;
     double comptonMaxCdtBaseEffectiveOpacity = 0.0;
+    double comptonMaxCdtSegmentKernel = 0.0;
     double comptonMaxCdtResidualKernel = 0.0;
     double comptonMaxCdtFleckAbsorptionOpacity = 0.0;
     double comptonMaxCdtPlanckOpacity = 0.0;
@@ -217,6 +228,18 @@ private:
     size_t comptonMaxEventCell = std::numeric_limits<size_t>::max();
     size_t comptonMaxEventSourceGroup = std::numeric_limits<size_t>::max();
     size_t comptonMaxEventTargetGroup = std::numeric_limits<size_t>::max();
+    size_t comptonSegmentUpdateCount = 0;
+    double comptonSegmentNegativeCorrection = 0.0;
+    double comptonSegmentNegativeCorrectionAbs = 0.0;
+    double comptonMaxSegmentDepositAbs = 0.0;
+    double comptonMaxSegmentDeposit = 0.0;
+    double comptonMaxSegmentOldWeight = 0.0;
+    double comptonMaxSegmentNewWeight = 0.0;
+    double comptonMaxSegmentDt = 0.0;
+    double comptonMaxSegmentNegativeCorrection = 0.0;
+    size_t comptonMaxSegmentCell = std::numeric_limits<size_t>::max();
+    size_t comptonMaxSegmentSourceGroup = std::numeric_limits<size_t>::max();
+    size_t comptonMaxSegmentTargetGroup = std::numeric_limits<size_t>::max();
     double comptonMinGroupEnergy = std::numeric_limits<double>::infinity();
     double comptonMaxGroupEnergy = -std::numeric_limits<double>::infinity();
     double comptonMinFleck = std::numeric_limits<double>::infinity();
