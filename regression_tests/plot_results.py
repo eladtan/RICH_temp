@@ -285,6 +285,48 @@ def plot_till(root: Path, out_dir: Path) -> bool:
     return True
 
 
+def plot_till_mc(root: Path, out_dir: Path) -> bool:
+    """Till Compton MC: Tgas and Trad vs time (IMC transport)."""
+    case_dir = root / "regression_tests" / "cases" / "till_compton_mc"
+    time_file = case_dir / "time.txt"
+    tgas_file = case_dir / "Tgas.txt"
+    trad_file = case_dir / "Trad.txt"
+    for f in (time_file, tgas_file, trad_file):
+        if not f.exists():
+            print(f"  [till_compton_mc] file not found: {f}")
+            return False
+
+    time = np.loadtxt(str(time_file))
+    tgas = np.loadtxt(str(tgas_file))
+    trad = np.loadtxt(str(trad_file))
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(time, tgas, "r-", linewidth=1.5, label="$T_{\\mathrm{gas}}$ (RICH IMC)")
+    ax.plot(time, trad, "b-", linewidth=1.5, label="$T_{\\mathrm{rad}}$ (RICH IMC)")
+
+    ref_file = root / "regression_tests" / "cases" / "till_compton" / "data" / "in_fbc_reference.txt"
+    if ref_file.exists():
+        ref = np.loadtxt(str(ref_file))
+        ax.plot(ref[:, 0], ref[:, 1], "k^", markersize=5,
+                label="$T_{\\mathrm{gas}}$ (IN-FBC)")
+        ax.plot(ref[:, 0], ref[:, 2], "ks", markersize=4,
+                label="$T_{\\mathrm{rad}}$ (IN-FBC)")
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.set_xscale("log")
+    ax.set_xlim(1e-11, 3e-8)
+    ax.set_title("Till Compton MC -- Gas & Radiation Temperature (IMC)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "till_compton_mc")
+    plt.close(fig)
+    print(f"  [till_compton_mc] saved till_compton_mc.png/pdf")
+    return True
+
+
 def _load_nlte_solver(root: Path):
     """Import the NLTE radiative shock solver."""
     solver_dir = root / "analysis_files" / "radiative_shock"
@@ -1026,6 +1068,46 @@ def plot_spherical_collapse(root: Path, out_dir: Path) -> bool:
     return True
 
 
+def _plot_till_variant(root: Path, out_dir: Path, case_name: str, label: str) -> bool:
+    """Generic Till Compton plot for variant cases (small-dt etc)."""
+    case_dir = root / "regression_tests" / "cases" / case_name
+    time_file = case_dir / "time.txt"
+    tgas_file = case_dir / "Tgas.txt"
+    trad_file = case_dir / "Trad.txt"
+    for f in (time_file, tgas_file, trad_file):
+        if not f.exists():
+            print(f"  [{case_name}] file not found: {f}")
+            return False
+
+    time = np.loadtxt(str(time_file))
+    tgas = np.loadtxt(str(tgas_file))
+    trad = np.loadtxt(str(trad_file))
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(time, tgas, "r-", linewidth=1.5, label="$T_{\\mathrm{gas}}$")
+    ax.plot(time, trad, "b-", linewidth=1.5, label="$T_{\\mathrm{rad}}$")
+
+    ref_file = root / "regression_tests" / "cases" / "till_compton" / "data" / "in_fbc_reference.txt"
+    if ref_file.exists():
+        ref = np.loadtxt(str(ref_file))
+        ax.plot(ref[:, 0], ref[:, 1], "k^", markersize=5, label="$T_{\\mathrm{gas}}$ (IN-FBC)")
+        ax.plot(ref[:, 0], ref[:, 2], "ks", markersize=4, label="$T_{\\mathrm{rad}}$ (IN-FBC)")
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.set_xscale("log")
+    ax.set_xlim(1e-11, 3e-8)
+    ax.set_title(f"Till Compton -- {label}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, case_name)
+    plt.close(fig)
+    print(f"  [{case_name}] saved {case_name}.png/pdf")
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -1035,6 +1117,7 @@ ALL_PLOTTERS = {
     "sedov_3d_mpi": plot_sedov,
     "lane_self_gravity": plot_lane,
     "till_compton": plot_till,
+    "till_compton_mc": plot_till_mc,
     "mach2_diffusion": plot_mach2_diffusion,
     "mach2_multigroup": plot_mach2_multigroup,
     "marshak_wave_1": plot_marshak_wave_1,

@@ -160,10 +160,7 @@ int main(int argc, char* argv[])
         .withCompton = true,
         .comptonUseInduced = true,
         .comptonAllowNZeroFallback = true,
-        .comptonDebugParityCheck = false,
-        .comptonDiagnostics = true,
         .comptonMatrixSamples = 2000000,
-        .comptonTransportMode = ComptonTransportMode::DeterministicSegment,
     };
 
     auto physics = std::make_shared<RadiationIMC>(
@@ -214,7 +211,7 @@ int main(int argc, char* argv[])
       Etotal.push_back(cell.internal_energy + cell.Erad);
       time.push_back(elapsed_time);
 
-      old_dt = force_time_step.value_or(std::min(old_dt * 1.2, 1e-11));
+      old_dt = force_time_step.value_or(std::min(old_dt * 1.2, 1e-10));
     }
 
     std::string const case_dir = fs::path(__FILE__).parent_path().string();
