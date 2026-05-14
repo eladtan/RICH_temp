@@ -6,8 +6,8 @@ RadiationStep::RadiationStep(Tessellation3D &tess, std::vector<ComputationalCell
                     #ifdef RICH_MPI
                         std::shared_ptr<CostCalculator3D> cost,
                     #endif // RICH_MPI
-                    const RadiationDriver &matrix_builder, bool no_hydro) :
-                    tess(tess), cells(cells), extensives(extensives), pt(pt), matrix_builder(matrix_builder), no_hydro(no_hydro)
+                    const RadiationDriver &matrix_builder, bool /*no_hydro*/) :
+                    tess(tess), cells(cells), extensives(extensives), pt(pt), matrix_builder(matrix_builder)
                         , suggested_dt(std::numeric_limits<double>::max())
                     #ifdef RICH_MPI
                         , cost(cost)
@@ -92,10 +92,6 @@ void RadiationStep::step(double dt)
 #endif
 	
     
-    if(no_hydro)
-    {
-        this->pt.updateTime(dt);
-    }
 	// double grow_factor = 1.25;
 	// if(max_iter_done > 200)
 	// 	grow_factor = 1.02;

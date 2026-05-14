@@ -98,35 +98,36 @@ int main(void)
 		const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
 	ConditionExtensiveUpdater3D eu(eu_sequence);
 
-	CourantFriedrichsLewy tsf(0.25, 1, force);
+	auto tsf = std::make_shared<CourantFriedrichsLewy>(0.25, 1, force);
 
 	Simulation simulation(tess, cells, eos);
-	HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, tsf, fc, cu, eu, force,
+	simulation.SetTimeStepFunction(tsf);
+	HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
 		std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
 	double const tf = 1e-9;
 	double old_dt = 1e-15;
-	tsf.SetTimeStep(old_dt);
 
-	RadiationStep radStep(tess, simulation.getCells(), simulation.getExtensives(),
+	auto radStep = std::make_shared<RadiationStep>(tess, simulation.getCells(), simulation.getExtensives(),
 		simulation.getTracker(),
 #ifdef RICH_MPI
 		nullptr,
 #endif
 		diffusion, true);
+	simulation.addPhysics(radStep);
 
-	while (sim.getTime() < tf)
+	while (simulation.GetTime() < tf)
 	{
-		double const t_now = std::max(sim.getTime(), 1e-15);
+		double const t_now = std::max(simulation.GetTime(), 1e-15);
 		double const T_bath = 1.014565 * std::pow(t_now / 1e-9, 1.0 / 3.0) * keV_K;
 		D_boundary.SetTemperature(T_bath);
 
 		try
 		{
-			radStep.step(old_dt);
-			double new_dt = radStep.suggestTimeStep();
-			new_dt = std::min(std::max(1e-15, sim.getTime() * 1e-3), new_dt);
-			tsf.SetTimeStep(new_dt);
+			simulation.SetTimeStep(old_dt);
+			simulation.step();
+			double new_dt = radStep->suggestTimeStep();
+			new_dt = std::min(std::max(1e-15, simulation.GetTime() * 1e-3), new_dt);
 			old_dt = new_dt;
 		}
 		catch (UniversalError const &eo)
@@ -135,7 +136,7 @@ int main(void)
 			throw;
 		}
 
-		std::cout << "\nCycle " << sim.getCycle() << " Time " << sim.getTime()
+		std::cout << "\nCycle " << simulation.GetCycle() << " Time " << simulation.GetTime()
 			<< " dt " << old_dt << "\n" << std::endl;
 	}
 

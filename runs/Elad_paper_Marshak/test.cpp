@@ -201,7 +201,7 @@ int main(int argc, char *argv[])
             #ifdef RICH_MPI
                 std::make_shared<CostCalculator3D>(),
             #endif
-            diffusion, /*no_hydro=*/true);
+            diffusion, /*no_hydro=*/false);
         sim.addPhysics(radStep);
 
         if(rank == 0)
