@@ -95,7 +95,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     compton_matrix_gen(
         energy_groups_center_,
         energy_groups_boundary_,
-        compton_on ? 200000 : 10,
+        compton_on ? 2000000 : 10,
         true, // num of samples
         1),
     tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -1345,7 +1345,6 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
     double const T = std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]);
     compton_matrix_gen.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
 
-
     // transform dtau_dT to dtau_dUm
     // double const beta = 1.0 / (4.0*CG::radiation_constant*pow<3>(T));
     // for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
@@ -1461,19 +1460,6 @@ double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) c
         }
     }
 
-    // if (Upsilon < -1e-29) {
-    //     std::cout<<"Negative Upsilon in cell "<<cell.ID<<cell<<std::endl;
-    //     double sum = 0;
-    //     for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
-    //         std::cout<<"sum "<<sum<<" ";
-    //         for (std::size_t gtt=0; gtt < ENERGY_GROUPS_NUM; ++gtt) {
-    //             std::cout<<dSdUm[gt][gtt]<<", ";
-    //             sum += dSdUm[gt][gtt] * cell.Eg[gt] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
-    //         }
-    //         std::cout<<std::endl;
-    //         std::cout<<"sum "<<sum<<std::endl;
-    //     }
-    // }
     return Upsilon;
 }
 
