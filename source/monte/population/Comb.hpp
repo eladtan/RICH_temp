@@ -1,6 +1,7 @@
 #ifndef COMB_POPULATION_CONTROL_HPP
 #define COMB_POPULATION_CONTROL_HPP
 
+#include <cmath>
 #include <random>
 #include <boost/random/mersenne_twister.hpp>
 #include "PopulationControl.hpp"

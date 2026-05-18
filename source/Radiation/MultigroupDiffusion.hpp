@@ -184,6 +184,14 @@ private:
                                                   double const dt_cgs) const;
 
     double get_doppler_slope(ComputationalCell3D const& cell, size_t const g, bool const expansion) const;
+
+    double calcEffectiveDiffusionCoefficient(ComputationalCell3D const& cell,
+                                             std::size_t cell_index,
+                                             std::size_t group) const;
+
+    void fillComptonScatteringRates(std::size_t cell_index,
+                                    std::vector<std::vector<double>> const& tau_mat,
+                                    std::vector<double> const& occ) const;
 };
 
 #endif

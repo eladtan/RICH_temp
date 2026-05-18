@@ -166,7 +166,7 @@ FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup(double 
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const {
-    return CG::speed_of_light / (3.0 * CalcAbsorptionOpacity(cell, energy));
+    return CG::speed_of_light / (3.0 * (CalcAbsorptionOpacity(cell, energy) + CalcScatteringOpacity(cell, energy)));
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {

@@ -1,6 +1,7 @@
 #ifndef SIDE_TEMPERATURE_HPP
 #define SIDE_TEMPERATURE_HPP
 
+#include <cmath>
 #include <boost/math/special_functions/pow.hpp>
 #include "BoundaryCondition.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"

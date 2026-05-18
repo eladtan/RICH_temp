@@ -132,7 +132,7 @@ namespace {
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonMatrixSamples(parameters.comptonMatrixSamples)
 {
     if(this->withCompton && this->withRandomWalk)
     {
@@ -522,6 +522,9 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
     if(this->withCompton && this->multigroupOpacity)
     {
         this->applyComptonEndOfStepCorrection(fullDt);
+        // Reconcile particles to match corrected Eg[g] immediately, rather than
+        // deferring to the start of the next step. All callers pass non-const locals.
+        this->reconcileComptonParticles(const_cast<std::vector<Particle>&>(particles));
         if(!this->noHydroFeedback)
         {
             for(size_t i = 0; i < Ncells; i++)
@@ -587,11 +590,23 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
         GroupMatrix residualMatrix{};
         double totalCorrectionToRadiation = 0.0;
 
+        // Scale Bcorr by ratio of post-transport to pre-step Erad to prevent
+        // overcorrection when transport has depleted radiation from this cell.
+        double totalPreStepErad = 0.0;
+        double totalPostTransportErad = 0.0;
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
         {
             rawGroupEnergy[g] = this->conserved[i].Eg[g];
-            rhs[g] = rawGroupEnergy[g] + cd.Bcorr[g];
+            totalPostTransportErad += rawGroupEnergy[g];
+            totalPreStepErad += cd.oldRadiationEnergy[g];
         }
+        totalPostTransportErad = std::max(0.0, totalPostTransportErad);
+        double const preStepExtensive = totalPreStepErad * cd.volume;
+        double const bcorrScale = (preStepExtensive > 0.0)
+            ? std::clamp(totalPostTransportErad / preStepExtensive, 0.01, 1.0)
+            : 1.0;
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+            rhs[g] = rawGroupEnergy[g] + bcorrScale * cd.Bcorr[g];
 
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
         {
@@ -625,7 +640,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             double finalGroupEnergy = solvedGroupEnergy[g];
             if(finalGroupEnergy < 0.0)
             {
-                if(std::abs(finalGroupEnergy) > 1e-4 * std::max(totalErad, rawGroupEnergy[g]))
+                // Relaxed from 1e-4 to tolerate small residuals from bcorrScale clamping
+                if(std::abs(finalGroupEnergy) > 1e-2 * std::max(totalErad, rawGroupEnergy[g]))
                 {
                     UniversalError eo("End-of-step correction produced significant negative group energy");
                     eo.addEntry("Cell index", static_cast<double>(i));
@@ -634,9 +650,13 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                     eo.addEntry("Solved energy", finalGroupEnergy);
                     eo.addEntry("Total Erad", totalErad);
                     eo.addEntry("Fleck", cd.fleck);
+                    eo.addEntry("Upsilon", cd.Upsilon);
+                    eo.addEntry("Planck opacity", cd.planckOpacity);
                     eo.addEntry("Gamma", cd.Gamma);
                     eo.addEntry("Min pivot", diag.minPivot);
                     eo.addEntry("Max coefficient", diag.maxCoeff);
+                    eo.addEntry("Cell volume", this->grid.GetVolume(i));
+                    eo.addEntry("Cell", this->cells[i]);
                     throw eo;
                 }
                 finalGroupEnergy = 0.0;
@@ -1180,7 +1200,48 @@ void RadiationIMC::applyComptonScatterEvent(size_t cellIndex, const Computationa
         throw eo;
     }
 
-    particle.velocity = this->opacity->getNewScatterVelocity(cell, particle);
+    if(this->comptonAngleDependent)
+    {
+        static thread_local std::vector<double> angleCdf;
+        this->comptonMatrixGen->get_angle_cdf(cd.temperature, sourceGroup, targetGroup, angleCdf);
+
+        double const r = this->dist(this->re);
+        std::size_t const N = ComptonMatrixMC::NUM_ANGLE_BINS;
+
+        auto it = std::upper_bound(angleCdf.begin(), angleCdf.end(), r);
+        std::size_t bin = 0;
+        if(it != angleCdf.begin())
+            bin = static_cast<std::size_t>(std::distance(angleCdf.begin(), it)) - 1;
+        if(bin >= N)
+            bin = N - 1;
+
+        double const binWidth = 2.0 / static_cast<double>(N);
+        double frac = 0.0;
+        double const denom = angleCdf[bin + 1] - angleCdf[bin];
+        if(denom > 0.0)
+            frac = (r - angleCdf[bin]) / denom;
+        double const cosTheta = -1.0 + (static_cast<double>(bin) + frac) * binWidth;
+        double const sinTheta = std::sqrt(std::max(0.0, 1.0 - cosTheta * cosTheta));
+        double const phi = 2.0 * M_PI * this->dist(this->re);
+
+        Vector3D const oldDir = normalize(oldVelocity);
+
+        Vector3D perp1;
+        if(std::abs(oldDir.z) < 0.9)
+            perp1 = normalize(CrossProduct(oldDir, Vector3D(0, 0, 1)));
+        else
+            perp1 = normalize(CrossProduct(oldDir, Vector3D(1, 0, 0)));
+        Vector3D const perp2 = CrossProduct(oldDir, perp1);
+
+        Vector3D const newDir = oldDir * cosTheta
+            + (perp1 * std::cos(phi) + perp2 * std::sin(phi)) * sinTheta;
+
+        particle.velocity = normalize(newDir) * units::clight;
+    }
+    else
+    {
+        particle.velocity = this->opacity->getNewScatterVelocity(cell, particle);
+    }
 
     double const mh = cd.comptonMh[sourceGroup];
     double const newWeight = oldWeight * mh;
@@ -1664,8 +1725,6 @@ void RadiationIMC::reconcileComptonParticles(std::vector<Particle> &particles)
 
 void RadiationIMC::adjustExistingParticles(std::vector<Particle> &particles, double fullDt)
 {
-    this->reconcileComptonParticles(particles);
-
     if(!this->MMC)
     {
         return;
@@ -1735,6 +1794,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     {
         os << "\t" << "Compton induced terms: " << parameters.comptonUseInduced << std::endl;
         os << "\t" << "Compton n=0 fallback: " << parameters.comptonAllowNZeroFallback << std::endl;
+        os << "\t" << "Compton angle-dependent: " << parameters.comptonAngleDependent << std::endl;
         os << "\t" << "Compton matrix samples: " << parameters.comptonMatrixSamples << std::endl;
     }
     if(parameters.withRandomWalk)

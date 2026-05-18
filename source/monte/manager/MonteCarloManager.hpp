@@ -1,6 +1,8 @@
 #ifndef MONTE_CARLO_MANAGER_HPP
 #define MONTE_CARLO_MANAGER_HPP
 
+#include <cmath>
+#include <iostream>
 #include "mpi/mpi_commands.hpp"
 #include "mpi/serialize/mpi_commands.hpp"
 #include "monte/MonteCarloParticle.hpp"
@@ -89,6 +91,10 @@ public:
 
     inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
 
+    inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount_;}
+
+    inline size_t GetPreStepParticleCount(void) const {return this->preStepParticleCount_;}
+
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
 
     inline size_t GetHandlerMemoryBytes(void) const {return this->handlerMemoryBytes_;}
@@ -146,6 +152,8 @@ private:
     size_t dynamicallyAdded;
     RDMA_Type rdma_type;
     size_t lastBuildGeneration;
+    size_t initialParticleCount_ = 0;
+    size_t preStepParticleCount_ = 0;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
     size_t handlerMemoryBytes_ = 0;
@@ -1505,7 +1513,23 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     }
 
     size_t preStepParticlesNum = newParticles1.size();
+    this->initialParticleCount_ = initialParticlesNum;
+    this->preStepParticleCount_ = preStepParticlesNum;
     this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
+    unsigned long long globalInitialParticles = static_cast<unsigned long long>(this->initialParticleCount_);
+    unsigned long long globalPreStepParticles = static_cast<unsigned long long>(this->preStepParticleCount_);
+    unsigned long long globalStartParticles = static_cast<unsigned long long>(this->startParticleCount_);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalInitialParticles, &globalInitialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalPreStepParticles, &globalPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalStartParticles, &globalStartParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+    if(this->rank_world == 0)
+    {
+        std::cout << "MC particle counts before transport:"
+                  << " initial=" << globalInitialParticles
+                  << " prestep_generated=" << globalPreStepParticles
+                  << " active_after_prestep=" << globalStartParticles
+                  << std::endl;
+    }
 
     this->resetTracker();
     this->currentStep++;
@@ -1541,7 +1565,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             p.tracingHistoryCount = 0;
             #endif // MC_TRACING_HISTORY
             p.timeLeft = fullDt;
-            p.initialWeight = p.weight;
+            p.initialWeight = std::abs(p.weight);
             p.steps = 0;
         }
     }

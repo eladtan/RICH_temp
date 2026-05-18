@@ -114,6 +114,26 @@ void RadiationMCStep::step(double dt)
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif
 
+    unsigned long long initialParticles = static_cast<unsigned long long>(this->manager->GetInitialParticleCount());
+    unsigned long long preStepParticles = static_cast<unsigned long long>(this->manager->GetPreStepParticleCount());
+    unsigned long long activeAfterPreStepParticles = static_cast<unsigned long long>(this->manager->GetStartParticleCount());
+    unsigned long long censusParticles = static_cast<unsigned long long>(this->manager->GetEndParticleCount());
+    #ifdef RICH_MPI
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &initialParticles, &initialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &preStepParticles, &preStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &activeAfterPreStepParticles, &activeAfterPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &censusParticles, &censusParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    #endif
+    if(rank == 0)
+    {
+        std::cout << "MC particle counts:"
+                  << " initial=" << initialParticles
+                  << " prestep_generated=" << preStepParticles
+                  << " active_after_prestep=" << activeAfterPreStepParticles
+                  << " census=" << censusParticles
+                  << std::endl;
+    }
+
     auto postManagerStart = std::chrono::high_resolution_clock::now();
 
     double max_Erad = N > 0 ? *std::max_element(old_Erad.begin(), old_Erad.end()) : std::numeric_limits<double>::lowest();

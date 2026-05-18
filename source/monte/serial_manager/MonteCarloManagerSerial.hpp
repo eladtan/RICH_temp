@@ -1,6 +1,8 @@
 #ifndef MONTE_CARLO_MANAGER_SERIAL_HPP
 #define MONTE_CARLO_MANAGER_SERIAL_HPP
 
+#include <cmath>
+#include <iostream>
 #include <memory>
 #include <random>
 #include <chrono>
@@ -59,6 +61,10 @@ public:
 
     inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
 
+    inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount_;}
+
+    inline size_t GetPreStepParticleCount(void) const {return this->preStepParticleCount_;}
+
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
 
     inline size_t GetHandlerMemoryBytes(void) const {return 0;}
@@ -74,6 +80,8 @@ private:
     Tracker tracker;
     size_t myIDCounter;
     std::vector<size_t> cellsStepsCounters;
+    size_t initialParticleCount_ = 0;
+    size_t preStepParticleCount_ = 0;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
 
@@ -438,14 +446,21 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
         p.tracingHistoryCount = 0;
         #endif // MC_TRACING_HISTORY
         p.timeLeft = fullDt;
-        p.initialWeight = p.weight;
+        p.initialWeight = std::abs(p.weight);
         p.steps = 0;
     }
 
     size_t initialParticlesNum = this->particlesData.th_length;
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
+    this->initialParticleCount_ = initialParticlesNum;
+    this->preStepParticleCount_ = newParticles1.size();
     this->startParticleCount_ = initialParticlesNum + newParticles1.size();
+    std::cout << "MC particle counts before transport:"
+              << " initial=" << this->initialParticleCount_
+              << " prestep_generated=" << this->preStepParticleCount_
+              << " active_after_prestep=" << this->startParticleCount_
+              << std::endl;
     
     this->cellsStepsCounters.assign(this->Ncells, 0);
 

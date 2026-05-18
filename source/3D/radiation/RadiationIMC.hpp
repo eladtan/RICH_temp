@@ -24,6 +24,7 @@ struct RadiationIMCParameters
     bool withCompton = false;
     bool comptonUseInduced = true;
     bool comptonAllowNZeroFallback = true;
+    bool comptonAngleDependent = true;
     size_t comptonMatrixSamples = 200000;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
@@ -146,6 +147,7 @@ private:
     bool withCompton;
     bool comptonUseInduced;
     bool comptonAllowNZeroFallback;
+    bool comptonAngleDependent;
     size_t comptonMatrixSamples;
 
     std::unique_ptr<RandomWalk> randomWalk;

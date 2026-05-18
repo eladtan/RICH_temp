@@ -1,6 +1,8 @@
 #ifndef TWO_SIDED_MONTE_CARLO_MANAGER_HPP
 #define TWO_SIDED_MONTE_CARLO_MANAGER_HPP
 
+#include <cmath>
+#include <iostream>
 #include <memory>
 #include <random>
 #include <boost/container/flat_set.hpp>
@@ -41,6 +43,10 @@ public:
     inline std::vector<size_t> &GetCellsStepsCounters(void) {return this->cellsStepsCounters;}
 
     inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
+
+    inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount_;}
+
+    inline size_t GetPreStepParticleCount(void) const {return this->preStepParticleCount_;}
 
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
 
@@ -101,6 +107,8 @@ private:
     size_t iteration;
     size_t myIDCounter;
     size_t currentStep;
+    size_t initialParticleCount_ = 0;
+    size_t preStepParticleCount_ = 0;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
     size_t handlerMemoryBytes_ = 0;
@@ -606,7 +614,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
             p.lastSeen = 0;
             #endif // MONTECARLO_DEBUG
             p.timeLeft = fullDt;
-            p.initialWeight = p.weight;
+            p.initialWeight = std::abs(p.weight);
             p.steps = 0;
         }
 
@@ -627,7 +635,23 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         MPI_Reduce((this->rank_world == 0)? MPI_IN_PLACE : &numParticles, &numParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
 
         size_t preStepParticlesNum = newParticles1.size();
+        this->initialParticleCount_ = initialParticlesNum;
+        this->preStepParticleCount_ = preStepParticlesNum;
         this->startParticleCount_ = initialParticlesNum + preStepParticlesNum;
+        unsigned long long globalInitialParticles = static_cast<unsigned long long>(this->initialParticleCount_);
+        unsigned long long globalPreStepParticles = static_cast<unsigned long long>(this->preStepParticleCount_);
+        unsigned long long globalStartParticles = static_cast<unsigned long long>(this->startParticleCount_);
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalInitialParticles, &globalInitialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalPreStepParticles, &globalPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        MPI_Reduce((this->rank_world == 0) ? MPI_IN_PLACE : &globalStartParticles, &globalStartParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, this->comm_world);
+        if(this->rank_world == 0)
+        {
+            std::cout << "MC particle counts before transport:"
+                      << " initial=" << globalInitialParticles
+                      << " prestep_generated=" << globalPreStepParticles
+                      << " active_after_prestep=" << globalStartParticles
+                      << std::endl;
+        }
         int64_t startingParticleNum = initialParticlesNum + preStepParticlesNum;
         // std::cout << "Rank " << this->rank_world << ", startingParticleNum is " << startingParticleNum << " = " << initialParticlesNum << " + " << preStepParticlesNum << std::endl;
 

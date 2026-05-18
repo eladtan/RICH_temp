@@ -31,7 +31,7 @@ namespace CG
     double constexpr boltzmann_constant = 1.380649e-16;
     double constexpr electron_mass = 9.1093837015e-28;
     double constexpr max_coupling_strength = 1e2;
-    double constexpr compton_optical_depth_turn_off = 10;
+    double constexpr compton_optical_depth_turn_off = 100;
 
     struct BiCGSTABWorkspace
     {

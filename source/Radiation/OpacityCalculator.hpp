@@ -44,6 +44,8 @@ public:
     virtual double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const
     { throw UniversalError("CalcScatteringOpacity(energy) not implemented"); }
 
+    virtual bool ComptonIncludedInTransport() const { return false; }
+
     virtual double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const
     { throw UniversalError("CalcDiffusionCoefficient(energy) not implemented"); }
 

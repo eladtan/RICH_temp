@@ -1,6 +1,7 @@
 #ifndef TWO_SIDES_TEMPERATURE_HPP
 #define TWO_SIDES_TEMPERATURE_HPP
 
+#include <cmath>
 #include <boost/math/special_functions/pow.hpp>
 #include "BoundaryCondition.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
