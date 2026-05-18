@@ -41,6 +41,11 @@ public:
     size_t sendBufferMinSize          = defaultSendBufferMinSize;
     size_t amountProgressMinCycles    = 16;
     size_t asyncReallocationProgressMinCycles = 16;
+    size_t asyncReallocationSendPollMinCycles = 8;
+    size_t asyncReallocationIncomingPollActiveCycles = 8;
+    size_t asyncReallocationIncomingPollIdleCycles = 8;
+    size_t asyncReallocationMaxIncomingRequestsPerPoll = 4;
+    size_t activeRankScanChunk        = 64;
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;
     size_t minimalBuffSize            = 50;
@@ -218,6 +223,10 @@ public:
                       << ", smallIdleFlushHoldoffCycles=" << smallIdleFlushHoldoffCycles
                       << ", amountProgressCycles=" << amountProgressMinCycles
                       << ", asyncReallocProgressCycles=" << asyncReallocationProgressMinCycles
+                      << ", asyncReallocSendPollCycles=" << asyncReallocationSendPollMinCycles
+                      << ", asyncReallocIncomingPollCycles(active/idle)=" << asyncReallocationIncomingPollActiveCycles
+                      << "/" << asyncReallocationIncomingPollIdleCycles
+                      << ", asyncReallocMaxIncomingPerPoll=" << asyncReallocationMaxIncomingRequestsPerPoll
                       << std::endl;
         }
     }

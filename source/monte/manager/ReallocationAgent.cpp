@@ -3,6 +3,7 @@
 #include "ReallocationAgent.hpp"
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <stdexcept>
 
 #define ASK_REALLOCATION_TAG 553
@@ -17,7 +18,9 @@ ReallocationAgent::ReallocationAgent(const MPI_Comm &comm, const ReallocationFun
                                      const MetadataUpdateFunction &metadataUpdateFunction)
     : comm(comm), reallocationFunction(reallocationFunction),
       localReallocationFunction(localReallocationFunction), metadataUpdateFunction(metadataUpdateFunction),
-      incomingAsyncRequest(MPI_REQUEST_NULL)
+      incomingAsyncRequest(MPI_REQUEST_NULL), asyncProgressCalls(0),
+      asyncSendPollMinCycles(8), asyncIncomingPollActiveCycles(8),
+      asyncIncomingPollIdleCycles(8), asyncMaxIncomingRequestsPerPoll(4)
 {
     MPI_Comm_rank(this->comm, &this->rank);
     MPI_Comm_size(this->comm, &this->size);
@@ -184,8 +187,20 @@ bool ReallocationAgent::AsyncEnabled(void) const
     return static_cast<bool>(this->localReallocationFunction) and static_cast<bool>(this->metadataUpdateFunction);
 }
 
-void ReallocationAgent::ProgressAsyncSends(void)
+void ReallocationAgent::ConfigureAsyncPolling(size_t sendPollMinCycles,
+                                             size_t incomingPollActiveCycles,
+                                             size_t incomingPollIdleCycles,
+                                             size_t maxIncomingRequestsPerPoll)
 {
+    this->asyncSendPollMinCycles = std::max<size_t>(1, sendPollMinCycles);
+    this->asyncIncomingPollActiveCycles = std::max<size_t>(1, incomingPollActiveCycles);
+    this->asyncIncomingPollIdleCycles = std::max<size_t>(1, incomingPollIdleCycles);
+    this->asyncMaxIncomingRequestsPerPoll = maxIncomingRequestsPerPoll;
+}
+
+bool ReallocationAgent::ProgressAsyncSends(void)
+{
+    bool madeProgress = false;
     for(auto it = this->pendingFactorSends.begin(); it != this->pendingFactorSends.end();)
     {
         int flag = 0;
@@ -193,6 +208,7 @@ void ReallocationAgent::ProgressAsyncSends(void)
         if(flag)
         {
             it = this->pendingFactorSends.erase(it);
+            madeProgress = true;
         }
         else
         {
@@ -207,12 +223,14 @@ void ReallocationAgent::ProgressAsyncSends(void)
         if(flag)
         {
             it = this->pendingMetadataSends.erase(it);
+            madeProgress = true;
         }
         else
         {
             ++it;
         }
     }
+    return madeProgress;
 }
 
 void ReallocationAgent::RequestReallocationAsync(rank_t toRank, double factor)
@@ -232,14 +250,15 @@ void ReallocationAgent::RequestReallocationAsync(rank_t toRank, double factor)
     MPI_Isend(&send.factor, 1, MPI_DOUBLE, toRank, ASYNC_REALLOCATION_REQUEST_TAG, this->comm, &send.request);
 }
 
-void ReallocationAgent::HandleIncomingAsyncRequests(void)
+size_t ReallocationAgent::HandleIncomingAsyncRequests(size_t maxRequests)
 {
     if(not this->AsyncEnabled() or this->incomingAsyncRequest == MPI_REQUEST_NULL)
     {
-        return;
+        return 0;
     }
 
-    while(true)
+    size_t handled = 0;
+    while(maxRequests == 0 or handled < maxRequests)
     {
         int flag = 0;
         MPI_Status status;
@@ -258,16 +277,19 @@ void ReallocationAgent::HandleIncomingAsyncRequests(void)
         this->pendingMetadataSends.push_back({fromRank, metadata, MPI_REQUEST_NULL});
         PendingMetadataSend &send = this->pendingMetadataSends.back();
         MPI_Isend(&send.metadata, static_cast<int>(sizeof(ReallocationMetadata)), MPI_BYTE, fromRank, ASYNC_REALLOCATION_METADATA_TAG, this->comm, &send.request);
+        handled++;
     }
+    return handled;
 }
 
-void ReallocationAgent::CheckMetadataUpdates(void)
+bool ReallocationAgent::CheckMetadataUpdates(void)
 {
     if(not this->AsyncEnabled() or this->pendingReallocRanks.empty())
     {
-        return;
+        return false;
     }
 
+    bool madeProgress = false;
     while(true)
     {
         int flag = 0;
@@ -283,7 +305,9 @@ void ReallocationAgent::CheckMetadataUpdates(void)
         MPI_Recv(&metadata, static_cast<int>(sizeof(ReallocationMetadata)), MPI_BYTE, fromRank, ASYNC_REALLOCATION_METADATA_TAG, this->comm, MPI_STATUS_IGNORE);
         this->metadataUpdateFunction(fromRank, metadata);
         this->pendingReallocRanks.erase(fromRank);
+        madeProgress = true;
     }
+    return madeProgress;
 }
 
 void ReallocationAgent::ProgressAsyncReallocations(void)
@@ -293,10 +317,25 @@ void ReallocationAgent::ProgressAsyncReallocations(void)
         return;
     }
 
-    this->ProgressAsyncSends();
+    this->asyncProgressCalls++;
+    bool hasOutgoingSends = (not this->pendingFactorSends.empty()) or
+                            (not this->pendingMetadataSends.empty());
+    bool hasPendingRanks = not this->pendingReallocRanks.empty();
+    bool hasLocalAsyncWork = hasOutgoingSends or hasPendingRanks;
+    bool pollSends = hasOutgoingSends and
+                     (this->asyncProgressCalls % this->asyncSendPollMinCycles == 0);
+    if(pollSends)
+    {
+        this->ProgressAsyncSends();
+    }
     this->CheckMetadataUpdates();
-    this->HandleIncomingAsyncRequests();
-    this->ProgressAsyncSends();
+    size_t incomingPollCycles = hasLocalAsyncWork
+        ? this->asyncIncomingPollActiveCycles
+        : this->asyncIncomingPollIdleCycles;
+    if(this->asyncProgressCalls % incomingPollCycles == 0)
+    {
+        this->HandleIncomingAsyncRequests(this->asyncMaxIncomingRequestsPerPoll);
+    }
 }
 
 bool ReallocationAgent::IsPendingReallocation(rank_t rank) const

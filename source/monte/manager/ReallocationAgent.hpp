@@ -7,6 +7,7 @@
 #include <list>
 #include <set>
 #include <functional>
+#include <cstddef>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
 #include "utils/rma/RemoteMemoryAgent.hpp"
@@ -47,6 +48,11 @@ public:
 
     bool HasPendingAsyncReallocations(void) const;
 
+    void ConfigureAsyncPolling(size_t sendPollMinCycles,
+                               size_t incomingPollActiveCycles,
+                               size_t incomingPollIdleCycles,
+                               size_t maxIncomingRequestsPerPoll);
+
 private:
     MPI_Comm comm;
     rank_t rank;
@@ -63,6 +69,11 @@ private:
     double incomingAsyncFactor;
     MPI_Request incomingAsyncRequest;
     std::set<rank_t> pendingReallocRanks;
+    size_t asyncProgressCalls;
+    size_t asyncSendPollMinCycles;
+    size_t asyncIncomingPollActiveCycles;
+    size_t asyncIncomingPollIdleCycles;
+    size_t asyncMaxIncomingRequestsPerPoll;
 
     struct PendingFactorSend
     {
@@ -87,11 +98,11 @@ private:
 
     bool AsyncEnabled(void) const;
 
-    void ProgressAsyncSends(void);
+    bool ProgressAsyncSends(void);
 
-    void HandleIncomingAsyncRequests(void);
+    size_t HandleIncomingAsyncRequests(size_t maxRequests);
 
-    void CheckMetadataUpdates(void);
+    bool CheckMetadataUpdates(void);
 };
 
 #endif // RICH_MPI
