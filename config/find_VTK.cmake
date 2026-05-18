@@ -25,6 +25,9 @@ if(NOT VTK_DIRECTORY)
     endif()
 
     list(GET _vtk_prefixes 0 VTK_DIRECTORY)
+
+    set(VTUNE_LIB_DIRECTORY "${VTK_DIRECTORY}/lib64")
+    set(VTUNE_INCLUDE "${VTK_DIRECTORY}/include")
     message(STATUS "Using VTK: ${VTK_DIRECTORY}")
 endif()
 
