@@ -18,33 +18,43 @@ enum class MonteCarloTransferDiagnosticsLevel
 struct MonteCarloConfig
 {
 private:
-    static constexpr size_t defaultSendBufferMinSize = 500;
-    static constexpr size_t sendBufferMinSizeMin = 500;
-    static constexpr size_t sendBufferMinSizeMax = 8000;
+    static constexpr size_t shrinkBuffersCycleMin = 50;
+    static constexpr size_t defaultSendBufferMinSize = 1024;
+    static constexpr size_t sendBufferMinSizeMin = 1024;
+    static constexpr size_t sendBufferMinSizeMax = 16384;
     static constexpr size_t sendBufferTargetParticlesPerFlush = 2048;
     static constexpr double sendBufferHighTransferFraction = 0.20;
     static constexpr double sendBufferLowTransferFraction = 0.08;
 
-    static constexpr size_t smallIdleFlushHoldoffCyclesMin = 128;
-    static constexpr size_t smallIdleFlushHoldoffCyclesMax = 2048;
+    static constexpr size_t smallIdleFlushHoldoffCyclesMin = 512;
+    static constexpr size_t smallIdleFlushHoldoffCyclesMax = 16384;
     static constexpr double smallIdleFlushHighCallFraction = 0.80;
     static constexpr double smallIdleFlushLowCallFraction = 0.50;
+    static constexpr double smallIdleFlushLowParticleFraction = 0.20;
     static constexpr size_t smallIdleFlushPendingSoftLimitFactor = 512;
 
     size_t smallIdleFlushHoldoffCycles = smallIdleFlushHoldoffCyclesMin;
 
 public:
-    size_t initialBufferSize          = 500;
-    size_t shrinkBuffersCycle         = 50;
+    size_t initialBufferSize          = 5000;
+    size_t shrinkBuffersCycle         = shrinkBuffersCycleMin;
     size_t sendBufferMinSize          = defaultSendBufferMinSize;
     size_t amountProgressMinCycles    = 16;
+    size_t asyncReallocationProgressMinCycles = 16;
+    size_t asyncReallocationSendPollMinCycles = 8;
+    size_t asyncReallocationIncomingPollActiveCycles = 8;
+    size_t asyncReallocationIncomingPollIdleCycles = 8;
+    size_t asyncReallocationMaxIncomingRequestsPerPoll = 4;
+    size_t activeRankScanChunk        = 64;
     size_t transferDiagnosticsEveryNSteps = 1;
     double bufferReallocationFactor   = 1.5;
     size_t minimalBuffSize            = 50;
-    double bufferShrinkFactor         = 0.1;
+    double bufferShrinkFactor         = 0.5;
     double bufferShrinkNeighborFactor = 0.5;
     double shrinkPercent              = 0.25;
-    bool holdSmallIdleFlushes = false;
+    bool holdSmallIdleFlushes = true;
+    size_t sendBufferMinIdleDrainSize = 512;
+    size_t sendBufferIdleDrainPatienceCycles = 16384;
     MonteCarloTransferDiagnosticsLevel transferDiagnosticsLevel = MonteCarloTransferDiagnosticsLevel::StepSummary;
 
     size_t GetSmallIdleFlushHoldoffCycles(void) const
@@ -106,8 +116,8 @@ public:
 
         if(reallocationFraction > 0.05)
             shrinkBuffersCycle = std::min<size_t>(500, shrinkBuffersCycle * 2);
-        else if(reallocationFraction < 0.01 && shrinkBuffersCycle > 10)
-            shrinkBuffersCycle = std::max<size_t>(10, shrinkBuffersCycle / 2);
+        else if(reallocationFraction < 0.01 && shrinkBuffersCycle > shrinkBuffersCycleMin)
+            shrinkBuffersCycle = std::max<size_t>(shrinkBuffersCycleMin, shrinkBuffersCycle / 2);
 
         if(avgReallocsPerHandler > 3.0)
         {
@@ -131,9 +141,13 @@ public:
             ? static_cast<double>(stats.totalSendIdleDrainFlushedParticles) / static_cast<double>(stats.totalSendFlushedParticles)
             : 0;
 
-        if(stats.totalSendFlushCalls > 0 and
-           stats.avgFlushTransferFraction > sendBufferHighTransferFraction and
-           particlesPerFlush < 0.75 * targetParticlesPerFlush)
+        bool idleDrainCallsDominate = idleDrainCallFraction > smallIdleFlushHighCallFraction;
+        bool idleDrainMovesLittle = idleDrainParticleFraction < smallIdleFlushLowParticleFraction;
+        bool flushBatchesAreSmall = particlesPerFlush < 0.75 * targetParticlesPerFlush;
+        bool transferTimeIsHigh = stats.avgFlushTransferFraction > sendBufferHighTransferFraction;
+
+        if(stats.totalSendFlushCalls > 0 and flushBatchesAreSmall and
+           (transferTimeIsHigh or (idleDrainCallsDominate and idleDrainMovesLittle)))
         {
             sendBufferMinSize = std::min<size_t>(
                 sendBufferMinSizeMax,
@@ -158,7 +172,6 @@ public:
                 sendBufferMinSizeMax * 64);
             size_t pendingHardLimit = pendingSoftLimit * 2;
 
-            bool idleCallsDominate = idleDrainCallFraction > smallIdleFlushHighCallFraction;
             bool batchesStillSmall = particlesPerFlush < 0.5 * targetParticlesPerFlush;
             bool pendingStillModest = stats.maxPendingSendBufferParticles < pendingSoftLimit;
 
@@ -168,7 +181,7 @@ public:
                     smallIdleFlushHoldoffCyclesMin,
                     smallIdleFlushHoldoffCycles / 2);
             }
-            else if(idleCallsDominate and batchesStillSmall and pendingStillModest)
+            else if(idleDrainCallsDominate and batchesStillSmall and pendingStillModest)
             {
                 smallIdleFlushHoldoffCycles = std::min<size_t>(
                     smallIdleFlushHoldoffCyclesMax,
@@ -205,8 +218,15 @@ public:
                       << ", pendingParticlesPeak=" << stats.maxPendingSendBufferParticles
                       << ", flushTransferFraction=" << stats.avgFlushTransferFraction
                       << ", holdSmallIdleFlushes=" << holdSmallIdleFlushes
+                      << ", sendMinIdleDrainSize=" << sendBufferMinIdleDrainSize
+                      << ", sendIdleDrainPatienceCycles=" << sendBufferIdleDrainPatienceCycles
                       << ", smallIdleFlushHoldoffCycles=" << smallIdleFlushHoldoffCycles
                       << ", amountProgressCycles=" << amountProgressMinCycles
+                      << ", asyncReallocProgressCycles=" << asyncReallocationProgressMinCycles
+                      << ", asyncReallocSendPollCycles=" << asyncReallocationSendPollMinCycles
+                      << ", asyncReallocIncomingPollCycles(active/idle)=" << asyncReallocationIncomingPollActiveCycles
+                      << "/" << asyncReallocationIncomingPollIdleCycles
+                      << ", asyncReallocMaxIncomingPerPoll=" << asyncReallocationMaxIncomingRequestsPerPoll
                       << std::endl;
         }
     }

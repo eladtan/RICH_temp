@@ -17,6 +17,7 @@
 #include "misc/memory_debug.hpp"
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
@@ -237,8 +238,20 @@ private:
     size_t sendBufferIdleHoldoffPendingParticles = 0;
     #endif // TIMING
 
-    boost::container::flat_map<rank_t, std::vector<MCParticle>> sendBuffers;
+    std::vector<std::vector<MCParticle>> sendBuffers;
+    std::vector<rank_t> sendBufferActiveRanks;
+    std::vector<rank_t> readySendBufferRanks;
+    std::vector<unsigned char> sendBufferActive;
+    std::vector<unsigned char> sendBufferListed;
+    std::vector<unsigned char> sendBufferReadyQueued;
+    std::vector<rank_t> activeRanks;
+    std::vector<rank_t> nextActiveRanks;
+    size_t readySendBufferCursor;
+    size_t sendBufferPendingRanks;
     size_t sendBufferCycleCounter;
+    size_t sendBufferPendingParticles;
+    size_t activeRankScanCursor;
+    size_t activeRankScanRemaining;
 
     bool HandleAll(MonteCarloStepFinalData &stepData);
 
@@ -253,6 +266,22 @@ private:
     void ResetAllBuffers(void);
 
     void ShrinkBuffers(void);
+
+    std::vector<MCParticle> &GetSendBuffer(rank_t rank);
+
+    void QueueReadySendBuffer(rank_t rank);
+
+    void MarkSendBufferEmpty(rank_t rank);
+
+    void ResetSendBuffers(void);
+
+    void NoteSendBufferGrowth(rank_t rank, size_t previousSize, const std::vector<MCParticle> &buffer, size_t addedParticles);
+
+    void NoteSendBufferFlush(rank_t rank, size_t flushedParticles);
+
+    bool UsesAsyncReallocation(void) const;
+
+    void ProgressReallocations(void);
 
     #ifdef TIMING
     void FlushSendBuffers(bool flushSmallBuffers, double &transferTime);
@@ -312,6 +341,10 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     this->communicators = std::vector<MPI_Comm>(this->size_world, MPI_COMM_NULL);
 
     this->rankHandlers = std::vector<RankHandler_t*>(this->size_world, nullptr);
+    this->sendBuffers.resize(this->size_world);
+    this->sendBufferActive.assign(this->size_world, 0);
+    this->sendBufferListed.assign(this->size_world, 0);
+    this->sendBufferReadyQueued.assign(this->size_world, 0);
 
     auto reallocationFunction = [this](rank_t rank)
     {
@@ -320,7 +353,33 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
         handler->Reallocate(factor);
     };
 
-    this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction);
+    auto localReallocationFunction = [this](rank_t rank, double factor) -> ReallocationMetadata
+    {
+        RankHandler_t *handler = this->rankHandlers[rank];
+        if(handler == nullptr)
+        {
+            throw std::runtime_error("MonteCarloManager: received async reallocation request for a missing handler");
+        }
+        return handler->LocalReallocate(factor);
+    };
+
+    auto metadataUpdateFunction = [this](rank_t rank, const ReallocationMetadata &metadata)
+    {
+        RankHandler_t *handler = this->rankHandlers[rank];
+        if(handler == nullptr)
+        {
+            throw std::runtime_error("MonteCarloManager: received async reallocation metadata for a missing handler");
+        }
+        handler->UpdatePeerRemoteInfo(metadata);
+    };
+
+    this->reallocationAgent = std::make_shared<ReallocationAgent>(this->comm_world, reallocationFunction,
+                                                                  localReallocationFunction, metadataUpdateFunction);
+    this->reallocationAgent->ConfigureAsyncPolling(
+        this->config.asyncReallocationSendPollMinCycles,
+        this->config.asyncReallocationIncomingPollActiveCycles,
+        this->config.asyncReallocationIncomingPollIdleCycles,
+        this->config.asyncReallocationMaxIncomingRequestsPerPoll);
 
     if(this->rank_world == 0)
     {
@@ -329,7 +388,12 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     this->cellsStepsCounters.assign(this->grid.GetPointNo(), 0);
     this->cellsParticleCounters.assign(this->grid.GetPointNo(), 0);
     this->lastBuildGeneration = std::numeric_limits<size_t>::max();
+    this->readySendBufferCursor = 0;
+    this->sendBufferPendingRanks = 0;
     this->sendBufferCycleCounter = 0;
+    this->sendBufferPendingParticles = 0;
+    this->activeRankScanCursor = 0;
+    this->activeRankScanRemaining = 0;
 }
 
 template<typename T, typename Grid>
@@ -458,6 +522,28 @@ MonteCarloManager<T, Grid>::~MonteCarloManager()
     {
         this->FreeHandlers();
         this->ClearCommunicator();
+    }
+}
+
+template<typename T, typename Grid>
+bool MonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
+{
+    RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
+                             ? RMAFactory::ResolveAutoRDMA()
+                             : this->rdma_type;
+    return resolved == RDMA_Type::IBV_RDMA;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::ProgressReallocations(void)
+{
+    if(this->UsesAsyncReallocation())
+    {
+        this->reallocationAgent->ProgressAsyncReallocations();
+    }
+    else
+    {
+        this->reallocationAgent->HandleAllWaitingReallocations();
     }
 }
 
@@ -694,8 +780,15 @@ void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::v
             }
         }
         #endif // MONTECARLO_DEBUG
-        remoteHandler->TransferParticles(particles);
-        this->reallocationAgent->HandleAllWaitingReallocations();
+        bool transferred = remoteHandler->TransferParticles(particles);
+        if(not transferred)
+        {
+            std::vector<MCParticle> &buffer = this->GetSendBuffer(toRank);
+            size_t previousSize = buffer.size();
+            buffer.insert(buffer.end(), particles.begin(), particles.end());
+            this->NoteSendBufferGrowth(toRank, previousSize, buffer, particles.size());
+        }
+        this->ProgressReallocations();
     }
 }
 
@@ -840,36 +933,55 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
             }
         }
         #endif // MONTECARLO_DEBUG
-        remoteHandler->TransferParticles(particles);
+        bool transferred = remoteHandler->TransferParticles(particles);
+        if(not transferred)
+        {
+            std::vector<MCParticle> &buffer = this->GetSendBuffer(toRank);
+            size_t previousSize = buffer.size();
+            buffer.insert(buffer.end(), particles.begin(), particles.end());
+            this->NoteSendBufferGrowth(toRank, previousSize, buffer, particles.size());
+        }
+        this->ProgressReallocations();
     }
 }
 
 template<typename T, typename Grid>
 bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
 {
-    static std::vector<rank_t> active_ranks;
-    static std::vector<rank_t> next_active_ranks;
     static std::vector<std::vector<size_t>> removeParticlesVec;
     static std::vector<std::vector<rank_t>> transferToRanks;
     static std::vector<std::vector<size_t>> transferParticlesVec;
     static std::vector<MCParticle> particlesToAdd;
+    std::vector<rank_t> &active_ranks = this->activeRanks;
+    std::vector<rank_t> &next_active_ranks = this->nextActiveRanks;
 
     // static std::uniform_real_distribution<double> dist(0, 1);
     // static std::mt19937 re(this->rank_world);
 
     next_active_ranks.clear();
+    bool completedNeighborSweep = true;
     if(active_ranks.empty())
     {
         // std::cout << "active_ranks is empty" << std::endl;
         const int PREFETCH_DISTANCE = 3;
         size_t N = this->neighbors.size();
-
-        for (size_t i = 0; i < N; ++i)
+        if(N > 0 and this->activeRankScanRemaining == 0)
         {
+            this->activeRankScanRemaining = N;
+            this->activeRankScanCursor %= N;
+        }
+        size_t scanCount = (N == 0) ? 0 :
+            std::min(this->activeRankScanRemaining,
+                     std::min(N, std::max<size_t>(1, this->config.activeRankScanChunk)));
+
+        for (size_t scanOffset = 0; scanOffset < scanCount; ++scanOffset)
+        {
+            size_t i = (this->activeRankScanCursor + scanOffset) % N;
             // Prefetch future data to hide memory latency
-            if (i + PREFETCH_DISTANCE < N)
+            if (scanOffset + PREFETCH_DISTANCE < scanCount)
             {
-                rank_t future_rank = this->neighbors[i + PREFETCH_DISTANCE];
+                size_t futureIndex = (this->activeRankScanCursor + scanOffset + PREFETCH_DISTANCE) % N;
+                rank_t future_rank = this->neighbors[futureIndex];
 
                 // Prefetch the RankHandler *object (heap-allocated, likely scattered)
                 RankHandler_t *future_handler = this->rankHandlers[future_rank];
@@ -895,6 +1007,13 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                 }
                 active_ranks.push_back(_rank);
             }
+        }
+        if(N > 0)
+        {
+            this->activeRankScanCursor = (this->activeRankScanCursor + scanCount) % N;
+            assert(this->activeRankScanRemaining >= scanCount);
+            this->activeRankScanRemaining -= scanCount;
+            completedNeighborSweep = (this->activeRankScanRemaining == 0);
         }
         {
             RankHandler_t *handler = this->rankHandlers[this->rank_world];
@@ -944,21 +1063,6 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
         transferParticlesVec.emplace_back();
         transferToRanks.emplace_back();
         removeParticlesVec.emplace_back();
-
-        // struct SelfBufferLockGuard
-        // {
-        //     explicit SelfBufferLockGuard(RankHandler_t *handler): handler(handler)
-        //     {
-        //         this->handler->LockSelfBuffer();
-        //     }
-
-        //     ~SelfBufferLockGuard()
-        //     {
-        //         this->handler->UnlockSelfBuffer();
-        //     }
-
-        //     RankHandler_t *handler;
-        // } selfBufferLock(handler);
 
         for(int i = 0; i < length; i++)
         {
@@ -1381,11 +1485,10 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                 eo.addEntry("Duplicate TH second index", duplicateTHSecond);
                 throw eo;
             }
-            this->reallocationAgent->HandleAllWaitingReallocations();
+            // this->reallocationAgent->HandleAllWaitingReallocations();
         }
 
-        this->reallocationAgent->HandleAllWaitingReallocations();
-
+        // this->reallocationAgent->HandleAllWaitingReallocations();
     }
 
     #ifdef TIMING
@@ -1408,7 +1511,10 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
             size_t particleIdx = currRankHandler->th[indexInToHandle];
             MCParticle &particle = currRankHandler->particles[particleIdx];
             particle.sent = false;
-            this->sendBuffers[toRank].push_back(particle);
+            std::vector<MCParticle> &buffer = this->GetSendBuffer(toRank);
+            size_t previousSize = buffer.size();
+            buffer.push_back(particle);
+            this->NoteSendBufferGrowth(toRank, previousSize, buffer, 1);
         }
     }
 
@@ -1435,7 +1541,12 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
     }
     active_ranks.swap(next_active_ranks);
 
-    bool toReturn = isEmpty and particlesToAdd.empty();
+    if(not isEmpty)
+    {
+        this->activeRankScanRemaining = 0;
+        completedNeighborSweep = false;
+    }
+    bool toReturn = isEmpty and completedNeighborSweep and particlesToAdd.empty();
     if(not particlesToAdd.empty())
     {
         this->dynamicallyAdded += particlesToAdd.size();
@@ -1646,6 +1757,100 @@ void MonteCarloManager<T, Grid>::ShrinkBuffers(void)
     }
 }
 
+template<typename T, typename Grid>
+std::vector<typename MonteCarloManager<T, Grid>::MCParticle> &MonteCarloManager<T, Grid>::GetSendBuffer(rank_t rank)
+{
+    assert(rank >= 0);
+    assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
+    return this->sendBuffers[static_cast<size_t>(rank)];
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::QueueReadySendBuffer(rank_t rank)
+{
+    assert(rank >= 0);
+    assert(rank < static_cast<rank_t>(this->sendBufferReadyQueued.size()));
+    size_t rankIndex = static_cast<size_t>(rank);
+    if(this->sendBufferReadyQueued[rankIndex])
+    {
+        return;
+    }
+    this->sendBufferReadyQueued[rankIndex] = 1;
+    this->readySendBufferRanks.push_back(rank);
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::MarkSendBufferEmpty(rank_t rank)
+{
+    assert(rank >= 0);
+    assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
+    size_t rankIndex = static_cast<size_t>(rank);
+    this->sendBuffers[rankIndex].clear();
+    this->sendBufferReadyQueued[rankIndex] = 0;
+    if(this->sendBufferActive[rankIndex])
+    {
+        this->sendBufferActive[rankIndex] = 0;
+        assert(this->sendBufferPendingRanks > 0);
+        this->sendBufferPendingRanks--;
+    }
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::ResetSendBuffers(void)
+{
+    for(rank_t rank : this->sendBufferActiveRanks)
+    {
+        if(rank < 0 or rank >= static_cast<rank_t>(this->sendBuffers.size()))
+        {
+            continue;
+        }
+        this->sendBuffers[static_cast<size_t>(rank)].clear();
+    }
+    std::fill(this->sendBufferActive.begin(), this->sendBufferActive.end(), 0);
+    std::fill(this->sendBufferListed.begin(), this->sendBufferListed.end(), 0);
+    std::fill(this->sendBufferReadyQueued.begin(), this->sendBufferReadyQueued.end(), 0);
+    this->sendBufferActiveRanks.clear();
+    this->readySendBufferRanks.clear();
+    this->readySendBufferCursor = 0;
+    this->sendBufferPendingRanks = 0;
+    this->sendBufferCycleCounter = 0;
+    this->sendBufferPendingParticles = 0;
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const std::vector<MCParticle> &buffer, size_t addedParticles)
+{
+    this->sendBufferPendingParticles += addedParticles;
+    if(addedParticles > 0 and previousSize == 0 and not buffer.empty())
+    {
+        assert(rank >= 0);
+        assert(rank < static_cast<rank_t>(this->sendBufferActive.size()));
+        size_t rankIndex = static_cast<size_t>(rank);
+        if(not this->sendBufferActive[rankIndex])
+        {
+            this->sendBufferActive[rankIndex] = 1;
+            this->sendBufferPendingRanks++;
+        }
+        if(not this->sendBufferListed[rankIndex])
+        {
+            this->sendBufferListed[rankIndex] = 1;
+            this->sendBufferActiveRanks.push_back(rank);
+        }
+    }
+    if(previousSize < this->config.sendBufferMinSize and buffer.size() >= this->config.sendBufferMinSize)
+    {
+        this->QueueReadySendBuffer(rank);
+    }
+}
+
+template<typename T, typename Grid>
+void MonteCarloManager<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
+{
+    assert(this->sendBufferPendingParticles >= flushedParticles);
+    this->sendBufferPendingParticles -= flushedParticles;
+    this->MarkSendBufferEmpty(rank);
+}
+
 #ifdef TIMING
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::RecordSendBufferFlush(size_t flushedParticles, SendFlushReason reason)
@@ -1696,10 +1901,10 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 #endif // TIMING
 {
     #ifdef TIMING
-    size_t pendingParticles = 0;
-    size_t pendingRanks = this->sendBuffers.size();
+    size_t pendingParticles = this->sendBufferPendingParticles;
+    size_t pendingRanks = this->sendBufferPendingRanks;
     #else
-    size_t pendingRanks = this->sendBuffers.size();
+    size_t pendingRanks = this->sendBufferPendingRanks;
     #endif // TIMING
 
     if(pendingRanks > 0)
@@ -1713,59 +1918,150 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 
     bool allowIdleDrain = flushSmallBuffers;
     bool heldIdleDrain = false;
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
     if(flushSmallBuffers and this->config.holdSmallIdleFlushes)
     {
         size_t holdoffCycles = std::max<size_t>(1, this->config.GetSmallIdleFlushHoldoffCycles());
         allowIdleDrain = this->sendBufferCycleCounter >= holdoffCycles;
     }
 
-    for(auto it = this->sendBuffers.begin(); it != this->sendBuffers.end();)
+    if(pendingRanks == 0)
     {
-        rank_t toRank = it->first;
-        std::vector<MCParticle> &particles = it->second;
+        #ifdef TIMING
+        this->sendBufferPeakRanks = std::max(this->sendBufferPeakRanks, pendingRanks);
+        this->sendBufferPeakParticles = std::max(this->sendBufferPeakParticles, pendingParticles);
+        #endif // TIMING
+        return;
+    }
+
+    auto flushRankIfReady = [&](rank_t toRank, bool allowIdleFlush)
+    {
+        if(toRank < 0 or toRank >= static_cast<rank_t>(this->sendBuffers.size()))
+        {
+            return;
+        }
+        size_t rankIndex = static_cast<size_t>(toRank);
+        if(not this->sendBufferActive[rankIndex])
+        {
+            return;
+        }
+        std::vector<MCParticle> &particles = this->sendBuffers[rankIndex];
         if(particles.empty())
         {
-            it = this->sendBuffers.erase(it);
-            continue;
+            this->MarkSendBufferEmpty(toRank);
+            return;
         }
-
-        #ifdef TIMING
-        pendingParticles += particles.size();
-        #endif // TIMING
         bool thresholdFlush = particles.size() >= this->config.sendBufferMinSize;
-        if(thresholdFlush or allowIdleDrain)
+        bool idleFlush = allowIdleFlush &&
+            (particles.size() >= this->config.sendBufferMinIdleDrainSize ||
+             this->sendBufferCycleCounter >= this->config.sendBufferIdleDrainPatienceCycles);
+        if(not thresholdFlush and not idleFlush)
         {
-            RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-            #ifdef TIMING
-            size_t flushedParticles = particles.size();
-            auto transferStart = std::chrono::high_resolution_clock::now();
-            #endif // TIMING
-            remoteHandler->TransferParticles(particles);
-            #ifdef TIMING
-            transferTime += MonteCarloTimingDetail::SecondsSince(transferStart);
-            #endif // TIMING
-            this->transfersCounter++;
-            #ifdef TIMING
-            this->RecordSendBufferFlush(flushedParticles, thresholdFlush ? SendFlushReason::Threshold : SendFlushReason::IdleDrain);
-            #endif // TIMING
-            it = this->sendBuffers.erase(it);
-            continue;
+            return;
         }
-        if(flushSmallBuffers)
+        if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
         {
-            heldIdleDrain = true;
+            if(thresholdFlush)
+            {
+                this->QueueReadySendBuffer(toRank);
+            }
+            return;
         }
-        ++it;
+        RankHandler_t *remoteHandler = this->rankHandlers[toRank];
+        size_t flushedParticles = particles.size();
+        #ifdef TIMING
+        auto transferStart = std::chrono::high_resolution_clock::now();
+        #endif // TIMING
+        bool transferred = remoteHandler->TransferParticles(particles);
+        #ifdef TIMING
+        transferTime += MonteCarloTimingDetail::SecondsSince(transferStart);
+        #endif // TIMING
+        if(not transferred)
+        {
+            this->ProgressReallocations();
+            if(thresholdFlush)
+            {
+                this->QueueReadySendBuffer(toRank);
+            }
+            return;
+        }
+        this->transfersCounter++;
+        this->NoteSendBufferFlush(toRank, flushedParticles);
+        #ifdef TIMING
+        this->RecordSendBufferFlush(flushedParticles, thresholdFlush ? SendFlushReason::Threshold : SendFlushReason::IdleDrain);
+        #endif // TIMING
+    };
+
+    size_t readyEntries = this->readySendBufferRanks.size() - this->readySendBufferCursor;
+    for(size_t readyIndex = 0; readyIndex < readyEntries; readyIndex++)
+    {
+        rank_t toRank = this->readySendBufferRanks[this->readySendBufferCursor++];
+        if(toRank >= 0 and toRank < static_cast<rank_t>(this->sendBufferReadyQueued.size()))
+        {
+            this->sendBufferReadyQueued[static_cast<size_t>(toRank)] = 0;
+        }
+        flushRankIfReady(toRank, false);
+    }
+    if(this->readySendBufferCursor >= this->readySendBufferRanks.size())
+    {
+        this->readySendBufferRanks.clear();
+        this->readySendBufferCursor = 0;
+    }
+    else if(this->readySendBufferCursor > 1024 and this->readySendBufferCursor * 2 > this->readySendBufferRanks.size())
+    {
+        this->readySendBufferRanks.erase(this->readySendBufferRanks.begin(),
+                                         this->readySendBufferRanks.begin() + static_cast<std::ptrdiff_t>(this->readySendBufferCursor));
+        this->readySendBufferCursor = 0;
+    }
+
+    if(allowIdleDrain)
+    {
+        for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
+        {
+            rank_t toRank = this->sendBufferActiveRanks[index];
+            if(toRank < 0 or toRank >= static_cast<rank_t>(this->sendBuffers.size()))
+            {
+                this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+                this->sendBufferActiveRanks.pop_back();
+                continue;
+            }
+            size_t rankIndex = static_cast<size_t>(toRank);
+            if(not this->sendBufferActive[rankIndex])
+            {
+                this->sendBufferListed[rankIndex] = 0;
+                this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+                this->sendBufferActiveRanks.pop_back();
+                continue;
+            }
+            flushRankIfReady(toRank, true);
+            if(not this->sendBufferActive[rankIndex])
+            {
+                this->sendBufferListed[rankIndex] = 0;
+                this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+                this->sendBufferActiveRanks.pop_back();
+                continue;
+            }
+            if(flushSmallBuffers)
+            {
+                heldIdleDrain = true;
+            }
+            index++;
+        }
+    }
+    else if(flushSmallBuffers and this->sendBufferPendingRanks > 0)
+    {
+        heldIdleDrain = true;
+    }
+
+    if(this->sendBufferPendingRanks == 0)
+    {
+        this->sendBufferCycleCounter = 0;
     }
     #ifdef TIMING
     if(heldIdleDrain)
     {
         this->sendBufferIdleHoldoffSkips++;
         this->sendBufferIdleHoldoffPendingParticles += pendingParticles;
-    }
-    if(this->sendBuffers.empty())
-    {
-        this->sendBufferCycleCounter = 0;
     }
     this->sendBufferPeakRanks = std::max(this->sendBufferPeakRanks, pendingRanks);
     this->sendBufferPeakParticles = std::max(this->sendBufferPeakParticles, pendingParticles);
@@ -1783,41 +2079,89 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
 #endif // TIMING
 {
     #ifdef TIMING
-    size_t pendingParticles = 0;
-    size_t pendingRanks = this->sendBuffers.size();
+    size_t pendingParticles = this->sendBufferPendingParticles;
+    size_t pendingRanks = this->sendBufferPendingRanks;
     #endif // TIMING
-    for(auto &[toRank, particles] : this->sendBuffers)
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+    for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
     {
-        if(particles.empty())
+        rank_t toRank = this->sendBufferActiveRanks[index];
+        if(toRank < 0 or toRank >= static_cast<rank_t>(this->sendBuffers.size()))
+        {
+            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+            this->sendBufferActiveRanks.pop_back();
             continue;
-        #ifdef TIMING
-        pendingParticles += particles.size();
+        }
+        size_t rankIndex = static_cast<size_t>(toRank);
+        if(not this->sendBufferActive[rankIndex])
+        {
+            this->sendBufferListed[rankIndex] = 0;
+            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+            this->sendBufferActiveRanks.pop_back();
+            continue;
+        }
+        std::vector<MCParticle> &particles = this->sendBuffers[rankIndex];
+        if(particles.empty())
+        {
+            this->MarkSendBufferEmpty(toRank);
+            this->sendBufferListed[rankIndex] = 0;
+            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+            this->sendBufferActiveRanks.pop_back();
+            continue;
+        }
         size_t flushedParticles = particles.size();
-        #endif // TIMING
+        if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
+        {
+            index++;
+            continue;
+        }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-        remoteHandler->TransferParticles(particles);
+        bool transferred = remoteHandler->TransferParticles(particles);
+        if(not transferred)
+        {
+            this->ProgressReallocations();
+            index++;
+            continue;
+        }
         this->transfersCounter++;
+        this->NoteSendBufferFlush(toRank, flushedParticles);
         #ifdef TIMING
         this->RecordSendBufferFlush(flushedParticles, reason);
         #endif // TIMING
+        this->sendBufferListed[rankIndex] = 0;
+        this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+        this->sendBufferActiveRanks.pop_back();
     }
     #ifdef TIMING
     this->sendBufferPeakRanks = std::max(this->sendBufferPeakRanks, pendingRanks);
     this->sendBufferPeakParticles = std::max(this->sendBufferPeakParticles, pendingParticles);
     #endif // TIMING
-    this->sendBuffers.clear();
-    this->sendBufferCycleCounter = 0;
+    if(this->sendBufferPendingRanks == 0)
+    {
+        this->sendBufferCycleCounter = 0;
+    }
 }
 
 template<typename T, typename Grid>
 bool MonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
 {
-    for(const auto &[rank, particles] : this->sendBuffers)
+    if(this->sendBufferPendingParticles == 0)
     {
-        if(!particles.empty())
-            return false;
+        return true;
     }
-    return true;
+    for(rank_t rank : this->sendBufferActiveRanks)
+    {
+        if(rank < 0 or rank >= static_cast<rank_t>(this->sendBuffers.size()))
+        {
+            continue;
+        }
+        size_t rankIndex = static_cast<size_t>(rank);
+        if(this->sendBufferActive[rankIndex] and not this->sendBuffers[rankIndex].empty())
+        {
+            return false;
+        }
+    }
+    return false;
 }
 
 #ifdef TIMING
@@ -2254,8 +2598,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     sectionStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
-    this->sendBuffers.clear();
-    this->sendBufferCycleCounter = 0;
+    this->ResetSendBuffers();
+    this->activeRanks.clear();
+    this->nextActiveRanks.clear();
+    this->activeRankScanCursor = 0;
+    this->activeRankScanRemaining = 0;
 
     #ifdef TIMING
     initClearSendBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
@@ -2502,15 +2849,26 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     START_TIMER_PREEMPTIVE("Main Loop");
     #endif // TIMING
 
+    const size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
+    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+    const size_t reallocationProgressMinCycles = usesAsyncReallocation
+        ? std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles)
+        : 1;
     auto loopStart = std::chrono::high_resolution_clock::now();
     try
     {
         while(not done)
         {
+            bool shouldProgressReallocations = (not usesAsyncReallocation) or
+                (this->iteration % reallocationProgressMinCycles == 0) or
+                this->reallocationAgent->HasPendingAsyncReallocations();
             #ifdef TIMING
             auto mainLoopSectionStart = std::chrono::high_resolution_clock::now();
             #endif // TIMING
-            this->reallocationAgent->HandleAllWaitingReallocations();
+            if(shouldProgressReallocations)
+            {
+                this->ProgressReallocations();
+            }
             #ifdef TIMING
             mainReallocationPollTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
 
@@ -2540,7 +2898,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             mainAmountDecreaseTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
             #endif // TIMING
 
-            size_t amountProgressMinCycles = std::max<size_t>(1, this->config.amountProgressMinCycles);
             if(this->iteration % amountProgressMinCycles == 0)
             {
                 #ifdef TIMING
@@ -2562,8 +2919,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 #else
                 this->FlushAllSendBuffers();
                 #endif // TIMING
-                this->reallocationAgent->HandleAllWaitingReallocations();
-                bool ok = this->AllSendBuffersEmpty();
+                this->ProgressReallocations();
+                bool ok = this->AllSendBuffersEmpty() and not this->reallocationAgent->HasPendingAsyncReallocations();
                 amountManager.Verify(ok);
                 #ifdef TIMING
                 mainVerifyTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);

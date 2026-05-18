@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <cmath>
@@ -34,7 +35,7 @@
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
-#include "utils/debug/cleanNode.hpp"
+#include "utils/debug/vtune.h"
 
 namespace fs = std::filesystem;
 
@@ -64,18 +65,18 @@ namespace fs = std::filesystem;
  * Timestep:   dt = 1e-11 s,  run until t = 10 ns  (1000 steps)
  */
 
- #ifdef RICH_MPI
+#ifdef RICH_MPI
 class HohlraumCostCalculator : public CostCalculator3D
 {
 public:
     HohlraumCostCalculator(const std::shared_ptr<MonteCarloManager3D> &manager, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics)
-        : manager(manager), physics(physics)
+        : manager(manager), physics(physics), hasSmoothedWeights(false), smoothedGeneration(0)
     {}
 
     std::vector<double> CalculateCost(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells) const override
     {
         size_t N = tess.GetPointNo();
-        std::vector<double> weights(N, 50);
+        std::vector<double> weights(N, baseWeight);
         const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
         const std::vector<size_t> &particleCounts = manager->GetBeginningParticleCount();
         const bool useCounters = counters.size() == N;
@@ -86,29 +87,88 @@ public:
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             if(rank == 0)
                 std::cout << "WARNING: CalculateCost size mismatch: N=" << N
-                          << " counters=" << counters.size()
-                          << " particleCounts=" << particleCounts.size() << std::endl;
+                    << " counters=" << counters.size()
+                    << " particleCounts=" << particleCounts.size() << std::endl;
         }
 
-        constexpr double particleWeight = 10.0;
+        double totalInstantWeight = 0.0;
         for(size_t i = 0; i < N; i++)
         {
+            const double measuredSteps = useCounters ? static_cast<double>(counters[i]) : 0.0;
+            const double initialParticles = useParticleCounts ? static_cast<double>(particleCounts[i]) : 0.0;
+            const double sourceFaces = static_cast<double>(CountSourceFaces(tess, i));
+
+            weights[i] += measuredStepWeight * measuredSteps;
             if(useParticleCounts)
             {
-                weights[i] += particleWeight * static_cast<double>(particleCounts[i]);
+                weights[i] += particleWeight * initialParticles;
             }
-            if(useCounters)
+            weights[i] += sourceFaceWeight * sourceFaces;
+            totalInstantWeight += weights[i];
+        }
+
+        const size_t generation = tess.GetBuildGeneration();
+        if(!this->hasSmoothedWeights ||
+            this->smoothedGeneration != generation ||
+            this->smoothedWeights.size() != N)
+        {
+            this->smoothedWeights = weights;
+            this->hasSmoothedWeights = true;
+            this->smoothedGeneration = generation;
+        }
+        else
+        {
+            for(size_t i = 0; i < N; i++)
             {
-                weights[i] += counters[i];
+                this->smoothedWeights[i] = ewmaAlpha * weights[i] +
+                    (1.0 - ewmaAlpha) * this->smoothedWeights[i];
             }
+        }
+
+        const double meanWeight = (N > 0) ? totalInstantWeight / static_cast<double>(N) : baseWeight;
+        const double maxWeight = std::max(baseWeight, maxWeightToMean * meanWeight);
+        for(size_t i = 0; i < N; i++)
+        {
+            weights[i] = std::min(maxWeight, std::max(baseWeight, this->smoothedWeights[i]));
         }
 
         return weights;
     }
 
 private:
+    size_t CountSourceFaces(const Tessellation3D &tess, size_t cellIndex) const
+    {
+        size_t sourceFaces = 0;
+        const size_t N = tess.GetPointNo();
+        const Vector3D &point = tess.GetMeshPoint(cellIndex);
+        for(const size_t &faceIdx : tess.GetCellFaces(cellIndex))
+        {
+            const std::pair<size_t, size_t> &neighbors = tess.GetFaceNeighbors(faceIdx);
+            size_t neighborIdx = (neighbors.first == cellIndex) ? neighbors.second : neighbors.first;
+            if(neighborIdx < N || !tess.IsPointOutsideBox(neighborIdx))
+            {
+                continue;
+            }
+            Vector3D normal = normalize(tess.GetMeshPoint(neighborIdx) - point);
+            if(normal.x < -0.99 && std::sqrt(point.y * point.y + point.z * point.z) < 0.65)
+            {
+                sourceFaces++;
+            }
+        }
+        return sourceFaces;
+    }
+
+    static constexpr double baseWeight = 25.0;
+    static constexpr double measuredStepWeight = 1.0;
+    static constexpr double particleWeight = 2.0;
+    static constexpr double sourceFaceWeight = 40.0;
+    static constexpr double ewmaAlpha = 0.35;
+    static constexpr double maxWeightToMean = 8.0;
     const std::shared_ptr<MonteCarloManager3D> manager;
     const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> physics;
+    mutable std::vector<double> smoothedWeights;
+    mutable bool hasSmoothedWeights;
+    mutable size_t smoothedGeneration;
 };
 #endif // RICH_MPI
 
@@ -201,12 +261,12 @@ std::vector<ComputationalCell3D> Initialize(Voronoi3D &tess, const EquationOfSta
         }
 
         std::cout << "Generated " << points.size() << " points"
-                    << " (N_base=" << N_base << ")"
-                    << std::endl;
+            << " (N_base=" << N_base << ")"
+            << std::endl;
         if(static_cast<rank_t>(points.size()) < ws)
         {
             std::cerr << "ERROR: only " << points.size() << " cells for " << ws
-                        << " MPI ranks. Reduce N_base." << std::endl;
+                << " MPI ranks. Reduce N_base." << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
@@ -324,8 +384,8 @@ void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cel
         volumes[i] = tess.GetVolume(i);
     }
     WriteVoronoiVTKOnly(tess, filename,
-                        {temps, tKeV, tr0, tr1, erads, physics->getEradTimeAvg(), volumes},
-                        {"Temperature_K", "Temperature_keV", "Material", "Vacuum", "Erad", "Erad_time_avg", "Volume"});
+        {temps, tKeV, tr0, tr1, erads, physics->getEradTimeAvg(), volumes},
+        {"Temperature_K", "Temperature_keV", "Material", "Vacuum", "Erad", "Erad_time_avg", "Volume"});
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     if(rank == 0)
@@ -334,361 +394,360 @@ void WriteVTK(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cel
     }
 }
 
-int main(int argc, char *argv[])
-{
-    DISABLE_TIMERS();
+int main(int argc, char *argv[]) {
+    rank_t rank = -1, ws = 0;
+    try {
+        MPI_Init(&argc, &argv);
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &ws);
 
-    MPI_Init(&argc, &argv);
-    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
+        vtune_stop();
+        DISABLE_TIMERS();
 
-    rank_t rank, ws;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &ws);
+        MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
 
-    {
-        char hostname[MPI_MAX_PROCESSOR_NAME];
-        int name_len;
-        MPI_Get_processor_name(hostname, &name_len);
-        std::cerr << "Rank " << rank << "/" << ws
-                  << " on " << hostname
-                  << " pid=" << getpid() << std::endl;
-    }
+        // char hostname[MPI_MAX_PROCESSOR_NAME];
+        // int name_len;
+        // MPI_Get_processor_name(hostname, &name_len);
+        // std::cerr << "Rank " << rank << "/" << ws
+        //         << " on " << hostname
+        //         << " pid=" << getpid() << std::endl;
 
-#ifdef RICH_MPI
-    try { ensureCleanNode(); }
-    catch(const UniversalError &e)
-    {
-        std::cerr << "=== UniversalError (cleanNode) on rank " << rank << " ===" << std::endl;
-        reportError(e, std::cerr);
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-#endif
-
-    if(rank == 0 and argc < 2)
-    {
-        std::cerr << "Usage: " << argv[0]
-                  << " <N_base> [new_per_cell] [max_per_cell] [--2d] [--p2p] [--ibv] [--mpi-rma]"
-                  << " [--hold-small-idle-flushes]"
-                  << " [--resume <dump_number>]"
-                  << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-
-  try
-  {
-    size_t N_base = std::stoul(argv[1]);
-    size_t newPhotonsPerCell = 5;
-    size_t minPhotonsPerCell = 15;
-    bool mode2d = false;
-    int resumeDump = -1;
-
-    bool resumeAuto = false;
-    bool useP2P = false;
-    bool useIBV = false;
-    bool useMpiRma = false;
-    bool holdSmallIdleFlushes = false;
-    std::vector<std::string> positionalArgs;
-    for(int a = 2; a < argc; a++)
-    {
-        std::string arg(argv[a]);
-        if(arg == "--2d")
-            mode2d = true;
-        else if(arg == "--p2p")
-            useP2P = true;
-        else if(arg == "--ibv")
-            useIBV = true;
-        else if(arg == "--mpi-rma")
-            useMpiRma = true;
-        else if(arg == "--hold-small-idle-flushes")
-            holdSmallIdleFlushes = true;
-        else if(arg == "--idle-flush-holdoff")
+        if(rank == 0 and argc < 2)
         {
-            if(rank == 0)
-                std::cerr << "--idle-flush-holdoff was removed; the holdoff value is now internal/adaptive." << std::endl;
+            std::cerr << "Usage: " << argv[0]
+                << " <N_base> [new_per_cell] [max_per_cell] [--2d] [--p2p] "
+                "[--ibv] [--mpi-rma]"
+                << " [--hold-small-idle-flushes]"
+                << " [--resume <dump_number>]" << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        else if(arg == "--resume")
+
+        size_t N_base = std::stoul(argv[1]);
+        size_t newPhotonsPerCell = 5;
+        size_t minPhotonsPerCell = 15;
+        bool mode2d = false;
+        int resumeDump = -1;
+
+        bool resumeAuto = false;
+        bool useP2P = false;
+        bool useIBV = false;
+        bool useMpiRma = false;
+        bool holdSmallIdleFlushes = false;
+        std::vector<std::string> positionalArgs;
+        for(int a = 2; a < argc; a++)
         {
-            if(a + 1 < argc and argv[a + 1][0] != '-')
+            std::string arg(argv[a]);
+            if(arg == "--2d")
+                mode2d = true;
+            else if(arg == "--p2p")
+                useP2P = true;
+            else if(arg == "--ibv")
+                useIBV = true;
+            else if(arg == "--mpi-rma")
+                useMpiRma = true;
+            else if(arg == "--hold-small-idle-flushes")
+                holdSmallIdleFlushes = true;
+            else if(arg == "--idle-flush-holdoff")
             {
-                resumeDump = std::stoi(argv[++a]);
-            }
-            else
-                resumeAuto = true;
-        }
-        else
-            positionalArgs.push_back(arg);
-    }
-    if(positionalArgs.size() >= 1)
-    {
-        newPhotonsPerCell = std::stoul(positionalArgs[0]);
-    }
-    if(positionalArgs.size() >= 2)
-    {
-        minPhotonsPerCell = std::stoul(positionalArgs[1]);
-    }
-
-    const std::string hohlraumDir = useP2P ? "Hohlraum_P2P" : "Hohlraum";
-    const std::string outputDir = "/leonardo_work/EUHPC_D35_204/" + hohlraumDir + "/N_base_" + std::to_string(N_base) + "/size_" + std::to_string(ws);
-    char prefixBuf[256];
-    std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_%d_", argv[1], ws);
-    const std::string prefix = outputDir + "/" + prefixBuf;
-
-    if(rank == 0)
-    {
-        fs::create_directories(outputDir);
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    // --- Physical parameters (Section 4.2) ---
-    const double T_boundary_keV = 1.0;
-    const double T_boundary     = T_boundary_keV * units::kev_kelvin;   // Kelvin
-    const double T_init         = 300.0;                                 // Kelvin
-    const double dt             = 1e-11 / (std::pow(ws / (static_cast<double>(5 * 112)), 0.333333333));                                 // seconds
-    const double t_final        = 1e-9;                                 // 2.5 ns
-    const size_t iterations     = static_cast<size_t>(t_final / dt + 0.5);
-    constexpr size_t boundaryPhotonsPerCell = 1000;
-    constexpr size_t dumpInterval = 25;
-
-    // Domain: 3D revolves around x-axis; 2D is a thin slab at z=1
-    // Pad the domain beyond the material boundaries so that no material
-    // interface coincides with the domain boundary (avoids particles
-    // landing exactly on a boundary face with zero distance to all faces).
-    const double Lx = 1.4, Ly = 0.65;
-    const double Lz = mode2d ? 1.0 : 0.65;
-    const double pad = 2 * 0.03;
-    Vector3D ll(0, -(Ly + pad), mode2d ? 0.0 : -(Lz + pad));
-    Vector3D ur(Lx + pad, Ly + pad, mode2d ? 2.0 : (Lz + pad));
-
-    // --- Equations of State ---
-    IdealGas eosMaterial(1.5, 3e15 / units::kev_kelvin, 1, 0);
-    IdealGas eosVacuum(1.5, 1e15 / units::kev_kelvin, 1, 0);
-    std::vector<EquationOfState *> eosList = {&eosMaterial, &eosVacuum};
-    MixedEOS eos(eosList);
-
-    if(resumeAuto)
-    {
-        int found = 0;
-        if(rank == 0)
-        {
-            std::string simFile = prefix + "latest_sim.h5";
-            if(fs::exists(simFile))
+                if(rank == 0)
+                    std::cerr << "--idle-flush-holdoff was removed; the holdoff value is "
+                        "now internal/adaptive."
+                        << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            } else if(arg == "--resume")
             {
-                found = 1;
-                std::cout << "Auto-detected simulation file: " << simFile << std::endl;
-            }
-            else
-                std::cout << "No simulation file found, starting fresh" << std::endl;
+                if(a + 1 < argc and argv[a + 1][0] != '-')
+                {
+                    resumeDump = std::stoi(argv[++a]);
+                } else
+                    resumeAuto = true;
+            } else
+                positionalArgs.push_back(arg);
         }
-        MPI_Bcast(&found, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        if(found)
-            resumeDump = 0;
-    }
-
-    Voronoi3D tess(ll, ur);
-    std::vector<ComputationalCell3D> initialCells;
-    size_t startCycle = 0;
-    
-    double simTime = 0;
-    size_t dumpCount = 0;
-
-    ComputationalCell3D::tracerNames = {"Material", "Vacuum"};
-
-    if(resumeDump < 0)
-    {
-        initialCells = Initialize(tess, eos, N_base, T_init, mode2d);
-    }
-
-    // --- Simulation ---
-    Simulation sim(tess, initialCells, eos);
-    std::shared_ptr<TimeStepFunction3D> tsc = std::make_shared<ManualTimeStep>();
-    sim.SetTimeStepFunction(tsc);
-
-    std::vector<ComputationalCell3D> &cells = sim.getCells();
-    std::vector<Conserved3D> &extensives = sim.getExtensives();
-
-    // --- MC radiation transport ---
-    constexpr bool withHydro = false;
-
-    auto eosPtr = std::make_shared<MixedEOS>(eos);
-    auto opacityPtr = std::make_shared<HohlraumOpacity>();
-
-    std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
-        std::make_shared<HohlraumBoundary<Vector3D, Tessellation3D>>(
-            tess, cells, T_boundary, boundaryPhotonsPerCell);
-
-    RadiationIMCParameters params = {
-        .newPhotonsPerCell = newPhotonsPerCell,
-        .withHydro = withHydro,
-        .withRandomWalk = true
-    };
-    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
-        tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, params);
-
-    size_t comb_factor = 6;
-    std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, minPhotonsPerCell, comb_factor);
-
-    MonteCarloConfig monteCarloConfig;
-    monteCarloConfig.holdSmallIdleFlushes = holdSmallIdleFlushes;
-    if(rank == 0)
-    {
-        std::cout << "Hohlraum MonteCarloConfig: holdSmallIdleFlushes=" << monteCarloConfig.holdSmallIdleFlushes
-                  << ", smallIdleFlushHoldoffCycles=" << monteCarloConfig.GetSmallIdleFlushHoldoffCycles()
-                  << std::endl;
-    }
-
-    std::vector<Particle3D> initialParticles;
-    auto mcStep = std::make_shared<RadiationMCStep>(
-        tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, 0, withHydro
-        #ifdef RICH_MPI
-            , useMpiRma ? RadiationMCStep::ManagerType::MPI_RMA
-                        : (useP2P ? RadiationMCStep::ManagerType::P2P
-                                  : (useIBV ? RadiationMCStep::ManagerType::IBV_RDMA
-                                            : RadiationMCStep::ManagerType::AUTO_RDMA))
-            , nullptr
-            , monteCarloConfig
-        #endif
-    );
-    sim.addPhysics(mcStep);
-    #ifdef RICH_MPI
-        mcStep->setCost(std::make_shared<HohlraumCostCalculator>(mcStep->getManager(), physics));
-        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
-        sim.addMigrationBuffer(mcStep->getManager()->GetBeginningParticleCount());
-    #endif // RICH_MPI
-
-    sim.SetTimeStep(dt);
-
-    if(resumeDump >= 0)
-    {
-        ReadSimulation(prefix + "latest_sim.h5", sim);
-        startCycle = sim.GetCycle();
-        simTime = sim.GetTime();
-        dumpCount = startCycle / dumpInterval;
-
-        if(rank == 0)
-            std::cout << "Resumed from " << prefix << "latest_sim.h5: cycle=" << startCycle
-                      << ", t=" << simTime * 1e9 << " ns"
-                      << ", dumpCount=" << dumpCount << std::endl;
-    }
-
-    extensives.resize(cells.size());
-    for(size_t i = 0; i < cells.size(); i++)
-    {
-        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
-    }
-
-    size_t N = tess.GetPointNo();
-    if(rank == 0)
-    {
-        size_t nMaterial = 0, nVacuum = 0;
-        for(size_t i = 0; i < N; i++)
+        if(positionalArgs.size() >= 1)
         {
-            if(cells[i].tracers[0] > 0.5) nMaterial++;
-            else nVacuum++;
+            newPhotonsPerCell = std::stoul(positionalArgs[0]);
         }
-        std::cout << "Hohlraum (" << (mode2d ? "2D" : "3D") << "): N_base=" << N_base
-                  << " cm, cells=" << N
-                  << ", material=" << nMaterial
-                  << ", vacuum=" << nVacuum
-                  << ", dt=" << dt << " s"
-                  << ", t_final=" << t_final << " s"
-                  << ", iterations=" << iterations
-                  << ", new/cell=" << newPhotonsPerCell
-                  << ", max/cell=" << minPhotonsPerCell
-                  << ", output=" << prefix
-                  << (resumeDump >= 0 ? ", resumed from dump " + std::to_string(resumeDump) : "")
-                  << std::endl;
-    }
+        if(positionalArgs.size() >= 2)
+        {
+            minPhotonsPerCell = std::stoul(positionalArgs[1]);
+        }
 
-    // WriteSimulation(sim, prefix + "latest_sim.h5");
-
-    if(resumeDump < 0)
-    {
-        // WriteVTK(tess, cells, physics, prefix + "init.vtu");
-    }
-    
-    // --- Main time-stepping loop ---
-    auto startWall = std::chrono::high_resolution_clock::now();
-    double computeTotal = 0;
-    size_t stepsSinceLastDump = 0;
-
-    while(simTime < t_final)
-    {
-        auto stepStart = std::chrono::high_resolution_clock::now();
-        sim.step();
-        auto stepEnd = std::chrono::high_resolution_clock::now();
-        double computeSec = std::chrono::duration<double>(stepEnd - stepStart).count();
-        computeTotal += computeSec;
-
-        stepsSinceLastDump++;
-        simTime = sim.GetTime();
-        sim.SetTimeStep(dt);
-
-        double fraction = simTime / t_final;
-        double eta = (fraction > 0) ? computeTotal * (1.0 - fraction) / fraction : 0;
+        const std::string hohlraumDir = useP2P ? "Hohlraum_P2P" : "Hohlraum";
+        const std::string outputDir =
+            "/leonardo_work/EUHPC_D35_204/" + hohlraumDir + "/N_base_" +
+            std::to_string(N_base) + "/size_" + std::to_string(ws);
+        char prefixBuf[256];
+        std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_%d_", argv[1], ws);
+        const std::string prefix = outputDir + "/" + prefixBuf;
 
         if(rank == 0)
         {
-            int pct = static_cast<int>(fraction * 100);
-            int etaMin = static_cast<int>(eta) / 60;
-            int etaSec = static_cast<int>(eta) % 60;
-            int totalMin = static_cast<int>(computeTotal) / 60;
-            int totalSec = static_cast<int>(computeTotal) % 60;
-            std::cout << "Cycle " << sim.GetCycle()
-                      << "  t=" << simTime * 1e9 << " ns"
-                      << " (" << pct << "%)"
-                      << "  step=" << computeSec << "s"
-                      << "  compute=" << totalMin << "m" << totalSec << "s"
-                      << "  ETA=" << etaMin << "m" << etaSec << "s"
-                      << std::endl;
+            fs::create_directories(outputDir);
         }
+        MPI_Barrier(MPI_COMM_WORLD);
 
-        if(stepsSinceLastDump >= dumpInterval)
+        // --- Physical parameters (Section 4.2) ---
+        const double T_boundary_keV = 1.0;
+        const double T_boundary = T_boundary_keV * units::kev_kelvin; // Kelvin
+        const double T_init = 300.0;                                  // Kelvin
+        const double dt = 1e-11 / (std::pow(ws / (static_cast<double>(5 * 112)),
+                0.333333333)); // seconds
+        const double t_final = dt * 150;                    // 1e-9;
+        const size_t iterations = static_cast<size_t>(t_final / dt + 0.5);
+        constexpr size_t boundaryPhotonsPerCell = 1000;
+        constexpr size_t dumpInterval = 25;
+
+        // Domain: 3D revolves around x-axis; 2D is a thin slab at z=1
+        // Pad the domain beyond the material boundaries so that no material
+        // interface coincides with the domain boundary (avoids particles
+        // landing exactly on a boundary face with zero distance to all faces).
+        const double Lx = 1.4, Ly = 0.65;
+        const double Lz = mode2d ? 1.0 : 0.65;
+        const double pad = 2 * 0.03;
+        Vector3D ll(0, -(Ly + pad), mode2d ? 0.0 : -(Lz + pad));
+        Vector3D ur(Lx + pad, Ly + pad, mode2d ? 2.0 : (Lz + pad));
+
+        // --- Equations of State ---
+        IdealGas eosMaterial(1.5, 3e15 / units::kev_kelvin, 1, 0);
+        IdealGas eosVacuum(1.5, 1e15 / units::kev_kelvin, 1, 0);
+        std::vector<EquationOfState *> eosList = {&eosMaterial, &eosVacuum};
+        MixedEOS eos(eosList);
+
+        if(resumeAuto)
         {
-            stepsSinceLastDump = 0;
-            char buf[512];
-
-            std::snprintf(buf, sizeof(buf), "%s%05zu.pvtu", prefix.c_str(), dumpCount);
-            // WriteVTK(tess, cells, physics, buf);
-
-            // WriteSimulation(sim, prefix + "latest_sim.h5");
+            int found = 0;
             if(rank == 0)
             {
-                std::cout << "Wrote simulation: " << prefix << "latest_sim.h5" << std::endl;
+                std::string simFile = prefix + "latest_sim.h5";
+                if(fs::exists(simFile))
+                {
+                    found = 1;
+                    std::cout << "Auto-detected simulation file: " << simFile
+                        << std::endl;
+                } else
+                    std::cout << "No simulation file found, starting fresh" << std::endl;
+            }
+            MPI_Bcast(&found, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            if(found)
+                resumeDump = 0;
+        }
+
+        Voronoi3D tess(ll, ur);
+        std::vector<ComputationalCell3D> initialCells;
+        size_t startCycle = 0;
+
+        double simTime = 0;
+        size_t dumpCount = 0;
+
+        ComputationalCell3D::tracerNames = {"Material", "Vacuum"};
+
+        if(resumeDump < 0)
+        {
+            initialCells = Initialize(tess, eos, N_base, T_init, mode2d);
+        }
+
+        // --- Simulation ---
+        Simulation sim(tess, initialCells, eos);
+        std::shared_ptr<TimeStepFunction3D> tsc =
+            std::make_shared<ManualTimeStep>();
+        sim.SetTimeStepFunction(tsc);
+
+        std::vector<ComputationalCell3D> &cells = sim.getCells();
+        std::vector<Conserved3D> &extensives = sim.getExtensives();
+
+        // --- MC radiation transport ---
+        constexpr bool withHydro = false;
+
+        auto eosPtr = std::make_shared<MixedEOS>(eos);
+        auto opacityPtr = std::make_shared<HohlraumOpacity>();
+
+        std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
+            std::make_shared<HohlraumBoundary<Vector3D, Tessellation3D>>(
+                tess, cells, T_boundary, boundaryPhotonsPerCell);
+
+        RadiationIMCParameters params = {.newPhotonsPerCell = newPhotonsPerCell,
+                .withHydro = withHydro,
+                .withRandomWalk = true};
+        std::shared_ptr<MonteCarloRadiationPhysics3D> physics =
+            std::make_shared<RadiationIMC>(tess, boundaryCond, cells, extensives,
+                eosPtr, opacityPtr, params);
+
+        size_t comb_factor = 6;
+        std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
+            std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(
+                tess, minPhotonsPerCell, comb_factor);
+
+        MonteCarloConfig monteCarloConfig;
+        monteCarloConfig.holdSmallIdleFlushes = holdSmallIdleFlushes;
+        if(rank == 0)
+        {
+            std::cout << "Hohlraum MonteCarloConfig: holdSmallIdleFlushes="
+                << monteCarloConfig.holdSmallIdleFlushes
+                << ", smallIdleFlushHoldoffCycles="
+                << monteCarloConfig.GetSmallIdleFlushHoldoffCycles()
+                << std::endl;
+        }
+
+        std::vector<Particle3D> initialParticles;
+        auto mcStep = std::make_shared<RadiationMCStep>(
+            tess, cells, extensives, physics, popControl, boundaryCond,
+            initialParticles, 0, withHydro
+#ifdef RICH_MPI
+            ,
+            useMpiRma
+            ? RadiationMCStep::ManagerType::MPI_RMA
+            : (useP2P ? RadiationMCStep::ManagerType::P2P
+                : (useIBV ? RadiationMCStep::ManagerType::IBV_RDMA
+                    : RadiationMCStep::ManagerType::AUTO_RDMA)),
+            nullptr, monteCarloConfig
+#endif
+        );
+        sim.addPhysics(mcStep);
+#ifdef RICH_MPI
+        mcStep->setCost(std::make_shared<HohlraumCostCalculator>(
+                mcStep->getManager(), physics));
+        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
+        sim.addMigrationBuffer(mcStep->getManager()->GetBeginningParticleCount());
+#endif // RICH_MPI
+
+        sim.SetTimeStep(dt);
+
+        if(resumeDump >= 0)
+        {
+            ReadSimulation(prefix + "latest_sim.h5", sim);
+            startCycle = sim.GetCycle();
+            simTime = sim.GetTime();
+            dumpCount = startCycle / dumpInterval;
+
+            if(rank == 0)
+                std::cout << "Resumed from " << prefix
+                    << "latest_sim.h5: cycle=" << startCycle
+                    << ", t=" << simTime * 1e9 << " ns"
+                    << ", dumpCount=" << dumpCount << std::endl;
+        }
+
+        extensives.resize(cells.size());
+        for(size_t i = 0; i < cells.size(); i++)
+        {
+            PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+        }
+
+        size_t N = tess.GetPointNo();
+        if(rank == 0)
+        {
+            size_t nMaterial = 0, nVacuum = 0;
+            for(size_t i = 0; i < N; i++)
+            {
+                if(cells[i].tracers[0] > 0.5)
+                    nMaterial++;
+                else
+                    nVacuum++;
+            }
+            std::cout << "Hohlraum (" << (mode2d ? "2D" : "3D")
+                << "): N_base=" << N_base << " cm, cells=" << N
+                << ", material=" << nMaterial << ", vacuum=" << nVacuum
+                << ", dt=" << dt << " s"
+                << ", t_final=" << t_final << " s"
+                << ", iterations=" << iterations
+                << ", new/cell=" << newPhotonsPerCell
+                << ", max/cell=" << minPhotonsPerCell << ", output=" << prefix
+                << (resumeDump >= 0
+                    ? ", resumed from dump " + std::to_string(resumeDump)
+                    : "")
+                << std::endl;
+        }
+
+        // WriteSimulation(sim, prefix + "latest_sim.h5");
+
+        if(resumeDump < 0)
+        {
+            // WriteVTK(tess, cells, physics, prefix + "init.vtu");
+        }
+
+        // --- Main time-stepping loop ---
+        auto startWall = std::chrono::high_resolution_clock::now();
+        double computeTotal = 0;
+        size_t stepsSinceLastDump = 0;
+
+        while(simTime < t_final)
+        {
+            auto stepStart = std::chrono::high_resolution_clock::now();
+            sim.step();
+            auto stepEnd = std::chrono::high_resolution_clock::now();
+            double computeSec = std::chrono::duration<double>(stepEnd - stepStart).count();
+            computeTotal += computeSec;
+
+            stepsSinceLastDump++;
+            simTime = sim.GetTime();
+            sim.SetTimeStep(dt);
+
+            double fraction = simTime / t_final;
+            double eta =
+                (fraction > 0) ? computeTotal * (1.0 - fraction) / fraction : 0;
+
+            if(rank == 0)
+            {
+                int pct = static_cast<int>(fraction * 100);
+                int etaMin = static_cast<int>(eta) / 60;
+                int etaSec = static_cast<int>(eta) % 60;
+                int totalMin = static_cast<int>(computeTotal) / 60;
+                int totalSec = static_cast<int>(computeTotal) % 60;
+                std::cout << "Cycle " << sim.GetCycle() << "  t=" << simTime * 1e9
+                    << " ns"
+                    << " (" << pct << "%)"
+                    << "  step=" << computeSec << "s"
+                    << "  compute=" << totalMin << "m" << totalSec << "s"
+                    << "  ETA=" << etaMin << "m" << etaSec << "s" << std::endl;
             }
 
-            double t_ns = simTime * 1e9;
-            std::snprintf(buf, sizeof(buf), "%s%05zu.txt", prefix.c_str(), dumpCount);
-            WriteProfile(tess, cells, buf, t_ns, N_base, mode2d);
+            if(stepsSinceLastDump >= dumpInterval)
+            {
+                stepsSinceLastDump = 0;
+                char buf[512];
 
-            dumpCount++;
+                std::snprintf(buf, sizeof(buf), "%s%05zu.pvtu", prefix.c_str(),
+                    dumpCount);
+                // WriteVTK(tess, cells, physics, buf);
+
+                // WriteSimulation(sim, prefix + "latest_sim.h5");
+                if(rank == 0)
+                {
+                    std::cout << "Wrote simulation: " << prefix << "latest_sim.h5"
+                        << std::endl;
+                }
+
+                double t_ns = simTime * 1e9;
+                std::snprintf(buf, sizeof(buf), "%s%05zu.txt", prefix.c_str(),
+                    dumpCount);
+                WriteProfile(tess, cells, buf, t_ns, N_base, mode2d);
+
+                dumpCount++;
+            }
         }
+
+        auto endWall = std::chrono::high_resolution_clock::now();
+        double wallSec = std::chrono::duration<double>(endWall - startWall).count();
+        if(rank == 0)
+            std::cout << "Total wall time: " << wallSec << "s"
+                << "  (compute: " << computeTotal << "s"
+                << ", I/O: " << wallSec - computeTotal << "s)" << std::endl;
+
+        // --- Final output ---
+        WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base,
+            mode2d);
+        // WriteVTK(tess, cells, physics, prefix + "final.vtu");
+        // WriteSimulation(sim, prefix + "latest_sim.h5");
+    } catch (const UniversalError &e) {
+        std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
+        reportError(e, std::cerr);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    } catch (const std::exception &e) {
+        std::cerr << "=== std::exception on rank " << rank << ": " << e.what()
+            << " ===" << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
-
-    auto endWall = std::chrono::high_resolution_clock::now();
-    double wallSec = std::chrono::duration<double>(endWall - startWall).count();
-    if(rank == 0)
-        std::cout << "Total wall time: " << wallSec << "s"
-                  << "  (compute: " << computeTotal << "s"
-                  << ", I/O: " << wallSec - computeTotal << "s)" << std::endl;
-
-    // --- Final output ---
-    WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base, mode2d);
-    // WriteVTK(tess, cells, physics, prefix + "final.vtu");
-    // WriteSimulation(sim, prefix + "latest_sim.h5");
-  }
-  catch(const UniversalError &e)
-  {
-      std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
-      reportError(e);
-      MPI_Abort(MPI_COMM_WORLD, 1);
-  }
-  catch(const std::exception &e)
-  {
-      std::cerr << "=== std::exception on rank " << rank << ": " << e.what() << " ===" << std::endl;
-      MPI_Abort(MPI_COMM_WORLD, 1);
-  }
 
     MPI_Finalize();
 }
