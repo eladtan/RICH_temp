@@ -370,13 +370,14 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
 
     double globalTotalEnergy = localTotalEnergy;
     size_t globalTotalCells = Ncells;
+    
     #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
     size_t totalParticles = globalTotalCells * this->newPhotonsPerCell * 10;
-    newParticles.reserve(totalParticles);
+    newParticles.reserve(Ncells * this->newPhotonsPerCell * 10);
 
     std::vector<size_t> nPhotons(Ncells);
     for(size_t i = 0; i < Ncells; i++)
