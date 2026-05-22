@@ -1,6 +1,7 @@
 #ifdef RICH_MPI
 
 #include "HilbertLoadBalancer.hpp"
+#include <cmath>
 
 HilbertLoadBalancer::HilbertLoadBalancer(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing, const std::vector<curve_index_t> &boundaries)
     : CurveLoadBalancer(boundaries), indexing(indexing)
@@ -85,6 +86,24 @@ void HilbertLoadBalancer::rebalance(const std::vector<Vector3D> &points, const s
         std::cout << "Running rebalancing" << std::endl;
     }
     this->boundaries = getWeightedBorders3(indices, weights);
+    if(this->boundaries.empty())
+    {
+        auto rectangularConvertor = std::dynamic_pointer_cast<HilbertRectangularConvertor3D>(this->convertor);
+        if(rectangularConvertor == nullptr)
+        {
+            throw UniversalError("HilbertLoadBalancer::rebalance: failed to create fallback boundaries for a non-rectangular Hilbert convertor");
+        }
+
+        hilbert_index_t hilbertSize = rectangularConvertor->getHilbertSize();
+        this->boundaries.resize(static_cast<size_t>(this->size));
+        for(rank_t boundaryRank = 0; boundaryRank < this->size; boundaryRank++)
+        {
+            long double fraction = static_cast<long double>(boundaryRank + 1) /
+                                   static_cast<long double>(this->size);
+            this->boundaries[static_cast<size_t>(boundaryRank)] =
+                static_cast<curve_index_t>(std::ceil(static_cast<long double>(hilbertSize) * fraction));
+        }
+    }
 }
 
 curve_index_t HilbertLoadBalancer::getCurveIndex(const Vector3D &point) const

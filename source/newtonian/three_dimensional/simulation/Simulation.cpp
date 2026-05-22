@@ -164,6 +164,11 @@ void Simulation::step(void)
         if(this->rank == 0) std::cout << "Running physics: " << name << std::endl;
 
         #ifdef RICH_MPI
+            // if(this->tracker.getCycle() == this->lastRebalanceCycle + 2)
+            // {
+            //     physics->dumpCost(this->tracker.getCycle());
+            // }
+
             std::string LB = physics->getRequiredLB();
             bool firstTime = false;
 
@@ -190,6 +195,8 @@ void Simulation::step(void)
 
             bool forceRebalance = this->forceRebalanceSteps > 0 && this->tracker.getCycle() < this->forceRebalanceSteps;
             double rebalanceTime = 0;
+            bool didRebalance = false;
+
             if(physics->allowRebalance() || forceRebalance)
             {
                 if(this->rank == 0) std::cout << "allowRebalance=true, computing weights..." << std::endl;
@@ -205,6 +212,8 @@ void Simulation::step(void)
                     if(this->rank == 0) std::cout << "Doing rebalance on LB " << LB << std::endl;
                     auto rebalanceStart = std::chrono::high_resolution_clock::now();
 
+                    didRebalance = true;
+                    this->lastRebalanceCycle = this->tracker.getCycle();
                     physics->beforeLB();
                     this->tess.Rebalance(weights);
                     if(this->rank == 0)
@@ -240,7 +249,13 @@ void Simulation::step(void)
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI
         auto start = std::chrono::high_resolution_clock::now();
+
+        if(not didRebalance and this->tracker.getCycle() > 100)
+        {
+            vtune_start();
+        }
         physics->step(dt);
+        vtune_stop();
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI

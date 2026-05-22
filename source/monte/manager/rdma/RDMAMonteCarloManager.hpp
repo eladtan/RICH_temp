@@ -1,5 +1,5 @@
-#ifndef MONTE_CARLO_MANAGER_HPP
-#define MONTE_CARLO_MANAGER_HPP
+#ifndef RDMA_MONTE_CARLO_MANAGER_HPP
+#define RDMA_MONTE_CARLO_MANAGER_HPP
 
 #include "mpi/mpi_commands.hpp"
 #include "mpi/serialize/mpi_commands.hpp"
@@ -11,8 +11,8 @@
 #include "monte/utils/GhostMap.hpp"
 #include "monte/utils/RankSync.hpp"
 #include "utils/debug/vtune.h" // TODO: remove
-#include "RankHandler.hpp"
-#include "ReallocationAgent.hpp"
+#include "monte/manager/rdma/RankHandler2.hpp"
+#include "monte/manager/ReallocationAgent.hpp"
 #include "utils/debug/SmartTimer.hpp"
 #include "misc/memory_debug.hpp"
 #include <array>
@@ -25,12 +25,13 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include <mpi.h>
-#include "MonteCarloConfig.hpp"
+#include "monte/manager/MonteCarloConfig.hpp"
 
 template<typename Grid>
-std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
+std::vector<rank_t> GetNeighborList2(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
 {
     size_t N = tess.GetPointNo();
     boost::container::flat_set<rank_t> ranks;
@@ -56,7 +57,7 @@ std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::fl
 }
 
 #ifdef TIMING
-namespace MonteCarloTimingDetail
+namespace MonteCarloTimingDetail2
 {
     struct Section
     {
@@ -105,7 +106,7 @@ namespace MonteCarloTimingDetail
     }
 }
 
-enum class SendFlushReason
+enum class SendFlushReason2
 {
     Threshold,
     IdleDrain,
@@ -115,10 +116,10 @@ enum class SendFlushReason
 #endif // TIMING
 
 template<typename T, typename Grid>
-class MonteCarloManager
+class RDMAMonteCarloManager
 {
     using MCParticle = MonteCarloParticle<T, Grid>;
-    using RankHandler_t = ::RankHandler<T, Grid>;
+    using RankHandler_t = ::RankHandler2<T, Grid>;
 
 public:
     struct MonteCarloStepFinalData
@@ -127,13 +128,13 @@ public:
         size_t leavingCount = 0;
     };
 
-    MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
+    RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics,
                     const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                     const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition,
                     const MonteCarloConfig &config = MonteCarloConfig(),
                     const MPI_Comm &comm = MPI_COMM_WORLD, RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
 
-    ~MonteCarloManager();
+    ~RDMAMonteCarloManager();
 
     void ClearCommunicator(void);
 
@@ -152,6 +153,16 @@ public:
     inline size_t GetStartParticleCount(void) const {return this->startParticleCount;}
 
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount;}
+
+    inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount;}
+
+    inline double GetPureComputeTime(void) const {
+        #ifdef TIMING
+        return this->pureComputeTime;
+        #else
+        return 0;
+        #endif
+    }
 
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount;}
 
@@ -186,6 +197,112 @@ public:
     inline void resetTracker(void){this->tracker.Reset();};
 
 private:
+    class RegisteredSendBuffer
+    {
+    public:
+        RegisteredSendBuffer() = default;
+        RegisteredSendBuffer(const RegisteredSendBuffer&) = delete;
+        RegisteredSendBuffer &operator=(const RegisteredSendBuffer&) = delete;
+
+        RegisteredSendBuffer(RegisteredSendBuffer &&other) noexcept:
+            storage(std::move(other.storage)),
+            registrationHandler(other.registrationHandler),
+            sourceRegistration(other.sourceRegistration)
+        {
+            other.registrationHandler = nullptr;
+            other.sourceRegistration = {};
+        }
+
+        RegisteredSendBuffer &operator=(RegisteredSendBuffer &&other) noexcept
+        {
+            if(this != &other)
+            {
+                this->ReleaseRegistration();
+                this->storage = std::move(other.storage);
+                this->registrationHandler = other.registrationHandler;
+                this->sourceRegistration = other.sourceRegistration;
+                other.registrationHandler = nullptr;
+                other.sourceRegistration = {};
+            }
+            return *this;
+        }
+
+        ~RegisteredSendBuffer()
+        {
+            this->ReleaseRegistration();
+        }
+
+        size_t size(void) const {return this->storage.size();}
+        size_t capacity(void) const {return this->storage.capacity();}
+        bool empty(void) const {return this->storage.empty();}
+        MCParticle *data(void) {return this->storage.data();}
+        const MCParticle *data(void) const {return this->storage.data();}
+
+        void clear(void)
+        {
+            this->storage.clear();
+        }
+
+        void push_back(const MCParticle &particle)
+        {
+            this->EnsureCapacity(this->storage.size() + 1);
+            this->storage.push_back(particle);
+        }
+
+        void Append(const MCParticle *particles, size_t particlesNum)
+        {
+            if(particlesNum == 0)
+            {
+                return;
+            }
+            this->EnsureCapacity(this->storage.size() + particlesNum);
+            this->storage.insert(this->storage.end(), particles, particles + particlesNum);
+        }
+
+        uint32_t SourceLkey(RankHandler_t *handler, bool useRegistration)
+        {
+            if(not useRegistration or handler == nullptr or this->storage.empty())
+            {
+                return 0;
+            }
+            if(this->sourceRegistration.handle != 0 and this->registrationHandler == handler)
+            {
+                return this->sourceRegistration.lkey;
+            }
+            this->ReleaseRegistration();
+            this->sourceRegistration = handler->RegisterSendSource(this->storage.data(), this->storage.capacity());
+            this->registrationHandler = (this->sourceRegistration.handle == 0)? nullptr : handler;
+            return this->sourceRegistration.lkey;
+        }
+
+        void ReleaseRegistration(void)
+        {
+            if(this->sourceRegistration.handle != 0)
+            {
+                assert(this->registrationHandler != nullptr);
+                this->registrationHandler->DeregisterSendSource(this->sourceRegistration.handle);
+            }
+            this->sourceRegistration = {};
+            this->registrationHandler = nullptr;
+        }
+
+    private:
+        void EnsureCapacity(size_t desiredCapacity)
+        {
+            if(desiredCapacity <= this->storage.capacity())
+            {
+                return;
+            }
+            this->ReleaseRegistration();
+            size_t newCapacity = std::max<size_t>(desiredCapacity, std::max<size_t>(1, this->storage.capacity() * 2));
+            this->storage.reserve(newCapacity);
+        }
+
+        std::vector<MCParticle> storage;
+        RankHandler_t *registrationHandler = nullptr;
+        typename RemoteMemoryAgent<MCParticle>::SourceRegistration sourceRegistration{};
+    };
+
     const Grid &grid;
     MonteCarloConfig config;
     MPI_Comm comm_world;
@@ -216,6 +333,7 @@ private:
     size_t lastBuildGeneration;
     size_t startParticleCount = 0;
     size_t endParticleCount = 0;
+    size_t initialParticleCount = 0;
     std::vector<size_t> beginningParticleCount;
     size_t handlerMemoryBytes = 0;
     #ifdef TIMING
@@ -238,12 +356,13 @@ private:
     size_t sendBufferIdleHoldoffPendingParticles = 0;
     #endif // TIMING
 
-    std::vector<std::vector<MCParticle>> sendBuffers;
+    std::vector<RegisteredSendBuffer> sendBuffers;
     std::vector<rank_t> sendBufferActiveRanks;
     std::vector<rank_t> readySendBufferRanks;
     std::vector<unsigned char> sendBufferActive;
     std::vector<unsigned char> sendBufferListed;
     std::vector<unsigned char> sendBufferReadyQueued;
+    std::vector<std::vector<MCParticle>> detachedRankParticles;
     std::vector<rank_t> activeRanks;
     std::vector<rank_t> nextActiveRanks;
     size_t readySendBufferCursor;
@@ -267,7 +386,7 @@ private:
 
     void ShrinkBuffers(void);
 
-    std::vector<MCParticle> &GetSendBuffer(rank_t rank);
+    RegisteredSendBuffer &GetSendBuffer(rank_t rank);
 
     void QueueReadySendBuffer(rank_t rank);
 
@@ -275,7 +394,9 @@ private:
 
     void ResetSendBuffers(void);
 
-    void NoteSendBufferGrowth(rank_t rank, size_t previousSize, const std::vector<MCParticle> &buffer, size_t addedParticles);
+    void ReleaseSendBufferRegistrations(void);
+
+    void NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer &buffer, size_t addedParticles);
 
     void NoteSendBufferFlush(rank_t rank, size_t flushedParticles);
 
@@ -286,7 +407,7 @@ private:
     #ifdef TIMING
     void FlushSendBuffers(bool flushSmallBuffers, double &transferTime);
 
-    void FlushAllSendBuffers(SendFlushReason reason = SendFlushReason::FinalDrain);
+    void FlushAllSendBuffers(SendFlushReason2 reason = SendFlushReason2::FinalDrain);
     #else
     void FlushSendBuffers(bool flushSmallBuffers);
 
@@ -298,7 +419,7 @@ private:
     void PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum);
 
     #ifdef TIMING
-    void RecordSendBufferFlush(size_t flushedParticles, SendFlushReason reason);
+    void RecordSendBufferFlush(size_t flushedParticles, SendFlushReason2 reason);
 
     void PrintTransferDiagnostics(double elapsed, double flushScanTime, double flushTransferTime) const;
 
@@ -326,7 +447,7 @@ private:
 };
 
 template<typename T, typename Grid>
-MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
+RDMAMonteCarloManager<T, Grid>::RDMAMonteCarloManager(const Grid &grid, const std::shared_ptr<MonteCarloPhysics<T, Grid>> &physics, const std::shared_ptr<PopulationControl<T, Grid>> &populationControl,
                                             const std::shared_ptr<BoundaryCondition<T, Grid>> &boundaryCondition, const MonteCarloConfig &config, const MPI_Comm &comm, RDMA_Type rdma_type):
     grid(grid), config(config), physics(physics), populationControl(populationControl), boundaryCondition(boundaryCondition), comm_world(MPI_COMM_NULL), tracker(comm), rdma_type(rdma_type)
 {
@@ -345,6 +466,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
     this->sendBufferActive.assign(this->size_world, 0);
     this->sendBufferListed.assign(this->size_world, 0);
     this->sendBufferReadyQueued.assign(this->size_world, 0);
+    this->detachedRankParticles.resize(this->size_world);
 
     auto reallocationFunction = [this](rank_t rank)
     {
@@ -358,7 +480,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
         RankHandler_t *handler = this->rankHandlers[rank];
         if(handler == nullptr)
         {
-            throw std::runtime_error("MonteCarloManager: received async reallocation request for a missing handler");
+            throw std::runtime_error("RDMAMonteCarloManager: received async reallocation request for a missing handler");
         }
         return handler->LocalReallocate(factor);
     };
@@ -368,7 +490,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
         RankHandler_t *handler = this->rankHandlers[rank];
         if(handler == nullptr)
         {
-            throw std::runtime_error("MonteCarloManager: received async reallocation metadata for a missing handler");
+            throw std::runtime_error("RDMAMonteCarloManager: received async reallocation metadata for a missing handler");
         }
         handler->UpdatePeerRemoteInfo(metadata);
     };
@@ -383,7 +505,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
 
     if(this->rank_world == 0)
     {
-        std::cout << "Done initializing MonteCarloManager" << std::endl;
+        std::cout << "Done initializing RDMAMonteCarloManager" << std::endl;
     }
     this->cellsStepsCounters.assign(this->grid.GetPointNo(), 0);
     this->cellsParticleCounters.assign(this->grid.GetPointNo(), 0);
@@ -397,7 +519,7 @@ MonteCarloManager<T, Grid>::MonteCarloManager(const Grid &grid, const std::share
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::ClearCommunicator()
+void RDMAMonteCarloManager<T, Grid>::ClearCommunicator()
 {
     if(this->comm_world == MPI_COMM_NULL)
     {
@@ -425,7 +547,7 @@ void MonteCarloManager<T, Grid>::ClearCommunicator()
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::FreeHandlers(void)
+void RDMAMonteCarloManager<T, Grid>::FreeHandlers(void)
 {
     auto freeHandler = [&](rank_t _rank)
     {
@@ -442,91 +564,68 @@ void MonteCarloManager<T, Grid>::FreeHandlers(void)
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &particles)
+void RDMAMonteCarloManager<T, Grid>::AddParticles(const std::vector<MCParticle> &particles)
 {
-    using index_t = typename RankHandler_t::index_t;
     if(particles.empty())
     {
         return;
     }
 
     RankHandler_t *myHandler = this->rankHandlers[this->rank_world];
-
-    // std::cout << "In add particles, handler size is " << myHandler->buffsize << ", particles size to add is " << particles.size() << std::endl;
-
-    if(myHandler->av_length < particles.size())
-    {
-        double factor = std::max<double>(this->config.bufferReallocationFactor, std::ceil(static_cast<double>(particles.size() + myHandler->buffsize) / static_cast<double>(myHandler->buffsize)));
-        myHandler->Reallocate(factor);
-        assert(myHandler->av_length >= particles.size());
-    }
-
-    // set particles
-    // update 'to handle' and 'available' lists accordingly
-    index_t particlesNum = particles.size();
-    myHandler->av_length -= particlesNum;
-    index_t *avIndices = myHandler->av + (myHandler->av_length);
-    index_t *thIndices = myHandler->th + (myHandler->th_length);
-    myHandler->th_length += particlesNum;
+    size_t particlesNum = particles.size();
     size_t firstID = this->myIDCounter;
     this->myIDCounter += particles.size();
 
-    for(size_t i = 0; i < particlesNum; i++)
+    myHandler->AppendLocalParticles(particlesNum, [this, &particles, firstID](MCParticle &destination, size_t i)
     {
-        index_t idx = avIndices[i];
-        // copy particle
-        MCParticle *particle = myHandler->particles + idx;
-        std::memcpy(particle, &particles[i], sizeof(MCParticle));
-        // set to handle
-        thIndices[i] = idx;
-        // set ID
-        particle->rank = this->rank_world;
-        particle->id = firstID + i;
+        std::memcpy(&destination, &particles[i], sizeof(MCParticle));
+        destination.rank = this->rank_world;
+        destination.id = firstID + i;
 
         #ifdef MONTECARLO_DEBUG
-            particle->checkedHere = true;
-            particle->nextRank = std::numeric_limits<rank_t>::max();
-            particle->removedFromRank = false;
-            particle->sentByRank = std::numeric_limits<rank_t>::max();
-            particle->lastSeen = 0;
+            destination.checkedHere = true;
+            destination.nextRank = std::numeric_limits<rank_t>::max();
+            destination.removedFromRank = false;
+            destination.sentByRank = std::numeric_limits<rank_t>::max();
+            destination.lastSeen = 0;
         #endif // MONTECARLO_DEBUG
 
         #ifdef MONTECARLO_DEBUG
-        if(not this->grid.IsPointInCell(particle->location, particle->cellIndex))
+        if(not this->grid.IsPointInCell(destination.location, destination.cellIndex))
         {
-            const T &declaredCell = this->grid.GetMeshPoint(particle->cellIndex);
-            size_t containingIdx = this->grid.GetContainingCell(particle->location);
+            const T &declaredCell = this->grid.GetMeshPoint(destination.cellIndex);
+            size_t containingIdx = this->grid.GetContainingCell(destination.location);
             const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-            UniversalError eo("MonteCarloManager<T, Grid>::AddParticles");
+            UniversalError eo("RDMAMonteCarloManager<T, Grid>::AddParticles");
             eo.addEntry("rank", this->rank_world);
-            eo.addEntry("Particle", *particle);
-            eo.addEntry("Declared Cell Index", particle->cellIndex);
+            eo.addEntry("Particle", destination);
+            eo.addEntry("Declared Cell Index", destination.cellIndex);
             eo.addEntry("Declared Cell", declaredCell);
-            eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle->location));
+            eo.addEntry("Declared Cell - Distance", abs(declaredCell - destination.location));
             eo.addEntry("Real Containing Cell Index", containingIdx);
             eo.addEntry("Real Containing Cell", containingCell);
-            eo.addEntry("Real Cell - Distance", abs(containingCell - particle->location));
+            eo.addEntry("Real Cell - Distance", abs(containingCell - destination.location));
             throw eo;
         }
         #endif // MONTECARLO_DEBUG
-    }
+    });
 
     this->localDecrementAmount -= static_cast<typename AmountManager::counter_t>(particlesNum);
-    // std::cout << "Done add particles" << std::endl;
 }
 
 template<typename T, typename Grid>
-MonteCarloManager<T, Grid>::~MonteCarloManager()
+RDMAMonteCarloManager<T, Grid>::~RDMAMonteCarloManager()
 {
     if(not std::uncaught_exceptions())
     {
+        this->ReleaseSendBufferRegistrations();
         this->FreeHandlers();
         this->ClearCommunicator();
     }
 }
 
 template<typename T, typename Grid>
-bool MonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
+bool RDMAMonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
 {
     RDMA_Type resolved = (this->rdma_type == RDMA_Type::AUTO_RDMA)
                              ? RMAFactory::ResolveAutoRDMA()
@@ -535,7 +634,7 @@ bool MonteCarloManager<T, Grid>::UsesAsyncReallocation(void) const
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::ProgressReallocations(void)
+void RDMAMonteCarloManager<T, Grid>::ProgressReallocations(void)
 {
     if(this->UsesAsyncReallocation())
     {
@@ -548,17 +647,17 @@ void MonteCarloManager<T, Grid>::ProgressReallocations(void)
 }
 
 template<typename T, typename Grid>
-MonteCarloManager<T, Grid>::Tracker::Tracker(const MPI_Comm &comm): comm(comm)
+RDMAMonteCarloManager<T, Grid>::Tracker::Tracker(const MPI_Comm &comm): comm(comm)
 {}
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::Tracker::Reset(void)
+void RDMAMonteCarloManager<T, Grid>::Tracker::Reset(void)
 {
     this->track.clear();
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::Tracker::ReportParticle(MCParticle &particle)
+void RDMAMonteCarloManager<T, Grid>::Tracker::ReportParticle(MCParticle &particle)
 {
     if(this->track.find(particle.id) == this->track.end())
     {
@@ -568,7 +667,7 @@ void MonteCarloManager<T, Grid>::Tracker::ReportParticle(MCParticle &particle)
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::Tracker::GetLocalTrackParticleRoute(size_t id) const
+std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloManager<T, Grid>::Tracker::GetLocalTrackParticleRoute(size_t id) const
 {
     auto it = this->track.find(id);
     if(it == this->track.end())
@@ -579,7 +678,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::Tracker::GetTrackParticleRoute(size_t id) const
+std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloManager<T, Grid>::Tracker::GetTrackParticleRoute(size_t id) const
 {
     std::vector<MCParticle> local = this->GetLocalTrackParticleRoute(id);
     std::vector<MCParticle> global = MPI_All_cast(local, this->comm);
@@ -589,10 +688,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&particles)
+void RDMAMonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&particles)
 {
-    using index_t = typename RankHandler_t::index_t;
-
     #ifdef MONTECARLO_DEBUG
     boost::container::flat_set<std::pair<rank_t, size_t>> particlesSet;
     for(const MCParticle &particle : particles)
@@ -621,31 +718,16 @@ void MonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&part
     }
 
     RankHandler_t *handler = this->rankHandlers[this->rank_world];
-
-    if(static_cast<size_t>(handler->av_length) < particlesNum)
+    handler->AppendLocalParticles(particlesNum, [this, &particles](MCParticle &destination, size_t i)
     {
-        double factor = std::max<double>(this->config.bufferReallocationFactor, std::ceil(static_cast<double>(particlesNum) / static_cast<double>(handler->buffsize)));
-        handler->Reallocate(factor);
-    }
-
-    handler->av_length -= static_cast<int>(particlesNum);
-    index_t *av_indices = handler->av + handler->av_length;
-    int oldTHLength = handler->th_length;
-    handler->th_length += particlesNum;
-
-    for(size_t i = 0; i < particlesNum; i++)
-    {
-        size_t particleIdx = av_indices[i];
-        handler->th[oldTHLength + i] = particleIdx;
-        std::memcpy(handler->particles + particleIdx, &particles[i], sizeof(MCParticle));
-        MCParticle &particle = handler->particles[particleIdx];
-        if(particle.id == std::numeric_limits<size_t>::max())
+        std::memcpy(&destination, &particles[i], sizeof(MCParticle));
+        if(destination.id == std::numeric_limits<size_t>::max())
         {
             // no ID has been assigned
-            particle.rank = this->rank_world;
-            particle.id = this->myIDCounter++;
+            destination.rank = this->rank_world;
+            destination.id = this->myIDCounter++;
         }
-    }
+    });
 
     // don't waste memory - remove current particles from the input vector
     std::vector<MCParticle> empty;
@@ -653,7 +735,7 @@ void MonteCarloManager<T, Grid>::PutSelfParticles(std::vector<MCParticle> &&part
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
+void RDMAMonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::vector<size_t> &indicesInToHandle, const std::vector<rank_t> &transferRanks, size_t num)
 {
     if(indicesInToHandle.empty())
     {
@@ -664,44 +746,22 @@ void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::v
     this->transfersCounter++;
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> rankToParticles;
-    #ifdef MONTECARLO_DEBUG
-        boost::container::flat_map<size_t, rank_t> sentAndToWhom;
-    #endif // MONTECARLO_DEBUG
     RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
 
     for(size_t i = 0; i < num; i++)
     {
-        const size_t &indexInToHandle = indicesInToHandle[i];
+        const size_t &particleIdx = indicesInToHandle[i];
         const rank_t &toRank = transferRanks[i];
         assert(toRank != this->rank_world); // can't send to self
-        size_t particleIdx = currRankHandler->th[indexInToHandle];
+        assert(particleIdx < currRankHandler->LocalSize());
         auto it = rankToParticles.find(toRank);
         if(it == rankToParticles.end())
         {
             rankToParticles[toRank] = std::vector<MCParticle>();
         }
 
-        #ifdef MONTECARLO_DEBUG
-            if(sentAndToWhom.find(particleIdx) == sentAndToWhom.end())
-            {
-                sentAndToWhom[particleIdx] = toRank;
-            }
-            else
-            {
-                UniversalError eo("Particle is being sent to multiple ranks");
-                eo.addEntry("Particle Index", particleIdx);
-                eo.addEntry("Particle", currRankHandler->particles[particleIdx]);
-                eo.addEntry("I am rank", this->rank_world);
-                eo.addEntry("From Rank Buffer", fromRank);
-                eo.addEntry("Already Sent To", sentAndToWhom[particleIdx]);
-                eo.addEntry("Now Sending To", toRank);
-                throw eo;
-            }
-        #endif // MONTECARLO_DEBUG
-        MCParticle &particle = currRankHandler->particles[particleIdx];
+        MCParticle &particle = currRankHandler->LocalParticleAt(particleIdx);
         particle.sent = false; // reset
-
-        // std::cout << "Rank " << this->rank_world << " transfers particle TH = " << indexInToHandle << ", particle index " << particleIdx << " (particle: " << particle << ") to rank " << toRank << std::endl;
 
         if(toRank == this->rank_world)
         {
@@ -711,33 +771,6 @@ void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::v
             eo.addEntry("To Rank", toRank);
             throw eo;
         }
-        #ifdef MONTECARLO_DEBUG
-        if(std::find_if(rankToParticles[toRank].begin(), rankToParticles[toRank].end(),
-                        [&particle](const MCParticle &p) { return p == particle; }) != rankToParticles[toRank].end())
-        {
-            UniversalError eo("Particle with the same ID is being sent to the same rank twice");
-            eo.addEntry("Index In Transfer Queue", i);
-            eo.addEntry("Particle Index", particleIdx);
-            eo.addEntry("Particle", particle);
-            for(size_t j = 0; j < i; j++)
-            {
-                size_t indexInToHandle2 = indicesInToHandle[j];
-                rank_t toRank2 = transferRanks[j];
-                size_t particle2Idx = currRankHandler->th[indexInToHandle2];
-                const MCParticle &particle2 = currRankHandler->particles[particle2Idx];
-                if(toRank2 == toRank and particle2 == particle)
-                {
-                    eo.addEntry("Already Appeared In Index", j);
-                    eo.addEntry("Particle2", particle2);
-                    eo.addEntry("Particle 2 Index", particle2Idx);
-                    break;
-                }
-            }
-            eo.addEntry("From Rank", fromRank);
-            eo.addEntry("To Rank", toRank);
-            throw eo;
-        }
-        #endif // MONTECARLO_DEBUG
 
         rankToParticles[toRank].push_back(particle);
 
@@ -783,9 +816,9 @@ void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::v
         bool transferred = remoteHandler->TransferParticles(particles);
         if(not transferred)
         {
-            std::vector<MCParticle> &buffer = this->GetSendBuffer(toRank);
+            RegisteredSendBuffer &buffer = this->GetSendBuffer(toRank);
             size_t previousSize = buffer.size();
-            buffer.insert(buffer.end(), particles.begin(), particles.end());
+            buffer.Append(particles.data(), particles.size());
             this->NoteSendBufferGrowth(toRank, previousSize, buffer, particles.size());
         }
         this->ProgressReallocations();
@@ -793,7 +826,7 @@ void MonteCarloManager<T, Grid>::TransferParticles(rank_t fromRank, const std::v
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks)
+void RDMAMonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &rankBuffers, const std::vector<std::vector<size_t>> &indicesInToHandle, const std::vector<std::vector<rank_t>> &transferRanks)
 {
     if(indicesInToHandle.empty())
     {
@@ -804,9 +837,6 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
     this->transfersCounter++;
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> rankToParticles;
-    #ifdef MONTECARLO_DEBUG
-        boost::container::flat_map<std::pair<rank_t, size_t>, rank_t> sentAndToWhom;
-    #endif // MONTECARLO_DEBUG
 
     assert(rankBuffers.size() == indicesInToHandle.size());
 
@@ -815,45 +845,25 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
     {
         const rank_t &fromRank = rankBuffers[i];
         RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
-        const std::vector<size_t> &myTHIndices = indicesInToHandle[i];
-        size_t numToHandle = myTHIndices.size();
+        const std::vector<size_t> &myParticleIndices = indicesInToHandle[i];
+        size_t numToHandle = myParticleIndices.size();
         const std::vector<rank_t> &myTransferRanks = transferRanks[i];
 
         for(size_t j = 0; j < numToHandle; j++)
         {
-            const size_t &indexInToHandle = myTHIndices[j];
+            const size_t &particleIdx = myParticleIndices[j];
             const rank_t &toRank = myTransferRanks[j];
 
             assert(toRank != this->rank_world); // can't send to self
-            size_t particleIdx = currRankHandler->th[indexInToHandle];
+            assert(particleIdx < currRankHandler->LocalSize());
             auto it = rankToParticles.find(toRank);
             if(it == rankToParticles.end())
             {
                 rankToParticles[toRank] = std::vector<MCParticle>();
             }
 
-            #ifdef MONTECARLO_DEBUG
-                std::pair<rank_t, size_t> particleKey = {fromRank, particleIdx};
-                if(sentAndToWhom.find(particleKey) == sentAndToWhom.end())
-                {
-                    sentAndToWhom[particleKey] = toRank;
-                }
-                else
-                {
-                    UniversalError eo("Particle is being sent to multiple ranks");
-                    eo.addEntry("Particle Index", particleIdx);
-                    eo.addEntry("Particle", currRankHandler->particles[particleIdx]);
-                    eo.addEntry("I am rank", this->rank_world);
-                    eo.addEntry("From Rank Buffer", fromRank);
-                    eo.addEntry("Already Sent To", sentAndToWhom[particleKey]);
-                    eo.addEntry("Now Sending To", toRank);
-                    throw eo;
-                }
-            #endif // MONTECARLO_DEBUG
-            MCParticle &particle = currRankHandler->particles[particleIdx];
+            MCParticle &particle = currRankHandler->LocalParticleAt(particleIdx);
             particle.sent = false; // reset
-
-            // std::cout << "Rank " << this->rank_world << " transfers particle TH = " << indexInToHandle << ", particle index " << particleIdx << " (particle: " << particle << ") to rank " << toRank << std::endl;
 
             if(toRank == this->rank_world)
             {
@@ -863,33 +873,6 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
                 eo.addEntry("To Rank", toRank);
                 throw eo;
             }
-            #ifdef MONTECARLO_DEBUG
-            if(std::find_if(rankToParticles[toRank].begin(), rankToParticles[toRank].end(),
-                            [&particle](const MCParticle &p) { return p == particle; }) != rankToParticles[toRank].end())
-            {
-                UniversalError eo("Particle with the same ID is being sent to the same rank twice");
-                eo.addEntry("Index In Transfer Queue", i);
-                eo.addEntry("Particle Index", particleIdx);
-                eo.addEntry("Particle", particle);
-                for(size_t j = 0; j < i; j++)
-                {
-                    size_t indexInToHandle2 = myTHIndices[j];
-                    rank_t toRank2 = myTransferRanks[j];
-                    size_t particle2Idx = currRankHandler->th[indexInToHandle2];
-                    const MCParticle &particle2 = currRankHandler->particles[particle2Idx];
-                    if(toRank2 == toRank and particle2 == particle)
-                    {
-                        eo.addEntry("Already Appeared In Index", j);
-                        eo.addEntry("Particle2", particle2);
-                        eo.addEntry("Particle 2 Index", particle2Idx);
-                        break;
-                    }
-                }
-                eo.addEntry("From Rank", fromRank);
-                eo.addEntry("To Rank", toRank);
-                throw eo;
-            }
-            #endif // MONTECARLO_DEBUG
 
             rankToParticles[toRank].push_back(particle);
 
@@ -936,9 +919,9 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
         bool transferred = remoteHandler->TransferParticles(particles);
         if(not transferred)
         {
-            std::vector<MCParticle> &buffer = this->GetSendBuffer(toRank);
+            RegisteredSendBuffer &buffer = this->GetSendBuffer(toRank);
             size_t previousSize = buffer.size();
-            buffer.insert(buffer.end(), particles.begin(), particles.end());
+            buffer.Append(particles.data(), particles.size());
             this->NoteSendBufferGrowth(toRank, previousSize, buffer, particles.size());
         }
         this->ProgressReallocations();
@@ -946,78 +929,67 @@ void MonteCarloManager<T, Grid>::TransferParticles(const std::vector<rank_t> &ra
 }
 
 template<typename T, typename Grid>
-bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
+bool RDMAMonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
 {
-    static std::vector<std::vector<size_t>> removeParticlesVec;
-    static std::vector<std::vector<rank_t>> transferToRanks;
-    static std::vector<std::vector<size_t>> transferParticlesVec;
     static std::vector<MCParticle> particlesToAdd;
     std::vector<rank_t> &active_ranks = this->activeRanks;
     std::vector<rank_t> &next_active_ranks = this->nextActiveRanks;
 
-    // static std::uniform_real_distribution<double> dist(0, 1);
-    // static std::mt19937 re(this->rank_world);
-
     next_active_ranks.clear();
     bool completedNeighborSweep = true;
+    auto hasDetachedParticles = [this](rank_t rank)
+    {
+        return rank >= 0 and rank < static_cast<rank_t>(this->detachedRankParticles.size()) and
+               not this->detachedRankParticles[static_cast<size_t>(rank)].empty();
+    };
+
     if(active_ranks.empty())
     {
-        // std::cout << "active_ranks is empty" << std::endl;
         const int PREFETCH_DISTANCE = 3;
-        size_t N = this->neighbors.size();
-        if(N > 0 and this->activeRankScanRemaining == 0)
+        size_t neighborsNum = this->neighbors.size();
+        if(neighborsNum > 0 and this->activeRankScanRemaining == 0)
         {
-            this->activeRankScanRemaining = N;
-            this->activeRankScanCursor %= N;
+            this->activeRankScanRemaining = neighborsNum;
+            this->activeRankScanCursor %= neighborsNum;
         }
-        size_t scanCount = (N == 0) ? 0 :
+        size_t scanCount = (neighborsNum == 0) ? 0 :
             std::min(this->activeRankScanRemaining,
-                     std::min(N, std::max<size_t>(1, this->config.activeRankScanChunk)));
+                     std::min(neighborsNum, std::max<size_t>(1, this->config.activeRankScanChunk)));
 
-        for (size_t scanOffset = 0; scanOffset < scanCount; ++scanOffset)
+        for(size_t scanOffset = 0; scanOffset < scanCount; ++scanOffset)
         {
-            size_t i = (this->activeRankScanCursor + scanOffset) % N;
-            // Prefetch future data to hide memory latency
-            if (scanOffset + PREFETCH_DISTANCE < scanCount)
+            size_t i = (this->activeRankScanCursor + scanOffset) % neighborsNum;
+            if(scanOffset + PREFETCH_DISTANCE < scanCount)
             {
-                size_t futureIndex = (this->activeRankScanCursor + scanOffset + PREFETCH_DISTANCE) % N;
-                rank_t future_rank = this->neighbors[futureIndex];
-
-                // Prefetch the RankHandler *object (heap-allocated, likely scattered)
-                RankHandler_t *future_handler = this->rankHandlers[future_rank];
-                __builtin_prefetch(future_handler, 0, 1);                  // bring RankHandler into cache
-                __builtin_prefetch((const void*) &(future_handler->th_length), 0, 1);      // bring th_length into cache
+                size_t futureIndex = (this->activeRankScanCursor + scanOffset + PREFETCH_DISTANCE) % neighborsNum;
+                RankHandler_t *future_handler = this->rankHandlers[this->neighbors[futureIndex]];
+                __builtin_prefetch(future_handler, 0, 1);
+                __builtin_prefetch((const void*) &(future_handler->tail), 0, 1);
             }
 
-            // Access current handler
             rank_t _rank = this->neighbors[i];
             RankHandler_t *handler = this->rankHandlers[_rank];
-
-            int len = handler->th_length;
-
+            if(hasDetachedParticles(_rank))
+            {
+                active_ranks.push_back(_rank);
+                continue;
+            }
+            size_t len = handler->LocalSize();
             if(len)
             {
-                if(len < 0 || len > static_cast<int>(handler->buffsize))
-                {
-                    std::cerr << "HandleAll: corrupt th_length=" << len
-                              << " for neighbor rank " << _rank << " (my rank " << this->rank_world
-                              << ", buffsize=" << handler->buffsize
-                              << ", iteration=" << this->iteration << ")" << std::endl;
-                    MPI_Abort(MPI_COMM_WORLD, 1);
-                }
                 active_ranks.push_back(_rank);
             }
         }
-        if(N > 0)
+        if(neighborsNum > 0)
         {
-            this->activeRankScanCursor = (this->activeRankScanCursor + scanCount) % N;
+            this->activeRankScanCursor = (this->activeRankScanCursor + scanCount) % neighborsNum;
             assert(this->activeRankScanRemaining >= scanCount);
             this->activeRankScanRemaining -= scanCount;
             completedNeighborSweep = (this->activeRankScanRemaining == 0);
         }
         {
             RankHandler_t *handler = this->rankHandlers[this->rank_world];
-            if(handler->th_length > 0)
+            if(hasDetachedParticles(this->rank_world) or not handler->LocalEmpty())
             {
                 active_ranks.push_back(this->rank_world);
             }
@@ -1027,29 +999,6 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
     bool isEmpty = true;
     size_t activeRanksNum = active_ranks.size();
 
-    auto eliminateParticle = [&](size_t rankIndex, size_t particleTH)
-    {
-        removeParticlesVec[rankIndex].push_back(particleTH);
-    };
-
-    auto transferParticle = [&](size_t rankIndex, size_t particleTH, rank_t toRank)
-    {
-        assert(toRank != this->rank_world); // can't send to self
-        transferToRanks[rankIndex].push_back(toRank);
-        transferParticlesVec[rankIndex].push_back(particleTH);
-        eliminateParticle(rankIndex, particleTH);
-    };
-
-    auto removeParticle = [&](size_t rankIndex, size_t particleTH)
-    {
-        eliminateParticle(rankIndex, particleTH);
-        this->localDecrementAmount += 1;
-    };
-
-    transferParticlesVec.clear();
-    transferToRanks.clear();
-    removeParticlesVec.clear();
-
     #ifdef TIMING
     auto computeLoopStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
@@ -1058,131 +1007,111 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
     {
         rank_t _rank = active_ranks[index];
         RankHandler_t *handler = this->rankHandlers[_rank];
-        int length = handler->th_length;
+        std::vector<MCParticle> &deferredParticles = this->detachedRankParticles[static_cast<size_t>(_rank)];
+        std::vector<MCParticle> localParticles;
 
-        transferParticlesVec.emplace_back();
-        transferToRanks.emplace_back();
-        removeParticlesVec.emplace_back();
-
-        for(int i = 0; i < length; i++)
+        if(not deferredParticles.empty())
         {
-            if(i >= static_cast<int>(handler->buffsize))
-            {
-                std::cerr << "HandleAll: th index " << i << " >= buffsize " << handler->buffsize
-                          << " for rank " << _rank << " (my rank " << this->rank_world
-                          << ", th_length=" << length << ", iteration=" << this->iteration << ")" << std::endl;
-                MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            size_t particleIndex = handler->th[i];
-            if(particleIndex >= handler->buffsize)
-            {
-                std::cerr << "HandleAll: particleIndex " << particleIndex << " >= buffsize " << handler->buffsize
-                          << " for rank " << _rank << " (my rank " << this->rank_world
-                          << ", th[" << i << "]=" << particleIndex
-                          << ", th_length=" << length << ", iteration=" << this->iteration << ")" << std::endl;
-                MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            MCParticle &particle = handler->particles[particleIndex];
-            bool debug = false; // (particle.rank == 5 and particle.id == 518987);
+            localParticles.swap(deferredParticles);
+        }
+        else
+        {
+            handler->DetachLocalParticles(localParticles);
+        }
 
-            try
-            {
-                #ifdef MONTECARLO_DEBUG
-                if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
+        while(not localParticles.empty())
+        {
+                int currentN = static_cast<int>(localParticles.size());
+                size_t particleIndex = static_cast<size_t>(currentN - 1);
+                MCParticle &particle = localParticles[particleIndex];
+                bool removeCurrent = false;
+                bool keepCurrent = false;
+                bool debug = false;
+
+                try
                 {
-                    UniversalError eo("Particle was already handled in this iteration");
-                    eo.addEntry("My Rank", this->rank_world);
-                    eo.addEntry("Particle", particle);
-                    eo.addEntry("Iteration", this->iteration);
-                    eo.addEntry("In Rank Buffer (1)", particle.lastSeenRankBuf);
-                    eo.addEntry("In TH Index (1)", particle.lastSeenIndex);
-                    eo.addEntry("In Rank Buffer (2)", _rank);
-                    eo.addEntry("In TH Index (2)", i);
-                    throw eo;
-                }
-                particle.lastSeen = this->iteration;
-                particle.lastSeenRankBuf = _rank;
-                particle.lastSeenRank = this->rank_world;
-                particle.lastSeenIndex = i;
-                #endif // MONTECARLO_DEBUG
-
-                isEmpty = false;
-                while(true)
-                {
-                    // TODO: shouldn't be, there's a bug
-                    // if(particle.sent)
-                    // {
-                    //     continue;
-                    // }
-
-                    // std::cout << "Rank " << this->rank_world << " handles TH = " << i << ", which is index " << particleIndex << ", particle: " << particle << std::endl;
-
-                    const size_t traceStep = particle.steps;
-                    if(particle.on_track)
-                    {
-                        MCParticle trackedParticle = particle;
-                        trackedParticle.steps = traceStep * 2;
-                        this->tracker.ReportParticle(trackedParticle);
-                    }
-                    particle.steps++;
-                    this->cellsStepsCounters[particle.cellIndex]++;
-
-                    // std::cout << "Rank " << this->rank_world << " handles particle " << particle.id << " of rank " << particle.rank << ", step " << particle.steps << std::endl;
-
                     #ifdef MONTECARLO_DEBUG
-                    if(particle.cellIndex >= this->Ncells)
+                    if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rank_world)
                     {
-                        UniversalError eo("Particle has invalid cell index (ghost)");
+                        UniversalError eo("Particle was already handled in this iteration");
+                        eo.addEntry("My Rank", this->rank_world);
                         eo.addEntry("Particle", particle);
-                        eo.addEntry("Cell Index", particle.cellIndex);
-                        eo.addEntry("Rank", this->rank_world);
-                        eo.addEntry("Buffer of Rank", _rank);
+                        eo.addEntry("Iteration", this->iteration);
+                        eo.addEntry("In Rank Buffer (1)", particle.lastSeenRankBuf);
+                        eo.addEntry("In List Index (1)", particle.lastSeenIndex);
+                        eo.addEntry("In Rank Buffer (2)", _rank);
+                        eo.addEntry("In List Index (2)", particleIndex);
                         throw eo;
                     }
-                    if(particle.removedFromRank)
+                    particle.lastSeen = this->iteration;
+                    particle.lastSeenRankBuf = _rank;
+                    particle.lastSeenRank = this->rank_world;
+                    particle.lastSeenIndex = particleIndex;
+                    #endif // MONTECARLO_DEBUG
+
+                    isEmpty = false;
+                    while(true)
                     {
-                        continue;
-                        UniversalError eo("Particle was removed from rank, but still in the list");
-                        eo.addEntry("Particle", particle);
-                        eo.addEntry("Rank", this->rank_world);
-                        eo.addEntry("Buffer of Rank", _rank);
-                        throw eo;
-                    }
-                    if(not particle.checkedHere)
-                    {
-                        if(particle.nextRank != this->rank_world)
+                        const size_t traceStep = particle.steps;
+                        if(particle.on_track)
                         {
-                            // particle is in the right cell, but not in the right place
-                            UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                            MCParticle trackedParticle = particle;
+                            trackedParticle.steps = traceStep * 2;
+                            this->tracker.ReportParticle(trackedParticle);
+                        }
+                        particle.steps++;
+                        this->cellsStepsCounters[particle.cellIndex]++;
+
+                        #ifdef MONTECARLO_DEBUG
+                        if(particle.cellIndex >= this->Ncells)
+                        {
+                            UniversalError eo("Particle has invalid cell index (ghost)");
                             eo.addEntry("Particle", particle);
-                            eo.addEntry("Origin", particle.sentByRank);
-                            eo.addEntry("Particle Previous Location", particle.previousLocation);
-                            eo.addEntry("Cell Index In Origin (Before Movement)", particle.cellIndexInPrevRank);
-                            eo.addEntry("Expected", particle.nextRank);
-                            eo.addEntry("Got (me)", this->rank_world);
-                            eo.addEntry("The Particle Index In Last Rank", particle.particleIndexInLastRank);
-                            eo.addEntry("Particle Index In This Rank", particleIndex);
-                            eo.addEntry("The Particle TH In Last Rank", particle.particleTHInLastRank);
-                            eo.addEntry("Particle TH In This Rank", i);
-                            eo.addEntry("New Cell Index Should Be", particle.cellIndex);
-                            eo.addEntry("New Cell Value Should Be", particle.newCellValue);
+                            eo.addEntry("Cell Index", particle.cellIndex);
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Buffer of Rank", _rank);
                             throw eo;
                         }
-                        particle.checkedHere = true;
-                        particle.nextRank = std::numeric_limits<rank_t>::max();
-                        particle.removedFromRank = false;
-                        particle.sentByRank = std::numeric_limits<rank_t>::max();
-                    }
-                    if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
-                    {
-                        const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
-                        size_t containingIdx = this->grid.GetContainingCell(particle.location);
-                        const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                        if(containingIdx != particle.cellIndex)
+                        if(particle.removedFromRank)
                         {
-                            if(not this->grid.IsPointInCell(particle.location, containingIdx))
+                            UniversalError eo("Particle was removed from rank, but still in the list");
+                            eo.addEntry("Particle", particle);
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Buffer of Rank", _rank);
+                            throw eo;
+                        }
+                        if(not particle.checkedHere)
+                        {
+                            if(particle.nextRank != this->rank_world)
                             {
-                                // particle is in the right cell, but not in the right place
+                                UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
+                                eo.addEntry("Particle", particle);
+                                eo.addEntry("Origin", particle.sentByRank);
+                                eo.addEntry("Particle Previous Location", particle.previousLocation);
+                                eo.addEntry("Cell Index In Origin (Before Movement)", particle.cellIndexInPrevRank);
+                                eo.addEntry("Expected", particle.nextRank);
+                                eo.addEntry("Got (me)", this->rank_world);
+                                eo.addEntry("The Particle Index In Last Rank", particle.particleIndexInLastRank);
+                                eo.addEntry("Particle Index In This Rank", particleIndex);
+                                eo.addEntry("The Particle TH In Last Rank", particle.particleTHInLastRank);
+                                eo.addEntry("Particle TH In This Rank", particleIndex);
+                                eo.addEntry("New Cell Index Should Be", particle.cellIndex);
+                                eo.addEntry("New Cell Value Should Be", particle.newCellValue);
+                                throw eo;
+                            }
+                            particle.checkedHere = true;
+                            particle.nextRank = std::numeric_limits<rank_t>::max();
+                            particle.removedFromRank = false;
+                            particle.sentByRank = std::numeric_limits<rank_t>::max();
+                        }
+                        if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
+                        {
+                            const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                            size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                            const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                            if(containingIdx != particle.cellIndex and
+                               not this->grid.IsPointInCell(particle.location, containingIdx))
+                            {
                                 UniversalError eo("Particle Arrived to a Wrong Rank After Transfer");
                                 eo.addEntry("My Rank", this->rank_world);
                                 eo.addEntry("Transferred From Rank", _rank);
@@ -1201,340 +1130,228 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
                                 throw eo;
                             }
                         }
-                        if(abs(abs(declaredCell - particle.location) - abs(containingCell - particle.location)) >= 1e-12)
+                        #endif // MONTECARLO_DEBUG
+
+                        if(particle.sent)
                         {
-                            UniversalError eo("Particle is in Wrong Location After Transfer");
-                            eo.addEntry("My Rank", this->rank_world);
-                            eo.addEntry("Transferred From Rank", _rank);
-                            eo.addEntry("Particle", particle);
-                            eo.addEntry("Cell Index Transffered From Previous Rank", particle.cellIndexInPrevRank);
-                            eo.addEntry("Particle Previous Location", particle.previousLocation);
-                            eo.addEntry("Ghost Index In Previous Rank", particle.ghostIndex);
-                            eo.addEntry("New Cell Value Should Be", particle.newCellValue);
-                            eo.addEntry("Declared Cell Index", particle.cellIndex);
-                            eo.addEntry("Declared Cell", declaredCell);
-                            eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
-                            eo.addEntry("Real Containing Cell Index", containingIdx);
-                            eo.addEntry("Real Containing Cell", containingCell);
-                            eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
-                            for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
-                            {
-                                eo.addEntry("Face Index", faceIdx);
-                                eo.addEntry("Face normal", this->grid.Normal(faceIdx));
-                                eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
-                                eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
-                            }
-                            throw eo;
+                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
+                            particle.sent = false;
                         }
-                    }
 
-                    prevLoc = particle.location;
-                    particle.previousLocation = particle.location;
-                    #endif // MONTECARLO_DEBUG
+                        #ifdef MONTECARLO_DEBUG
+                        T prevLoc = particle.location;
+                        particle.previousLocation = particle.location;
+                        #endif // MONTECARLO_DEBUG
 
-                    if(particle.sent)
-                    {
-                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
-                                            MONTECARLO_EPSILON * this->grid.GetMeshPoint(particle.cellIndex);
-                        particle.sent = false;
-                    }
-
-                    if(debug)
-                    {
-                        std::cout << "Before running particle step, particle is " << particle << std::endl;
-                    }
-
-                    MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
-
-                    if(particle.on_track)
-                    {
-                        MCParticle trackedParticle = particle;
-                        trackedParticle.steps = traceStep * 2 + 1;
-                        this->tracker.ReportParticle(trackedParticle);
-                    }
-
-                    #ifdef MC_TRACING_HISTORY
-                        particle.recordHistory(particle.cellIndex, static_cast<int>(this->rank_world), static_cast<int>(functionality.change));
-                    #endif // MC_TRACING_HISTORY
-
-                    // std::cout << "Handling particle " << particle << ", functionality is " << functionality.change << std::endl;
-                    if(debug)
-                    {
-                        std::cout << "Particle " << particle << ", functionality is " << functionality.change << std::endl;
-                    }
-
-                    if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
-                    {
-                        size_t nextCellIndex = functionality.nextCellIndex;
-
-                        assert(nextCellIndex != particle.cellIndex);
-                        assert(particle.timeLeft >= 0);
-
-                        if(BOOST_LIKELY(nextCellIndex < this->Ncells))
+                        if(debug)
                         {
-                            // local neighbor
-                            #ifdef MONTECARLO_DEBUG
-                            size_t previousCell = particle.cellIndex;
-                            #endif // MONTECARLO_DEBUG
-                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                            particle.cellIndex = nextCellIndex;
-                            #ifdef MONTECARLO_DEBUG
-                            if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
-                            {
-                                const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
-                                size_t containingIdx = this->grid.GetContainingCell(particle.location);
-                                const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                                UniversalError eo("Particle is in Wrong Location");
-                                eo.addEntry("rank", this->rank_world);
-                                eo.addEntry("Particle", particle);
-                                eo.addEntry("Previous Cell Index", previousCell);
-                                eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
-                                eo.addEntry("Previous Location", prevLoc);
-                                eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
-                                eo.addEntry("Declared Cell Index", particle.cellIndex);
-                                eo.addEntry("Declared Cell", declaredCell);
-                                eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
-                                eo.addEntry("Real Containing Cell Index", containingIdx);
-                                eo.addEntry("Real Containing Cell", containingCell);
-                                eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
-                                for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
-                                {
-                                    eo.addEntry("Face Index", faceIdx);
-                                    eo.addEntry("Face normal", this->grid.Normal(faceIdx));
-                                    eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
-                                    eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
-                                }
-                                throw eo;
-                            }
-                            #endif // MONTECARLO_DEBUG
+                            std::cout << "Before running particle step, particle is " << particle << std::endl;
                         }
-                        else
+
+                        MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+
+                        if(particle.on_track)
                         {
-                            // a ghost point, check rank and index in rank
-                            auto it = ranks_ghost_map.find(nextCellIndex);
-                            if(it == ranks_ghost_map.end())
+                            MCParticle trackedParticle = particle;
+                            trackedParticle.steps = traceStep * 2 + 1;
+                            this->tracker.ReportParticle(trackedParticle);
+                        }
+
+                        #ifdef MC_TRACING_HISTORY
+                            particle.recordHistory(particle.cellIndex, static_cast<int>(this->rank_world), static_cast<int>(functionality.change));
+                        #endif // MC_TRACING_HISTORY
+
+                        if(functionality.change == MonteCarloParticleStatus::CELL_MOVE)
+                        {
+                            size_t nextCellIndex = functionality.nextCellIndex;
+
+                            assert(nextCellIndex != particle.cellIndex);
+                            assert(particle.timeLeft >= 0);
+
+                            if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                             {
-                                // leaving domain
-                                #ifdef MC_TRACING_HISTORY
-                                    T preReflectLoc = particle.location;
-                                    T preReflectVel = particle.velocity;
-                                #endif // MC_TRACING_HISTORY
-                                MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
-                                if(debug)
+                                #ifdef MONTECARLO_DEBUG
+                                size_t previousCell = particle.cellIndex;
+                                #endif // MONTECARLO_DEBUG
+                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                    MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                                particle.cellIndex = nextCellIndex;
+                                #ifdef MONTECARLO_DEBUG
+                                if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
                                 {
-                                    std::cout << "Particle " << particle << ", leaving domain. status from bounday condition: " << status << std::endl;
+                                    const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                                    size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                                    const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                                    UniversalError eo("Particle is in Wrong Location");
+                                    eo.addEntry("rank", this->rank_world);
+                                    eo.addEntry("Particle", particle);
+                                    eo.addEntry("Previous Cell Index", previousCell);
+                                    eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
+                                    eo.addEntry("Previous Location", prevLoc);
+                                    eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
+                                    eo.addEntry("Declared Cell Index", particle.cellIndex);
+                                    eo.addEntry("Declared Cell", declaredCell);
+                                    eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
+                                    eo.addEntry("Real Containing Cell Index", containingIdx);
+                                    eo.addEntry("Real Containing Cell", containingCell);
+                                    eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
+                                    throw eo;
                                 }
-                                if(status == MonteCarloParticleStatus::REFLECT)
+                                #endif // MONTECARLO_DEBUG
+                            }
+                            else
+                            {
+                                auto it = ranks_ghost_map.find(nextCellIndex);
+                                if(it == ranks_ghost_map.end())
                                 {
                                     #ifdef MC_TRACING_HISTORY
-                                        particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
+                                        T preReflectLoc = particle.location;
+                                        T preReflectVel = particle.velocity;
                                     #endif // MC_TRACING_HISTORY
+                                    MonteCarloParticleStatus status = this->boundaryCondition->apply(particle);
+                                    if(status == MonteCarloParticleStatus::REFLECT)
+                                    {
+                                        #ifdef MC_TRACING_HISTORY
+                                            particle.markLastHistoryReflected(preReflectLoc, preReflectVel);
+                                        #endif // MC_TRACING_HISTORY
+                                        keepCurrent = true;
+                                    }
+                                    else if(status == MonteCarloParticleStatus::REMOVE)
+                                    {
+                                        stepData.leavingCount++;
+                                        this->allStepsCounter += particle.steps;
+                                        this->localDecrementAmount += 1;
+                                        removeCurrent = true;
+                                    }
+                                    else
+                                    {
+                                        UniversalError eo("Unknown boundary condition for particle");
+                                        eo.addEntry("Particle", particle);
+                                        eo.addEntry("Status", status);
+                                        throw eo;
+                                    }
+                                    break;
                                 }
-                                else if(status == MonteCarloParticleStatus::REMOVE)
+
+                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location +
+                                                    MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                                auto [otherRank, neighborIndexInRank] = it->second;
+                                #ifdef MONTECARLO_DEBUG
+                                particle.checkedHere = false;
+                                if(particle.nextRank != std::numeric_limits<rank_t>::max())
                                 {
-                                    stepData.leavingCount++;
-                                    this->allStepsCounter += particle.steps;
-                                    // remove particle from current list
-                                    removeParticle(index, i);
-                                }
-                                else
-                                {
-                                    UniversalError eo("Unknown boundary condition for particle");
+                                    UniversalError eo("Particle was already sent, and not sent again");
                                     eo.addEntry("Particle", particle);
-                                    eo.addEntry("Status", status);
+                                    eo.addEntry("Already Transferred To Rank", particle.nextRank);
+                                    eo.addEntry("Being Transferred To Rank", otherRank);
+                                    eo.addEntry("Being Transferred To Index In Rank", neighborIndexInRank);
                                     throw eo;
                                 }
-                                break;
-                            }
-
-                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                            auto [otherRank, neighborIndexInRank] = it->second;
-                            #ifdef MONTECARLO_DEBUG
-                            particle.checkedHere = false; // reset checked here flag
-                            if(particle.nextRank != std::numeric_limits<rank_t>::max())
-                            {
-                                UniversalError eo("Particle was already sent, and not sent again");
-                                eo.addEntry("Particle", particle);
-                                eo.addEntry("Already Transferred To Rank", particle.nextRank);
-                                eo.addEntry("Being Transferred To Rank", otherRank);
-                                eo.addEntry("Being Transferred To Index In Rank", neighborIndexInRank);
-                                throw eo;
-                            }
-                            const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
-                            if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
-                            {
-                                UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
-                                eo.addEntry("Particle", particle);
-                                eo.addEntry("My Rank", this->rank_world);
-                                eo.addEntry("Next Rank", otherRank);
-                                eo.addEntry("Index In Remote Rank", neighborIndexInRank);
-                                throw eo;
-                            }
-                            particle.cellIndexInPrevRank = particle.cellIndex;
-                            particle.sentByRank = this->rank_world;
-                            particle.ghostIndex = nextCellIndex;
-                            particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
-                            particle.particleIndexInLastRank = particleIndex;
-                            particle.particleTHInLastRank = i;
-                            particle.nextRank = otherRank;
-
-                            if(particle.nextRank == this->rank_world)
-                            {
-                                UniversalError eo("Particle is going to be sent to the same rank");
-                                eo.addEntry("Particle", particle);
-                                eo.addEntry("My Rank", this->rank_world);
-                                eo.addEntry("Next Rank", otherRank);
-                                eo.addEntry("Index In Remote Rank", neighborIndexInRank);
-                                throw eo;
-                            }
-                            #endif // MONTECARLO_DEBUG
-                            particle.sent = true;
-                            particle.cellIndex = neighborIndexInRank;
-
-                            #ifdef MONTECARLO_DEBUG
-                            if(not TransferParticlesVecOfRank.empty())
-                            {
-                                size_t lastTHIndex = TransferParticlesVecOfRank.back();
-                                size_t lastParticleIndex = handler->th[lastTHIndex];
-                                const MCParticle &lastParticle = handler->particles[lastParticleIndex];
-                                if(lastParticle == particle)
+                                const std::vector<rank_t> &neighbors = this->grid.GetDuplicatedProcs();
+                                if(std::find(neighbors.cbegin(), neighbors.cend(), otherRank) == neighbors.cend())
                                 {
-                                    UniversalError eo("Particle is already in the transfer list");
-                                    eo.addEntry("Iteration", this->iteration);
+                                    UniversalError eo("Particle is going to be transffered to a non-neighboring rank");
                                     eo.addEntry("Particle", particle);
                                     eo.addEntry("My Rank", this->rank_world);
-                                    eo.addEntry("TH Index 1", lastTHIndex);
-                                    eo.addEntry("TH Index 2", i);
-                                    eo.addEntry("Length of Transfer List", TransferParticlesVecOfRank.size());
-                                    eo.addEntry("In Rank Buffer", _rank);
-                                    eo.addEntry("Sent to Rank", otherRank);
+                                    eo.addEntry("Next Rank", otherRank);
+                                    eo.addEntry("Index In Remote Rank", neighborIndexInRank);
                                     throw eo;
                                 }
-                            }
-                            #endif // MONTECARLO_DEBUG
+                                particle.cellIndexInPrevRank = particle.cellIndex;
+                                particle.sentByRank = this->rank_world;
+                                particle.ghostIndex = nextCellIndex;
+                                particle.newCellValue = this->grid.GetMeshPoint(nextCellIndex);
+                                particle.particleIndexInLastRank = particleIndex;
+                                particle.particleTHInLastRank = particleIndex;
+                                particle.nextRank = otherRank;
+                                if(particle.nextRank == this->rank_world)
+                                {
+                                    UniversalError eo("Particle is going to be sent to the same rank");
+                                    eo.addEntry("Particle", particle);
+                                    eo.addEntry("My Rank", this->rank_world);
+                                    eo.addEntry("Next Rank", otherRank);
+                                    eo.addEntry("Index In Remote Rank", neighborIndexInRank);
+                                    throw eo;
+                                }
+                                #endif // MONTECARLO_DEBUG
 
-                            transferParticle(index, i, otherRank);
-                            break;
+                                particle.sent = true;
+                                particle.cellIndex = neighborIndexInRank;
+                                particle.sent = false;
+                                RegisteredSendBuffer &buffer = this->GetSendBuffer(otherRank);
+                                size_t previousSize = buffer.size();
+                                buffer.push_back(particle);
+                                this->NoteSendBufferGrowth(otherRank, previousSize, buffer, 1);
+                                removeCurrent = true;
+                                break;
+                            }
                         }
-                    }
-                    else if(functionality.change == MonteCarloParticleStatus::REMOVE)
-                    {
-                        this->allStepsCounter += particle.steps;
-                        removeParticle(index, i);
-                        break;
-                    }
-                    else if(functionality.change == MonteCarloParticleStatus::DONE)
-                    {
-                        stepData.remaining.push_back(particle);
-                        this->allStepsCounter += particle.steps;
-                        // remove particle from current list
-                        removeParticle(index, i);
-                        break;
-                    }
-                }
-            }
-            catch(UniversalError &eo)
-            {
-                eo.addEntry("Particle TH index", i);
-                eo.addEntry("Particle index", particleIndex);
-                eo.addEntry("Handler rank buffer", _rank);
-                eo.addEntry("Handler TH length", handler->th_length);
-                eo.addEntry("Handler AV length", handler->av_length);
-                eo.addEntry("Handler buffer size", handler->buffsize);
-                int particleIndexAVPosition = -1;
-                int handlerAVLength = handler->av_length;
-                if(handlerAVLength >= 0)
-                {
-                    for(int avIndex = 0; avIndex < handlerAVLength; avIndex++)
-                    {
-                        if(handler->av[avIndex] == particleIndex)
+                        else if(functionality.change == MonteCarloParticleStatus::REMOVE)
                         {
-                            particleIndexAVPosition = avIndex;
+                            this->allStepsCounter += particle.steps;
+                            this->localDecrementAmount += 1;
+                            removeCurrent = true;
                             break;
                         }
-                    }
-                }
-                eo.addEntry("Particle index AV position", particleIndexAVPosition);
-                int duplicateParticleIndex = -1;
-                int duplicateTHFirst = -1;
-                int duplicateTHSecond = -1;
-                int handlerTHLength = handler->th_length;
-                if(handlerTHLength >= 0)
-                {
-                    static thread_local std::vector<int> seenTHIndex;
-                    seenTHIndex.assign(handler->buffsize, -1);
-                    for(int thIndex = 0; thIndex < handlerTHLength; thIndex++)
-                    {
-                        size_t thParticleIndex = handler->th[thIndex];
-                        if(thParticleIndex >= handler->buffsize)
+                        else if(functionality.change == MonteCarloParticleStatus::DONE)
+                        {
+                            stepData.remaining.push_back(particle);
+                            this->allStepsCounter += particle.steps;
+                            this->localDecrementAmount += 1;
+                            removeCurrent = true;
+                            break;
+                        }
+                        else if(functionality.change == MonteCarloParticleStatus::NO_CELL_MOVE)
                         {
                             continue;
                         }
-                        if(seenTHIndex[thParticleIndex] >= 0)
+                        else
                         {
-                            duplicateParticleIndex = static_cast<int>(thParticleIndex);
-                            duplicateTHFirst = seenTHIndex[thParticleIndex];
-                            duplicateTHSecond = thIndex;
-                            break;
+                            UniversalError eo("Unknown Monte Carlo particle status");
+                            eo.addEntry("Particle", particle);
+                            eo.addEntry("Status", functionality.change);
+                            throw eo;
                         }
-                        seenTHIndex[thParticleIndex] = thIndex;
                     }
                 }
-                eo.addEntry("Duplicate TH particle index", duplicateParticleIndex);
-                eo.addEntry("Duplicate TH first index", duplicateTHFirst);
-                eo.addEntry("Duplicate TH second index", duplicateTHSecond);
-                throw eo;
-            }
-            // this->reallocationAgent->HandleAllWaitingReallocations();
+                catch(UniversalError &eo)
+                {
+                    eo.addEntry("Particle list index", particleIndex);
+                    eo.addEntry("Handler rank buffer", _rank);
+                    eo.addEntry("Handler head", static_cast<size_t>(handler->head));
+                    eo.addEntry("Handler tail", static_cast<size_t>(handler->tail));
+                    eo.addEntry("Handler buffer size", handler->buffsize);
+                    throw eo;
+                }
+
+                if(removeCurrent)
+                {
+                    localParticles.pop_back();
+                }
+                else
+                {
+                    assert(keepCurrent);
+                    break;
+                }
         }
 
-        // this->reallocationAgent->HandleAllWaitingReallocations();
+        if(not localParticles.empty())
+        {
+            assert(deferredParticles.empty());
+            deferredParticles.swap(localParticles);
+        }
     }
 
     #ifdef TIMING
-    this->pureComputeTime += MonteCarloTimingDetail::SecondsSince(computeLoopStart);
+    this->pureComputeTime += MonteCarloTimingDetail2::SecondsSince(computeLoopStart);
     #endif // TIMING
 
     for(size_t i = 0; i < activeRanksNum; i++)
     {
-        const rank_t &fromRank = active_ranks[i];
-        RankHandler_t *currRankHandler = this->rankHandlers[fromRank];
-        const std::vector<size_t> &myTHIndices = transferParticlesVec[i];
-        const std::vector<rank_t> &myTransferRanks = transferToRanks[i];
-        size_t numToTransfer = myTHIndices.size();
-
-        for(size_t j = 0; j < numToTransfer; j++)
-        {
-            const size_t &indexInToHandle = myTHIndices[j];
-            const rank_t &toRank = myTransferRanks[j];
-            assert(toRank != this->rank_world);
-            size_t particleIdx = currRankHandler->th[indexInToHandle];
-            MCParticle &particle = currRankHandler->particles[particleIdx];
-            particle.sent = false;
-            std::vector<MCParticle> &buffer = this->GetSendBuffer(toRank);
-            size_t previousSize = buffer.size();
-            buffer.push_back(particle);
-            this->NoteSendBufferGrowth(toRank, previousSize, buffer, 1);
-        }
-    }
-
-    for(size_t i = 0; i < activeRanksNum; i++)
-    {
-        rank_t _rank = active_ranks[i];
-        const std::vector<size_t> &rankRemoveParticlesVec = removeParticlesVec[i];
-        if(rankRemoveParticlesVec.empty())
-        {
-            continue; // nothing to remove
-        }
-        RankHandler_t *handler = this->rankHandlers[_rank];
-        handler->RemoveParticles(rankRemoveParticlesVec, rankRemoveParticlesVec.size());
-    }
-
-    for(size_t i = 0; i < activeRanksNum; i++)
-    {
         rank_t _rank = active_ranks[i];
         RankHandler_t *handler = this->rankHandlers[_rank];
-        if(handler->th_length > 0)
+        if(hasDetachedParticles(_rank) or not handler->LocalEmpty())
         {
             next_active_ranks.push_back(_rank);
         }
@@ -1557,9 +1374,15 @@ bool MonteCarloManager<T, Grid>::HandleAll(MonteCarloStepFinalData &stepData)
     return toReturn;
 }
 
+
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::ResetAllBuffers(void)
+void RDMAMonteCarloManager<T, Grid>::ResetAllBuffers(void)
 {
+    for(std::vector<MCParticle> &particles : this->detachedRankParticles)
+    {
+        particles.clear();
+    }
+
     auto resetHandler = [this](rank_t rank)
     {
         if(rank < 0 or rank >= static_cast<rank_t>(this->rankHandlers.size()))
@@ -1584,7 +1407,7 @@ void MonteCarloManager<T, Grid>::ResetAllBuffers(void)
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::ShrinkBuffers(void)
+void RDMAMonteCarloManager<T, Grid>::ShrinkBuffers(void)
 {
     std::vector<rank_t> shrinkList;
     boost::container::flat_set<rank_t> neighbors(this->neighbors.cbegin(), this->neighbors.cend());
@@ -1758,7 +1581,7 @@ void MonteCarloManager<T, Grid>::ShrinkBuffers(void)
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManager<T, Grid>::MCParticle> &MonteCarloManager<T, Grid>::GetSendBuffer(rank_t rank)
+typename RDMAMonteCarloManager<T, Grid>::RegisteredSendBuffer &RDMAMonteCarloManager<T, Grid>::GetSendBuffer(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
@@ -1766,7 +1589,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> &MonteCarloManager<
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::QueueReadySendBuffer(rank_t rank)
+void RDMAMonteCarloManager<T, Grid>::QueueReadySendBuffer(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBufferReadyQueued.size()));
@@ -1780,7 +1603,7 @@ void MonteCarloManager<T, Grid>::QueueReadySendBuffer(rank_t rank)
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::MarkSendBufferEmpty(rank_t rank)
+void RDMAMonteCarloManager<T, Grid>::MarkSendBufferEmpty(rank_t rank)
 {
     assert(rank >= 0);
     assert(rank < static_cast<rank_t>(this->sendBuffers.size()));
@@ -1796,7 +1619,7 @@ void MonteCarloManager<T, Grid>::MarkSendBufferEmpty(rank_t rank)
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::ResetSendBuffers(void)
+void RDMAMonteCarloManager<T, Grid>::ResetSendBuffers(void)
 {
     for(rank_t rank : this->sendBufferActiveRanks)
     {
@@ -1818,7 +1641,16 @@ void MonteCarloManager<T, Grid>::ResetSendBuffers(void)
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const std::vector<MCParticle> &buffer, size_t addedParticles)
+void RDMAMonteCarloManager<T, Grid>::ReleaseSendBufferRegistrations(void)
+{
+    for(RegisteredSendBuffer &buffer : this->sendBuffers)
+    {
+        buffer.ReleaseRegistration();
+    }
+}
+
+template<typename T, typename Grid>
+void RDMAMonteCarloManager<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t previousSize, const RegisteredSendBuffer &buffer, size_t addedParticles)
 {
     this->sendBufferPendingParticles += addedParticles;
     if(addedParticles > 0 and previousSize == 0 and not buffer.empty())
@@ -1844,7 +1676,7 @@ void MonteCarloManager<T, Grid>::NoteSendBufferGrowth(rank_t rank, size_t previo
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
+void RDMAMonteCarloManager<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flushedParticles)
 {
     assert(this->sendBufferPendingParticles >= flushedParticles);
     this->sendBufferPendingParticles -= flushedParticles;
@@ -1853,7 +1685,7 @@ void MonteCarloManager<T, Grid>::NoteSendBufferFlush(rank_t rank, size_t flushed
 
 #ifdef TIMING
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::RecordSendBufferFlush(size_t flushedParticles, SendFlushReason reason)
+void RDMAMonteCarloManager<T, Grid>::RecordSendBufferFlush(size_t flushedParticles, SendFlushReason2 reason)
 {
     this->sendBufferFlushCalls++;
     this->sendBufferFlushedParticles += flushedParticles;
@@ -1872,19 +1704,19 @@ void MonteCarloManager<T, Grid>::RecordSendBufferFlush(size_t flushedParticles, 
 
     switch(reason)
     {
-        case SendFlushReason::Threshold:
+        case SendFlushReason2::Threshold:
             this->sendBufferFlushThresholdCalls++;
             this->sendBufferThresholdParticles += flushedParticles;
             break;
-        case SendFlushReason::IdleDrain:
+        case SendFlushReason2::IdleDrain:
             this->sendBufferFlushIdleDrainCalls++;
             this->sendBufferIdleDrainParticles += flushedParticles;
             break;
-        case SendFlushReason::VerifyDrain:
+        case SendFlushReason2::VerifyDrain:
             this->sendBufferFlushVerifyDrainCalls++;
             this->sendBufferVerifyDrainParticles += flushedParticles;
             break;
-        case SendFlushReason::FinalDrain:
+        case SendFlushReason2::FinalDrain:
             this->sendBufferFlushFinalDrainCalls++;
             this->sendBufferFinalDrainParticles += flushedParticles;
             break;
@@ -1894,10 +1726,10 @@ void MonteCarloManager<T, Grid>::RecordSendBufferFlush(size_t flushedParticles, 
 
 #ifdef TIMING
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers, double &transferTime)
+void RDMAMonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers, double &transferTime)
 #else
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
+void RDMAMonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 #endif // TIMING
 {
     #ifdef TIMING
@@ -1919,6 +1751,7 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
     bool allowIdleDrain = flushSmallBuffers;
     bool heldIdleDrain = false;
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+    const bool useRegisteredSendSources = usesAsyncReallocation;
     if(flushSmallBuffers and this->config.holdSmallIdleFlushes)
     {
         size_t holdoffCycles = std::max<size_t>(1, this->config.GetSmallIdleFlushHoldoffCycles());
@@ -1945,7 +1778,7 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         {
             return;
         }
-        std::vector<MCParticle> &particles = this->sendBuffers[rankIndex];
+        RegisteredSendBuffer &particles = this->sendBuffers[rankIndex];
         if(particles.empty())
         {
             this->MarkSendBufferEmpty(toRank);
@@ -1969,12 +1802,13 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
         size_t flushedParticles = particles.size();
+        uint32_t sourceLkey = particles.SourceLkey(remoteHandler, useRegisteredSendSources);
         #ifdef TIMING
         auto transferStart = std::chrono::high_resolution_clock::now();
         #endif // TIMING
-        bool transferred = remoteHandler->TransferParticles(particles);
+        bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
         #ifdef TIMING
-        transferTime += MonteCarloTimingDetail::SecondsSince(transferStart);
+        transferTime += MonteCarloTimingDetail2::SecondsSince(transferStart);
         #endif // TIMING
         if(not transferred)
         {
@@ -1988,7 +1822,7 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
         this->transfersCounter++;
         this->NoteSendBufferFlush(toRank, flushedParticles);
         #ifdef TIMING
-        this->RecordSendBufferFlush(flushedParticles, thresholdFlush ? SendFlushReason::Threshold : SendFlushReason::IdleDrain);
+        this->RecordSendBufferFlush(flushedParticles, thresholdFlush ? SendFlushReason2::Threshold : SendFlushReason2::IdleDrain);
         #endif // TIMING
     };
 
@@ -2072,10 +1906,10 @@ void MonteCarloManager<T, Grid>::FlushSendBuffers(bool flushSmallBuffers)
 
 #ifdef TIMING
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::FlushAllSendBuffers(SendFlushReason reason)
+void RDMAMonteCarloManager<T, Grid>::FlushAllSendBuffers(SendFlushReason2 reason)
 #else
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
+void RDMAMonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
 #endif // TIMING
 {
     #ifdef TIMING
@@ -2083,6 +1917,7 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
     size_t pendingRanks = this->sendBufferPendingRanks;
     #endif // TIMING
     const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+    const bool useRegisteredSendSources = usesAsyncReallocation;
     for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
     {
         rank_t toRank = this->sendBufferActiveRanks[index];
@@ -2100,7 +1935,7 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
             this->sendBufferActiveRanks.pop_back();
             continue;
         }
-        std::vector<MCParticle> &particles = this->sendBuffers[rankIndex];
+        RegisteredSendBuffer &particles = this->sendBuffers[rankIndex];
         if(particles.empty())
         {
             this->MarkSendBufferEmpty(toRank);
@@ -2116,7 +1951,8 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
             continue;
         }
         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
-        bool transferred = remoteHandler->TransferParticles(particles);
+        uint32_t sourceLkey = particles.SourceLkey(remoteHandler, useRegisteredSendSources);
+        bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
         if(not transferred)
         {
             this->ProgressReallocations();
@@ -2143,7 +1979,7 @@ void MonteCarloManager<T, Grid>::FlushAllSendBuffers(void)
 }
 
 template<typename T, typename Grid>
-bool MonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
+bool RDMAMonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
 {
     if(this->sendBufferPendingParticles == 0)
     {
@@ -2166,7 +2002,7 @@ bool MonteCarloManager<T, Grid>::AllSendBuffersEmpty(void) const
 
 #ifdef TIMING
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::PrintTransferDiagnostics(double elapsed, double flushScanTime, double flushTransferTime) const
+void RDMAMonteCarloManager<T, Grid>::PrintTransferDiagnostics(double elapsed, double flushScanTime, double flushTransferTime) const
 {
     if(this->config.transferDiagnosticsLevel == MonteCarloTransferDiagnosticsLevel::Off)
     {
@@ -2362,10 +2198,9 @@ void MonteCarloManager<T, Grid>::PrintTransferDiagnostics(double elapsed, double
 #endif // TIMING
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
+void RDMAMonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesNum, size_t preStepParticlesNum)
 {
-    using index_t = typename RankHandler_t::index_t;
-    const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(index_t);
+    const size_t bytesPerSlot = sizeof(MCParticle);
     size_t localHandlerMemory = 0;
     for(const RankHandler_t *h : this->rankHandlers)
     {
@@ -2436,7 +2271,7 @@ void MonteCarloManager<T, Grid>::PrintMemoryDiagnostics(size_t initialParticlesN
 }
 
 template<typename T, typename Grid>
-void MonteCarloManager<T, Grid>::PrepareHandlers(void)
+void RDMAMonteCarloManager<T, Grid>::PrepareHandlers(void)
 {
     #ifdef TIMING
     PrepareHandlersTiming timing;
@@ -2447,13 +2282,13 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
     boost::container::flat_set<rank_t> oldNeighbors(this->neighbors.cbegin(), this->neighbors.cend());
 
     #ifdef TIMING
-    timing.oldNeighborSet = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.oldNeighborSet = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     sectionStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
-    this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
+    this->neighbors = GetNeighborList2(this->grid, this->ranks_ghost_map);
     #ifdef TIMING
-    timing.neighborList = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.neighborList = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     #endif // TIMING
 
     // Self handler: 1-process communicator, no coordination needed
@@ -2473,7 +2308,7 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
         #endif // TIMING
     }
     #ifdef TIMING
-    timing.selfHandler = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.selfHandler = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     sectionStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
@@ -2486,7 +2321,7 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
         }
     }
     #ifdef TIMING
-    timing.findNewNeighbors = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.findNewNeighbors = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     #endif // TIMING
 
     int numNewNeighbors = newNeighbors.size();
@@ -2496,7 +2331,7 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
     #endif // TIMING
     MPI_Allreduce(MPI_IN_PLACE, &numNewNeighbors, 1, MPI_INT, MPI_SUM, this->comm_world);
     #ifdef TIMING
-    timing.newNeighborAllreduce = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    timing.newNeighborAllreduce = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     timing.globalNewNeighbors = numNewNeighbors;
     #endif // TIMING
 
@@ -2533,7 +2368,7 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
         };
         ForEachRankSyncByList(this->comm_world, newNeighbors, createHandler);
         #ifdef TIMING
-        timing.createHandlers = MonteCarloTimingDetail::SecondsSince(sectionStart);
+        timing.createHandlers = MonteCarloTimingDetail2::SecondsSince(sectionStart);
         #endif // TIMING
     }
 
@@ -2547,14 +2382,14 @@ void MonteCarloManager<T, Grid>::PrepareHandlers(void)
     #endif // TIMING
     this->ResetAllBuffers();
     #ifdef TIMING
-    timing.resetBuffers = MonteCarloTimingDetail::SecondsSince(sectionStart);
-    timing.total = MonteCarloTimingDetail::SecondsSince(totalStart);
+    timing.resetBuffers = MonteCarloTimingDetail2::SecondsSince(sectionStart);
+    timing.total = MonteCarloTimingDetail2::SecondsSince(totalStart);
     this->lastPrepareHandlersTiming = timing;
     #endif // TIMING
 }
 
 template<typename T, typename Grid>
-std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
+std::vector<typename RDMAMonteCarloManager<T, Grid>::MCParticle> RDMAMonteCarloManager<T, Grid>::step(std::vector<MCParticle> &&particleList, dt_t fullDt)
 {
     // if(this->Ncells != this->grid.GetPointNo())
     // {
@@ -2587,14 +2422,14 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     std::tie(this->ll, this->ur) = this->grid.GetBoxCoordinates();
 
     #ifdef TIMING
-    initGridMetaTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initGridMetaTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     sectionStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
     this->PrepareHandlers();
 
     #ifdef TIMING
-    initPrepareHandlersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initPrepareHandlersTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     sectionStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
@@ -2605,7 +2440,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->activeRankScanRemaining = 0;
 
     #ifdef TIMING
-    initClearSendBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initClearSendBuffersTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     #endif // TIMING
 
     bool didRebalance = this->grid.DidRebalance() and (this->lastBuildGeneration != this->grid.GetBuildGeneration());
@@ -2620,12 +2455,13 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         #endif // TIMING
         this->ShrinkBuffers();
         #ifdef TIMING
-        initShrinkBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+        initShrinkBuffersTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
         #endif // TIMING
     }
     this->lastBuildGeneration = this->grid.GetBuildGeneration();
 
     size_t initialParticlesNum = particleList.size();
+    this->initialParticleCount = initialParticlesNum;
     this->cellsParticleCounters.assign(this->Ncells, 0);
     for(const auto &p : particleList) this->cellsParticleCounters[p.cellIndex]++;
     #ifdef TIMING
@@ -2633,7 +2469,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     #endif // TIMING
     this->PutSelfParticles(std::move(particleList));
     #ifdef TIMING
-    initPutSelfParticlesTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initPutSelfParticlesTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     START_TIMER_PREEMPTIVE("Prestep");
 
@@ -2642,7 +2478,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->physics->updateGridData();
 
     #ifdef TIMING
-    initUpdateGridDataTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initUpdateGridDataTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     std::chrono::high_resolution_clock::time_point preStepStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
@@ -2711,11 +2547,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         handler->transferUnlockTimeThisStep = 0;
         #endif // TIMING
 
-        int length = handler->th_length;
-        for(int i = 0; i < length; i++)
+        handler->ForEachLocalParticle([fullDt](MCParticle &p, size_t)
         {
-            size_t particleIndex = handler->th[i];
-            MCParticle &p = handler->particles[particleIndex];
             #ifdef MONTECARLO_DEBUG
             p.checkedHere = true;
             p.nextRank = std::numeric_limits<rank_t>::max();
@@ -2730,10 +2563,10 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             p.timeLeft = fullDt;
             p.initialWeight = p.weight;
             p.steps = 0;
-        }
+        });
     }
     #ifdef TIMING
-    initResetParticleStateTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initResetParticleStateTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     auto addParticlesStart = std::chrono::high_resolution_clock::now();
     #endif // TIMING
@@ -2745,11 +2578,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         std::vector<MCParticle>().swap(newParticles1);
     }
     #ifdef TIMING
-    initAddParticlesTime = MonteCarloTimingDetail::SecondsSince(addParticlesStart);
+    initAddParticlesTime = MonteCarloTimingDetail2::SecondsSince(addParticlesStart);
 
     sectionStart = std::chrono::high_resolution_clock::now();
     MPI_Barrier(this->comm_world);
-    initBarrierTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    initBarrierTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     double initTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - initStart).count();
     #else
     MPI_Barrier(this->comm_world);
@@ -2797,7 +2630,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     AmountManager amountManager(this->comm_world);
     amountManager.Initialize(startingParticleNum);
     #ifdef TIMING
-    amountManagerTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    amountManagerTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     #endif // TIMING
 
     MonteCarloStepFinalData data;
@@ -2807,7 +2640,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     #endif // TIMING
 
     {
-        const size_t bytesPerSlot = sizeof(MCParticle) + 2 * sizeof(typename RankHandler_t::index_t);
+        const size_t bytesPerSlot = sizeof(MCParticle);
         this->handlerMemoryBytes = 0;
         for(const RankHandler_t *h : this->rankHandlers)
         {
@@ -2823,7 +2656,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     #endif // TIMING
     this->PrintMemoryDiagnostics(initialParticlesNum, preStepParticlesNum);
     #ifdef TIMING
-    memoryDiagnosticsTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    memoryDiagnosticsTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
 
     auto start = std::chrono::high_resolution_clock::now();
     #endif // TIMING
@@ -2870,18 +2703,18 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 this->ProgressReallocations();
             }
             #ifdef TIMING
-            mainReallocationPollTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+            mainReallocationPollTime += MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
 
             mainLoopSectionStart = std::chrono::high_resolution_clock::now();
             #endif // TIMING
             bool localWorkDone = this->HandleAll(data);
             #ifdef TIMING
-            mainHandleAllTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+            mainHandleAllTime += MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
 
             mainLoopSectionStart = std::chrono::high_resolution_clock::now();
             double flushTransferTime = 0;
             this->FlushSendBuffers(localWorkDone, flushTransferTime);
-            double flushTotalTime = MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+            double flushTotalTime = MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
             mainFlushSendBuffersTime += flushTotalTime;
             mainFlushSendTransferTime += flushTransferTime;
             mainFlushSendScanTime += std::max(0.0, flushTotalTime - flushTransferTime);
@@ -2895,7 +2728,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             amountManager.Decrease(this->localDecrementAmount);
             this->localDecrementAmount = 0;
             #ifdef TIMING
-            mainAmountDecreaseTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+            mainAmountDecreaseTime += MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
             #endif // TIMING
 
             if(this->iteration % amountProgressMinCycles == 0)
@@ -2905,7 +2738,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 #endif // TIMING
                 amountManager.Progress();
                 #ifdef TIMING
-                mainAmountProgressTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+                mainAmountProgressTime += MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
                 mainAmountProgressCalls++;
                 #endif // TIMING
             }
@@ -2915,7 +2748,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 #ifdef TIMING
                 mainVerifyCount++;
                 mainLoopSectionStart = std::chrono::high_resolution_clock::now();
-                this->FlushAllSendBuffers(SendFlushReason::VerifyDrain);
+                this->FlushAllSendBuffers(SendFlushReason2::VerifyDrain);
                 #else
                 this->FlushAllSendBuffers();
                 #endif // TIMING
@@ -2923,7 +2756,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 bool ok = this->AllSendBuffersEmpty() and not this->reallocationAgent->HasPendingAsyncReallocations();
                 amountManager.Verify(ok);
                 #ifdef TIMING
-                mainVerifyTime += MonteCarloTimingDetail::SecondsSince(mainLoopSectionStart);
+                mainVerifyTime += MonteCarloTimingDetail2::SecondsSince(mainLoopSectionStart);
                 #endif // TIMING
             }
 
@@ -2956,7 +2789,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     #ifdef TIMING
     sectionStart = std::chrono::high_resolution_clock::now();
     MPI_Barrier(this->comm_world);
-    mainExitBarrierTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+    mainExitBarrierTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
     auto end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
@@ -3124,12 +2957,27 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         {
             continue;
         }
-        if(handler->th_length != 0)
+        size_t localSize = handler->LocalSize();
+        if(localSize != 0)
         {
-            UniversalError eo("End of MonteCarloManager::step: th length is not 0");
+            UniversalError eo("End of RDMAMonteCarloManager::step: queue is not empty");
             eo.addEntry("Rank", this->rank_world);
-            eo.addEntry("TH Length", handler->th_length);
+            eo.addEntry("Head", static_cast<size_t>(handler->head));
+            eo.addEntry("Tail", static_cast<size_t>(handler->tail));
+            eo.addEntry("Particles", localSize);
             eo.addEntry("Peer Rank", handler->peer_rank_world);
+            throw eo;
+        }
+    }
+    for(rank_t rank = 0; rank < static_cast<rank_t>(this->detachedRankParticles.size()); rank++)
+    {
+        const std::vector<MCParticle> &particles = this->detachedRankParticles[static_cast<size_t>(rank)];
+        if(not particles.empty())
+        {
+            UniversalError eo("End of RDMAMonteCarloManager::step: detached particle list is not empty");
+            eo.addEntry("Rank", this->rank_world);
+            eo.addEntry("Peer Rank", rank);
+            eo.addEntry("Detached Particles", particles.size());
             throw eo;
         }
     }
@@ -3147,7 +2995,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             #endif // TIMING
             this->ShrinkBuffers();
             #ifdef TIMING
-            endStepShrinkBuffersTime = MonteCarloTimingDetail::SecondsSince(sectionStart);
+            endStepShrinkBuffersTime = MonteCarloTimingDetail2::SecondsSince(sectionStart);
             #endif // TIMING
         }
     }
@@ -3171,7 +3019,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                   << "s, previously accounted=" << accounted << "s" << std::endl;
     }
 
-    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Main loop detail",
+    MonteCarloTimingDetail2::PrintTimingBreakdown(this->comm_world, this->rank_world, "Main loop detail",
         {
             {"pollRealloc", mainReallocationPollTime},
             {"handleAll", mainHandleAllTime},
@@ -3265,7 +3113,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
     this->PrintTransferDiagnostics(elapsed, mainFlushSendScanTime, mainFlushSendTransferTime);
 
-    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Init detail",
+    MonteCarloTimingDetail2::PrintTimingBreakdown(this->comm_world, this->rank_world, "Init detail",
         {
             {"gridMeta", initGridMetaTime},
             {"prepareHandlers", initPrepareHandlersTime},
@@ -3281,7 +3129,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         });
 
     const PrepareHandlersTiming &prepareTiming = this->lastPrepareHandlersTiming;
-    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "PrepareHandlers detail",
+    MonteCarloTimingDetail2::PrintTimingBreakdown(this->comm_world, this->rank_world, "PrepareHandlers detail",
         {
             {"oldNeighborSet", prepareTiming.oldNeighborSet},
             {"neighborList", prepareTiming.neighborList},
@@ -3293,7 +3141,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             {"total", prepareTiming.total}
         });
 
-    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Handler constructor detail",
+    MonteCarloTimingDetail2::PrintTimingBreakdown(this->comm_world, this->rank_world, "Handler constructor detail",
         {
             {"rmaCreate", prepareTiming.handlerCtorRma},
             {"mutexCreate", prepareTiming.handlerCtorMutex},
@@ -3315,7 +3163,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                   << std::endl;
     }
 
-    MonteCarloTimingDetail::PrintTimingBreakdown(this->comm_world, this->rank_world, "Pre/post-main detail",
+    MonteCarloTimingDetail2::PrintTimingBreakdown(this->comm_world, this->rank_world, "Pre/post-main detail",
         {
             {"amountManager", amountManagerTime},
             {"memoryDiagnostics", memoryDiagnosticsTime},
@@ -3381,4 +3229,4 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     return data.remaining;
 }
 
-#endif // MONTE_CARLO_MANAGER_HPP
+#endif // RDMA_MONTE_CARLO_MANAGER_HPP

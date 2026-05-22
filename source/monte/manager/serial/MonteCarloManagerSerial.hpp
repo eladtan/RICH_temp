@@ -61,6 +61,10 @@ public:
 
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
 
+    inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount_;}
+
+    inline double GetPureComputeTime(void) const {return 0;}
+
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount_;}
 
     inline std::vector<size_t> &GetBeginningParticleCount(void) {return this->beginningParticleCount_;}
@@ -80,6 +84,7 @@ private:
     std::vector<size_t> cellsStepsCounters;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
+    size_t initialParticleCount_ = 0;
     std::vector<size_t> beginningParticleCount_;
 
     struct
@@ -448,6 +453,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     }
 
     size_t initialParticlesNum = this->particlesData.th_length;
+    this->initialParticleCount_ = initialParticlesNum;
     std::vector<MCParticle> newParticles1 = this->physics->preStep(fullDt);
     this->AddParticles(newParticles1);
     this->startParticleCount_ = initialParticlesNum + newParticles1.size();

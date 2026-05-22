@@ -21,7 +21,7 @@
 #include "QueryAgent.hpp"
 #include "mpi/serialize/Serializer.hpp"
 #include "misc/universal_error.hpp"
-#include "monte/two_sided_manager/BuffersManager.hpp"
+#include "utils/buffersManager/BuffersManager.hpp"
 #include "utils/amountManager/AmountManager.hpp"
 
 #define TAG_REQUEST 200

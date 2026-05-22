@@ -20,10 +20,17 @@ public:
     #ifdef RICH_MPI
     enum ManagerType
     {
-        MPI_RMA,
-        IBV_RDMA,
+        LEGACY_MPI_RMA,
+        LEGACY_IBV_RDMA,
         P2P,
-        AUTO_RDMA
+        LEGACY_AUTO_RDMA,
+        RDMA,
+        RDMA_IBV,
+        MPI_RMA = LEGACY_MPI_RMA,
+        IBV_RDMA = LEGACY_IBV_RDMA,
+        AUTO_RDMA = LEGACY_AUTO_RDMA,
+        NEW_RDMA = RDMA,
+        NEW_IBV_RDMA = RDMA_IBV
     };
     #endif // RICH_MPI
 
@@ -86,6 +93,8 @@ public:
         void beforeLB(void) override;
 
         void afterLB(void) override;
+
+        void dumpCost(size_t cycle) const override;
     #endif // RICH_MPI
 
 private:

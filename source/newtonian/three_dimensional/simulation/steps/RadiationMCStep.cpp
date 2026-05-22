@@ -30,22 +30,28 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
     #ifdef RICH_MPI
         switch(this->managerType)
         {
-            case ManagerType::MPI_RMA:
-            case ManagerType::IBV_RDMA:
-            case ManagerType::AUTO_RDMA:
+            case ManagerType::LEGACY_MPI_RMA:
+            case ManagerType::LEGACY_IBV_RDMA:
+            case ManagerType::LEGACY_AUTO_RDMA:
             {
                 RDMA_Type type;
-                if(managerType == ManagerType::IBV_RDMA)
+                if(managerType == ManagerType::LEGACY_IBV_RDMA)
                     type = RDMA_Type::IBV_RDMA;
-                else if(managerType == ManagerType::MPI_RMA)
+                else if(managerType == ManagerType::LEGACY_MPI_RMA)
                     type = RDMA_Type::MPI_RMA;
                 else
                     type = RDMA_Type::AUTO_RDMA;
-                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, type);
+                this->manager = std::make_shared<RDMAMonteCarloManagerLegacy3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, type);
                 break;
             }
             case ManagerType::P2P:
                 this->manager = std::make_shared<TwoSidedMonteCarloManager3D>(tess, physics, popControl, boundaryCond);
+                break;
+            case ManagerType::RDMA:
+                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+                break;
+            case ManagerType::RDMA_IBV:
+                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::IBV_RDMA);
                 break;
         }
     #else // RICH_MPI
@@ -240,6 +246,12 @@ void RadiationMCStep::step(double dt)
     void RadiationMCStep::afterLB(void)
     {
         UpdateNewCellsAfterExchange(this->tess, this->particles);
+    }
+
+    void RadiationMCStep::dumpCost(size_t cycle) const
+    {
+        if(this->cost)
+            this->cost->Dump(cycle);
     }
 
 #endif // RICH_MPI

@@ -13,7 +13,7 @@
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "utils/amountManager/AmountManager.hpp"
-#include "BuffersManager.hpp"
+#include "utils/buffersManager/BuffersManager.hpp"
 #include "monte/manager/MonteCarloConfig.hpp"
 
 #define PARTICLES_TAG 8817
@@ -43,6 +43,10 @@ public:
     inline size_t GetStartParticleCount(void) const {return this->startParticleCount_;}
 
     inline size_t GetEndParticleCount(void) const {return this->endParticleCount_;}
+
+    inline size_t GetInitialParticleCount(void) const {return this->initialParticleCount_;}
+
+    inline double GetPureComputeTime(void) const {return 0;}
 
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const {return this->beginningParticleCount_;}
 
@@ -107,6 +111,7 @@ private:
     size_t currentStep;
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
+    size_t initialParticleCount_ = 0;
     std::vector<size_t> beginningParticleCount_;
     size_t handlerMemoryBytes_ = 0;
 
@@ -593,6 +598,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
         this->particles.clear();
 
         size_t initialParticlesNum = particleList.size();
+        this->initialParticleCount_ = initialParticlesNum;
         this->PutSelfParticles(particleList.data(), particleList.size());
         {
             std::vector<MCParticle> empty;
