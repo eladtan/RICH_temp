@@ -358,7 +358,8 @@ def print_times_table(selected_times, nprocs_list, cycle_data,
 
 
 def analyze_sum_T(nprocs_list, cycle_data, files_dict, particle_data,
-                  delta_t, no_rebalances, tasks_per_node, no_peaks=False):
+                  delta_t, no_rebalances, tasks_per_node, no_peaks=False,
+                  per_particle=False):
     """Compute per-run averages over the last delta_t ns of simulation time.
     Returns a list of result dicts, one per nprocs."""
     is_rebalance = lambda c: c > 1 and c % 10 == 1
@@ -396,7 +397,15 @@ def analyze_sum_T(nprocs_list, cycle_data, files_dict, particle_data,
             if not selected:
                 continue
 
-        avg_time = np.mean([wt for _, wt in selected])
+        if per_particle:
+            normalized = []
+            for c, wt in selected:
+                p = pc.get(c)
+                if p:
+                    normalized.append(wt / p)
+            avg_time = np.mean(normalized) if normalized else 0
+        else:
+            avg_time = np.mean([wt for _, wt in selected])
 
         part_counts = [pc.get(c, 0) for c, _ in selected]
         valid_parts = [p for p in part_counts if p > 0]
@@ -577,7 +586,8 @@ def main():
         results = analyze_sum_T(nprocs_list, cycle_data, weak_files,
                                 particle_data, delta_t,
                                 args.no_rebalances, args.tasks_per_node,
-                                no_peaks=args.no_peaks)
+                                no_peaks=args.no_peaks,
+                                per_particle=args.per_particle)
         if not results:
             print("No valid data for --sum-T analysis.", file=sys.stderr)
             sys.exit(1)
@@ -612,7 +622,8 @@ def main():
                 p2p_nprocs_list, p2p_cycle_data, p2p_weak_files,
                 p2p_particle_data, delta_t,
                 args.no_rebalances, args.tasks_per_node,
-                no_peaks=args.no_peaks)
+                no_peaks=args.no_peaks,
+                per_particle=args.per_particle)
             if p2p_results:
                 p2p_ref_result = next(
                     (r for r in p2p_results if r['nprocs'] == ref_nprocs),

@@ -4,7 +4,7 @@
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
 #include "3D/tesselation/voronoi/Voronoi3D.hpp"
-#include "monte/manager/MonteCarloManager.hpp"
+#include "monte/manager/rdma_legacy/MonteCarloManager.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
@@ -145,7 +145,7 @@ int main(int argc, char *argv[])
     });
 
     {
-        MonteCarloManager<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
+        MonteCarloManagerLegacy<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
         
         std::vector<MonteCarloParticle<Vector3D, Tessellation3D>> particles;
         size_t iterations = 10000;
