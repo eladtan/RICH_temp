@@ -2,6 +2,7 @@
 #define SIMULATION_HPP
 
 #include <functional>
+#include <limits>
 #include <vector>
 #include <map>
 #include <memory>
@@ -13,6 +14,7 @@
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "newtonian/three_dimensional/simulation/steps/PhysicsStep.hpp"
 #include "newtonian/three_dimensional/time_step_function3D.hpp"
+#include "utils/debug/vtune.h"
 
 #ifdef RICH_MPI
     #include <mpi.h>
@@ -124,6 +126,8 @@ private:
     std::map<std::string, std::shared_ptr<LoadBalancer>> loads;
     size_t forceRebalanceSteps = 0;
     std::pair<Vector3D, Vector3D> currentBox;
+    size_t lastRebalanceCycle = std::numeric_limits<size_t>::max();
+
 #endif // RICH_MPI
 };
 

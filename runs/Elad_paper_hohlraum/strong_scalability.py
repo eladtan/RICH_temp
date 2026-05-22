@@ -30,7 +30,9 @@ def parse_args():
     parser.add_argument("--speedup", action="store_true",
                         help="Plot speedup (T_min_procs / T_N) vs. processor count with ideal scaling line")
     parser.add_argument("--p2p", action="store_true",
-                        help="Include P2P files (hohlraum_P2P_*) as additional curves")
+                        help="Include P2P files (hohlraum_SS_P2P_*) as additional curves")
+    parser.add_argument("--per-particle", action="store_true",
+                        help="Normalize each cycle's time by total particle count for that cycle")
     parser.add_argument("--loop-times", action="store_true",
                         help="Measure MC loop elapsed times ('Elapsed: X seconds') instead of step times")
     parser.add_argument("--output", type=str, default=None,
@@ -47,11 +49,11 @@ def parse_args():
 def find_latest_files(directory, include_p2p=False):
     """Find the latest .out file for each processor count (highest job number).
     Returns (regular_files, p2p_files) where p2p_files is empty if include_p2p is False."""
-    pattern = os.path.join(directory, "hohlraum_*_n*.out")
+    pattern = os.path.join(directory, "hohlraum_SS_*_n*.out")
     files = glob.glob(pattern)
 
-    regular_re = re.compile(r"hohlraum_(\d+)_n(\d+)\.out$")
-    p2p_re = re.compile(r"hohlraum_P2P_(\d+)_n(\d+)\.out$")
+    regular_re = re.compile(r"hohlraum_SS_(\d+)_n(\d+)\.out$")
+    p2p_re = re.compile(r"hohlraum_SS_P2P_(\d+)_n(\d+)\.out$")
 
     rank_files = defaultdict(list)
     p2p_rank_files = defaultdict(list)
@@ -98,10 +100,10 @@ def parse_cycle_times(filepath, loop_times=False):
 
 def _parse_loop_times(filepath):
     """Parse MC loop elapsed times, returning dict mapping cycle_number -> elapsed_seconds.
-    The 'Elapsed: X seconds' line after 'Cycle N at time' belongs to the step reported
-    on the 'Cycle N+1' progress line, so we attribute it to cycle N+1."""
+    The 'Loop time: X seconds, ...' line after 'Cycle N at time' belongs to the step
+    reported on the 'Cycle N+1' progress line, so we attribute it to cycle N+1."""
     cycle_at_re = re.compile(r"^Cycle\s+(\d+)\s+at\s+time\s+")
-    elapsed_re = re.compile(r"^Elapsed:\s+([\d.]+)\s+seconds")
+    loop_time_re = re.compile(r"^Loop time:\s+([\d.eE+\-]+)\s+seconds")
     cycle_times = {}
     current_cycle = None
     with open(filepath, "r") as f:
@@ -110,22 +112,41 @@ def _parse_loop_times(filepath):
             if m:
                 current_cycle = int(m.group(1))
                 continue
-            m = elapsed_re.match(line)
+            m = loop_time_re.match(line)
             if m and current_cycle is not None:
                 cycle_times[current_cycle + 1] = float(m.group(1))
     return cycle_times
 
 
+def parse_particle_counts(filepath):
+    """Parse total particle counts per cycle from 'Started with N.' lines.
+    Returns {cycle: starting_particle_count}."""
+    cycle_at_re = re.compile(r"^Cycle\s+(\d+)\s+at\s+time\s+")
+    starting_re = re.compile(r"^Start(?:ing|ed) with (\d+)\.")
+    counts = {}
+    current_cycle = None
+    with open(filepath, "r") as f:
+        for line in f:
+            m = cycle_at_re.match(line)
+            if m:
+                current_cycle = int(m.group(1))
+                continue
+            m = starting_re.match(line)
+            if m and current_cycle is not None:
+                counts[current_cycle + 1] = int(m.group(1))
+    return counts
+
+
 def pick_default_cycles(max_common_cycle, num_curves=5):
     """Pick num_curves evenly spaced cycles up to max_common_cycle,
-    avoiding rebalance cycles (c%10==1, c>1; decrease by 1 in that case)."""
+    avoiding rebalance cycles (c%10==1; decrease by 1 in that case)."""
     cycles = []
     for i in range(1, num_curves + 1):
         c = round(max_common_cycle * i / num_curves)
-        if c > 1 and c % 10 == 1:
+        if c % 10 == 1:
             c -= 1
-        if c < 1:
-            c = 1
+        if c < 2:
+            c = 2
         cycles.append(c)
     return sorted(set(cycles))
 
@@ -139,10 +160,10 @@ def fit_strong_scaling_A(nprocs_arr, times_arr):
 
 
 def adjust_cycle(c):
-    """If cycle is a rebalance cycle (c%10==1, c>1), decrease by 1."""
-    if c > 1 and c % 10 == 1:
+    """If cycle is a rebalance cycle (c%10==1), move to nearest non-rebalance."""
+    if c % 10 == 1:
         c -= 1
-    return max(c, 1)
+    return max(c, 2)
 
 
 def print_table(file_info):
@@ -193,6 +214,7 @@ def main():
 
     def load_cycle_data(files_dict, label=""):
         cycle_data = {}
+        particle_data = {}
         finfo = {}
         for nprocs in sorted(files_dict.keys()):
             filepath = files_dict[nprocs]
@@ -201,15 +223,16 @@ def main():
                 print(f"Warning: no cycle data in {filepath}, skipping.", file=sys.stderr)
                 continue
             cycle_data[nprocs] = ct
+            particle_data[nprocs] = parse_particle_counts(filepath)
             finfo[nprocs] = (filepath, max(ct.keys()))
-        return cycle_data, finfo
+        return cycle_data, particle_data, finfo
 
-    all_cycle_data, file_info = load_cycle_data(latest_files)
+    all_cycle_data, all_particle_data, file_info = load_cycle_data(latest_files)
     if not all_cycle_data:
         print("No cycle data found in any file.", file=sys.stderr)
         sys.exit(1)
 
-    p2p_cycle_data, p2p_file_info = load_cycle_data(p2p_files)
+    p2p_cycle_data, p2p_particle_data, p2p_file_info = load_cycle_data(p2p_files)
 
     print_table(file_info)
     if p2p_file_info:
@@ -247,7 +270,7 @@ def main():
             first_cycle = 1
             last_n = sum_max
 
-        is_rebalance = lambda c: c > 1 and c % 10 == 1
+        is_rebalance = lambda c: c % 10 == 1
 
         skip_label = ""
         if args.no_rebalances:
@@ -260,10 +283,18 @@ def main():
         sum_times = []
         for nprocs in qualifying:
             ct = all_cycle_data[nprocs]
-            total = sum(
-                ct[c] for c in range(first_cycle, sum_max + 1)
-                if c in ct and not (args.no_rebalances and is_rebalance(c))
-            )
+            pc = all_particle_data.get(nprocs, {})
+            if args.per_particle:
+                total = sum(
+                    ct[c] / pc[c] for c in range(first_cycle, sum_max + 1)
+                    if c in ct and not (args.no_rebalances and is_rebalance(c))
+                    and pc.get(c)
+                )
+            else:
+                total = sum(
+                    ct[c] for c in range(first_cycle, sum_max + 1)
+                    if c in ct and not (args.no_rebalances and is_rebalance(c))
+                )
             sum_times.append(total)
 
         range_label = f"cycles {first_cycle}\u2013{sum_max}"
@@ -293,10 +324,18 @@ def main():
                 p2p_sum = []
                 for nprocs in p2p_qualifying:
                     ct = p2p_cycle_data[nprocs]
-                    total = sum(
-                        ct[c] for c in range(first_cycle, sum_max + 1)
-                        if c in ct and not (args.no_rebalances and is_rebalance(c))
-                    )
+                    pc = p2p_particle_data.get(nprocs, {})
+                    if args.per_particle:
+                        total = sum(
+                            ct[c] / pc[c] for c in range(first_cycle, sum_max + 1)
+                            if c in ct and not (args.no_rebalances and is_rebalance(c))
+                            and pc.get(c)
+                        )
+                    else:
+                        total = sum(
+                            ct[c] for c in range(first_cycle, sum_max + 1)
+                            if c in ct and not (args.no_rebalances and is_rebalance(c))
+                        )
                     p2p_sum.append(total)
                 ax.plot(p2p_qualifying, p2p_sum, "s--",
                         label=f"P2P total time ({range_label}{skip_label})", markersize=5)
@@ -342,7 +381,7 @@ def main():
         ax.set_xticklabels([str(n) for n in all_ticks], rotation=90)
 
         plt.tight_layout()
-        out = args.output or "scalability.png"
+        out = args.output or "strong_scalability.png"
         plt.savefig(out, dpi=150)
         print(f"Saved {out}")
         if args.show:
@@ -400,6 +439,12 @@ def main():
         for nprocs in nprocs_list:
             t = all_cycle_data[nprocs].get(cycle)
             if t is not None:
+                if args.per_particle:
+                    pc = all_particle_data.get(nprocs, {}).get(cycle)
+                    if pc:
+                        t = t / pc
+                    else:
+                        continue
                 sp_nprocs.append(nprocs)
                 sp_times.append(t)
         if not sp_nprocs:
@@ -428,6 +473,12 @@ def main():
             for nprocs in p2p_nprocs_list:
                 t = p2p_cycle_data[nprocs].get(p2p_cycle)
                 if t is not None:
+                    if args.per_particle:
+                        pc = p2p_particle_data.get(nprocs, {}).get(p2p_cycle)
+                        if pc:
+                            t = t / pc
+                        else:
+                            continue
                     p2p_sp_nprocs.append(nprocs)
                     p2p_sp_times.append(t)
             if p2p_sp_nprocs:
@@ -453,7 +504,7 @@ def main():
         ax.set_xticklabels([str(n) for n in all_sp_ticks], rotation=90)
 
         plt.tight_layout()
-        out = args.output or "scalability_speedup.png"
+        out = args.output or "strong_scalability_speedup.png"
         plt.savefig(out, dpi=150)
         print(f"Saved {out}")
         if args.show:
@@ -470,7 +521,14 @@ def main():
         for nprocs in nprocs_list:
             ct = all_cycle_data[nprocs]
             if cycle in ct:
-                times.append(ct[cycle])
+                t = ct[cycle]
+                if args.per_particle:
+                    pc = all_particle_data.get(nprocs, {}).get(cycle)
+                    if pc:
+                        t = t / pc
+                    else:
+                        continue
+                times.append(t)
                 valid_nprocs.append(nprocs)
         if valid_nprocs:
             label = f"{rdma_label + ' c' if rdma_label else 'C'}ycle {cycle}"
@@ -490,7 +548,14 @@ def main():
             for nprocs in p2p_nprocs_list:
                 ct = p2p_cycle_data[nprocs]
                 if cyc in ct:
-                    times.append(ct[cyc])
+                    t = ct[cyc]
+                    if args.per_particle:
+                        pc = p2p_particle_data.get(nprocs, {}).get(cyc)
+                        if pc:
+                            t = t / pc
+                        else:
+                            continue
+                    times.append(t)
                     valid_nprocs.append(nprocs)
             if valid_nprocs:
                 color = cycle_colors.get(cyc)
@@ -505,6 +570,12 @@ def main():
         for nprocs in nprocs_list:
             t = all_cycle_data[nprocs].get(cycle)
             if t is not None:
+                if args.per_particle:
+                    pc = all_particle_data.get(nprocs, {}).get(cycle)
+                    if pc:
+                        t = t / pc
+                    else:
+                        continue
                 opt_nprocs.append(nprocs)
                 opt_times.append(t)
         if opt_nprocs:
@@ -525,6 +596,12 @@ def main():
             for nprocs in p2p_nprocs_list:
                 t = p2p_cycle_data[nprocs].get(p2p_cycle)
                 if t is not None:
+                    if args.per_particle:
+                        pc = p2p_particle_data.get(nprocs, {}).get(p2p_cycle)
+                        if pc:
+                            t = t / pc
+                        else:
+                            continue
                     p2p_opt_nprocs.append(nprocs)
                     p2p_opt_times.append(t)
             if p2p_opt_nprocs:
@@ -571,7 +648,7 @@ def main():
     ax.set_xticklabels([str(n) for n in all_nprocs], rotation=90)
 
     plt.tight_layout()
-    out = args.output or ("scalability_optimal.png" if args.optimal else "scalability.png")
+    out = args.output or ("strong_scalability_optimal.png" if args.optimal else "strong_scalability.png")
     plt.savefig(out, dpi=150)
     print(f"Saved {out}")
     if args.show:

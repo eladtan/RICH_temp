@@ -34,6 +34,8 @@ public:
     {
         return ExchangeChain();
     }
+
+    virtual void dumpCost(size_t /*cycle*/) const {}
 #endif // RICH_MPI
 };
 

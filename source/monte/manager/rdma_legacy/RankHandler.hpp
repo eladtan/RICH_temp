@@ -21,10 +21,10 @@
 #include "mpi/mpi_commands.hpp"
 #include "utils/rma-helpers/DistributedMutex.hpp"
 #include "monte/MonteCarloParticle.hpp"
-#include "ReallocationAgent.hpp"
+#include "monte/manager/ReallocationAgent.hpp"
 #include "utils/rma/RMAFactory.hpp"
 #include "misc/memory_debug.hpp"
-#include "MonteCarloConfig.hpp"
+#include "monte/manager/MonteCarloConfig.hpp"
 
 #define MPI_INDEX_T MPI_UINT32_T
 

@@ -21,15 +21,33 @@ std::vector<typename MonteCarloManagerSerial3D::MCParticle> MonteCarloManagerSer
 
 #ifdef RICH_MPI
 
+RDMAMonteCarloManagerLegacy3D::RDMAMonteCarloManagerLegacy3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
+                                         const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
+                                         const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
+                                         const MonteCarloConfig &config, const MPI_Comm &comm, RDMA_Type rdma_type): MonteCarloManagerLegacy<Vector3D, Tessellation3D>(grid, physics, populationControl, boundaryCondition, config, comm, rdma_type)
+{}
+
+std::vector<typename RDMAMonteCarloManagerLegacy3D::MCParticle> RDMAMonteCarloManagerLegacy3D::step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt)
+{
+    std::vector<MCParticle> newParticles = MonteCarloManagerLegacy<Vector3D, Tessellation3D>::step(std::move(particleList), fullDt);
+    for(MCParticle &p : newParticles)
+    {
+        size_t cellIndex = p.cellIndex;
+        assert(cells.size() > cellIndex);
+        p.cellID = cells[cellIndex].ID;
+    }
+    return newParticles;
+}
+
 RDMAMonteCarloManager3D::RDMAMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
                                          const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
                                          const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
-                                         const MonteCarloConfig &config, const MPI_Comm &comm, RDMA_Type rdma_type): MonteCarloManager<Vector3D, Tessellation3D>(grid, physics, populationControl, boundaryCondition, config, comm, rdma_type)
+                                         const MonteCarloConfig &config, const MPI_Comm &comm, RDMA_Type rdma_type): RDMAMonteCarloManager<Vector3D, Tessellation3D>(grid, physics, populationControl, boundaryCondition, config, comm, rdma_type)
 {}
 
 std::vector<typename RDMAMonteCarloManager3D::MCParticle> RDMAMonteCarloManager3D::step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt)
 {
-    std::vector<MCParticle> newParticles = MonteCarloManager<Vector3D, Tessellation3D>::step(std::move(particleList), fullDt);
+    std::vector<MCParticle> newParticles = RDMAMonteCarloManager<Vector3D, Tessellation3D>::step(std::move(particleList), fullDt);
     for(MCParticle &p : newParticles)
     {
         size_t cellIndex = p.cellIndex;

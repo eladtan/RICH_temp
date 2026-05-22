@@ -3,7 +3,7 @@
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
 #include "3D/tesselation/voronoi/Voronoi3D.hpp"
-#include "monte/manager/MonteCarloManager.hpp"
+#include "monte/manager/rdma_legacy/MonteCarloManager.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
@@ -74,7 +74,7 @@ int main(int argc, char *argv[])
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl = std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, 100);
 
     {
-        MonteCarloManager<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
+        MonteCarloManagerLegacy<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
         
         std::vector<MonteCarloParticle<Vector3D, Tessellation3D>> particles;
         size_t iterations = 500 / 0.03 / 4;

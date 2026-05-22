@@ -178,7 +178,7 @@ int main(int argc, char *argv[])
     {
         if(argc != 3 and argc != 4 and argc != 5 and argc != 6)
         {
-            std::cerr << "Usage: " << argv[0] << " <number of points> <particles per cell> [output? = 1] [RDMA/P2P] [iterations]" << std::endl;
+            std::cerr << "Usage: " << argv[0] << " <number of points> <particles per cell> [output? = 1] [RDMA/P2P/NEW_RDMA/NEW_IBV_RDMA] [iterations]" << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
@@ -203,6 +203,14 @@ int main(int argc, char *argv[])
         else if(managerTypeStr == "P2P")
         {
             managerType = RadiationMCStep::ManagerType::P2P;
+        }
+        else if(managerTypeStr == "NEW_RDMA")
+        {
+            managerType = RadiationMCStep::ManagerType::NEW_RDMA;
+        }
+        else if(managerTypeStr == "NEW_IBV_RDMA" or managerTypeStr == "NEW_IBV")
+        {
+            managerType = RadiationMCStep::ManagerType::NEW_IBV_RDMA;
         }
     }
     #endif // RICH_MPI

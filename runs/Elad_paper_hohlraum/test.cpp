@@ -70,13 +70,13 @@ class HohlraumCostCalculator : public CostCalculator3D
 {
 public:
     HohlraumCostCalculator(const std::shared_ptr<MonteCarloManager3D> &manager, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics)
-        : manager(manager), physics(physics), hasSmoothedWeights(false), smoothedGeneration(0)
+        : manager(manager), physics(physics)
     {}
 
     std::vector<double> CalculateCost(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells) const override
     {
         size_t N = tess.GetPointNo();
-        std::vector<double> weights(N, baseWeight);
+        std::vector<double> weights(N, 50);
         const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
         const std::vector<size_t> &particleCounts = manager->GetBeginningParticleCount();
         const bool useCounters = counters.size() == N;
@@ -87,88 +87,97 @@ public:
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
             if(rank == 0)
                 std::cout << "WARNING: CalculateCost size mismatch: N=" << N
-                    << " counters=" << counters.size()
-                    << " particleCounts=" << particleCounts.size() << std::endl;
+                          << " counters=" << counters.size()
+                          << " particleCounts=" << particleCounts.size() << std::endl;
         }
 
-        double totalInstantWeight = 0.0;
+        constexpr double particleWeight = 10;
+        constexpr double countersWeight = 1.0;
+
         for(size_t i = 0; i < N; i++)
         {
-            const double measuredSteps = useCounters ? static_cast<double>(counters[i]) : 0.0;
-            const double initialParticles = useParticleCounts ? static_cast<double>(particleCounts[i]) : 0.0;
-            const double sourceFaces = static_cast<double>(CountSourceFaces(tess, i));
-
-            weights[i] += measuredStepWeight * measuredSteps;
             if(useParticleCounts)
             {
-                weights[i] += particleWeight * initialParticles;
+                weights[i] += particleWeight * static_cast<double>(particleCounts[i]);
             }
-            weights[i] += sourceFaceWeight * sourceFaces;
-            totalInstantWeight += weights[i];
-        }
-
-        const size_t generation = tess.GetBuildGeneration();
-        if(!this->hasSmoothedWeights ||
-            this->smoothedGeneration != generation ||
-            this->smoothedWeights.size() != N)
-        {
-            this->smoothedWeights = weights;
-            this->hasSmoothedWeights = true;
-            this->smoothedGeneration = generation;
-        }
-        else
-        {
-            for(size_t i = 0; i < N; i++)
+            if(useCounters)
             {
-                this->smoothedWeights[i] = ewmaAlpha * weights[i] +
-                    (1.0 - ewmaAlpha) * this->smoothedWeights[i];
+                weights[i] += countersWeight * counters[i];
             }
-        }
-
-        const double meanWeight = (N > 0) ? totalInstantWeight / static_cast<double>(N) : baseWeight;
-        const double maxWeight = std::max(baseWeight, maxWeightToMean * meanWeight);
-        for(size_t i = 0; i < N; i++)
-        {
-            weights[i] = std::min(maxWeight, std::max(baseWeight, this->smoothedWeights[i]));
         }
 
         return weights;
     }
 
-private:
-    size_t CountSourceFaces(const Tessellation3D &tess, size_t cellIndex) const
+    void Dump(size_t cycle) const override
     {
-        size_t sourceFaces = 0;
-        const size_t N = tess.GetPointNo();
-        const Vector3D &point = tess.GetMeshPoint(cellIndex);
-        for(const size_t &faceIdx : tess.GetCellFaces(cellIndex))
+        const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
+        const std::vector<size_t> &particleCounts = manager->GetBeginningParticleCount();
+
+        size_t totalSteps = 0;
+        for(size_t c : counters)
+            totalSteps += c;
+
+        size_t totalParticles = 0;
+        for(size_t p : particleCounts)
+            totalParticles += p;
+
+        constexpr double particleWeight = 10.0;
+        double totalWeight = 50.0 * static_cast<double>(counters.size())
+            + particleWeight * static_cast<double>(totalParticles)
+            + static_cast<double>(totalSteps);
+
+        size_t endParticles = manager->GetEndParticleCount();
+        size_t initialParticles = manager->GetInitialParticleCount();
+        size_t numCells = counters.size();
+
+        int rank, ws;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &ws);
+
+        std::vector<double> allWeights(ws);
+        std::vector<size_t> allSteps(ws);
+        std::vector<size_t> allParticles(ws);
+        std::vector<size_t> allEndParticles(ws);
+        std::vector<size_t> allInitialParticles(ws);
+        std::vector<size_t> allCells(ws);
+
+        MPI_Gather(&totalWeight, 1, MPI_DOUBLE, allWeights.data(), 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Gather(&totalSteps, 1, MPI_UNSIGNED_LONG_LONG, allSteps.data(), 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        MPI_Gather(&totalParticles, 1, MPI_UNSIGNED_LONG_LONG, allParticles.data(), 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        MPI_Gather(&endParticles, 1, MPI_UNSIGNED_LONG_LONG, allEndParticles.data(), 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        MPI_Gather(&initialParticles, 1, MPI_UNSIGNED_LONG_LONG, allInitialParticles.data(), 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        MPI_Gather(&numCells, 1, MPI_UNSIGNED_LONG_LONG, allCells.data(), 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        #ifdef TIMING
+        double computeTime = manager->GetPureComputeTime();
+        std::vector<double> allComputeTime(ws);
+        MPI_Gather(&computeTime, 1, MPI_DOUBLE, allComputeTime.data(), 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        #endif
+
+        if(rank == 0)
         {
-            const std::pair<size_t, size_t> &neighbors = tess.GetFaceNeighbors(faceIdx);
-            size_t neighborIdx = (neighbors.first == cellIndex) ? neighbors.second : neighbors.first;
-            if(neighborIdx < N || !tess.IsPointOutsideBox(neighborIdx))
-            {
-                continue;
-            }
-            Vector3D normal = normalize(tess.GetMeshPoint(neighborIdx) - point);
-            if(normal.x < -0.99 && std::sqrt(point.y * point.y + point.z * point.z) < 0.65)
-            {
-                sourceFaces++;
-            }
+            std::string filename = "after_rebalance_info_" + std::to_string(cycle) + ".csv";
+            std::ofstream out(filename);
+            #ifdef TIMING
+            out << "rank,cells,weight,steps,particles,end_particles,initial_particles,compute_time\n";
+            for(int r = 0; r < ws; r++)
+                out << r << "," << allCells[r] << "," << allWeights[r] << "," << allSteps[r] << "," << allParticles[r]
+                    << "," << allEndParticles[r] << "," << allInitialParticles[r]
+                    << "," << allComputeTime[r] << "\n";
+            #else
+            out << "rank,cells,weight,steps,particles,end_particles,initial_particles\n";
+            for(int r = 0; r < ws; r++)
+                out << r << "," << allCells[r] << "," << allWeights[r] << "," << allSteps[r] << "," << allParticles[r]
+                    << "," << allEndParticles[r] << "," << allInitialParticles[r] << "\n";
+            #endif
+            out.close();
+            std::cout << "Wrote " << filename << std::endl;
         }
-        return sourceFaces;
     }
 
-    static constexpr double baseWeight = 25.0;
-    static constexpr double measuredStepWeight = 1.0;
-    static constexpr double particleWeight = 2.0;
-    static constexpr double sourceFaceWeight = 40.0;
-    static constexpr double ewmaAlpha = 0.35;
-    static constexpr double maxWeightToMean = 8.0;
+private:
     const std::shared_ptr<MonteCarloManager3D> manager;
     const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> physics;
-    mutable std::vector<double> smoothedWeights;
-    mutable bool hasSmoothedWeights;
-    mutable size_t smoothedGeneration;
 };
 #endif // RICH_MPI
 
@@ -417,7 +426,7 @@ int main(int argc, char *argv[]) {
         {
             std::cerr << "Usage: " << argv[0]
                 << " <N_base> [new_per_cell] [max_per_cell] [--2d] [--p2p] "
-                "[--ibv] [--mpi-rma]"
+                "[--ibv] [--new_ibv] [--new-rdma] [--mpi-rma]"
                 << " [--hold-small-idle-flushes]"
                 << " [--resume <dump_number>]" << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
@@ -433,7 +442,9 @@ int main(int argc, char *argv[]) {
         bool useP2P = false;
         bool useIBV = false;
         bool useMpiRma = false;
-        bool holdSmallIdleFlushes = false;
+        bool useNewRdma = false;
+        bool useNewIbv = false;
+        bool holdSmallIdleFlushes = true;
         std::vector<std::string> positionalArgs;
         for(int a = 2; a < argc; a++)
         {
@@ -446,6 +457,10 @@ int main(int argc, char *argv[]) {
                 useIBV = true;
             else if(arg == "--mpi-rma")
                 useMpiRma = true;
+            else if(arg == "--new-rdma")
+                useNewRdma = true;
+            else if(arg == "--new_ibv" or arg == "--new-ibv")
+                useNewIbv = true;
             else if(arg == "--hold-small-idle-flushes")
                 holdSmallIdleFlushes = true;
             else if(arg == "--idle-flush-holdoff")
@@ -492,10 +507,9 @@ int main(int argc, char *argv[]) {
         const double T_boundary_keV = 1.0;
         const double T_boundary = T_boundary_keV * units::kev_kelvin; // Kelvin
         const double T_init = 300.0;                                  // Kelvin
-        const double dt = 1e-11 / (std::pow(ws / (static_cast<double>(5 * 112)),
-                0.333333333)); // seconds
-        const double t_final = dt * 150;                    // 1e-9;
-        const size_t iterations = static_cast<size_t>(t_final / dt + 0.5);
+        const double init_dt = 1e-11; // 1e-11 / (std::pow(ws / (static_cast<double>(5 * 112)), 0.333333333)); // seconds
+        const double t_final = 3e-9; // dt * 150;                    // 1e-9;
+        const double max_dt = 5e-11; 
         constexpr size_t boundaryPhotonsPerCell = 1000;
         constexpr size_t dumpInterval = 25;
 
@@ -599,8 +613,10 @@ int main(int argc, char *argv[]) {
             useMpiRma
             ? RadiationMCStep::ManagerType::MPI_RMA
             : (useP2P ? RadiationMCStep::ManagerType::P2P
-                : (useIBV ? RadiationMCStep::ManagerType::IBV_RDMA
-                    : RadiationMCStep::ManagerType::AUTO_RDMA)),
+                : (useNewIbv ? RadiationMCStep::ManagerType::NEW_IBV_RDMA
+                    : (useIBV ? RadiationMCStep::ManagerType::IBV_RDMA
+                        : (useNewRdma ? RadiationMCStep::ManagerType::NEW_RDMA
+                            : RadiationMCStep::ManagerType::AUTO_RDMA)))),
             nullptr, monteCarloConfig
 #endif
         );
@@ -612,6 +628,7 @@ int main(int argc, char *argv[]) {
         sim.addMigrationBuffer(mcStep->getManager()->GetBeginningParticleCount());
 #endif // RICH_MPI
 
+        double dt = init_dt;
         sim.SetTimeStep(dt);
 
         if(resumeDump >= 0)
@@ -650,7 +667,6 @@ int main(int argc, char *argv[]) {
                 << ", material=" << nMaterial << ", vacuum=" << nVacuum
                 << ", dt=" << dt << " s"
                 << ", t_final=" << t_final << " s"
-                << ", iterations=" << iterations
                 << ", new/cell=" << newPhotonsPerCell
                 << ", max/cell=" << minPhotonsPerCell << ", output=" << prefix
                 << (resumeDump >= 0
@@ -681,6 +697,11 @@ int main(int argc, char *argv[]) {
 
             stepsSinceLastDump++;
             simTime = sim.GetTime();
+
+            if(simTime >= 1e-9)
+            {
+                dt = std::min(1.05 * dt, max_dt);
+            }
             sim.SetTimeStep(dt);
 
             double fraction = simTime / t_final;
@@ -735,8 +756,7 @@ int main(int argc, char *argv[]) {
                 << ", I/O: " << wallSec - computeTotal << "s)" << std::endl;
 
         // --- Final output ---
-        WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base,
-            mode2d);
+        WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base,mode2d);
         // WriteVTK(tess, cells, physics, prefix + "final.vtu");
         // WriteSimulation(sim, prefix + "latest_sim.h5");
     } catch (const UniversalError &e) {
