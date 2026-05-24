@@ -1,4 +1,6 @@
 #include "RadiationIMC.hpp"
+#include "SphericalObserver.hpp"
+#include "PostProcessIMCHelpers.hpp"
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include <cmath>
@@ -132,11 +134,23 @@ namespace {
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcMinParticleOpticalDepth(parameters.ddmcMinParticleOpticalDepth), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonMatrixSamples(parameters.comptonMatrixSamples), postProcess_(parameters.postProcess)
 {
+    if(postProcess_.enabled)
+    {
+        PostProcessIMC::ValidateConfig(postProcess_, withCompton, parameters.withMultigroupOpacity, withRandomWalk);
+        withHydro = false;
+        diffusionPressureGradient = false;
+        MMC = false;
+        noHydroFeedback = true;
+    }
     if(this->withCompton && this->withRandomWalk)
     {
         throw UniversalError("RadiationIMC Compton precompute is not compatible with random walk yet");
+    }
+    if(this->withCompton && this->withDDMC)
+    {
+        throw UniversalError("RadiationIMC Compton precompute is not compatible with DDMC yet");
     }
     if(this->withCompton && !parameters.withMultigroupOpacity)
     {
@@ -164,6 +178,21 @@ namespace {
     }
 }
 
+void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
+{
+    observer_ = std::move(observer);
+}
+
+std::shared_ptr<SphericalObserver> RadiationIMC::getObserver() const
+{
+    return observer_;
+}
+
+bool RadiationIMC::isPostProcessMode() const
+{
+    return postProcess_.enabled;
+}
+
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std::vector<Particle> &particlesToAdd)
 {
     (void)particlesToAdd;
@@ -179,6 +208,14 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 
     // todo: change opacity with doppler shift in cast of frequency dependance
     double dopplerShift = (this->withHydro && !this->MMC) ? DopplerShift(particle, cell.velocity) : 1.0;
+
+    if(this->withDDMC && cellIndex < this->ddmcCellData.size() && this->ddmcCellData[cellIndex].eligible)
+    {
+        if(this->tryDDMCStep(particle, functionality, dopplerShift))
+        {
+            return functionality;
+        }
+    }
 
     if(this->randomWalk && this->rwCellEligible[cellIndex])
     {
@@ -238,16 +275,29 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     dt_t timeScattering = std::isfinite(scatteringDistance) ? scatteringDistance / abs(particle.velocity) : std::numeric_limits<dt_t>::infinity();
 
     dt_t timeLeft = particle.timeLeft;
-    std::array<std::pair<size_t, dt_t>, 3> times;
+
+    dt_t timeObserver = std::numeric_limits<dt_t>::infinity();
+    SphericalObserver::Crossing observerCrossing;
+    if (postProcess_.enabled && observer_)
+    {
+        observerCrossing = observer_->nextOutwardCrossing(
+            particle.location, particle.velocity, particle.timeLeft);
+        if (observerCrossing.hit)
+            timeObserver = observerCrossing.time;
+    }
+
+    std::array<std::pair<size_t, dt_t>, 4> times;
     enum Events
     { 
         INTERSECTION = 0, 
         SCATTERING = 1, 
-        TIMELEFT = 2
+        TIMELEFT = 2,
+        OBSERVER = 3
     };
     times[Events::INTERSECTION] = {INTERSECTION, timeIntersect};
     times[Events::SCATTERING] = {SCATTERING, timeScattering};
     times[Events::TIMELEFT] = {TIMELEFT, timeLeft};
+    times[Events::OBSERVER] = {OBSERVER, timeObserver};
 
     std::pair<size_t, double> min = *std::min_element(times.begin(), times.end(), [](const std::pair<size_t, dt_t> &a, const std::pair<size_t, dt_t> &b) { return a.second < b.second; });
     if(debug)
@@ -274,7 +324,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     double expFactor1 = std::expm1(tmp * dopplerShift);
     double expFactor2 = std::expm1(tmp);
     double integratedForTally = particle.weight * dt;
-    if(std::abs(tmp2 * dt) >= 1e-12)
+    if(std::abs(tmp2) >= 1e-30 && std::abs(tmp2 * dt) >= 1e-12)
     {
         integratedForTally = particle.weight * expFactor2 * (-1.0 / tmp2);
     }
@@ -299,10 +349,41 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         size_t g = this->opacity->findGroup(particle.frequency);
         this->Eg_time_avg[cellIndex][g] += integratedForTally;
     }
+    double const oldWeightForDiagnostics = particle.weight;
     particle.weight *= 1 + expFactor1;
 
-    if(std::abs(particle.weight) < particle.initialWeight * 1e-3)
+    if (postProcess_.enabled && observer_)
     {
+        double absorbed = oldWeightForDiagnostics - particle.weight;
+        if (absorbed > 0.0)
+            observer_->addAbsorbedEnergy(absorbed);
+    }
+
+    double low_energy_threshold = postProcess_.enabled ? 1e-8 : 1e-3;
+    bool lowWeight = std::abs(particle.weight) < particle.initialWeight * low_energy_threshold;
+
+    if (postProcess_.enabled && observer_ && min.first == Events::OBSERVER)
+    {
+        observer_->recordCrossing(particle.location, particle.weight, particle.frequency);
+        Vector3D candidate = PostProcessIMC::ObserverNudgeCandidate(*observer_, particle.location);
+        if (this->grid.IsPointInCell(candidate, cellIndex))
+            particle.location = candidate;
+        if (lowWeight)
+        {
+            observer_->addCutoffEnergy(particle.weight);
+            functionality.change = MonteCarloParticleStatus::REMOVE;
+        }
+        else
+        {
+            functionality.change = MonteCarloParticleStatus::NO_CELL_MOVE;
+        }
+        return functionality;
+    }
+
+    if(lowWeight)
+    {
+        if (postProcess_.enabled && observer_)
+            observer_->addCutoffEnergy(particle.weight);
         functionality.change = MonteCarloParticleStatus::REMOVE;
         if(!this->noHydroFeedback)
         {
@@ -396,6 +477,51 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 
 void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullDt)
 {
+    auto printAccelerationStats = [this]()
+    {
+        unsigned long long counts[6] = {
+            static_cast<unsigned long long>(this->rwStepCount),
+            static_cast<unsigned long long>(this->ddmcStepCount),
+            static_cast<unsigned long long>(this->ddmcLeakCount),
+            static_cast<unsigned long long>(this->ddmcCensusCount),
+            static_cast<unsigned long long>(this->ddmcUpscatterCount),
+            static_cast<unsigned long long>(this->ddmcFallbackCount)
+        };
+        int rank = 0;
+        #ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        if(rank == 0)
+            MPI_Reduce(MPI_IN_PLACE, counts, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        else
+            MPI_Reduce(counts, nullptr, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        #endif
+        if(rank == 0)
+        {
+            if(this->withRandomWalk)
+                std::cout << "RW steps: " << counts[0] << std::endl;
+            if(this->withDDMC)
+            {
+                std::cout << "DDMC steps: " << counts[1]
+                          << " leaks=" << counts[2]
+                          << " census=" << counts[3]
+                          << " upscatter=" << counts[4]
+                          << " fallback=" << counts[5]
+                          << std::endl;
+            }
+        }
+    };
+
+    if (postProcess_.enabled)
+    {
+        double timedOut = 0.0;
+        for (auto const& p : particles)
+            timedOut += p.weight;
+        if (observer_)
+            observer_->addTimedOutEnergy(timedOut);
+        printAccelerationStats();
+        return;
+    }
+
     size_t Ncells = this->grid.GetPointNo();
     for(size_t i = 0; i < Ncells; i++)
     {
@@ -559,20 +685,7 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
         }
     }
 
-    if(this->withRandomWalk)
-    {
-        size_t globalRwSteps = this->rwStepCount;
-        int rank = 0;
-        #ifdef RICH_MPI
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        if(rank == 0)
-            MPI_Reduce(MPI_IN_PLACE, &globalRwSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-        else
-            MPI_Reduce(&globalRwSteps, nullptr, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-        #endif
-        if(rank == 0)
-            std::cout << "RW steps: " << globalRwSteps << std::endl;
-    }
+    printAccelerationStats();
 }
 
 void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
@@ -769,7 +882,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             particle.timeLeft = fullDt * this->dist(this->re);
             if(this->withHydro && !this->MMC)
             {
-                double D = DopplerShift(particle, cell.velocity);
+                double D = std::max(DopplerShift(particle, cell.velocity), 1e-30);
                 if(this->multigroupOpacity)
                 {
                     double rnd = this->dist(this->re);
@@ -1417,6 +1530,9 @@ void RadiationIMC::precomputeComptonData(double fullDt)
 
 std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt)
 {
+    if (postProcess_.enabled && !observer_)
+        throw UniversalError("RadiationIMC post-process mode requires observer");
+
     assert(this->cells.size() >= this->grid.GetPointNo());
     assert(this->conserved.size() >= this->grid.GetPointNo());
 
@@ -1463,7 +1579,25 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         }
     }
 
-    this->precomputeComptonData(fullDt);
+    if (postProcess_.enabled && !withCompton && postProcess_.forceGreyFleckOne)
+    {
+        for (size_t i = 0; i < Ncells; ++i)
+            factorFleck[i] = 1.0;
+    }
+
+    double const emissionDt = postProcess_.enabled ? postProcess_.sourceDt : fullDt;
+
+    this->precomputeComptonData(emissionDt);
+
+    if(this->withDDMC)
+    {
+        this->precomputeDDMCData();
+        this->ddmcStepCount = 0;
+        this->ddmcLeakCount = 0;
+        this->ddmcCensusCount = 0;
+        this->ddmcUpscatterCount = 0;
+        this->ddmcFallbackCount = 0;
+    }
 
     if(this->withRandomWalk)
     {
@@ -1471,29 +1605,31 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         this->rwStepCount = 0;
     }
 
-    std::vector<Particle> newParticles = this->generateParticles(fullDt);
-    std::vector<Particle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt); // todo: not here
+    std::vector<Particle> newParticles = this->generateParticles(emissionDt);
+
+    if (postProcess_.enabled)
+    {
+        double emitted = PostProcessIMC::PrepareGeneratedParticles(newParticles, postProcess_.transportTime);
+        if (observer_)
+            observer_->addEmittedEnergy(emitted);
+        return newParticles;
+    }
+
+    std::vector<Particle> newParticles2 = this->boundary->generateNewBoundaryParticles(fullDt);
     for(Particle &particle : newParticles2)
     {
         SetInitialWeightFromWeight(particle);
     }
     newParticles.insert(newParticles.end(), newParticles2.begin(), newParticles2.end());
-    // auto printParticles = [&]()
-    // {
-    //     rank_t rank;
-    //     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    //     for(MCParticle &p : newParticles)
-    //     {
-    //         std::cout << "Rank " << rank << ": " << p << std::endl;
-    //     }
-    // };
-    // MPI_Sync(MPI_COMM_WORLD, printParticles);
     return newParticles;
 }
 
 std::vector<typename RadiationIMC::Particle> RadiationIMC::generateInitialParticles(size_t particlesPerCell)
 {
     std::vector<Particle> result;
+    if(particlesPerCell == 0)
+        return result;
+
     size_t Ncells = this->grid.GetPointNo();
 
     std::array<double, ENERGY_GROUPS_NUM + 1> cumulPlanck;
@@ -1789,6 +1925,7 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     os << "\t" << "MMC: " << parameters.MMC << std::endl;
     os << "\t" << "with multigroup opacity: " << parameters.withMultigroupOpacity << std::endl;
     os << "\t" << "with random walk: " << parameters.withRandomWalk << std::endl;
+    os << "\t" << "with DDMC: " << parameters.withDDMC << std::endl;
     os << "\t" << "with Compton: " << parameters.withCompton << std::endl;
     if(parameters.withCompton)
     {
@@ -1801,6 +1938,12 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     {
         os << "\t" << "RW min cell optical depth: " << parameters.rwMinCellOpticalDepth << std::endl;
         os << "\t" << "RW min particle optical depth: " << parameters.rwMinParticleOpticalDepth << std::endl;
+    }
+    if(parameters.withDDMC)
+    {
+        os << "\t" << "DDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << std::endl;
+        os << "\t" << "DDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << std::endl;
+        os << "\t" << "DDMC multigroup PGRW cutoff: " << parameters.ddmcUseMultigroupPGRW << std::endl;
     }
     os << "\t" << "no hydro feedback: " << parameters.noHydroFeedback << std::endl;
     return os;

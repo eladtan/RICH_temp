@@ -2,12 +2,18 @@
 #define RADIATION_IMC_HPP
 
 #include <array>
+#include <limits>
 #include <memory>
+#include <string>
+#include <vector>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "RandomWalk.hpp"
 #include "Radiation/CMMC/src/compton_matrix_mc.hpp"
+#include "PostProcessIMCHelpers.hpp"
+
+class SphericalObserver;
 
 struct RadiationIMCParameters
 {
@@ -19,6 +25,10 @@ struct RadiationIMCParameters
     bool withRandomWalk = false;
     double rwMinCellOpticalDepth = 25.0;
     double rwMinParticleOpticalDepth = 5.0;
+    bool withDDMC = false;
+    double ddmcMinCellOpticalDepth = 15.0;
+    double ddmcMinParticleOpticalDepth = 5.0;
+    bool ddmcUseMultigroupPGRW = true;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
     bool withCompton = false;
@@ -26,6 +36,8 @@ struct RadiationIMCParameters
     bool comptonAllowNZeroFallback = true;
     bool comptonAngleDependent = true;
     size_t comptonMatrixSamples = 200000;
+
+    RadiationIMCPostProcessConfig postProcess;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
@@ -93,6 +105,14 @@ public:
 
     void postStep(const std::vector<Particle> &particles, double fullDt) override;
 
+    size_t getRandomWalkStepCount() const override { return this->rwStepCount; }
+    size_t getDDMCStepCount() const override { return this->ddmcStepCount; }
+    size_t getDDMCLeakCount() const override { return this->ddmcLeakCount; }
+    size_t getDDMCCensusCount() const override { return this->ddmcCensusCount; }
+    size_t getDDMCUpscatterCount() const override { return this->ddmcUpscatterCount; }
+    size_t getDDMCFallbackCount() const override { return this->ddmcFallbackCount; }
+    std::string getAccelerationDebugInfo(size_t cellIndex, double frequency) const override;
+
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
 
     std::vector<Particle> generateInitialParticles(size_t particlesPerCell) override;
@@ -109,7 +129,32 @@ public:
 
     inline const GroupArray &getComptonGroupWidths(void) const {return this->comptonGroupWidths;}
 
+    void setObserver(std::shared_ptr<SphericalObserver> observer);
+    std::shared_ptr<SphericalObserver> getObserver() const;
+    bool isPostProcessMode() const;
+
 private:    
+    struct DDMCFaceLeak
+    {
+        size_t faceIndex = std::numeric_limits<size_t>::max();
+        size_t nextCellIndex = std::numeric_limits<size_t>::max();
+        double rate = 0.0;
+    };
+
+    struct DDMCCellData
+    {
+        bool eligible = false;
+        bool observerExcluded = false;
+        bool boundaryExcluded = false;
+        double sigmaT = 0.0;
+        double sigmaA = 0.0;
+        double diffusionCoefficient = 0.0;
+        double gamma = 1.0;
+        size_t groupCutoff = 0;
+        double totalLeakRate = 0.0;
+        std::vector<DDMCFaceLeak> faceLeaks;
+    };
+
     std::vector<Particle> generateParticles(double fullDt);
     std::vector<Particle> generateComptonParticles(double fullDt);
     void precomputeComptonData(double fullDt);
@@ -142,6 +187,10 @@ private:
     bool withRandomWalk;
     double rwMinCellOpticalDepth;
     double rwMinParticleOpticalDepth;
+    bool withDDMC;
+    double ddmcMinCellOpticalDepth;
+    double ddmcMinParticleOpticalDepth;
+    bool ddmcUseMultigroupPGRW;
     bool noHydroFeedback;
     bool withEgTimeAvg;
     bool withCompton;
@@ -156,8 +205,20 @@ private:
     std::vector<PGRWCellData> rwCellData;
     size_t rwStepCount = 0;
 
+    std::vector<DDMCCellData> ddmcCellData;
+    size_t ddmcStepCount = 0;
+    size_t ddmcLeakCount = 0;
+    size_t ddmcCensusCount = 0;
+    size_t ddmcUpscatterCount = 0;
+    size_t ddmcFallbackCount = 0;
+
+    RadiationIMCPostProcessConfig postProcess_;
+    std::shared_ptr<SphericalObserver> observer_;
+
     bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeRandomWalkData();
+    bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
+    void precomputeDDMCData();
 };
 
 #endif // RADIATION_IMC_HPP
