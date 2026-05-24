@@ -36,20 +36,6 @@ namespace
 		return radii;
 	}
 
-	std::vector<Vector3D> fibonacci_sphere_directions(size_t n)
-	{
-		std::vector<Vector3D> dirs;
-		dirs.reserve(n);
-		double const golden_angle = M_PI * (3.0 - std::sqrt(5.0));
-		for (size_t i = 0; i < n; ++i) {
-			double const z = 1.0 - (2.0 * static_cast<double>(i) + 1.0) / static_cast<double>(n);
-			double const r = std::sqrt(std::max(0.0, 1.0 - z * z));
-			double const phi = golden_angle * static_cast<double>(i);
-			dirs.push_back(Vector3D(r * std::cos(phi), r * std::sin(phi), z));
-		}
-		return dirs;
-	}
-
 	void append_shell(std::vector<Vector3D>& points, std::vector<Vector3D> const& dirs,
 		double radius, Vector3D const& center, Vector3D const& ll, Vector3D const& ur)
 	{
@@ -118,6 +104,20 @@ namespace
 			++measured_bins;
 		}
 	}
+}
+
+std::vector<Vector3D> fibonacci_sphere_directions(size_t n)
+{
+	std::vector<Vector3D> dirs;
+	dirs.reserve(n);
+	double const golden_angle = M_PI * (3.0 - std::sqrt(5.0));
+	for (size_t i = 0; i < n; ++i) {
+		double const z = 1.0 - (2.0 * static_cast<double>(i) + 1.0) / static_cast<double>(n);
+		double const r = std::sqrt(std::max(0.0, 1.0 - z * z));
+		double const phi = golden_angle * static_cast<double>(i);
+		dirs.push_back(Vector3D(r * std::cos(phi), r * std::sin(phi), z));
+	}
+	return dirs;
 }
 
  vector<Vector3D> CartesianMesh(std::size_t nx, std::size_t ny, std::size_t nz, Vector3D const& lower_left, Vector3D const& upper_right)

@@ -154,4 +154,10 @@ SphericalShellMeshDiagnostics MeasureSphericalShellMesh3D(Tessellation3D const& 
  */
 std::vector<Vector3D> RandSphereSurface(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0));
 
+/*! \brief Generate N near-uniform directions on the unit sphere using a Fibonacci/golden-angle lattice
+  \param n Number of directions
+  \return List of unit vectors
+ */
+std::vector<Vector3D> fibonacci_sphere_directions(size_t n);
+
 #endif //MESHGENERATOR3D_HPP
