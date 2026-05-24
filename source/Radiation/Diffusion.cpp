@@ -39,7 +39,8 @@ Diffusion::Diffusion(OpacityCalculator const& D_coefficient_calc,
                      bool const flux_limiter, 
                      bool const hydro_on, 
                      bool const compton_on,
-                     bool const cooling_time_limiter_on) : 
+                     bool const cooling_time_limiter_on,
+                     double const max_planck_opacity_factor) : 
                                              RadiationDriver(eos, 
                                                             zero_cells, 
                                                             flux_limiter, 
@@ -58,7 +59,8 @@ Diffusion::Diffusion(OpacityCalculator const& D_coefficient_calc,
                                              old_Er(),
                                              cells_temp(),
                                              extensives_temp(),
-                                             cooling_time_limiter_on_(cooling_time_limiter_on) {}
+                                             cooling_time_limiter_on_(cooling_time_limiter_on),
+                                             max_planck_opacity_factor_(max_planck_opacity_factor) {}
 
 double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double const dt)const
 {
@@ -66,7 +68,7 @@ double Diffusion::GetSingleFleckFactor(ComputationalCell3D const& cell, double c
     cell_cgs.density *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
     double const Er = cell.Erad * cell.density *  mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
     double sigma_planck = D_coefficient_calcualtor.CalcPlanckOpacity(cell_cgs);
-    sigma_planck = std::min(sigma_planck, 100.0 / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
+    sigma_planck = std::min(sigma_planck, max_planck_opacity_factor_ / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
     double const sigma_s = D_coefficient_calcualtor.CalcScatteringOpacity(cell_cgs);
     double const T = cell.temperature;
     double Cv = eos_.dT2cv(cell.density, T, cell.tracers, ComputationalCell3D::tracerNames);
@@ -323,7 +325,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         sigma_planck[i] = D_coefficient_calcualtor.CalcPlanckOpacity(cells_cgs[i]);
         if(sigma_planck[i] < 0)
             throw UniversalError("Negative sigma_planck");
-        sigma_planck[i] = std::min(sigma_planck[i], 10.0 / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
+        sigma_planck[i] = std::min(sigma_planck[i], max_planck_opacity_factor_ / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
         sigma_s[i] = D_coefficient_calcualtor.CalcScatteringOpacity(cells_cgs[i]);
 
         // Optional cooling limiter for under-resolved post-shock cooling layers.

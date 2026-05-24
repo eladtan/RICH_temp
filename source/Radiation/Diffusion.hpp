@@ -126,7 +126,8 @@ public:
               bool const flux_limiter = true, 
               bool const hydro_on = true, 
               bool const compton_on = false,
-              bool const cooling_time_limiter_on = false);
+              bool const cooling_time_limiter_on = false,
+              double const max_planck_opacity_factor = 100.0);
     
     ~Diffusion() = default;
 
@@ -182,6 +183,7 @@ public:
     mutable std::vector<Conserved3D> extensives_temp;
     mutable CG::BiCGSTABWorkspace cg_workspace_;
     bool const cooling_time_limiter_on_;
+    double const max_planck_opacity_factor_;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck
