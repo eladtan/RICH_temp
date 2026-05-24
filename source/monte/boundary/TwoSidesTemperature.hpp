@@ -92,12 +92,13 @@ MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<
                 return MonteCarloParticleStatus::REMOVE;
             }
             reflectsHad++;
-            // Reflect the particle
+            const double signedDistance = ScalarProd(particle.location - onFace, normal);
+            particle.location -= 2 * signedDistance * normal;
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
         }
     }
 
-    if(reflectsHad >= 2)
+    if(reflectsHad > 0)
     {
         const T &center = this->grid.GetMeshPoint(particle.cellIndex);
         constexpr double nudge = 1e-6;

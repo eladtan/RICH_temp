@@ -81,8 +81,12 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
                     return MonteCarloParticleStatus::REMOVE;
                 }
             }
-            // Reflect the particle
+            const double signedDistance = ScalarProd(particle.location - onFace, normal);
+            particle.location -= 2 * signedDistance * normal;
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
+            const T &center = this->grid.GetMeshPoint(particle.cellIndex);
+            constexpr double nudge = 1e-6;
+            particle.location = particle.location * (1 - nudge) + nudge * center;
             status = MonteCarloParticleStatus::REFLECT;
             return status;
         }
