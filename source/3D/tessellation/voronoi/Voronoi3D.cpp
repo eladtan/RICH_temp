@@ -1421,6 +1421,15 @@ void Voronoi3D::BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, c
         std::cout << "Time for preparing (hilbert tree + load balancing): " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
     }
 
+    {
+        int myPts = static_cast<int>(activePoints.size());
+        int maxPts = myPts, minPts = myPts;
+        MPI_Allreduce(MPI_IN_PLACE, &maxPts, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &minPts, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if (rank == 0)
+            std::cout << "Post-LB point distribution: max=" << maxPts << ", min=" << minPts << std::endl;
+    }
+
     start = std::chrono::high_resolution_clock::now();
 
     std::vector<size_t> order;
@@ -1853,6 +1862,7 @@ void Voronoi3D::MockMesh(void)
     }
 
     this->UpdateCMs();
+    MPI_exchange_data(*this, this->volume_, true);
 }
 
 void Voronoi3D::SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer)
