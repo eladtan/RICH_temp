@@ -2,6 +2,7 @@
 #define MONTE_CARLO_MANAGER_SERIAL_HPP
 
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -468,12 +469,32 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
     // measure time
     // vtune_start();
     auto start = std::chrono::high_resolution_clock::now();
+    double lastProgressPrint = 0.0;
+    size_t const totalParticlesStart = this->startParticleCount_;
+    size_t progressIter = 0;
 
     try
     {
         while(this->particlesData.th_length != 0)
         {
             this->HandleAll(data);
+            ++progressIter;
+
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed_s = std::chrono::duration<double>(now - start).count();
+            if (elapsed_s - lastProgressPrint >= 10.0) {
+                lastProgressPrint = elapsed_s;
+                size_t remaining = this->particlesData.th_length;
+                double done_frac = 1.0 - static_cast<double>(remaining) / static_cast<double>(totalParticlesStart);
+                double processed = static_cast<double>(totalParticlesStart - remaining);
+                double rate = processed / elapsed_s;
+                double eta = (rate > 0) ? remaining / rate : 0.0;
+                std::cerr << "[Progress] " << std::fixed << std::setprecision(1)
+                          << (done_frac * 100.0) << "% done, "
+                          << elapsed_s << "s elapsed, "
+                          << "~" << eta << "s remaining"
+                          << std::endl;
+            }
         }
     }
     catch(const UniversalError &eo)

@@ -2,9 +2,11 @@
 #define COMB_POPULATION_CONTROL_HPP
 
 #include <cmath>
+#include <limits>
 #include <random>
 #include <boost/random/mersenne_twister.hpp>
 #include "PopulationControl.hpp"
+#include "misc/universal_error.hpp"
 
 template<typename T, typename Grid>
 class CombPopulationControl : public PopulationControl<T, Grid>
@@ -77,6 +79,34 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
     double totalWeight = 0.0;
     for(const MCParticle &particle : particles)
     {
+        if(this->grid.IsPointOutsideBox(particle.location))
+        {
+            UniversalError eo("Comb Population Control: input particle is outside the box");
+            eo.addEntry("Particle", particle);
+            eo.addEntry("Cell count", Ncells);
+            if(particle.cellIndex < Ncells)
+            {
+                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                eo.addEntry("Inside declared cell", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+            }
+            throw eo;
+        }
+        if(!std::isfinite(particle.weight))
+        {
+            UniversalError eo("Comb Population Control: particle weight is not finite");
+            eo.addEntry("Particle weight", particle.weight);
+            eo.addEntry("Particle cell index", particle.cellIndex);
+            throw eo;
+        }
+        if(particle.weight < 0.0)
+        {
+            UniversalError eo("Comb Population Control: particle weight is negative");
+            eo.addEntry("Particle weight", particle.weight);
+            eo.addEntry("Particle cell index", particle.cellIndex);
+            throw eo;
+        }
+        if(particle.weight == 0.0)
+            continue;
         assert(particle.cellIndex < Ncells);
         weights[particle.cellIndex] += particle.weight;
         totalWeight += particle.weight;
@@ -86,6 +116,15 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
     #ifdef RICH_MPI
         MPI_Allreduce(MPI_IN_PLACE, &totalWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     #endif // RICH_MPI
+    if(!std::isfinite(totalWeight))
+    {
+        UniversalError eo("Comb Population Control: total particle weight is not finite");
+        eo.addEntry("Total weight", totalWeight);
+        eo.addEntry("Local particle count", particles.size());
+        throw eo;
+    }
+    if(totalWeight == 0.0)
+        return result;
 
     Ntotal = static_cast<size_t>(Ntotal * this->Nmin * this->totalParticlesFactor);
 
@@ -160,6 +199,14 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
     {
         if(this->grid.IsPointOutsideBox(p.location))
         {
+            const size_t Ncells = this->grid.GetPointNo();
+            if(p.cellIndex >= Ncells)
+            {
+                UniversalError eo("Comb Population Control: outside particle has invalid cell index");
+                eo.addEntry("Particle cell index", p.cellIndex);
+                eo.addEntry("Cell count", Ncells);
+                throw eo;
+            }
             const Vector3D original = p.location;
             const Vector3D direction = this->grid.GetMeshPoint(p.cellIndex) - original;
             double t = 1e-6;
@@ -168,6 +215,8 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
                 p.location = original + t * direction;
                 t *= 2;
             }
+            if(this->grid.IsPointOutsideBox(p.location))
+                p.location = this->grid.GetMeshPoint(p.cellIndex);
         }
     }
 
