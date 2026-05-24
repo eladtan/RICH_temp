@@ -10,6 +10,11 @@
 
 #define RADIUSES_FACTOR 2
 
+namespace
+{
+    constexpr double UPDATE_NEW_CELLS_BOX_EPS_FACTOR = 16.0;
+}
+
 #ifdef RICH_MPI
 
 // Move according to sent points
@@ -171,8 +176,8 @@ static size_t ResolveRemainingParticles(const Tessellation3D &tess, std::vector<
 
     auto [tess_ll, tess_ur] = tess.GetBoxCoordinates();
     Vector3D tess_boxsize = tess_ur - tess_ll;
-    tess_ll -= 2.0 * EPSILON * tess_boxsize;
-    tess_ur += 2.0 * EPSILON * tess_boxsize;
+    tess_ll -= UPDATE_NEW_CELLS_BOX_EPS_FACTOR * EPSILON * tess_boxsize;
+    tess_ur += UPDATE_NEW_CELLS_BOX_EPS_FACTOR * EPSILON * tess_boxsize;
     OctTree<IndexedVector3D> wideTree(IndexedVector3D(tess_ll, std::numeric_limits<size_t>::max()), IndexedVector3D(tess_ur, std::numeric_limits<size_t>::max()));
     for(size_t i = 0; i < N; i++)
         wideTree.insert(IndexedVector3D(tess.GetMeshPoint(i), i));
@@ -427,6 +432,15 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
     {
         size_t N = tess.GetPointNo();
     #ifndef RICH_MPI
+        if(N == 0)
+        {
+            if(particles.empty())
+                return;
+
+            UniversalError eo("UpdateNewCells: particles remain on a rank with no local cells");
+            eo.addEntry("Particle count", particles.size());
+            throw eo;
+        }
         for(Particle3D &p : particles)
         {
             if(p.cellIndex < N)
@@ -448,32 +462,37 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
 
         START_TIMER_PREEMPTIVE("Local Trees Construction");
         
-        Vector3D ll(std::numeric_limits<double>::max());
-        Vector3D ur(std::numeric_limits<double>::lowest());
-
-        const std::vector<Vector3D> &vertices = tess.GetFacePoints();
-        for(const point_vec &vec : tess.GetAllPointsInFace())
+        auto [tess_ll, tess_ur] = tess.GetBoxCoordinates();
+        Vector3D ll = tess_ll;
+        Vector3D ur = tess_ur;
+        if(N > 0)
         {
-            for(size_t pointIdx : vec)
+            ll = Vector3D(std::numeric_limits<double>::max());
+            ur = Vector3D(std::numeric_limits<double>::lowest());
+
+            const std::vector<Vector3D> &vertices = tess.GetFacePoints();
+            for(const point_vec &vec : tess.GetAllPointsInFace())
             {
-                const Vector3D &p = vertices[pointIdx];
-                ll.x = std::min(ll.x, p.x);
-                ll.y = std::min(ll.y, p.y);
-                ll.z = std::min(ll.z, p.z);
-                ur.x = std::max(ur.x, p.x);
-                ur.y = std::max(ur.y, p.y);
-                ur.z = std::max(ur.z, p.z);
+                for(size_t pointIdx : vec)
+                {
+                    const Vector3D &p = vertices[pointIdx];
+                    ll.x = std::min(ll.x, p.x);
+                    ll.y = std::min(ll.y, p.y);
+                    ll.z = std::min(ll.z, p.z);
+                    ur.x = std::max(ur.x, p.x);
+                    ur.y = std::max(ur.y, p.y);
+                    ur.z = std::max(ur.z, p.z);
+                }
             }
+
+            Vector3D boxsize = ur - ll;
+            ll -= EPSILON * boxsize;
+            ur += EPSILON * boxsize;
         }
 
-        Vector3D boxsize = ur - ll;
-        ll -= EPSILON * boxsize;
-        ur += EPSILON * boxsize;
-
-        auto [tess_ll, tess_ur] = tess.GetBoxCoordinates();
         Vector3D tess_boxsize = tess_ur - tess_ll;
-        tess_ll -= 2.0 * EPSILON * tess_boxsize;
-        tess_ur += 2.0 * EPSILON * tess_boxsize;
+        tess_ll -= UPDATE_NEW_CELLS_BOX_EPS_FACTOR * EPSILON * tess_boxsize;
+        tess_ur += UPDATE_NEW_CELLS_BOX_EPS_FACTOR * EPSILON * tess_boxsize;
         BoundingBox<Vector3D> bb(tess_ll, tess_ur);
         BoundingBox<Vector3D> subBox(ll, ur);
 
