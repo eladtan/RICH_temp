@@ -198,6 +198,7 @@ private:
     bool comptonAllowNZeroFallback;
     bool comptonAngleDependent;
     size_t comptonMatrixSamples;
+    bool useTransportVelocities_ = false;
 
     std::unique_ptr<RandomWalk> randomWalk;
     std::vector<bool> rwCellEligible;

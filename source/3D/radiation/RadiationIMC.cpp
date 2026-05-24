@@ -136,6 +136,10 @@ namespace {
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
     : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcMinParticleOpticalDepth(parameters.ddmcMinParticleOpticalDepth), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), withCompton(parameters.withCompton), comptonUseInduced(parameters.comptonUseInduced), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonMatrixSamples(parameters.comptonMatrixSamples), postProcess_(parameters.postProcess)
 {
+    this->useTransportVelocities_ =
+        (parameters.withHydro && !parameters.MMC) ||
+        (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities);
+
     if(postProcess_.enabled)
     {
         PostProcessIMC::ValidateConfig(postProcess_, withCompton, parameters.withMultigroupOpacity, withRandomWalk);
@@ -175,6 +179,35 @@ namespace {
     if(rank == 0)
     {
         std::cout << parameters << std::endl;
+        if(postProcess_.enabled)
+        {
+            std::cout << "PostProcess transport: useCellVelocities="
+                      << postProcess_.useCellVelocities
+                      << ", useTransportVelocities_="
+                      << this->useTransportVelocities_
+                      << std::endl;
+        }
+    }
+
+    if(this->postProcess_.enabled && this->useTransportVelocities_)
+    {
+        size_t const Nreal = this->grid.GetPointNo();
+        for(size_t i = 0; i < Nreal; ++i)
+        {
+            const Vector3D &v = this->cells[i].velocity;
+            const double v2 = ScalarProd(v, v);
+            if(!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z) ||
+               !(v2 < units::clight * units::clight))
+            {
+                UniversalError eo("PostProcess: invalid cell velocity for transport");
+                eo.addEntry("cellIndex", static_cast<double>(i));
+                eo.addEntry("velocity x", v.x);
+                eo.addEntry("velocity y", v.y);
+                eo.addEntry("velocity z", v.z);
+                eo.addEntry("|v|/c", std::sqrt(v2) / units::clight);
+                throw eo;
+            }
+        }
     }
 }
 
@@ -206,8 +239,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     auto [faceIntersect, timeIntersect, nextCellIndex] = this->getIntersectionDetails(particle);
     assert(timeIntersect >= 0);
 
-    // todo: change opacity with doppler shift in cast of frequency dependance
-    double dopplerShift = (this->withHydro && !this->MMC) ? DopplerShift(particle, cell.velocity) : 1.0;
+    double dopplerShift = this->useTransportVelocities_ ? DopplerShift(particle, cell.velocity) : 1.0;
 
     if(this->withDDMC && cellIndex < this->ddmcCellData.size() && this->ddmcCellData[cellIndex].eligible)
     {
@@ -446,7 +478,7 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
                 ClampFrequencyToBounds(particle.frequency);
             }
         }
-        if(this->withHydro && !this->MMC && !didImplicitCompton)
+        if(this->useTransportVelocities_ && !didImplicitCompton)
         {
             double weightBefore = particle.weight;
             particle.weight *= D_lab_to_co;
@@ -1946,5 +1978,10 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
         os << "\t" << "DDMC multigroup PGRW cutoff: " << parameters.ddmcUseMultigroupPGRW << std::endl;
     }
     os << "\t" << "no hydro feedback: " << parameters.noHydroFeedback << std::endl;
+    if(parameters.postProcess.enabled)
+    {
+        os << "\t" << "post-process: enabled" << std::endl;
+        os << "\t" << "post-process use cell velocities: " << parameters.postProcess.useCellVelocities << std::endl;
+    }
     return os;
 }

@@ -13,6 +13,10 @@ struct RadiationIMCPostProcessConfig
     double sourceDt = 0.0;
     double transportTime = 0.0;
     bool forceGreyFleckOne = true;
+    // In post-process mode, hydro feedback is disabled, but snapshot cell
+    // velocities may still be used for Doppler shifts, comoving opacities,
+    // frequency-group decisions, and lab/comoving transforms.
+    bool useCellVelocities = true;
 };
 
 namespace PostProcessIMC

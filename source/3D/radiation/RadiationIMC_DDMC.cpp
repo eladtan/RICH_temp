@@ -120,9 +120,13 @@ void RadiationIMC::precomputeDDMCData()
         if(data.eligible && this->postProcess_.enabled && this->observer_)
         {
             Vector3D const cellCenter = this->grid.GetMeshPoint(i);
+            double cellRadius = 0.0;
+            for(size_t faceIdx : this->grid.GetCellFaces(i))
+                cellRadius = std::max(cellRadius, abs(this->grid.FaceCM(faceIdx) - cellCenter));
+            double const charLen = std::max(meanChordLength, cellRadius);
             double const distToObserver = abs(cellCenter - this->observer_->getCenter());
             double const obsR = this->observer_->getRadius();
-            if(distToObserver + meanChordLength >= obsR && distToObserver - meanChordLength <= obsR)
+            if(distToObserver + charLen >= obsR && distToObserver - charLen <= obsR)
             {
                 data.eligible = false;
                 data.observerExcluded = true;
@@ -202,8 +206,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     ComputationalCell3D &cell = this->cells[cellIndex];
 
-    bool const movingHydroNoMMC = this->withHydro && !this->MMC;
-    double const gammaCell = movingHydroNoMMC ? CellGamma(cell.velocity) : 1.0;
+    bool const useVelocityTransport = this->useTransportVelocities_;
+    double const gammaCell = useVelocityTransport ? CellGamma(cell.velocity) : 1.0;
 
     if(!(gammaCell > 0.0) || !std::isfinite(gammaCell))
     {
@@ -215,7 +219,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     double const oldLabWeight = particle.weight;
 
     Particle materialParticle = particle;
-    if(movingHydroNoMMC)
+    if(useVelocityTransport)
     {
         LorentzTransformation(materialParticle, cell.velocity);
         if(this->multigroupOpacity)
@@ -265,7 +269,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     }
 
     double const tEventCo = -std::log(PositiveRandom(this->dist(this->re))) / eventRateCo;
-    double const tCensusCo = movingHydroNoMMC ? particle.timeLeft / gammaCell
+    double const tCensusCo = useVelocityTransport ? particle.timeLeft / gammaCell
                                               : particle.timeLeft;
 
     double const dtCo = std::min(tEventCo, tCensusCo);
@@ -274,7 +278,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     // This intentionally ignores the event displacement term
     // gammaCell * dot(cell.velocity, dxCo) / c^2.
     // Use Level 2 before relying on high-v/c DDMC results.
-    double dtLab = movingHydroNoMMC ? gammaCell * dtCo : dtCo;
+    double dtLab = useVelocityTransport ? gammaCell * dtCo : dtCo;
     bool const censusEvent = (tCensusCo <= tEventCo);
     if(censusEvent)
         dtLab = particle.timeLeft;
@@ -334,7 +338,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             functionality.change = MonteCarloParticleStatus::REMOVE;
 
-            if(this->withHydro && !this->diffusionPressureGradient && !this->noHydroFeedback)
+            if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
             {
                 this->conserved[cellIndex].momentum +=
                     (oldLabWeight * oldLabVelocity) * units::inv_clight2;
@@ -345,7 +349,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
         Particle finalLabParticle = materialParticle;
 
-        if(movingHydroNoMMC)
+        if(useVelocityTransport)
         {
             LorentzTransformation(finalLabParticle, -1 * cell.velocity);
             if(this->multigroupOpacity)
@@ -358,7 +362,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.weight    = finalLabParticle.weight;
         particle.timeLeft  = finalLabParticle.timeLeft;
 
-        if(this->withHydro && !this->diffusionPressureGradient && !this->noHydroFeedback)
+        if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
         {
             this->conserved[cellIndex].momentum +=
                 (oldLabWeight * oldLabVelocity - particle.weight * particle.velocity)
@@ -370,8 +374,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     bool removeParticle = false;
 
-    double const lowWeightCutoff = this->postProcess_.enabled ? 1e-4 : 1e-3;
-    double const initialCoWeightApprox = movingHydroNoMMC
+    double const lowWeightCutoff = this->postProcess_.enabled ? 1e-8 : 1e-3;
+    double const initialCoWeightApprox = useVelocityTransport
         ? particle.initialWeight * DopplerShift(particle, cell.velocity)
         : particle.initialWeight;
 
@@ -514,7 +518,12 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
     }
 
     DDMCCellData const &data = this->ddmcCellData[cellIndex];
-    os << " eligible=" << data.eligible
+    Vector3D const &cellVel = this->cells[cellIndex].velocity;
+    os << " useTransportVelocities=" << this->useTransportVelocities_
+       << " postProcess=" << this->postProcess_.enabled
+       << " cell_vel=(" << cellVel.x << "," << cellVel.y << "," << cellVel.z << ")"
+       << " freq_assumed_lab=" << frequency
+       << " eligible=" << data.eligible
        << " observer_excluded=" << data.observerExcluded
        << " boundary_excluded=" << data.boundaryExcluded
        << " sigmaT=" << data.sigmaT

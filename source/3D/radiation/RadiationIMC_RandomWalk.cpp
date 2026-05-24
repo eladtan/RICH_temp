@@ -110,8 +110,11 @@ void RadiationIMC::precomputeRandomWalkData()
         if (this->rwCellEligible[i] && this->postProcess_.enabled && this->observer_)
         {
             Vector3D cellCenter = this->grid.GetMeshPoint(i);
+            double cellRadius = 0.0;
+            for(size_t faceIdx : this->grid.GetCellFaces(i))
+                cellRadius = std::max(cellRadius, abs(this->grid.FaceCM(faceIdx) - cellCenter));
+            double charLen = std::max(meanChordLength, cellRadius);
             double distToObserver = abs(cellCenter - this->observer_->getCenter());
-            double charLen = meanChordLength;
             double obsR = this->observer_->getRadius();
             if (distToObserver + charLen >= obsR && distToObserver - charLen <= obsR)
                 this->rwCellEligible[i] = false;
@@ -126,8 +129,8 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     size_t cellIndex = particle.cellIndex;
     ComputationalCell3D &cell = this->cells[cellIndex];
 
-    bool const movingHydroNoMMC = this->withHydro && !this->MMC;
-    double const gammaCell = movingHydroNoMMC ? CellGamma(cell.velocity) : 1.0;
+    bool const useVelocityTransport = this->useTransportVelocities_;
+    double const gammaCell = useVelocityTransport ? CellGamma(cell.velocity) : 1.0;
 
     if(!(gammaCell > 0.0) || !std::isfinite(gammaCell))
         return false;
@@ -136,7 +139,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     double const oldLabWeight = particle.weight;
 
     Particle materialParticle = particle;
-    if(movingHydroNoMMC)
+    if(useVelocityTransport)
     {
         LorentzTransformation(materialParticle, cell.velocity);
         if(this->multigroupOpacity)
@@ -205,7 +208,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     double const tauLeak = this->randomWalk->sampleLeakTime(this->dist(this->re));
     double const tLeakCo = tauLeak * Ro * Ro / D_phys;
 
-    double const tCensusCo = movingHydroNoMMC ? particle.timeLeft / gammaCell
+    double const tCensusCo = useVelocityTransport ? particle.timeLeft / gammaCell
                                               : particle.timeLeft;
 
     double tUpscatterCo = std::numeric_limits<double>::max();
@@ -240,7 +243,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     // This intentionally ignores the event displacement term
     // gammaCell * dot(cell.velocity, dxCo) / c^2.
     // Use Level 2 before relying on high-v/c RW results.
-    double dtLab = movingHydroNoMMC ? gammaCell * dtCo : dtCo;
+    double dtLab = useVelocityTransport ? gammaCell * dtCo : dtCo;
     if(rwEvent == RW_CENSUS)
         dtLab = particle.timeLeft;
 
@@ -295,7 +298,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
         {
             functionality.change = MonteCarloParticleStatus::REMOVE;
 
-            if(movingHydroNoMMC && !this->diffusionPressureGradient && !this->noHydroFeedback)
+            if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
             {
                 this->conserved[cellIndex].momentum +=
                     (oldLabWeight * oldLabVelocity) * units::inv_clight2;
@@ -306,7 +309,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
 
         Particle finalLabParticle = materialParticle;
 
-        if(movingHydroNoMMC)
+        if(useVelocityTransport)
         {
             LorentzTransformation(finalLabParticle, -1 * cell.velocity);
             if(this->multigroupOpacity)
@@ -319,7 +322,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
         particle.weight    = finalLabParticle.weight;
         particle.timeLeft  = finalLabParticle.timeLeft;
 
-        if(movingHydroNoMMC && !this->diffusionPressureGradient && !this->noHydroFeedback)
+        if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
         {
             this->conserved[cellIndex].momentum +=
                 (oldLabWeight * oldLabVelocity - particle.weight * particle.velocity)
@@ -331,8 +334,8 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
 
     bool removeParticle = false;
 
-    double const lowWeightCutoff = this->postProcess_.enabled ? 1e-4 : 1e-3;
-    double const initialCoWeightApprox = movingHydroNoMMC
+    double const lowWeightCutoff = this->postProcess_.enabled ? 1e-8 : 1e-3;
+    double const initialCoWeightApprox = useVelocityTransport
         ? particle.initialWeight * DopplerShift(particle, cell.velocity)
         : particle.initialWeight;
 
