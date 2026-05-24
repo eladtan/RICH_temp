@@ -2,6 +2,7 @@
 #include "SphericalObserver.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -22,6 +23,16 @@ namespace {
     inline double HarmonicMean(double a, double b)
     {
         return (a > 0.0 && b > 0.0) ? (2.0 * a * b / (a + b)) : std::max(a, b);
+    }
+
+    inline double CellGamma(Vector3D const &v)
+    {
+        double const beta2 = ScalarProd(v, v) * units::inv_clight2;
+        if(beta2 <= 0.0)
+            return 1.0;
+        if(beta2 >= 1.0)
+            return std::numeric_limits<double>::infinity();
+        return 1.0 / std::sqrt(1.0 - beta2);
     }
 }
 
@@ -178,11 +189,7 @@ void RadiationIMC::precomputeDDMCData()
 
 bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift)
 {
-    if(this->withHydro && !this->MMC)
-    {
-        ++this->ddmcFallbackCount;
-        return false;
-    }
+    (void)dopplerShift;
 
     size_t const cellIndex = particle.cellIndex;
     if(cellIndex >= this->ddmcCellData.size())
@@ -192,6 +199,28 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     if(!data.eligible || data.totalLeakRate <= 0.0 || data.faceLeaks.empty()
        || data.sigmaT <= 0.0 || data.diffusionCoefficient <= 0.0)
         return false;
+
+    ComputationalCell3D &cell = this->cells[cellIndex];
+
+    bool const movingHydroNoMMC = this->withHydro && !this->MMC;
+    double const gammaCell = movingHydroNoMMC ? CellGamma(cell.velocity) : 1.0;
+
+    if(!(gammaCell > 0.0) || !std::isfinite(gammaCell))
+    {
+        ++this->ddmcFallbackCount;
+        return false;
+    }
+
+    Vector3D const oldLabVelocity = particle.velocity;
+    double const oldLabWeight = particle.weight;
+
+    Particle materialParticle = particle;
+    if(movingHydroNoMMC)
+    {
+        LorentzTransformation(materialParticle, cell.velocity);
+        if(this->multigroupOpacity)
+            ClampFrequencyToBoundsDDMC(materialParticle.frequency);
+    }
 
     const auto &normals = this->gridData.normalsOfCells[cellIndex];
     const auto &facePoints = this->gridData.pointsOnFaces[cellIndex];
@@ -210,14 +239,12 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     bool const usePGRW = (this->multigroupOpacity != nullptr && this->ddmcUseMultigroupPGRW);
     if(usePGRW)
     {
-        if(data.groupCutoff == 0)
+        if(data.groupCutoff == 0 || data.groupCutoff > ENERGY_GROUPS_NUM)
         {
             ++this->ddmcFallbackCount;
             return false;
         }
-        double coFreq = particle.frequency;
-        if(this->withHydro && !this->MMC)
-            coFreq *= dopplerShift;
+        double coFreq = materialParticle.frequency;
         ClampFrequencyToBoundsDDMC(coFreq);
         if(coFreq >= ComputationalCell3D::energyBoundaries[data.groupCutoff])
         {
@@ -227,77 +254,149 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     }
 
     double const f = this->factorFleck[cellIndex];
-    double const upscatterRate = (usePGRW && data.gamma < 1.0 && data.sigmaA > 0.0 && f > 0.0)
+    double const upscatterRateCo = (usePGRW && data.gamma < 1.0 && data.sigmaA > 0.0 && f > 0.0)
         ? units::clight * (1.0 - f) * data.sigmaA * (1.0 - data.gamma)
         : 0.0;
-    double const eventRate = data.totalLeakRate + upscatterRate;
-    if(!(eventRate > 0.0) || !std::isfinite(eventRate))
+    double const eventRateCo = data.totalLeakRate + upscatterRateCo;
+    if(!(eventRateCo > 0.0) || !std::isfinite(eventRateCo))
     {
         ++this->ddmcFallbackCount;
         return false;
     }
 
-    double const tEvent = -std::log(PositiveRandom(this->dist(this->re))) / eventRate;
-    double const tCensus = particle.timeLeft;
-    double const dt = std::min(tEvent, tCensus);
+    double const tEventCo = -std::log(PositiveRandom(this->dist(this->re))) / eventRateCo;
+    double const tCensusCo = movingHydroNoMMC ? particle.timeLeft / gammaCell
+                                              : particle.timeLeft;
 
-    Vector3D oldVelocity = particle.velocity;
-    double const oldWeight = particle.weight;
-    double const absRate = data.sigmaA * f * units::clight;
-    double const expFactor = std::expm1(-dt * absRate);
+    double const dtCo = std::min(tEventCo, tCensusCo);
+
+    // Level-1 mixed-frame approximation: dtLab = gammaCell * dtCo.
+    // This intentionally ignores the event displacement term
+    // gammaCell * dot(cell.velocity, dxCo) / c^2.
+    // Use Level 2 before relying on high-v/c DDMC results.
+    double dtLab = movingHydroNoMMC ? gammaCell * dtCo : dtCo;
+    bool const censusEvent = (tCensusCo <= tEventCo);
+    if(censusEvent)
+        dtLab = particle.timeLeft;
+
+    if(dtLab < 0.0 || !std::isfinite(dtLab))
+    {
+        ++this->ddmcFallbackCount;
+        return false;
+    }
+    if(dtLab > particle.timeLeft)
+        dtLab = particle.timeLeft;
+
+    double const absRateCo = data.sigmaA * f * units::clight;
+    double const oldCoWeight = materialParticle.weight;
+    double const expFactorCo = std::expm1(-dtCo * absRateCo);
+    double const absorbedCo = -expFactorCo * oldCoWeight;
+
     if(!this->noHydroFeedback)
-        this->conserved[cellIndex].internal_energy += -expFactor * particle.weight;
+        this->conserved[cellIndex].internal_energy += absorbedCo;
 
-    if(absRate > 0.0)
-    {
-        double const integrated = particle.weight * expFactor * (-1.0 / absRate);
-        this->Erad_time_avg[cellIndex] += integrated;
-        if(this->withEgTimeAvg && this->multigroupOpacity)
-        {
-            size_t const g = this->opacity->findGroup(particle.frequency);
-            this->Eg_time_avg[cellIndex][g] += integrated;
-        }
-    }
+    // TODO(mixed-frame): Erad_time_avg is accumulated as a material-frame
+    // diffusion tally here. Ordinary IMC mixed-frame tally semantics should be
+    // audited separately before using Erad_time_avg for high-v/c hydro diagnostics.
+    double integratedCo;
+    if(absRateCo > 0.0)
+        integratedCo = oldCoWeight * expFactorCo * (-1.0 / absRateCo);
     else
+        integratedCo = oldCoWeight * dtCo;
+
+    this->Erad_time_avg[cellIndex] += integratedCo;
+
+    if(this->withEgTimeAvg && this->multigroupOpacity)
     {
-        this->Erad_time_avg[cellIndex] += particle.weight * dt;
-        if(this->withEgTimeAvg && this->multigroupOpacity)
-        {
-            size_t const g = this->opacity->findGroup(particle.frequency);
-            this->Eg_time_avg[cellIndex][g] += particle.weight * dt;
-        }
+        double freqForGroup = materialParticle.frequency;
+        ClampFrequencyToBoundsDDMC(freqForGroup);
+        size_t const g = this->opacity->findGroup(freqForGroup);
+        this->Eg_time_avg[cellIndex][g] += integratedCo;
     }
 
-    particle.weight *= 1.0 + expFactor;
+    materialParticle.weight *= 1.0 + expFactorCo;
+
     if(this->postProcess_.enabled && this->observer_)
     {
-        double const absorbed = oldWeight - particle.weight;
+        double const absorbed = oldCoWeight - materialParticle.weight;
         if(absorbed > 0.0)
             this->observer_->addAbsorbedEnergy(absorbed);
     }
 
-    particle.timeLeft -= dt;
+    materialParticle.timeLeft = particle.timeLeft - dtLab;
+    if(materialParticle.timeLeft < 0.0 && materialParticle.timeLeft > -1e-12)
+        materialParticle.timeLeft = 0.0;
+
     ++this->ddmcStepCount;
 
-    double const lowWeightCutoff = this->postProcess_.enabled ? 1e-4 : 1e-3;
-    if(std::abs(particle.weight) < particle.initialWeight * lowWeightCutoff)
-    {
-        if(this->postProcess_.enabled && this->observer_)
-            this->observer_->addCutoffEnergy(particle.weight);
-        functionality.change = MonteCarloParticleStatus::REMOVE;
-        if(!this->noHydroFeedback)
-            this->conserved[cellIndex].internal_energy += particle.weight;
+    auto finalizeAccelerationStep = [&](bool remove) -> bool {
+        if(remove)
+        {
+            functionality.change = MonteCarloParticleStatus::REMOVE;
+
+            if(this->withHydro && !this->diffusionPressureGradient && !this->noHydroFeedback)
+            {
+                this->conserved[cellIndex].momentum +=
+                    (oldLabWeight * oldLabVelocity) * units::inv_clight2;
+            }
+
+            return true;
+        }
+
+        Particle finalLabParticle = materialParticle;
+
+        if(movingHydroNoMMC)
+        {
+            LorentzTransformation(finalLabParticle, -1 * cell.velocity);
+            if(this->multigroupOpacity)
+                ClampFrequencyToBoundsDDMC(finalLabParticle.frequency);
+        }
+
+        particle.location  = finalLabParticle.location;
+        particle.velocity  = finalLabParticle.velocity;
+        particle.frequency = finalLabParticle.frequency;
+        particle.weight    = finalLabParticle.weight;
+        particle.timeLeft  = finalLabParticle.timeLeft;
+
+        if(this->withHydro && !this->diffusionPressureGradient && !this->noHydroFeedback)
+        {
+            this->conserved[cellIndex].momentum +=
+                (oldLabWeight * oldLabVelocity - particle.weight * particle.velocity)
+                * units::inv_clight2;
+        }
+
         return true;
+    };
+
+    bool removeParticle = false;
+
+    double const lowWeightCutoff = this->postProcess_.enabled ? 1e-4 : 1e-3;
+    double const initialCoWeightApprox = movingHydroNoMMC
+        ? particle.initialWeight * DopplerShift(particle, cell.velocity)
+        : particle.initialWeight;
+
+    if(std::abs(materialParticle.weight) < std::abs(initialCoWeightApprox) * lowWeightCutoff)
+    {
+        removeParticle = true;
+
+        if(this->postProcess_.enabled && this->observer_)
+            this->observer_->addCutoffEnergy(materialParticle.weight);
+
+        if(!this->noHydroFeedback)
+            this->conserved[cellIndex].internal_energy += materialParticle.weight;
     }
 
-    if(tCensus <= tEvent)
+    if(removeParticle)
+        return finalizeAccelerationStep(true);
+
+    if(censusEvent)
     {
         functionality.change = MonteCarloParticleStatus::DONE;
         ++this->ddmcCensusCount;
-        return true;
+        return finalizeAccelerationStep(false);
     }
 
-    double eventPick = this->dist(this->re) * eventRate;
+    double eventPick = this->dist(this->re) * eventRateCo;
     if(eventPick <= data.totalLeakRate)
     {
         double facePick = this->dist(this->re) * data.totalLeakRate;
@@ -315,13 +414,55 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             chosen = &data.faceLeaks.back();
         if(chosen == nullptr)
         {
+            ++this->ddmcFallbackCount;
             functionality.change = MonteCarloParticleStatus::DONE;
-            ++this->ddmcCensusCount;
-            return true;
+            return finalizeAccelerationStep(false);
         }
 
-        particle.location = this->grid.FaceCM(chosen->faceIndex);
-        particle.velocity = this->opacity->getRandomVelocity(this->cells[cellIndex]);
+        Vector3D const leakFaceCenter = this->grid.FaceCM(chosen->faceIndex);
+
+        Vector3D nOut = this->grid.Normal(chosen->faceIndex);
+        if(abs(nOut) <= 0.0)
+        {
+            ++this->ddmcFallbackCount;
+            functionality.change = MonteCarloParticleStatus::DONE;
+            return finalizeAccelerationStep(false);
+        }
+        nOut = normalize(nOut);
+
+        Vector3D const sourceCenter = this->grid.GetMeshPoint(cellIndex);
+        Vector3D towardNeighbor;
+        if(chosen->nextCellIndex < this->grid.getMeshPoints().size())
+            towardNeighbor = this->grid.GetMeshPoint(chosen->nextCellIndex) - sourceCenter;
+        else
+            towardNeighbor = leakFaceCenter - sourceCenter;
+
+        if(ScalarProd(nOut, towardNeighbor) < 0.0)
+            nOut = -1.0 * nOut;
+
+        Vector3D helper = (std::abs(nOut.x) < 0.9)
+            ? Vector3D(1.0, 0.0, 0.0)
+            : Vector3D(0.0, 1.0, 0.0);
+        Vector3D e1 = normalize(helper - ScalarProd(helper, nOut) * nOut);
+        Vector3D e2 = CrossProduct(nOut, e1);
+        if(abs(e2) > 0.0)
+            e2 = normalize(e2);
+
+        constexpr double DDMC_PI = 3.14159265358979323846;
+        double const xiMu = std::min(1.0, PositiveRandom(this->dist(this->re)));
+        double const mu = std::sqrt(xiMu);
+        double const phiLeak = 2.0 * DDMC_PI * this->dist(this->re);
+        double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+
+        Vector3D dir = mu * nOut
+            + sinTheta * std::cos(phiLeak) * e1
+            + sinTheta * std::sin(phiLeak) * e2;
+
+        materialParticle.location = leakFaceCenter;
+        materialParticle.velocity = normalize(dir) * units::clight;
+
+        assert(ScalarProd(materialParticle.velocity, nOut) > 0.0);
+
         functionality.change = MonteCarloParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
         ++this->ddmcLeakCount;
@@ -332,10 +473,9 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             functionality.change = MonteCarloParticleStatus::DONE;
             ++this->ddmcCensusCount;
-            return true;
+            return finalizeAccelerationStep(false);
         }
 
-        ComputationalCell3D &cell = this->cells[cellIndex];
         this->multigroupOpacity->GetCummulativeOpacity(cell);
         const auto &cumOp = this->multigroupOpacity->getCummulativeOpacity();
         double const cdfAtCutoff = cumOp[data.groupCutoff];
@@ -344,22 +484,20 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             double const lo = cdfAtCutoff / cdfTotal;
             double const xi = this->dist(this->re);
-            particle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, lo + xi * (1.0 - lo));
+            materialParticle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, lo + xi * (1.0 - lo));
         }
         else
         {
-            particle.frequency = std::nextafter(
+            materialParticle.frequency = std::nextafter(
                 ComputationalCell3D::energyBoundaries[data.groupCutoff],
                 std::numeric_limits<double>::max());
         }
-        particle.velocity = this->opacity->getRandomVelocity(cell);
+        ClampFrequencyToBoundsDDMC(materialParticle.frequency);
+        materialParticle.velocity = this->opacity->getRandomVelocity(cell);
         ++this->ddmcUpscatterCount;
     }
 
-    if(!this->diffusionPressureGradient && !this->noHydroFeedback)
-        this->conserved[cellIndex].momentum += (oldWeight * oldVelocity - particle.weight * particle.velocity) * units::inv_clight2;
-
-    return true;
+    return finalizeAccelerationStep(false);
 }
 
 std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double frequency) const
