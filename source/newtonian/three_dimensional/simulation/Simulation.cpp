@@ -303,13 +303,9 @@ void Simulation::step(void)
             if(newBox != this->currentBox)
             {
                 this->currentBox = newBox;
-                for(auto [loadName, load] : this->loads)
+                for(auto &entry : this->loads)
                 {
-                    if(loadName == this->currentLB)
-                    {
-                        continue;
-                    }
-                    load->changeBox(this->currentBox);
+                    entry.second->changeBox(this->currentBox);
                 }
             }
         #endif // RICH_MPI

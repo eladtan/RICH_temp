@@ -1,6 +1,10 @@
 #include "HydroStep.hpp"
 
-HydroStep::HydroStep(HDSim3D &sim, StepType stepType) : sim(sim), stepType(stepType)
+HydroStep::HydroStep(HDSim3D &sim, StepType stepType,
+                     const ComputationalCell3D* left_ext,
+                     const ComputationalCell3D* right_ext)
+    : sim(sim), stepType(stepType),
+      left_external_(left_ext), right_external_(right_ext)
 {}
 
 void HydroStep::step(double dt)
@@ -9,6 +13,9 @@ void HydroStep::step(double dt)
     {
         case StepType::TIMEADVANCE_2:
             this->sim.timeAdvance2();
+            break;
+        case StepType::TIMEADVANCE_LAGRANGIAN_1D:
+            this->sim.timeAdvanceLagrangian1D(left_external_, right_external_);
             break;
         default:
             throw std::runtime_error("Invalid step type");

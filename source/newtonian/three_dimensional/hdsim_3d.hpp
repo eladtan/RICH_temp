@@ -17,6 +17,7 @@
 #include "SourceTerm3D.hpp"
 #include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
 #include "CostCalculator3D.hpp"
+#include "Hllc3D.hpp"
 
 #ifdef RICH_MPI
   #include <mpi.h>
@@ -63,6 +64,14 @@ public:
   void timeAdvance();
   //! \brief Advances the simulation in time (second order)
   void timeAdvance2();
+
+  /*! \brief Second order time advance with Lagrangian x-boundaries
+    \param left_external Exterior state at left x-boundary (nullptr = vacuum)
+    \param right_external Exterior state at right x-boundary (nullptr = vacuum)
+   */
+  void timeAdvanceLagrangian1D(
+    const ComputationalCell3D* left_external = nullptr,
+    const ComputationalCell3D* right_external = nullptr);
 
   /*! \brief Third order time advance
    */
