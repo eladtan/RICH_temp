@@ -30,6 +30,60 @@ def repo_root() -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Test categories (ordered)
+# --------------------------------------------------------------------------- #
+
+TEST_GROUPS: dict[str, tuple[str, list[str]]] = {
+    "gresho": ("Gresho Vortex", ["gresho_euler", "gresho_lagrangian"]),
+    "yee_vortex": ("Yee Isentropic Vortex", ["yee_vortex_64", "yee_vortex_128"]),
+    "marshak_waves": ("Marshak Wave Problems", [
+        "marshak_wave_1", "marshak_wave_2", "marshak_wave_3", "marshak_wave_4",
+    ]),
+    "mach2": ("Mach~2 Radiative Shock", ["mach2_diffusion", "mach2_multigroup"]),
+    "eulerian_diffusion": ("1D Eulerian Diffusion Suite", [
+        "eulerian_diffusion_freefree_suite",
+        "eulerian_diffusion_freefree_multigroup_suite",
+    ]),
+    "till_compton_group": ("Till Compton Equilibration", ["till_compton", "till_compton_mc"]),
+    "densmore": ("Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo)", [
+        "desmore2012_mc", "desmore2012_mc_serial",
+    ]),
+    "moving_slab": ("Moving Slab MC Benchmark", ["moving_slab_mc", "moving_slab_mc_32"]),
+    "lsq_gradient": ("LSQ Gradient Verification", [
+        "spherical_gauss_linear", "cartesian_gauss_linear",
+    ]),
+}
+
+TEST_CATEGORIES: list[tuple[str, list[str]]] = [
+    ("Pure Hydrodynamics", [
+        "sod_1d",
+        "sedov_3d_mpi",
+        "gresho",
+        "yee_vortex",
+        "spherical_collapse",
+        "rayleigh_taylor_mpi",
+    ]),
+    ("Radiation Transport -- Diffusion", [
+        "marshak_waves",
+        "mach2",
+        "eulerian_diffusion",
+    ]),
+    ("Radiation Transport -- Monte Carlo", [
+        "till_compton_group",
+        "densmore",
+        "moving_slab",
+    ]),
+    ("Self-Gravity", [
+        "lane_self_gravity",
+    ]),
+    ("Mesh and Infrastructure", [
+        "amr_random",
+        "voronoi_volume",
+        "lsq_gradient",
+    ]),
+]
+
+# --------------------------------------------------------------------------- #
 # Test metadata
 # --------------------------------------------------------------------------- #
 
@@ -144,8 +198,8 @@ TESTS = [
             r"Cells with centroid $r < 0.2$ receive high energy:"
             "\n"
             r"\begin{itemize}" "\n"
-            r"  \item \textbf{Inner region} ($r < 0.2$): $\rho = 1$, $e_{\mathrm{int}} = 10^5$." "\n"
-            r"  \item \textbf{Outer region} ($r \ge 0.2$): $\rho = 1$, $e_{\mathrm{int}} = 0.1$." "\n"
+            r"  \item \textbf{Inner region} ($r < 0.1$): $\rho = 1$, $e_{\mathrm{int}} = 8 \times 10^5$." "\n"
+            r"  \item \textbf{Outer region} ($r \ge 0.1$): $\rho = 1$, $e_{\mathrm{int}} = 0.1$." "\n"
             r"\end{itemize}" "\n"
             r"The adiabatic index is $\gamma = 5/3$."
         ),
@@ -260,6 +314,60 @@ TESTS = [
             "temperature (blue) vs.\\ time, converging to thermal equilibrium. "
             "Black markers show the IN-FBC reference data digitized from "
             "McGraw, Till \\& Warsa, JCP 478 (2023) 111980, Figure~2(a)."
+        ),
+    },
+    {
+        "id": "till_compton_mc",
+        "title": "Till Compton Equilibration (IMC)",
+        "description": (
+            "This test verifies the same radiation--matter Compton equilibration "
+            "as the diffusion test, but solved with Implicit Monte Carlo (IMC) "
+            "transport using the f-reduced Compton scattering scheme. "
+            "The IMC approach stochastically transports photon packets with "
+            "frequency-group redistribution at each Compton event, while a "
+            "deterministic residual correction enforces the implicit coupling.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{f-reduced Compton events:} Each MC scattering "
+            "event applies the implicit Fleck factor to reduce the energy "
+            "exchange, ensuring stability at large time steps.\n"
+            "  \\item \\textbf{Implicit residual solve:} The deterministic "
+            "correction $(I - c\\Delta t\\,K_{\\mathrm{res}})\\,E = E_{\\mathrm{raw}} + B_{\\mathrm{res}}$ "
+            "accounts for the difference between the stochastic operator and the "
+            "full implicit target.\n"
+            "  \\item \\textbf{Particle--grid consistency:} Particle reconciliation "
+            "ensures that group energies carried by MC packets match the "
+            "corrected grid values across time steps.\n"
+            "  \\item \\textbf{Energy conservation:} Total energy (radiation + "
+            "material) is conserved to within MC noise levels.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Same as the diffusion Till Compton test: single cell, "
+            r"$\rho = 1\;\mathrm{g\,cm^{-3}}$, "
+            r"$T_{\mathrm{gas}} = 1\;\mathrm{keV}$, "
+            r"$T_{\mathrm{rad}} = 10\;\mathrm{keV}$, "
+            r"32 energy groups, Kramers free--free opacity. "
+            r"IMC uses 10\,000 new photons per cell per time step, "
+            r"4000 initial photons per cell, with "
+            r"comb population control ($N_{\min}=10\,000$)."
+        ),
+        "boundary_conditions": "Rigid walls.",
+        "mesh_movement": "Static (single cell).",
+        "execution": "Serial, 1~CPU. Built with \\texttt{--energy\\_groups\\_num=32}.",
+        "pass_criteria": (
+            r"\begin{itemize}" "\n"
+            r"  \item No NaN or Inf values in output." "\n"
+            r"  \item Final $|T_{\mathrm{gas}} - T_{\mathrm{rad}}| / "
+            r"\max(T_{\mathrm{gas}},\,T_{\mathrm{rad}}) < 20\%$." "\n"
+            r"  \item Total energy conserved within 5\%." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": ["till_compton_mc.png"],
+        "plot_caption": (
+            "Till Compton IMC equilibration: gas temperature (red) and radiation "
+            "temperature (blue) vs.\\ time. Black markers show the IN-FBC "
+            "reference from McGraw et al."
         ),
     },
     {
@@ -1222,38 +1330,13 @@ TESTS = [
         "plot_caption": "",
     },
     {
-        "id": "spherical_collapse_hires",
-        "title": "Spherical Shell Collapse (High Resolution, Symmetry Test)",
-        "description": (
-            "High-resolution companion to \\texttt{spherical\\_collapse}. "
-            "Uses the same physics and setup but doubles the angular resolution "
-            "($N_{\\mathrm{edge}}=82$ vs.\\ 41), roughly quadrupling the total "
-            "cell count. The purpose is to verify that angular scatter "
-            "decreases with resolution and that the code scales correctly "
-            "to larger problem sizes under MPI."
-        ),
-        "initial_conditions": (
-            r"Same as \texttt{spherical\_collapse} but with "
-            r"$N_{\mathrm{edge}}=82$ (high resolution)."
-        ),
-        "boundary_conditions": "Rigid (reflective) walls on all faces of the $[-1.55, 1.55]^3$ box.",
-        "mesh_movement": "Eulerian (fixed mesh).",
-        "execution": "MPI, 128~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
-        "pass_criteria": (
-            r"Maximum angular density scatter $< 0.1$ and maximum angular "
-            r"velocity scatter $< 0.1$ across all radial bins with "
-            r"significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$)."
-        ),
-        "plots": [],
-        "plot_caption": "",
-    },
-    {
         "id": "spherical_collapse",
         "title": "Spherical Shell Collapse (Symmetry Test)",
         "description": (
-            "A dense spherical shell ($0.9 < r < 1.0$, $\\rho=1$, $P=1$) is "
-            "embedded in a low-density ambient medium ($\\rho=10^{-3}$, "
-            "$P=10^{-4}$) and allowed to collapse inward on a fixed Eulerian "
+            "A dense spherical shell ($0.9 < r < 1.0$, $\\rho=10$, $P=0.1$) is "
+            "given an inward radial velocity $v_r = -1$ and embedded in a "
+            "low-density ambient medium ($\\rho=10^{-3}$, "
+            "$P=10^{-5}$).  The shell collapses inward on a fixed Eulerian "
             "mesh. The mesh is constructed by generating a well-rounded "
             "template sphere (\\texttt{RandSphereSurfaceRounded}, $\\sim$10\\,000 "
             "points) and replicating it at logarithmically spaced radii from "
@@ -1278,9 +1361,9 @@ TESTS = [
             "\\end{itemize}"
         ),
         "initial_conditions": (
-            r"Dense shell: $\rho = 1$, $P = 1$ for $0.9 < r < 1.0$; "
-            r"ambient: $\rho = 10^{-3}$, $P = 10^{-4}$ elsewhere. "
-            r"Zero velocity everywhere. $\gamma = 5/3$."
+            r"Dense shell: $\rho = 10$, $P = 0.1$, $v_r = -1$ for $0.9 < r < 1.0$; "
+            r"ambient: $\rho = 10^{-3}$, $P = 10^{-5}$, zero velocity elsewhere. "
+            r"$\gamma = 5/3$."
         ),
         "boundary_conditions": "Rigid (reflective) walls on all faces of the $[-1.55, 1.55]^3$ box.",
         "mesh_movement": "Eulerian (fixed mesh).",
@@ -1696,6 +1779,38 @@ def _read_till_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
+def _read_till_mc_metrics(cases_dir: Path) -> list[MetricRow]:
+    case = cases_dir / "till_compton_mc"
+    tgas = _last_number(case / "Tgas.txt")
+    trad = _last_number(case / "Trad.txt")
+    if tgas is None or trad is None:
+        return []
+    denom = max(tgas, trad)
+    if denom <= 0:
+        denom = 1e-99
+    rel_diff = abs(tgas - trad) / denom
+    passed = rel_diff < 2e-1
+    rows: list[MetricRow] = [
+        ("Final $T_{\\mathrm{gas}}$", f"{tgas:.6e}", "---", True),
+        ("Final $T_{\\mathrm{rad}}$", f"{trad:.6e}", "---", True),
+        ("Relative difference", f"{rel_diff:.6e}", "$ < 2\\times10^{-1}$", passed),
+    ]
+    etotal_file = case / "Etotal.txt"
+    if etotal_file.is_file():
+        try:
+            lines = [l.strip() for l in etotal_file.read_text().splitlines() if l.strip()]
+            e_init = float(lines[0])
+            e_final = float(lines[-1])
+            if e_init > 0:
+                e_rel = abs(e_final - e_init) / e_init
+                e_passed = e_rel < 5e-2
+                rows.append(("Energy conservation (rel.)", f"{e_rel:.6e}",
+                             "$ < 5\\times10^{-2}$", e_passed))
+        except (ValueError, IndexError):
+            pass
+    return rows
+
+
 def _read_amr_metrics(cases_dir: Path) -> list[MetricRow]:
     kv = _parse_kv_space(cases_dir / "amr_random" / "amr_random_metrics.txt")
     if not kv:
@@ -1980,26 +2095,11 @@ def _read_cartesian_gauss_linear_metrics(cases_dir: Path) -> list[MetricRow]:
     return rows
 
 
-def _read_collapse_hires_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_space(cases_dir / "spherical_collapse_hires" / "collapse_metrics.txt")
-    if not kv:
-        return []
-    rows = []
-    for field, key, thr_val in [
-        ("Max density scatter", "max_density_scatter", 0.1),
-        ("Max velocity scatter", "max_velocity_scatter", 0.1),
-    ]:
-        val = kv.get(key)
-        if val is not None:
-            passed = float(val) < thr_val
-            rows.append((field, val, f"{thr_val}", passed))
-    return rows
-
-
 METRIC_READERS: dict[str, object] = {
     "sod_1d": lambda cd: _read_sod_metrics(cd),
     "sedov_3d_mpi": lambda cd: _read_sedov_metrics(cd),
     "till_compton": lambda cd: _read_till_metrics(cd),
+    "till_compton_mc": lambda cd: _read_till_mc_metrics(cd),
     "amr_random": lambda cd: _read_amr_metrics(cd),
     "voronoi_volume": lambda cd: _read_voronoi_metrics(cd),
     "lane_self_gravity": lambda cd: _read_lane_metrics(cd),
@@ -2019,7 +2119,6 @@ METRIC_READERS: dict[str, object] = {
     "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
     "cartesian_gauss_linear": lambda cd: _read_cartesian_gauss_linear_metrics(cd),
     "spherical_collapse": lambda cd: _read_collapse_metrics(cd),
-    "spherical_collapse_hires": lambda cd: _read_collapse_hires_metrics(cd),
     "spherical_gauss_linear": lambda cd: _read_spherical_gauss_linear_metrics(cd),
     "rayleigh_taylor_mpi": lambda cd: _read_rt_metrics(cd),
     "eulerian_diffusion_freefree_suite": lambda cd: _read_freefree_gray_suite_metrics(cd),
@@ -2266,42 +2365,46 @@ POSTAMBLE = r"""
 
 
 def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
-                      out_dir: Optional[Path] = None) -> str:
-    """Return the LaTeX source for one test section."""
+                      out_dir: Optional[Path] = None, *,
+                      level: str = "section") -> str:
+    """Return the LaTeX source for one test section.
+
+    *level* controls heading depth: "section" (default) or "subsection".
+    """
     lines = []
     tid = test["id"]
     title = test["title"]
 
-    lines.append(f"\\section{{{title}}}")
+    if level == "section":
+        sec, subsec = "section", "subsection*"
+    else:
+        sec, subsec = "subsection", "subsubsection*"
+
+    lines.append(f"\\{sec}{{{title}}}")
     lines.append(f"\\label{{sec:{tid}}}")
     lines.append("")
 
-    # Description
-    lines.append("\\subsection*{Description}")
+    lines.append(f"\\{subsec}{{Description}}")
     lines.append(test["description"])
     lines.append("")
 
-    # Initial and boundary conditions
-    lines.append("\\subsection*{Initial Conditions}")
+    lines.append(f"\\{subsec}{{Initial Conditions}}")
     lines.append(test["initial_conditions"])
     lines.append("")
 
-    lines.append("\\subsection*{Boundary Conditions}")
+    lines.append(f"\\{subsec}{{Boundary Conditions}}")
     lines.append(test["boundary_conditions"])
     lines.append("")
 
-    # Mesh movement
-    lines.append("\\subsection*{Mesh Movement}")
+    lines.append(f"\\{subsec}{{Mesh Movement}}")
     lines.append(test["mesh_movement"])
     lines.append("")
 
-    # Execution
-    lines.append("\\subsection*{Execution}")
+    lines.append(f"\\{subsec}{{Execution}}")
     lines.append(test["execution"])
     lines.append("")
 
-    # Pass criteria
-    lines.append("\\subsection*{Pass Criteria}")
+    lines.append(f"\\{subsec}{{Pass Criteria}}")
     lines.append(test["pass_criteria"])
     lines.append("")
 
@@ -2310,11 +2413,11 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
     if reader is not None:
         metric_rows = reader(cases_dir)
         if metric_rows:
-            lines.append("\\subsection*{Achieved Results}")
+            lines.append(f"\\{subsec}{{Achieved Results}}")
             lines.append(_metrics_table_tex(metric_rows))
             lines.append("")
         else:
-            lines.append("\\subsection*{Achieved Results}")
+            lines.append(f"\\{subsec}{{Achieved Results}}")
             lines.append(
                 "\\textit{No metric output files found --- "
                 "run the test suite first.}"
@@ -2352,7 +2455,7 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
                     found = True
                     break
         if available:
-            lines.append("\\subsection*{Plots}")
+            lines.append(f"\\{subsec}{{Plots}}")
             lines.append("\\begin{figure}[htbp]")
             lines.append("  \\centering")
             n_plots = len(available)
@@ -2382,7 +2485,7 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
             lines.append("")
         else:
             lines.append(
-                "\\subsection*{Plots}"
+                f"\\{subsec}{{Plots}}"
             )
             lines.append(
                 "\\textit{Plots not available --- "
@@ -2390,7 +2493,7 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
             )
             lines.append("")
     else:
-        lines.append("\\subsection*{Plots}")
+        lines.append(f"\\{subsec}{{Plots}}")
         lines.append("\\textit{This test does not produce comparison plots.}")
         lines.append("")
 
@@ -2399,8 +2502,39 @@ def _section_for_test(test: dict, plots_dir: Path, cases_dir: Path,
     return "\n".join(lines)
 
 
+_SUMMARY_TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
+    "sod_1d": ("Sod 1D", "Serial", "1", "Eulerian", "Yes"),
+    "sedov_3d_mpi": ("Sedov 3D", "MPI", "128", "Lagrangian", "Yes"),
+    "gresho_euler": ("Gresho Vortex (Euler)", "Serial", "1", "Eulerian", "Yes"),
+    "gresho_lagrangian": ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
+    "yee_vortex_64": ("Yee Vortex ($64^2$)", "MPI", "8", "Lagrangian", "Yes"),
+    "yee_vortex_128": ("Yee Vortex ($128^2$)", "MPI", "16", "Lagrangian", "No"),
+    "spherical_collapse": ("Spherical Collapse", "MPI", "64", "Eulerian", "Yes"),
+    "rayleigh_taylor_mpi": ("Rayleigh--Taylor", "MPI", "128", "Lagrangian", "Yes"),
+    "marshak_wave_1": ("Marshak Wave 1", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_2": ("Marshak Wave 2", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_3": ("Marshak Wave 3", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_4": ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
+    "mach2_diffusion": ("Mach 2 Gray", "MPI", "8", "Eulerian", "Yes"),
+    "mach2_multigroup": ("Mach 2 Multigroup", "MPI", "8", "Eulerian", "Yes"),
+    "eulerian_diffusion_freefree_suite": ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
+    "eulerian_diffusion_freefree_multigroup_suite": ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
+    "till_compton": ("Till Compton", "Serial", "1", "Lagrangian", "Yes"),
+    "till_compton_mc": ("Till Compton MC", "Serial", "1", "Lagrangian", "Yes"),
+    "desmore2012_mc": ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
+    "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
+    "moving_slab_mc": ("Moving Slab MC", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
+    "moving_slab_mc_32": ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
+    "lane_self_gravity": ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
+    "amr_random": ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),
+    "voronoi_volume": ("Voronoi Volume", "Serial + MPI", "1 / 64", "Static", "No"),
+    "spherical_gauss_linear": ("Spherical LSQ Gradient", "Serial", "1", "Static", "No"),
+    "cartesian_gauss_linear": ("Cartesian LSQ Gradient", "Serial", "1", "Static", "No"),
+}
+
+
 def _summary_table() -> str:
-    """Return a LaTeX summary table of all tests."""
+    """Return a LaTeX summary table of all tests, grouped by category."""
     lines = []
     lines.append("\\section{Summary}")
     lines.append("\\label{sec:summary}")
@@ -2419,37 +2553,19 @@ def _summary_table() -> str:
     )
     lines.append("\\midrule")
 
-    rows = [
-        ("Sod 1D", "Serial", "1", "Eulerian", "Yes"),
-        ("Sedov 3D", "MPI", "128", "Lagrangian", "Yes"),
-        ("Till Compton", "Serial", "1", "Lagrangian", "Yes"),
-        ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),
-        ("Voronoi Volume", "Serial + MPI", "1 / 64", "Static", "No"),
-        ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
-        ("Mach 2 Gray", "MPI", "8", "Eulerian", "Yes"),
-        ("Mach 2 Multigroup", "MPI", "8", "Eulerian", "Yes"),
-        ("Marshak Wave 1", "Serial", "1", "Eulerian", "Yes"),
-        ("Marshak Wave 2", "Serial", "1", "Eulerian", "Yes"),
-        ("Marshak Wave 3", "Serial", "1", "Eulerian", "Yes"),
-        ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
-        ("Gresho Vortex (Euler)", "Serial", "1", "Eulerian", "Yes"),
-        ("Gresho Vortex (Lagrangian)", "MPI", "8", "Lagrangian", "Yes"),
-        ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
-        ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
-        ("Moving Slab MC", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
-        ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
-        ("Yee Vortex ($64^2$)", "MPI", "8", "Lagrangian", "Yes"),
-        ("Yee Vortex ($128^2$)", "MPI", "16", "Lagrangian", "No"),
-        ("Cartesian LSQ Gradient", "Serial", "1", "Static", "No"),
-        ("Spherical LSQ Gradient", "Serial", "1", "Static", "No"),
-        ("Spherical Collapse", "MPI", "64", "Eulerian", "Yes"),
-        ("Spherical Collapse (HiRes)", "MPI", "128", "Eulerian", "No"),
-        ("Rayleigh--Taylor", "MPI", "128", "Lagrangian", "Yes"),
-        ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
-        ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
-    ]
-    for row in rows:
-        lines.append(" & ".join(row) + " \\\\")
+    for cat_idx, (cat_name, cat_ids) in enumerate(TEST_CATEGORIES):
+        lines.append("\\multicolumn{5}{l}{\\textit{" + cat_name + "}} \\\\")
+        for entry in cat_ids:
+            if entry in TEST_GROUPS:
+                _, sub_ids = TEST_GROUPS[entry]
+                for tid in sub_ids:
+                    row = _SUMMARY_TABLE_ROWS[tid]
+                    lines.append("\\quad " + " & ".join(row) + " \\\\")
+            else:
+                row = _SUMMARY_TABLE_ROWS[entry]
+                lines.append("\\quad " + " & ".join(row) + " \\\\")
+        if cat_idx < len(TEST_CATEGORIES) - 1:
+            lines.append("\\addlinespace")
 
     lines.append("\\bottomrule")
     lines.append("\\end{tabular}")
@@ -2581,9 +2697,23 @@ based.
 def generate_tex(plots_dir: Path, cases_dir: Path,
                   out_dir: Optional[Path] = None) -> str:
     """Return the full LaTeX document as a string."""
+    test_by_id = {t["id"]: t for t in TESTS}
     parts = [PREAMBLE, VV_INTRODUCTION, _summary_table()]
-    for test in TESTS:
-        parts.append(_section_for_test(test, plots_dir, cases_dir, out_dir))
+    for cat_name, cat_ids in TEST_CATEGORIES:
+        parts.append(f"\n\\part{{{cat_name}}}\n\\setcounter{{section}}{{0}}\n\\newpage\n")
+        for entry in cat_ids:
+            if entry in TEST_GROUPS:
+                group_title, sub_ids = TEST_GROUPS[entry]
+                parts.append(f"\\section{{{group_title}}}")
+                parts.append(f"\\label{{sec:{entry}}}")
+                parts.append("")
+                for sub_tid in sub_ids:
+                    test = test_by_id[sub_tid]
+                    parts.append(_section_for_test(
+                        test, plots_dir, cases_dir, out_dir, level="subsection"))
+            else:
+                test = test_by_id[entry]
+                parts.append(_section_for_test(test, plots_dir, cases_dir, out_dir))
     parts.append(BIBLIOGRAPHY)
     parts.append(POSTAMBLE)
     return "\n".join(parts)
