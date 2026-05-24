@@ -1,8 +1,12 @@
 #ifndef MONTE_CARLO_MANAGER_HPP
 #define MONTE_CARLO_MANAGER_HPP
 
+#include <array>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
+#include "newtonian/three_dimensional/computational_cell.hpp"
+#include "Radiation/OpacityCalculator.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "mpi/serialize/mpi_commands.hpp"
 #include "monte/MonteCarloParticle.hpp"
@@ -27,6 +31,8 @@
 #define SHRINK_BUFFERS_CYCLE 50
 #define SEND_BUFFER_MIN_SIZE 200
 #define SEND_BUFFER_MIN_CYCLES 100
+#define RW_PROGRESS_TAG 9941
+#define MC_PROGRESS_COUNTERS 6
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -146,6 +152,14 @@ private:
     size_t currentStep;
     size_t allStepsCounter;
     size_t transfersCounter;
+    std::chrono::high_resolution_clock::time_point progressStartTime_;
+    double lastProgressPrintTime_ = 0.0;
+    int64_t progressStartParticles_ = 0;
+    size_t progressRemovedCount_ = 0;
+public:
+    const void* progressCellsPtr_ = nullptr;
+    const void* progressOpacityPtr_ = nullptr;
+private:
     std::vector<rank_t> neighbors;
     std::vector<size_t> cellsStepsCounters;
     size_t iteration;
@@ -738,6 +752,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     static std::vector<std::vector<rank_t>> transferToRanks;
     static std::vector<std::vector<size_t>> transferParticlesVec;
     static std::vector<MCParticle> particlesToAdd;
+    static size_t progressStepCounter;
 
     // static std::uniform_real_distribution<double> dist(0, 1);
     // static std::mt19937 re(this->rank_world);
@@ -804,6 +819,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     {
         eliminateParticle(rankIndex, particleTH);
         this->localDecrementAmount += 1;
+        ++this->progressRemovedCount_;
     };
 
     transferParticlesVec.clear();
@@ -856,14 +872,33 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                 isEmpty = false;
                 while(true)
                 {
-                    // TODO: shouldn't be, there's a bug
-                    // if(particle.sent)
-                    // {
-                    //     continue;
-                    // }
-                    
-                    // std::cout << "Rank " << this->rank_world << " handles TH = " << i << ", which is index " << particleIndex << ", particle: " << particle << std::endl;
-    
+                    ++progressStepCounter;
+                    if ((progressStepCounter & 0x3FFFF) == 0 && particle.steps > 100000) {
+                        std::cerr << "[StuckParticle] rank=" << this->rank_world
+                                  << " localPts=" << this->grid.GetPointNo()
+                                  << " " << particle
+                                  << " freq=" << particle.frequency
+                                  << " w/w0=" << (particle.initialWeight > 0 ? particle.weight / particle.initialWeight : 0.0) << std::endl;
+                        if (this->progressCellsPtr_ && particle.cellIndex < this->Ncells) {
+                            auto const& cc = (*static_cast<const std::vector<ComputationalCell3D>*>(this->progressCellsPtr_))[particle.cellIndex];
+                            std::cerr << " cell=" << cc << std::endl;
+                            if (this->progressOpacityPtr_) {
+                                auto const* opa = static_cast<const OpacityCalculator*>(this->progressOpacityPtr_);
+                                double sigP = opa->CalcPlanckOpacity(cc);
+                                double sigS = opa->CalcScatteringOpacity(cc);
+                                double charLen = std::cbrt(this->grid.GetVolume(particle.cellIndex));
+                                std::cerr << " sig_planck=" << sigP
+                                          << " sig_scat=" << sigS
+                                          << " tau_planck=" << sigP * charLen
+                                          << " tau_scat=" << sigS * charLen << std::endl;
+                            }
+                        }
+                        std::string accelInfo = this->physics->getAccelerationDebugInfo(particle.cellIndex, particle.frequency);
+                        if(!accelInfo.empty())
+                            std::cerr << accelInfo << std::endl;
+                        std::cerr << std::endl;
+                    }
+
                     const size_t traceStep = particle.steps;
                     if(particle.on_track)
                     {
@@ -984,7 +1019,58 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                         std::cout << "Before running particle step, particle is " << particle << std::endl;
                     }
 
+                    const T beforeStepLocation = particle.location;
+                    const T beforeStepVelocity = particle.velocity;
+                    const dt_t beforeStepTimeLeft = particle.timeLeft;
+                    if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location) &&
+                                      (particle.cellIndex >= this->Ncells ||
+                                       !this->grid.IsPointInCell(particle.location, particle.cellIndex))))
+                    {
+                        auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+                        UniversalError eo("MonteCarloManager: particle outside box before physics step");
+                        eo.addEntry("Rank", this->rank_world);
+                        eo.addEntry("Particle before step", particle);
+                        eo.addEntry("Location before step", beforeStepLocation);
+                        eo.addEntry("Velocity before step", beforeStepVelocity);
+                        eo.addEntry("Time left before step", beforeStepTimeLeft);
+                        eo.addEntry("Box lower", boxLL);
+                        eo.addEntry("Box upper", boxUR);
+                        eo.addEntry("Cell count", this->Ncells);
+                        if(particle.cellIndex < this->Ncells)
+                        {
+                            eo.addEntry("Cell index", particle.cellIndex);
+                            eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                            eo.addEntry("Inside declared cell before step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                        }
+                        throw eo;
+                    }
                     MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
+                    if(BOOST_UNLIKELY(functionality.change != MonteCarloParticleStatus::REMOVE &&
+                                      functionality.change != MonteCarloParticleStatus::CELL_MOVE &&
+                                      this->grid.IsPointOutsideBox(particle.location) &&
+                                      (particle.cellIndex >= this->Ncells ||
+                                       !this->grid.IsPointInCell(particle.location, particle.cellIndex))))
+                    {
+                        auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+                        UniversalError eo("MonteCarloManager: physics step moved particle outside the box");
+                        eo.addEntry("Rank", this->rank_world);
+                        eo.addEntry("Particle after step", particle);
+                        eo.addEntry("Functionality", MonteCarloParticleStatusToString(functionality.change));
+                        eo.addEntry("Next cell index", functionality.nextCellIndex);
+                        eo.addEntry("Location before step", beforeStepLocation);
+                        eo.addEntry("Velocity before step", beforeStepVelocity);
+                        eo.addEntry("Time left before step", beforeStepTimeLeft);
+                        eo.addEntry("Box lower", boxLL);
+                        eo.addEntry("Box upper", boxUR);
+                        eo.addEntry("Cell count", this->Ncells);
+                        if(particle.cellIndex < this->Ncells)
+                        {
+                            eo.addEntry("Cell index", particle.cellIndex);
+                            eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                            eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                        }
+                        throw eo;
+                    }
 
                     if(particle.on_track)
                     {
@@ -1604,6 +1690,17 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     this->PrintMemoryDiagnostics(initialParticlesNum, preStepParticlesNum);
 
     auto start = std::chrono::high_resolution_clock::now();
+    this->progressStartTime_ = start;
+    this->lastProgressPrintTime_ = 0.0;
+    this->progressStartParticles_ = (this->rank_world == 0) ? static_cast<int64_t>(numParticles) : startingParticleNum;
+    this->progressRemovedCount_ = 0;
+    int64_t globalInitialForProgress = (this->rank_world == 0) ? static_cast<int64_t>(numParticles) : startingParticleNum;
+#ifdef RICH_MPI
+    std::vector<std::array<unsigned long long, MC_PROGRESS_COUNTERS>> progressCountersByRank(this->size_world);
+    MPI_Request progressReportSendReq = MPI_REQUEST_NULL;
+    std::array<unsigned long long, MC_PROGRESS_COUNTERS> progressReportSendValue{};
+    double progressLastReportSendTime = 0.0;
+#endif
 
     const bool &verify = amountManager.GetVerifyRef();
     const bool &done = amountManager.GetDoneRef();
@@ -1623,7 +1720,111 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             this->localDecrementAmount = 0;
 
             amountManager.Progress();
-            
+
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed_s = std::chrono::duration<double>(now - this->progressStartTime_).count();
+
+#ifdef RICH_MPI
+            if(this->rank_world == 0)
+            {
+                progressCountersByRank[0] = {
+                    static_cast<unsigned long long>(this->physics->getRandomWalkStepCount()),
+                    static_cast<unsigned long long>(this->physics->getDDMCStepCount()),
+                    static_cast<unsigned long long>(this->physics->getDDMCLeakCount()),
+                    static_cast<unsigned long long>(this->physics->getDDMCCensusCount()),
+                    static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount()),
+                    static_cast<unsigned long long>(this->physics->getDDMCFallbackCount())
+                };
+
+                int hasMsg = 0;
+                MPI_Status status;
+                while(true)
+                {
+                    MPI_Iprobe(MPI_ANY_SOURCE, RW_PROGRESS_TAG, this->comm_world, &hasMsg, &status);
+                    if(!hasMsg)
+                        break;
+                    std::array<unsigned long long, MC_PROGRESS_COUNTERS> recvCounters{};
+                    MPI_Recv(recvCounters.data(), MC_PROGRESS_COUNTERS, MPI_UNSIGNED_LONG_LONG, status.MPI_SOURCE,
+                             RW_PROGRESS_TAG, this->comm_world, MPI_STATUS_IGNORE);
+                    progressCountersByRank[status.MPI_SOURCE] = recvCounters;
+                }
+            }
+            else if(elapsed_s - progressLastReportSendTime >= 5.0)
+            {
+                if(progressReportSendReq != MPI_REQUEST_NULL)
+                {
+                    int sendDone = 0;
+                    MPI_Test(&progressReportSendReq, &sendDone, MPI_STATUS_IGNORE);
+                    if(sendDone)
+                        progressReportSendReq = MPI_REQUEST_NULL;
+                }
+                if(progressReportSendReq == MPI_REQUEST_NULL)
+                {
+                    progressReportSendValue = {
+                        static_cast<unsigned long long>(this->physics->getRandomWalkStepCount()),
+                        static_cast<unsigned long long>(this->physics->getDDMCStepCount()),
+                        static_cast<unsigned long long>(this->physics->getDDMCLeakCount()),
+                        static_cast<unsigned long long>(this->physics->getDDMCCensusCount()),
+                        static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount()),
+                        static_cast<unsigned long long>(this->physics->getDDMCFallbackCount())
+                    };
+                    MPI_Isend(progressReportSendValue.data(), MC_PROGRESS_COUNTERS, MPI_UNSIGNED_LONG_LONG, 0,
+                              RW_PROGRESS_TAG, this->comm_world, &progressReportSendReq);
+                    progressLastReportSendTime = elapsed_s;
+                }
+            }
+#endif
+
+            if(this->rank_world == 0 && elapsed_s - this->lastProgressPrintTime_ >= 10.0)
+            {
+                this->lastProgressPrintTime_ = elapsed_s;
+                unsigned long long globalRwSteps = 0;
+                unsigned long long globalDDMCSteps = 0;
+                unsigned long long globalDDMCLeaks = 0;
+                unsigned long long globalDDMCCensus = 0;
+                unsigned long long globalDDMCUpscatter = 0;
+                unsigned long long globalDDMCFallback = 0;
+#ifdef RICH_MPI
+                for(const auto &counters : progressCountersByRank)
+                {
+                    globalRwSteps += counters[0];
+                    globalDDMCSteps += counters[1];
+                    globalDDMCLeaks += counters[2];
+                    globalDDMCCensus += counters[3];
+                    globalDDMCUpscatter += counters[4];
+                    globalDDMCFallback += counters[5];
+                }
+#else
+                globalRwSteps = static_cast<unsigned long long>(this->physics->getRandomWalkStepCount());
+                globalDDMCSteps = static_cast<unsigned long long>(this->physics->getDDMCStepCount());
+                globalDDMCLeaks = static_cast<unsigned long long>(this->physics->getDDMCLeakCount());
+                globalDDMCCensus = static_cast<unsigned long long>(this->physics->getDDMCCensusCount());
+                globalDDMCUpscatter = static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
+                globalDDMCFallback = static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
+#endif
+                int64_t globalRemaining = amountManager.GetValue();
+                int64_t globalDone = globalInitialForProgress - globalRemaining;
+                double done_frac = (globalInitialForProgress > 0) ? static_cast<double>(globalDone) / static_cast<double>(globalInitialForProgress) : 0.0;
+                double rate = (elapsed_s > 0) ? static_cast<double>(globalDone) / elapsed_s : 0.0;
+                double eta = (rate > 0) ? static_cast<double>(globalRemaining) / rate : 0.0;
+                RankHandler_t *selfHandler = this->rankHandlers[this->rank_world];
+                int localRemaining = selfHandler ? selfHandler->th_length : 0;
+                std::cerr << "[Progress] ~"
+                          << (done_frac * 100.0) << "% done, "
+                          << elapsed_s << "s elapsed, "
+                          << "~" << eta << "s ETA, "
+                          << "global_done=" << globalDone << "/" << globalInitialForProgress
+                          << " rank0_local_remaining=" << localRemaining
+                          << " rw_steps_total=" << globalRwSteps
+                          << " ddmc_steps_total=" << globalDDMCSteps
+                          << " ddmc_leaks=" << globalDDMCLeaks
+                          << " ddmc_census=" << globalDDMCCensus
+                          << " ddmc_upscatter=" << globalDDMCUpscatter
+                          << " ddmc_fallback=" << globalDDMCFallback
+                          << " eta_is_count_based=1"
+                          << std::endl;
+            }
+
             if(verify)
             {
                 this->FlushAllSendBuffers();
@@ -1641,6 +1842,11 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
         reportError(eo);
         throw;
     }
+
+#ifdef RICH_MPI
+    if(this->rank_world != 0 && progressReportSendReq != MPI_REQUEST_NULL)
+        MPI_Wait(&progressReportSendReq, MPI_STATUS_IGNORE);
+#endif
 
     MPI_Barrier(this->comm_world);
     auto end = std::chrono::high_resolution_clock::now();
