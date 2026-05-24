@@ -1,4 +1,5 @@
 #include "RadiationIMC.hpp"
+#include "SphericalObserver.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <iostream>
 
@@ -101,6 +102,16 @@ void RadiationIMC::precomputeRandomWalkData()
                 data = PGRWCellData{};
                 this->rwCellEligible[i] = false;
             }
+        }
+
+        if (this->rwCellEligible[i] && this->postProcess_.enabled && this->observer_)
+        {
+            Vector3D cellCenter = this->grid.GetMeshPoint(i);
+            double distToObserver = abs(cellCenter - this->observer_->getCenter());
+            double charLen = meanChordLength;
+            double obsR = this->observer_->getRadius();
+            if (distToObserver + charLen >= obsR && distToObserver - charLen <= obsR)
+                this->rwCellEligible[i] = false;
         }
     }
 }
@@ -228,10 +239,19 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     }
     particle.weight *= 1.0 + rwExp;
 
+    if (this->postProcess_.enabled && this->observer_)
+    {
+        double absorbed = oldWeight - particle.weight;
+        if (absorbed > 0.0)
+            this->observer_->addAbsorbedEnergy(absorbed);
+    }
+
     particle.timeLeft -= dt;
 
     if(std::abs(particle.weight) < particle.initialWeight * 1e-4)
     {
+        if (this->postProcess_.enabled && this->observer_)
+            this->observer_->addCutoffEnergy(particle.weight);
         functionality.change = MonteCarloParticleStatus::REMOVE;
         if(!this->noHydroFeedback)
         {
