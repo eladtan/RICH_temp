@@ -181,6 +181,8 @@ namespace
 		{
 			res[i] += other[i];
 			res[i] *= 0.5;
+			double kinetic = 0.5 * ScalarProd(res[i].momentum, res[i].momentum) / res[i].mass;
+    		res[i].internal_energy = res[i].energy - kinetic;
 		}
 	}
 
@@ -241,8 +243,9 @@ namespace
 				const ComputationalCell3D& cell = cells[interior];
 				ComputationalCell3D vacuum_state = cell;
 				double vac_factor = 1e-10;
+				vacuum_state.velocity = Vector3D(0, 0, 0);
 				vacuum_state.density = cell.density * vac_factor;
-				vacuum_state.pressure = cell.pressure * vac_factor;
+				vacuum_state.pressure = cell.pressure * vac_factor * 0.01;
 				vacuum_state.internal_energy = eos.dp2e(vacuum_state.density,
 					vacuum_state.pressure, cell.tracers, ComputationalCell3D::tracerNames);
 				std::pair<double, double> ustar_pstar = hllc.GetUstarPstar(

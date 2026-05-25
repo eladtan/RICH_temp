@@ -36,9 +36,6 @@
 #include <fenv.h>
 #include <libgen.h>
 #include <string.h>
-// #region agent log
-#include <chrono>
-// #endregion
 #ifdef RICH_MPI
 #include <mpi.h>
 #endif
@@ -95,7 +92,7 @@ int main(int argc, char* argv[])
 	PowerLawOpacity opacity(D0, -1.2, 1.5, planck0, 1.2, -1.5);
 
 	// Domain: 1D slab along x
-	size_t const Nx = 1024;
+	size_t const Nx = 512;
 	double const L = 1.5e-3;
 	double const dy = L / 50;
 	Vector3D ll(0, 0, 0), ur(L, dy, dy);
@@ -103,7 +100,41 @@ int main(int argc, char* argv[])
 
 	std::vector<Vector3D> points;
 	if (rank == 0)
-		points = CartesianMesh(Nx, 1, 1, ll, ur);
+	{
+		double const dx0 = L / (Nx * 4.0);
+		double const growth = 1.025;
+		std::vector<double> widths(Nx);
+		double geo_sum = 0;
+		for (size_t i = 0; i < Nx; ++i)
+		{
+			double w_geo = dx0 * std::pow(growth, static_cast<double>(i));
+			double remaining = L - geo_sum;
+			size_t cells_left = Nx - i;
+			double w_const = remaining / static_cast<double>(cells_left);
+			if (w_const <= w_geo)
+			{
+				for (size_t j = i; j < Nx; ++j)
+					widths[j] = w_const;
+				break;
+			}
+			widths[i] = w_geo;
+			geo_sum += w_geo;
+		}
+		points.resize(Nx);
+		double x_acc = 0;
+		for (size_t i = 0; i < Nx; ++i)
+		{
+			points[i] = Vector3D(x_acc + widths[i] * 0.5, dy * 0.5, dy * 0.5);
+			x_acc += widths[i];
+		}
+		std::cout << "Initial mesh points (" << points.size() << "):" << std::endl;
+		for (size_t i = 0; i < points.size(); ++i)
+		{
+			std::cout << "  [" << i << "] "
+				<< points[i].x << " " << points[i].y << " " << points[i].z
+				<< std::endl;
+		}
+	}
 	try {
 #ifdef RICH_MPI
 		tess.BuildParallel(points);
@@ -140,13 +171,13 @@ int main(int argc, char* argv[])
 	XOnlyMotion3D pm(round_cells);
 
 	// Radiation boundary: blackbody on left x-face, zero flux elsewhere
-	double const t_start = 1e-12;
+	double const t_start = 1e-14 * 512 / Nx;
 	double const T_bath_init = std::pow(1.0 + 0.169141 * std::pow(t_start / 1e-9, -79.0 / 192.0), 0.25) * HeV_K;
 	DiffusionSideBoundary D_boundary(T_bath_init);
 
 	// Diffusion: no flux limiter, hydro on, no compton
 	Diffusion diffusion(opacity, D_boundary, eos, std::vector<std::string>(),
-		false, true, false);
+		false, true, false, false, 1e50);
 	DiffusionForce force(diffusion, eos);
 
 	DefaultCellUpdater cu(false, 0, true, 0, &diffusion);
@@ -263,57 +294,6 @@ int main(int argc, char* argv[])
 					<< mass_cumulative << "\n";
 			}
 
-		// #region agent log
-		double max_rho = 0, shock_face_rho = 0, shock_mass = 0;
-		double x_peak = 0;
-		double mass_running = 0;
-		double rho0 = 19.32;
-		double total_mass = 0;
-		for (auto const& r : all_rows) total_mass += r.dm;
-		// ablation front: first compressed cell from left
-		for (auto const& r : all_rows)
-		{
-			mass_running += r.dm;
-			if (r.rho > max_rho) { max_rho = r.rho; x_peak = r.x; }
-			if (shock_face_rho == 0 && r.rho > rho0 * 1.05)
-			{
-				shock_face_rho = r.rho;
-				shock_mass = mass_running;
-			}
-		}
-		// shock front: last compressed cell from right (scan right-to-left)
-		double m_shock_front = 0;
-		{
-			double mass_from_right = 0;
-			for (int ri = static_cast<int>(all_rows.size()) - 1; ri >= 0; --ri)
-			{
-				mass_from_right += all_rows[ri].dm;
-				if (all_rows[ri].rho > rho0 * 1.05)
-				{
-					m_shock_front = total_mass - mass_from_right + all_rows[ri].dm;
-					break;
-				}
-			}
-		}
-		double t_ns = simulation.GetTime() / 1e-9;
-		double m_abl_analytic   = 1.01889e-3  * std::pow(t_ns, 33.0 / 64.0);
-		double m_shock_analytic = 0.0121368   * std::pow(t_ns, 0.776042);
-		long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::system_clock::now().time_since_epoch()).count();
-		std::ofstream dbg("/home/elads/RICH_monte/.cursor/debug-f4bd36.log", std::ios::app);
-		dbg << "{\"sessionId\":\"f4bd36\",\"hypothesisId\":\"G\","
-			<< "\"location\":\"test.cpp:write_output\","
-			<< "\"message\":\"cycle_stats\",\"data\":{"
-			<< "\"cycle\":" << simulation.GetCycle()
-			<< ",\"time_ns\":" << t_ns
-			<< ",\"max_rho\":" << max_rho
-			<< ",\"x_peak\":" << x_peak
-			<< ",\"m_ablation_front\":" << shock_mass
-			<< ",\"m_abl_analytic\":" << m_abl_analytic
-			<< ",\"m_shock_front\":" << m_shock_front
-			<< ",\"m_shock_analytic\":" << m_shock_analytic
-			<< "},\"timestamp\":" << ms << "}\n";
-		// #endregion
 		}
 	};
 
@@ -323,7 +303,7 @@ int main(int argc, char* argv[])
 	while (simulation.GetTime() < tf)
 	{
 		double const t_now = simulation.GetTime();
-		double const t_ns = t_now / 1e-9;
+		double const t_ns = (t_now + old_dt * 0.5) / 1e-9;
 		double const T_bath = std::pow(1.0 + 0.169141 * std::pow(t_ns, -79.0 / 192.0), 0.25) * HeV_K;
 		D_boundary.SetTemperature(T_bath);
 
@@ -334,7 +314,7 @@ int main(int argc, char* argv[])
 			double new_dt = radStep->suggestTimeStep();
 			new_dt = std::min(new_dt, tsf->GetTimeStep());
 			// new_dt = std::min(std::max(1e-14, simulation.GetTime() * 1e-3), new_dt);
-			new_dt = std::max(1e-14, new_dt);
+			new_dt = std::max(1e-16 * 512 / Nx, new_dt);
 			old_dt = new_dt;
 		}
 		catch (UniversalError const& eo)
