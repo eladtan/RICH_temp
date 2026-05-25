@@ -523,7 +523,7 @@ int main(int argc, char *argv[])
         sim.addPhysics(remeshStep);
         sim.addPhysics(mcStep);
 #ifdef RICH_MPI
-        sim.addMigrationBuffer(mcStep->getCellCosts());
+        // sim.addMigrationBuffer(mcStep->getLoadBalanceWeights());
         sim.PresetLoadBalance("remesh");
 #endif
 

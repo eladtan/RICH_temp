@@ -677,7 +677,7 @@ int main(int argc, char *argv[])
                     }
                     localPoints[i] = p;
                 }
-                if (savedLB != nullptr)
+                if(savedLB != nullptr)
                 {
                     tess.PresetLoadBalancer(savedLB);
                 }

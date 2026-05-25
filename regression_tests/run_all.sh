@@ -613,9 +613,9 @@ echo
 SUITE_START_EPOCH="$(date +%s)"
 
 # ==================== Parallel build configuration ====================
-MAX_PARALLEL_BUILDS=4
+MAX_PARALLEL_BUILDS=10
 TOTAL_CORES="${NPROC_OVERRIDE:-$(nproc)}"
-JOBS_PER_BUILD=$(( TOTAL_CORES / MAX_PARALLEL_BUILDS ))
+JOBS_PER_BUILD=10 # $(( TOTAL_CORES / MAX_PARALLEL_BUILDS ))
 (( JOBS_PER_BUILD < 1 )) && JOBS_PER_BUILD=1
 
 # FIFO-based semaphore to cap concurrent builds

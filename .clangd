@@ -1,3 +1,6 @@
+# Project include paths and defines are in compile_flags.txt (resolved relative to
+# this directory). Add machine-specific -I paths below or in ~/.config/clangd/config.yaml
+# (e.g. MPI, Boost, VTK, HDF5, ParMETIS, METIS) so the repo stays portable.
 CompileFlags:
-  Add: [-DRICH_MPI]
   CompilationDatabase: .
+  Add: []

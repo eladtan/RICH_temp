@@ -109,7 +109,7 @@ std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::
                         newParticle.velocity.y = _1mmu * std::cos(theta);
                         newParticle.velocity.z = _1mmu * std::sin(theta);
                         newParticle.velocity *= units::clight;
-                        newParticle.energy = 0;
+                        newParticle.frequency = 0;
                         newParticle.weight = energyToProduce;
                         newParticle.initialWeight = newParticle.weight;
                         newParticle.timeLeft = fullDt * unif(re);

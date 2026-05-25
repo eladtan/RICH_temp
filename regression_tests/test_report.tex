@@ -182,7 +182,8 @@ Marshak Wave 3 & Serial & 1 & Eulerian & Yes \\
 Marshak Wave 4 & Serial & 1 & Eulerian & Yes \\
 Gresho Vortex (Euler) & Serial & 1 & Eulerian & Yes \\
 Gresho Vortex (Lagrangian) & MPI & 8 & Lagrangian & Yes \\
-Densmore 2012 MC & MPI & 32 & Eulerian & Yes \\
+Densmore 2012 MC (MPI, no RW) & MPI & 32 & Eulerian & Yes \\
+Densmore 2012 MC (serial+RW) & Serial & 1 & Eulerian & No \\
 Yee Vortex ($64^2$) & MPI & 8 & Lagrangian & Yes \\
 Yee Vortex ($128^2$) & MPI & 16 & Lagrangian & No \\
 Cartesian LSQ Gradient & Serial & 1 & Static & No \\
@@ -307,7 +308,12 @@ Radially binned profiles of density, pressure, and velocity are compared to the 
 \textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\textit{Plots not available --- run the test suite and the plot generator first.}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.95\textwidth]{plots/sedov_3d_mpi.pdf}
+  \caption{Sedov--Taylor blast wave: radially binned numerical profiles (black dots) vs.\ the ODE self-similar solution (red line) for density (left), pressure (center), and radial velocity (right).}
+  \label{fig:sedov_3d_mpi}
+\end{figure}
 
 \newpage
 
@@ -363,9 +369,9 @@ The simulation produces time histories of $T_{\mathrm{gas}}(t)$, $T_{\mathrm{rad
 \toprule
 \textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
 \midrule
-Final $T_{\mathrm{gas}}$ & 1.154070e+08 & --- & {\color{green!60!black}PASS} \\
-Final $T_{\mathrm{rad}}$ & 1.154980e+08 & --- & {\color{green!60!black}PASS} \\
-Relative difference & 7.878924e-04 & $ < 10^{-2}$ & {\color{green!60!black}PASS} \\
+Final $T_{\mathrm{gas}}$ & 1.151930e+08 & --- & {\color{green!60!black}PASS} \\
+Final $T_{\mathrm{rad}}$ & 1.154990e+08 & --- & {\color{green!60!black}PASS} \\
+Relative difference & 2.649374e-03 & $ < 10^{-2}$ & {\color{green!60!black}PASS} \\
 Energy conservation (rel.) & 0.000000e+00 & $ < 10^{-8}$ & {\color{green!60!black}PASS} \\
 \bottomrule
 \end{tabular}
@@ -519,10 +525,24 @@ The volume-weighted average density error vs.\ the analytical Lane--Emden profil
 \end{itemize}
 
 \subsection*{Achieved Results}
-\textit{No metric output files found --- run the test suite first.}
+\begin{table}[htbp]
+\centering
+\begin{tabular}{l r r c}
+\toprule
+\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
+\midrule
+|final\_metric| & 1.752910e-02 & 4.00e-02 & {\color{green!60!black}PASS} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection*{Plots}
-\textit{Plots not available --- run the test suite and the plot generator first.}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.95\textwidth]{plots/lane_self_gravity.pdf}
+  \caption{Lane--Emden self-gravity: numerical density profile (black dots) vs.\ the analytical Lane--Emden solution (red line) as a function of radius.}
+  \label{fig:lane_self_gravity}
+\end{figure}
 
 \newpage
 
@@ -619,15 +639,7 @@ Same spatial profile thresholds as the gray case:
 \textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{plots/mach2_multigroup.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{plots/mach2_multigroup_spectrum.pdf}
-  \hfill
-  \caption{Mach~2 multigroup radiative shock. Top: spatial profiles of density, gas temperature, and radiation temperature (numerical vs.\ NLTE analytical). Bottom: radiation energy spectrum at the hottest cell (numerical vs.\ Planck distribution at $T_{\mathrm{gas}}$).}
-  \label{fig:mach2_multigroup}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -716,8 +728,8 @@ Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ must be 
 \toprule
 \textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
 \midrule
-$T_{\mathrm{gas}}$ rel. $L_1$ & 5.017616e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 9.874844e-03 & 1e-2 & {\color{green!60!black}PASS} \\
+$T_{\mathrm{gas}}$ rel. $L_1$ & 5.017587e-03 & 1e-2 & {\color{green!60!black}PASS} \\
+$T_{\mathrm{rad}}$ rel. $L_1$ & 9.874810e-03 & 1e-2 & {\color{green!60!black}PASS} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -953,7 +965,6 @@ The first heterogeneous test problem from Densmore et al.\ \cite{densmore2012} e
 \begin{itemize}
   \item \textbf{Monte Carlo IMC transport:} Particle creation, transport, absorption, and re-emission in a frequency-dependent setting.
   \item \textbf{Multigroup opacities:} Correct frequency-group averaging of the power-law opacity $\sigma = \sigma_0 / (\sqrt{kT}\,E^3)$.
-  \item \textbf{Random walk acceleration:} The hybrid MC/diffusion random walk is enabled in optically thick cells.
   \item \textbf{MPI parallelism:} The problem is distributed across 32 MPI ranks with domain decomposition and particle communication.
   \item \textbf{Heterogeneous material interface:} The sharp opacity jump at $x = 2$~cm produces a characteristic temperature spike that tests the interface treatment.
 \end{itemize}
@@ -990,9 +1001,53 @@ The gas temperature profile $T_{\mathrm{gas}}(x)$ is compared to the Monte Carlo
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.95\textwidth]{plots/desmore2012_mc.pdf}
-  \caption{Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH Monte Carlo IMC result (black dots) vs.\ digitized reference from Figure~4 of Densmore et al.\ (2012) (red line).}
+  \caption{Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH MPI MC without random walk (black circles), RICH serial MC with random walk (red crosses), and digitized reference from Figure~4 of Densmore et al.\ (2012) (blue line).}
   \label{fig:desmore2012_mc}
 \end{figure}
+
+\newpage
+
+\section{Densmore 2012 Heterogeneous Step-Opacity (Serial MC, Random Walk)}
+\label{sec:desmore2012_mc_serial}
+
+\subsection*{Description}
+The same heterogeneous problem as \texttt{desmore2012\_mc} but run serially with the random walk acceleration enabled. This exercises the serial (non-MPI) execution path and RW acceleration of the Monte Carlo IMC solver.
+
+\textbf{Code and physics aspects verified:}
+\begin{itemize}
+  \item \textbf{Serial execution path:} Verifies that the MC solver produces correct results without MPI domain decomposition.
+  \item \textbf{Cross-validation:} Together with the MPI (no-RW) variant, this test confirms that both random walk acceleration and MPI parallelism produce accurate results independently.
+\end{itemize}
+
+\subsection*{Initial Conditions}
+Identical to \texttt{desmore2012\_mc}: 256 cells, $x \in [0,\,3]$~cm, $\sigma_0 = 10 / 1000$~keV$^{7/2}$/cm, $T_0 = 1$~eV, $t_{\mathrm{end}} = 1$~ns, $\Delta t = 5 \times 10^{-12}$~s.
+
+\subsection*{Boundary Conditions}
+Left boundary: isotropic Planck source at $T = 1$~keV. Right boundary: reflective.
+
+\subsection*{Mesh Movement}
+Eulerian (fixed mesh), no hydrodynamics.
+
+\subsection*{Execution}
+Serial (single core).
+
+\subsection*{Pass Criteria}
+Same as \texttt{desmore2012\_mc}: $L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV.
+
+\subsection*{Achieved Results}
+\begin{table}[htbp]
+\centering
+\begin{tabular}{l r r c}
+\toprule
+\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
+\midrule
+$T_{\mathrm{gas}}$ $L_1$ [keV] & 1.60684268e-02 & 0.05 & {\color{green!60!black}PASS} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Plots}
+\textit{This test does not produce comparison plots.}
 
 \newpage
 
@@ -1030,7 +1085,16 @@ Volume-weighted $L_1$ density error at $t=10$ compared to the analytical initial
 \textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\textit{Plots not available --- run the test suite and the plot generator first.}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.48\textwidth]{plots/yee_vortex_density_2d.pdf}
+  \hfill
+  \includegraphics[width=0.48\textwidth]{plots/yee_vortex_pressure_2d.pdf}
+  \\[6pt]
+  \includegraphics[width=0.48\textwidth]{plots/yee_vortex_density_r.pdf}
+  \caption{Yee isentropic vortex at $t=10$: density field (top left), pressure field (top right), radially binned density profile vs.\ analytical IC for both resolutions (bottom left), and $L_1$ density error convergence with second-order reference (bottom right).}
+  \label{fig:yee_vortex_64}
+\end{figure}
 
 \newpage
 
@@ -1228,17 +1292,7 @@ MPI, 64~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
 Maximum angular density scatter $< 0.1$ and maximum angular velocity scatter $< 0.1$ across all radial bins with significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$).
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Max density scatter & 1.971124806921e-05 & 0.1 & {\color{green!60!black}PASS} \\
-Max velocity scatter & 1.276993974504e-05 & 0.1 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
 \textit{Plots not available --- run the test suite and the plot generator first.}
@@ -1279,7 +1333,15 @@ Fitted linear growth rate $\sigma_{\mathrm{fit}}$ (from $t=2$ to $t=3$) within 2
 \textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\textit{Plots not available --- run the test suite and the plot generator first.}
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.48\textwidth]{plots/rayleigh_taylor_mpi_ekz.pdf}
+  \hfill
+  \includegraphics[width=0.48\textwidth]{plots/rayleigh_taylor_mpi_slice.pdf}
+  \hfill
+  \caption{Rayleigh--Taylor instability: vertical kinetic energy $E_{k,z}(t)$ with best-fit exponential growth rate (left), and density slice in the $xz$-plane at $y=0.5$ at $t=3$ (right).}
+  \label{fig:rayleigh_taylor_mpi}
+\end{figure}
 
 \newpage
 
@@ -1345,13 +1407,13 @@ Each of the four sub-runs must complete without fatal errors and produce a valid
 \textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
 \midrule
 512: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512: peak $T_{\mathrm{gas}}$ & 4.4187 keV & finite & {\color{green!60!black}PASS} \\
+512: peak $T_{\mathrm{gas}}$ & 1.9515 keV & finite & {\color{green!60!black}PASS} \\
 512 limited: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512 limited: peak $T_{\mathrm{gas}}$ & 4.4187 keV & finite & {\color{green!60!black}PASS} \\
+512 limited: peak $T_{\mathrm{gas}}$ & 1.9298 keV & finite & {\color{green!60!black}PASS} \\
 32: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32: peak $T_{\mathrm{gas}}$ & 4.4276 keV & finite & {\color{green!60!black}PASS} \\
+32: peak $T_{\mathrm{gas}}$ & 0.0142 keV & finite & {\color{green!60!black}PASS} \\
 32 limited: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32 limited: peak $T_{\mathrm{gas}}$ & 4.4276 keV & finite & {\color{green!60!black}PASS} \\
+32 limited: peak $T_{\mathrm{gas}}$ & 1.3015 keV & finite & {\color{green!60!black}PASS} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1425,13 +1487,13 @@ Same structural criteria as the gray suite: all four sub-runs must complete and 
 \textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
 \midrule
 512: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512: peak $T_{\mathrm{gas}}$ & 4.4154 keV & finite & {\color{green!60!black}PASS} \\
+512: peak $T_{\mathrm{gas}}$ & 0.6191 keV & finite & {\color{green!60!black}PASS} \\
 512 limited: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512 limited: peak $T_{\mathrm{gas}}$ & 4.4154 keV & finite & {\color{green!60!black}PASS} \\
+512 limited: peak $T_{\mathrm{gas}}$ & 0.8649 keV & finite & {\color{green!60!black}PASS} \\
 32: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32: peak $T_{\mathrm{gas}}$ & 4.4230 keV & finite & {\color{green!60!black}PASS} \\
+32: peak $T_{\mathrm{gas}}$ & 0.0128 keV & finite & {\color{green!60!black}PASS} \\
 32 limited: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32 limited: peak $T_{\mathrm{gas}}$ & 4.4230 keV & finite & {\color{green!60!black}PASS} \\
+32 limited: peak $T_{\mathrm{gas}}$ & 0.1404 keV & finite & {\color{green!60!black}PASS} \\
 \bottomrule
 \end{tabular}
 \end{table}

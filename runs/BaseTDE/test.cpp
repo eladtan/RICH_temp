@@ -385,7 +385,7 @@ namespace
 		}
 	}
 	
-	class STAMGopacity: public MultigroupDiffusionCoefficientCalculator
+	class STAMGopacity: public OpacityCalculator
 	{
 	private:
 		std::vector<double> rho_, T_;
@@ -438,8 +438,9 @@ namespace
 			}
 		}
 
-		double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, size_t const group) const override
+		double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override
 		{
+			std::size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
@@ -451,7 +452,7 @@ namespace
 			{
 				d_ratio = std::exp(rho_[0]) / cell.density;
 				d = rho_[0];
-				double const scattering = CalcScatteringCoefficientGroup(cell, group);
+				double const scattering = CalcScatteringOpacity(cell, energy);
 				double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
          		return CG::speed_of_light / (3 * std::max(sig, scattering));
 			}
@@ -464,8 +465,9 @@ namespace
 			return CG::speed_of_light / (3 * sig);
 		}
 
-		double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
+		double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
 		{
+			std::size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
@@ -498,8 +500,9 @@ namespace
 			return sig;
 		}
 
-		double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
+		double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
 		{
+			std::size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;

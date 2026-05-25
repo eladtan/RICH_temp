@@ -1,14 +1,15 @@
 #!/bin/bash
-#SBATCH -p socket
-#SBATCH -n 640
+#SBATCH -p bigrun
+#SBATCH --job-name="Hohlraum3D"
+#SBATCH -n 1024
 #SBATCH --exclusive
-#SBATCH -o hohlraum_run.out
-#SBATCH -e hohlraum_run.err
+#SBATCH -o hohlraum_%j_slurm.out
+#SBATCH -e hohlraum_%j_slurm.err
 
-cd /home/maorm/RICH/runs/Elad_paper_hohlraum
+# srun ulimit -c unlimited
 
-# delta=0.05 cm  =>  ~28x26x26 = ~19k cells  (coarse test run)
-# delta=0.02 cm  =>  ~70x65x65 = ~296k cells (medium)
-# delta=0.005 cm  =>  ~140x130x130 = ~2.4M cells (nominal from paper)
-
-mpirun ./rich 0.01 hohlraum 50 200
+# srun --ntasks-per-node=1 systemctl start drop-caches
+NBASE=${NBASE:-$(( 892 * SLURM_NNODES ))}
+ln -s hohlraum_${SLURM_JOB_ID}_slurm.out hohlraum_${SLURM_JOB_ID}_n${SLURM_NTASKS}.out
+ln -s hohlraum_${SLURM_JOB_ID}_slurm.err hohlraum_${SLURM_JOB_ID}_n${SLURM_NTASKS}.err
+mpirun ./rich ${NBASE} --ibv --hold-small-idle-flushes

@@ -6,6 +6,8 @@
 #SBATCH --ntasks=512
 #SBATCH --partition=bigrun
 #SBATCH --exclusive
-#SBATCH --constraint=d24g
+#SBATCH --constraint=d25g
 
-mpirun ./rich 20000 100
+mpirun ./rich 20000 200 --ibv \
+    > >(tee "crookedPipe_${SLURM_JOB_ID}_n${SLURM_NTASKS}.out") \
+    2> >(tee "crookedPipe_${SLURM_JOB_ID}_n${SLURM_NTASKS}.err" >&2)

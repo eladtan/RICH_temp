@@ -27,7 +27,7 @@
 #include "3D/output/MC/read_write_particles.hpp"
 #include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
 #include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
-
+#include  "utils/debug/cleanNode.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "monte/population/Comb.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
@@ -422,6 +422,8 @@ int main(int argc, char *argv[]) {
         //         << " on " << hostname
         //         << " pid=" << getpid() << std::endl;
 
+        ensureCleanNode();
+
         if(rank == 0 and argc < 2)
         {
             std::cerr << "Usage: " << argv[0]
@@ -491,7 +493,7 @@ int main(int argc, char *argv[]) {
 
         const std::string hohlraumDir = useP2P ? "Hohlraum_P2P" : "Hohlraum";
         const std::string outputDir =
-            "/leonardo_work/EUHPC_D35_204/" + hohlraumDir + "/N_base_" +
+            "/data/shared/maorm/Hohlraum/" + hohlraumDir + "/N_base_" +
             std::to_string(N_base) + "/size_" + std::to_string(ws);
         char prefixBuf[256];
         std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_%d_", argv[1], ws);

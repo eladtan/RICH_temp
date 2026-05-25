@@ -75,7 +75,7 @@ namespace
 		return std::exp(BiLinearInterpolation(T_, rho_, data, T, d));
 	}
 
-	class STAopacity: public DiffusionCoefficientCalculator
+	class STAopacity: public OpacityCalculator
 	{
 	private:
 		std::vector<double> rho_, T_;
