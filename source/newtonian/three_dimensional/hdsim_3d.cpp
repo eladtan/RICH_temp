@@ -4,6 +4,7 @@
 #include "misc/memory_debug.hpp"
 #include "misc/memory_profile.hpp"
 
+
 namespace
 {
 	#ifdef RICH_MPI
@@ -189,17 +190,23 @@ namespace
 		auto box = tess.GetBoxCoordinates();
 		Vector3D ll = box.first;
 		Vector3D ur = box.second;
-		double x_tol = 1e-6 * (ur.x - ll.x);
+		size_t Norg = tess.GetPointNo();
 		std::vector<size_t> left_faces, right_faces;
 		size_t Nfaces = tess.GetTotalFacesNumber();
 		for (size_t i = 0; i < Nfaces; ++i)
 		{
 			if (!tess.BoundaryFace(i))
 				continue;
-			const Vector3D cm = tess.FaceCM(i);
-			if (cm.x < ll.x + x_tol)
+			Vector3D normal = normalize(tess.Normal(i));
+			if (std::abs(normal.x) < 0.5)
+				continue;
+			size_t n0 = tess.GetFaceNeighbors(i).first;
+			size_t n1 = tess.GetFaceNeighbors(i).second;
+			size_t ghost = (n0 < Norg) ? n1 : n0;
+			Vector3D ghost_point = tess.GetMeshPoint(ghost);
+			if (ghost_point.x < ll.x)
 				left_faces.push_back(i);
-			else if (cm.x > ur.x - x_tol)
+			else if (ghost_point.x > ur.x)
 				right_faces.push_back(i);
 		}
 		return std::make_pair(left_faces, right_faces);
@@ -224,7 +231,9 @@ namespace
 			size_t n1 = neighbors.second;
 			size_t interior = (n0 < Norg) ? n0 : n1;
 			Vector3D raw_normal = normalize(tess.Normal(fi));
-			Vector3D outward_normal = (n0 < Norg) ? raw_normal : (-1.0 * raw_normal);
+			double sign = (n0 < Norg) ? 1.0 : -1.0;
+			double nx_sign = (raw_normal.x * sign > 0) ? 1.0 : -1.0;
+			Vector3D outward_normal(nx_sign, 0, 0);
 
 			double contact_speed;
 			if (external_state == nullptr)
@@ -274,7 +283,9 @@ namespace
 			size_t n1 = neighbors.second;
 			size_t interior = (n0 < Norg) ? n0 : n1;
 			Vector3D raw_normal = normalize(tess.Normal(fi));
-			Vector3D outward_normal = (n0 < Norg) ? raw_normal : (-1.0 * raw_normal);
+			double sign = (n0 < Norg) ? 1.0 : -1.0;
+			double nx_sign = (raw_normal.x * sign > 0) ? 1.0 : -1.0;
+			Vector3D outward_normal(nx_sign, 0, 0);
 
 			double contact_speed;
 			if (external_state == nullptr)
@@ -376,25 +387,25 @@ void HDSim3D::timeAdvance2(void)
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
 	MEMORY_DEBUG_PRINT("hydro: after source terms");
-	if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
-	{
-		vector<Vector3D>& mesh = tess_.accessMeshPoints();
-		mesh.resize(tess_.GetPointNo());
-		vector<size_t> order = HilbertOrder3D(mesh);
-		size_t Nlocal = order.size();
-		ApplyPermutation(mesh, order);
-		mid_extensives.resize(Nlocal);
-		ApplyPermutation(mid_extensives, order);
-		extensive_.resize(Nlocal);
-		ApplyPermutation(extensive_, order);
-		cells_.resize(Nlocal);
-		ApplyPermutation(cells_, order);
-		point_vel.resize(Nlocal);
-		ApplyPermutation(point_vel, order);
-#ifdef RICH_MPI
-		tess_.PreparePoints(mesh, order);
-#endif
-	}
+	// if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
+	// {
+		// vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		// mesh.resize(tess_.GetPointNo());
+		// vector<size_t> order = HilbertOrder3D(mesh);
+		// size_t Nlocal = order.size();
+		// ApplyPermutation(mesh, order);
+		// mid_extensives.resize(Nlocal);
+		// ApplyPermutation(mid_extensives, order);
+		// extensive_.resize(Nlocal);
+		// ApplyPermutation(extensive_, order);
+		// cells_.resize(Nlocal);
+		// ApplyPermutation(cells_, order);
+		// point_vel.resize(Nlocal);
+		// ApplyPermutation(point_vel, order);
+// #ifdef RICH_MPI
+		// tess_.PreparePoints(mesh, order);
+// #endif
+	// }
 	Conserved3D edummy;
 	ComputationalCell3D cdummy;
 	if(pm_.MovedPoints())
@@ -508,25 +519,25 @@ void HDSim3D::timeAdvanceLagrangian1D(
 	auto t2 = get_time();
 	DisplayTime(t1, t2, "Source time ");
 
-	if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
-	{
-		vector<Vector3D>& mesh = tess_.accessMeshPoints();
-		mesh.resize(tess_.GetPointNo());
-		vector<size_t> order = HilbertOrder3D(mesh);
-		size_t Nlocal = order.size();
-		ApplyPermutation(mesh, order);
-		mid_extensives.resize(Nlocal);
-		ApplyPermutation(mid_extensives, order);
-		extensive_.resize(Nlocal);
-		ApplyPermutation(extensive_, order);
-		cells_.resize(Nlocal);
-		ApplyPermutation(cells_, order);
-		point_vel.resize(Nlocal);
-		ApplyPermutation(point_vel, order);
-#ifdef RICH_MPI
-		tess_.PreparePoints(mesh, order);
-#endif
-	}
+	// if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
+	// {
+		// vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		// mesh.resize(tess_.GetPointNo());
+		// vector<size_t> order = HilbertOrder3D(mesh);
+		// size_t Nlocal = order.size();
+		// ApplyPermutation(mesh, order);
+		// mid_extensives.resize(Nlocal);
+		// ApplyPermutation(mid_extensives, order);
+		// extensive_.resize(Nlocal);
+		// ApplyPermutation(extensive_, order);
+		// cells_.resize(Nlocal);
+		// ApplyPermutation(cells_, order);
+		// point_vel.resize(Nlocal);
+		// ApplyPermutation(point_vel, order);
+// #ifdef RICH_MPI
+		// tess_.PreparePoints(mesh, order);
+// #endif
+	// }
 
 	if (pm_.MovedPoints())
 		MovePoints(tess_, point_vel, dt);
@@ -698,22 +709,22 @@ void HDSim3D::timeAdvance3(void)
 	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, 0.5 * dt, mid_extensives);
 
-	if (pt_.getCycle() % 10 == 0)
-	{
-		vector<Vector3D>& mesh = tess_.accessMeshPoints();
-		mesh.resize(tess_.GetPointNo());
-		vector<size_t> order = HilbertOrder3D(mesh);
-		size_t Nlocal = order.size();
-		ApplyPermutation(mesh, order);
-		mid_extensives.resize(Nlocal);
-		ApplyPermutation(mid_extensives, order);
-		extensive_.resize(Nlocal);
-		ApplyPermutation(extensive_, order);
-		cells_.resize(Nlocal);
-		ApplyPermutation(cells_, order);
-		point_vel.resize(Nlocal);
-		ApplyPermutation(point_vel, order);
-	}
+	// if (pt_.getCycle() % 10 == 0)
+	// {
+		// vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		// mesh.resize(tess_.GetPointNo());
+		// vector<size_t> order = HilbertOrder3D(mesh);
+		// size_t Nlocal = order.size();
+		// ApplyPermutation(mesh, order);
+		// mid_extensives.resize(Nlocal);
+		// ApplyPermutation(mid_extensives, order);
+		// extensive_.resize(Nlocal);
+		// ApplyPermutation(extensive_, order);
+		// cells_.resize(Nlocal);
+		// ApplyPermutation(cells_, order);
+		// point_vel.resize(Nlocal);
+		// ApplyPermutation(point_vel, order);
+	// }
 	oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt * 0.5);
@@ -818,22 +829,22 @@ void HDSim3D::timeAdvance33(void)
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 
-	if (pt_.getCycle() % 10 == 0)
-	{
-		vector<Vector3D>& mesh = tess_.accessMeshPoints();
-		mesh.resize(tess_.GetPointNo());
-		vector<size_t> order = HilbertOrder3D(mesh);
-		size_t Nlocal = order.size();
-		ApplyPermutation(mesh, order);
-		mid_extensives.resize(Nlocal);
-		ApplyPermutation(mid_extensives, order);
-		extensive_.resize(Nlocal);
-		ApplyPermutation(extensive_, order);
-		cells_.resize(Nlocal);
-		ApplyPermutation(cells_, order);
-		point_vel.resize(Nlocal);
-		ApplyPermutation(point_vel, order);
-	}
+	// if (pt_.getCycle() % 10 == 0)
+	// {
+		// vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		// mesh.resize(tess_.GetPointNo());
+		// vector<size_t> order = HilbertOrder3D(mesh);
+		// size_t Nlocal = order.size();
+		// ApplyPermutation(mesh, order);
+		// mid_extensives.resize(Nlocal);
+		// ApplyPermutation(mid_extensives, order);
+		// extensive_.resize(Nlocal);
+		// ApplyPermutation(extensive_, order);
+		// cells_.resize(Nlocal);
+		// ApplyPermutation(cells_, order);
+		// point_vel.resize(Nlocal);
+		// ApplyPermutation(point_vel, order);
+	// }
 	oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt);
@@ -947,22 +958,22 @@ void HDSim3D::timeAdvance32(void)
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
 
-	if (pt_.getCycle() % 10 == 0)
-	{
-		vector<Vector3D>& mesh = tess_.accessMeshPoints();
-		mesh.resize(tess_.GetPointNo());
-		vector<size_t> order = HilbertOrder3D(mesh);
-		size_t Nlocal = order.size();
-		ApplyPermutation(mesh, order);
-		mid_extensives.resize(Nlocal);
-		ApplyPermutation(mid_extensives, order);
-		extensive_.resize(Nlocal);
-		ApplyPermutation(extensive_, order);
-		cells_.resize(Nlocal);
-		ApplyPermutation(cells_, order);
-		point_vel.resize(Nlocal);
-		ApplyPermutation(point_vel, order);
-	}
+	// if (pt_.getCycle() % 10 == 0)
+	// {
+		// vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		// mesh.resize(tess_.GetPointNo());
+		// vector<size_t> order = HilbertOrder3D(mesh);
+		// size_t Nlocal = order.size();
+		// ApplyPermutation(mesh, order);
+		// mid_extensives.resize(Nlocal);
+		// ApplyPermutation(mid_extensives, order);
+		// extensive_.resize(Nlocal);
+		// ApplyPermutation(extensive_, order);
+		// cells_.resize(Nlocal);
+		// ApplyPermutation(cells_, order);
+		// point_vel.resize(Nlocal);
+		// ApplyPermutation(point_vel, order);
+	// }
 	MovePoints(tess_, point_vel, dt);
 
 	#ifdef RICH_MPI
@@ -1049,22 +1060,22 @@ void HDSim3D::timeAdvance4(void)
 	eu_(fluxes, tess_, 0.5 * dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
 	source_(tess_, cells_, fluxes, point_vel, time, 0.5 * dt, mid_extensives);
 
-	if (pt_.getCycle() % 10 == 0)
-	{
-		vector<Vector3D>& mesh = tess_.accessMeshPoints();
-		mesh.resize(tess_.GetPointNo());
-		vector<size_t> order = HilbertOrder3D(mesh);
-		size_t Nlocal = order.size();
-		ApplyPermutation(mesh, order);
-		mid_extensives.resize(Nlocal);
-		ApplyPermutation(mid_extensives, order);
-		extensive_.resize(Nlocal);
-		ApplyPermutation(extensive_, order);
-		cells_.resize(Nlocal);
-		ApplyPermutation(cells_, order);
-		point_vel.resize(Nlocal);
-		ApplyPermutation(point_vel, order);
-	}
+	// if (pt_.getCycle() % 10 == 0)
+	// {
+		// vector<Vector3D>& mesh = tess_.accessMeshPoints();
+		// mesh.resize(tess_.GetPointNo());
+		// vector<size_t> order = HilbertOrder3D(mesh);
+		// size_t Nlocal = order.size();
+		// ApplyPermutation(mesh, order);
+		// mid_extensives.resize(Nlocal);
+		// ApplyPermutation(mid_extensives, order);
+		// extensive_.resize(Nlocal);
+		// ApplyPermutation(extensive_, order);
+		// cells_.resize(Nlocal);
+		// ApplyPermutation(cells_, order);
+		// point_vel.resize(Nlocal);
+		// ApplyPermutation(point_vel, order);
+	// }
 	oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt * 0.5);
