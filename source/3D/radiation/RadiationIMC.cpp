@@ -855,10 +855,26 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
         localTotalEnergy += energyToCreateVec[i];
     }
 
+    std::vector<double> shareWeight(Ncells);
+    double localTotalShareWeight = 0;
+    for (size_t i = 0; i < Ncells; i++)
+    {
+        shareWeight[i] = energyToCreateVec[i];
+        if (postProcess_.enabled)
+        {
+            double tauAbs = this->planckOpacities[i] * std::cbrt(this->grid.GetVolume(i));
+            if (tauAbs > 12.0)
+                shareWeight[i] *= std::exp(12.0 - tauAbs);
+        }
+        localTotalShareWeight += shareWeight[i];
+    }
+
     double globalTotalEnergy = localTotalEnergy;
+    double globalTotalShareWeight = localTotalShareWeight;
     size_t globalTotalCells = Ncells;
     #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &globalTotalShareWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
@@ -866,8 +882,8 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     std::vector<size_t> nPhotons(Ncells);
     for(size_t i = 0; i < Ncells; i++)
     {
-        size_t proportionalShare = (globalTotalEnergy > 0)
-            ? static_cast<size_t>(energyToCreateVec[i] / globalTotalEnergy * totalParticles)
+        size_t proportionalShare = (globalTotalShareWeight > 0)
+            ? static_cast<size_t>(shareWeight[i] / globalTotalShareWeight * totalParticles)
             : this->newPhotonsPerCell;
         nPhotons[i] = std::max(this->newPhotonsPerCell, std::min(proportionalShare, this->newPhotonsPerCell * 20));
     }
