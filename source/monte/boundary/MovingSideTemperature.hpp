@@ -172,28 +172,28 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                     {
                         MonteCarloParticle<T, Grid> p;
                         p.location = RandomPointOnFace(this->grid, faceIdx);
-
-                        double const mu = std::sqrt(unif(re));
-                        double const sinTheta = std::sqrt(1.0 - mu * mu);
-                        double const phi = 2.0 * M_PI * unif(re);
-
-                        T dirFace = (-mu) * nOut
-                                  + sinTheta * std::cos(phi) * e1
-                                  + sinTheta * std::sin(phi) * e2;
-                        dirFace = normalize(dirFace);
-
-                        p.velocity = units::clight * dirFace;
+                        p.weight = packetEnergyFace;
+                        p.initialWeight = p.weight;
+                        p.timeLeft = fullDt * unif(re);
+                        p.cellIndex = i;
                         p.frequency = 0;
                         if (multigroup_)
                             p.frequency = LinearInterpolation(cumulativePlanckFunction_,
                                                              ComputationalCell3D::energyBoundaries, unif(re));
 
-                        p.weight = packetEnergyFace;
-                        p.initialWeight = p.weight;
-                        p.timeLeft = fullDt * unif(re);
-                        p.cellIndex = i;
+                        do {
+                            double const mu = std::sqrt(unif(re));
+                            double const sinTheta = std::sqrt(1.0 - mu * mu);
+                            double const phi = 2.0 * M_PI * unif(re);
 
-                        LorentzTransformation(p, -1.0 * leftFaceVelocity_);
+                            T dirFace = (-mu) * nOut
+                                      + sinTheta * std::cos(phi) * e1
+                                      + sinTheta * std::sin(phi) * e2;
+                            dirFace = normalize(dirFace);
+
+                            p.velocity = units::clight * dirFace;
+                            LorentzTransformation(p, -1.0 * leftFaceVelocity_);
+                        } while (p.velocity.x < 0);
 
                         newParticles.push_back(p);
                     }
