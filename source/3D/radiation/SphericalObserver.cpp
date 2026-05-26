@@ -187,6 +187,7 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     observerCrossingCount_.assign(numObservers_, 0);
     observerSolidAngle_ = computePerObserverSolidAngles(directions_, numObservers_);
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
 }
 
 SphericalObserver::Crossing
@@ -247,6 +248,7 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
     if (numGroups_ > 1) {
         size_t g = findGroup(frequency);
         groupEnergy_[obs][g] += weight;
+        ++groupCrossingCount_[obs][g];
     }
 }
 
@@ -391,6 +393,20 @@ void SphericalObserver::mpiReduceToRank0()
                 groupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
     }
 
+    std::vector<size_t> flatCountSend(flatSize, 0);
+    for (size_t i = 0; i < numObservers_; ++i)
+        for (size_t g = 0; g < numGroups_; ++g)
+            flatCountSend[i * numGroups_ + g] = groupCrossingCount_[i][g];
+
+    std::vector<size_t> flatCountRecv(flatSize, 0);
+    MPI_Reduce(flatCountSend.data(), flatCountRecv.data(), static_cast<int>(flatSize),
+               MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (size_t i = 0; i < numObservers_; ++i)
+            for (size_t g = 0; g < numGroups_; ++g)
+                groupCrossingCount_[i][g] = flatCountRecv[i * numGroups_ + g];
+    }
+
     double scalars[5] = {emittedEnergy_, absorbedEnergy_, boxEscapeEnergy_,
                          timedOutEnergy_, cutoffEnergy_};
     double scalarRecv[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
@@ -458,6 +474,7 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         std::vector<std::vector<double>> gLum = getGroupLuminosity(sourceDt);
         writer.WriteElement("/tally/multigroup/group_energy", groupEnergy_);
         writer.WriteElement("/tally/multigroup/group_luminosity", gLum);
+        writer.WriteElement("/tally/multigroup/group_crossing_count", groupCrossingCount_);
     }
 
     writer.WriteElement("/diagnostics/source_dt", diagnostics.sourceDt);
@@ -572,6 +589,13 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             file << "LOOKUP_TABLE default\n";
             for (size_t i = 0; i < N; ++i)
                 file << groupEnergy_[i][g] * invDt << "\n";
+        }
+
+        for (size_t g = 0; g < numGroups_; ++g) {
+            file << "SCALARS group_" << g << "_crossing_count double 1\n";
+            file << "LOOKUP_TABLE default\n";
+            for (size_t i = 0; i < N; ++i)
+                file << static_cast<double>(groupCrossingCount_[i][g]) << "\n";
         }
     }
 }

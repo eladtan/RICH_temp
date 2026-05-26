@@ -88,6 +88,7 @@ private:
     std::vector<size_t> observerCrossingCount_;
     std::vector<double> observerSolidAngle_;
     std::vector<std::vector<double>> groupEnergy_;
+    std::vector<std::vector<size_t>> groupCrossingCount_;
 
     double emittedEnergy_ = 0.0;
     double absorbedEnergy_ = 0.0;

@@ -8,4 +8,6 @@
 
 Vector3D RandomPointInCell(const Tessellation3D &voronoi, size_t cellIndex);
 
+void ReseedRandomInCell(uint64_t seed);
+
 #endif // RANDOM_IN_CELL_HPP

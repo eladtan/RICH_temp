@@ -21,11 +21,11 @@ public:
 
     OpacityCalculator()
     {
-        int seed = 0;
+        int rank = 0;
 #ifdef RICH_MPI
-        MPI_Comm_rank(MPI_COMM_WORLD, &seed);
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
-        rng_ = std::mt19937_64(static_cast<uint64_t>(seed));
+        rng_ = std::mt19937_64(static_cast<uint64_t>(rank) * 3 + 1);
     }
     virtual ~OpacityCalculator() = default;
 

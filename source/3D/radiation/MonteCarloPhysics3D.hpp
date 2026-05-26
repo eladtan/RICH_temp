@@ -38,7 +38,12 @@ public:
 
     inline std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void){return this->Eg_time_avg;}
 
-    void reseedRNG(uint64_t seed) { this->re.seed(seed); }
+    void reseedRNG(uint64_t seed)
+    {
+        this->re.seed(seed);
+        this->opacity->rng_.seed(seed + 1);
+        ReseedRandomInCell(seed + 2);
+    }
 
     const OpacityCalculator* getOpacity() const { return opacity.get(); }
     

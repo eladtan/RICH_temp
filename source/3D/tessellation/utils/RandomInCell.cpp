@@ -1,11 +1,28 @@
 #include "RandomInCell.hpp"
 #include <algorithm>
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
+
+namespace {
+    int getRank()
+    {
+        int rank = 0;
+#ifdef RICH_MPI
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        if(initialized)
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+        return rank;
+    }
+
+    std::mt19937 g_ricRng(static_cast<std::mt19937::result_type>(getRank()) * 3 + 2);
+    std::uniform_real_distribution<double> g_ricDist(0.0, 1.0);
+}
 
 Vector3D RandomPointInCell(const Tessellation3D &voronoi, size_t cellIndex)
 {
-    static std::mt19937 re(0);
-    static std::uniform_real_distribution<double> dist(0.0, 1.0);
-
     static size_t cachedCell = SIZE_MAX;
     static const Tessellation3D *cachedGrid = nullptr;
     static size_t cachedBuildGeneration = SIZE_MAX;
@@ -46,15 +63,20 @@ Vector3D RandomPointInCell(const Tessellation3D &voronoi, size_t cellIndex)
 
     const std::vector<Vector3D> &verts = voronoi.GetFacePoints();
 
-    double r = dist(re) * totalVolume;
+    double r = g_ricDist(g_ricRng) * totalVolume;
     size_t idx = static_cast<size_t>(std::lower_bound(cumVolumes.begin(), cumVolumes.end(), r) - cumVolumes.begin());
     if(idx >= tris.size()) idx = tris.size() - 1;
 
-    double s = dist(re), t = dist(re), u = dist(re);
+    double s = g_ricDist(g_ricRng), t = g_ricDist(g_ricRng), u = g_ricDist(g_ricRng);
     if(s > t) std::swap(s, t);
     if(t > u) std::swap(t, u);
     if(s > t) std::swap(s, t);
 
     const auto &tv = tris[idx];
     return s * verts[tv[0]] + (t - s) * verts[tv[1]] + (u - t) * verts[tv[2]] + (1 - u) * center;
+}
+
+void ReseedRandomInCell(uint64_t seed)
+{
+    g_ricRng.seed(static_cast<std::mt19937::result_type>(seed));
 }
