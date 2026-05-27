@@ -15,6 +15,17 @@ public:
     MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
 
     std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        (void)faceIdx;
+        (void)insideCellIndex;
+        (void)outsidePointIndex;
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
 };
 
 template<typename T, typename Grid>

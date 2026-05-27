@@ -23,6 +23,23 @@ public:
     MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
     std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
 
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        T nOut;
+        if (!this->getDDMCOrientedOutwardNormal(
+                faceIdx, insideCellIndex, outsidePointIndex, nOut))
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        // Left x moving thermal source. Not implemented as a DDMC boundary yet.
+        if (nOut.x < -0.99)
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
+
     void SetTemperature(double temperature);
 
 private:
@@ -165,6 +182,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                 T nOut = normalize(this->grid.GetMeshPoint(neighborIdx) - point);
                 if (nOut.x < -0.99)
                 {
+                    std::cout<<"Left velocity: "<<leftFaceVelocity_<<", nOut: "<<nOut<<std::endl;
                     double const area = this->grid.GetArea(faceIdx);
 
                     double const v2 = ScalarProd(leftFaceVelocity_, leftFaceVelocity_);
@@ -174,11 +192,14 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                     // T_bath is defined in the comoving/fluid frame.
                     // This is therefore the proper-frame emitted energy per packet.
                     double const dtFace = fullDt / gammaFace;
+                    // double const w_n = ScalarProd(leftFaceVelocity_, nOut);
+                    // double const sweptFactor = (w_n > 0.0) ? 1.0 + 4.0 * w_n / units::clight : 1.0;
                     double const packetEnergyFace = units::sigma_sb * T4 * area * dtFace / Npercell_;
+                    double const fluidEnergy = packetEnergyFace * Npercell_ * gammaFace;
 
                     T e1(0, 1, 0);
                     T e2(0, 0, 1);
-
+                    double totalWeight = 0.0;
                     for (size_t j = 0; j < Npercell_; ++j)
                     {
                         MonteCarloParticle<T, Grid> p;
@@ -188,7 +209,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                         p.cellIndex = i;
                         p.frequency = 0;
                         if (multigroup_)
-                        p.frequency = LinearInterpolation(cumulativePlanckFunction_,
+                            p.frequency = LinearInterpolation(cumulativePlanckFunction_,
                     ComputationalCell3D::energyBoundaries, unif(re));
                     
                     do {
@@ -205,9 +226,12 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                         LorentzTransformation(p, -1.0 * leftFaceVelocity_);
                         p.initialWeight = p.weight;
                         } while (p.velocity.x < 0);
-
+                        totalWeight += p.weight;
+                        if(j == 0)
+                            std::cout<<"Fluid energy: "<<packetEnergyFace<<" end weight: "<<p.weight<<std::endl;
                         newParticles.push_back(p);
                     }
+                    std::cout<<"Total weight: "<<totalWeight<<", fluidEnergy: "<<fluidEnergy<<" expected lab weight: "<<fluidEnergy * (1 + 2 * leftFaceVelocity_.x / (3 * units::clight)) <<std::endl;
                 }
             }
         }

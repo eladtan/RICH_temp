@@ -24,6 +24,17 @@ public:
         return {};
     }
 
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        (void)faceIdx;
+        (void)insideCellIndex;
+        (void)outsidePointIndex;
+        return DDMCBoundaryFaceBehavior::Unsupported;
+    }
+
     double getEscapedEnergy() const
     {
         return escapedEnergy_;

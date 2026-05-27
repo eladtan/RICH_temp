@@ -873,7 +873,7 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                 while(true)
                 {
                     ++progressStepCounter;
-                    if ((progressStepCounter & 0x3FFFF) == 0 && particle.steps > 10000) {
+                    if ((progressStepCounter & 0x3FFFF) == 0 && particle.steps > 100000) {
                         std::cerr << "[StuckParticle] rank=" << this->rank_world
                                   << " localPts=" << this->grid.GetPointNo()
                                   << " " << particle

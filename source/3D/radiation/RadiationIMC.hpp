@@ -146,6 +146,9 @@ private:
         bool eligible = false;
         bool observerExcluded = false;
         bool boundaryExcluded = false;
+        size_t rigidBoundaryFaceCount = 0;
+        size_t unsupportedBoundaryFaceCount = 0;
+        size_t firstUnsupportedBoundaryFace = std::numeric_limits<size_t>::max();
         double sigmaT = 0.0;
         double sigmaA = 0.0;
         double diffusionCoefficient = 0.0;

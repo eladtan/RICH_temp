@@ -151,6 +151,22 @@ void RadiationIMC::precomputeDDMCData()
             size_t const nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
             if(this->grid.IsPointOutsideBox(nextCellIndex))
             {
+                DDMCBoundaryFaceBehavior const faceBehavior =
+                    this->boundary->getDDMCBoundaryFaceBehavior(
+                        faceIdx, i, nextCellIndex);
+
+                if(faceBehavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
+                {
+                    ++data.rigidBoundaryFaceCount;
+                    continue;
+                }
+
+                ++data.unsupportedBoundaryFaceCount;
+                if(data.firstUnsupportedBoundaryFace ==
+                   std::numeric_limits<size_t>::max())
+                {
+                    data.firstUnsupportedBoundaryFace = faceIdx;
+                }
                 data.boundaryExcluded = true;
                 continue;
             }
@@ -587,6 +603,9 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
        << " eligible=" << data.eligible
        << " observer_excluded=" << data.observerExcluded
        << " boundary_excluded=" << data.boundaryExcluded
+       << " rigid_boundary_faces=" << data.rigidBoundaryFaceCount
+       << " unsupported_boundary_faces=" << data.unsupportedBoundaryFaceCount
+       << " first_unsupported_boundary_face=" << data.firstUnsupportedBoundaryFace
        << " sigmaT=" << data.sigmaT
        << " sigmaA=" << data.sigmaA
        << " D=" << data.diffusionCoefficient

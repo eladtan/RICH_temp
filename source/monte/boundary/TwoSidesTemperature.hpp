@@ -19,6 +19,23 @@ public:
 
     std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
 
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        T nOut;
+        if (!this->getDDMCOrientedOutwardNormal(
+                faceIdx, insideCellIndex, outsidePointIndex, nOut))
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        // Both x sides are thermal source / removal boundaries.
+        if (std::abs(nOut.x) > 0.99)
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
+
 private:
     const std::vector<ComputationalCell3D> &cells;
     double temperatureLeft;
