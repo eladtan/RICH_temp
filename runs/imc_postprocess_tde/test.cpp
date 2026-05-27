@@ -190,6 +190,10 @@ struct Config
     size_t nGenerations = 1;
     bool ddmc = true;
     bool useCellVelocities = true;
+    bool polarization = false;
+    int polarizationManualScatterings = 4;
+    double polarizationDepolarizationScatterings = 2.0;
+    std::string polarizationClosure = "damped_last_scatterings";
 };
 
 void printUsage(int rank)
@@ -212,7 +216,11 @@ void printUsage(int rank)
               << "  --compton-samples N      Compton matrix samples (default: 200000)\n"
               << "  --n-generations N        Split transport into N generations (default: 1)\n"
               << "  --no-ddmc                Disable DDMC thick-cell acceleration\n"
-              << "  --no-velocity            Ignore cell velocities (no Doppler shifts)\n";
+              << "  --no-velocity            Ignore cell velocities (no Doppler shifts)\n"
+              << "  --polarization           Enable postprocess linear polarization\n"
+              << "  --polarization-manual-scatterings N\n"
+              << "  --polarization-depolarization-scatterings N\n"
+              << "  --polarization-closure NAME\n";
 }
 
 bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
@@ -242,6 +250,10 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--n-generations" && i + 1 < argc) { cfg.nGenerations = static_cast<size_t>(std::atoi(argv[++i])); }
         else if (arg == "--no-ddmc") { cfg.ddmc = false; }
         else if (arg == "--no-velocity") { cfg.useCellVelocities = false; }
+        else if (arg == "--polarization") { cfg.polarization = true; }
+        else if (arg == "--polarization-manual-scatterings" && i + 1 < argc) { cfg.polarizationManualScatterings = std::atoi(argv[++i]); }
+        else if (arg == "--polarization-depolarization-scatterings" && i + 1 < argc) { cfg.polarizationDepolarizationScatterings = std::atof(argv[++i]); }
+        else if (arg == "--polarization-closure" && i + 1 < argc) { cfg.polarizationClosure = argv[++i]; }
         else { if (rank == 0) std::cerr << "Unknown argument: " << arg << "\n"; return false; }
     }
 
@@ -309,6 +321,7 @@ int main(int argc, char* argv[])
                       << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
                       << "DDMC:            " << (cfg.ddmc ? "yes" : "no") << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
+                      << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Generations:     " << cfg.nGenerations << "\n"
                       << "MPI ranks:       " << mpiSize << "\n"
                       << std::endl;
@@ -524,7 +537,7 @@ int main(int argc, char* argv[])
         // ============================================================
         // Compute grey FLD luminosity per observer patch
         // ============================================================
-        STAgreyOpacity greyOpacity(cfg.greyOpacityDir);
+        auto greyOpacity = std::make_shared<STAgreyOpacity>(cfg.greyOpacityDir);
         if (rank == 0)
             std::cout << "Grey opacity loaded for FLD luminosity." << std::endl;
 
@@ -535,7 +548,7 @@ int main(int argc, char* argv[])
 
         for (size_t i = 0; i < Ncells; ++i) {
             Er_vol[i] = cells[i].density * cells[i].Erad;
-            D_cell[i] = greyOpacity.CalcDiffusionCoefficient(cells[i]);
+            D_cell[i] = greyOpacity->CalcDiffusionCoefficient(cells[i]);
         }
 
 #ifdef RICH_MPI
@@ -692,6 +705,10 @@ int main(int argc, char* argv[])
         params.postProcess.sourceDt = cfg.sourceDt;
         params.postProcess.transportTime = cfg.transportTime;
         params.postProcess.useCellVelocities = cfg.useCellVelocities;
+        params.postProcess.polarization.enabled = cfg.polarization;
+        params.postProcess.polarization.manualScatteringsAfterAcceleration = cfg.polarizationManualScatterings;
+        params.postProcess.polarization.depolarizationScatterings = cfg.polarizationDepolarizationScatterings;
+        params.postProcess.polarization.acceleratedClosure = cfg.polarizationClosure;
 
         auto physics = std::make_shared<RadiationIMC>(
             tess, boundary, cells, extensives, eos, opacity, params);
@@ -842,6 +859,143 @@ int main(int argc, char* argv[])
                       << "Sink residual:            " << residual << " erg\n"
                       << "Timed-out fraction:       " << timedOutFrac << "\n"
                       << "Output written to:        " << cfg.outputPath << "\n"
+                      << std::endl;
+        }
+
+        // ============================================================
+        // Release MG objects before grey run to avoid OOM
+        // ============================================================
+        manager.reset();
+        physics.reset();
+        popControl.reset();
+        observer.reset();
+        boundary.reset();
+        opacity.reset();
+
+        if (rank == 0)
+            std::cout << "MG resources released." << std::endl;
+
+        // ============================================================
+        // Grey IMC run (half generations)
+        // ============================================================
+        size_t nGreyGens = std::max<size_t>(1, cfg.nGenerations / 2);
+        size_t greyPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / (2 * nGreyGens));
+
+        if (rank == 0)
+            std::cout << "\n=== Starting Grey IMC run (" << nGreyGens << " generations) ===" << std::endl;
+
+        auto greyObserver = std::make_shared<SphericalObserver>(
+            cfg.center, cfg.radius, cfg.nObservers, std::vector<double>());
+
+        auto greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+        RadiationIMCParameters greyParams;
+        greyParams.newPhotonsPerCell = greyPhotonsPerCell;
+        greyParams.withHydro = false;
+        greyParams.noHydroFeedback = true;
+        greyParams.withRandomWalk = true;
+        greyParams.rwMinCellOpticalDepth = 15;
+        greyParams.withDDMC = cfg.ddmc;
+        greyParams.ddmcMinCellOpticalDepth = 15;
+        greyParams.ddmcMinParticleOpticalDepth = 5;
+        greyParams.ddmcUseMultigroupPGRW = false;
+        greyParams.MMC = false;
+        greyParams.diffusionPressureGradient = false;
+        greyParams.withMultigroupOpacity = false;
+        greyParams.withCompton = false;
+        greyParams.postProcess.enabled = true;
+        greyParams.postProcess.sourceDt = cfg.sourceDt;
+        greyParams.postProcess.transportTime = cfg.transportTime;
+        greyParams.postProcess.useCellVelocities = cfg.useCellVelocities;
+
+        auto greyPhysics = std::make_shared<RadiationIMC>(
+            tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
+        greyPhysics->setObserver(greyObserver);
+
+        auto greyPopControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+        std::shared_ptr<MonteCarloManager3D> greyManager;
+#ifdef RICH_MPI
+        greyManager = std::make_shared<RDMAMonteCarloManager3D>(
+            tess, greyPhysics, greyPopControl, greyBoundary);
+#else
+        greyManager = std::make_shared<MonteCarloManagerSerial3D>(
+            tess, greyPhysics, greyPopControl, greyBoundary);
+#endif
+
+        for (size_t gen = 0; gen < nGreyGens; ++gen) {
+            if (rank == 0)
+                std::cout << "Grey generation " << (gen + 1) << "/" << nGreyGens << std::endl;
+
+            greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * nGreyGens + gen);
+
+            std::vector<Particle3D> empty;
+            auto remaining = greyManager->step(std::move(empty), cells, cfg.transportTime);
+            (void)remaining;
+        }
+
+        greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
+        greyObserver->mpiReduceToRank0();
+
+        if (nGreyGens > 1)
+            greyObserver->scale(1.0 / static_cast<double>(nGreyGens));
+
+        if (rank == 0) {
+            std::string greyVtk;
+            if (!cfg.vtkOutput.empty()) {
+                size_t dotPos = cfg.vtkOutput.rfind('.');
+                if (dotPos != std::string::npos)
+                    greyVtk = cfg.vtkOutput.substr(0, dotPos) + "_grey" + cfg.vtkOutput.substr(dotPos);
+                else
+                    greyVtk = cfg.vtkOutput + "_grey";
+            }
+
+            if (!greyVtk.empty()) {
+                greyObserver->writeVTK(greyVtk, cfg.sourceDt);
+
+                std::vector<double> const& greySolidAngles = greyObserver->getObserverSolidAngles();
+                std::ofstream vtkAppend(greyVtk, std::ios::app);
+                if (vtkAppend.is_open()) {
+                    vtkAppend << std::scientific << std::setprecision(12);
+
+                    double fourPi = 4.0 * M_PI;
+
+                    vtkAppend << "SCALARS fld_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p)
+                        vtkAppend << fldLuminosity[p] << "\n";
+
+                    vtkAppend << "SCALARS fld_isotropic_equivalent_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double isoEquiv = (greySolidAngles[p] > 0.0)
+                            ? fldLuminosity[p] * fourPi / greySolidAngles[p] : 0.0;
+                        vtkAppend << isoEquiv << "\n";
+                    }
+
+                    vtkAppend << "SCALARS log10_fld_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double val = (fldLuminosity[p] > 0.0) ? std::log10(fldLuminosity[p]) : -99.0;
+                        vtkAppend << val << "\n";
+                    }
+
+                    vtkAppend << "SCALARS fld_flux double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double patchArea_p = greySolidAngles[p] * cfg.radius * cfg.radius;
+                        double flux = (patchArea_p > 0.0) ? fldLuminosity[p] / patchArea_p : 0.0;
+                        vtkAppend << flux << "\n";
+                    }
+                }
+            }
+
+            double greyTotalLum = greyObserver->getTotalCrossingEnergy() / cfg.sourceDt;
+            std::cout << "\n=== Grey IMC Results ===\n"
+                      << "Generations:              " << nGreyGens << "\n"
+                      << "Photons/cell/gen:         " << greyPhotonsPerCell << "\n"
+                      << "Total crossing luminosity: " << greyTotalLum << " erg/s\n"
+                      << "Grey VTK written to:      " << greyVtk << "\n"
                       << std::endl;
         }
 
