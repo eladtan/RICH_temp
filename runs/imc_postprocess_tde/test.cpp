@@ -14,6 +14,8 @@
 #include "source/3D/monte/MonteCarloManager3D.hpp"
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/SphericalObserver.hpp"
+#include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
+#include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 #include "source/monte/boundary/Vacuum.hpp"
 #include "source/monte/population/NoControl.hpp"
 #include "source/newtonian/three_dimensional/OndrejEOS.hpp"
@@ -23,6 +25,7 @@
 #include "source/Radiation/STAgreyOpacity.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/CMMC/src/units/units.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include "source/misc/universal_error.hpp"
 #include "source/misc/simple_io.hpp"
 #include "source/misc/utils.hpp"
@@ -30,6 +33,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <unordered_map>
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -46,8 +50,14 @@ class STAMGopacityMC : public OpacityCalculator
 private:
     std::vector<double> rho_, T_;
     std::vector<std::vector<std::vector<double>>> planck_, scatter_;
+    std::unordered_map<size_t, double> rosselandScale_;
 
 public:
+    void SetRosselandScaleFactors(std::unordered_map<size_t, double> factors)
+    {
+        rosselandScale_ = std::move(factors);
+    }
+
     STAMGopacityMC(std::string const& file_directory)
     {
         energy_groups_boundary = read_vector(file_directory + "frequency_edges.txt");
@@ -116,7 +126,13 @@ public:
             T_ratio = std::pow(cell.temperature / std::exp(T_.back()), -1.5);
             T = T_.back();
         }
-        return std::exp(BiLinearInterpolation(rho_, T_, planck_[group], d, T)) * d_ratio * T_ratio;
+        double result = std::exp(BiLinearInterpolation(rho_, T_, planck_[group], d, T)) * d_ratio * T_ratio;
+        if (!rosselandScale_.empty()) {
+            auto it = rosselandScale_.find(cell.ID);
+            if (it != rosselandScale_.end())
+                result *= it->second;
+        }
+        return result;
     }
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
@@ -194,6 +210,8 @@ struct Config
     int polarizationManualScatterings = 4;
     double polarizationDepolarizationScatterings = 2.0;
     std::string polarizationClosure = "damped_last_scatterings";
+    bool measuredLoadBalance = true;
+    bool scaleToGreyRosseland = true;
 };
 
 void printUsage(int rank)
@@ -220,7 +238,9 @@ void printUsage(int rank)
               << "  --polarization           Enable postprocess linear polarization\n"
               << "  --polarization-manual-scatterings N\n"
               << "  --polarization-depolarization-scatterings N\n"
-              << "  --polarization-closure NAME\n";
+              << "  --polarization-closure NAME\n"
+              << "  --no-measured-lb         Disable first-generation measured load balance\n"
+              << "  --no-rosseland-scale     Disable MG absorption scaling to match grey Rosseland\n";
 }
 
 bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
@@ -254,6 +274,8 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--polarization-manual-scatterings" && i + 1 < argc) { cfg.polarizationManualScatterings = std::atoi(argv[++i]); }
         else if (arg == "--polarization-depolarization-scatterings" && i + 1 < argc) { cfg.polarizationDepolarizationScatterings = std::atof(argv[++i]); }
         else if (arg == "--polarization-closure" && i + 1 < argc) { cfg.polarizationClosure = argv[++i]; }
+        else if (arg == "--no-measured-lb") { cfg.measuredLoadBalance = false; }
+        else if (arg == "--no-rosseland-scale") { cfg.scaleToGreyRosseland = false; }
         else { if (rank == 0) std::cerr << "Unknown argument: " << arg << "\n"; return false; }
     }
 
@@ -280,6 +302,66 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
 #endif
 
     return true;
+}
+
+// Rosseland weight fraction for a single group with dimensionless boundaries [a, b].
+// Uses: integral_a^b x^4 e^x/(e^x-1)^2 dx = a^4/(e^a-1) - b^4/(e^b-1) + 4*(pi^4/15)*planck_integral(a,b)
+// Normalized by the full-spectrum integral 4*pi^4/15.
+double RosselandWeightFraction(double a, double b)
+{
+    double const fullIntegral = 4.0 * std::pow(M_PI, 4) / 15.0;
+    double boundaryTerm = 0.0;
+    if (a > 0.0 && a < 500.0)
+        boundaryTerm += std::pow(a, 4) / std::expm1(a);
+    if (b > 0.0 && b < 500.0)
+        boundaryTerm -= std::pow(b, 4) / std::expm1(b);
+    double planckTerm = 4.0 * (std::pow(M_PI, 4) / 15.0) * planck_integral::planck_integral(a, b);
+    return (boundaryTerm + planckTerm) / fullIntegral;
+}
+
+// Solve for alpha such that:
+//   sum_g [ f_g / (alpha * sigmaA[g] + sigmaS[g]) ] = 1/kappaRGrey
+// F(alpha) is monotonically decreasing, so bisection converges.
+double SolveRosselandAlpha(
+    std::vector<double> const& sigmaA,
+    std::vector<double> const& sigmaS,
+    std::vector<double> const& fRoss,
+    double kappaRGrey)
+{
+    double const target = 1.0 / kappaRGrey;
+
+    auto evalF = [&](double alpha) {
+        double sum = 0.0;
+        for (size_t g = 0; g < sigmaA.size(); ++g) {
+            double denom = alpha * sigmaA[g] + sigmaS[g];
+            if (denom > 0.0)
+                sum += fRoss[g] / denom;
+        }
+        return sum - target;
+    };
+
+    // F is decreasing: F(0) = sum(f_g/sigmaS_g) - target (large positive if scattering << grey)
+    //                   F(inf) → -target (negative)
+    // Find bracket
+    double lo = 0.0, hi = 1.0;
+    while (evalF(hi) > 0.0 && hi < 1e10)
+        hi *= 2.0;
+
+    if (evalF(lo) <= 0.0)
+        return lo;
+    if (evalF(hi) >= 0.0)
+        return hi;
+
+    for (int iter = 0; iter < 100; ++iter) {
+        double mid = 0.5 * (lo + hi);
+        if (evalF(mid) > 0.0)
+            lo = mid;
+        else
+            hi = mid;
+        if ((hi - lo) < 1e-12 * (lo + hi + 1e-300))
+            break;
+    }
+    return 0.5 * (lo + hi);
 }
 
 } // anonymous namespace
@@ -322,6 +404,8 @@ int main(int argc, char* argv[])
                       << "DDMC:            " << (cfg.ddmc ? "yes" : "no") << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
+                      << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
+                      << "Rosseland scale: " << (cfg.scaleToGreyRosseland ? "enabled" : "disabled") << "\n"
                       << "Generations:     " << cfg.nGenerations << "\n"
                       << "MPI ranks:       " << mpiSize << "\n"
                       << std::endl;
@@ -540,6 +624,70 @@ int main(int argc, char* argv[])
         auto greyOpacity = std::make_shared<STAgreyOpacity>(cfg.greyOpacityDir);
         if (rank == 0)
             std::cout << "Grey opacity loaded for FLD luminosity." << std::endl;
+
+        // ============================================================
+        // Scale MG absorption so total MG Rosseland matches grey
+        // ============================================================
+#if ENERGY_GROUPS_NUM > 1
+        if (cfg.scaleToGreyRosseland) {
+            size_t const Ng = opacity->energy_groups_boundary.size() - 1;
+            std::unordered_map<size_t, double> scaleFactors;
+            scaleFactors.reserve(Ncells);
+
+            double alphaMin = std::numeric_limits<double>::max();
+            double alphaMax = 0.0;
+            double alphaSum = 0.0;
+            size_t alphaOutliers = 0;
+
+            for (size_t i = 0; i < Ncells; ++i) {
+                double kT = CG::boltzmann_constant * cells[i].temperature;
+                if (kT <= 0.0) continue;
+
+                std::vector<double> fRoss(Ng);
+                double fTotal = 0.0;
+                for (size_t g = 0; g < Ng; ++g) {
+                    double a = opacity->energy_groups_boundary[g] / kT;
+                    double b = opacity->energy_groups_boundary[g + 1] / kT;
+                    if (a >= b || a > 500.0) { fRoss[g] = 0.0; continue; }
+                    b = std::min(b, 500.0);
+                    fRoss[g] = RosselandWeightFraction(a, b);
+                    fTotal += fRoss[g];
+                }
+                if (fTotal <= 0.0) continue;
+                for (double& f : fRoss)
+                    f /= fTotal;
+
+                std::vector<double> sigA(Ng), sigS(Ng);
+                for (size_t g = 0; g < Ng; ++g) {
+                    sigA[g] = opacity->CalcAbsorptionOpacity(cells[i], opacity->energy_groups_center[g]);
+                    sigS[g] = opacity->CalcScatteringOpacity(cells[i], opacity->energy_groups_center[g]);
+                }
+
+                double D_grey = greyOpacity->CalcDiffusionCoefficient(cells[i]);
+                double kappaRGrey = CG::speed_of_light / (3.0 * D_grey);
+
+                double alpha = SolveRosselandAlpha(sigA, sigS, fRoss, kappaRGrey);
+                alpha = std::max(0.01, std::min(alpha, 100.0));
+
+                scaleFactors[cells[i].ID] = alpha;
+
+                alphaMin = std::min(alphaMin, alpha);
+                alphaMax = std::max(alphaMax, alpha);
+                alphaSum += alpha;
+                if (alpha < 0.5 || alpha > 2.0)
+                    ++alphaOutliers;
+            }
+
+            opacity->SetRosselandScaleFactors(std::move(scaleFactors));
+
+            if (rank == 0) {
+                double alphaMean = (Ncells > 0) ? alphaSum / static_cast<double>(Ncells) : 1.0;
+                std::cout << "Rosseland scale applied: alpha min=" << alphaMin
+                          << " max=" << alphaMax << " mean=" << alphaMean
+                          << " outliers(>2x)=" << alphaOutliers << "/" << Ncells << std::endl;
+            }
+        }
+#endif
 
         // Per-cell radiation energy density, diffusion coefficient, and FLD flux vector
         std::vector<double> Er_vol(Ncells);
@@ -762,6 +910,26 @@ int main(int argc, char* argv[])
         // ============================================================
         using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 
+        bool const measuredLBActive = cfg.measuredLoadBalance && cfg.nGenerations > 1;
+#if ENERGY_GROUPS_NUM > 1
+        bool const isMultigroup = true;
+#else
+        bool const isMultigroup = false;
+#endif
+
+        if (rank == 0)
+            std::cout << "Measured LB active: " << (measuredLBActive ? "yes" : "no") << std::endl;
+
+        imc_measured_lb::Parameters measuredLBParams;
+        measuredLBParams.floorCost = 1.0;
+        measuredLBParams.stepWeight = 1.0;
+        measuredLBParams.particleWeight = 0.0;
+        measuredLBParams.medianClampFactor = isMultigroup ? 50.0 : 30.0;
+        measuredLBParams.missingCellCost = isMultigroup ? 5.0 : 2.0;
+        measuredLBParams.grayZeroStepInflation = 2.0;
+        measuredLBParams.multigroupZeroStepInflation = 5.0;
+        measuredLBParams.useMedianClamp = true;
+
         for (size_t gen = 0; gen < cfg.nGenerations; ++gen)
         {
             if (rank == 0)
@@ -772,6 +940,89 @@ int main(int argc, char* argv[])
             std::vector<Particle3D> empty;
             auto remaining = manager->step(std::move(empty), cells, cfg.transportTime);
             (void)remaining;
+
+#ifdef RICH_MPI
+            // Generation 0 is retained as part of the final postprocess result.
+            // Its measured step counters are used only to repartition generations 1..N-1.
+            // Repartition assumptions:
+            //   - Each generation is independent (no census particles carried between them).
+            //   - noHydroFeedback is true: gas state is not modified by MC generations.
+            //   - Extensives can be rebuilt from cell primitives after repartition.
+            //   - The observer accumulates escaped packets globally and is preserved.
+            if (gen == 0 && measuredLBActive) {
+                if (!params.noHydroFeedback) {
+                    throw UniversalError("Measured load balance repartition requires noHydroFeedback=true");
+                }
+
+                auto const& localSteps = manager->GetCellsStepsCounters();
+
+                std::vector<size_t> cellIDs(Ncells);
+                for (size_t i = 0; i < Ncells; ++i)
+                    cellIDs[i] = cells[i].ID;
+
+                std::vector<size_t> noParticles;
+                auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(cellIDs, localSteps, noParticles);
+                auto globalMeasurements = imc_measured_lb::GatherMeasurementsAllRanks(localMeasurements, MPI_COMM_WORLD);
+
+                size_t globalTotalSteps = 0;
+                for (auto const& m : globalMeasurements)
+                    globalTotalSteps += m.stepCount;
+
+                if (globalTotalSteps == 0) {
+                    if (rank == 0)
+                        std::cerr << "MEASURED_LB: generation 0 had zero total steps, skipping repartition\n";
+                } else {
+                    auto costByCellID = imc_measured_lb::BuildMeasuredCosts(globalMeasurements, measuredLBParams, isMultigroup);
+                    imc_measured_lb::PrintMeasuredLBDiagnostics(localMeasurements, costByCellID, isMultigroup, MPI_COMM_WORLD);
+
+                    IMCStepCounterCostCalculator::Parameters costCalcParams;
+                    costCalcParams.floorCost = measuredLBParams.floorCost;
+                    costCalcParams.missingCellCost = measuredLBParams.missingCellCost;
+                    IMCStepCounterCostCalculator measuredCostCalc(costByCellID, costCalcParams);
+
+                    std::vector<Vector3D> currentPoints(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        currentPoints[i] = tess.GetMeshPoint(i);
+
+                    auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
+                    tess.BuildParallel(currentPoints, lbWeightsNew);
+                    MPI_exchange_data(tess, cells, false, 1, &dummyCell);
+
+                    Ncells = tess.GetPointNo();
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+                    boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    physics = std::make_shared<RadiationIMC>(
+                        tess, boundary, cells, extensives, eos, opacity, params);
+                    // Keep the same observer so generation-0 tallies remain part of the result.
+                    physics->setObserver(observer);
+
+                    popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+                    manager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, physics, popControl, boundary);
+
+                    std::vector<size_t> newCellIDs(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        newCellIDs[i] = cells[i].ID;
+                    imc_measured_lb::PrintPostRepartitionDiagnostics(
+                        costByCellID, newCellIDs, measuredLBParams.missingCellCost, isMultigroup, MPI_COMM_WORLD);
+
+                    if (rank == 0)
+                        std::cout << "MEASURED_LB: repartitioned after generation 0, new local cells=" << Ncells << std::endl;
+                }
+            }
+#endif // RICH_MPI
         }
 
         // ============================================================
@@ -923,6 +1174,21 @@ int main(int argc, char* argv[])
             tess, greyPhysics, greyPopControl, greyBoundary);
 #endif
 
+        bool const greyMeasuredLBActive = cfg.measuredLoadBalance && nGreyGens > 1;
+
+        if (rank == 0)
+            std::cout << "Grey measured LB active: " << (greyMeasuredLBActive ? "yes" : "no") << std::endl;
+
+        imc_measured_lb::Parameters greyLBParams;
+        greyLBParams.floorCost = 1.0;
+        greyLBParams.stepWeight = 1.0;
+        greyLBParams.particleWeight = 0.0;
+        greyLBParams.medianClampFactor = 30.0;
+        greyLBParams.missingCellCost = 2.0;
+        greyLBParams.grayZeroStepInflation = 2.0;
+        greyLBParams.multigroupZeroStepInflation = 5.0;
+        greyLBParams.useMedianClamp = true;
+
         for (size_t gen = 0; gen < nGreyGens; ++gen) {
             if (rank == 0)
                 std::cout << "Grey generation " << (gen + 1) << "/" << nGreyGens << std::endl;
@@ -932,6 +1198,83 @@ int main(int argc, char* argv[])
             std::vector<Particle3D> empty;
             auto remaining = greyManager->step(std::move(empty), cells, cfg.transportTime);
             (void)remaining;
+
+#ifdef RICH_MPI
+            // Same repartition logic as multigroup: use generation-0 step counters
+            // to rebalance subsequent grey generations.
+            if (gen == 0 && greyMeasuredLBActive) {
+                if (!greyParams.noHydroFeedback) {
+                    throw UniversalError("Grey measured load balance repartition requires noHydroFeedback=true");
+                }
+
+                auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
+
+                std::vector<size_t> greyCellIDs(Ncells);
+                for (size_t i = 0; i < Ncells; ++i)
+                    greyCellIDs[i] = cells[i].ID;
+
+                std::vector<size_t> noParticles;
+                auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(greyCellIDs, greyLocalSteps, noParticles);
+                auto greyGlobalMeas = imc_measured_lb::GatherMeasurementsAllRanks(greyLocalMeas, MPI_COMM_WORLD);
+
+                size_t greyGlobalTotalSteps = 0;
+                for (auto const& m : greyGlobalMeas)
+                    greyGlobalTotalSteps += m.stepCount;
+
+                if (greyGlobalTotalSteps == 0) {
+                    if (rank == 0)
+                        std::cerr << "MEASURED_LB_GREY: generation 0 had zero total steps, skipping repartition\n";
+                } else {
+                    auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(greyGlobalMeas, greyLBParams, false);
+                    imc_measured_lb::PrintMeasuredLBDiagnostics(greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
+
+                    IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
+                    greyCostCalcParams.floorCost = greyLBParams.floorCost;
+                    greyCostCalcParams.missingCellCost = greyLBParams.missingCellCost;
+                    IMCStepCounterCostCalculator greyCostCalc(greyCostByCellID, greyCostCalcParams);
+
+                    std::vector<Vector3D> greyCurrentPoints(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        greyCurrentPoints[i] = tess.GetMeshPoint(i);
+
+                    auto greyLBWeights = greyCostCalc.CalculateCost(tess, cells);
+                    tess.BuildParallel(greyCurrentPoints, greyLBWeights);
+                    MPI_exchange_data(tess, cells, false, 1, &dummyCell);
+
+                    Ncells = tess.GetPointNo();
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after grey measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+                    greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    greyPhysics = std::make_shared<RadiationIMC>(
+                        tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
+                    greyPhysics->setObserver(greyObserver);
+
+                    greyPopControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+                    greyManager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, greyPhysics, greyPopControl, greyBoundary);
+
+                    std::vector<size_t> newGreyCellIDs(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        newGreyCellIDs[i] = cells[i].ID;
+                    imc_measured_lb::PrintPostRepartitionDiagnostics(
+                        greyCostByCellID, newGreyCellIDs, greyLBParams.missingCellCost, false, MPI_COMM_WORLD);
+
+                    if (rank == 0)
+                        std::cout << "MEASURED_LB_GREY: repartitioned after generation 0, new local cells=" << Ncells << std::endl;
+                }
+            }
+#endif // RICH_MPI
         }
 
         greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
@@ -991,10 +1334,26 @@ int main(int argc, char* argv[])
             }
 
             double greyTotalLum = greyObserver->getTotalCrossingEnergy() / cfg.sourceDt;
+            double greyEmitted = greyObserver->getEmittedEnergy();
+            double greyAbsorbed = greyObserver->getAbsorbedEnergy();
+            double greyBoxEscape = greyObserver->getBoxEscapeEnergy();
+            double greyTimedOut = greyObserver->getTimedOutEnergy();
+            double greyCutoff = greyObserver->getCutoffEnergy();
+            double greyResidual = greyEmitted - greyAbsorbed - greyBoxEscape - greyTimedOut - greyCutoff;
+            double greyTimedOutFrac = (greyEmitted > 0.0) ? greyTimedOut / greyEmitted : 0.0;
+
             std::cout << "\n=== Grey IMC Results ===\n"
                       << "Generations:              " << nGreyGens << "\n"
                       << "Photons/cell/gen:         " << greyPhotonsPerCell << "\n"
                       << "Total crossing luminosity: " << greyTotalLum << " erg/s\n"
+                      << "Total FLD luminosity:     " << totalFldLum << " erg/s\n"
+                      << "Emitted energy:           " << greyEmitted << " erg\n"
+                      << "Absorbed energy:          " << greyAbsorbed << " erg\n"
+                      << "Box escape energy:        " << greyBoxEscape << " erg\n"
+                      << "Timed-out energy:         " << greyTimedOut << " erg\n"
+                      << "Cutoff energy:            " << greyCutoff << " erg\n"
+                      << "Sink residual:            " << greyResidual << " erg\n"
+                      << "Timed-out fraction:       " << greyTimedOutFrac << "\n"
                       << "Grey VTK written to:      " << greyVtk << "\n"
                       << std::endl;
         }
