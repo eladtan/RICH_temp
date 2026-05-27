@@ -103,6 +103,7 @@ MonteCarloParticleStatus MovingSideTemperature<T, Grid>::apply(MonteCarloParticl
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
+    MonteCarloParticleStatus result = MonteCarloParticleStatus::DONE;
     for (const typename Grid::Face_T &face : faces)
     {
         const T &onFace = face.vertices[0];
@@ -124,9 +125,11 @@ MonteCarloParticleStatus MovingSideTemperature<T, Grid>::apply(MonteCarloParticl
             const T &center = this->grid.GetMeshPoint(particle.cellIndex);
             constexpr double nudge = 1e-6;
             particle.location = particle.location * (1 - nudge) + nudge * center;
-            return MonteCarloParticleStatus::REFLECT;
+            result = MonteCarloParticleStatus::REFLECT;
         }
     }
+    if(result == MonteCarloParticleStatus::REFLECT)
+        return result;
     std::cerr << "MovingSideTemperature: particle is not on any boundary" << std::endl;
     exit(1);
 }
@@ -163,7 +166,15 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                 if (nOut.x < -0.99)
                 {
                     double const area = this->grid.GetArea(faceIdx);
-                    double const packetEnergyFace = units::sigma_sb * T4 * area * fullDt / Npercell_;
+
+                    double const v2 = ScalarProd(leftFaceVelocity_, leftFaceVelocity_);
+                
+                    double const gammaFace = 1.0 / std::sqrt(1.0 - v2 / (units::clight * units::clight));
+                
+                    // T_bath is defined in the comoving/fluid frame.
+                    // This is therefore the proper-frame emitted energy per packet.
+                    double const dtFace = fullDt / gammaFace;
+                    double const packetEnergyFace = units::sigma_sb * T4 * area * dtFace / Npercell_;
 
                     T e1(0, 1, 0);
                     T e2(0, 0, 1);
@@ -173,26 +184,26 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                         MonteCarloParticle<T, Grid> p;
                         p.location = RandomPointOnFace(this->grid, faceIdx);
                         p.weight = packetEnergyFace;
-                        p.initialWeight = p.weight;
                         p.timeLeft = fullDt * unif(re);
                         p.cellIndex = i;
                         p.frequency = 0;
                         if (multigroup_)
-                            p.frequency = LinearInterpolation(cumulativePlanckFunction_,
-                                                             ComputationalCell3D::energyBoundaries, unif(re));
-
-                        do {
-                            double const mu = std::sqrt(unif(re));
-                            double const sinTheta = std::sqrt(1.0 - mu * mu);
-                            double const phi = 2.0 * M_PI * unif(re);
-
-                            T dirFace = (-mu) * nOut
-                                      + sinTheta * std::cos(phi) * e1
-                                      + sinTheta * std::sin(phi) * e2;
-                            dirFace = normalize(dirFace);
-
-                            p.velocity = units::clight * dirFace;
-                            LorentzTransformation(p, -1.0 * leftFaceVelocity_);
+                        p.frequency = LinearInterpolation(cumulativePlanckFunction_,
+                    ComputationalCell3D::energyBoundaries, unif(re));
+                    
+                    do {
+                        double const mu = std::sqrt(unif(re));
+                        double const sinTheta = std::sqrt(1.0 - mu * mu);
+                        double const phi = 2.0 * M_PI * unif(re);
+                        
+                        T dirFace = (-mu) * nOut
+                        + sinTheta * std::cos(phi) * e1
+                        + sinTheta * std::sin(phi) * e2;
+                        dirFace = normalize(dirFace);
+                        
+                        p.velocity = units::clight * dirFace;
+                        LorentzTransformation(p, -1.0 * leftFaceVelocity_);
+                        p.initialWeight = p.weight;
                         } while (p.velocity.x < 0);
 
                         newParticles.push_back(p);
