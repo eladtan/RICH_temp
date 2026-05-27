@@ -2,6 +2,7 @@
 #define POST_PROCESS_IMC_HELPERS_HPP
 
 #include <cmath>
+#include <string>
 #include "3D/elementary/Vector3D.hpp"
 
 class SphericalObserver;
@@ -17,6 +18,14 @@ struct RadiationIMCPostProcessConfig
     // velocities may still be used for Doppler shifts, comoving opacities,
     // frequency-group decisions, and lab/comoving transforms.
     bool useCellVelocities = true;
+
+    struct PolarizationConfig
+    {
+        bool enabled = false;
+        int manualScatteringsAfterAcceleration = 4;
+        double depolarizationScatterings = 2.0;
+        std::string acceleratedClosure = "damped_last_scatterings";
+    } polarization;
 };
 
 namespace PostProcessIMC
@@ -34,6 +43,11 @@ namespace PostProcessIMC
         for (auto &p : particles) {
             p.timeLeft = transportTime;
             p.initialWeight = std::abs(p.weight);
+#ifdef MONTECARLO_POLARIZATION
+            p.stokesQ = 0.0;
+            p.stokesU = 0.0;
+            p.polarizationInitialized = false;
+#endif
             emitted += p.weight;
         }
         return emitted;

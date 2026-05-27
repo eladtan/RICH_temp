@@ -10,6 +10,7 @@
 #include <map>
 #include <numeric>
 #include <stdexcept>
+#include <utility>
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -151,6 +152,20 @@ std::vector<double> computePerObserverSolidAngles(
     return solidAngles;
 }
 
+#ifdef MONTECARLO_POLARIZATION
+inline double PolarizationDegree(double I, double Q, double U)
+{
+    if(!(I > 0.0) || !std::isfinite(I))
+        return 0.0;
+    return std::sqrt(Q*Q + U*U) / I;
+}
+
+inline double PolarizationAngle(double Q, double U)
+{
+    return 0.5 * std::atan2(U, Q);
+}
+#endif
+
 } // anonymous namespace
 
 SphericalObserver::SphericalObserver(Vector3D center, double radius,
@@ -188,6 +203,12 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     observerSolidAngle_ = computePerObserverSolidAngles(directions_, numObservers_);
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
+#ifdef MONTECARLO_POLARIZATION
+    observerStokesQ_.assign(numObservers_, 0.0);
+    observerStokesU_.assign(numObservers_, 0.0);
+    groupStokesQ_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupStokesU_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+#endif
 }
 
 SphericalObserver::Crossing
@@ -240,6 +261,9 @@ SphericalObserver::nextOutwardCrossing(Vector3D const& position,
 void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
                                        double weight, double frequency)
 {
+#ifdef MONTECARLO_POLARIZATION
+    recordCrossing(crossingPoint, weight, frequency, 0.0, 0.0);
+#else
     if (weight == 0.0 || !std::isfinite(weight))
         return;
     size_t obs = findNearestObserver(crossingPoint);
@@ -250,7 +274,58 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
         groupEnergy_[obs][g] += weight;
         ++groupCrossingCount_[obs][g];
     }
+#endif
 }
+
+#ifdef MONTECARLO_POLARIZATION
+void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
+                                       double weight,
+                                       double frequency,
+                                       double qObserver,
+                                       double uObserver)
+{
+    if (weight == 0.0 || !std::isfinite(weight))
+        return;
+
+    if(!std::isfinite(qObserver))
+        qObserver = 0.0;
+    if(!std::isfinite(uObserver))
+        uObserver = 0.0;
+
+    double const p2 = qObserver*qObserver + uObserver*uObserver;
+    if(p2 > 1.0)
+    {
+        double const invP = 1.0 / std::sqrt(p2);
+        qObserver *= invP;
+        uObserver *= invP;
+    }
+
+    size_t obs = findNearestObserver(crossingPoint);
+    observerEnergy_[obs] += weight;
+    observerStokesQ_[obs] += weight * qObserver;
+    observerStokesU_[obs] += weight * uObserver;
+    ++observerCrossingCount_[obs];
+
+    if (numGroups_ > 1) {
+        size_t g = findGroup(frequency);
+        groupEnergy_[obs][g] += weight;
+        groupStokesQ_[obs][g] += weight * qObserver;
+        groupStokesU_[obs][g] += weight * uObserver;
+        ++groupCrossingCount_[obs][g];
+    }
+}
+
+void SphericalObserver::setPolarizationMetadata(bool enabled,
+                                                int manualScatteringsAfterAcceleration,
+                                                double depolarizationScatterings,
+                                                std::string acceleratedClosure)
+{
+    polarizationOutputEnabled_ = enabled;
+    polarizationManualScatteringsAfterAcceleration_ = manualScatteringsAfterAcceleration;
+    polarizationDepolarizationScatterings_ = depolarizationScatterings;
+    polarizationAcceleratedClosure_ = std::move(acceleratedClosure);
+}
+#endif
 
 void SphericalObserver::addEmittedEnergy(double energy) { emittedEnergy_ += energy; }
 void SphericalObserver::addAbsorbedEnergy(double energy) { absorbedEnergy_ += energy; }
@@ -345,6 +420,14 @@ void SphericalObserver::scale(double factor)
     for (auto& e : observerEnergy_) e *= factor;
     for (auto& gv : groupEnergy_)
         for (auto& e : gv) e *= factor;
+#ifdef MONTECARLO_POLARIZATION
+    for (auto& e : observerStokesQ_) e *= factor;
+    for (auto& e : observerStokesU_) e *= factor;
+    for (auto& gv : groupStokesQ_)
+        for (auto& e : gv) e *= factor;
+    for (auto& gv : groupStokesU_)
+        for (auto& e : gv) e *= factor;
+#endif
     emittedEnergy_ *= factor;
     absorbedEnergy_ *= factor;
     boxEscapeEnergy_ *= factor;
@@ -369,6 +452,18 @@ void SphericalObserver::mpiReduceToRank0()
     if (rank == 0)
         observerEnergy_ = recvBuf;
 
+#ifdef MONTECARLO_POLARIZATION
+    MPI_Reduce(observerStokesQ_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerStokesQ_ = recvBuf;
+
+    MPI_Reduce(observerStokesU_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerStokesU_ = recvBuf;
+#endif
+
     std::vector<size_t> countRecvBuf(static_cast<size_t>(count), 0);
     MPI_Reduce(observerCrossingCount_.data(), countRecvBuf.data(), count,
                MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -392,6 +487,32 @@ void SphericalObserver::mpiReduceToRank0()
             for (size_t g = 0; g < numGroups_; ++g)
                 groupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
     }
+
+#ifdef MONTECARLO_POLARIZATION
+    for (size_t i = 0; i < numObservers_; ++i)
+        for (size_t g = 0; g < numGroups_; ++g)
+            flatSend[i * numGroups_ + g] = groupStokesQ_[i][g];
+    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (size_t i = 0; i < numObservers_; ++i)
+            for (size_t g = 0; g < numGroups_; ++g)
+                groupStokesQ_[i][g] = flatRecv[i * numGroups_ + g];
+    }
+
+    for (size_t i = 0; i < numObservers_; ++i)
+        for (size_t g = 0; g < numGroups_; ++g)
+            flatSend[i * numGroups_ + g] = groupStokesU_[i][g];
+    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (size_t i = 0; i < numObservers_; ++i)
+            for (size_t g = 0; g < numGroups_; ++g)
+                groupStokesU_[i][g] = flatRecv[i * numGroups_ + g];
+    }
+#endif
 
     std::vector<size_t> flatCountSend(flatSize, 0);
     for (size_t i = 0; i < numObservers_; ++i)
@@ -453,6 +574,32 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/tally/luminosity", lum);
     writer.WriteElement("/tally/total_energy", totalEnergy);
     writer.WriteElement("/tally/total_luminosity", totalLum);
+#ifdef MONTECARLO_POLARIZATION
+    double invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+    if(polarizationOutputEnabled_)
+    {
+        std::vector<double> polDegree(numObservers_), polAngle(numObservers_);
+        std::vector<double> qLum(numObservers_), uLum(numObservers_);
+        std::vector<double> qNorm(numObservers_), uNorm(numObservers_);
+        for (size_t i = 0; i < numObservers_; ++i) {
+            polDegree[i] = PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]);
+            polAngle[i] = PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]);
+            qLum[i] = observerStokesQ_[i] * invDt;
+            uLum[i] = observerStokesU_[i] * invDt;
+            double const invI = (observerEnergy_[i] > 0.0) ? 1.0 / observerEnergy_[i] : 0.0;
+            qNorm[i] = observerStokesQ_[i] * invI;
+            uNorm[i] = observerStokesU_[i] * invI;
+        }
+        writer.WriteElement("/tally/observer_stokes_Q", observerStokesQ_);
+        writer.WriteElement("/tally/observer_stokes_U", observerStokesU_);
+        writer.WriteElement("/tally/observer_q", qNorm);
+        writer.WriteElement("/tally/observer_u", uNorm);
+        writer.WriteElement("/tally/observer_Q_luminosity", qLum);
+        writer.WriteElement("/tally/observer_U_luminosity", uLum);
+        writer.WriteElement("/tally/observer_polarization_degree", polDegree);
+        writer.WriteElement("/tally/observer_polarization_angle", polAngle);
+    }
+#endif
 
     double fourPi = 4.0 * M_PI;
     std::vector<double> isoEquiv(numObservers_);
@@ -475,6 +622,36 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/tally/multigroup/group_energy", groupEnergy_);
         writer.WriteElement("/tally/multigroup/group_luminosity", gLum);
         writer.WriteElement("/tally/multigroup/group_crossing_count", groupCrossingCount_);
+#ifdef MONTECARLO_POLARIZATION
+        if(polarizationOutputEnabled_)
+        {
+            std::vector<std::vector<double>> gDegree(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gAngle(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gQNorm(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gUNorm(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gQLum(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gULum(numObservers_, std::vector<double>(numGroups_, 0.0));
+            for (size_t i = 0; i < numObservers_; ++i) {
+                for (size_t g = 0; g < numGroups_; ++g) {
+                    gDegree[i][g] = PolarizationDegree(groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g]);
+                    gAngle[i][g] = PolarizationAngle(groupStokesQ_[i][g], groupStokesU_[i][g]);
+                    double const invI = (groupEnergy_[i][g] > 0.0) ? 1.0 / groupEnergy_[i][g] : 0.0;
+                    gQNorm[i][g] = groupStokesQ_[i][g] * invI;
+                    gUNorm[i][g] = groupStokesU_[i][g] * invI;
+                    gQLum[i][g] = groupStokesQ_[i][g] * invDt;
+                    gULum[i][g] = groupStokesU_[i][g] * invDt;
+                }
+            }
+            writer.WriteElement("/tally/multigroup/group_stokes_Q", groupStokesQ_);
+            writer.WriteElement("/tally/multigroup/group_stokes_U", groupStokesU_);
+            writer.WriteElement("/tally/multigroup/group_q", gQNorm);
+            writer.WriteElement("/tally/multigroup/group_u", gUNorm);
+            writer.WriteElement("/tally/multigroup/group_Q_luminosity", gQLum);
+            writer.WriteElement("/tally/multigroup/group_U_luminosity", gULum);
+            writer.WriteElement("/tally/multigroup/group_polarization_degree", gDegree);
+            writer.WriteElement("/tally/multigroup/group_polarization_angle", gAngle);
+        }
+#endif
     }
 
     writer.WriteElement("/diagnostics/source_dt", diagnostics.sourceDt);
@@ -500,6 +677,22 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/diagnostics/snapshot_time", diagnostics.snapshotTime);
     writer.WriteElement("/diagnostics/snapshot_cycle", diagnostics.snapshotCycle);
     writer.WriteElement("/diagnostics/n_generations", diagnostics.nGenerations);
+#ifdef MONTECARLO_POLARIZATION
+    writer.WriteElement("/diagnostics/polarization_compiled", 1);
+    writer.WriteElement("/diagnostics/polarization_enabled", polarizationOutputEnabled_ ? 1 : 0);
+    writer.WriteElement("/diagnostics/polarization_basis",
+                        std::string("observer_basis_1_global_z_projected_perpendicular_to_observer_direction"));
+    writer.WriteElement("/diagnostics/polarization_accelerated_closure",
+                        polarizationAcceleratedClosure_);
+    writer.WriteElement("/diagnostics/polarization_manual_scatterings_after_acceleration",
+                        polarizationManualScatteringsAfterAcceleration_);
+    writer.WriteElement("/diagnostics/polarization_depolarization_scatterings",
+                        polarizationDepolarizationScatterings_);
+    writer.WriteElement("/diagnostics/polarization_basis_boost",
+                        std::string("project_after_boost_low_velocity_approximation"));
+    writer.WriteElement("/diagnostics/polarization_transport_model",
+                        std::string("polarized_thomson_explicit_scalar_acceleration_closure"));
+#endif
 }
 
 void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) const
@@ -582,6 +775,31 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
     file << "LOOKUP_TABLE default\n";
     for (size_t i = 0; i < N; ++i)
         file << observerSolidAngle_[i] << "\n";
+
+#ifdef MONTECARLO_POLARIZATION
+    if(polarizationOutputEnabled_)
+    {
+        file << "SCALARS stokes_Q double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << observerStokesQ_[i] << "\n";
+
+        file << "SCALARS stokes_U double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << observerStokesU_[i] << "\n";
+
+        file << "SCALARS polarization_degree double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]) << "\n";
+
+        file << "SCALARS polarization_angle double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]) << "\n";
+    }
+#endif
 
     if (numGroups_ > 1) {
         for (size_t g = 0; g < numGroups_; ++g) {

@@ -41,6 +41,17 @@ public:
 
     void recordCrossing(Vector3D const& crossingPoint,
                         double weight, double frequency);
+#ifdef MONTECARLO_POLARIZATION
+    void recordCrossing(Vector3D const& crossingPoint,
+                        double weight,
+                        double frequency,
+                        double qObserver,
+                        double uObserver);
+    void setPolarizationMetadata(bool enabled,
+                                 int manualScatteringsAfterAcceleration,
+                                 double depolarizationScatterings,
+                                 std::string acceleratedClosure);
+#endif
 
     void addEmittedEnergy(double energy);
     void addAbsorbedEnergy(double energy);
@@ -89,6 +100,16 @@ private:
     std::vector<double> observerSolidAngle_;
     std::vector<std::vector<double>> groupEnergy_;
     std::vector<std::vector<size_t>> groupCrossingCount_;
+#ifdef MONTECARLO_POLARIZATION
+    bool polarizationOutputEnabled_ = false;
+    int polarizationManualScatteringsAfterAcceleration_ = 4;
+    double polarizationDepolarizationScatterings_ = 2.0;
+    std::string polarizationAcceleratedClosure_ = "damped_last_scatterings";
+    std::vector<double> observerStokesQ_;
+    std::vector<double> observerStokesU_;
+    std::vector<std::vector<double>> groupStokesQ_;
+    std::vector<std::vector<double>> groupStokesU_;
+#endif
 
     double emittedEnergy_ = 0.0;
     double absorbedEnergy_ = 0.0;

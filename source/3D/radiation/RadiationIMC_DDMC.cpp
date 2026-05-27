@@ -1,5 +1,6 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
+#include "IMCPolarization.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <algorithm>
 #include <cassert>
@@ -361,6 +362,16 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.frequency = finalLabParticle.frequency;
         particle.weight    = finalLabParticle.weight;
         particle.timeLeft  = finalLabParticle.timeLeft;
+#ifdef MONTECARLO_POLARIZATION
+        particle.stokesQ = finalLabParticle.stokesQ;
+        particle.stokesU = finalLabParticle.stokesU;
+        particle.polarizationBasis = finalLabParticle.polarizationBasis;
+        particle.polarizationInitialized = finalLabParticle.polarizationInitialized;
+        if(particle.polarizationInitialized)
+            particle.polarizationBasis =
+                IMCPolarization::ProjectBasisToDirection(particle.polarizationBasis,
+                                                         particle.velocity);
+#endif
 
         if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
         {
@@ -395,6 +406,28 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     if(censusEvent)
     {
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+        {
+            IMCPolarization::InitializeIfNeeded(materialParticle);
+            materialParticle.polarizationBasis =
+                IMCPolarization::ProjectBasisToDirection(materialParticle.polarizationBasis,
+                                                         materialParticle.velocity);
+
+            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
+            double const sigmaReset = (1.0 - f) * data.sigmaA;
+            IMCPolarization::ApplyAcceleratedPolarizationHistory(
+                materialParticle,
+                dtCo,
+                scatOp,
+                sigmaReset,
+                materialParticle.velocity,
+                this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+                this->postProcess_.polarization.depolarizationScatterings,
+                this->re,
+                this->dist);
+        }
+#endif
         functionality.change = MonteCarloParticleStatus::DONE;
         ++this->ddmcCensusCount;
         return finalizeAccelerationStep(false);
@@ -463,7 +496,31 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             + sinTheta * std::sin(phiLeak) * e2;
 
         materialParticle.location = leakFaceCenter;
-        materialParticle.velocity = normalize(dir) * units::clight;
+        Vector3D const oldVelocityCoForPol = materialParticle.velocity;
+        Vector3D const finalVelocityCoForPol = normalize(dir) * units::clight;
+        materialParticle.velocity = finalVelocityCoForPol;
+
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+        {
+            materialParticle.velocity = oldVelocityCoForPol;
+
+            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
+            double const sigmaReset = (1.0 - f) * data.sigmaA;
+            IMCPolarization::ApplyAcceleratedPolarizationHistory(
+                materialParticle,
+                dtCo,
+                scatOp,
+                sigmaReset,
+                finalVelocityCoForPol,
+                this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+                this->postProcess_.polarization.depolarizationScatterings,
+                this->re,
+                this->dist);
+        }
+#endif
+
+        materialParticle.velocity = finalVelocityCoForPol;
 
         assert(ScalarProd(materialParticle.velocity, nOut) > 0.0);
 
@@ -498,6 +555,10 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         }
         ClampFrequencyToBoundsDDMC(materialParticle.frequency);
         materialParticle.velocity = this->opacity->getRandomVelocity(cell);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+            IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
         ++this->ddmcUpscatterCount;
     }
 

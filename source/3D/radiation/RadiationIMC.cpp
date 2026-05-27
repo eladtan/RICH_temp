@@ -1,6 +1,7 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
 #include "PostProcessIMCHelpers.hpp"
+#include "IMCPolarization.hpp"
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include <cmath>
@@ -187,6 +188,19 @@ namespace {
                       << this->useTransportVelocities_
                       << std::endl;
         }
+#ifdef MONTECARLO_POLARIZATION
+        if(postProcess_.enabled && postProcess_.polarization.enabled)
+        {
+            std::cout << "PostProcess polarization: enabled=true"
+                      << ", manualScatteringsAfterAcceleration="
+                      << postProcess_.polarization.manualScatteringsAfterAcceleration
+                      << ", depolarizationScatterings="
+                      << postProcess_.polarization.depolarizationScatterings
+                      << ", acceleratedClosure="
+                      << postProcess_.polarization.acceleratedClosure
+                      << std::endl;
+        }
+#endif
     }
 
     if(this->postProcess_.enabled && this->useTransportVelocities_)
@@ -214,6 +228,15 @@ namespace {
 void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
 {
     observer_ = std::move(observer);
+#ifdef MONTECARLO_POLARIZATION
+    if(observer_)
+    {
+        observer_->setPolarizationMetadata(postProcess_.enabled && postProcess_.polarization.enabled,
+                                           postProcess_.polarization.manualScatteringsAfterAcceleration,
+                                           postProcess_.polarization.depolarizationScatterings,
+                                           postProcess_.polarization.acceleratedClosure);
+    }
+#endif
 }
 
 std::shared_ptr<SphericalObserver> RadiationIMC::getObserver() const
@@ -396,6 +419,21 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 
     if (postProcess_.enabled && observer_ && min.first == Events::OBSERVER)
     {
+#ifdef MONTECARLO_POLARIZATION
+        if(postProcess_.polarization.enabled)
+        {
+            IMCPolarization::InitializeIfNeeded(particle);
+            Vector3D const obsDir = normalize(particle.location - observer_->getCenter());
+            Vector3D const basis = IMCPolarization::ObserverBasis1(obsDir);
+            auto const qu = IMCPolarization::ProjectToBasis(particle, particle.velocity, basis);
+            observer_->recordCrossing(particle.location,
+                                      particle.weight,
+                                      particle.frequency,
+                                      qu.first,
+                                      qu.second);
+        }
+        else
+#endif
         observer_->recordCrossing(particle.location, particle.weight, particle.frequency);
         Vector3D candidate = PostProcessIMC::ObserverNudgeCandidate(*observer_, particle.location);
         if (this->grid.IsPointInCell(candidate, cellIndex))
@@ -434,6 +472,20 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     else if(min.first == Events::SCATTERING)
     {
         Vector3D oldVelocity = particle.velocity;
+#ifdef MONTECARLO_POLARIZATION
+        Particle polarizationMaterialParticle = particle;
+        Vector3D oldVelocityForPolarization = oldVelocity;
+        if(postProcess_.enabled && postProcess_.polarization.enabled && this->useTransportVelocities_)
+        {
+            LorentzTransformation(polarizationMaterialParticle, cell.velocity);
+            oldVelocityForPolarization = polarizationMaterialParticle.velocity;
+            if(polarizationMaterialParticle.polarizationInitialized)
+                polarizationMaterialParticle.polarizationBasis =
+                    IMCPolarization::ProjectBasisToDirection(
+                        polarizationMaterialParticle.polarizationBasis,
+                        polarizationMaterialParticle.velocity);
+        }
+#endif
         double oldWeight = particle.weight;
         double D_lab_to_co = dopplerShift;
         double eventRandom = this->dist(this->re) * eventOpacity;
@@ -441,7 +493,33 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         bool isEffectiveScatter = false;
         if(eventRandom < elasticScatteringOpacity)
         {
-            particle.velocity = opacity->getNewScatterVelocity(cell, particle);
+#ifdef MONTECARLO_POLARIZATION
+            if(postProcess_.enabled && postProcess_.polarization.enabled)
+            {
+                polarizationMaterialParticle.velocity = oldVelocityForPolarization;
+                auto u01 = [this]() -> double {
+                    return std::clamp(this->dist(this->re),
+                                      std::numeric_limits<double>::min(),
+                                      1.0 - std::numeric_limits<double>::epsilon());
+                };
+                particle.velocity =
+                    IMCPolarization::SamplePolarizedThomsonDirection(
+                        polarizationMaterialParticle,
+                        oldVelocityForPolarization,
+                        u01);
+                IMCPolarization::ApplyThomsonScatter(polarizationMaterialParticle,
+                                                     oldVelocityForPolarization,
+                                                     particle.velocity);
+                particle.stokesQ = polarizationMaterialParticle.stokesQ;
+                particle.stokesU = polarizationMaterialParticle.stokesU;
+                particle.polarizationBasis = polarizationMaterialParticle.polarizationBasis;
+                particle.polarizationInitialized = polarizationMaterialParticle.polarizationInitialized;
+            }
+            else
+#endif
+            {
+                particle.velocity = opacity->getNewScatterVelocity(cell, particle);
+            }
         }
         else if((eventRandom -= elasticScatteringOpacity) < effectiveAbsorptionOpacity)
         {
@@ -478,11 +556,23 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
                 ClampFrequencyToBounds(particle.frequency);
             }
         }
+#ifdef MONTECARLO_POLARIZATION
+        if(postProcess_.enabled && postProcess_.polarization.enabled && isEffectiveScatter)
+            IMCPolarization::ResetUnpolarized(particle);
+        if(postProcess_.enabled && postProcess_.polarization.enabled && didImplicitCompton)
+            throw UniversalError("Internal error: polarization reached Compton event");
+#endif
         if(this->useTransportVelocities_ && !didImplicitCompton)
         {
             double weightBefore = particle.weight;
             particle.weight *= D_lab_to_co;
             LorentzTransformation(particle, -1 * cell.velocity);
+#ifdef MONTECARLO_POLARIZATION
+            if(postProcess_.enabled && postProcess_.polarization.enabled && particle.polarizationInitialized)
+                particle.polarizationBasis =
+                    IMCPolarization::ProjectBasisToDirection(particle.polarizationBasis,
+                                                             particle.velocity);
+#endif
             if(this->multigroupOpacity)
             {
                 ClampFrequencyToBounds(particle.frequency);
@@ -1998,6 +2088,13 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     {
         os << "\t" << "post-process: enabled" << std::endl;
         os << "\t" << "post-process use cell velocities: " << parameters.postProcess.useCellVelocities << std::endl;
+        os << "\t" << "post-process polarization: " << parameters.postProcess.polarization.enabled << std::endl;
+        os << "\t" << "post-process polarization manual scatterings: "
+           << parameters.postProcess.polarization.manualScatteringsAfterAcceleration << std::endl;
+        os << "\t" << "post-process polarization depolarization scatterings: "
+           << parameters.postProcess.polarization.depolarizationScatterings << std::endl;
+        os << "\t" << "post-process polarization accelerated closure: "
+           << parameters.postProcess.polarization.acceleratedClosure << std::endl;
     }
     return os;
 }

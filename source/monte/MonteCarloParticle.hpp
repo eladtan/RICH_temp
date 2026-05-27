@@ -69,6 +69,12 @@ struct MonteCarloParticle
     double frequency = std::numeric_limits<double>::max();
     double weight = std::numeric_limits<double>::max();
     double initialWeight = std::numeric_limits<double>::max();
+#ifdef MONTECARLO_POLARIZATION
+    double stokesQ = 0.0;
+    double stokesU = 0.0;
+    T polarizationBasis = T();
+    bool polarizationInitialized = false;
+#endif
     size_t steps = 0;
     bool on_track = false;
     bool sent = false;
@@ -138,6 +144,12 @@ struct MonteCarloParticle
         this->removedFromRank = false;
         this->sentByRank = std::numeric_limits<rank_t>::max();
         #endif // MONTECARLO_DEBUG
+#ifdef MONTECARLO_POLARIZATION
+        this->stokesQ = 0.0;
+        this->stokesU = 0.0;
+        this->polarizationBasis = T();
+        this->polarizationInitialized = false;
+#endif
     };
 
     std::pair<size_t, distance_t> distanceToNearestFace(const Grid &grid, const std::vector<T> &normalsOfCell, const std::vector<T> &pointsOnFaces) const;
@@ -145,10 +157,16 @@ struct MonteCarloParticle
     friend inline std::ostream &operator<<(std::ostream &stream, const MonteCarloParticle &particle)
     {
         #ifdef RICH_MPI
-                return stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
+                stream << "Particle(ID " << particle.id << " of rank " << particle.rank << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps;
         #else // RICH_MPI
-                return stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps << ")";
+                stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps;
         #endif // RICH_MPI
+#ifdef MONTECARLO_POLARIZATION
+                stream << ", q " << particle.stokesQ
+                       << ", u " << particle.stokesU
+                       << ", polInit " << particle.polarizationInitialized;
+#endif
+                return stream << ")";
     }
 
     inline bool operator==(const MonteCarloParticle &other) const
@@ -415,6 +433,12 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->frequency);
     bytes += serializer->insert(this->weight);
     bytes += serializer->insert(this->initialWeight);
+#ifdef MONTECARLO_POLARIZATION
+    bytes += serializer->insert(this->stokesQ);
+    bytes += serializer->insert(this->stokesU);
+    bytes += serializer->insert(this->polarizationBasis);
+    bytes += serializer->insert(this->polarizationInitialized);
+#endif
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
     bytes += serializer->insert(this->sent);
@@ -463,6 +487,12 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->frequency, byteOffset + bytes);
     bytes += serializer->extract(this->weight, byteOffset + bytes);
     bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
+#ifdef MONTECARLO_POLARIZATION
+    bytes += serializer->extract(this->stokesQ, byteOffset + bytes);
+    bytes += serializer->extract(this->stokesU, byteOffset + bytes);
+    bytes += serializer->extract(this->polarizationBasis, byteOffset + bytes);
+    bytes += serializer->extract(this->polarizationInitialized, byteOffset + bytes);
+#endif
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);
     bytes += serializer->extract(this->sent, byteOffset + bytes);
