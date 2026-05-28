@@ -364,6 +364,33 @@ double SolveRosselandAlpha(
     return 0.5 * (lo + hi);
 }
 
+bool MeasuredLBDebugMemory()
+{
+    static int cached = -1;
+    if (cached < 0) {
+        char const* val = std::getenv("RICH_MEASURED_LB_DEBUG_MEMORY");
+        cached = (val != nullptr && std::string(val) != "0" && std::string(val) != "false") ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+void PrintVmRSS(std::string const& label, int rank) {
+    if (!MeasuredLBDebugMemory())
+        return;
+#ifdef __linux__
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::cerr << "MEMORY_RSS rank=" << rank
+                      << " label=" << label
+                      << " " << line << "\n";
+            break;
+        }
+    }
+#endif
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -924,7 +951,7 @@ int main(int argc, char* argv[])
         measuredLBParams.floorCost = 1.0;
         measuredLBParams.stepWeight = 1.0;
         measuredLBParams.particleWeight = 0.0;
-        measuredLBParams.medianClampFactor = isMultigroup ? 50.0 : 30.0;
+        measuredLBParams.medianClampFactor = isMultigroup ? 30.0 : 20.0;
         measuredLBParams.missingCellCost = isMultigroup ? 5.0 : 2.0;
         measuredLBParams.grayZeroStepInflation = 2.0;
         measuredLBParams.multigroupZeroStepInflation = 5.0;
@@ -954,47 +981,108 @@ int main(int argc, char* argv[])
                     throw UniversalError("Measured load balance repartition requires noHydroFeedback=true");
                 }
 
-                auto const& localSteps = manager->GetCellsStepsCounters();
+                PrintVmRSS("before_measured_lb", rank);
 
-                std::vector<size_t> cellIDs(Ncells);
-                for (size_t i = 0; i < Ncells; ++i)
-                    cellIDs[i] = cells[i].ID;
+                std::vector<double> measuredWeightsForExchange;
 
-                std::vector<size_t> noParticles;
-                auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(cellIDs, localSteps, noParticles);
-                auto globalMeasurements = imc_measured_lb::GatherMeasurementsAllRanks(localMeasurements, MPI_COMM_WORLD);
+                {
+                    auto const& localSteps = manager->GetCellsStepsCounters();
 
-                size_t globalTotalSteps = 0;
-                for (auto const& m : globalMeasurements)
-                    globalTotalSteps += m.stepCount;
-
-                if (globalTotalSteps == 0) {
-                    if (rank == 0)
-                        std::cerr << "MEASURED_LB: generation 0 had zero total steps, skipping repartition\n";
-                } else {
-                    auto costByCellID = imc_measured_lb::BuildMeasuredCosts(globalMeasurements, measuredLBParams, isMultigroup);
-                    imc_measured_lb::PrintMeasuredLBDiagnostics(localMeasurements, costByCellID, isMultigroup, MPI_COMM_WORLD);
-
-                    IMCStepCounterCostCalculator::Parameters costCalcParams;
-                    costCalcParams.floorCost = measuredLBParams.floorCost;
-                    costCalcParams.missingCellCost = measuredLBParams.missingCellCost;
-                    IMCStepCounterCostCalculator measuredCostCalc(costByCellID, costCalcParams);
-
-                    std::vector<Vector3D> currentPoints(Ncells);
+                    std::vector<size_t> cellIDs(Ncells);
                     for (size_t i = 0; i < Ncells; ++i)
-                        currentPoints[i] = tess.GetMeshPoint(i);
+                        cellIDs[i] = cells[i].ID;
 
-                    auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
-                    tess.BuildParallel(currentPoints, lbWeightsNew);
+                    std::vector<size_t> noParticles;
+                    auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(cellIDs, localSteps, noParticles);
+
+                    uint64_t localTotalSteps = 0;
+                    for (auto const& m : localMeasurements)
+                        localTotalSteps += static_cast<uint64_t>(m.stepCount);
+
+                    uint64_t globalTotalSteps = 0;
+                    MPI_Allreduce(&localTotalSteps, &globalTotalSteps, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                    if (globalTotalSteps == 0) {
+                        if (rank == 0)
+                            std::cerr << "MEASURED_LB: generation 0 had zero total steps, skipping repartition\n";
+                    } else {
+                        // Global-mean-based clamp via MPI_Allreduce (no per-cell allgather).
+                        auto localCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                            localMeasurements, measuredLBParams, isMultigroup, MPI_COMM_WORLD);
+
+                        imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                            localMeasurements, localCostByCellID, isMultigroup, MPI_COMM_WORLD);
+
+                        PrintVmRSS("after_local_costs", rank);
+
+                        size_t localMissingCosts = 0;
+                        for (size_t i = 0; i < Ncells; ++i) {
+                            if (localCostByCellID.find(cells[i].ID) == localCostByCellID.end())
+                                ++localMissingCosts;
+                        }
+                        uint64_t localMissing64 = static_cast<uint64_t>(localMissingCosts);
+                        uint64_t globalMissingCosts = 0;
+                        MPI_Allreduce(&localMissing64, &globalMissingCosts, 1,
+                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                        if (rank == 0 && globalMissingCosts != 0) {
+                            std::cerr << "MEASURED_LB_WARNING missing local measured costs before repartition: "
+                                      << globalMissingCosts << "\n";
+                        }
+
+                        IMCStepCounterCostCalculator::Parameters costCalcParams;
+                        costCalcParams.floorCost = measuredLBParams.floorCost;
+                        costCalcParams.missingCellCost = measuredLBParams.missingCellCost;
+                        IMCStepCounterCostCalculator measuredCostCalc(std::move(localCostByCellID), costCalcParams);
+
+                        std::vector<Vector3D> currentPoints(Ncells);
+                        for (size_t i = 0; i < Ncells; ++i)
+                            currentPoints[i] = tess.GetMeshPoint(i);
+
+                        auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
+
+                        if (lbWeightsNew.size() != Ncells) {
+                            throw UniversalError("Measured LB weight count mismatch before BuildParallel");
+                        }
+
+                        measuredWeightsForExchange = lbWeightsNew;
+
+                        const double weightCompression = 0.5;
+                        for (auto& w : lbWeightsNew)
+                            w = std::pow(w, weightCompression);
+
+                        tess.BuildParallel(currentPoints, lbWeightsNew);
+                    }
+                }
+
+                PrintVmRSS("after_build_parallel", rank);
+
+                if (!measuredWeightsForExchange.empty()) {
                     MPI_exchange_data(tess, cells, false, 1, &dummyCell);
 
+                    double dummyWeight = measuredLBParams.missingCellCost;
+                    MPI_exchange_data(tess, measuredWeightsForExchange, false, 1, &dummyWeight);
+
                     Ncells = tess.GetPointNo();
+
                     if (cells.size() != Ncells) {
                         UniversalError eo("Cell count mismatch after measured LB repartition");
                         eo.addEntry("cells.size()", static_cast<double>(cells.size()));
                         eo.addEntry("Ncells", static_cast<double>(Ncells));
                         throw eo;
                     }
+
+                    if (measuredWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(measuredWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        measuredWeightsForExchange, isMultigroup, MPI_COMM_WORLD);
+
+                    PrintVmRSS("after_exchange", rank);
 
                     extensives.resize(Ncells);
                     for (size_t i = 0; i < Ncells; ++i)
@@ -1004,7 +1092,6 @@ int main(int argc, char* argv[])
 
                     physics = std::make_shared<RadiationIMC>(
                         tess, boundary, cells, extensives, eos, opacity, params);
-                    // Keep the same observer so generation-0 tallies remain part of the result.
                     physics->setObserver(observer);
 
                     popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
@@ -1012,14 +1099,10 @@ int main(int argc, char* argv[])
                     manager = std::make_shared<RDMAMonteCarloManager3D>(
                         tess, physics, popControl, boundary);
 
-                    std::vector<size_t> newCellIDs(Ncells);
-                    for (size_t i = 0; i < Ncells; ++i)
-                        newCellIDs[i] = cells[i].ID;
-                    imc_measured_lb::PrintPostRepartitionDiagnostics(
-                        costByCellID, newCellIDs, measuredLBParams.missingCellCost, isMultigroup, MPI_COMM_WORLD);
-
                     if (rank == 0)
                         std::cout << "MEASURED_LB: repartitioned after generation 0, new local cells=" << Ncells << std::endl;
+
+                    PrintVmRSS("after_rebuild_physics", rank);
                 }
             }
 #endif // RICH_MPI
@@ -1200,54 +1283,92 @@ int main(int argc, char* argv[])
             (void)remaining;
 
 #ifdef RICH_MPI
-            // Same repartition logic as multigroup: use generation-0 step counters
-            // to rebalance subsequent grey generations.
             if (gen == 0 && greyMeasuredLBActive) {
                 if (!greyParams.noHydroFeedback) {
                     throw UniversalError("Grey measured load balance repartition requires noHydroFeedback=true");
                 }
 
-                auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
+                PrintVmRSS("grey_before_measured_lb", rank);
 
-                std::vector<size_t> greyCellIDs(Ncells);
-                for (size_t i = 0; i < Ncells; ++i)
-                    greyCellIDs[i] = cells[i].ID;
+                std::vector<double> greyWeightsForExchange;
 
-                std::vector<size_t> noParticles;
-                auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(greyCellIDs, greyLocalSteps, noParticles);
-                auto greyGlobalMeas = imc_measured_lb::GatherMeasurementsAllRanks(greyLocalMeas, MPI_COMM_WORLD);
+                {
+                    auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
 
-                size_t greyGlobalTotalSteps = 0;
-                for (auto const& m : greyGlobalMeas)
-                    greyGlobalTotalSteps += m.stepCount;
-
-                if (greyGlobalTotalSteps == 0) {
-                    if (rank == 0)
-                        std::cerr << "MEASURED_LB_GREY: generation 0 had zero total steps, skipping repartition\n";
-                } else {
-                    auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(greyGlobalMeas, greyLBParams, false);
-                    imc_measured_lb::PrintMeasuredLBDiagnostics(greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
-
-                    IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
-                    greyCostCalcParams.floorCost = greyLBParams.floorCost;
-                    greyCostCalcParams.missingCellCost = greyLBParams.missingCellCost;
-                    IMCStepCounterCostCalculator greyCostCalc(greyCostByCellID, greyCostCalcParams);
-
-                    std::vector<Vector3D> greyCurrentPoints(Ncells);
+                    std::vector<size_t> greyCellIDs(Ncells);
                     for (size_t i = 0; i < Ncells; ++i)
-                        greyCurrentPoints[i] = tess.GetMeshPoint(i);
+                        greyCellIDs[i] = cells[i].ID;
 
-                    auto greyLBWeights = greyCostCalc.CalculateCost(tess, cells);
-                    tess.BuildParallel(greyCurrentPoints, greyLBWeights);
+                    std::vector<size_t> noParticles;
+                    auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(greyCellIDs, greyLocalSteps, noParticles);
+
+                    uint64_t greyLocalTotalSteps = 0;
+                    for (auto const& m : greyLocalMeas)
+                        greyLocalTotalSteps += static_cast<uint64_t>(m.stepCount);
+
+                    uint64_t greyGlobalTotalSteps = 0;
+                    MPI_Allreduce(&greyLocalTotalSteps, &greyGlobalTotalSteps, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                    if (greyGlobalTotalSteps == 0) {
+                        if (rank == 0)
+                            std::cerr << "MEASURED_LB_GREY: generation 0 had zero total steps, skipping repartition\n";
+                    } else {
+                        auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                            greyLocalMeas, greyLBParams, false, MPI_COMM_WORLD);
+
+                        imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                            greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
+
+                        IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
+                        greyCostCalcParams.floorCost = greyLBParams.floorCost;
+                        greyCostCalcParams.missingCellCost = greyLBParams.missingCellCost;
+                        IMCStepCounterCostCalculator greyCostCalc(std::move(greyCostByCellID), greyCostCalcParams);
+
+                        std::vector<Vector3D> greyCurrentPoints(Ncells);
+                        for (size_t i = 0; i < Ncells; ++i)
+                            greyCurrentPoints[i] = tess.GetMeshPoint(i);
+
+                        auto greyLBWeights = greyCostCalc.CalculateCost(tess, cells);
+
+                        if (greyLBWeights.size() != Ncells) {
+                            throw UniversalError("Grey measured LB weight count mismatch before BuildParallel");
+                        }
+
+                        greyWeightsForExchange = greyLBWeights;
+
+                        const double greyWeightCompression = 0.5;
+                        for (auto& w : greyLBWeights)
+                            w = std::pow(w, greyWeightCompression);
+
+                        tess.BuildParallel(greyCurrentPoints, greyLBWeights);
+                    }
+                }
+
+                if (!greyWeightsForExchange.empty()) {
                     MPI_exchange_data(tess, cells, false, 1, &dummyCell);
 
+                    double greyDummyWeight = greyLBParams.missingCellCost;
+                    MPI_exchange_data(tess, greyWeightsForExchange, false, 1, &greyDummyWeight);
+
                     Ncells = tess.GetPointNo();
+
                     if (cells.size() != Ncells) {
                         UniversalError eo("Cell count mismatch after grey measured LB repartition");
                         eo.addEntry("cells.size()", static_cast<double>(cells.size()));
                         eo.addEntry("Ncells", static_cast<double>(Ncells));
                         throw eo;
                     }
+
+                    if (greyWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Grey measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(greyWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        greyWeightsForExchange, false, MPI_COMM_WORLD);
 
                     extensives.resize(Ncells);
                     for (size_t i = 0; i < Ncells; ++i)
@@ -1264,14 +1385,10 @@ int main(int argc, char* argv[])
                     greyManager = std::make_shared<RDMAMonteCarloManager3D>(
                         tess, greyPhysics, greyPopControl, greyBoundary);
 
-                    std::vector<size_t> newGreyCellIDs(Ncells);
-                    for (size_t i = 0; i < Ncells; ++i)
-                        newGreyCellIDs[i] = cells[i].ID;
-                    imc_measured_lb::PrintPostRepartitionDiagnostics(
-                        greyCostByCellID, newGreyCellIDs, greyLBParams.missingCellCost, false, MPI_COMM_WORLD);
-
                     if (rank == 0)
                         std::cout << "MEASURED_LB_GREY: repartitioned after generation 0, new local cells=" << Ncells << std::endl;
+
+                    PrintVmRSS("grey_after_rebuild_physics", rank);
                 }
             }
 #endif // RICH_MPI
