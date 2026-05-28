@@ -24,6 +24,7 @@
 #include "3D/monte/MonteCarloManager3D.hpp"
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
+#include "utils/arguments/ArgumentParser.hpp"
 #include "utils/debug/vtune.h"
 
 using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
@@ -319,19 +320,6 @@ static size_t CountCellsInsideBall(const Tessellation3D &grid,
     return count;
 }
 
-static void PrintUsage(const char *program)
-{
-    std::cerr << "Usage: " << program
-              << " [N_base] [photons_per_emitter_cell] [steps]"
-              << " [--p2p] [--new-rdma] [--new-ibv] [--new-mpi-rma]"
-              << " [--rdma] [--ibv] [--mpi-rma]"
-              << " [--dt <seconds>] [--domain-size <length>]"
-              << " [--radius <r>] [--n-ball <points>]"
-              << " [--target-emitters <cells>]"
-              << " [--direction-mode outward|isotropic] [--weight <w>]"
-              << std::endl;
-}
-
 int main(int argc, char *argv[])
 {
     vtune_stop();
@@ -346,18 +334,68 @@ int main(int argc, char *argv[])
 
     try
     {
-        size_t N_base = 20000;
-        size_t photonsPerEmitterCell = 10;
-        size_t steps = 20;
-        size_t N_ball = 0;
-        size_t targetEmitterCells = 0;
-        double domainSize = 10.0;
-        double ballRadius = 0.1;
-        double dt = 1e-10;
-        double particleWeight = 1.0;
-        bool isotropicEmission = false;
-        std::string directionMode = "outward";
-        bool explicitNBall = false;
+        ArgumentParser arguments("Ball emission benchmark");
+        arguments.addPositional<size_t>("N_base", 20000, "number of background mesh points");
+        arguments.addPositional<size_t>("photons_per_emitter_cell", 10, "photons emitted from each emitter cell per cycle");
+        arguments.addPositional<size_t>("steps", 20, "number of benchmark cycles");
+        arguments.addPositional<size_t>("N_ball", 0, "number of extra mesh points inside the emitting ball")
+            .optionAlias("n-ball");
+
+        arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
+            .choices({"new-rdma-auto", "new-rdma-ibv", "new-rdma-mpi-rma",
+                      "old-rdma-auto", "old-rdma-ibv", "old-rdma-mpi-rma", "p2p"})
+            .flagAlias("p2p", "p2p")
+            .flagAlias("new-rdma", "new-rdma-auto")
+            .flagAlias("new-ibv", "new-rdma-ibv")
+            .flagAlias("new_ibv", "new-rdma-ibv")
+            .flagAlias("new-mpi-rma", "new-rdma-mpi-rma")
+            .flagAlias("rdma", "old-rdma-auto")
+            .flagAlias("old-rdma", "old-rdma-auto")
+            .flagAlias("ibv", "old-rdma-ibv")
+            .flagAlias("mpi-rma", "old-rdma-mpi-rma");
+
+        arguments.addOption<double>("dt", 1e-10, "step size in seconds");
+        arguments.addOption<double>("domain-size", 10.0, "side length of the cubic domain");
+        arguments.addOption<double>("radius", 1.5, "emitting ball radius");
+        arguments.addOption<size_t>("target-emitters", 0, "target number of emitter cells")
+            .alias("emitter-target");
+        arguments.addOption<std::string>("direction-mode", "outward", "emission direction mode")
+            .choices({"outward", "isotropic"})
+            .flagAlias("isotropic", "isotropic");
+        arguments.addOption<double>("weight", 1.0, "particle weight");
+
+        try
+        {
+            if(!arguments.parse(argc, argv))
+            {
+                if(rank == 0)
+                    std::cout << arguments.help() << std::endl;
+                MPI_Finalize();
+                return 0;
+            }
+        }
+        catch(const std::exception &e)
+        {
+            if(rank == 0)
+            {
+                std::cerr << e.what() << std::endl;
+                std::cerr << arguments.help() << std::endl;
+            }
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+
+        size_t N_base = arguments.get<size_t>("N_base");
+        size_t photonsPerEmitterCell = arguments.get<size_t>("photons_per_emitter_cell");
+        size_t steps = arguments.get<size_t>("steps");
+        size_t N_ball = arguments.get<size_t>("N_ball");
+        size_t targetEmitterCells = arguments.get<size_t>("target-emitters");
+        double domainSize = arguments.get<double>("domain-size");
+        double ballRadius = arguments.get<double>("radius");
+        double dt = arguments.get<double>("dt");
+        double particleWeight = arguments.get<double>("weight");
+
+        std::string directionMode = arguments.get<std::string>("direction-mode");
+        bool isotropicEmission = directionMode == "isotropic";
 
         enum ManagerKind
         {
@@ -365,156 +403,20 @@ int main(int argc, char *argv[])
             MANAGER_OLD_RDMA,
             MANAGER_P2P
         };
-        ManagerKind managerKind = MANAGER_NEW_RDMA;
-        std::string managerName = "new-rdma-auto";
+        std::string managerName = arguments.get<std::string>("manager");
+        ManagerKind managerKind = managerName == "p2p" ? MANAGER_P2P :
+                                  managerName.find("old-rdma") == 0 ? MANAGER_OLD_RDMA :
+                                  MANAGER_NEW_RDMA;
 
         #ifdef RICH_MPI
         RDMA_Type rdmaType = RDMA_Type::AUTO_RDMA;
+        if(managerName.find("ibv") != std::string::npos)
+            rdmaType = RDMA_Type::IBV_RDMA;
+        else if(managerName.find("mpi-rma") != std::string::npos)
+            rdmaType = RDMA_Type::MPI_RMA;
         #endif
 
-        std::vector<std::string> positionalArgs;
-        for(int a = 1; a < argc; a++)
-        {
-            std::string arg(argv[a]);
-            if(arg == "--help" || arg == "-h")
-            {
-                if(rank == 0)
-                    PrintUsage(argv[0]);
-                MPI_Finalize();
-                return 0;
-            }
-            else if(arg == "--p2p")
-            {
-                managerKind = MANAGER_P2P;
-                managerName = "p2p";
-            }
-            else if(arg == "--new-rdma")
-            {
-                managerKind = MANAGER_NEW_RDMA;
-                managerName = "new-rdma-auto";
-                #ifdef RICH_MPI
-                rdmaType = RDMA_Type::AUTO_RDMA;
-                #endif
-            }
-            else if(arg == "--new-ibv" || arg == "--new_ibv")
-            {
-                managerKind = MANAGER_NEW_RDMA;
-                managerName = "new-rdma-ibv";
-                #ifdef RICH_MPI
-                rdmaType = RDMA_Type::IBV_RDMA;
-                #endif
-            }
-            else if(arg == "--new-mpi-rma")
-            {
-                managerKind = MANAGER_NEW_RDMA;
-                managerName = "new-rdma-mpi-rma";
-                #ifdef RICH_MPI
-                rdmaType = RDMA_Type::MPI_RMA;
-                #endif
-            }
-            else if(arg == "--rdma" || arg == "--old-rdma")
-            {
-                managerKind = MANAGER_OLD_RDMA;
-                managerName = "old-rdma-auto";
-                #ifdef RICH_MPI
-                rdmaType = RDMA_Type::AUTO_RDMA;
-                #endif
-            }
-            else if(arg == "--ibv")
-            {
-                managerKind = MANAGER_OLD_RDMA;
-                managerName = "old-rdma-ibv";
-                #ifdef RICH_MPI
-                rdmaType = RDMA_Type::IBV_RDMA;
-                #endif
-            }
-            else if(arg == "--mpi-rma")
-            {
-                managerKind = MANAGER_OLD_RDMA;
-                managerName = "old-rdma-mpi-rma";
-                #ifdef RICH_MPI
-                rdmaType = RDMA_Type::MPI_RMA;
-                #endif
-            }
-            else if(arg == "--dt" && a + 1 < argc)
-            {
-                dt = std::stod(argv[++a]);
-            }
-            else if(arg == "--domain-size" && a + 1 < argc)
-            {
-                domainSize = std::stod(argv[++a]);
-            }
-            else if(arg == "--radius" && a + 1 < argc)
-            {
-                ballRadius = std::stod(argv[++a]);
-            }
-            else if(arg == "--n-ball" && a + 1 < argc)
-            {
-                N_ball = std::stoul(argv[++a]);
-                explicitNBall = true;
-            }
-            else if((arg == "--target-emitters" || arg == "--emitter-target") && a + 1 < argc)
-            {
-                targetEmitterCells = std::stoul(argv[++a]);
-            }
-            else if(arg == "--direction-mode" && a + 1 < argc)
-            {
-                directionMode = argv[++a];
-                if(directionMode == "isotropic")
-                {
-                    isotropicEmission = true;
-                }
-                else if(directionMode == "outward")
-                {
-                    isotropicEmission = false;
-                }
-                else
-                {
-                    if(rank == 0)
-                    {
-                        std::cerr << "Unknown direction mode: " << directionMode << std::endl;
-                        PrintUsage(argv[0]);
-                    }
-                    MPI_Abort(MPI_COMM_WORLD, 1);
-                }
-            }
-            else if(arg == "--isotropic")
-            {
-                directionMode = "isotropic";
-                isotropicEmission = true;
-            }
-            else if(arg == "--weight" && a + 1 < argc)
-            {
-                particleWeight = std::stod(argv[++a]);
-            }
-            else if(!arg.empty() && arg[0] == '-')
-            {
-                if(rank == 0)
-                {
-                    std::cerr << "Unknown option: " << arg << std::endl;
-                    PrintUsage(argv[0]);
-                }
-                MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            else
-            {
-                positionalArgs.push_back(arg);
-            }
-        }
-
-        if(positionalArgs.size() > 0)
-            N_base = std::stoul(positionalArgs[0]);
-        if(positionalArgs.size() > 1)
-            photonsPerEmitterCell = std::stoul(positionalArgs[1]);
-        if(positionalArgs.size() > 2)
-            steps = std::stoul(positionalArgs[2]);
-        if(positionalArgs.size() > 3)
-        {
-            N_ball = std::stoul(positionalArgs[3]);
-            explicitNBall = true;
-        }
-
-        if(!explicitNBall)
+        if(!arguments.wasSet("N_ball"))
             N_ball = std::max<size_t>(512, N_base / 20);
 
         const double halfDomain = 0.5 * domainSize;

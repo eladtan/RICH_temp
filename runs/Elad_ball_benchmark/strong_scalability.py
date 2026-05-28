@@ -257,6 +257,7 @@ def linspace(start, stop, num=200):
 def require_matplotlib():
     try:
         import matplotlib.pyplot as plt
+        import matplotlib.ticker as ticker  # noqa: F401
     except ImportError:
         print("matplotlib is required for plotting. Use --table-only to just parse results.",
               file=sys.stderr)
@@ -393,9 +394,13 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
     ax.set_ylabel("Speedup")
     ax.set_title("Ball benchmark strong-scaling speedup")
     ax.grid(True, alpha=0.3)
+    ax.grid(True, which="minor", alpha=0.15)
     ax.legend()
     ax.set_xscale("log", base=2)
     ax.set_yscale("log", base=2)
+    import matplotlib.ticker as ticker
+    ax.yaxis.set_minor_locator(ticker.LogLocator(base=2, subs="auto", numticks=20))
+    ax.yaxis.set_minor_formatter(ticker.NullFormatter())
     if all_ticks:
         ax.set_xticks(sorted(all_ticks))
         ax.set_xticklabels([str(n) for n in sorted(all_ticks)], rotation=90)
@@ -433,9 +438,13 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
     ax.set_ylabel(measurement_label(args))
     ax.set_title("Ball benchmark strong scaling")
     ax.grid(True, alpha=0.3)
+    ax.grid(True, which="minor", alpha=0.15)
     ax.legend()
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
+    import matplotlib.ticker as ticker
+    ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=range(2, 10), numticks=20))
+    ax.yaxis.set_minor_formatter(ticker.NullFormatter())
     shown_times = [r.total_time for r in rdma_runs]
     shown_times.extend(r.total_time for r in p2p_runs)
     if shown_times:
