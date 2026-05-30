@@ -41,7 +41,7 @@ class Run:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot weak scaling for ball benchmark runs."
+        description="Plot weak scaling for space benchmark runs."
     )
     parser.add_argument("--ignore", type=str, default="",
                         help="Comma-separated list of processor counts to ignore.")
@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument("--efficiency", action="store_true",
                         help="Plot weak-scaling efficiency T_ref / T(N).")
     parser.add_argument("--p2p", action="store_true",
-                        help="Include P2P files (ball_WS_P2P_*) as an additional curve.")
+                        help="Include P2P files (space_WS_P2P_*) as an additional curve.")
     parser.add_argument("--sum", type=int, nargs="?", const=0, default=None, metavar="X",
                         help="Use per-cycle step_wall(max) timings instead of the final "
                              "total benchmark time. No value: sum all available cycles. "
@@ -75,7 +75,7 @@ def parse_args():
     parser.add_argument("--table-only", action="store_true",
                         help="Only parse files and print the selected run table; do not plot.")
     parser.add_argument("--dir", type=str, default=os.path.dirname(os.path.abspath(__file__)),
-                        help="Directory to search for ball_WS_*.out files.")
+                        help="Directory to search for space_WS_*.out files.")
     args = parser.parse_args()
 
     if args.sum is not None and args.sum < 0:
@@ -119,18 +119,17 @@ def parse_run_time(filepath, sum_cycles=None):
         r"^Cycle\s+(\d+)\s+.*\bstep_wall\(max\)=([\d.eE+\-]+)s?"
     )
     avg_steps_re = re.compile(r"\bavg steps:\s*([\d.eE+\-]+)")
-    ball_meta_re = re.compile(r"^Ball emission benchmark:\s*(.*)$")
+    ball_meta_re = re.compile(r"^Space emission benchmark:\s*(.*)$")
     weak_param_re = re.compile(
         r"^\s*(NBASE|NBALL|DT|SOURCE_RADIUS|TARGET_EMITTERS|EMISSION_DIRECTION)=([\w.dE+\-]+)\s*$"
     )
     nodes_re = re.compile(r"^\s*nodes=(\d+)\s+ranks=(\d+)\s*$")
     generated_re = re.compile(
-        r"Generated\s+\d+\s+mesh points\s+"
-        r"\(background=(\d+),\s*(?:ball=(\d+),\s*)?shell=(\d+)\)"
+        r"Generated\s+\d+\s+mesh points\s+\(background=(\d+)\)"
     )
     command_re = re.compile(
         r"\s(?:\./)?rich\s+(\d+)\s+(\d+)\s+(\d+)\s+"
-        r".*--n-ball\s+(\d+).*--dt\s+([\d.eE+\-]+)"
+        r".*--dt\s+([\d.eE+\-]+)"
     )
 
     total_time = None
@@ -181,16 +180,14 @@ def parse_run_time(filepath, sum_cycles=None):
             m = generated_re.search(line)
             if m:
                 meta["NBASE"] = m.group(1)
-                meta["NBALL"] = m.group(2) or m.group(3)
                 continue
 
             m = command_re.search(line)
             if m:
                 meta.setdefault("NBASE", m.group(1))
-                meta.setdefault("photons/emitter/cycle", m.group(2))
+                meta.setdefault("photons/cell/cycle", m.group(2))
                 meta.setdefault("steps", m.group(3))
-                meta.setdefault("NBALL", m.group(4))
-                meta.setdefault("dt", m.group(5))
+                meta.setdefault("dt", m.group(4))
 
     if sum_cycles is not None:
         if not cycle_times:
@@ -221,11 +218,11 @@ def parse_run_time(filepath, sum_cycles=None):
 
 
 def find_runs(directory, include_p2p=False, sum_cycles=None):
-    pattern = os.path.join(directory, "ball_WS_*.out")
+    pattern = os.path.join(directory, "space_WS_*.out")
     files = glob.glob(pattern)
 
-    regular_re = re.compile(r"ball_WS_(\d+)_n(\d+)\.out$")
-    p2p_re = re.compile(r"ball_WS_P2P_(\d+)_n(\d+)\.out$")
+    regular_re = re.compile(r"space_WS_(\d+)_n(\d+)\.out$")
+    p2p_re = re.compile(r"space_WS_P2P_(\d+)_n(\d+)\.out$")
 
     rdma_runs = []
     p2p_runs = []
@@ -264,7 +261,7 @@ def find_runs(directory, include_p2p=False, sum_cycles=None):
             nbase=parse_int(meta, "NBASE"),
             nball=parse_int(meta, "NBALL"),
             emitted_per_cycle=parse_int(meta, "emitted/cycle"),
-            photons_per_emitter=parse_int(meta, "photons/emitter/cycle"),
+            photons_per_emitter=parse_int(meta, "photons/cell/cycle"),
             radius=parse_float(meta, "radius"),
             target_emitters=parse_int(meta, "target emitters"),
             cycle_count=cycle_count,
@@ -377,12 +374,12 @@ def output_name(args):
     if args.output:
         return args.output
     if args.efficiency:
-        return "ball_weak_scalability_efficiency.png"
+        return "space_weak_scalability_efficiency.png"
     if args.sum is not None:
-        return "ball_weak_scalability_sum.png"
+        return "space_weak_scalability_sum.png"
     if args.optimal:
-        return "ball_weak_scalability_optimal.png"
-    return "ball_weak_scalability.png"
+        return "space_weak_scalability_optimal.png"
+    return "space_weak_scalability.png"
 
 
 def p2p_acceleration_by_nprocs(p2p_runs):
@@ -405,7 +402,7 @@ def print_table(title, runs, tasks_per_node, p2p_times=None):
     print(title)
     columns = [
         "Processors", "Nodes", "Job", "Time(s)", "Measure", "Manager",
-        "NBASE", "NBALL", "Radius", "TargetEmit", "Steps", "dt",
+        "Cells", "Photons/cell", "Steps", "dt",
         "Emitted/cyc", "AvgSteps(last)",
     ]
     if p2p_times:
@@ -422,9 +419,7 @@ def print_table(title, runs, tasks_per_node, p2p_times=None):
             run.time_source,
             run.manager,
             str(run.nbase) if run.nbase else "",
-            str(run.nball) if run.nball else "",
-            f"{run.radius:.3g}" if run.radius else "",
-            str(run.target_emitters) if run.target_emitters else "",
+            str(run.photons_per_emitter) if run.photons_per_emitter else "",
             str(run.steps) if run.steps else "",
             f"{run.dt:.3g}" if run.dt else "",
             str(run.emitted_per_cycle) if run.emitted_per_cycle else "",
@@ -518,7 +513,7 @@ def warn_mixed_fixed_parameters(label, runs):
     }
     if len(signatures) > 1:
         formatted = ", ".join(
-            f"steps={steps}, photons/emitter={photons}, radius={radius:.3g}, "
+            f"steps={steps}, photons/cell={photons}, radius={radius:.3g}, "
             f"sampled_source={sampled}, direction={direction or 'unknown'}"
             for steps, photons, radius, sampled, direction in sorted(signatures)
         )
@@ -533,7 +528,7 @@ def warn_cross_series_parameters(rdma_runs, p2p_runs):
     p2p_sig = {(run.steps, run.photons_per_emitter) for run in p2p_runs}
     if rdma_sig != p2p_sig:
         print("Warning: RDMA and P2P selected curves do not have identical "
-              "(steps, photons/emitter) metadata.", file=sys.stderr)
+              "(steps, photons/cell) metadata.", file=sys.stderr)
 
 
 def add_nodes_axis(ax, tasks_per_node):
@@ -586,7 +581,7 @@ def make_efficiency_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
                label="Ideal (100%)")
     ax.set_xlabel("Number of processors")
     ax.set_ylabel("Weak scaling efficiency (%)")
-    ax.set_title("Ball benchmark weak-scaling efficiency")
+    ax.set_title("Space benchmark weak-scaling efficiency")
     ax.grid(True, alpha=0.3)
     ax.legend()
     ax.set_xscale("log", base=2)
@@ -629,7 +624,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel(measurement_label(args))
-    ax.set_title("Ball benchmark weak scaling")
+    ax.set_title("Space benchmark weak scaling")
     ax.grid(True, alpha=0.3)
     ax.legend()
     ax.set_xscale("log", base=2)
@@ -677,7 +672,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_xlabel("Number of processors")
         ax2.set_ylabel("Deviation from ideal weak scaling (%)")
-        ax2.set_title("Ball benchmark deviation from ideal weak scaling")
+        ax2.set_title("Space benchmark deviation from ideal weak scaling")
         ax2.grid(True, alpha=0.3)
         ax2.legend()
         ax2.set_xscale("log", base=2)
@@ -707,7 +702,7 @@ def main():
     p2p_all = [r for r in p2p_all if r.nprocs not in ignore_set]
 
     if not rdma_all:
-        print("No completed ball_WS_*.out files found. If jobs are incomplete, "
+        print("No completed space_WS_*.out files found. If jobs are incomplete, "
               "try --sum or --sum=X.", file=sys.stderr)
         sys.exit(1)
 

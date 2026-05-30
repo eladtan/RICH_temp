@@ -33,7 +33,7 @@ class Run:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot strong scaling for ball benchmark runs."
+        description="Plot strong scaling for space benchmark runs."
     )
     parser.add_argument("--ignore", type=str, default="",
                         help="Comma-separated list of processor counts to ignore.")
@@ -44,7 +44,7 @@ def parse_args():
     parser.add_argument("--speedup", action="store_true",
                         help="Plot speedup (T_min_procs / T_N) with ideal scaling line.")
     parser.add_argument("--p2p", action="store_true",
-                        help="Include P2P files (ball_SS_P2P_*) as an additional curve.")
+                        help="Include P2P files (space_SS_P2P_*) as an additional curve.")
     parser.add_argument("--sum", type=int, default=None, metavar="X",
                         help="Use the sum of the last X per-cycle step_wall(max) timings "
                              "instead of the final total benchmark time.")
@@ -64,7 +64,7 @@ def parse_args():
     parser.add_argument("--table-only", action="store_true",
                         help="Only parse files and print the selected run table; do not plot.")
     parser.add_argument("--dir", type=str, default=os.path.dirname(os.path.abspath(__file__)),
-                        help="Directory to search for ball_SS_*.out files.")
+                        help="Directory to search for space_SS_*.out files.")
     args = parser.parse_args()
     if args.sum is not None and args.sum <= 0:
         parser.error("--sum must be a positive integer")
@@ -84,7 +84,7 @@ def parse_run_time(filepath, sum_cycles=None):
     cycle_re = re.compile(
         r"^Cycle\s+(\d+)\s+.*\bstep_wall\(max\)=([\d.eE+\-]+)s?"
     )
-    meta_re = re.compile(r"^Ball emission benchmark:\s*(.*)$")
+    meta_re = re.compile(r"^Space emission benchmark:\s*(.*)$")
 
     total_time = None
     meta = {}
@@ -145,11 +145,11 @@ def parse_float(meta, key, default=0.0):
 
 
 def find_runs(directory, include_p2p=False, sum_cycles=None):
-    pattern = os.path.join(directory, "ball_SS_*.out")
+    pattern = os.path.join(directory, "space_SS_*.out")
     files = glob.glob(pattern)
 
-    regular_re = re.compile(r"ball_SS_(\d+)_n(\d+)\.out$")
-    p2p_re = re.compile(r"ball_SS_P2P_(\d+)_n(\d+)\.out$")
+    regular_re = re.compile(r"space_SS_(\d+)_n(\d+)\.out$")
+    p2p_re = re.compile(r"space_SS_P2P_(\d+)_n(\d+)\.out$")
 
     rdma_runs = []
     p2p_runs = []
@@ -413,7 +413,7 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel("Speedup")
-    ax.set_title("Ball benchmark strong-scaling speedup")
+    ax.set_title("Space benchmark strong-scaling speedup")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", alpha=0.15)
     ax.legend()
@@ -427,7 +427,7 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
         ax.set_xticklabels([str(n) for n in sorted(all_ticks)], rotation=90)
 
     plt.tight_layout()
-    out = args.output or "ball_strong_scalability_speedup.png"
+    out = args.output or "space_strong_scalability_speedup.png"
     plt.savefig(out, dpi=150)
     print(f"Saved {out}")
     if args.show:
@@ -457,7 +457,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel(measurement_label(args))
-    ax.set_title("Ball benchmark strong scaling")
+    ax.set_title("Space benchmark strong scaling")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", alpha=0.15)
     ax.legend()
@@ -479,7 +479,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
         ax.set_xticklabels([str(n) for n in sorted(all_ticks)], rotation=90)
 
     plt.tight_layout()
-    out = args.output or "ball_strong_scalability.png"
+    out = args.output or "space_strong_scalability.png"
     plt.savefig(out, dpi=150)
     print(f"Saved {out}")
     if args.show:
@@ -511,7 +511,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_xlabel("Number of processors")
         ax2.set_ylabel("Deviation from ideal (%)")
-        ax2.set_title("Ball benchmark deviation from ideal strong scaling")
+        ax2.set_title("Space benchmark deviation from ideal strong scaling")
         ax2.grid(True, alpha=0.3)
         ax2.legend()
         ax2.set_xscale("log", base=2)
@@ -538,7 +538,7 @@ def main():
     p2p_all = [r for r in p2p_all if r.nprocs not in ignore_set]
 
     if not rdma_all:
-        print("No completed ball_SS_*.out files found.", file=sys.stderr)
+        print("No completed space_SS_*.out files found.", file=sys.stderr)
         sys.exit(1)
 
     rdma_selected = aggregate_runs(rdma_all, args.select)

@@ -31,6 +31,7 @@
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
+#include "monte/boundary/Rigid.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
 #include "utils/debug/vtune.h"
 
@@ -71,27 +72,6 @@ public:
 };
 
 template<typename T, typename Grid>
-class VacuumBoundary : public BoundaryCondition<T, Grid>
-{
-public:
-    using Particle = MonteCarloParticle<T, Grid>;
-
-    explicit VacuumBoundary(const Grid &grid)
-        : BoundaryCondition<T, Grid>(grid)
-    {}
-
-    MonteCarloParticleStatus apply(Particle&) override
-    {
-        return MonteCarloParticleStatus::REMOVE;
-    }
-
-    std::vector<Particle> generateNewBoundaryParticles(double) override
-    {
-        return std::vector<Particle>();
-    }
-};
-
-template<typename T, typename Grid>
 class IdentityPopulationControl : public PopulationControl<T, Grid>
 {
 public:
@@ -107,26 +87,20 @@ public:
     }
 };
 
-class BallEmissionPhysics : public MonteCarloRadiationPhysics3D
+class SpaceEmissionPhysics : public MonteCarloRadiationPhysics3D
 {
 public:
-    BallEmissionPhysics(Tessellation3D &grid,
-                        const std::shared_ptr<BoundaryCond> &boundary,
-                        std::vector<ComputationalCell3D> &cells,
-                        std::vector<Conserved3D> &conserved,
-                        const std::shared_ptr<EquationOfState> &eos,
-                        const std::shared_ptr<OpacityCalculator> &opacity,
-                        const Vector3D &center,
-                        double radius,
-                        bool isotropicEmission,
-                        size_t photonsPerEmitterCell,
-                        double particleWeight,
-                        uint64_t seed)
+    SpaceEmissionPhysics(Tessellation3D &grid,
+                         const std::shared_ptr<BoundaryCond> &boundary,
+                         std::vector<ComputationalCell3D> &cells,
+                         std::vector<Conserved3D> &conserved,
+                         const std::shared_ptr<EquationOfState> &eos,
+                         const std::shared_ptr<OpacityCalculator> &opacity,
+                         size_t photonsPerCell,
+                         double particleWeight,
+                         uint64_t seed)
         : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity),
-          center(center),
-          radius(radius),
-          isotropicEmission(isotropicEmission),
-          photonsPerEmitterCell(photonsPerEmitterCell),
+          photonsPerCell(photonsPerCell),
           particleWeight(particleWeight),
           lastEmittedCount(0),
           cycle(0),
@@ -138,15 +112,12 @@ public:
     {
         std::vector<Particle> particles;
         const size_t emitterCells = countEmitterCells();
-        particles.reserve(emitterCells * photonsPerEmitterCell);
+        particles.reserve(emitterCells * photonsPerCell);
 
         const size_t N = this->grid.GetPointNo();
         for(size_t i = 0; i < N; i++)
         {
-            if(!isEmitterCell(i))
-                continue;
-
-            for(size_t j = 0; j < photonsPerEmitterCell; j++)
+            for(size_t j = 0; j < photonsPerCell; j++)
             {
                 Particle particle = generateSingleParticle(i, this->cells[i]);
                 particle.timeLeft = fullDt;
@@ -172,7 +143,7 @@ public:
 
         if(dt < 0)
         {
-            UniversalError eo("Negative time step in BallEmissionPhysics::step");
+            UniversalError eo("Negative time step in SpaceEmissionPhysics::step");
             eo.addEntry("timeIntersect", timeIntersect);
             eo.addEntry("timeLeft", timeLeftBefore);
             eo.addEntry("Particle", particle);
@@ -215,12 +186,6 @@ public:
         particle.location = particle.location * (1.0 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
 
         Vector3D direction = randomUnitVector();
-        if(!isotropicEmission)
-        {
-            const Vector3D radial = particle.location - center;
-            if(abs(radial) > radius * 1e-8 && ScalarProd(direction, radial) < 0.0)
-                direction *= -1.0;
-        }
 
         particle.velocity = direction * units::clight;
         particle.timeLeft = 0.0;
@@ -229,12 +194,7 @@ public:
 
     size_t countEmitterCells() const
     {
-        size_t count = 0;
-        const size_t N = this->grid.GetPointNo();
-        for(size_t i = 0; i < N; i++)
-            if(isEmitterCell(i))
-                count++;
-        return count;
+        return this->grid.GetPointNo();
     }
 
     size_t getLastEmittedCount() const
@@ -243,12 +203,6 @@ public:
     }
 
 private:
-    bool isEmitterCell(size_t i) const
-    {
-        const Vector3D point = this->grid.GetCellCM(i);
-        return abs(point - center) <= radius;
-    }
-
     Vector3D randomUnitVector() const
     {
         const double z = 2.0 * dist(rng) - 1.0;
@@ -257,10 +211,7 @@ private:
         return Vector3D(r * std::cos(phi), r * std::sin(phi), z);
     }
 
-    Vector3D center;
-    double radius;
-    bool isotropicEmission;
-    size_t photonsPerEmitterCell;
+    size_t photonsPerCell;
     double particleWeight;
     size_t lastEmittedCount;
     size_t cycle;
@@ -315,9 +266,9 @@ int main(int argc, char *argv[])
 
     try
     {
-        ArgumentParser arguments("Ball emission benchmark");
+        ArgumentParser arguments("Space emission benchmark");
         arguments.addPositional<size_t>("N_base", 20000, "number of background mesh points");
-        arguments.addPositional<size_t>("photons_per_emitter_cell", 10, "photons emitted from each emitter cell per cycle");
+        arguments.addPositional<size_t>("photons_per_cell", 10, "photons emitted from each cell per cycle");
         arguments.addPositional<size_t>("steps", 20, "number of benchmark cycles");
 
         arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
@@ -335,10 +286,6 @@ int main(int argc, char *argv[])
 
         arguments.addOption<double>("dt", 1e-10, "step size in seconds");
         arguments.addOption<double>("domain-size", 10.0, "side length of the cubic domain");
-        arguments.addOption<double>("radius", 1.5, "emitting ball radius");
-        arguments.addOption<std::string>("direction-mode", "isotropic", "emission direction mode")
-            .choices({"outward", "isotropic"})
-            .flagAlias("isotropic", "isotropic");
         arguments.addOption<double>("weight", 1.0, "particle weight");
         arguments.addOption<std::string>("profiling-dir", "", "directory for per-rank cell profiling output");
 
@@ -363,16 +310,12 @@ int main(int argc, char *argv[])
         }
 
         size_t N_base = arguments.get<size_t>("N_base");
-        size_t photonsPerEmitterCell = arguments.get<size_t>("photons_per_emitter_cell");
+        size_t photonsPerCell = arguments.get<size_t>("photons_per_cell");
         size_t steps = arguments.get<size_t>("steps");
         double domainSize = arguments.get<double>("domain-size");
-        double ballRadius = arguments.get<double>("radius");
         double dt = arguments.get<double>("dt");
         double particleWeight = arguments.get<double>("weight");
         std::string profilingDir = arguments.get<std::string>("profiling-dir");
-
-        std::string directionMode = arguments.get<std::string>("direction-mode");
-        bool isotropicEmission = directionMode == "isotropic";
 
         enum ManagerKind
         {
@@ -402,12 +345,8 @@ int main(int argc, char *argv[])
         if(rank == 0)
         {
             const size_t backgroundPoints = N_base;
-            // const size_t shellPoints = N_base / 5;
 
             points = RandRectangular(backgroundPoints, ll, ur);
-            // std::vector<Vector3D> sourceShell =
-            //     RandSphereR(shellPoints, ll, ur, ballRadius, 2.0 * ballRadius, center);
-            // points.insert(points.end(), sourceShell.begin(), sourceShell.end());
 
             if(static_cast<rank_t>(points.size()) < ws)
             {
@@ -417,8 +356,7 @@ int main(int argc, char *argv[])
             }
 
             std::cout << "Generated " << points.size() << " mesh points"
-                      << " (background=" << backgroundPoints
-                      // << ", shell=" << shellPoints << ")" << std::endl;
+                      << " (background=" << backgroundPoints << ")"
                       << std::endl;
         }
 
@@ -450,12 +388,11 @@ int main(int argc, char *argv[])
 
         auto eosPtr = std::make_shared<IdealGas>(eos);
         auto opacity = std::make_shared<TransparentOpacity>();
-        auto boundary = std::make_shared<VacuumBoundary<Vector3D, Tessellation3D>>(tess);
+        auto boundary = std::make_shared<RigidBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
-        auto physics = std::make_shared<BallEmissionPhysics>(
+        auto physics = std::make_shared<SpaceEmissionPhysics>(
             tess, boundary, cells, extensives, eosPtr, opacity,
-            center, ballRadius, isotropicEmission,
-            photonsPerEmitterCell, particleWeight,
+            photonsPerCell, particleWeight,
             static_cast<uint64_t>(12345 + 7919 * rank));
         auto popControl = std::make_shared<IdentityPopulationControl<Vector3D, Tessellation3D>>(tess);
 
@@ -464,15 +401,14 @@ int main(int argc, char *argv[])
         if(globalEmitterCells == 0)
         {
             if(rank == 0)
-                std::cerr << "ERROR: no cell centers landed inside the emitting ball."
-                          << " Increase N_base or --radius." << std::endl;
+                std::cerr << "ERROR: no emitter cells found. Increase N_base." << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
 
         MonteCarloConfig config;
         config.holdSmallIdleFlushes = true;
         config.transferDiagnosticsLevel = MonteCarloTransferDiagnosticsLevel::Off;
-        config.initialBufferSize = std::max<size_t>(5000, globalEmitterCells * photonsPerEmitterCell / std::max<rank_t>(1, ws));
+        config.initialBufferSize = std::max<size_t>(5000, globalEmitterCells * photonsPerCell / std::max<rank_t>(1, ws));
         config.minimalBuffSize = std::max<size_t>(50, config.initialBufferSize / 10);
 
         std::shared_ptr<MonteCarloManager3D> manager;
@@ -497,15 +433,15 @@ int main(int argc, char *argv[])
 
         if(rank == 0)
         {
-            std::cout << "Ball emission benchmark:"
+            std::cout << "Space emission benchmark:"
                       << " manager=" << managerName
                       << ", ranks=" << ws
                       << ", local cells(rank0)=" << initialLocalCells
                       << ", emitter cells=" << globalEmitterCells
-                      << ", photons/emitter/cycle=" << photonsPerEmitterCell
-                      << ", emitted/cycle=" << globalEmitterCells * photonsPerEmitterCell
-                      << ", radius=" << ballRadius
-                      << ", direction=" << directionMode
+                      << ", photons/cell/cycle=" << photonsPerCell
+                      << ", emitted/cycle=" << globalEmitterCells * photonsPerCell
+                      << ", boundary=rigid"
+                      << ", direction=isotropic"
                       << ", domain=[" << -halfDomain << "," << halfDomain << "]^3"
                       << ", dt=" << dt
                       << ", steps=" << steps
@@ -522,6 +458,7 @@ int main(int argc, char *argv[])
             auto stepStart = std::chrono::high_resolution_clock::now();
             particles = manager->step(std::move(particles), cells, dt);
             auto stepEnd = std::chrono::high_resolution_clock::now();
+            // particles.clear();
 
             const double localStepWall = std::chrono::duration<double>(stepEnd - stepStart).count();
             const double stepWall = GlobalMax(localStepWall);
@@ -539,47 +476,6 @@ int main(int argc, char *argv[])
                           << "  remaining=" << remaining
                           << "  step_wall(max)=" << stepWall << "s"
                           << std::endl;
-            }
-
-            if(cycle == 1)
-            {
-                MPI_Barrier(MPI_COMM_WORLD);
-                const std::vector<size_t> &cellSteps = manager->GetCellsStepsCounters();
-                const std::vector<double> weights = BuildCellStepWeights(tess, cellSteps);
-                const size_t localWeightSum =
-                    std::accumulate(cellSteps.cbegin(), cellSteps.cend(), static_cast<size_t>(0));
-                const size_t globalWeightSum = GlobalSum(localWeightSum);
-
-                auto lbStart = std::chrono::high_resolution_clock::now();
-                if(rank == 0)
-                {
-                    std::cout << "Running one load balance after cycle 2"
-                              << " using cell call counters as weights"
-                              << " (total calls=" << globalWeightSum << ")"
-                              << std::endl;
-                }
-
-                tess.Rebalance(weights);
-                MPI_exchange_data(tess, extensives, false);
-                MPI_exchange_data(tess, cells, false);
-                UpdateNewCellsAfterExchange(tess, particles);
-                for(Particle3D &particle : particles)
-                    particle.cellID = cells[particle.cellIndex].ID;
-                MPI_Barrier(MPI_COMM_WORLD);
-
-                const double localLbWall =
-                    std::chrono::duration<double>(
-                        std::chrono::high_resolution_clock::now() - lbStart).count();
-                const double lbWall = GlobalMax(localLbWall);
-                const size_t remainingAfterLb = GlobalSum(particles.size());
-                if(rank == 0)
-                {
-                    std::cout << "Single load balance complete:"
-                              << " local cells(rank0)=" << tess.GetPointNo()
-                              << ", remaining=" << remainingAfterLb
-                              << ", lb_wall(max)=" << lbWall << "s"
-                              << std::endl;
-                }
             }
         }
 
