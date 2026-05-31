@@ -642,6 +642,9 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         // this loop must be serial b/c CG is an iterative method
 
         sub_p = sub_r;
+        double max0_factor = 4e-5;
+        if(ENERGY_GROUPS_NUM > 1)
+            max0_factor *= 3;
         double max_sub_x = 0;
         double error = std::numeric_limits<double>::max();
         bool print = false;//rank == 0 && time >  136.97915 && time <  136.98;
@@ -749,9 +752,9 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             bool any_fixed_local = false;
             for(size_t j = 0; j < Nlocal; ++j)
             {
-                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5))))
+                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5))))
                 {
-                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 2e-5)));
+                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5)));
                     max_loc1 = j;
                 }
                 if(sub_x[j] < -max_sub_x * 1e-10)
@@ -768,9 +771,9 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                         max_data[2].val = 1;
                     }
                 }
-                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 4e-5))
+                if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor))
                 {
-                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * 4e-5);
+                    max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor);
                     max_loc0 = j;
                 }
             }
