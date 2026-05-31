@@ -37,6 +37,8 @@ public:
         return DDMCBoundaryFaceBehavior::ReflectingRigid;
     }
 
+    void SetTemperature(double temp) { temperature = temp; }
+
 private:
     const std::vector<ComputationalCell3D> &cells;
     double temperature;
@@ -89,7 +91,6 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
         double absU = abs(u);
         if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
         {
-            // intersects this face
             normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
@@ -98,18 +99,18 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
                     return MonteCarloParticleStatus::REMOVE;
                 }
             }
-            const double signedDistance = ScalarProd(particle.location - onFace, normal);
-            particle.location -= 2 * signedDistance * normal;
+            const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
+            particle.location -= 2 * unsignedDistance * normal;
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
             const T &center = this->grid.GetMeshPoint(particle.cellIndex);
             constexpr double nudge = 1e-6;
             particle.location = particle.location * (1 - nudge) + nudge * center;
             status = MonteCarloParticleStatus::REFLECT;
-            return status;
         }
     }
+    if(status == MonteCarloParticleStatus::REFLECT)
+        return status;
 
-    // should not reach here
     std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
     exit(1);
 }

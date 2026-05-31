@@ -136,8 +136,8 @@ MonteCarloParticleStatus MovingSideTemperature<T, Grid>::apply(MonteCarloParticl
                 if (std::abs(particle.location.x - ll.x) < std::abs(ur.x - particle.location.x))
                     return MonteCarloParticleStatus::REMOVE;
             }
-            const double signedDistance = ScalarProd(particle.location - onFace, normal);
-            particle.location -= 2 * signedDistance * normal;
+            const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
+            particle.location -= 2 * unsignedDistance * normal;
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
             const T &center = this->grid.GetMeshPoint(particle.cellIndex);
             constexpr double nudge = 1e-6;

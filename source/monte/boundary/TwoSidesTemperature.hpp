@@ -102,15 +102,14 @@ MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<
         double absU = abs(u);
         if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
         {
-            // intersects this face
             normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
                 return MonteCarloParticleStatus::REMOVE;
             }
             reflectsHad++;
-            const double signedDistance = ScalarProd(particle.location - onFace, normal);
-            particle.location -= 2 * signedDistance * normal;
+            const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
+            particle.location -= 2 * unsignedDistance * normal;
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
         }
     }
@@ -126,7 +125,6 @@ MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<
         return MonteCarloParticleStatus::REFLECT;    
     }
 
-    // should not reach here
     UniversalError eo("Particle is not on any boundary");
     eo.addEntry("Particle", particle);
     throw eo;

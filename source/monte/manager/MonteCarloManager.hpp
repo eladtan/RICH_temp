@@ -1027,22 +1027,46 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                        !this->grid.IsPointInCell(particle.location, particle.cellIndex))))
                     {
                         auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
-                        UniversalError eo("MonteCarloManager: particle outside box before physics step");
-                        eo.addEntry("Rank", this->rank_world);
-                        eo.addEntry("Particle before step", particle);
-                        eo.addEntry("Location before step", beforeStepLocation);
-                        eo.addEntry("Velocity before step", beforeStepVelocity);
-                        eo.addEntry("Time left before step", beforeStepTimeLeft);
-                        eo.addEntry("Box lower", boxLL);
-                        eo.addEntry("Box upper", boxUR);
-                        eo.addEntry("Cell count", this->Ncells);
-                        if(particle.cellIndex < this->Ncells)
+                        constexpr double clampTol = 1e-13;
+                        T boxSize = boxUR - boxLL;
+                        T clamped = particle.location;
+                        clamped.x = std::max(boxLL.x, std::min(boxUR.x, clamped.x));
+                        clamped.y = std::max(boxLL.y, std::min(boxUR.y, clamped.y));
+                        clamped.z = std::max(boxLL.z, std::min(boxUR.z, clamped.z));
+                        T drift = particle.location - clamped;
+                        double relDrift = abs(drift) / abs(boxSize);
+                        if(relDrift < clampTol)
                         {
-                            eo.addEntry("Cell index", particle.cellIndex);
-                            eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
-                            eo.addEntry("Inside declared cell before step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            particle.location = clamped;
+                            constexpr double inwardNudge = 1e-10;
+                            particle.location.x += (particle.location.x <= boxLL.x ? inwardNudge * boxSize.x :
+                                                    (particle.location.x >= boxUR.x ? -inwardNudge * boxSize.x : 0.0));
+                            particle.location.y += (particle.location.y <= boxLL.y ? inwardNudge * boxSize.y :
+                                                    (particle.location.y >= boxUR.y ? -inwardNudge * boxSize.y : 0.0));
+                            particle.location.z += (particle.location.z <= boxLL.z ? inwardNudge * boxSize.z :
+                                                    (particle.location.z >= boxUR.z ? -inwardNudge * boxSize.z : 0.0));
+                            particle.cellIndex = this->grid.GetContainingCell(particle.location);
                         }
-                        throw eo;
+                        else
+                        {
+                            UniversalError eo("MonteCarloManager: particle outside box before physics step");
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Particle before step", particle);
+                            eo.addEntry("Location before step", beforeStepLocation);
+                            eo.addEntry("Velocity before step", beforeStepVelocity);
+                            eo.addEntry("Time left before step", beforeStepTimeLeft);
+                            eo.addEntry("Box lower", boxLL);
+                            eo.addEntry("Box upper", boxUR);
+                            eo.addEntry("Relative drift", relDrift);
+                            eo.addEntry("Cell count", this->Ncells);
+                            if(particle.cellIndex < this->Ncells)
+                            {
+                                eo.addEntry("Cell index", particle.cellIndex);
+                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                                eo.addEntry("Inside declared cell before step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            }
+                            throw eo;
+                        }
                     }
                     MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
                     if(BOOST_UNLIKELY(functionality.change != MonteCarloParticleStatus::REMOVE &&
@@ -1052,24 +1076,48 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                        !this->grid.IsPointInCell(particle.location, particle.cellIndex))))
                     {
                         auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
-                        UniversalError eo("MonteCarloManager: physics step moved particle outside the box");
-                        eo.addEntry("Rank", this->rank_world);
-                        eo.addEntry("Particle after step", particle);
-                        eo.addEntry("Functionality", MonteCarloParticleStatusToString(functionality.change));
-                        eo.addEntry("Next cell index", functionality.nextCellIndex);
-                        eo.addEntry("Location before step", beforeStepLocation);
-                        eo.addEntry("Velocity before step", beforeStepVelocity);
-                        eo.addEntry("Time left before step", beforeStepTimeLeft);
-                        eo.addEntry("Box lower", boxLL);
-                        eo.addEntry("Box upper", boxUR);
-                        eo.addEntry("Cell count", this->Ncells);
-                        if(particle.cellIndex < this->Ncells)
+                        constexpr double clampTol = 1e-8;
+                        T boxSize = boxUR - boxLL;
+                        T clamped = particle.location;
+                        clamped.x = std::max(boxLL.x, std::min(boxUR.x, clamped.x));
+                        clamped.y = std::max(boxLL.y, std::min(boxUR.y, clamped.y));
+                        clamped.z = std::max(boxLL.z, std::min(boxUR.z, clamped.z));
+                        T drift = particle.location - clamped;
+                        double relDrift = abs(drift) / abs(boxSize);
+                        if(relDrift < clampTol)
                         {
-                            eo.addEntry("Cell index", particle.cellIndex);
-                            eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
-                            eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            particle.location = clamped;
+                            constexpr double inwardNudge = 1e-10;
+                            particle.location.x += (particle.location.x <= boxLL.x ? inwardNudge * boxSize.x :
+                                                    (particle.location.x >= boxUR.x ? -inwardNudge * boxSize.x : 0.0));
+                            particle.location.y += (particle.location.y <= boxLL.y ? inwardNudge * boxSize.y :
+                                                    (particle.location.y >= boxUR.y ? -inwardNudge * boxSize.y : 0.0));
+                            particle.location.z += (particle.location.z <= boxLL.z ? inwardNudge * boxSize.z :
+                                                    (particle.location.z >= boxUR.z ? -inwardNudge * boxSize.z : 0.0));
+                            particle.cellIndex = this->grid.GetContainingCell(particle.location);
                         }
-                        throw eo;
+                        else
+                        {
+                            UniversalError eo("MonteCarloManager: physics step moved particle outside the box");
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Particle after step", particle);
+                            eo.addEntry("Functionality", MonteCarloParticleStatusToString(functionality.change));
+                            eo.addEntry("Next cell index", functionality.nextCellIndex);
+                            eo.addEntry("Location before step", beforeStepLocation);
+                            eo.addEntry("Velocity before step", beforeStepVelocity);
+                            eo.addEntry("Time left before step", beforeStepTimeLeft);
+                            eo.addEntry("Box lower", boxLL);
+                            eo.addEntry("Box upper", boxUR);
+                            eo.addEntry("Relative drift", relDrift);
+                            eo.addEntry("Cell count", this->Ncells);
+                            if(particle.cellIndex < this->Ncells)
+                            {
+                                eo.addEntry("Cell index", particle.cellIndex);
+                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                                eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            }
+                            throw eo;
+                        }
                     }
 
                     if(particle.on_track)

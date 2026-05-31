@@ -42,6 +42,7 @@ template<typename T, typename Grid>
 MonteCarloParticleStatus RigidBoundaryCondition<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
+    MonteCarloParticleStatus status;
     for(const typename Grid::Face_T &face : faces)
     {
         const T &onFace = face.vertices[0];
@@ -52,16 +53,17 @@ MonteCarloParticleStatus RigidBoundaryCondition<T, Grid>::apply(MonteCarloPartic
         if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
         {
             normal /= abs(normal);
-            const double signedDistance = ScalarProd(particle.location - onFace, normal);
-            particle.location -= 2 * signedDistance * normal;
+            const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
+            particle.location -= 2 * unsignedDistance * normal;
             particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
             const T &center = this->grid.GetMeshPoint(particle.cellIndex);
             constexpr double nudge = 1e-6;
             particle.location = particle.location * (1 - nudge) + nudge * center;
-            return MonteCarloParticleStatus::REFLECT;
+            status = MonteCarloParticleStatus::REFLECT;
         }
     }
-
+    if(status == MonteCarloParticleStatus::REFLECT)
+        return status;
     std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
     exit(1);
 }
