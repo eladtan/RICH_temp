@@ -80,22 +80,12 @@ void HilbertLoadBalancer::rebalance(const std::vector<Vector3D> &points, const s
         indices.push_back(this->convertor->xyz2d((*this->indexing)(point)));
     }
 
-    int dont_do_weights = (weights.empty() and std::all_of(weights.cbegin(), weights.cend(), [&weights](const double &x){return x == weights[0];}))? 1 : 0;
-    MPI_Allreduce(MPI_IN_PLACE, &dont_do_weights, 1, MPI_INT, MPI_MAX, this->comm);
     if(this->rank == 0)
     {
         std::cout << "Running rebalancing" << std::endl;
     }
-    if(dont_do_weights)
-    {
-        // responsibilityRange = getBorders(indices);
-        this->boundaries = getWeightedBorders2(indices, std::vector<double>(points.size(), 1.0));
-    }
-    else
-    {
         // responsibilityRange = getWeightedBorders(indices, weights);
-        this->boundaries = getWeightedBorders2(indices, weights);
-    }
+    this->boundaries = getWeightedBorders2(indices, weights);
 }
 
 curve_index_t HilbertLoadBalancer::getCurveIndex(const Vector3D &point) const
