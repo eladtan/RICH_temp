@@ -12,6 +12,7 @@ import os
 
 debug = ARGUMENTS.get('debug',0)
 compiler = ARGUMENTS.get('compiler','g++')
+montecarlo_polarization = ARGUMENTS.get('montecarlo_polarization',0)
 
 linkflags = ''
 if compiler=='g++':
@@ -43,6 +44,8 @@ elif compiler=='mpiCC':
         cflags += ' -O3 -march=native'
 else:
     raise NameError('unsupported compiler')
+if int(montecarlo_polarization):
+    cflags += ' -DMONTECARLO_POLARIZATION'
 if compiler=='profile':
 	compiler = 'g++'
 
