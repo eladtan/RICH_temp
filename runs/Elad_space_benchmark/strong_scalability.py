@@ -8,16 +8,22 @@ import re
 import statistics
 import sys
 from collections import defaultdict
+from datetime import datetime
 
 
 RDMA_COLOR = "tab:blue"
 P2P_COLOR = "tab:red"
+AXIS_LABEL_SIZE = 14
+TICK_LABEL_SIZE = 12
+TITLE_SIZE = 16
+LEGEND_SIZE = 12
+IDEAL_LINE_ALPHA = 0.6
 
 
 class Run:
     def __init__(self, nprocs, job_id, filepath, total_time, is_p2p,
                  manager="", steps=0, dt=0.0, emitted_per_cycle=0,
-                 cycle_count=0, time_source="total"):
+                 cycle_count=0, time_source="total", run_date=""):
         self.nprocs = nprocs
         self.job_id = job_id
         self.filepath = filepath
@@ -29,6 +35,7 @@ class Run:
         self.emitted_per_cycle = emitted_per_cycle
         self.cycle_count = cycle_count
         self.time_source = time_source
+        self.run_date = run_date
 
 
 def parse_args():
@@ -144,6 +151,22 @@ def parse_float(meta, key, default=0.0):
         return default
 
 
+def format_file_date(filepath):
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return ""
+
+
+def format_group_dates(runs):
+    dates = sorted({run.run_date for run in runs if run.run_date})
+    if not dates:
+        return ""
+    if dates[0] == dates[-1]:
+        return dates[0]
+    return f"{dates[0]}..{dates[-1]}"
+
+
 def find_runs(directory, include_p2p=False, sum_cycles=None):
     pattern = os.path.join(directory, "space_SS_*.out")
     files = glob.glob(pattern)
@@ -187,6 +210,7 @@ def find_runs(directory, include_p2p=False, sum_cycles=None):
             emitted_per_cycle=parse_int(meta, "emitted/cycle"),
             cycle_count=cycle_count,
             time_source=time_source,
+            run_date=format_file_date(filepath),
         )
         if is_p2p:
             p2p_runs.append(run)
@@ -230,6 +254,7 @@ def aggregate_runs(runs, selector):
                 emitted_per_cycle=template.emitted_per_cycle,
                 cycle_count=template.cycle_count,
                 time_source=template.time_source,
+                run_date=format_group_dates(group),
             ))
     return selected
 
@@ -265,6 +290,28 @@ def require_matplotlib():
     return plt
 
 
+def format_log_seconds(value, _pos=None):
+    if value >= 10:
+        return f"{value:g}"
+    return f"{value:.1g}"
+
+
+def style_axis_text(ax, title=None):
+    ax.xaxis.label.set_size(AXIS_LABEL_SIZE)
+    ax.yaxis.label.set_size(AXIS_LABEL_SIZE)
+    ax.tick_params(axis="both", which="major", labelsize=TICK_LABEL_SIZE)
+    ax.tick_params(axis="both", which="minor", labelsize=TICK_LABEL_SIZE)
+    if title is not None:
+        ax.set_title(title, fontsize=TITLE_SIZE)
+
+
+def style_legend(ax):
+    legend = ax.legend(fontsize=LEGEND_SIZE)
+    if legend is not None:
+        for text in legend.get_texts():
+            text.set_fontsize(LEGEND_SIZE)
+
+
 def p2p_acceleration_by_nprocs(p2p_runs):
     return {run.nprocs: run.total_time for run in p2p_runs}
 
@@ -283,7 +330,10 @@ def print_table(title, runs, p2p_times=None):
         return
 
     print(title)
-    columns = ["Processors", "Job", "Time(s)", "Measure", "Manager", "Steps", "dt", "Emitted/cyc"]
+    columns = [
+        "Processors", "Job", "Run date", "Time(s)", "Measure", "Manager",
+        "Steps", "dt", "Emitted/cyc",
+    ]
     if p2p_times:
         columns.append("P2P/RDMA")
     columns.append("File")
@@ -292,6 +342,7 @@ def print_table(title, runs, p2p_times=None):
         row = [
             str(run.nprocs),
             str(run.job_id),
+            run.run_date,
             f"{run.total_time:.6g}",
             run.time_source,
             run.manager,
@@ -374,8 +425,8 @@ def plot_total_times(ax, runs, label, marker, linestyle, color=None):
 
 def measurement_label(args):
     if args.sum is not None:
-        return f"Last {args.sum} cycles step wall sum (s)"
-    return "Wall time (s)"
+        return f"Wallclock time of last {args.sum} cycles (s)"
+    return "Wallclock time (s)"
 
 
 def add_ideal_line(ax, runs, label, fit_A=False, color="gray", linestyle="--"):
@@ -387,6 +438,7 @@ def add_ideal_line(ax, runs, label, fit_A=False, color="gray", linestyle="--"):
     x = linspace(min(nprocs), max(nprocs), 200)
     fit_label = "fit" if fit_A else "ref"
     ax.plot(x, [A / xi for xi in x], linestyle=linestyle, color=color,
+            alpha=IDEAL_LINE_ALPHA,
             label=f"{label} ideal strong scaling {fit_label} (A={A:.0f})")
     return A
 
@@ -405,7 +457,8 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
         ax.plot(nprocs, speedups, marker=marker, linestyle=linestyle,
                 label=label, markersize=5, color=color)
         x = linspace(nprocs[0], nprocs[-1], 200)
-        ax.plot(x, [xi / base.nprocs for xi in x], "--", color=color, alpha=0.7)
+        ax.plot(x, [xi / base.nprocs for xi in x], "--", color=color,
+                alpha=IDEAL_LINE_ALPHA)
         all_ticks.update(nprocs)
 
     add_series(rdma_runs, "RDMA speedup", "o", "-", RDMA_COLOR)
@@ -413,10 +466,10 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel("Speedup")
-    ax.set_title("Space benchmark strong-scaling speedup")
+    style_axis_text(ax, "Space benchmark strong-scaling speedup")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", alpha=0.15)
-    ax.legend()
+    style_legend(ax)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log", base=2)
     import matplotlib.ticker as ticker
@@ -457,22 +510,31 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel(measurement_label(args))
-    ax.set_title("Space benchmark strong scaling")
+    style_axis_text(ax, "Space benchmark strong scaling")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", alpha=0.15)
-    ax.legend()
+    style_legend(ax)
     ax.set_xscale("log", base=2)
     ax.set_yscale("log")
     import matplotlib.ticker as ticker
-    ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=range(2, 10), numticks=20))
+    ax.yaxis.set_major_locator(
+        ticker.LogLocator(base=10, subs=(1.0, 2.0, 5.0), numticks=30)
+    )
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(format_log_seconds))
+    ax.yaxis.set_minor_locator(
+        ticker.LogLocator(base=10, subs=(3.0, 4.0, 6.0, 7.0, 8.0, 9.0),
+                          numticks=30)
+    )
     ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+    ax.tick_params(axis="y", which="major", length=7)
+    ax.tick_params(axis="y", which="minor", length=4)
     shown_times = [r.total_time for r in rdma_runs]
     shown_times.extend(r.total_time for r in p2p_runs)
     if shown_times:
         min_time = min(shown_times)
         max_time = max(shown_times)
-        ymin = args.ymin if args.ymin is not None else min_time * 0.5
-        ymax = args.ymax if args.ymax is not None else max_time * 1.75
+        ymin = args.ymin if args.ymin is not None else min_time * 0.75
+        ymax = args.ymax if args.ymax is not None else max_time * 1.35
         ax.set_ylim(ymin, ymax)
     if all_ticks:
         ax.set_xticks(sorted(all_ticks))
@@ -511,9 +573,9 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_xlabel("Number of processors")
         ax2.set_ylabel("Deviation from ideal (%)")
-        ax2.set_title("Space benchmark deviation from ideal strong scaling")
+        style_axis_text(ax2, "Space benchmark deviation from ideal strong scaling")
         ax2.grid(True, alpha=0.3)
-        ax2.legend()
+        style_legend(ax2)
         ax2.set_xscale("log", base=2)
         if all_ticks:
             ax2.set_xticks(sorted(all_ticks))

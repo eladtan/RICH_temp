@@ -7,10 +7,18 @@ import re
 import statistics
 import sys
 from collections import defaultdict
+from datetime import datetime
 
 
 RDMA_COLOR = "tab:blue"
 P2P_COLOR = "tab:red"
+AXIS_LABEL_SIZE = 14
+TICK_LABEL_SIZE = 12
+TITLE_SIZE = 16
+LEGEND_SIZE = 12
+IDEAL_LINE_ALPHA = 0.6
+WEAK_TIME_YMIN = 20.0
+WEAK_TIME_YMAX = 40.0
 
 
 class Run:
@@ -18,7 +26,8 @@ class Run:
                  manager="", steps=0, dt=0.0, nbase=0, nball=0,
                  emitted_per_cycle=0, photons_per_emitter=0,
                  radius=0.0, target_emitters=0, cycle_count=0,
-                 time_source="total", direction="", last_avg_particle_steps=0.0):
+                 time_source="total", direction="", last_avg_particle_steps=0.0,
+                 run_date=""):
         self.nprocs = nprocs
         self.job_id = job_id
         self.filepath = filepath
@@ -37,6 +46,7 @@ class Run:
         self.time_source = time_source
         self.direction = direction
         self.last_avg_particle_steps = last_avg_particle_steps
+        self.run_date = run_date
 
 
 def parse_args():
@@ -109,6 +119,22 @@ def parse_key_value_meta(text):
         key, value = part.strip().split("=", 1)
         meta[key.strip()] = value.strip()
     return meta
+
+
+def format_file_date(filepath):
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return ""
+
+
+def format_group_dates(runs):
+    dates = sorted({run.run_date for run in runs if run.run_date})
+    if not dates:
+        return ""
+    if dates[0] == dates[-1]:
+        return dates[0]
+    return f"{dates[0]}..{dates[-1]}"
 
 
 def parse_run_time(filepath, sum_cycles=None):
@@ -268,6 +294,7 @@ def find_runs(directory, include_p2p=False, sum_cycles=None):
             time_source=time_source,
             direction=meta.get("direction", ""),
             last_avg_particle_steps=parse_float(meta, "last avg particle steps"),
+            run_date=format_file_date(filepath),
         )
         if is_p2p:
             p2p_runs.append(run)
@@ -322,6 +349,7 @@ def aggregate_runs(runs, selector):
                     if selector == "median"
                     else statistics.mean(r.last_avg_particle_steps for r in group)
                 ),
+                run_date=format_group_dates(group),
             ))
     return selected
 
@@ -349,6 +377,22 @@ def require_matplotlib():
     return plt
 
 
+def style_axis_text(ax, title=None):
+    ax.xaxis.label.set_size(AXIS_LABEL_SIZE)
+    ax.yaxis.label.set_size(AXIS_LABEL_SIZE)
+    ax.tick_params(axis="both", which="major", labelsize=TICK_LABEL_SIZE)
+    ax.tick_params(axis="both", which="minor", labelsize=TICK_LABEL_SIZE)
+    if title is not None:
+        ax.set_title(title, fontsize=TITLE_SIZE)
+
+
+def style_legend(ax):
+    legend = ax.legend(fontsize=LEGEND_SIZE)
+    if legend is not None:
+        for text in legend.get_texts():
+            text.set_fontsize(LEGEND_SIZE)
+
+
 def reference_run(runs, base=None):
     if not runs:
         return None
@@ -364,10 +408,10 @@ def reference_run(runs, base=None):
 
 def measurement_label(args):
     if args.sum is None:
-        return "Wall time (s)"
+        return "Wallclock time (s)"
     if args.sum == 0:
-        return "All available cycles step wall sum (s)"
-    return f"Last {args.sum} cycles step wall sum (s)"
+        return "Wallclock time of all available cycles (s)"
+    return f"Wallclock time of last {args.sum} cycles (s)"
 
 
 def output_name(args):
@@ -401,7 +445,7 @@ def print_table(title, runs, tasks_per_node, p2p_times=None):
 
     print(title)
     columns = [
-        "Processors", "Nodes", "Job", "Time(s)", "Measure", "Manager",
+        "Processors", "Nodes", "Job", "Run date", "Time(s)", "Measure", "Manager",
         "Cells", "Photons/cell", "Steps", "dt",
         "Emitted/cyc", "AvgSteps(last)",
     ]
@@ -415,6 +459,7 @@ def print_table(title, runs, tasks_per_node, p2p_times=None):
             str(run.nprocs),
             f"{nodes:.3g}",
             str(run.job_id),
+            run.run_date,
             f"{run.total_time:.6g}",
             run.time_source,
             run.manager,
@@ -537,7 +582,9 @@ def add_nodes_axis(ax, tasks_per_node):
         functions=(lambda x: x / tasks_per_node,
                    lambda x: x * tasks_per_node),
     )
-    secax.set_xlabel("Number of nodes")
+    secax.set_xlabel("")
+    secax.set_xticks([])
+    secax.tick_params(axis="x", which="both", top=False, labeltop=False)
 
 
 def add_ticks(ax, runs, p2p_runs=None):
@@ -560,6 +607,7 @@ def add_ideal_weak_line(ax, runs, ref, label, color):
         return
     x = linspace(min(r.nprocs for r in runs), max(r.nprocs for r in runs), 200)
     ax.plot(x, [ref.total_time for _ in x], "--", color=color,
+            alpha=IDEAL_LINE_ALPHA,
             label=f"{label} ideal weak scaling (T={ref.total_time:.3g}s)")
 
 
@@ -581,9 +629,9 @@ def make_efficiency_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
                label="Ideal (100%)")
     ax.set_xlabel("Number of processors")
     ax.set_ylabel("Weak scaling efficiency (%)")
-    ax.set_title("Space benchmark weak-scaling efficiency")
+    style_axis_text(ax, "Space benchmark weak-scaling efficiency")
     ax.grid(True, alpha=0.3)
-    ax.legend()
+    style_legend(ax)
     ax.set_xscale("log", base=2)
     add_ticks(ax, rdma_runs, p2p_runs)
     add_nodes_axis(ax, args.tasks_per_node)
@@ -624,20 +672,25 @@ def make_total_time_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel(measurement_label(args))
-    ax.set_title("Space benchmark weak scaling")
+    style_axis_text(ax, "Space benchmark weak scaling")
     ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.grid(True, which="minor", axis="y", alpha=0.15)
+    style_legend(ax)
     ax.set_xscale("log", base=2)
     add_ticks(ax, rdma_runs, p2p_runs)
     add_nodes_axis(ax, args.tasks_per_node)
 
+    import matplotlib.ticker as ticker
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(2))
+    ax.yaxis.set_minor_locator(ticker.MultipleLocator(1))
+    ax.tick_params(axis="y", which="major", length=7)
+    ax.tick_params(axis="y", which="minor", length=4)
+
     shown_times = [r.total_time for r in rdma_runs]
     shown_times.extend(r.total_time for r in p2p_runs)
     if shown_times:
-        min_time = min(shown_times)
-        max_time = max(shown_times)
-        ymin = args.ymin if args.ymin is not None else min_time * 0.25
-        ymax = args.ymax if args.ymax is not None else max_time * 1.75
+        ymin = args.ymin if args.ymin is not None else WEAK_TIME_YMIN
+        ymax = args.ymax if args.ymax is not None else WEAK_TIME_YMAX
         ax.set_ylim(ymin, ymax)
 
     plt.tight_layout()
@@ -672,9 +725,9 @@ def make_total_time_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_xlabel("Number of processors")
         ax2.set_ylabel("Deviation from ideal weak scaling (%)")
-        ax2.set_title("Space benchmark deviation from ideal weak scaling")
+        style_axis_text(ax2, "Space benchmark deviation from ideal weak scaling")
         ax2.grid(True, alpha=0.3)
-        ax2.legend()
+        style_legend(ax2)
         ax2.set_xscale("log", base=2)
         add_ticks(ax2, rdma_runs, p2p_runs)
         add_nodes_axis(ax2, args.tasks_per_node)
