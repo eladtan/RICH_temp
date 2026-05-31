@@ -215,6 +215,9 @@ private:
     size_t ddmcCensusCount = 0;
     size_t ddmcUpscatterCount = 0;
     size_t ddmcFallbackCount = 0;
+    size_t ddmcFallbackOutsideCellCount = 0;
+    size_t ddmcFallbackLeakFaceDistanceCount = 0;
+    size_t ddmcFallbackInvalidLeakFaceDistanceCount = 0;
 
     RadiationIMCPostProcessConfig postProcess_;
     std::shared_ptr<SphericalObserver> observer_;
@@ -223,6 +226,13 @@ private:
     void precomputeRandomWalkData();
     bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeDDMCData();
+
+    double computeMinSignedDistanceToAllCellFaces(size_t cellIndex,
+                                                  Vector3D const &location) const;
+    double computeDDMCGeometryTolerance(size_t cellIndex) const;
+    double computeMinDistanceToDDMCLeakFaces(size_t cellIndex,
+                                             Vector3D const &location,
+                                             DDMCCellData const &data) const;
 };
 
 #endif // RADIATION_IMC_HPP
