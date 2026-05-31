@@ -51,7 +51,7 @@ class Run:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot weak scaling for space benchmark runs."
+        description="Plot weak scaling for uniform benchmark runs."
     )
     parser.add_argument("--ignore", type=str, default="",
                         help="Comma-separated list of processor counts to ignore.")
@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--efficiency", action="store_true",
                         help="Plot weak-scaling efficiency T_ref / T(N).")
     parser.add_argument("--p2p", action="store_true",
-                        help="Include P2P files (space_WS_P2P_*) as an additional curve.")
+                        help="Include P2P files (uniform_WS_P2P_*) as an additional curve.")
     parser.add_argument("--sum", type=int, nargs="?", const=0, default=None, metavar="X",
                         help="Use per-cycle step_wall(max) timings instead of the final "
                              "total benchmark time. No value: sum all available cycles. "
@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument("--table-only", action="store_true",
                         help="Only parse files and print the selected run table; do not plot.")
     parser.add_argument("--dir", type=str, default=os.path.dirname(os.path.abspath(__file__)),
-                        help="Directory to search for space_WS_*.out files.")
+                        help="Directory to search for uniform_WS_*.out files.")
     args = parser.parse_args()
 
     if args.sum is not None and args.sum < 0:
@@ -145,7 +145,7 @@ def parse_run_time(filepath, sum_cycles=None):
         r"^Cycle\s+(\d+)\s+.*\bstep_wall\(max\)=([\d.eE+\-]+)s?"
     )
     avg_steps_re = re.compile(r"\bavg steps:\s*([\d.eE+\-]+)")
-    ball_meta_re = re.compile(r"^Space emission benchmark:\s*(.*)$")
+    ball_meta_re = re.compile(r"^Uniform emission benchmark:\s*(.*)$")
     weak_param_re = re.compile(
         r"^\s*(NBASE|NBALL|DT|SOURCE_RADIUS|TARGET_EMITTERS|EMISSION_DIRECTION)=([\w.dE+\-]+)\s*$"
     )
@@ -244,11 +244,11 @@ def parse_run_time(filepath, sum_cycles=None):
 
 
 def find_runs(directory, include_p2p=False, sum_cycles=None):
-    pattern = os.path.join(directory, "space_WS_*.out")
+    pattern = os.path.join(directory, "uniform_WS_*.out")
     files = glob.glob(pattern)
 
-    regular_re = re.compile(r"space_WS_(\d+)_n(\d+)\.out$")
-    p2p_re = re.compile(r"space_WS_P2P_(\d+)_n(\d+)\.out$")
+    regular_re = re.compile(r"uniform_WS_(\d+)_n(\d+)\.out$")
+    p2p_re = re.compile(r"uniform_WS_P2P_(\d+)_n(\d+)\.out$")
 
     rdma_runs = []
     p2p_runs = []
@@ -360,7 +360,7 @@ def aggregate_for_line(runs, selector):
     return aggregate_runs(runs, selector)
 
 
-def linspace(start, stop, num=200):
+def linuniform(start, stop, num=200):
     if num <= 1 or start == stop:
         return [start]
     step = (stop - start) / float(num - 1)
@@ -418,12 +418,12 @@ def output_name(args):
     if args.output:
         return args.output
     if args.efficiency:
-        return "space_weak_scalability_efficiency.png"
+        return "uniform_weak_scalability_efficiency.png"
     if args.sum is not None:
-        return "space_weak_scalability_sum.png"
+        return "uniform_weak_scalability_sum.png"
     if args.optimal:
-        return "space_weak_scalability_optimal.png"
-    return "space_weak_scalability.png"
+        return "uniform_weak_scalability_optimal.png"
+    return "uniform_weak_scalability.png"
 
 
 def p2p_acceleration_by_nprocs(p2p_runs):
@@ -605,7 +605,7 @@ def plot_time_series(ax, runs, label, marker, color):
 def add_ideal_weak_line(ax, runs, ref, label, color):
     if not runs or ref is None:
         return
-    x = linspace(min(r.nprocs for r in runs), max(r.nprocs for r in runs), 200)
+    x = linuniform(min(r.nprocs for r in runs), max(r.nprocs for r in runs), 200)
     ax.plot(x, [ref.total_time for _ in x], "--", color=color,
             alpha=IDEAL_LINE_ALPHA,
             label=f"{label} ideal weak scaling (T={ref.total_time:.3g}s)")
@@ -629,7 +629,7 @@ def make_efficiency_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
                label="Ideal (100%)")
     ax.set_xlabel("Number of processors")
     ax.set_ylabel("Weak scaling efficiency (%)")
-    style_axis_text(ax, "Space benchmark weak-scaling efficiency")
+    style_axis_text(ax, "Uniform benchmark weak-scaling efficiency")
     ax.grid(True, alpha=0.3)
     style_legend(ax)
     ax.set_xscale("log", base=2)
@@ -672,7 +672,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel(measurement_label(args))
-    style_axis_text(ax, "Space benchmark weak scaling")
+    style_axis_text(ax, "Uniform benchmark weak scaling")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", axis="y", alpha=0.15)
     style_legend(ax)
@@ -725,7 +725,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs, rdma_ref, p2p_ref):
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_xlabel("Number of processors")
         ax2.set_ylabel("Deviation from ideal weak scaling (%)")
-        style_axis_text(ax2, "Space benchmark deviation from ideal weak scaling")
+        style_axis_text(ax2, "Uniform benchmark deviation from ideal weak scaling")
         ax2.grid(True, alpha=0.3)
         style_legend(ax2)
         ax2.set_xscale("log", base=2)
@@ -755,7 +755,7 @@ def main():
     p2p_all = [r for r in p2p_all if r.nprocs not in ignore_set]
 
     if not rdma_all:
-        print("No completed space_WS_*.out files found. If jobs are incomplete, "
+        print("No completed uniform_WS_*.out files found. If jobs are incomplete, "
               "try --sum or --sum=X.", file=sys.stderr)
         sys.exit(1)
 

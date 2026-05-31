@@ -40,7 +40,7 @@ class Run:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot strong scaling for space benchmark runs."
+        description="Plot strong scaling for uniform benchmark runs."
     )
     parser.add_argument("--ignore", type=str, default="",
                         help="Comma-separated list of processor counts to ignore.")
@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument("--speedup", action="store_true",
                         help="Plot speedup (T_min_procs / T_N) with ideal scaling line.")
     parser.add_argument("--p2p", action="store_true",
-                        help="Include P2P files (space_SS_P2P_*) as an additional curve.")
+                        help="Include P2P files (uniform_SS_P2P_*) as an additional curve.")
     parser.add_argument("--sum", type=int, default=None, metavar="X",
                         help="Use the sum of the last X per-cycle step_wall(max) timings "
                              "instead of the final total benchmark time.")
@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument("--table-only", action="store_true",
                         help="Only parse files and print the selected run table; do not plot.")
     parser.add_argument("--dir", type=str, default=os.path.dirname(os.path.abspath(__file__)),
-                        help="Directory to search for space_SS_*.out files.")
+                        help="Directory to search for uniform_SS_*.out files.")
     args = parser.parse_args()
     if args.sum is not None and args.sum <= 0:
         parser.error("--sum must be a positive integer")
@@ -91,7 +91,7 @@ def parse_run_time(filepath, sum_cycles=None):
     cycle_re = re.compile(
         r"^Cycle\s+(\d+)\s+.*\bstep_wall\(max\)=([\d.eE+\-]+)s?"
     )
-    meta_re = re.compile(r"^Space emission benchmark:\s*(.*)$")
+    meta_re = re.compile(r"^Uniform emission benchmark:\s*(.*)$")
 
     total_time = None
     meta = {}
@@ -168,11 +168,11 @@ def format_group_dates(runs):
 
 
 def find_runs(directory, include_p2p=False, sum_cycles=None):
-    pattern = os.path.join(directory, "space_SS_*.out")
+    pattern = os.path.join(directory, "uniform_SS_*.out")
     files = glob.glob(pattern)
 
-    regular_re = re.compile(r"space_SS_(\d+)_n(\d+)\.out$")
-    p2p_re = re.compile(r"space_SS_P2P_(\d+)_n(\d+)\.out$")
+    regular_re = re.compile(r"uniform_SS_(\d+)_n(\d+)\.out$")
+    p2p_re = re.compile(r"uniform_SS_P2P_(\d+)_n(\d+)\.out$")
 
     rdma_runs = []
     p2p_runs = []
@@ -272,7 +272,7 @@ def fit_strong_scaling_A(nprocs_arr, times_arr):
     )
 
 
-def linspace(start, stop, num=200):
+def linuniform(start, stop, num=200):
     if num <= 1:
         return [start]
     step = (stop - start) / float(num - 1)
@@ -435,7 +435,7 @@ def add_ideal_line(ax, runs, label, fit_A=False, color="gray", linestyle="--"):
     nprocs = [r.nprocs for r in runs]
     times = [r.total_time for r in runs]
     A = fit_strong_scaling_A(nprocs, times) if fit_A else nprocs[0] * times[0]
-    x = linspace(min(nprocs), max(nprocs), 200)
+    x = linuniform(min(nprocs), max(nprocs), 200)
     fit_label = "fit" if fit_A else "ref"
     ax.plot(x, [A / xi for xi in x], linestyle=linestyle, color=color,
             alpha=IDEAL_LINE_ALPHA,
@@ -456,7 +456,7 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
         speedups = [base.total_time / r.total_time for r in runs]
         ax.plot(nprocs, speedups, marker=marker, linestyle=linestyle,
                 label=label, markersize=5, color=color)
-        x = linspace(nprocs[0], nprocs[-1], 200)
+        x = linuniform(nprocs[0], nprocs[-1], 200)
         ax.plot(x, [xi / base.nprocs for xi in x], "--", color=color,
                 alpha=IDEAL_LINE_ALPHA)
         all_ticks.update(nprocs)
@@ -466,7 +466,7 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel("Speedup")
-    style_axis_text(ax, "Space benchmark strong-scaling speedup")
+    style_axis_text(ax, "Uniform benchmark strong-scaling speedup")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", alpha=0.15)
     style_legend(ax)
@@ -480,7 +480,7 @@ def make_speedup_plot(args, rdma_runs, p2p_runs):
         ax.set_xticklabels([str(n) for n in sorted(all_ticks)], rotation=90)
 
     plt.tight_layout()
-    out = args.output or "space_strong_scalability_speedup.png"
+    out = args.output or "uniform_strong_scalability_speedup.png"
     plt.savefig(out, dpi=150)
     print(f"Saved {out}")
     if args.show:
@@ -510,7 +510,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
 
     ax.set_xlabel("Number of processors")
     ax.set_ylabel(measurement_label(args))
-    style_axis_text(ax, "Space benchmark strong scaling")
+    style_axis_text(ax, "Uniform benchmark strong scaling")
     ax.grid(True, alpha=0.3)
     ax.grid(True, which="minor", alpha=0.15)
     style_legend(ax)
@@ -541,7 +541,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
         ax.set_xticklabels([str(n) for n in sorted(all_ticks)], rotation=90)
 
     plt.tight_layout()
-    out = args.output or "space_strong_scalability.png"
+    out = args.output or "uniform_strong_scalability.png"
     plt.savefig(out, dpi=150)
     print(f"Saved {out}")
     if args.show:
@@ -573,7 +573,7 @@ def make_total_time_plot(args, rdma_runs, p2p_runs):
         ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
         ax2.set_xlabel("Number of processors")
         ax2.set_ylabel("Deviation from ideal (%)")
-        style_axis_text(ax2, "Space benchmark deviation from ideal strong scaling")
+        style_axis_text(ax2, "Uniform benchmark deviation from ideal strong scaling")
         ax2.grid(True, alpha=0.3)
         style_legend(ax2)
         ax2.set_xscale("log", base=2)
@@ -600,7 +600,7 @@ def main():
     p2p_all = [r for r in p2p_all if r.nprocs not in ignore_set]
 
     if not rdma_all:
-        print("No completed space_SS_*.out files found.", file=sys.stderr)
+        print("No completed uniform_SS_*.out files found.", file=sys.stderr)
         sys.exit(1)
 
     rdma_selected = aggregate_runs(rdma_all, args.select)
