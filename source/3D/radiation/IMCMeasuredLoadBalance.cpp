@@ -26,15 +26,17 @@ std::vector<LocalCellMeasurement> BuildLocalMeasurements(
     return out;
 }
 
-std::unordered_map<size_t, double> BuildMeasuredCosts(
-    std::vector<LocalCellMeasurement> const& globalMeasurements,
+namespace {
+
+std::unordered_map<size_t, double> BuildRawCosts(
+    std::vector<LocalCellMeasurement> const& measurements,
     Parameters const& params,
     bool multigroup)
 {
     std::unordered_map<size_t, double> costByID;
-    costByID.reserve(globalMeasurements.size());
+    costByID.reserve(measurements.size());
 
-    for (auto const& m : globalMeasurements) {
+    for (auto const& m : measurements) {
         double c = params.floorCost
                  + params.stepWeight * static_cast<double>(m.stepCount)
                  + params.particleWeight * static_cast<double>(m.particleCount)
@@ -49,27 +51,98 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
         costByID[m.globalCellID] += c;
     }
 
-    if (params.useMedianClamp) {
-        std::vector<double> rawCosts;
-        rawCosts.reserve(costByID.size());
+    return costByID;
+}
+
+void ClampCosts(std::unordered_map<size_t, double>& costByID,
+                double floorCost, double maxCost)
+{
+    for (auto& kv : costByID)
+        kv.second = std::min(std::max(kv.second, floorCost), maxCost);
+}
+
+} // anonymous namespace
+
+std::unordered_map<size_t, double> BuildMeasuredCosts(
+    std::vector<LocalCellMeasurement> const& measurements,
+    Parameters const& params,
+    bool multigroup)
+{
+    auto costByID = BuildRawCosts(measurements, params, multigroup);
+
+    if (params.useMedianClamp && !costByID.empty()) {
+        double localSum = 0.0;
         for (auto const& kv : costByID)
-            rawCosts.push_back(kv.second);
-
-        double med = MedianPositive(rawCosts);
-        double maxCost = params.medianClampFactor * med;
-
-        for (auto& kv : costByID)
-            kv.second = std::min(std::max(kv.second, params.floorCost), maxCost);
+            localSum += kv.second;
+        double localMean = localSum / static_cast<double>(costByID.size());
+        double maxCost = params.medianClampFactor * std::max(localMean, params.floorCost);
+        ClampCosts(costByID, params.floorCost, maxCost);
     }
 
     return costByID;
 }
 
 #ifdef RICH_MPI
-std::vector<LocalCellMeasurement> GatherMeasurementsAllRanks(
-    std::vector<LocalCellMeasurement> const& localMeasurements,
+std::unordered_map<size_t, double> BuildMeasuredCosts(
+    std::vector<LocalCellMeasurement> const& measurements,
+    Parameters const& params,
+    bool multigroup,
     MPI_Comm comm)
 {
+    auto costByID = BuildRawCosts(measurements, params, multigroup);
+
+    if (params.useMedianClamp) {
+        double localSum = 0.0;
+        uint64_t localCount = 0;
+        for (auto const& kv : costByID) {
+            localSum += kv.second;
+            ++localCount;
+        }
+
+        double globalSum = 0.0;
+        uint64_t globalCount = 0;
+        MPI_Allreduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(&localCount, &globalCount, 1, MPI_UINT64_T, MPI_SUM, comm);
+
+        double globalMean = (globalCount > 0)
+            ? globalSum / static_cast<double>(globalCount)
+            : params.floorCost;
+
+        double maxCost = params.medianClampFactor * std::max(globalMean, params.floorCost);
+        double minCost = std::max(globalMean / params.medianClampFactor, params.floorCost);
+
+        int rank = 0;
+        MPI_Comm_rank(comm, &rank);
+        if (rank == 0) {
+            std::cerr << "MEASURED_LB_CLAMP"
+                      << " global_mean_cost=" << globalMean
+                      << " clamp_factor=" << params.medianClampFactor
+                      << " clamp_ceiling=" << maxCost
+                      << " clamp_floor=" << minCost
+                      << " effective_ratio=" << (minCost > 0 ? maxCost / minCost : 0)
+                      << " global_cells=" << globalCount
+                      << "\n";
+        }
+
+        ClampCosts(costByID, minCost, maxCost);
+    }
+
+    return costByID;
+}
+
+std::vector<LocalCellMeasurement> GatherMeasurementsAllRanksDebugOnly(
+    std::vector<LocalCellMeasurement> const& localMeasurements,
+    MPI_Comm comm,
+    uint64_t maxAllowedGlobalCells)
+{
+    uint64_t localCount64 = static_cast<uint64_t>(localMeasurements.size());
+    uint64_t globalCount64 = 0;
+    MPI_Allreduce(&localCount64, &globalCount64, 1, MPI_UINT64_T, MPI_SUM, comm);
+
+    if (globalCount64 > maxAllowedGlobalCells) {
+        throw UniversalError("Refusing debug all-rank measurement gather for production-size mesh");
+    }
+
     if (localMeasurements.size() > static_cast<size_t>(std::numeric_limits<int>::max() / 3)) {
         throw UniversalError("Too many local IMC measurements for MPI_Allgatherv int counts");
     }
@@ -121,9 +194,9 @@ std::vector<LocalCellMeasurement> GatherMeasurementsAllRanks(
     return result;
 }
 
-void PrintMeasuredLBDiagnostics(
+void PrintMeasuredLBDiagnosticsDistributed(
     std::vector<LocalCellMeasurement> const& localMeasurements,
-    std::unordered_map<size_t, double> const& costByCellID,
+    std::unordered_map<size_t, double> const& localCostByCellID,
     bool multigroup,
     MPI_Comm comm)
 {
@@ -131,63 +204,72 @@ void PrintMeasuredLBDiagnostics(
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &mpiSize);
 
-    size_t localStepSum = 0;
-    size_t localStepMax = 0;
-    size_t localNonzero = 0;
+    uint64_t localCellCount = static_cast<uint64_t>(localMeasurements.size());
+    uint64_t localStepSum = 0;
+    uint64_t localStepMax = 0;
+    uint64_t localZeroStepCells = 0;
+
     for (auto const& m : localMeasurements) {
-        localStepSum += m.stepCount;
-        if (m.stepCount > localStepMax)
-            localStepMax = m.stepCount;
-        if (m.stepCount > 0)
-            ++localNonzero;
+        uint64_t s = static_cast<uint64_t>(m.stepCount);
+        localStepSum += s;
+        if (s > localStepMax)
+            localStepMax = s;
+        if (m.stepCount == 0)
+            ++localZeroStepCells;
     }
 
     std::cerr << "MEASURED_LB_BEFORE rank=" << rank
-              << " local_cells=" << localMeasurements.size()
+              << " local_cells=" << localCellCount
               << " local_step_sum=" << localStepSum
               << " local_step_max=" << localStepMax
-              << " local_nonzero_cells=" << localNonzero
+              << " local_zero_step_cells=" << localZeroStepCells
               << "\n";
 
-    // Gather rank step sums to compute imbalance ratio
     double localStepSumD = static_cast<double>(localStepSum);
     double maxRankSteps = 0.0, sumRankSteps = 0.0;
     MPI_Allreduce(&localStepSumD, &maxRankSteps, 1, MPI_DOUBLE, MPI_MAX, comm);
     MPI_Allreduce(&localStepSumD, &sumRankSteps, 1, MPI_DOUBLE, MPI_SUM, comm);
     double meanRankSteps = sumRankSteps / std::max(mpiSize, 1);
 
+    uint64_t globalCellCount = 0;
+    uint64_t globalZeroStepCells = 0;
+    uint64_t globalStepMax = 0;
+    MPI_Allreduce(&localCellCount, &globalCellCount, 1, MPI_UINT64_T, MPI_SUM, comm);
+    MPI_Allreduce(&localZeroStepCells, &globalZeroStepCells, 1, MPI_UINT64_T, MPI_SUM, comm);
+    MPI_Allreduce(&localStepMax, &globalStepMax, 1, MPI_UINT64_T, MPI_MAX, comm);
+
+    double localCostSum = 0.0;
+    double localCostMax = 0.0;
+    uint64_t localFloorLikeCells = 0;
+
+    for (auto const& kv : localCostByCellID) {
+        localCostSum += kv.second;
+        if (kv.second > localCostMax)
+            localCostMax = kv.second;
+        if (kv.second <= 1.0)
+            ++localFloorLikeCells;
+    }
+
+    double globalCostSum = 0.0, globalCostMax = 0.0;
+    uint64_t globalFloorLikeCells = 0;
+    MPI_Allreduce(&localCostSum, &globalCostSum, 1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&localCostMax, &globalCostMax, 1, MPI_DOUBLE, MPI_MAX, comm);
+    MPI_Allreduce(&localFloorLikeCells, &globalFloorLikeCells, 1, MPI_UINT64_T, MPI_SUM, comm);
+
+    double globalMeanCost = (globalCellCount > 0)
+        ? globalCostSum / static_cast<double>(globalCellCount) : 0.0;
+
     if (rank == 0) {
-        double totalCost = 0.0;
-        double maxCost = 0.0;
-        size_t zeroStepCells = 0;
-        std::vector<double> allCosts;
-        allCosts.reserve(costByCellID.size());
-
-        for (auto const& kv : costByCellID) {
-            allCosts.push_back(kv.second);
-            totalCost += kv.second;
-            if (kv.second > maxCost)
-                maxCost = kv.second;
-        }
-
-        double meanCost = costByCellID.empty() ? 0.0
-                        : totalCost / static_cast<double>(costByCellID.size());
-        double medianCost = MedianPositive(allCosts);
-
-        for (auto const& kv : costByCellID) {
-            if (kv.second <= 1.0)
-                ++zeroStepCells;
-        }
-
         std::cerr << "MEASURED_LB_GLOBAL"
-                  << " total_cells=" << costByCellID.size()
-                  << " total_cost=" << totalCost
-                  << " mean_cost=" << meanCost
-                  << " median_cost=" << medianCost
-                  << " max_cost=" << maxCost
-                  << " max_over_mean=" << (meanCost > 0.0 ? maxCost / meanCost : 0.0)
-                  << " zero_step_cells=" << zeroStepCells
+                  << " total_cells=" << globalCellCount
+                  << " total_cost=" << globalCostSum
+                  << " mean_cost=" << globalMeanCost
+                  << " max_cost=" << globalCostMax
+                  << " max_over_mean=" << (globalMeanCost > 0.0 ? globalCostMax / globalMeanCost : 0.0)
+                  << " zero_step_cells=" << globalZeroStepCells
+                  << " floor_like_cells=" << globalFloorLikeCells
                   << " mode=" << (multigroup ? "multigroup" : "gray")
+                  << " clamp_scope=global_mean"
                   << "\n";
 
         std::cerr << "MEASURED_LB_RANK_IMBALANCE"
@@ -200,10 +282,8 @@ void PrintMeasuredLBDiagnostics(
     std::cerr << std::flush;
 }
 
-void PrintPostRepartitionDiagnostics(
-    std::unordered_map<size_t, double> const& costByCellID,
-    std::vector<size_t> const& newCellIDs,
-    double missingCellCost,
+void PrintPostRepartitionDiagnosticsFromWeights(
+    std::vector<double> const& localWeightsAfterRepartition,
     bool multigroup,
     MPI_Comm comm)
 {
@@ -212,23 +292,26 @@ void PrintPostRepartitionDiagnostics(
     MPI_Comm_size(comm, &mpiSize);
 
     double localCostSum = 0.0;
-    for (size_t id : newCellIDs) {
-        auto it = costByCellID.find(id);
-        localCostSum += (it != costByCellID.end()) ? it->second : missingCellCost;
-    }
+    for (double w : localWeightsAfterRepartition)
+        localCostSum += w;
 
     double maxRankCost = 0.0, sumRankCost = 0.0;
     MPI_Allreduce(&localCostSum, &maxRankCost, 1, MPI_DOUBLE, MPI_MAX, comm);
     MPI_Allreduce(&localCostSum, &sumRankCost, 1, MPI_DOUBLE, MPI_SUM, comm);
     double meanRankCost = sumRankCost / std::max(mpiSize, 1);
 
+    uint64_t localNewCells = static_cast<uint64_t>(localWeightsAfterRepartition.size());
+    uint64_t globalNewCells = 0;
+    MPI_Allreduce(&localNewCells, &globalNewCells, 1, MPI_UINT64_T, MPI_SUM, comm);
+
     std::cerr << "MEASURED_LB_AFTER rank=" << rank
-              << " new_local_cells=" << newCellIDs.size()
+              << " new_local_cells=" << localNewCells
               << " new_predicted_local_cost=" << localCostSum
               << "\n";
 
     if (rank == 0) {
         std::cerr << "MEASURED_LB_AFTER_SUMMARY"
+                  << " total_cells=" << globalNewCells
                   << " mode=" << (multigroup ? "multigroup" : "gray")
                   << " max_rank_cost=" << maxRankCost
                   << " mean_rank_cost=" << meanRankCost

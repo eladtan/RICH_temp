@@ -58,25 +58,32 @@ std::vector<LocalCellMeasurement> BuildLocalMeasurements(
     std::vector<size_t> const& particlesPerCell);
 
 std::unordered_map<size_t, double> BuildMeasuredCosts(
-    std::vector<LocalCellMeasurement> const& globalMeasurements,
+    std::vector<LocalCellMeasurement> const& measurements,
     Parameters const& params,
     bool multigroup);
 
 #ifdef RICH_MPI
-std::vector<LocalCellMeasurement> GatherMeasurementsAllRanks(
-    std::vector<LocalCellMeasurement> const& localMeasurements,
-    MPI_Comm comm);
-
-void PrintMeasuredLBDiagnostics(
-    std::vector<LocalCellMeasurement> const& localMeasurements,
-    std::unordered_map<size_t, double> const& costByCellID,
+std::unordered_map<size_t, double> BuildMeasuredCosts(
+    std::vector<LocalCellMeasurement> const& measurements,
+    Parameters const& params,
     bool multigroup,
     MPI_Comm comm);
 
-void PrintPostRepartitionDiagnostics(
-    std::unordered_map<size_t, double> const& costByCellID,
-    std::vector<size_t> const& newCellIDs,
-    double missingCellCost,
+// Debug-only helper. This replicates O(global_cells) measurement data onto
+// every MPI rank and must not be used in production-scale runs.
+std::vector<LocalCellMeasurement> GatherMeasurementsAllRanksDebugOnly(
+    std::vector<LocalCellMeasurement> const& localMeasurements,
+    MPI_Comm comm,
+    uint64_t maxAllowedGlobalCells = 1000000);
+
+void PrintMeasuredLBDiagnosticsDistributed(
+    std::vector<LocalCellMeasurement> const& localMeasurements,
+    std::unordered_map<size_t, double> const& localCostByCellID,
+    bool multigroup,
+    MPI_Comm comm);
+
+void PrintPostRepartitionDiagnosticsFromWeights(
+    std::vector<double> const& localWeightsAfterRepartition,
     bool multigroup,
     MPI_Comm comm);
 #endif
