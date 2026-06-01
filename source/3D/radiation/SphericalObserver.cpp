@@ -199,6 +199,7 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     }
 
     observerEnergy_.assign(numObservers_, 0.0);
+    observerMaxPacketEnergy_.assign(numObservers_, 0.0);
     observerCrossingCount_.assign(numObservers_, 0);
     observerSolidAngle_ = computePerObserverSolidAngles(directions_, numObservers_);
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
@@ -206,6 +207,9 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
+    observerSumWeightSq_.assign(numObservers_, 0.0);
+    observerSumWQ2_.assign(numObservers_, 0.0);
+    observerSumWU2_.assign(numObservers_, 0.0);
     groupStokesQ_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupStokesU_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
 #endif
@@ -268,6 +272,8 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
         return;
     size_t obs = findNearestObserver(crossingPoint);
     observerEnergy_[obs] += weight;
+    if (weight > observerMaxPacketEnergy_[obs])
+        observerMaxPacketEnergy_[obs] = weight;
     ++observerCrossingCount_[obs];
     if (numGroups_ > 1) {
         size_t g = findGroup(frequency);
@@ -302,8 +308,13 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
 
     size_t obs = findNearestObserver(crossingPoint);
     observerEnergy_[obs] += weight;
+    if (weight > observerMaxPacketEnergy_[obs])
+        observerMaxPacketEnergy_[obs] = weight;
     observerStokesQ_[obs] += weight * qObserver;
     observerStokesU_[obs] += weight * uObserver;
+    observerSumWeightSq_[obs] += weight * weight;
+    observerSumWQ2_[obs] += weight * qObserver * qObserver;
+    observerSumWU2_[obs] += weight * uObserver * uObserver;
     ++observerCrossingCount_[obs];
 
     if (numGroups_ > 1) {
@@ -415,6 +426,11 @@ std::vector<double> const& SphericalObserver::getObserverSolidAngles() const
     return observerSolidAngle_;
 }
 
+std::vector<double> const& SphericalObserver::getMaxPacketEnergy() const
+{
+    return observerMaxPacketEnergy_;
+}
+
 void SphericalObserver::scale(double factor)
 {
     for (auto& e : observerEnergy_) e *= factor;
@@ -423,6 +439,9 @@ void SphericalObserver::scale(double factor)
 #ifdef MONTECARLO_POLARIZATION
     for (auto& e : observerStokesQ_) e *= factor;
     for (auto& e : observerStokesU_) e *= factor;
+    for (auto& e : observerSumWeightSq_) e *= factor * factor;
+    for (auto& e : observerSumWQ2_) e *= factor;
+    for (auto& e : observerSumWU2_) e *= factor;
     for (auto& gv : groupStokesQ_)
         for (auto& e : gv) e *= factor;
     for (auto& gv : groupStokesU_)
@@ -452,6 +471,12 @@ void SphericalObserver::mpiReduceToRank0()
     if (rank == 0)
         observerEnergy_ = recvBuf;
 
+    std::vector<double> maxRecvBuf(static_cast<size_t>(count), 0.0);
+    MPI_Reduce(observerMaxPacketEnergy_.data(), maxRecvBuf.data(), count,
+               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerMaxPacketEnergy_ = maxRecvBuf;
+
 #ifdef MONTECARLO_POLARIZATION
     MPI_Reduce(observerStokesQ_.data(), recvBuf.data(), count,
                MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -462,6 +487,21 @@ void SphericalObserver::mpiReduceToRank0()
                MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (rank == 0)
         observerStokesU_ = recvBuf;
+
+    MPI_Reduce(observerSumWeightSq_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerSumWeightSq_ = recvBuf;
+
+    MPI_Reduce(observerSumWQ2_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerSumWQ2_ = recvBuf;
+
+    MPI_Reduce(observerSumWU2_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerSumWU2_ = recvBuf;
 #endif
 
     std::vector<size_t> countRecvBuf(static_cast<size_t>(count), 0);
@@ -771,6 +811,11 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
     for (size_t i = 0; i < N; ++i)
         file << static_cast<double>(observerCrossingCount_[i]) << "\n";
 
+    file << "SCALARS max_packet_energy double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < N; ++i)
+        file << observerMaxPacketEnergy_[i] << "\n";
+
     file << "SCALARS solid_angle double 1\n";
     file << "LOOKUP_TABLE default\n";
     for (size_t i = 0; i < N; ++i)
@@ -798,6 +843,78 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
         file << "LOOKUP_TABLE default\n";
         for (size_t i = 0; i < N; ++i)
             file << PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]) << "\n";
+
+        file << "SCALARS polarization_effective_packets double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double neff = (observerSumWeightSq_[i] > 0.0)
+                ? (observerEnergy_[i] * observerEnergy_[i]) / observerSumWeightSq_[i] : 0.0;
+            file << neff << "\n";
+        }
+
+        file << "SCALARS polarization_sigma_q double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double Iv = observerEnergy_[i];
+            double W2 = observerSumWeightSq_[i];
+            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
+            double q = observerStokesQ_[i] / Iv;
+            double varQ = observerSumWQ2_[i] / Iv - q * q;
+            if (varQ < 0.0) varQ = 0.0;
+            double neff = Iv * Iv / W2;
+            file << std::sqrt(varQ / neff) << "\n";
+        }
+
+        file << "SCALARS polarization_sigma_u double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double Iv = observerEnergy_[i];
+            double W2 = observerSumWeightSq_[i];
+            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
+            double u = observerStokesU_[i] / Iv;
+            double varU = observerSumWU2_[i] / Iv - u * u;
+            if (varU < 0.0) varU = 0.0;
+            double neff = Iv * Iv / W2;
+            file << std::sqrt(varU / neff) << "\n";
+        }
+
+        file << "SCALARS polarization_sigma_p double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double Iv = observerEnergy_[i];
+            double W2 = observerSumWeightSq_[i];
+            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
+            double q = observerStokesQ_[i] / Iv;
+            double u = observerStokesU_[i] / Iv;
+            double varQ = observerSumWQ2_[i] / Iv - q * q;
+            double varU = observerSumWU2_[i] / Iv - u * u;
+            if (varQ < 0.0) varQ = 0.0;
+            if (varU < 0.0) varU = 0.0;
+            double neff = Iv * Iv / W2;
+            double sigQ = std::sqrt(varQ / neff);
+            double sigU = std::sqrt(varU / neff);
+            file << std::sqrt(sigQ * sigQ + sigU * sigU) << "\n";
+        }
+
+        file << "SCALARS polarization_snr double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double Iv = observerEnergy_[i];
+            double W2 = observerSumWeightSq_[i];
+            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
+            double q = observerStokesQ_[i] / Iv;
+            double u = observerStokesU_[i] / Iv;
+            double p = std::sqrt(q * q + u * u);
+            double varQ = observerSumWQ2_[i] / Iv - q * q;
+            double varU = observerSumWU2_[i] / Iv - u * u;
+            if (varQ < 0.0) varQ = 0.0;
+            if (varU < 0.0) varU = 0.0;
+            double neff = Iv * Iv / W2;
+            double sigQ = std::sqrt(varQ / neff);
+            double sigU = std::sqrt(varU / neff);
+            double sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
+            file << ((sigP > 0.0) ? p / sigP : 0.0) << "\n";
+        }
     }
 #endif
 

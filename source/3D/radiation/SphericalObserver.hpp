@@ -86,6 +86,13 @@ public:
     double getSolidAngle() const;
     double getPatchArea() const;
     std::vector<double> const& getObserverSolidAngles() const;
+    std::vector<double> const& getMaxPacketEnergy() const;
+    std::vector<double> const& getObserverEnergy() const { return observerEnergy_; }
+    std::vector<size_t> const& getObserverCrossingCount() const { return observerCrossingCount_; }
+#ifdef MONTECARLO_POLARIZATION
+    std::vector<double> const& getObserverStokesQ() const { return observerStokesQ_; }
+    std::vector<double> const& getObserverStokesU() const { return observerStokesU_; }
+#endif
 
 private:
     Vector3D center_;
@@ -96,6 +103,7 @@ private:
     std::vector<double> groupBoundaries_;
     std::vector<Vector3D> directions_;
     std::vector<double> observerEnergy_;
+    std::vector<double> observerMaxPacketEnergy_;
     std::vector<size_t> observerCrossingCount_;
     std::vector<double> observerSolidAngle_;
     std::vector<std::vector<double>> groupEnergy_;
@@ -107,6 +115,9 @@ private:
     std::string polarizationAcceleratedClosure_ = "damped_last_scatterings";
     std::vector<double> observerStokesQ_;
     std::vector<double> observerStokesU_;
+    std::vector<double> observerSumWeightSq_;
+    std::vector<double> observerSumWQ2_;
+    std::vector<double> observerSumWU2_;
     std::vector<std::vector<double>> groupStokesQ_;
     std::vector<std::vector<double>> groupStokesU_;
 #endif
