@@ -6,6 +6,32 @@
 #include <vector>
 #include "3D/elementary/Vector3D.hpp"
 
+// Stokes convention: weight = Stokes I (packet energy).
+// stokesQ/stokesU are fractional (q = Q/I, u = U/I), so
+// absolute Stokes Q = weight * stokesQ.
+struct ObserverCrossingRecord
+{
+    Vector3D crossingPoint;
+    Vector3D direction;
+    double weight = 0.0;
+    double frequency = 0.0;
+#ifdef MONTECARLO_POLARIZATION
+    double stokesQ = 0.0;
+    double stokesU = 0.0;
+    Vector3D polBasis;
+    bool polarizationInitialized = false;
+#endif
+};
+
+struct ObserverPolarizationConfig
+{
+    Vector3D referenceAxis = Vector3D(0.0, 0.0, 1.0);
+    Vector3D fallbackAxis = Vector3D(1.0, 0.0, 0.0);
+    double poleTolerance = 0.999999;
+    double warnMismatchAngle = 0.01;
+    double failMismatchAngle = -1.0;
+};
+
 class SphericalObserver
 {
 public:
@@ -41,6 +67,7 @@ public:
 
     void recordCrossing(Vector3D const& crossingPoint,
                         double weight, double frequency);
+    void recordCrossing(ObserverCrossingRecord const& record);
 #ifdef MONTECARLO_POLARIZATION
     void recordCrossing(Vector3D const& crossingPoint,
                         double weight,
@@ -51,6 +78,7 @@ public:
                                  int manualScatteringsAfterAcceleration,
                                  double depolarizationScatterings,
                                  std::string acceleratedClosure);
+    void setPolarizationConfig(ObserverPolarizationConfig const& config);
 #endif
 
     void addEmittedEnergy(double energy);
@@ -67,6 +95,8 @@ public:
                    Diagnostics const& diagnostics) const;
 
     void writeVTK(std::string const& filename, double sourceDt) const;
+
+    void writeTXT(std::string const& filename, double sourceDt) const;
 
     std::vector<double> getLuminosity(double sourceDt) const;
     std::vector<std::vector<double>> getGroupLuminosity(double sourceDt) const;
@@ -92,6 +122,9 @@ public:
 #ifdef MONTECARLO_POLARIZATION
     std::vector<double> const& getObserverStokesQ() const { return observerStokesQ_; }
     std::vector<double> const& getObserverStokesU() const { return observerStokesU_; }
+    std::vector<double> const& getMismatchWeightedSum() const { return mismatchWeightedSum_; }
+    std::vector<double> const& getMismatchWeighted2Sum() const { return mismatchWeighted2Sum_; }
+    std::vector<double> const& getMismatchMax() const { return mismatchMax_; }
 #endif
 
 private:
@@ -113,13 +146,25 @@ private:
     int polarizationManualScatteringsAfterAcceleration_ = 4;
     double polarizationDepolarizationScatterings_ = 2.0;
     std::string polarizationAcceleratedClosure_ = "damped_last_scatterings";
+    ObserverPolarizationConfig polConfig_;
+    std::vector<Vector3D> skyE1_;
     std::vector<double> observerStokesQ_;
     std::vector<double> observerStokesU_;
     std::vector<double> observerSumWeightSq_;
     std::vector<double> observerSumWQ2_;
     std::vector<double> observerSumWU2_;
+    std::vector<double> mismatchWeightedSum_;
+    std::vector<double> mismatchWeighted2Sum_;
+    std::vector<double> mismatchMax_;
+    size_t mismatchWarningCount_ = 0;
+    size_t uninitializedPolarizationCount_ = 0;
     std::vector<std::vector<double>> groupStokesQ_;
     std::vector<std::vector<double>> groupStokesU_;
+
+    void buildSkyBases();
+    void rotateAndAccumulate(ObserverCrossingRecord const& rec, size_t obs);
+    void accumulateMismatch(ObserverCrossingRecord const& rec, size_t obs,
+                            Vector3D const& rhat);
 #endif
 
     double emittedEnergy_ = 0.0;

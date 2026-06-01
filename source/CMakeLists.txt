@@ -12,6 +12,11 @@ include(${CMAKE_SOURCE_DIR}/../config/find_static_library.cmake)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(RICH_MONTECARLO_POLARIZATION "Enable Monte Carlo linear polarization packet state" OFF)
+if(RICH_MONTECARLO_POLARIZATION)
+    add_compile_definitions(MONTECARLO_POLARIZATION)
+endif()
+
 message(STATUS "CXX Standard: " ${CMAKE_CXX_STANDARD})
 message(STATUS "Build Type: " ${CMAKE_BUILD_TYPE})
 

@@ -210,8 +210,12 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     observerSumWeightSq_.assign(numObservers_, 0.0);
     observerSumWQ2_.assign(numObservers_, 0.0);
     observerSumWU2_.assign(numObservers_, 0.0);
+    mismatchWeightedSum_.assign(numObservers_, 0.0);
+    mismatchWeighted2Sum_.assign(numObservers_, 0.0);
+    mismatchMax_.assign(numObservers_, 0.0);
     groupStokesQ_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupStokesU_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    buildSkyBases();
 #endif
 }
 
@@ -283,6 +287,37 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
 #endif
 }
 
+void SphericalObserver::recordCrossing(ObserverCrossingRecord const& rec)
+{
+    if (rec.weight == 0.0 || !std::isfinite(rec.weight))
+        return;
+
+    Vector3D rhat = rec.crossingPoint - center_;
+    double const rnorm = abs(rhat);
+    if (rnorm <= 0.0)
+        return;
+    rhat = rhat * (1.0 / rnorm);
+
+    size_t obs = findNearestObserver(rec.crossingPoint);
+    observerEnergy_[obs] += rec.weight;
+    if (rec.weight > observerMaxPacketEnergy_[obs])
+        observerMaxPacketEnergy_[obs] = rec.weight;
+    ++observerCrossingCount_[obs];
+
+    if (numGroups_ > 1) {
+        size_t g = findGroup(rec.frequency);
+        groupEnergy_[obs][g] += rec.weight;
+        ++groupCrossingCount_[obs][g];
+    }
+
+#ifdef MONTECARLO_POLARIZATION
+    if (polarizationOutputEnabled_) {
+        rotateAndAccumulate(rec, obs);
+        accumulateMismatch(rec, obs, rhat);
+    }
+#endif
+}
+
 #ifdef MONTECARLO_POLARIZATION
 void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
                                        double weight,
@@ -335,6 +370,138 @@ void SphericalObserver::setPolarizationMetadata(bool enabled,
     polarizationManualScatteringsAfterAcceleration_ = manualScatteringsAfterAcceleration;
     polarizationDepolarizationScatterings_ = depolarizationScatterings;
     polarizationAcceleratedClosure_ = std::move(acceleratedClosure);
+}
+
+void SphericalObserver::setPolarizationConfig(ObserverPolarizationConfig const& config)
+{
+    polConfig_ = config;
+    double const refNorm = abs(polConfig_.referenceAxis);
+    if (refNorm < 1e-14)
+        throw UniversalError("ObserverPolarizationConfig: referenceAxis is zero");
+    polConfig_.referenceAxis = polConfig_.referenceAxis * (1.0 / refNorm);
+
+    double const fbNorm = abs(polConfig_.fallbackAxis);
+    if (fbNorm < 1e-14)
+        throw UniversalError("ObserverPolarizationConfig: fallbackAxis is zero");
+    polConfig_.fallbackAxis = polConfig_.fallbackAxis * (1.0 / fbNorm);
+
+    polConfig_.poleTolerance = std::clamp(polConfig_.poleTolerance, 0.0, 1.0);
+    buildSkyBases();
+}
+
+void SphericalObserver::buildSkyBases()
+{
+    skyE1_.resize(numObservers_);
+    for (size_t i = 0; i < numObservers_; ++i) {
+        Vector3D const& n = directions_[i];
+        Vector3D ref = polConfig_.referenceAxis;
+        if (std::abs(ScalarProd(ref, n)) > polConfig_.poleTolerance)
+            ref = polConfig_.fallbackAxis;
+
+        Vector3D e1 = ref - ScalarProd(ref, n) * n;
+        double const norm1 = abs(e1);
+        if (norm1 > 1e-14) {
+            e1 = e1 * (1.0 / norm1);
+        } else {
+            Vector3D fallbackCross = CrossProduct(n, polConfig_.fallbackAxis);
+            double const fcNorm = abs(fallbackCross);
+            if (fcNorm > 1e-14)
+                e1 = fallbackCross * (1.0 / fcNorm);
+            else
+                e1 = (std::abs(n.z) < 0.9)
+                    ? normalize(CrossProduct(n, Vector3D(0, 0, 1)))
+                    : normalize(CrossProduct(n, Vector3D(0, 1, 0)));
+        }
+        skyE1_[i] = e1;
+    }
+}
+
+void SphericalObserver::rotateAndAccumulate(ObserverCrossingRecord const& rec,
+                                            size_t obs)
+{
+    if (!rec.polarizationInitialized) {
+        ++uninitializedPolarizationCount_;
+        return;
+    }
+
+    double const dirNorm = abs(rec.direction);
+    if (dirNorm < 1e-14 || !std::isfinite(dirNorm))
+        return;
+    Vector3D const khat = rec.direction * (1.0 / dirNorm);
+    Vector3D const& skyE1 = skyE1_[obs];
+
+    Vector3D e1_target = skyE1 - ScalarProd(skyE1, khat) * khat;
+    double const norm = abs(e1_target);
+    if (norm < 1e-14) {
+        Vector3D helper = (std::abs(khat.z) < 0.9)
+            ? Vector3D(0.0, 0.0, 1.0)
+            : Vector3D(0.0, 1.0, 0.0);
+        e1_target = helper - ScalarProd(helper, khat) * khat;
+        e1_target = normalize(e1_target);
+    } else {
+        e1_target = e1_target * (1.0 / norm);
+    }
+
+    Vector3D polE1 = rec.polBasis - ScalarProd(rec.polBasis, khat) * khat;
+    double const polNorm = abs(polE1);
+    if (polNorm < 1e-14)
+        return;
+    polE1 = polE1 * (1.0 / polNorm);
+
+    // Rotation angle psi from packet basis to observer basis around khat.
+    // Uses double-angle identities: cos(2psi) = cos^2(psi) - sin^2(psi),
+    // sin(2psi) = 2*cos(psi)*sin(psi).
+    // This is mathematically identical to IMCPolarization::ProjectToBasis.
+    double const cosPsi = std::clamp(ScalarProd(polE1, e1_target), -1.0, 1.0);
+    double const sinPsi = ScalarProd(khat, CrossProduct(polE1, e1_target));
+    double const cos2psi = cosPsi * cosPsi - sinPsi * sinPsi;
+    double const sin2psi = 2.0 * cosPsi * sinPsi;
+
+    double const qRot = rec.stokesQ * cos2psi + rec.stokesU * sin2psi;
+    double const uRot = -rec.stokesQ * sin2psi + rec.stokesU * cos2psi;
+
+    observerStokesQ_[obs] += rec.weight * qRot;
+    observerStokesU_[obs] += rec.weight * uRot;
+    observerSumWeightSq_[obs] += rec.weight * rec.weight;
+    observerSumWQ2_[obs] += rec.weight * qRot * qRot;
+    observerSumWU2_[obs] += rec.weight * uRot * uRot;
+
+    if (numGroups_ > 1) {
+        size_t g = findGroup(rec.frequency);
+        groupStokesQ_[obs][g] += rec.weight * qRot;
+        groupStokesU_[obs][g] += rec.weight * uRot;
+    }
+}
+
+void SphericalObserver::accumulateMismatch(ObserverCrossingRecord const& rec,
+                                           size_t obs,
+                                           Vector3D const& rhat)
+{
+    double const dirNorm = abs(rec.direction);
+    if (dirNorm < 1e-14 || !std::isfinite(dirNorm))
+        return;
+    Vector3D const khat = rec.direction * (1.0 / dirNorm);
+    double const mu = std::clamp(ScalarProd(rhat, khat), -1.0, 1.0);
+    double const mismatchAngle = std::acos(mu);
+
+    mismatchWeightedSum_[obs] += rec.weight * mismatchAngle;
+    mismatchWeighted2Sum_[obs] += rec.weight * mismatchAngle * mismatchAngle;
+    if (mismatchAngle > mismatchMax_[obs])
+        mismatchMax_[obs] = mismatchAngle;
+
+    if (polConfig_.warnMismatchAngle > 0.0 &&
+        mismatchAngle > polConfig_.warnMismatchAngle)
+        ++mismatchWarningCount_;
+
+    if (polConfig_.failMismatchAngle > 0.0 &&
+        mismatchAngle > polConfig_.failMismatchAngle) {
+        UniversalError eo("Extraction-sphere observer approximation failed: "
+                          "khat-rhat mismatch exceeds threshold");
+        eo.addEntry("mismatch_angle_rad", mismatchAngle);
+        eo.addEntry("threshold_rad", polConfig_.failMismatchAngle);
+        eo.addEntry("observer_index", static_cast<double>(obs));
+        throw eo;
+    }
 }
 #endif
 
@@ -442,6 +609,8 @@ void SphericalObserver::scale(double factor)
     for (auto& e : observerSumWeightSq_) e *= factor * factor;
     for (auto& e : observerSumWQ2_) e *= factor;
     for (auto& e : observerSumWU2_) e *= factor;
+    for (auto& e : mismatchWeightedSum_) e *= factor;
+    for (auto& e : mismatchWeighted2Sum_) e *= factor;
     for (auto& gv : groupStokesQ_)
         for (auto& e : gv) e *= factor;
     for (auto& gv : groupStokesU_)
@@ -502,6 +671,22 @@ void SphericalObserver::mpiReduceToRank0()
                MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (rank == 0)
         observerSumWU2_ = recvBuf;
+
+    MPI_Reduce(mismatchWeightedSum_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        mismatchWeightedSum_ = recvBuf;
+
+    MPI_Reduce(mismatchWeighted2Sum_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        mismatchWeighted2Sum_ = recvBuf;
+
+    std::vector<double> maxMismatchRecv(static_cast<size_t>(count), 0.0);
+    MPI_Reduce(mismatchMax_.data(), maxMismatchRecv.data(), count,
+               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        mismatchMax_ = maxMismatchRecv;
 #endif
 
     std::vector<size_t> countRecvBuf(static_cast<size_t>(count), 0);
@@ -638,6 +823,34 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/tally/observer_U_luminosity", uLum);
         writer.WriteElement("/tally/observer_polarization_degree", polDegree);
         writer.WriteElement("/tally/observer_polarization_angle", polAngle);
+
+        std::vector<double> meanMismatch(numObservers_, 0.0);
+        std::vector<double> rmsMismatch(numObservers_, 0.0);
+        for (size_t i = 0; i < numObservers_; ++i) {
+            if (observerEnergy_[i] > 0.0) {
+                double const invW = 1.0 / observerEnergy_[i];
+                meanMismatch[i] = mismatchWeightedSum_[i] * invW;
+                double const var = mismatchWeighted2Sum_[i] * invW
+                                 - meanMismatch[i] * meanMismatch[i];
+                rmsMismatch[i] = std::sqrt(std::max(0.0, var));
+            }
+        }
+        writer.WriteElement("/tally/observer_mean_direction_mismatch", meanMismatch);
+        writer.WriteElement("/tally/observer_rms_direction_mismatch", rmsMismatch);
+        writer.WriteElement("/tally/observer_max_direction_mismatch", mismatchMax_);
+
+        std::vector<double> crossingCountDbl(numObservers_);
+        for (size_t i = 0; i < numObservers_; ++i)
+            crossingCountDbl[i] = static_cast<double>(observerCrossingCount_[i]);
+        writer.WriteElement("/tally/observer_packet_count", crossingCountDbl);
+
+        std::vector<double> theta(numObservers_), phi(numObservers_);
+        for (size_t i = 0; i < numObservers_; ++i) {
+            theta[i] = std::acos(std::clamp(directions_[i].z, -1.0, 1.0));
+            phi[i] = std::atan2(directions_[i].y, directions_[i].x);
+        }
+        writer.WriteElement("/observer/theta", theta);
+        writer.WriteElement("/observer/phi", phi);
     }
 #endif
 
@@ -732,6 +945,12 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                         std::string("project_after_boost_low_velocity_approximation"));
     writer.WriteElement("/diagnostics/polarization_transport_model",
                         std::string("polarized_thomson_explicit_scalar_acceleration_closure"));
+    writer.WriteElement("/diagnostics/polarization_mismatch_warning_count",
+                        static_cast<double>(mismatchWarningCount_));
+    writer.WriteElement("/diagnostics/polarization_uninitialized_count",
+                        static_cast<double>(uninitializedPolarizationCount_));
+    writer.WriteElement("/diagnostics/polarization_positive_Q_convention",
+                        std::string("aligned_with_projected_reference_axis"));
 #endif
 }
 
@@ -915,6 +1134,19 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             double sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
             file << ((sigP > 0.0) ? p / sigP : 0.0) << "\n";
         }
+
+        file << "SCALARS mean_direction_mismatch double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double mean = (observerEnergy_[i] > 0.0)
+                ? mismatchWeightedSum_[i] / observerEnergy_[i] : 0.0;
+            file << mean << "\n";
+        }
+
+        file << "SCALARS max_direction_mismatch double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << mismatchMax_[i] << "\n";
     }
 #endif
 
@@ -932,5 +1164,59 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             for (size_t i = 0; i < N; ++i)
                 file << static_cast<double>(groupCrossingCount_[i][g]) << "\n";
         }
+    }
+}
+
+void SphericalObserver::writeTXT(std::string const& filename, double sourceDt) const
+{
+    std::ofstream file(filename);
+    if (!file.is_open())
+        throw UniversalError("SphericalObserver::writeTXT: cannot open " + filename);
+
+    file << std::scientific << std::setprecision(8);
+
+    file << "# obs_index theta_obs phi_obs solid_angle N_packets energy luminosity";
+#ifdef MONTECARLO_POLARIZATION
+    if (polarizationOutputEnabled_)
+        file << " I Q U q u P polarization_angle_rad"
+             << " mean_k_minus_r_angle_rad rms_k_minus_r_angle_rad max_k_minus_r_angle_rad";
+#endif
+    file << "\n";
+
+    double const invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+    for (size_t i = 0; i < numObservers_; ++i) {
+        double const theta = std::acos(std::clamp(directions_[i].z, -1.0, 1.0));
+        double const phi = std::atan2(directions_[i].y, directions_[i].x);
+        double const lum = observerEnergy_[i] * invDt;
+
+        file << i << " " << theta << " " << phi << " "
+             << observerSolidAngle_[i] << " "
+             << observerCrossingCount_[i] << " "
+             << observerEnergy_[i] << " " << lum;
+
+#ifdef MONTECARLO_POLARIZATION
+        if (polarizationOutputEnabled_) {
+            double const Iv = observerEnergy_[i];
+            double const invI = (Iv > 0.0) ? 1.0 / Iv : 0.0;
+            double const q = observerStokesQ_[i] * invI;
+            double const u = observerStokesU_[i] * invI;
+            double const P = std::sqrt(q * q + u * u);
+            double const polAngle = 0.5 * std::atan2(observerStokesU_[i], observerStokesQ_[i]);
+
+            double meanMismatch = 0.0, rmsMismatch = 0.0;
+            if (Iv > 0.0) {
+                meanMismatch = mismatchWeightedSum_[i] / Iv;
+                double const var = mismatchWeighted2Sum_[i] / Iv
+                                 - meanMismatch * meanMismatch;
+                rmsMismatch = std::sqrt(std::max(0.0, var));
+            }
+
+            file << " " << Iv << " " << observerStokesQ_[i]
+                 << " " << observerStokesU_[i]
+                 << " " << q << " " << u << " " << P << " " << polAngle
+                 << " " << meanMismatch << " " << rmsMismatch << " " << mismatchMax_[i];
+        }
+#endif
+        file << "\n";
     }
 }

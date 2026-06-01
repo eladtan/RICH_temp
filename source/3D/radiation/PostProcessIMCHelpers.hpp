@@ -25,6 +25,11 @@ struct RadiationIMCPostProcessConfig
         int manualScatteringsAfterAcceleration = 4;
         double depolarizationScatterings = 2.0;
         std::string acceleratedClosure = "damped_last_scatterings";
+        Vector3D referenceAxis = Vector3D(0.0, 0.0, 1.0);
+        Vector3D fallbackAxis = Vector3D(1.0, 0.0, 0.0);
+        double poleTolerance = 0.999999;
+        double warnMismatchAngle = 0.01;
+        double failMismatchAngle = -1.0;
     } polarization;
 };
 

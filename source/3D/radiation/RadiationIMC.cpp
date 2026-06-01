@@ -235,6 +235,13 @@ void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
                                            postProcess_.polarization.manualScatteringsAfterAcceleration,
                                            postProcess_.polarization.depolarizationScatterings,
                                            postProcess_.polarization.acceleratedClosure);
+        ObserverPolarizationConfig polCfg;
+        polCfg.referenceAxis = postProcess_.polarization.referenceAxis;
+        polCfg.fallbackAxis = postProcess_.polarization.fallbackAxis;
+        polCfg.poleTolerance = postProcess_.polarization.poleTolerance;
+        polCfg.warnMismatchAngle = postProcess_.polarization.warnMismatchAngle;
+        polCfg.failMismatchAngle = postProcess_.polarization.failMismatchAngle;
+        observer_->setPolarizationConfig(polCfg);
     }
 #endif
 }
@@ -423,14 +430,16 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         if(postProcess_.polarization.enabled)
         {
             IMCPolarization::InitializeIfNeeded(particle);
-            Vector3D const obsDir = normalize(particle.location - observer_->getCenter());
-            Vector3D const basis = IMCPolarization::ObserverBasis1(obsDir);
-            auto const qu = IMCPolarization::ProjectToBasis(particle, particle.velocity, basis);
-            observer_->recordCrossing(particle.location,
-                                      particle.weight,
-                                      particle.frequency,
-                                      qu.first,
-                                      qu.second);
+            ObserverCrossingRecord rec;
+            rec.crossingPoint = particle.location;
+            rec.direction = particle.velocity;
+            rec.weight = particle.weight;
+            rec.frequency = particle.frequency;
+            rec.stokesQ = particle.stokesQ;
+            rec.stokesU = particle.stokesU;
+            rec.polBasis = particle.polarizationBasis;
+            rec.polarizationInitialized = particle.polarizationInitialized;
+            observer_->recordCrossing(rec);
         }
         else
 #endif
