@@ -87,6 +87,12 @@ public:
     void addTimedOutEnergy(double energy);
     void addCutoffEnergy(double energy);
 
+    void setPeelOffMetadata(bool enabled);
+    void recordPeelOff(size_t observerIndex, double energy, double frequency);
+    std::vector<double> const& getPeelOffEnergy() const { return peelOffEnergy_; }
+    std::vector<size_t> const& getPeelOffCount() const { return peelOffCount_; }
+    std::vector<std::vector<double>> const& getPeelOffGroupEnergy() const { return peelOffGroupEnergy_; }
+
     void scale(double factor);
 
     void mpiReduceToRank0();
@@ -166,6 +172,11 @@ private:
     void accumulateMismatch(ObserverCrossingRecord const& rec, size_t obs,
                             Vector3D const& rhat);
 #endif
+
+    bool peelOffOutputEnabled_ = false;
+    std::vector<double> peelOffEnergy_;
+    std::vector<size_t> peelOffCount_;
+    std::vector<std::vector<double>> peelOffGroupEnergy_;
 
     double emittedEnergy_ = 0.0;
     double absorbedEnergy_ = 0.0;

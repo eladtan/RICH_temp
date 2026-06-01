@@ -222,6 +222,22 @@ private:
     RadiationIMCPostProcessConfig postProcess_;
     std::shared_ptr<SphericalObserver> observer_;
 
+    enum class PeelOffEventKind { SOURCE_EMISSION };
+
+    void maybeRecordPeelOffIsotropic(
+        size_t sourceCellIndex,
+        Vector3D const& sourceLocation,
+        double labFrequency,
+        double labWeight,
+        double eventTimeLeft,
+        PeelOffEventKind kind);
+
+    size_t peelOffAttemptedCount_ = 0;
+    size_t peelOffRecordedCount_ = 0;
+    size_t peelOffTauClippedCount_ = 0;
+    size_t peelOffTimeRejectedCount_ = 0;
+    size_t peelOffRayFailedCount_ = 0;
+
     bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeRandomWalkData();
     bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);

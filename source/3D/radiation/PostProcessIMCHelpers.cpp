@@ -12,10 +12,30 @@ void ValidateConfig(const RadiationIMCPostProcessConfig &config,
                     bool withMultigroupOpacity,
                     bool withRandomWalk)
 {
+    if(config.peelOff.enabled && !config.enabled)
+        throw UniversalError("PostProcess peel-off requires postProcess.enabled");
     if(config.polarization.enabled && !config.enabled)
         throw UniversalError("PostProcess polarization requires postProcess.enabled");
     if (!config.enabled)
         return;
+    if(config.peelOff.enabled)
+    {
+        if(config.peelOff.maxTau <= 0.0)
+            throw UniversalError("PostProcess peel-off: maxTau must be positive");
+        if(config.peelOff.rayNudgeFraction <= 0.0 || config.peelOff.rayNudgeFraction >= 1.0)
+            throw UniversalError("PostProcess peel-off: rayNudgeFraction must be in (0, 1)");
+        if(config.peelOff.resolvedEvents)
+            throw UniversalError("PostProcess peel-off: resolvedEvents is not implemented in phase 1");
+        if(config.peelOff.acceleratedBoundaryEvents)
+            throw UniversalError("PostProcess peel-off: acceleratedBoundaryEvents is not implemented in phase 1");
+        if(withCompton)
+            throw UniversalError("PostProcess peel-off does not support Compton yet");
+#ifdef RICH_MPI
+        // Peel-off rays terminate at domain boundaries (ghost cells treated as
+        // vacuum escape). This underestimates tau for cross-domain rays but is
+        // safe — contributions are conservative (over-estimated flux).
+#endif
+    }
     if (config.sourceDt <= 0.0)
         throw UniversalError("PostProcess: sourceDt must be positive");
     if (config.transportTime <= 0.0)

@@ -19,6 +19,16 @@ struct RadiationIMCPostProcessConfig
     // frequency-group decisions, and lab/comoving transforms.
     bool useCellVelocities = true;
 
+    struct PeelOffConfig
+    {
+        bool enabled = false;
+        bool sourceEmission = true;
+        bool resolvedEvents = false;
+        bool acceleratedBoundaryEvents = false;
+        double maxTau = 700.0;
+        double rayNudgeFraction = 1e-10;
+    } peelOff;
+
     struct PolarizationConfig
     {
         bool enabled = false;

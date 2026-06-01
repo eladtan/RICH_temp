@@ -141,6 +141,11 @@ namespace {
         (parameters.withHydro && !parameters.MMC) ||
         (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities);
 
+    if(postProcess_.peelOff.enabled && !postProcess_.enabled)
+    {
+        throw UniversalError("PostProcess peel-off requires postProcess.enabled");
+    }
+
     if(postProcess_.enabled)
     {
         PostProcessIMC::ValidateConfig(postProcess_, withCompton, parameters.withMultigroupOpacity, withRandomWalk);
@@ -186,6 +191,8 @@ namespace {
                       << postProcess_.useCellVelocities
                       << ", useTransportVelocities_="
                       << this->useTransportVelocities_
+                      << ", peelOff="
+                      << postProcess_.peelOff.enabled
                       << std::endl;
         }
 #ifdef MONTECARLO_POLARIZATION
@@ -228,6 +235,10 @@ namespace {
 void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
 {
     observer_ = std::move(observer);
+    if(observer_)
+    {
+        observer_->setPeelOffMetadata(postProcess_.enabled && postProcess_.peelOff.enabled);
+    }
 #ifdef MONTECARLO_POLARIZATION
     if(observer_)
     {
@@ -650,6 +661,22 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
         if (observer_)
             observer_->addTimedOutEnergy(timedOut);
         printAccelerationStats();
+        if (postProcess_.peelOff.enabled)
+        {
+            int rank = 0;
+#ifdef RICH_MPI
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+            if (rank == 0)
+            {
+                std::cout << "PeelOff: attempted=" << peelOffAttemptedCount_
+                          << " recorded=" << peelOffRecordedCount_
+                          << " tauClipped=" << peelOffTauClippedCount_
+                          << " timeRejected=" << peelOffTimeRejectedCount_
+                          << " rayFailed=" << peelOffRayFailedCount_
+                          << std::endl;
+            }
+        }
         return;
     }
 
@@ -1762,6 +1789,27 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         double emitted = PostProcessIMC::PrepareGeneratedParticles(newParticles, postProcess_.transportTime);
         if (observer_)
             observer_->addEmittedEnergy(emitted);
+
+        if (postProcess_.peelOff.enabled && postProcess_.peelOff.sourceEmission && observer_)
+        {
+            peelOffAttemptedCount_ = 0;
+            peelOffRecordedCount_ = 0;
+            peelOffTauClippedCount_ = 0;
+            peelOffTimeRejectedCount_ = 0;
+            peelOffRayFailedCount_ = 0;
+
+            for (auto const& p : newParticles)
+            {
+                maybeRecordPeelOffIsotropic(
+                    p.cellIndex,
+                    p.location,
+                    p.frequency,
+                    p.weight,
+                    p.timeLeft,
+                    PeelOffEventKind::SOURCE_EMISSION);
+            }
+        }
+
         return newParticles;
     }
 

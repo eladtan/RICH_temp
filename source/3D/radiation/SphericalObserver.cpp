@@ -204,6 +204,9 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     observerSolidAngle_ = computePerObserverSolidAngles(directions_, numObservers_);
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
+    peelOffEnergy_.assign(numObservers_, 0.0);
+    peelOffCount_.assign(numObservers_, 0);
+    peelOffGroupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
@@ -603,6 +606,9 @@ void SphericalObserver::scale(double factor)
     for (auto& e : observerEnergy_) e *= factor;
     for (auto& gv : groupEnergy_)
         for (auto& e : gv) e *= factor;
+    for (auto& e : peelOffEnergy_) e *= factor;
+    for (auto& gv : peelOffGroupEnergy_)
+        for (auto& e : gv) e *= factor;
 #ifdef MONTECARLO_POLARIZATION
     for (auto& e : observerStokesQ_) e *= factor;
     for (auto& e : observerStokesU_) e *= factor;
@@ -621,6 +627,25 @@ void SphericalObserver::scale(double factor)
     boxEscapeEnergy_ *= factor;
     timedOutEnergy_ *= factor;
     cutoffEnergy_ *= factor;
+}
+
+void SphericalObserver::setPeelOffMetadata(bool enabled)
+{
+    peelOffOutputEnabled_ = enabled;
+}
+
+void SphericalObserver::recordPeelOff(size_t observerIndex, double energy, double frequency)
+{
+    if (observerIndex >= numObservers_)
+        return;
+    if (energy == 0.0 || !std::isfinite(energy) || !std::isfinite(frequency))
+        return;
+    peelOffEnergy_[observerIndex] += energy;
+    peelOffCount_[observerIndex] += 1;
+    if (numGroups_ > 1) {
+        size_t g = findGroup(frequency);
+        peelOffGroupEnergy_[observerIndex][g] += energy;
+    }
 }
 
 void SphericalObserver::mpiReduceToRank0()
@@ -751,6 +776,33 @@ void SphericalObserver::mpiReduceToRank0()
         for (size_t i = 0; i < numObservers_; ++i)
             for (size_t g = 0; g < numGroups_; ++g)
                 groupCrossingCount_[i][g] = flatCountRecv[i * numGroups_ + g];
+    }
+
+    // Peel-off arrays (ready for future distributed tau implementation)
+    if (peelOffOutputEnabled_) {
+        MPI_Reduce(peelOffEnergy_.data(), recvBuf.data(), count,
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            peelOffEnergy_ = recvBuf;
+
+        MPI_Reduce(peelOffCount_.data(), countRecvBuf.data(), count,
+                   MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            peelOffCount_ = countRecvBuf;
+
+        if (numGroups_ > 1) {
+            for (size_t i = 0; i < numObservers_; ++i)
+                for (size_t g = 0; g < numGroups_; ++g)
+                    flatSend[i * numGroups_ + g] = peelOffGroupEnergy_[i][g];
+            std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+            MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+                       MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            if (rank == 0) {
+                for (size_t i = 0; i < numObservers_; ++i)
+                    for (size_t g = 0; g < numGroups_; ++g)
+                        peelOffGroupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
+            }
+        }
     }
 
     double scalars[5] = {emittedEnergy_, absorbedEnergy_, boxEscapeEnergy_,
@@ -905,6 +957,29 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/tally/multigroup/group_polarization_angle", gAngle);
         }
 #endif
+    }
+
+    if (peelOffOutputEnabled_) {
+        writer.WriteElement("/tally/peeloff/energy", peelOffEnergy_);
+        double peelOffTotal = std::accumulate(peelOffEnergy_.begin(), peelOffEnergy_.end(), 0.0);
+        writer.WriteElement("/tally/peeloff/total_energy", peelOffTotal);
+        std::vector<double> peelOffLum(numObservers_);
+        double invSourceDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+        for (size_t i = 0; i < numObservers_; ++i)
+            peelOffLum[i] = peelOffEnergy_[i] * invSourceDt;
+        writer.WriteElement("/tally/peeloff/luminosity", peelOffLum);
+        std::vector<double> peelOffIsoEquiv(numObservers_);
+        for (size_t i = 0; i < numObservers_; ++i)
+            peelOffIsoEquiv[i] = (observerSolidAngle_[i] > 0.0)
+                ? peelOffLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
+        writer.WriteElement("/tally/peeloff/isotropic_equivalent_luminosity", peelOffIsoEquiv);
+        std::vector<double> peelOffCountDbl(numObservers_);
+        for (size_t i = 0; i < numObservers_; ++i)
+            peelOffCountDbl[i] = static_cast<double>(peelOffCount_[i]);
+        writer.WriteElement("/tally/peeloff/contribution_count", peelOffCountDbl);
+        if (numGroups_ > 1)
+            writer.WriteElement("/tally/peeloff/group_energy", peelOffGroupEnergy_);
+        writer.WriteElement("/diagnostics/peeloff_enabled", 1);
     }
 
     writer.WriteElement("/diagnostics/source_dt", diagnostics.sourceDt);
@@ -1163,6 +1238,26 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             file << "LOOKUP_TABLE default\n";
             for (size_t i = 0; i < N; ++i)
                 file << static_cast<double>(groupCrossingCount_[i][g]) << "\n";
+        }
+    }
+
+    if (peelOffOutputEnabled_) {
+        file << "SCALARS peeloff_luminosity double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << peelOffEnergy_[i] * invDt << "\n";
+
+        file << "SCALARS peeloff_energy double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i)
+            file << peelOffEnergy_[i] << "\n";
+
+        file << "SCALARS peeloff_isotropic_equivalent_luminosity double 1\n";
+        file << "LOOKUP_TABLE default\n";
+        for (size_t i = 0; i < N; ++i) {
+            double isoEq = (observerSolidAngle_[i] > 0.0)
+                ? peelOffEnergy_[i] * invDt * fourPi / observerSolidAngle_[i] : 0.0;
+            file << isoEq << "\n";
         }
     }
 }
