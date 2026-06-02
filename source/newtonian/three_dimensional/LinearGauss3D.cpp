@@ -836,15 +836,26 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 			new_cells_[j].velocity *= gamma;
 		}
 	}
-	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+	if (CellNumber > 0)
+		rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+	else
+		rslopes_.clear();
 	conditional_shrink(rslopes_);
 	naive_rslopes_.resize(CellNumber);
 	conditional_shrink(naive_rslopes_);
-	Slope3D temp1(cells[0], cells[0], cells[0]);
-	ComputationalCell3D temp2(cells[0]);
-	ComputationalCell3D temp3(cells[0]);
-	ComputationalCell3D temp4(cells[0]);
-	ComputationalCell3D temp5(cells[0]);
+	Slope3D temp1;
+	ComputationalCell3D temp2;
+	ComputationalCell3D temp3;
+	ComputationalCell3D temp4;
+	ComputationalCell3D temp5;
+	if (CellNumber > 0)
+	{
+		temp1 = Slope3D(cells[0], cells[0], cells[0]);
+		temp2 = cells[0];
+		temp3 = cells[0];
+		temp4 = cells[0];
+		temp5 = cells[0];
+	}
 	vector<ComputationalCell3D> neighbor_list;
 	vector<Vector3D> neighbor_mesh_list;
 	vector<Vector3D> neighbor_cm_list;
@@ -889,15 +900,26 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 			new_cells_[j].velocity *= gamma;
 		}
 	}
-	rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+	if (CellNumber > 0)
+		rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
+	else
+		rslopes_.clear();
 	conditional_shrink(rslopes_);
 	naive_rslopes_.resize(CellNumber);
 	conditional_shrink(naive_rslopes_);
-	Slope3D temp1(cells[0], cells[0], cells[0]);
-	ComputationalCell3D temp2(cells[0]);
-	ComputationalCell3D temp3(cells[0]);
-	ComputationalCell3D temp4(cells[0]);
-	ComputationalCell3D temp5(cells[0]);
+	Slope3D temp1;
+	ComputationalCell3D temp2;
+	ComputationalCell3D temp3;
+	ComputationalCell3D temp4;
+	ComputationalCell3D temp5;
+	if (CellNumber > 0)
+	{
+		temp1 = Slope3D(cells[0], cells[0], cells[0]);
+		temp2 = cells[0];
+		temp3 = cells[0];
+		temp4 = cells[0];
+		temp5 = cells[0];
+	}
 	vector<ComputationalCell3D> neighbor_list;
 	vector<Vector3D> neighbor_mesh_list;
 	vector<Vector3D> neighbor_cm_list;
@@ -911,7 +933,10 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 	for (size_t i = 0; i < CellNumber; ++i)
 		all_cell_cms[i] = tess.GetCellCM(i);
 	
-	res.resize(tess.GetTotalFacesNumber(), pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]));
+	if (CellNumber > 0)
+		res.resize(tess.GetTotalFacesNumber(), pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]));
+	else
+		res.clear();
 	ComputationalCell3D* cell_ref = nullptr;
 	size_t energy_index = ComputationalCell3D::tracerNames.size();
 	vector<string>::const_iterator it = binary_find(ComputationalCell3D::tracerNames.begin(),
