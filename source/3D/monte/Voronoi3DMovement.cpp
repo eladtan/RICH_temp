@@ -606,5 +606,14 @@ void UpdateNewCells(const Tessellation3D &tess, std::vector<Particle3D> &particl
     {
         cellIDs.push_back(cells[i].ID);
     }
+
     UpdateNewCells(tess, particles, cellIDs);
+
+    // Keep the persistent cell ID synchronized with the resolved local index.
+    // MC transport updates particle.cellIndex during cell crossings, but the
+    // cellID field is used by InternalMovements() after a later mesh exchange.
+    // Leaving it stale can make the first remap phase trust the wrong cell.
+    for(Particle3D &p : particles)
+        if(p.cellIndex < N)
+            p.cellID = cells[p.cellIndex].ID;
 }
