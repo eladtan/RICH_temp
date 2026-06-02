@@ -22,11 +22,73 @@ struct RadiationIMCPostProcessConfig
     struct PeelOffConfig
     {
         bool enabled = false;
+
+        // [exact] Source emission peel-off (static media only for event modes).
         bool sourceEmission = true;
+        // [exact, static-only] Isotropic elastic scatter peel-off.
+        // Requires non-polarized, isotropic elastic scattering model.
+        bool resolvedElasticScattering = false;
+        // [exact, static-only] Effective (absorption+reemission) scatter peel-off.
+        bool resolvedEffectiveScattering = false;
+
+        // [unsupported] RW closure peel-off — rejected in validation.
+        // Requires boundary-source geometry not yet implemented.
+        bool randomWalkClosureEvents = false;
+        // [exact, static-only] RW upscatter peel-off.
+        bool randomWalkUpscatterEvents = false;
+        // [approximate geometry] DDMC interface leak peel-off. Uses face-center
+        // cosine-law (Lambertian) source; face-area variation of optical depth
+        // to the observer is neglected. Under MPI with DistributedExact (the
+        // production default), ray propagation across ranks is exact.
+        // StrictAbort and LocalConservativeVacuum are explicit debug/fallback
+        // modes requiring allowApproximateMpiPeelOff=true.
+        bool ddmcLeakEvents = false;
+        // [exact, static-only] DDMC upscatter peel-off.
+        bool ddmcUpscatterEvents = false;
+
+        // [deprecated] Use explicit flags instead. Throws in validation.
         bool resolvedEvents = false;
+        // [deprecated] Use explicit flags instead. Throws in validation.
         bool acceleratedBoundaryEvents = false;
+
         double maxTau = 700.0;
         double rayNudgeFraction = 1e-10;
+        size_t maxRayCells = 100000;
+
+        // MPI ray policy for peel-off rays that exit the local rank domain.
+        // Exact distributed MPI requires collective queue processing; do not
+        // send MPI messages from inside maybeRecordPeelOff or event handlers.
+        //
+        // StrictAbort [debug/fallback]: reject all rays leaving local real
+        //   cells (conservative lower bound, not exact).
+        // LocalConservativeVacuum [debug/fallback]: keep tau accumulated to
+        //   the local MPI boundary; assume zero additional optical depth
+        //   beyond that boundary (approximate upper bound, not exact).
+        // DistributedExact [production MPI]: continue rays across ranks via
+        //   collective queue drained at known synchronization points.
+        enum class MpiRayPolicy { StrictAbort, LocalConservativeVacuum, DistributedExact };
+        MpiRayPolicy mpiRayPolicy = MpiRayPolicy::DistributedExact;
+
+        // Allow StrictAbort/LocalConservativeVacuum in MPI builds. If false,
+        // validation requires DistributedExact when RICH_MPI is defined.
+        bool allowApproximateMpiPeelOff = false;
+
+        // Maximum number of MPI exchange rounds in the distributed ray
+        // queue before marking remaining rays as failed.
+        size_t maxDistributedExchangeRounds = 64;
+
+        static const char* mpiRayPolicyName(MpiRayPolicy p)
+        {
+            switch (p)
+            {
+                case MpiRayPolicy::StrictAbort:              return "StrictAbort";
+                case MpiRayPolicy::LocalConservativeVacuum:  return "LocalConservativeVacuum";
+                case MpiRayPolicy::DistributedExact:         return "DistributedExact";
+                default:                                     return "Unknown";
+            }
+        }
+
+        bool writePerKindTallies = true;
     } peelOff;
 
     struct PolarizationConfig
@@ -45,10 +107,11 @@ struct RadiationIMCPostProcessConfig
 
 namespace PostProcessIMC
 {
-    void ValidateConfig(const RadiationIMCPostProcessConfig &config,
+    void NormalizeAndValidateConfig(RadiationIMCPostProcessConfig &config,
                         bool withCompton,
                         bool withMultigroupOpacity,
-                        bool withRandomWalk);
+                        bool withRandomWalk,
+                        bool withDDMC);
 
     template<class ParticleContainer>
     double PrepareGeneratedParticles(ParticleContainer &particles,

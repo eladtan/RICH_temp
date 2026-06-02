@@ -636,6 +636,57 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         functionality.change = MonteCarloParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
         ++this->ddmcLeakCount;
+
+        // DDMC leak peel-off uses face classification to correctly distinguish
+        // local, physical boundary, and remote-rank destinations. The DDMC
+        // scheme leaks packets through cell faces with a Lambertian angular
+        // distribution p(mu) = mu/pi for mu>0 (outward hemisphere). The face
+        // center is the representative emission point, consistent with the DDMC
+        // operator which treats each planar Voronoi face as uniform interface
+        // flux. This is an approximate estimator: face-area variation of optical
+        // depth to the observer is neglected.
+        if (postProcess_.peelOff.enabled &&
+            postProcess_.peelOff.ddmcLeakEvents &&
+            observer_)
+        {
+            FaceExitInfo exit = classifyFaceExit(chosen->faceIndex, cellIndex);
+
+            PeelOffSource source;
+            source.kind = PeelOffEventKind::DDMC_LEAK;
+            source.phaseMode = PeelOffSource::PhaseMode::CosineLeak;
+            source.surfaceNormalLab = nOut;
+            source.sourceLocation = leakFaceCenter;
+            source.labFrequency = materialParticle.frequency;
+            source.labWeight = materialParticle.weight;
+            source.eventTimeLeft = materialParticle.timeLeft;
+            source.sourceCellIndex = cellIndex;
+            source.startExit = exit;
+
+            bool validExit = true;
+            switch (exit.kind)
+            {
+                case FaceExitKind::LocalRealCell:
+                    source.startKind = PeelOffSource::StartKind::LocalCellPoint;
+                    source.sourceCellIndex = exit.nextLocalCell;
+                    break;
+
+                case FaceExitKind::PhysicalVacuumBoundary:
+                    source.startKind = PeelOffSource::StartKind::PhysicalVacuumBoundary;
+                    break;
+
+                case FaceExitKind::RemoteRankBoundary:
+                    source.startKind = PeelOffSource::StartKind::RemoteBoundaryFace;
+                    break;
+
+                default:
+                    peelOffCounters_.sourceExitClassFailed[
+                        static_cast<size_t>(PeelOffEventKind::DDMC_LEAK)]++;
+                    validExit = false;
+                    break;
+            }
+            if (validExit)
+                maybeRecordPeelOff(source);
+        }
     }
     else
     {
@@ -669,6 +720,21 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             IMCPolarization::ResetUnpolarized(materialParticle);
 #endif
         ++this->ddmcUpscatterCount;
+
+        if (postProcess_.peelOff.enabled &&
+            postProcess_.peelOff.ddmcUpscatterEvents &&
+            observer_)
+        {
+            PeelOffSource source;
+            source.sourceCellIndex = cellIndex;
+            source.sourceLocation = materialParticle.location;
+            source.labFrequency = materialParticle.frequency;
+            source.labWeight = materialParticle.weight;
+            source.eventTimeLeft = materialParticle.timeLeft;
+            source.kind = PeelOffEventKind::DDMC_UPSCATTER;
+            source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
+            maybeRecordPeelOff(source);
+        }
     }
 
     return finalizeAccelerationStep(false);

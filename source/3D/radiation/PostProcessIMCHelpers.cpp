@@ -2,15 +2,17 @@
 #include "SphericalObserver.hpp"
 #include "misc/universal_error.hpp"
 #include <cmath>
+#include <iostream>
 #include <sstream>
 
 namespace PostProcessIMC
 {
 
-void ValidateConfig(const RadiationIMCPostProcessConfig &config,
+void NormalizeAndValidateConfig(RadiationIMCPostProcessConfig &config,
                     bool withCompton,
                     bool withMultigroupOpacity,
-                    bool withRandomWalk)
+                    bool withRandomWalk,
+                    bool withDDMC)
 {
     if(config.peelOff.enabled && !config.enabled)
         throw UniversalError("PostProcess peel-off requires postProcess.enabled");
@@ -24,16 +26,57 @@ void ValidateConfig(const RadiationIMCPostProcessConfig &config,
             throw UniversalError("PostProcess peel-off: maxTau must be positive");
         if(config.peelOff.rayNudgeFraction <= 0.0 || config.peelOff.rayNudgeFraction >= 1.0)
             throw UniversalError("PostProcess peel-off: rayNudgeFraction must be in (0, 1)");
+        if(config.peelOff.maxRayCells == 0)
+            throw UniversalError("PostProcess peel-off: maxRayCells must be positive");
+
         if(config.peelOff.resolvedEvents)
-            throw UniversalError("PostProcess peel-off: resolvedEvents is not implemented in phase 1");
+            throw UniversalError("PostProcess peel-off: resolvedEvents is deprecated. "
+                "Use resolvedElasticScattering and resolvedEffectiveScattering explicitly");
         if(config.peelOff.acceleratedBoundaryEvents)
-            throw UniversalError("PostProcess peel-off: acceleratedBoundaryEvents is not implemented in phase 1");
-        if(withCompton)
+            throw UniversalError("PostProcess peel-off: acceleratedBoundaryEvents is deprecated. "
+                "Use ddmcLeakEvents, ddmcUpscatterEvents, randomWalkUpscatterEvents explicitly");
+
+        bool const anyEventPeelOff =
+            config.peelOff.resolvedElasticScattering ||
+            config.peelOff.resolvedEffectiveScattering ||
+            config.peelOff.randomWalkClosureEvents ||
+            config.peelOff.randomWalkUpscatterEvents ||
+            config.peelOff.ddmcLeakEvents ||
+            config.peelOff.ddmcUpscatterEvents;
+
+        if(withCompton && anyEventPeelOff)
+            throw UniversalError("PostProcess peel-off: event peel-off beyond source emission does not support Compton yet");
+        if(withCompton && config.peelOff.sourceEmission)
+        {
+            // Source-emission-only peel-off without Compton events is guarded:
+            // Compton changes opacity semantics. Disallow until validated.
             throw UniversalError("PostProcess peel-off does not support Compton yet");
+        }
+
+        if(config.useCellVelocities && anyEventPeelOff)
+            throw UniversalError("PostProcess peel-off: resolved/accelerated event peel-off with moving media (useCellVelocities=true) is not yet implemented; disable event peel-off or set useCellVelocities=false");
+
+        if(config.peelOff.randomWalkClosureEvents)
+            throw UniversalError("PostProcess peel-off: RW closure peel-off requires boundary-source geometry that is not yet implemented");
+        if(!withRandomWalk && config.peelOff.randomWalkUpscatterEvents)
+            throw UniversalError("PostProcess peel-off: RW upscatter peel-off requires withRandomWalk=true");
+        if(!withDDMC && (config.peelOff.ddmcLeakEvents || config.peelOff.ddmcUpscatterEvents))
+            throw UniversalError("PostProcess peel-off: DDMC peel-off flags require withDDMC=true");
+
+        using MpiPolicy = RadiationIMCPostProcessConfig::PeelOffConfig::MpiRayPolicy;
 #ifdef RICH_MPI
-        // Peel-off rays terminate at domain boundaries (ghost cells treated as
-        // vacuum escape). This underestimates tau for cross-domain rays but is
-        // safe — contributions are conservative (over-estimated flux).
+        if(config.peelOff.mpiRayPolicy != MpiPolicy::DistributedExact &&
+           !config.peelOff.allowApproximateMpiPeelOff)
+            throw UniversalError("PostProcess peel-off: MPI builds require mpiRayPolicy=DistributedExact "
+                "for correct peel-off. Set allowApproximateMpiPeelOff=true to use "
+                "StrictAbort or LocalConservativeVacuum as debug/fallback modes");
+#endif
+        if(config.peelOff.maxDistributedExchangeRounds == 0)
+            throw UniversalError("PostProcess peel-off: maxDistributedExchangeRounds must be positive");
+
+#ifdef MONTECARLO_POLARIZATION
+        if(config.polarization.enabled && config.peelOff.resolvedElasticScattering)
+            throw UniversalError("PostProcess peel-off: polarized elastic scatter peel-off requires Thomson/Stokes phase function that is not implemented");
 #endif
     }
     if (config.sourceDt <= 0.0)

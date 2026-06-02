@@ -1,10 +1,12 @@
 #ifndef SPHERICAL_OBSERVER_HPP
 #define SPHERICAL_OBSERVER_HPP
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <vector>
 #include "3D/elementary/Vector3D.hpp"
+#include "PeelOffTypes.hpp"
 
 // Stokes convention: weight = Stokes I (packet energy).
 // stokesQ/stokesU are fractional (q = Q/I, u = U/I), so
@@ -87,8 +89,31 @@ public:
     void addTimedOutEnergy(double energy);
     void addCutoffEnergy(double energy);
 
-    void setPeelOffMetadata(bool enabled);
-    void recordPeelOff(size_t observerIndex, double energy, double frequency);
+    struct PeelOffConfigSnapshot
+    {
+        bool sourceEmission = true;
+        bool resolvedElastic = false;
+        bool resolvedEffective = false;
+        bool rwClosure = false;
+        bool rwUpscatter = false;
+        bool ddmcLeak = false;
+        bool ddmcUpscatter = false;
+        double maxTau = 700.0;
+        double rayNudgeFraction = 1e-10;
+        size_t maxRayCells = 100000;
+        size_t maxDistributedExchangeRounds = 64;
+        std::string mpiRayPolicy = "DistributedExact";
+        int mpiRayPolicyId = 2;  // 0=StrictAbort, 1=LocalConservativeVacuum, 2=DistributedExact
+        bool allowApproximateMpiPeelOff = false;
+        bool writePerKindTallies = true;
+    };
+
+    void setPeelOffMetadata(bool enabled, bool writePerKindTallies = true);
+    void setPeelOffConfig(PeelOffConfigSnapshot const& snap);
+    void setPeelOffCounters(PeelOffCounters const& counters);
+    bool recordPeelOff(size_t observerIndex, double energy, double frequency);
+    bool recordPeelOff(size_t observerIndex, double energy, double frequency,
+                       PeelOffEventKind kind);
     std::vector<double> const& getPeelOffEnergy() const { return peelOffEnergy_; }
     std::vector<size_t> const& getPeelOffCount() const { return peelOffCount_; }
     std::vector<std::vector<double>> const& getPeelOffGroupEnergy() const { return peelOffGroupEnergy_; }
@@ -174,9 +199,17 @@ private:
 #endif
 
     bool peelOffOutputEnabled_ = false;
+    bool peelOffPerKindEnabled_ = false;
+    bool peelOffNeedsMpiReduction_ = false;
+    PeelOffCounters peelOffCounters_;
+    PeelOffConfigSnapshot peelOffConfigSnap_;
     std::vector<double> peelOffEnergy_;
     std::vector<size_t> peelOffCount_;
     std::vector<std::vector<double>> peelOffGroupEnergy_;
+
+    std::array<std::vector<double>, NumPeelOffKinds> peelOffEnergyByKind_;
+    std::array<std::vector<size_t>, NumPeelOffKinds> peelOffCountByKind_;
+    std::array<std::vector<std::vector<double>>, NumPeelOffKinds> peelOffGroupEnergyByKind_;
 
     double emittedEnergy_ = 0.0;
     double absorbedEnergy_ = 0.0;

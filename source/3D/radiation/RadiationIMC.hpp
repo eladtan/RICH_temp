@@ -12,6 +12,11 @@
 #include "RandomWalk.hpp"
 #include "Radiation/CMMC/src/compton_matrix_mc.hpp"
 #include "PostProcessIMCHelpers.hpp"
+#include "PeelOffTypes.hpp"
+#include "FaceExitInfo.hpp"
+#ifdef RICH_MPI
+#include <boost/container/flat_map.hpp>
+#endif
 
 class SphericalObserver;
 
@@ -222,21 +227,107 @@ private:
     RadiationIMCPostProcessConfig postProcess_;
     std::shared_ptr<SphericalObserver> observer_;
 
-    enum class PeelOffEventKind { SOURCE_EMISSION };
+    struct PeelOffSource
+    {
+        enum class StartKind
+        {
+            LocalCellPoint,
+            PhysicalVacuumBoundary,
+            RemoteBoundaryFace,
+            Invalid
+        };
 
-    void maybeRecordPeelOffIsotropic(
-        size_t sourceCellIndex,
-        Vector3D const& sourceLocation,
+        StartKind startKind = StartKind::LocalCellPoint;
+        size_t sourceCellIndex = 0;
+        FaceExitInfo startExit;
+
+        Vector3D sourceLocation;
+        double labFrequency = 0.0;
+        double labWeight = 0.0;
+        double eventTimeLeft = 0.0;
+        PeelOffEventKind kind = PeelOffEventKind::SOURCE_EMISSION;
+
+        enum class PhaseMode { Isotropic, ElasticScatter, CosineLeak };
+        PhaseMode phaseMode = PhaseMode::Isotropic;
+        Vector3D incomingDirectionLab;
+        Vector3D surfaceNormalLab;
+    };
+
+    struct PeelOffRayState
+    {
+        unsigned long long rayId = 0;
+        PeelOffEventKind kind = PeelOffEventKind::SOURCE_EMISSION;
+        size_t observerIndex = 0;
+        Vector3D nObsLab;
+        Vector3D position;
+        double remainingDist = 0.0;
+        double tau = 0.0;
+        double labFrequency = 0.0;
+        double contributionPrefactor = 0.0;
+        double eventTimeLeft = -1.0;
+        size_t currentLocalCell = std::numeric_limits<size_t>::max();
+        int originRank = 0;
+        int currentRank = 0;
+        unsigned int mpiHops = 0;
+        unsigned int cellsTraversed = 0;
+        bool crossedAnyMpiBoundary = false;
+        bool valid = true;
+
+        static constexpr size_t PackedDoubles = 20;
+        void packInto(double* buf) const;
+        static PeelOffRayState unpack(const double* buf);
+    };
+
+    struct LocalTraceOutcome
+    {
+        enum class Status
+        {
+            CompletedAtObserver,
+            CompletedAfterPhysicalVacuumExit,
+            NeedsRemoteContinuation,
+            TauClipped,
+            TimeRejected,
+            NoExitFace,
+            MaxCellsExceeded,
+            UnsupportedBoundary,
+            InvalidState
+        } status = Status::InvalidState;
+
+        PeelOffRayState state;
+        FaceExitInfo remoteExit;
+    };
+
+    FaceExitInfo classifyFaceExit(size_t faceGlobalIdx, size_t fromCell) const;
+
+    void maybeRecordPeelOff(PeelOffSource const& source);
+
+    LocalTraceOutcome continuePeelOffRayLocally(PeelOffRayState state) const;
+
+    void processPendingPeelOffRays();
+
+    double evaluatePeelOffPhasePdf(
+        PeelOffSource const& source,
+        Vector3D const& nObsLab) const;
+
+    double computePeelOffRayOpacity(
+        ComputationalCell3D const& cell,
+        size_t localCellIndex,
         double labFrequency,
-        double labWeight,
-        double eventTimeLeft,
-        PeelOffEventKind kind);
+        Vector3D const& nLab,
+        double& dopplerShiftOut,
+        double& shiftedFreqOut) const;
 
-    size_t peelOffAttemptedCount_ = 0;
-    size_t peelOffRecordedCount_ = 0;
-    size_t peelOffTauClippedCount_ = 0;
-    size_t peelOffTimeRejectedCount_ = 0;
-    size_t peelOffRayFailedCount_ = 0;
+    void resetPeelOffCounters();
+
+    PeelOffCounters peelOffCounters_;
+    std::vector<PeelOffRayState> pendingPeelOffRays_;
+    unsigned long long nextPeelOffRayId_ = 0;
+
+#ifdef RICH_MPI
+    // Built once in constructor; valid for entire RadiationIMC lifetime.
+    // INVARIANT: mesh topology is frozen during the radiation timestep.
+    boost::container::flat_map<size_t, std::pair<int, size_t>> peelOffGhostMap_;
+#endif
 
     bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeRandomWalkData();

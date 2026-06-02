@@ -5,8 +5,11 @@
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <map>
+#include <stdexcept>
+#include <string>
 
 // #define MONTECARLO_EPS 1e-7
 
@@ -148,11 +151,54 @@ namespace {
 
     if(postProcess_.enabled)
     {
-        PostProcessIMC::ValidateConfig(postProcess_, withCompton, parameters.withMultigroupOpacity, withRandomWalk);
+        PostProcessIMC::NormalizeAndValidateConfig(postProcess_, withCompton, parameters.withMultigroupOpacity, withRandomWalk, withDDMC);
         withHydro = false;
         diffusionPressureGradient = false;
         MMC = false;
         noHydroFeedback = true;
+
+        if(postProcess_.peelOff.enabled)
+        {
+            int rank = 0;
+#ifdef RICH_MPI
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            // Ghost map is built once here and remains valid for the entire
+            // RadiationIMC lifetime. INVARIANT: the mesh topology (cell/face
+            // connectivity, ghost cell ownership) is frozen during the radiation
+            // timestep. Repartition, remap, and AMR occur in separate
+            // operator-split phases outside this object's scope.
+            peelOffGhostMap_ = GetGhostMap(this->grid);
+#endif
+            if(rank == 0)
+            {
+                using PeelOff = RadiationIMCPostProcessConfig::PeelOffConfig;
+                std::cout << "PeelOff config: sourceEmission=" << postProcess_.peelOff.sourceEmission
+                          << " resolvedElastic=" << postProcess_.peelOff.resolvedElasticScattering
+                          << " resolvedEffective=" << postProcess_.peelOff.resolvedEffectiveScattering
+                          << " rwClosure=" << postProcess_.peelOff.randomWalkClosureEvents
+                          << " rwUpscatter=" << postProcess_.peelOff.randomWalkUpscatterEvents
+                          << " ddmcLeak=" << postProcess_.peelOff.ddmcLeakEvents
+                          << " ddmcUpscatter=" << postProcess_.peelOff.ddmcUpscatterEvents
+                          << " maxTau=" << postProcess_.peelOff.maxTau
+                          << " maxRayCells=" << postProcess_.peelOff.maxRayCells
+                          << " maxDistributedExchangeRounds=" << postProcess_.peelOff.maxDistributedExchangeRounds
+                          << " mpiRayPolicy=" << PeelOff::mpiRayPolicyName(postProcess_.peelOff.mpiRayPolicy)
+                          << " writePerKindTallies=" << postProcess_.peelOff.writePerKindTallies
+                          << std::endl;
+            }
+        }
+
+        if(postProcess_.peelOff.enabled && this->useTransportVelocities_)
+        {
+            bool anyEvent =
+                postProcess_.peelOff.resolvedElasticScattering ||
+                postProcess_.peelOff.resolvedEffectiveScattering ||
+                postProcess_.peelOff.randomWalkUpscatterEvents ||
+                postProcess_.peelOff.ddmcLeakEvents ||
+                postProcess_.peelOff.ddmcUpscatterEvents;
+            if(anyEvent)
+                throw UniversalError("PostProcess peel-off: event peel-off requires useTransportVelocities_=false (check withHydro, MMC, and useCellVelocities)");
+        }
     }
     if(this->withCompton && this->withRandomWalk)
     {
@@ -237,7 +283,29 @@ void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
     observer_ = std::move(observer);
     if(observer_)
     {
-        observer_->setPeelOffMetadata(postProcess_.enabled && postProcess_.peelOff.enabled);
+        observer_->setPeelOffMetadata(postProcess_.enabled && postProcess_.peelOff.enabled,
+                                      postProcess_.peelOff.writePerKindTallies);
+        if (postProcess_.enabled && postProcess_.peelOff.enabled)
+        {
+            using PeelOff = RadiationIMCPostProcessConfig::PeelOffConfig;
+            SphericalObserver::PeelOffConfigSnapshot snap;
+            snap.sourceEmission = postProcess_.peelOff.sourceEmission;
+            snap.resolvedElastic = postProcess_.peelOff.resolvedElasticScattering;
+            snap.resolvedEffective = postProcess_.peelOff.resolvedEffectiveScattering;
+            snap.rwClosure = postProcess_.peelOff.randomWalkClosureEvents;
+            snap.rwUpscatter = postProcess_.peelOff.randomWalkUpscatterEvents;
+            snap.ddmcLeak = postProcess_.peelOff.ddmcLeakEvents;
+            snap.ddmcUpscatter = postProcess_.peelOff.ddmcUpscatterEvents;
+            snap.maxTau = postProcess_.peelOff.maxTau;
+            snap.rayNudgeFraction = postProcess_.peelOff.rayNudgeFraction;
+            snap.maxRayCells = postProcess_.peelOff.maxRayCells;
+            snap.mpiRayPolicy = PeelOff::mpiRayPolicyName(postProcess_.peelOff.mpiRayPolicy);
+            snap.mpiRayPolicyId = static_cast<int>(postProcess_.peelOff.mpiRayPolicy);
+            snap.allowApproximateMpiPeelOff = postProcess_.peelOff.allowApproximateMpiPeelOff;
+            snap.maxDistributedExchangeRounds = postProcess_.peelOff.maxDistributedExchangeRounds;
+            snap.writePerKindTallies = postProcess_.peelOff.writePerKindTallies;
+            observer_->setPeelOffConfig(snap);
+        }
     }
 #ifdef MONTECARLO_POLARIZATION
     if(observer_)
@@ -540,6 +608,22 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
             {
                 particle.velocity = opacity->getNewScatterVelocity(cell, particle);
             }
+
+            if (postProcess_.peelOff.enabled &&
+                postProcess_.peelOff.resolvedElasticScattering &&
+                observer_)
+            {
+                PeelOffSource source;
+                source.sourceCellIndex = cellIndex;
+                source.sourceLocation = particle.location;
+                source.labFrequency = particle.frequency;
+                source.labWeight = particle.weight;
+                source.eventTimeLeft = particle.timeLeft;
+                source.kind = PeelOffEventKind::RESOLVED_ELASTIC_SCATTER;
+                source.phaseMode = PeelOffSource::PhaseMode::ElasticScatter;
+                source.incomingDirectionLab = normalize(oldVelocity);
+                maybeRecordPeelOff(source);
+            }
         }
         else if((eventRandom -= elasticScatteringOpacity) < effectiveAbsorptionOpacity)
         {
@@ -576,6 +660,22 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
                 ClampFrequencyToBounds(particle.frequency);
             }
         }
+        if (isEffectiveScatter &&
+            postProcess_.peelOff.enabled &&
+            postProcess_.peelOff.resolvedEffectiveScattering &&
+            observer_)
+        {
+            PeelOffSource source;
+            source.sourceCellIndex = cellIndex;
+            source.sourceLocation = particle.location;
+            source.labFrequency = particle.frequency;
+            source.labWeight = particle.weight;
+            source.eventTimeLeft = particle.timeLeft;
+            source.kind = PeelOffEventKind::RESOLVED_EFFECTIVE_SCATTER;
+            source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
+            maybeRecordPeelOff(source);
+        }
+
 #ifdef MONTECARLO_POLARIZATION
         if(postProcess_.enabled && postProcess_.polarization.enabled && isEffectiveScatter)
             IMCPolarization::ResetUnpolarized(particle);
@@ -663,18 +763,164 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
         printAccelerationStats();
         if (postProcess_.peelOff.enabled)
         {
+            // Drain pending rays before final reporting
+            processPendingPeelOffRays();
+
+            if (!pendingPeelOffRays_.empty())
+            {
+                std::string msg = "PeelOff: pending rays remain after drain ("
+                    + std::to_string(pendingPeelOffRays_.size()) + " rays); "
+                    "this indicates a logic error in processPendingPeelOffRays";
+#ifdef RICH_MPI
+                std::cerr << msg << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+#else
+                throw std::runtime_error(msg);
+#endif
+            }
+
             int rank = 0;
 #ifdef RICH_MPI
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            static constexpr size_t nFields = 21;
+            static constexpr size_t nTotal = nFields * NumPeelOffKinds;
+            unsigned long long localBuf[nTotal];
+            for (size_t k = 0; k < NumPeelOffKinds; ++k)
+            {
+                localBuf[k + 0  * NumPeelOffKinds] = peelOffCounters_.directionsConsidered[k];
+                localBuf[k + 1  * NumPeelOffKinds] = peelOffCounters_.phaseAccepted[k];
+                localBuf[k + 2  * NumPeelOffKinds] = peelOffCounters_.phaseRejected[k];
+                localBuf[k + 3  * NumPeelOffKinds] = peelOffCounters_.observerMissed[k];
+                localBuf[k + 4  * NumPeelOffKinds] = peelOffCounters_.timeRejected[k];
+                localBuf[k + 5  * NumPeelOffKinds] = peelOffCounters_.raysStarted[k];
+                localBuf[k + 6  * NumPeelOffKinds] = peelOffCounters_.raysCompleted[k];
+                localBuf[k + 7  * NumPeelOffKinds] = peelOffCounters_.recorded[k];
+                localBuf[k + 8  * NumPeelOffKinds] = peelOffCounters_.tauClipped[k];
+                localBuf[k + 9  * NumPeelOffKinds] = peelOffCounters_.rayFailed[k];
+                localBuf[k + 10 * NumPeelOffKinds] = peelOffCounters_.noExitFace[k];
+                localBuf[k + 11 * NumPeelOffKinds] = peelOffCounters_.maxCellsExceeded[k];
+                localBuf[k + 12 * NumPeelOffKinds] = peelOffCounters_.unsupportedBoundary[k];
+                localBuf[k + 13 * NumPeelOffKinds] = peelOffCounters_.lostRemoteCell[k];
+                localBuf[k + 14 * NumPeelOffKinds] = peelOffCounters_.distributedExchangeLimitExceeded[k];
+                localBuf[k + 15 * NumPeelOffKinds] = peelOffCounters_.raysCrossedMpiBoundary[k];
+                localBuf[k + 16 * NumPeelOffKinds] = peelOffCounters_.mpiBoundaryCrossings[k];
+                localBuf[k + 17 * NumPeelOffKinds] = peelOffCounters_.physicalVacuumExits[k];
+                localBuf[k + 18 * NumPeelOffKinds] = peelOffCounters_.invalidState[k];
+                localBuf[k + 19 * NumPeelOffKinds] = peelOffCounters_.sourceExitClassFailed[k];
+                localBuf[k + 20 * NumPeelOffKinds] = peelOffCounters_.mpiBoundaryRejected[k];
+            }
+            if (rank == 0)
+                MPI_Reduce(MPI_IN_PLACE, localBuf, static_cast<int>(nTotal),
+                           MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            else
+                MPI_Reduce(localBuf, nullptr, static_cast<int>(nTotal),
+                           MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            if (rank == 0)
+            {
+                for (size_t k = 0; k < NumPeelOffKinds; ++k)
+                {
+                    peelOffCounters_.directionsConsidered[k]       = localBuf[k + 0  * NumPeelOffKinds];
+                    peelOffCounters_.phaseAccepted[k]              = localBuf[k + 1  * NumPeelOffKinds];
+                    peelOffCounters_.phaseRejected[k]              = localBuf[k + 2  * NumPeelOffKinds];
+                    peelOffCounters_.observerMissed[k]             = localBuf[k + 3  * NumPeelOffKinds];
+                    peelOffCounters_.timeRejected[k]               = localBuf[k + 4  * NumPeelOffKinds];
+                    peelOffCounters_.raysStarted[k]                = localBuf[k + 5  * NumPeelOffKinds];
+                    peelOffCounters_.raysCompleted[k]              = localBuf[k + 6  * NumPeelOffKinds];
+                    peelOffCounters_.recorded[k]                   = localBuf[k + 7  * NumPeelOffKinds];
+                    peelOffCounters_.tauClipped[k]                 = localBuf[k + 8  * NumPeelOffKinds];
+                    peelOffCounters_.rayFailed[k]                  = localBuf[k + 9  * NumPeelOffKinds];
+                    peelOffCounters_.noExitFace[k]                 = localBuf[k + 10 * NumPeelOffKinds];
+                    peelOffCounters_.maxCellsExceeded[k]           = localBuf[k + 11 * NumPeelOffKinds];
+                    peelOffCounters_.unsupportedBoundary[k]        = localBuf[k + 12 * NumPeelOffKinds];
+                    peelOffCounters_.lostRemoteCell[k]             = localBuf[k + 13 * NumPeelOffKinds];
+                    peelOffCounters_.distributedExchangeLimitExceeded[k] = localBuf[k + 14 * NumPeelOffKinds];
+                    peelOffCounters_.raysCrossedMpiBoundary[k]     = localBuf[k + 15 * NumPeelOffKinds];
+                    peelOffCounters_.mpiBoundaryCrossings[k]       = localBuf[k + 16 * NumPeelOffKinds];
+                    peelOffCounters_.physicalVacuumExits[k]        = localBuf[k + 17 * NumPeelOffKinds];
+                    peelOffCounters_.invalidState[k]               = localBuf[k + 18 * NumPeelOffKinds];
+                    peelOffCounters_.sourceExitClassFailed[k]      = localBuf[k + 19 * NumPeelOffKinds];
+                    peelOffCounters_.mpiBoundaryRejected[k]       = localBuf[k + 20 * NumPeelOffKinds];
+                }
+            }
 #endif
             if (rank == 0)
             {
-                std::cout << "PeelOff: attempted=" << peelOffAttemptedCount_
-                          << " recorded=" << peelOffRecordedCount_
-                          << " tauClipped=" << peelOffTauClippedCount_
-                          << " timeRejected=" << peelOffTimeRejectedCount_
-                          << " rayFailed=" << peelOffRayFailedCount_
+                std::cout << "PeelOff: directions=" << peelOffCounters_.totalDirectionsConsidered()
+                          << " raysStarted=" << peelOffCounters_.totalRaysStarted()
+                          << " recorded=" << peelOffCounters_.totalRecorded()
+                          << " tauClipped=" << peelOffCounters_.totalTauClipped()
+                          << " rayFailed=" << peelOffCounters_.totalRayFailed()
                           << std::endl;
+                for (size_t k = 0; k < NumPeelOffKinds; ++k)
+                {
+                    if (peelOffCounters_.directionsConsidered[k] > 0)
+                    {
+                        std::cout << "  " << peelOffKindName(static_cast<PeelOffEventKind>(k))
+                                  << ": dirs=" << peelOffCounters_.directionsConsidered[k]
+                                  << " phaseOk=" << peelOffCounters_.phaseAccepted[k]
+                                  << " phaseRej=" << peelOffCounters_.phaseRejected[k]
+                                  << " obsMiss=" << peelOffCounters_.observerMissed[k]
+                                  << " timeRej=" << peelOffCounters_.timeRejected[k]
+                                  << " started=" << peelOffCounters_.raysStarted[k]
+                                  << " completed=" << peelOffCounters_.raysCompleted[k]
+                                  << " recorded=" << peelOffCounters_.recorded[k]
+                                  << " tauClip=" << peelOffCounters_.tauClipped[k]
+                                  << " noExit=" << peelOffCounters_.noExitFace[k]
+                                  << " maxCells=" << peelOffCounters_.maxCellsExceeded[k]
+                                  << " unsupBnd=" << peelOffCounters_.unsupportedBoundary[k]
+                                  << " lostRemote=" << peelOffCounters_.lostRemoteCell[k]
+                                  << " exchLimitExc=" << peelOffCounters_.distributedExchangeLimitExceeded[k]
+                                  << " mpiRejected=" << peelOffCounters_.mpiBoundaryRejected[k]
+                                  << " mpiRays=" << peelOffCounters_.raysCrossedMpiBoundary[k]
+                                  << " mpiCrossings=" << peelOffCounters_.mpiBoundaryCrossings[k]
+                                  << " vacExits=" << peelOffCounters_.physicalVacuumExits[k]
+                                  << " invalidSt=" << peelOffCounters_.invalidState[k]
+                                  << " | srcExitFail=" << peelOffCounters_.sourceExitClassFailed[k]
+                                  << std::endl;
+                    }
+                }
+                {
+                    unsigned long long totalMpiHops = 0;
+                    for (auto v : peelOffCounters_.mpiBoundaryCrossings) totalMpiHops += v;
+                    if (totalMpiHops > 0)
+                    {
+                        using MpiPolicy = RadiationIMCPostProcessConfig::PeelOffConfig::MpiRayPolicy;
+                        if (postProcess_.peelOff.mpiRayPolicy == MpiPolicy::DistributedExact)
+                            std::cout << "PeelOff: " << totalMpiHops
+                                      << " MPI boundary crossings handled via DistributedExact"
+                                      << std::endl;
+                        else if (postProcess_.peelOff.mpiRayPolicy == MpiPolicy::StrictAbort)
+                            std::cout << "PeelOff WARNING: " << totalMpiHops
+                                      << " rays crossed non-local cell boundaries and were rejected (StrictAbort)"
+                                      << std::endl;
+                        else
+                            std::cout << "PeelOff WARNING: " << totalMpiHops
+                                      << " rays crossed non-local cell boundaries and used approximate "
+                                      << "local-vacuum continuation (LocalConservativeVacuum)"
+                                      << std::endl;
+                    }
+                }
+            }
+#ifdef RICH_MPI
+            if (rank == 0)
+#endif
+            {
+                // Counter invariants are global post-reduction invariants in
+                // DistributedExact MPI: raysStarted and raysCompleted/rayFailed
+                // may occur on different ranks, so only the reduced sum on
+                // rank 0 is expected to satisfy them.
+                std::string invariantMsg;
+                if (!peelOffCounters_.validateInvariants(invariantMsg))
+                {
+                    std::cerr << "PeelOff counter invariant violation: " << invariantMsg << std::endl;
+#ifdef RICH_MPI
+                    MPI_Abort(MPI_COMM_WORLD, 1);
+#else
+                    throw std::runtime_error("PeelOff counter invariant violation: " + invariantMsg);
+#endif
+                }
+                if (observer_)
+                    observer_->setPeelOffCounters(peelOffCounters_);
             }
         }
         return;
@@ -1790,25 +2036,30 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         if (observer_)
             observer_->addEmittedEnergy(emitted);
 
+        resetPeelOffCounters();
+
+        // Source emission peel-off: RICH's generateParticles() samples
+        // emission directions uniformly on the unit sphere in the lab frame
+        // (see RadiationIMC::generateParticles / generateIsotropicDirection).
+        // The peel-off phase PDF is therefore 1/(4*pi) in lab coordinates.
+        // The ray tracer applies Doppler-shifted opacity along the path.
         if (postProcess_.peelOff.enabled && postProcess_.peelOff.sourceEmission && observer_)
         {
-            peelOffAttemptedCount_ = 0;
-            peelOffRecordedCount_ = 0;
-            peelOffTauClippedCount_ = 0;
-            peelOffTimeRejectedCount_ = 0;
-            peelOffRayFailedCount_ = 0;
-
             for (auto const& p : newParticles)
             {
-                maybeRecordPeelOffIsotropic(
-                    p.cellIndex,
-                    p.location,
-                    p.frequency,
-                    p.weight,
-                    p.timeLeft,
-                    PeelOffEventKind::SOURCE_EMISSION);
+                PeelOffSource source;
+                source.sourceCellIndex = p.cellIndex;
+                source.sourceLocation = p.location;
+                source.labFrequency = p.frequency;
+                source.labWeight = p.weight;
+                source.eventTimeLeft = p.timeLeft;
+                source.kind = PeelOffEventKind::SOURCE_EMISSION;
+                source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
+                maybeRecordPeelOff(source);
             }
         }
+        if (postProcess_.peelOff.enabled)
+            processPendingPeelOffRays();
 
         return newParticles;
     }

@@ -609,6 +609,15 @@ void SphericalObserver::scale(double factor)
     for (auto& e : peelOffEnergy_) e *= factor;
     for (auto& gv : peelOffGroupEnergy_)
         for (auto& e : gv) e *= factor;
+    if (peelOffPerKindEnabled_)
+    {
+        for (size_t k = 0; k < NumPeelOffKinds; ++k)
+        {
+            for (auto& e : peelOffEnergyByKind_[k]) e *= factor;
+            for (auto& gv : peelOffGroupEnergyByKind_[k])
+                for (auto& e : gv) e *= factor;
+        }
+    }
 #ifdef MONTECARLO_POLARIZATION
     for (auto& e : observerStokesQ_) e *= factor;
     for (auto& e : observerStokesU_) e *= factor;
@@ -629,23 +638,67 @@ void SphericalObserver::scale(double factor)
     cutoffEnergy_ *= factor;
 }
 
-void SphericalObserver::setPeelOffMetadata(bool enabled)
+void SphericalObserver::setPeelOffMetadata(bool enabled, bool writePerKindTallies)
 {
     peelOffOutputEnabled_ = enabled;
+    peelOffPerKindEnabled_ = enabled && writePerKindTallies;
+    if (peelOffPerKindEnabled_)
+    {
+        for (size_t k = 0; k < NumPeelOffKinds; ++k)
+        {
+            peelOffEnergyByKind_[k].assign(numObservers_, 0.0);
+            peelOffCountByKind_[k].assign(numObservers_, 0);
+            peelOffGroupEnergyByKind_[k].assign(numObservers_,
+                std::vector<double>(numGroups_, 0.0));
+        }
+    }
 }
 
-void SphericalObserver::recordPeelOff(size_t observerIndex, double energy, double frequency)
+void SphericalObserver::setPeelOffConfig(PeelOffConfigSnapshot const& snap)
+{
+    peelOffConfigSnap_ = snap;
+}
+
+void SphericalObserver::setPeelOffCounters(PeelOffCounters const& counters)
+{
+    peelOffCounters_ = counters;
+}
+
+bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy, double frequency)
+{
+    return recordPeelOff(observerIndex, energy, frequency, PeelOffEventKind::SOURCE_EMISSION);
+}
+
+bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy,
+                                       double frequency, PeelOffEventKind kind)
 {
     if (observerIndex >= numObservers_)
-        return;
-    if (energy == 0.0 || !std::isfinite(energy) || !std::isfinite(frequency))
-        return;
+        return false;
+    if (!(energy > 0.0) || !std::isfinite(energy) ||
+        !(frequency > 0.0) || !std::isfinite(frequency))
+        return false;
+
+    peelOffNeedsMpiReduction_ = true;
     peelOffEnergy_[observerIndex] += energy;
     peelOffCount_[observerIndex] += 1;
-    if (numGroups_ > 1) {
+    if (numGroups_ > 1)
+    {
         size_t g = findGroup(frequency);
         peelOffGroupEnergy_[observerIndex][g] += energy;
     }
+
+    size_t k = static_cast<size_t>(kind);
+    if (peelOffPerKindEnabled_ && k < NumPeelOffKinds)
+    {
+        peelOffEnergyByKind_[k][observerIndex] += energy;
+        peelOffCountByKind_[k][observerIndex] += 1;
+        if (numGroups_ > 1)
+        {
+            size_t g = findGroup(frequency);
+            peelOffGroupEnergyByKind_[k][observerIndex][g] += energy;
+        }
+    }
+    return true;
 }
 
 void SphericalObserver::mpiReduceToRank0()
@@ -778,7 +831,6 @@ void SphericalObserver::mpiReduceToRank0()
                 groupCrossingCount_[i][g] = flatCountRecv[i * numGroups_ + g];
     }
 
-    // Peel-off arrays (ready for future distributed tau implementation)
     if (peelOffOutputEnabled_) {
         MPI_Reduce(peelOffEnergy_.data(), recvBuf.data(), count,
                    MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -803,6 +855,41 @@ void SphericalObserver::mpiReduceToRank0()
                         peelOffGroupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
             }
         }
+
+        if (peelOffPerKindEnabled_) {
+            for (size_t k = 0; k < NumPeelOffKinds; ++k) {
+                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
+                MPI_Reduce(peelOffEnergyByKind_[k].data(), recvBuf.data(),
+                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+                if (rank == 0)
+                    peelOffEnergyByKind_[k] = recvBuf;
+
+                std::fill(countRecvBuf.begin(), countRecvBuf.end(), 0);
+                MPI_Reduce(peelOffCountByKind_[k].data(), countRecvBuf.data(),
+                           count, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+                if (rank == 0)
+                    peelOffCountByKind_[k] = countRecvBuf;
+
+                if (numGroups_ > 1) {
+                    for (size_t i = 0; i < numObservers_; ++i)
+                        for (size_t g = 0; g < numGroups_; ++g)
+                            flatSend[i * numGroups_ + g] =
+                                peelOffGroupEnergyByKind_[k][i][g];
+                    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+                    MPI_Reduce(flatSend.data(), flatRecv.data(),
+                               static_cast<int>(flatSize),
+                               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+                    if (rank == 0) {
+                        for (size_t i = 0; i < numObservers_; ++i)
+                            for (size_t g = 0; g < numGroups_; ++g)
+                                peelOffGroupEnergyByKind_[k][i][g] =
+                                    flatRecv[i * numGroups_ + g];
+                    }
+                }
+            }
+        }
+        if (rank == 0)
+            peelOffNeedsMpiReduction_ = false;
     }
 
     double scalars[5] = {emittedEnergy_, absorbedEnergy_, boxEscapeEnergy_,
@@ -960,6 +1047,16 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     }
 
     if (peelOffOutputEnabled_) {
+#ifdef RICH_MPI
+        writer.WriteElement("/diagnostics/peeloff/status/mpi_reduction_complete",
+            peelOffNeedsMpiReduction_ ? 0 : 1);
+        if (peelOffNeedsMpiReduction_)
+        {
+            std::cerr << "PeelOff FATAL: SphericalObserver::writeHDF5 called with peel-off "
+                      << "data that has not been MPI-reduced." << std::endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+#endif
         writer.WriteElement("/tally/peeloff/energy", peelOffEnergy_);
         double peelOffTotal = std::accumulate(peelOffEnergy_.begin(), peelOffEnergy_.end(), 0.0);
         writer.WriteElement("/tally/peeloff/total_energy", peelOffTotal);
@@ -979,6 +1076,174 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/tally/peeloff/contribution_count", peelOffCountDbl);
         if (numGroups_ > 1)
             writer.WriteElement("/tally/peeloff/group_energy", peelOffGroupEnergy_);
+
+        if (peelOffPerKindEnabled_)
+        {
+            for (size_t k = 0; k < NumPeelOffKinds; ++k)
+            {
+                std::string prefix = std::string("/tally/peeloff/by_kind/")
+                    + peelOffKindName(static_cast<PeelOffEventKind>(k));
+                writer.WriteElement(prefix + "/energy",
+                                    peelOffEnergyByKind_[k]);
+                std::vector<double> kindLum(numObservers_);
+                for (size_t i = 0; i < numObservers_; ++i)
+                    kindLum[i] = peelOffEnergyByKind_[k][i] * invSourceDt;
+                writer.WriteElement(prefix + "/luminosity", kindLum);
+                std::vector<double> kindCountDbl(numObservers_);
+                for (size_t i = 0; i < numObservers_; ++i)
+                    kindCountDbl[i] = static_cast<double>(
+                        peelOffCountByKind_[k][i]);
+                writer.WriteElement(prefix + "/contribution_count", kindCountDbl);
+                if (numGroups_ > 1)
+                    writer.WriteElement(prefix + "/group_energy",
+                                        peelOffGroupEnergyByKind_[k]);
+            }
+        }
+
+        for (size_t k = 0; k < NumPeelOffKinds; ++k)
+        {
+            std::string dp = std::string("/diagnostics/peeloff/by_kind/")
+                + peelOffKindName(static_cast<PeelOffEventKind>(k));
+            writer.WriteElement(dp + "/directions_considered",
+                static_cast<double>(peelOffCounters_.directionsConsidered[k]));
+            writer.WriteElement(dp + "/phase_accepted",
+                static_cast<double>(peelOffCounters_.phaseAccepted[k]));
+            writer.WriteElement(dp + "/phase_rejected",
+                static_cast<double>(peelOffCounters_.phaseRejected[k]));
+            writer.WriteElement(dp + "/observer_missed",
+                static_cast<double>(peelOffCounters_.observerMissed[k]));
+            writer.WriteElement(dp + "/time_rejected",
+                static_cast<double>(peelOffCounters_.timeRejected[k]));
+            writer.WriteElement(dp + "/rays_started",
+                static_cast<double>(peelOffCounters_.raysStarted[k]));
+            writer.WriteElement(dp + "/rays_completed",
+                static_cast<double>(peelOffCounters_.raysCompleted[k]));
+            writer.WriteElement(dp + "/recorded",
+                static_cast<double>(peelOffCounters_.recorded[k]));
+            writer.WriteElement(dp + "/tau_clipped",
+                static_cast<double>(peelOffCounters_.tauClipped[k]));
+            writer.WriteElement(dp + "/ray_failed",
+                static_cast<double>(peelOffCounters_.rayFailed[k]));
+            writer.WriteElement(dp + "/no_exit_face",
+                static_cast<double>(peelOffCounters_.noExitFace[k]));
+            writer.WriteElement(dp + "/max_cells_exceeded",
+                static_cast<double>(peelOffCounters_.maxCellsExceeded[k]));
+            writer.WriteElement(dp + "/unsupported_boundary",
+                static_cast<double>(peelOffCounters_.unsupportedBoundary[k]));
+            writer.WriteElement(dp + "/lost_remote_cell",
+                static_cast<double>(peelOffCounters_.lostRemoteCell[k]));
+            writer.WriteElement(dp + "/distributed_exchange_limit_exceeded",
+                static_cast<double>(peelOffCounters_.distributedExchangeLimitExceeded[k]));
+            writer.WriteElement(dp + "/mpi_boundary_rejected",
+                static_cast<double>(peelOffCounters_.mpiBoundaryRejected[k]));
+            writer.WriteElement(dp + "/rays_crossed_mpi_boundary",
+                static_cast<double>(peelOffCounters_.raysCrossedMpiBoundary[k]));
+            writer.WriteElement(dp + "/mpi_boundary_crossings",
+                static_cast<double>(peelOffCounters_.mpiBoundaryCrossings[k]));
+            writer.WriteElement(dp + "/physical_vacuum_exits",
+                static_cast<double>(peelOffCounters_.physicalVacuumExits[k]));
+            writer.WriteElement(dp + "/invalid_state",
+                static_cast<double>(peelOffCounters_.invalidState[k]));
+            writer.WriteElement(dp + "/source_exit_class_failed",
+                static_cast<double>(peelOffCounters_.sourceExitClassFailed[k]));
+        }
+
+        writer.WriteElement("/diagnostics/peeloff/config/source_emission",
+            peelOffConfigSnap_.sourceEmission ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/resolved_elastic",
+            peelOffConfigSnap_.resolvedElastic ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/resolved_effective",
+            peelOffConfigSnap_.resolvedEffective ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/rw_closure",
+            peelOffConfigSnap_.rwClosure ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/rw_upscatter",
+            peelOffConfigSnap_.rwUpscatter ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/ddmc_leak",
+            peelOffConfigSnap_.ddmcLeak ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/ddmc_upscatter",
+            peelOffConfigSnap_.ddmcUpscatter ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/max_tau",
+            peelOffConfigSnap_.maxTau);
+        writer.WriteElement("/diagnostics/peeloff/config/ray_nudge_fraction",
+            peelOffConfigSnap_.rayNudgeFraction);
+        writer.WriteElement("/diagnostics/peeloff/config/max_ray_cells",
+            static_cast<double>(peelOffConfigSnap_.maxRayCells));
+        writer.WriteElement("/diagnostics/peeloff/config/max_distributed_exchange_rounds",
+            static_cast<double>(peelOffConfigSnap_.maxDistributedExchangeRounds));
+        writer.WriteElement("/diagnostics/peeloff/config/write_per_kind_tallies",
+            peelOffConfigSnap_.writePerKindTallies ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/mpi_ray_policy_id",
+            peelOffConfigSnap_.mpiRayPolicyId);
+        writer.WriteElement("/diagnostics/peeloff/config/mpi_ray_policy",
+            peelOffConfigSnap_.mpiRayPolicy);
+        {
+            bool exactMpi = (peelOffConfigSnap_.mpiRayPolicyId == 2);
+#ifndef RICH_MPI
+            exactMpi = false;
+#endif
+            writer.WriteElement("/diagnostics/peeloff/config/requested_exact_mpi_ray_tracing",
+                exactMpi ? 1 : 0);
+
+            bool noDistributedFailures = true;
+            bool noSourceClassFailures = true;
+            for (size_t kk = 0; kk < NumPeelOffKinds; ++kk)
+            {
+                if (peelOffCounters_.lostRemoteCell[kk] > 0 ||
+                    peelOffCounters_.distributedExchangeLimitExceeded[kk] > 0 ||
+                    peelOffCounters_.mpiBoundaryRejected[kk] > 0 ||
+                    peelOffCounters_.unsupportedBoundary[kk] > 0 ||
+                    peelOffCounters_.invalidState[kk] > 0)
+                    noDistributedFailures = false;
+                if (peelOffCounters_.sourceExitClassFailed[kk] > 0)
+                    noSourceClassFailures = false;
+            }
+            writer.WriteElement("/diagnostics/peeloff/status/exact_mpi_no_distributed_failures",
+                (exactMpi && noDistributedFailures && noSourceClassFailures) ? 1 : 0);
+            // mpi_exact_output: no MPI-related failure occurred (routing,
+            // classification, exchange cap, source exit). Does NOT imply
+            // tally_complete (which also requires no tau-clip, no maxCells, etc.).
+            bool exactOutput = exactMpi && noDistributedFailures && noSourceClassFailures;
+            writer.WriteElement("/diagnostics/peeloff/status/mpi_exact_output",
+                exactOutput ? 1 : 0);
+        }
+
+        {
+            bool noRayFailures = true;
+            for (size_t kk = 0; kk < NumPeelOffKinds; ++kk)
+            {
+                if (peelOffCounters_.rayFailed[kk] > 0 ||
+                    peelOffCounters_.sourceExitClassFailed[kk] > 0)
+                {
+                    noRayFailures = false;
+                    break;
+                }
+            }
+            writer.WriteElement("/diagnostics/peeloff/status/tally_complete",
+                noRayFailures ? 1 : 0);
+        }
+        {
+            std::string msg;
+            writer.WriteElement("/diagnostics/peeloff/status/counter_invariants_valid",
+                peelOffCounters_.validateInvariants(msg) ? 1 : 0);
+        }
+        writer.WriteElement("/diagnostics/peeloff/config/allow_approximate_mpi_peeloff",
+            peelOffConfigSnap_.allowApproximateMpiPeelOff ? 1 : 0);
+        writer.WriteElement("/diagnostics/peeloff/config/compiled_with_mpi",
+#ifdef RICH_MPI
+            1
+#else
+            0
+#endif
+        );
+        writer.WriteElement("/diagnostics/peeloff/config/ddmc_leak_spatial_estimator",
+            std::string("face_center_approximation"));
+        writer.WriteElement("/diagnostics/peeloff/config/source_emission_angular_frame",
+            std::string("lab"));
+        writer.WriteElement("/diagnostics/peeloff/config/source_emission_pdf",
+            std::string("isotropic_1_over_4pi"));
+        writer.WriteElement("/diagnostics/peeloff/config/counter_schema_version",
+            PeelOffCounterSchemaVersion);
+
         writer.WriteElement("/diagnostics/peeloff_enabled", 1);
     }
 
