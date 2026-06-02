@@ -2,6 +2,7 @@
 #include "SphericalObserver.hpp"
 #include "PostProcessIMCHelpers.hpp"
 #include "IMCPolarization.hpp"
+#include "monte/utils/GhostMap.hpp"
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include <cmath>
