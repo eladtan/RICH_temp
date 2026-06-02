@@ -127,7 +127,7 @@ MonteCarloParticleStatus MovingSideTemperature<T, Grid>::apply(MonteCarloParticl
         T u = face.vertices[1] - face.vertices[0];
         T v = face.vertices[2] - face.vertices[0];
         T normal = CrossProduct(u, v);
-        double absU = abs(u);
+        double absU = std::min(abs(v), abs(u));
         if (std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
         {
             normal /= abs(normal);
@@ -138,10 +138,14 @@ MonteCarloParticleStatus MovingSideTemperature<T, Grid>::apply(MonteCarloParticl
             }
             const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
             particle.location -= 2 * unsignedDistance * normal;
-            particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
-            const T &center = this->grid.GetMeshPoint(particle.cellIndex);
+            T boxCenter = 0.5 * (ll + ur);
             constexpr double nudge = 1e-6;
-            particle.location = particle.location * (1 - nudge) + nudge * center;
+            particle.location = particle.location * (1 - nudge) + nudge * boxCenter;
+            // Box face normals point inward (see BuildBox in Voronoi3D.cpp).
+            // vn > 0 means velocity is already directed inward — no reflection needed.
+            double vn = ScalarProd(particle.velocity, normal);
+            if (vn <= 0)
+                particle.velocity -= 2 * vn * normal;
             result = MonteCarloParticleStatus::REFLECT;
         }
     }

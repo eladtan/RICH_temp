@@ -110,15 +110,19 @@ MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<
             reflectsHad++;
             const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
             particle.location -= 2 * unsignedDistance * normal;
-            particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
+            // Box face normals point inward (see BuildBox in Voronoi3D.cpp).
+            // vn > 0 means velocity is already directed inward — no reflection needed.
+            double vn = ScalarProd(particle.velocity, normal);
+            if (vn <= 0)
+                particle.velocity -= 2 * vn * normal;
         }
     }
 
     if(reflectsHad > 0)
     {
-        const T &center = this->grid.GetMeshPoint(particle.cellIndex);
+        T boxCenter = 0.5 * (ll + ur);
         constexpr double nudge = 1e-6;
-        particle.location = particle.location + nudge * (center - particle.location);
+        particle.location = particle.location + nudge * (boxCenter - particle.location);
     }
     if(reflectsHad > 0)
     {
