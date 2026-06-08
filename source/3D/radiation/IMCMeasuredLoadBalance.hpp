@@ -84,6 +84,7 @@ void PrintMeasuredLBDiagnosticsDistributed(
 
 void PrintPostRepartitionDiagnosticsFromWeights(
     std::vector<double> const& localWeightsAfterRepartition,
+    double weightCompression,
     bool multigroup,
     MPI_Comm comm);
 #endif

@@ -284,6 +284,7 @@ void PrintMeasuredLBDiagnosticsDistributed(
 
 void PrintPostRepartitionDiagnosticsFromWeights(
     std::vector<double> const& localWeightsAfterRepartition,
+    double weightCompression,
     bool multigroup,
     MPI_Comm comm)
 {
@@ -291,32 +292,73 @@ void PrintPostRepartitionDiagnosticsFromWeights(
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &mpiSize);
 
-    double localCostSum = 0.0;
-    for (double w : localWeightsAfterRepartition)
-        localCostSum += w;
+    double localRawCostSum = 0.0;
+    double localPartitionWeightSum = 0.0;
+    for (double w : localWeightsAfterRepartition) {
+        double const safeWeight = std::max(0.0, w);
+        localRawCostSum += safeWeight;
+        localPartitionWeightSum += std::pow(safeWeight, weightCompression);
+    }
 
-    double maxRankCost = 0.0, sumRankCost = 0.0;
-    MPI_Allreduce(&localCostSum, &maxRankCost, 1, MPI_DOUBLE, MPI_MAX, comm);
-    MPI_Allreduce(&localCostSum, &sumRankCost, 1, MPI_DOUBLE, MPI_SUM, comm);
-    double meanRankCost = sumRankCost / std::max(mpiSize, 1);
+    double maxRankRawCost = 0.0, sumRankRawCost = 0.0;
+    double maxRankPartitionWeight = 0.0, sumRankPartitionWeight = 0.0;
+    MPI_Allreduce(&localRawCostSum, &maxRankRawCost, 1, MPI_DOUBLE, MPI_MAX, comm);
+    MPI_Allreduce(&localRawCostSum, &sumRankRawCost, 1, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(&localPartitionWeightSum, &maxRankPartitionWeight, 1, MPI_DOUBLE, MPI_MAX, comm);
+    MPI_Allreduce(&localPartitionWeightSum, &sumRankPartitionWeight, 1, MPI_DOUBLE, MPI_SUM, comm);
+    double meanRankRawCost = sumRankRawCost / std::max(mpiSize, 1);
+    double meanRankPartitionWeight = sumRankPartitionWeight / std::max(mpiSize, 1);
 
     uint64_t localNewCells = static_cast<uint64_t>(localWeightsAfterRepartition.size());
     uint64_t globalNewCells = 0;
     MPI_Allreduce(&localNewCells, &globalNewCells, 1, MPI_UINT64_T, MPI_SUM, comm);
 
-    std::cerr << "MEASURED_LB_AFTER rank=" << rank
-              << " new_local_cells=" << localNewCells
-              << " new_predicted_local_cost=" << localCostSum
-              << "\n";
+    std::vector<double> gatheredRawCosts;
+    std::vector<double> gatheredPartitionWeights;
+    std::vector<uint64_t> gatheredCells;
+    if (rank == 0) {
+        gatheredRawCosts.resize(static_cast<size_t>(mpiSize), 0.0);
+        gatheredPartitionWeights.resize(static_cast<size_t>(mpiSize), 0.0);
+        gatheredCells.resize(static_cast<size_t>(mpiSize), 0);
+    }
+    MPI_Gather(&localRawCostSum, 1, MPI_DOUBLE,
+               rank == 0 ? gatheredRawCosts.data() : nullptr, 1, MPI_DOUBLE,
+               0, comm);
+    MPI_Gather(&localPartitionWeightSum, 1, MPI_DOUBLE,
+               rank == 0 ? gatheredPartitionWeights.data() : nullptr, 1, MPI_DOUBLE,
+               0, comm);
+    MPI_Gather(&localNewCells, 1, MPI_UINT64_T,
+               rank == 0 ? gatheredCells.data() : nullptr, 1, MPI_UINT64_T,
+               0, comm);
 
     if (rank == 0) {
         std::cerr << "MEASURED_LB_AFTER_SUMMARY"
                   << " total_cells=" << globalNewCells
                   << " mode=" << (multigroup ? "multigroup" : "gray")
-                  << " max_rank_cost=" << maxRankCost
-                  << " mean_rank_cost=" << meanRankCost
-                  << " max_over_mean=" << (meanRankCost > 0.0 ? maxRankCost / meanRankCost : 0.0)
+                  << " weight_compression=" << weightCompression
+                  << " max_rank_cost=" << maxRankRawCost
+                  << " mean_rank_cost=" << meanRankRawCost
+                  << " max_over_mean=" << (meanRankRawCost > 0.0 ? maxRankRawCost / meanRankRawCost : 0.0)
+                  << " raw_predicted_max_over_mean=" << (meanRankRawCost > 0.0 ? maxRankRawCost / meanRankRawCost : 0.0)
+                  << " partition_weight_max_over_mean=" << (meanRankPartitionWeight > 0.0 ? maxRankPartitionWeight / meanRankPartitionWeight : 0.0)
                   << "\n";
+
+        std::vector<int> order(static_cast<size_t>(mpiSize), 0);
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(), [&](int a, int b) {
+            return gatheredRawCosts[static_cast<size_t>(a)] >
+                   gatheredRawCosts[static_cast<size_t>(b)];
+        });
+        int const topCount = std::min(10, mpiSize);
+        for (int i = 0; i < topCount; ++i) {
+            int const r = order[static_cast<size_t>(i)];
+            std::cerr << "MEASURED_LB_AFTER_TOP_RAW"
+                      << " rank=" << r
+                      << " predicted_raw_cost=" << gatheredRawCosts[static_cast<size_t>(r)]
+                      << " partition_weight=" << gatheredPartitionWeights[static_cast<size_t>(r)]
+                      << " local_cells=" << gatheredCells[static_cast<size_t>(r)]
+                      << "\n";
+        }
     }
 
     std::cerr << std::flush;
