@@ -166,6 +166,8 @@ check_till_case() {
     local final_tgas
     local final_trad
     local rel_diff
+    local max_temp_rel_diff="${TILL_MAX_TEMP_REL_DIFF:-1e-2}"
+    local max_energy_rel_err="${TILL_MAX_ENERGY_REL_ERR:-1e-8}"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
@@ -224,12 +226,12 @@ check_till_case() {
             }'
     )
 
-    if ! awk -v r="$rel_diff" 'BEGIN { exit !(r < 1e-2) }'; then
-        set_check_msg "Till final Tgas/Trad mismatch >= 1%"
+    if ! awk -v r="$rel_diff" -v t="$max_temp_rel_diff" 'BEGIN { exit !(r < t) }'; then
+        set_check_msg "Till final Tgas/Trad mismatch: ${rel_diff} >= ${max_temp_rel_diff}"
         return 1
     fi
 
-    # Energy conservation check: |E_final - E_initial| / E_initial < 1e-8
+    # Energy conservation check: |E_final - E_initial| / E_initial below the selected Till threshold.
     local etotal_file="${run_dir}/Etotal.txt"
     if is_nonempty_and_newer "$etotal_file" "$run_start_epoch"; then
         local e_initial
@@ -255,15 +257,21 @@ check_till_case() {
                     printf "%.12e", val;
                 }'
         )
-        if ! awk -v r="$energy_rel_err" 'BEGIN { exit !(r < 1e-8) }'; then
-            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= 1e-8"
+        if ! awk -v r="$energy_rel_err" -v t="$max_energy_rel_err" 'BEGIN { exit !(r < t) }'; then
+            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= ${max_energy_rel_err}"
             return 1
         fi
-        set_check_msg "Till passed: Tgas/Trad agree within 1%, energy conserved (rel err ${energy_rel_err})"
+        set_check_msg "Till passed: Tgas/Trad rel diff ${rel_diff}, energy rel err ${energy_rel_err}"
     else
-        set_check_msg "Till final Tgas and Trad agree within 1% (Etotal.txt not found, energy check skipped)"
+        set_check_msg "Till final Tgas/Trad rel diff ${rel_diff} (Etotal.txt not found, energy check skipped)"
     fi
     return 0
+}
+
+check_till_mc_case() {
+    TILL_MAX_TEMP_REL_DIFF="${TILL_MC_MAX_TEMP_REL_DIFF:-2e-1}" \
+    TILL_MAX_ENERGY_REL_ERR="${TILL_MC_MAX_ENERGY_REL_ERR:-5e-2}" \
+    check_till_case "$@"
 }
 
 check_amr_random_case() {
