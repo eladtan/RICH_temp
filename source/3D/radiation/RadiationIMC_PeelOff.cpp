@@ -1,6 +1,7 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
 #include "LorentzTransformation.hpp"
+#include "IMCPolarization.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #ifdef RICH_MPI
 #include "monte/utils/GhostMap.hpp"
@@ -56,7 +57,7 @@ double computeCellScale(Vector3D const& meshPoint, Vector3D const& rayPos)
 
 // --- MPI ray state packing ---
 //
-// Wire format: 20 contiguous doubles per ray. Any new integer-like field
+// Wire format: 23 contiguous doubles per ray. Any new integer-like field
 // needs pack-side exactness checks (assertExactDouble) and receive-side
 // target-type + context validation.
 //
@@ -72,16 +73,19 @@ double computeCellScale(Vector3D const& meshPoint, Vector3D const& rayPos)
 //   7    tau                  double     finite, >= 0
 //   8    labFrequency         double     finite, > 0
 //   9    contributionPrefactor double    finite, >= 0
-//  10    eventTimeLeft        double     finite
-//  11    rayId                uint64     exact-in-double (<= 2^53)
-//  12    kind (PeelOffEventKind) int     [0, NumPeelOffKinds)
-//  13    observerIndex        size_t     exact-in-double, < numObservers
-//  14    currentLocalCell     size_t     exact-in-double, < Nreal at recv
-//  15    originRank           int        [0, numRanks)
-//  16    currentRank          int        intended destination rank; validated == myRank at recv
-//  17    mpiHops              uint32     [0, UINT_MAX]
-//  18    cellsTraversed       uint32     [0, UINT_MAX]
-//  19    crossedAnyMpiBoundary bool      exactly 0.0 or 1.0
+//  10    stokesQ              double     finite
+//  11    stokesU              double     finite
+//  12    polarizationInit     bool       exactly 0.0 or 1.0
+//  13    eventTimeLeft        double     finite
+//  14    rayId                uint64     exact-in-double (<= 2^53)
+//  15    kind (PeelOffEventKind) int     [0, NumPeelOffKinds)
+//  16    observerIndex        size_t     exact-in-double, < numObservers
+//  17    currentLocalCell     size_t     exact-in-double, < Nreal at recv
+//  18    originRank           int        [0, numRanks)
+//  19    currentRank          int        intended destination rank; validated == myRank at recv
+//  20    mpiHops              uint32     [0, UINT_MAX]
+//  21    cellsTraversed       uint32     [0, UINT_MAX]
+//  22    crossedAnyMpiBoundary bool      exactly 0.0 or 1.0
 
 // Pack-side check: integer value must round-trip exactly through double.
 static void assertExactDouble(unsigned long long v, const char* field)
@@ -101,7 +105,7 @@ static void assertExactDouble(unsigned long long v, const char* field)
 
 void RadiationIMC::PeelOffRayState::packInto(double* buf) const
 {
-    static_assert(PackedDoubles == 20, "Update packInto/unpack if PackedDoubles changes");
+    static_assert(PackedDoubles == 23, "Update packInto/unpack if PackedDoubles changes");
     assertExactDouble(rayId, "rayId");
     assertExactDouble(static_cast<unsigned long long>(observerIndex), "observerIndex");
     assertExactDouble(static_cast<unsigned long long>(currentLocalCell), "currentLocalCell");
@@ -116,16 +120,19 @@ void RadiationIMC::PeelOffRayState::packInto(double* buf) const
     buf[7]  = tau;
     buf[8]  = labFrequency;
     buf[9]  = contributionPrefactor;
-    buf[10] = eventTimeLeft;
-    buf[11] = static_cast<double>(rayId);
-    buf[12] = static_cast<double>(kind);
-    buf[13] = static_cast<double>(observerIndex);
-    buf[14] = static_cast<double>(currentLocalCell);
-    buf[15] = static_cast<double>(originRank);
-    buf[16] = static_cast<double>(currentRank);
-    buf[17] = static_cast<double>(mpiHops);
-    buf[18] = static_cast<double>(cellsTraversed);
-    buf[19] = crossedAnyMpiBoundary ? 1.0 : 0.0;
+    buf[10] = stokesQ;
+    buf[11] = stokesU;
+    buf[12] = polarizationInitialized ? 1.0 : 0.0;
+    buf[13] = eventTimeLeft;
+    buf[14] = static_cast<double>(rayId);
+    buf[15] = static_cast<double>(kind);
+    buf[16] = static_cast<double>(observerIndex);
+    buf[17] = static_cast<double>(currentLocalCell);
+    buf[18] = static_cast<double>(originRank);
+    buf[19] = static_cast<double>(currentRank);
+    buf[20] = static_cast<double>(mpiHops);
+    buf[21] = static_cast<double>(cellsTraversed);
+    buf[22] = crossedAnyMpiBoundary ? 1.0 : 0.0;
 }
 
 // Integer fields packed as doubles are exact up to 2^53; validate integrality
@@ -152,7 +159,10 @@ RadiationIMC::PeelOffRayState RadiationIMC::PeelOffRayState::unpack(const double
     s.tau              = buf[7];
     s.labFrequency     = buf[8];
     s.contributionPrefactor = buf[9];
-    s.eventTimeLeft    = buf[10];
+    s.stokesQ          = buf[10];
+    s.stokesU          = buf[11];
+    s.polarizationInitialized = (buf[12] > 0.5);
+    s.eventTimeLeft    = buf[13];
 
     constexpr double kMaxExactInt = 9007199254740992.0; // 2^53
 
@@ -162,6 +172,8 @@ RadiationIMC::PeelOffRayState RadiationIMC::PeelOffRayState::unpack(const double
         !std::isfinite(s.tau) || s.tau < 0.0 ||
         !std::isfinite(s.labFrequency) || s.labFrequency <= 0.0 ||
         !std::isfinite(s.contributionPrefactor) || s.contributionPrefactor < 0.0 ||
+        !std::isfinite(s.stokesQ) || !std::isfinite(s.stokesU) ||
+        !(buf[12] == 0.0 || buf[12] == 1.0) ||
         !std::isfinite(s.eventTimeLeft))
     {
         s.valid = false;
@@ -171,29 +183,29 @@ RadiationIMC::PeelOffRayState RadiationIMC::PeelOffRayState::unpack(const double
     constexpr double kIntMax = static_cast<double>(std::numeric_limits<int>::max());
     constexpr double kUintMax = static_cast<double>(std::numeric_limits<unsigned int>::max());
 
-    if (!validPackedUint(buf[11], kMaxExactInt) ||
-        !validPackedInt(buf[12], 0.0, static_cast<double>(NumPeelOffKinds - 1)) ||
-        !validPackedUint(buf[13], kMaxExactInt) ||
-        !validPackedUint(buf[14], kMaxExactInt) ||
-        !validPackedInt(buf[15], 0.0, kIntMax) ||
-        !validPackedInt(buf[16], 0.0, kIntMax) ||
-        !validPackedUint(buf[17], kUintMax) ||
-        !validPackedUint(buf[18], kUintMax) ||
-        !(buf[19] == 0.0 || buf[19] == 1.0))
+    if (!validPackedUint(buf[14], kMaxExactInt) ||
+        !validPackedInt(buf[15], 0.0, static_cast<double>(NumPeelOffKinds - 1)) ||
+        !validPackedUint(buf[16], kMaxExactInt) ||
+        !validPackedUint(buf[17], kMaxExactInt) ||
+        !validPackedInt(buf[18], 0.0, kIntMax) ||
+        !validPackedInt(buf[19], 0.0, kIntMax) ||
+        !validPackedUint(buf[20], kUintMax) ||
+        !validPackedUint(buf[21], kUintMax) ||
+        !(buf[22] == 0.0 || buf[22] == 1.0))
     {
         s.valid = false;
         return s;
     }
 
-    s.rayId            = static_cast<unsigned long long>(buf[11]);
-    s.kind             = static_cast<PeelOffEventKind>(static_cast<int>(buf[12]));
-    s.observerIndex    = static_cast<size_t>(buf[13]);
-    s.currentLocalCell = static_cast<size_t>(buf[14]);
-    s.originRank       = static_cast<int>(buf[15]);
-    s.currentRank      = static_cast<int>(buf[16]);
-    s.mpiHops          = static_cast<unsigned int>(buf[17]);
-    s.cellsTraversed   = static_cast<unsigned int>(buf[18]);
-    s.crossedAnyMpiBoundary = (buf[19] > 0.5);
+    s.rayId            = static_cast<unsigned long long>(buf[14]);
+    s.kind             = static_cast<PeelOffEventKind>(static_cast<int>(buf[15]));
+    s.observerIndex    = static_cast<size_t>(buf[16]);
+    s.currentLocalCell = static_cast<size_t>(buf[17]);
+    s.originRank       = static_cast<int>(buf[18]);
+    s.currentRank      = static_cast<int>(buf[19]);
+    s.mpiHops          = static_cast<unsigned int>(buf[20]);
+    s.cellsTraversed   = static_cast<unsigned int>(buf[21]);
+    s.crossedAnyMpiBoundary = (buf[22] > 0.5);
     s.valid            = true;
     return s;
 }
@@ -321,8 +333,15 @@ void RadiationIMC::resetPeelOffCounters()
 
 double RadiationIMC::evaluatePeelOffPhasePdf(
     PeelOffSource const& source,
-    Vector3D const& nObsLab) const
+    Vector3D const& nObsLab,
+    double& qObserver,
+    double& uObserver,
+    bool& polarizationInitialized) const
 {
+    qObserver = 0.0;
+    uObserver = 0.0;
+    polarizationInitialized = false;
+
     switch (source.phaseMode)
     {
         case PeelOffSource::PhaseMode::Isotropic:
@@ -334,7 +353,35 @@ double RadiationIMC::evaluatePeelOffPhasePdf(
         case PeelOffSource::PhaseMode::ElasticScatter:
 #ifdef MONTECARLO_POLARIZATION
             if (postProcess_.polarization.enabled)
-                return 0.0;
+            {
+                struct PeelOffParticle
+                {
+                    Vector3D velocity;
+                    double stokesQ = 0.0;
+                    double stokesU = 0.0;
+                    Vector3D polarizationBasis;
+                    bool polarizationInitialized = false;
+                };
+
+                PeelOffParticle p;
+                p.velocity = source.incomingDirectionLab;
+                p.stokesQ = source.stokesQ;
+                p.stokesU = source.stokesU;
+                p.polarizationBasis = source.polarizationBasis;
+                p.polarizationInitialized = source.polarizationInitialized;
+
+                auto const result = IMCPolarization::EvaluateThomsonPeelOff(
+                    p,
+                    source.incomingDirectionLab,
+                    nObsLab,
+                    IMCPolarization::ObserverBasis1(nObsLab));
+                if (!result.valid)
+                    return 0.0;
+                qObserver = result.stokesQ;
+                uObserver = result.stokesU;
+                polarizationInitialized = true;
+                return result.phasePdf;
+            }
 #endif
             // Non-polarized elastic scattering is isotropic in the current codebase
             // (getNewScatterVelocity samples a uniform random direction).
@@ -599,6 +646,13 @@ void RadiationIMC::processPendingPeelOffRays()
     using MpiPolicy = RadiationIMCPostProcessConfig::PeelOffConfig::MpiRayPolicy;
 
 #ifdef RICH_MPI
+    int localHasPending = pendingPeelOffRays_.empty() ? 0 : 1;
+    int anyHasPending = 0;
+    MPI_Allreduce(&localHasPending, &anyHasPending, 1, MPI_INT, MPI_MAX,
+                  MPI_COMM_WORLD);
+    if (!anyHasPending)
+        return;
+
     if (postProcess_.peelOff.mpiRayPolicy == MpiPolicy::DistributedExact)
     {
         if (!observer_)
@@ -687,14 +741,8 @@ void RadiationIMC::processPendingPeelOffRays()
                         peelOffCounters_.raysCompleted[kind]++;
                         double contribution = out.state.contributionPrefactor
                                             * std::exp(-out.state.tau);
-                        if (contribution > 0.0 && std::isfinite(contribution))
-                        {
-                            if (observer_->recordPeelOff(out.state.observerIndex,
-                                                         contribution,
-                                                         out.state.labFrequency,
-                                                         out.state.kind))
-                                peelOffCounters_.recorded[kind]++;
-                        }
+                        if (recordPeelOffContribution(out.state, contribution))
+                            peelOffCounters_.recorded[kind]++;
                         if (out.state.crossedAnyMpiBoundary)
                             peelOffCounters_.raysCrossedMpiBoundary[kind]++;
                         break;
@@ -920,7 +968,11 @@ void RadiationIMC::processPendingPeelOffRays()
                           << " originRank=" << r0.originRank
                           << " currentRank=" << r0.currentRank
                           << " mpiHops=" << r0.mpiHops
-                          << " kind=" << static_cast<int>(r0.kind);
+                          << " kind=" << static_cast<int>(r0.kind)
+                          << " currentLocalCell=" << r0.currentLocalCell
+                          << " remainingDist=" << r0.remainingDist
+                          << " tau=" << r0.tau
+                          << " cellsTraversed=" << r0.cellsTraversed;
             }
             std::cerr << " Increase maxDistributedExchangeRounds or investigate mesh/partition."
                       << std::endl;
@@ -931,6 +983,8 @@ void RadiationIMC::processPendingPeelOffRays()
 #endif
 
     // Non-distributed mode: trace all pending rays locally
+    if (pendingPeelOffRays_.empty())
+        return;
     for (auto& ray : pendingPeelOffRays_)
     {
         size_t const kind = static_cast<size_t>(ray.kind);
@@ -954,14 +1008,8 @@ void RadiationIMC::processPendingPeelOffRays()
                 peelOffCounters_.raysCompleted[kind]++;
                 double contribution = out.state.contributionPrefactor
                                     * std::exp(-out.state.tau);
-                if (contribution > 0.0 && std::isfinite(contribution))
-                {
-                    if (observer_->recordPeelOff(out.state.observerIndex,
-                                                 contribution,
-                                                 out.state.labFrequency,
-                                                 out.state.kind))
-                        peelOffCounters_.recorded[kind]++;
-                }
+                if (recordPeelOffContribution(out.state, contribution))
+                    peelOffCounters_.recorded[kind]++;
                 break;
             }
 
@@ -977,14 +1025,8 @@ void RadiationIMC::processPendingPeelOffRays()
                     peelOffCounters_.raysCompleted[kind]++;
                     double contribution = out.state.contributionPrefactor
                                         * std::exp(-out.state.tau);
-                    if (contribution > 0.0 && std::isfinite(contribution))
-                    {
-                        if (observer_->recordPeelOff(out.state.observerIndex,
-                                                     contribution,
-                                                     out.state.labFrequency,
-                                                     out.state.kind))
-                            peelOffCounters_.recorded[kind]++;
-                    }
+                    if (recordPeelOffContribution(out.state, contribution))
+                        peelOffCounters_.recorded[kind]++;
                 }
                 else
 #endif
@@ -1027,6 +1069,104 @@ void RadiationIMC::processPendingPeelOffRays()
 
 // --- Enqueue + record logic ---
 
+bool RadiationIMC::recordPeelOffContribution(PeelOffRayState const& ray,
+                                              double contribution)
+{
+    if (!observer_ || !(contribution > 0.0) || !std::isfinite(contribution))
+        return false;
+#ifdef MONTECARLO_POLARIZATION
+    if (ray.polarizationInitialized)
+    {
+        return observer_->recordPeelOff(ray.observerIndex, contribution,
+                                        ray.labFrequency, ray.stokesQ,
+                                        ray.stokesU, ray.kind);
+    }
+#endif
+    return observer_->recordPeelOff(ray.observerIndex, contribution,
+                                    ray.labFrequency, ray.kind);
+}
+
+void RadiationIMC::traceOrQueuePeelOffRay(PeelOffRayState ray)
+{
+    size_t const kind = static_cast<size_t>(ray.kind);
+    if (kind >= NumPeelOffKinds)
+        return;
+
+    peelOffCounters_.raysStarted[kind]++;
+
+#ifdef RICH_MPI
+    int myRank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
+    if (ray.currentRank != myRank)
+    {
+        pendingPeelOffRays_.push_back(ray);
+        return;
+    }
+#endif
+
+    LocalTraceOutcome out = continuePeelOffRayLocally(ray);
+    switch (out.status)
+    {
+        case LocalTraceOutcome::Status::CompletedAtObserver:
+        case LocalTraceOutcome::Status::CompletedAfterPhysicalVacuumExit:
+        {
+            if (out.status == LocalTraceOutcome::Status::CompletedAfterPhysicalVacuumExit)
+                peelOffCounters_.physicalVacuumExits[kind]++;
+            peelOffCounters_.raysCompleted[kind]++;
+            double const contribution = out.state.contributionPrefactor
+                                      * std::exp(-out.state.tau);
+            if (recordPeelOffContribution(out.state, contribution))
+                peelOffCounters_.recorded[kind]++;
+            if (out.state.crossedAnyMpiBoundary)
+                peelOffCounters_.raysCrossedMpiBoundary[kind]++;
+            break;
+        }
+
+        case LocalTraceOutcome::Status::NeedsRemoteContinuation:
+#ifdef RICH_MPI
+        {
+            out.state.crossedAnyMpiBoundary = true;
+            out.state.mpiHops++;
+            peelOffCounters_.mpiBoundaryCrossings[kind]++;
+            out.state.currentRank = out.remoteExit.remoteRank;
+            out.state.currentLocalCell = out.remoteExit.remoteLocalIndex;
+            pendingPeelOffRays_.push_back(out.state);
+            break;
+        }
+#else
+            peelOffCounters_.unsupportedBoundary[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+#endif
+
+        case LocalTraceOutcome::Status::TauClipped:
+            peelOffCounters_.tauClipped[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+        case LocalTraceOutcome::Status::TimeRejected:
+            peelOffCounters_.timeRejected[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+        case LocalTraceOutcome::Status::NoExitFace:
+            peelOffCounters_.noExitFace[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+        case LocalTraceOutcome::Status::MaxCellsExceeded:
+            peelOffCounters_.maxCellsExceeded[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+        case LocalTraceOutcome::Status::UnsupportedBoundary:
+            peelOffCounters_.unsupportedBoundary[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+        case LocalTraceOutcome::Status::InvalidState:
+        default:
+            peelOffCounters_.invalidState[kind]++;
+            peelOffCounters_.rayFailed[kind]++;
+            break;
+    }
+}
+
 void RadiationIMC::maybeRecordPeelOff(PeelOffSource const& source)
 {
     if (!postProcess_.peelOff.enabled || !observer_)
@@ -1059,7 +1199,11 @@ void RadiationIMC::maybeRecordPeelOff(PeelOffSource const& source)
         Vector3D const& nObsLab = directions[j];
         peelOffCounters_.directionsConsidered[kind]++;
 
-        double phase = evaluatePeelOffPhasePdf(source, nObsLab);
+        double qObserver = 0.0;
+        double uObserver = 0.0;
+        bool polarizationInitialized = false;
+        double phase = evaluatePeelOffPhasePdf(
+            source, nObsLab, qObserver, uObserver, polarizationInitialized);
         if (!(phase > 0.0) || !std::isfinite(phase))
         {
             peelOffCounters_.phaseRejected[kind]++;
@@ -1096,6 +1240,9 @@ void RadiationIMC::maybeRecordPeelOff(PeelOffSource const& source)
         ray.nObsLab = nObsLab;
         ray.labFrequency = source.labFrequency;
         ray.contributionPrefactor = source.labWeight * phase * solidAngles[j];
+        ray.stokesQ = qObserver;
+        ray.stokesU = uObserver;
+        ray.polarizationInitialized = polarizationInitialized;
         ray.eventTimeLeft = source.eventTimeLeft;
         ray.originRank = myRank;
         ray.currentRank = myRank;
@@ -1118,13 +1265,8 @@ void RadiationIMC::maybeRecordPeelOff(PeelOffSource const& source)
                 peelOffCounters_.physicalVacuumExits[kind]++;
                 {
                     double contribution = ray.contributionPrefactor;
-                    if (contribution > 0.0 && std::isfinite(contribution))
-                    {
-                        if (observer_->recordPeelOff(j, contribution,
-                                                     source.labFrequency,
-                                                     source.kind))
-                            peelOffCounters_.recorded[kind]++;
-                    }
+                    if (recordPeelOffContribution(ray, contribution))
+                        peelOffCounters_.recorded[kind]++;
                 }
                 rayHandledBySource = true;
                 break;
@@ -1150,13 +1292,8 @@ void RadiationIMC::maybeRecordPeelOff(PeelOffSource const& source)
                     peelOffCounters_.mpiBoundaryCrossings[kind]++;
                     peelOffCounters_.raysCrossedMpiBoundary[kind]++;
                     double contribution = ray.contributionPrefactor;
-                    if (contribution > 0.0 && std::isfinite(contribution))
-                    {
-                        if (observer_->recordPeelOff(j, contribution,
-                                                     source.labFrequency,
-                                                     source.kind))
-                            peelOffCounters_.recorded[kind]++;
-                    }
+                    if (recordPeelOffContribution(ray, contribution))
+                        peelOffCounters_.recorded[kind]++;
                     rayHandledBySource = true;
                 }
                 else
@@ -1187,7 +1324,6 @@ void RadiationIMC::maybeRecordPeelOff(PeelOffSource const& source)
         if (rayHandledBySource)
             continue;
 
-        peelOffCounters_.raysStarted[kind]++;
-        pendingPeelOffRays_.push_back(ray);
+        traceOrQueuePeelOffRay(ray);
     }
 }

@@ -232,6 +232,55 @@ inline std::pair<double, double> ProjectToBasis(Particle const &p,
     return {q, u};
 }
 
+struct ThomsonPeelOffResult
+{
+    bool valid = false;
+    double phasePdf = 0.0;
+    double stokesQ = 0.0;
+    double stokesU = 0.0;
+};
+
+template<class Particle>
+inline ThomsonPeelOffResult EvaluateThomsonPeelOff(
+    Particle const &packet,
+    Vector3D const &oldVelocity,
+    Vector3D const &observerDirection,
+    Vector3D const &observerBasis)
+{
+    ThomsonPeelOffResult result;
+
+    Particle p = packet;
+    InitializeIfNeeded(p);
+
+    Vector3D const kIn = SafeNormalize(oldVelocity, Vector3D(0.0, 0.0, 1.0));
+    Vector3D const kOut = SafeNormalize(observerDirection, kIn);
+    Vector3D planeNormal = CrossProduct(kIn, kOut);
+    double const planeNorm = abs(planeNormal);
+    double const mu = std::clamp(ScalarProd(kIn, kOut), -1.0, 1.0);
+    double const mu2 = mu * mu;
+
+    double qPlane = 0.0;
+    if(planeNorm > 1e-10)
+    {
+        planeNormal = planeNormal * (1.0 / planeNorm);
+        qPlane = ProjectToBasis(p, oldVelocity, planeNormal).first;
+    }
+
+    double const intensityFactor = (1.0 + mu2) + (1.0 - mu2) * qPlane;
+    double const phasePdf = (3.0 / (16.0 * POL_PI)) * intensityFactor;
+    if(!(phasePdf > 0.0) || !std::isfinite(phasePdf))
+        return result;
+
+    ApplyThomsonScatter(p, oldVelocity, observerDirection);
+    auto const qu = ProjectToBasis(p, observerDirection, observerBasis);
+
+    result.valid = true;
+    result.phasePdf = phasePdf;
+    result.stokesQ = qu.first;
+    result.stokesU = qu.second;
+    return result;
+}
+
 template<class Particle, class Uniform01>
 inline Vector3D SamplePolarizedThomsonDirection(Particle const &p,
                                                 Vector3D const &oldVelocity,

@@ -74,10 +74,6 @@ void NormalizeAndValidateConfig(RadiationIMCPostProcessConfig &config,
         if(config.peelOff.maxDistributedExchangeRounds == 0)
             throw UniversalError("PostProcess peel-off: maxDistributedExchangeRounds must be positive");
 
-#ifdef MONTECARLO_POLARIZATION
-        if(config.polarization.enabled && config.peelOff.resolvedElasticScattering)
-            throw UniversalError("PostProcess peel-off: polarized elastic scatter peel-off requires Thomson/Stokes phase function that is not implemented");
-#endif
     }
     if (config.sourceDt <= 0.0)
         throw UniversalError("PostProcess: sourceDt must be positive");
@@ -100,7 +96,7 @@ void NormalizeAndValidateConfig(RadiationIMCPostProcessConfig &config,
             throw UniversalError("PostProcess polarization does not support Compton yet");
         if(config.polarization.manualScatteringsAfterAcceleration < 0)
             throw UniversalError("PostProcess polarization manualScatteringsAfterAcceleration must be non-negative");
-        if(config.polarization.manualScatteringsAfterAcceleration > 64)
+        if(config.polarization.manualScatteringsAfterAcceleration > 128)
             throw UniversalError("PostProcess polarization manualScatteringsAfterAcceleration is too large");
         if(!(config.polarization.depolarizationScatterings > 0.0) ||
            !std::isfinite(config.polarization.depolarizationScatterings))

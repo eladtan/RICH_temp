@@ -62,6 +62,7 @@ struct MonteCarloParticle
     #endif // RICH_MPI
     size_t id = std::numeric_limits<size_t>::max();
     size_t cellID = std::numeric_limits<size_t>::max();
+    size_t sourceCellID = std::numeric_limits<size_t>::max();
     T location = T(std::numeric_limits<typename T::value_type>::max());
     T velocity = T(std::numeric_limits<typename T::value_type>::max());
     size_t cellIndex = std::numeric_limits<size_t>::max();
@@ -426,6 +427,7 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->rank);
     bytes += serializer->insert(this->id);
     bytes += serializer->insert(this->cellID);
+    bytes += serializer->insert(this->sourceCellID);
     bytes += serializer->insert(this->location);
     bytes += serializer->insert(this->velocity);
     bytes += serializer->insert(this->cellIndex);
@@ -480,6 +482,7 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->rank, byteOffset);
     bytes += serializer->extract(this->id, byteOffset + bytes);
     bytes += serializer->extract(this->cellID, byteOffset + bytes);
+    bytes += serializer->extract(this->sourceCellID, byteOffset + bytes);
     bytes += serializer->extract(this->location, byteOffset + bytes);
     bytes += serializer->extract(this->velocity, byteOffset + bytes);
     bytes += serializer->extract(this->cellIndex, byteOffset + bytes);

@@ -3,7 +3,9 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "3D/elementary/Vector3D.hpp"
 #include "PeelOffTypes.hpp"
@@ -17,6 +19,7 @@ struct ObserverCrossingRecord
     Vector3D direction;
     double weight = 0.0;
     double frequency = 0.0;
+    size_t sourceCellID = std::numeric_limits<size_t>::max();
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -58,6 +61,17 @@ public:
         double snapshotTime = 0.0;
         int snapshotCycle = 0;
         int nGenerations = 1;
+        int includedFinalGenerations = 1;
+        int discardedBurninGenerations = 0;
+        int adaptiveOnlyFinalOutput = 0;
+    };
+
+    struct SourceCellEscapeStat
+    {
+        size_t cellID = std::numeric_limits<size_t>::max();
+        size_t observerIndex = std::numeric_limits<size_t>::max();
+        double energy = 0.0;
+        size_t count = 0;
     };
 
     SphericalObserver(Vector3D center, double radius, size_t numObservers,
@@ -89,6 +103,16 @@ public:
     void addTimedOutEnergy(double energy);
     void addCutoffEnergy(double energy);
 
+    void resetGenerationSourceCellEscapeStats();
+    std::vector<SourceCellEscapeStat> getGenerationSourceCellEscapeStats() const;
+    void resetTallies();
+    void clearGenerationStatistics();
+    void accumulateCurrentTalliesForStatistics(double sourceDt);
+    void loadStatisticalMeanTallies();
+    size_t getStatisticsSamples() const;
+    double getTotalLuminosityStderrGen(double sourceDt) const;
+    double getTotalLuminosityRelErrGen(double sourceDt) const;
+
     struct PeelOffConfigSnapshot
     {
         bool sourceEmission = true;
@@ -114,9 +138,17 @@ public:
     bool recordPeelOff(size_t observerIndex, double energy, double frequency);
     bool recordPeelOff(size_t observerIndex, double energy, double frequency,
                        PeelOffEventKind kind);
+#ifdef MONTECARLO_POLARIZATION
+    bool recordPeelOff(size_t observerIndex, double energy, double frequency,
+                       double qObserver, double uObserver, PeelOffEventKind kind);
+#endif
     std::vector<double> const& getPeelOffEnergy() const { return peelOffEnergy_; }
     std::vector<size_t> const& getPeelOffCount() const { return peelOffCount_; }
     std::vector<std::vector<double>> const& getPeelOffGroupEnergy() const { return peelOffGroupEnergy_; }
+#ifdef MONTECARLO_POLARIZATION
+    std::vector<double> const& getPeelOffStokesQ() const { return peelOffStokesQ_; }
+    std::vector<double> const& getPeelOffStokesU() const { return peelOffStokesU_; }
+#endif
 
     void scale(double factor);
 
@@ -167,10 +199,13 @@ private:
     std::vector<double> groupBoundaries_;
     std::vector<Vector3D> directions_;
     std::vector<double> observerEnergy_;
+    std::vector<double> observerEnergyWeightSq_;
     std::vector<double> observerMaxPacketEnergy_;
     std::vector<size_t> observerCrossingCount_;
+    std::unordered_map<size_t, std::unordered_map<size_t, SourceCellEscapeStat>> generationSourceCellEscape_;
     std::vector<double> observerSolidAngle_;
     std::vector<std::vector<double>> groupEnergy_;
+    std::vector<std::vector<double>> groupEnergyWeightSq_;
     std::vector<std::vector<size_t>> groupCrossingCount_;
 #ifdef MONTECARLO_POLARIZATION
     bool polarizationOutputEnabled_ = false;
@@ -204,12 +239,24 @@ private:
     PeelOffCounters peelOffCounters_;
     PeelOffConfigSnapshot peelOffConfigSnap_;
     std::vector<double> peelOffEnergy_;
+    std::vector<double> peelOffEnergyWeightSq_;
     std::vector<size_t> peelOffCount_;
     std::vector<std::vector<double>> peelOffGroupEnergy_;
+    std::vector<std::vector<double>> peelOffGroupEnergyWeightSq_;
+#ifdef MONTECARLO_POLARIZATION
+    std::vector<double> peelOffStokesQ_;
+    std::vector<double> peelOffStokesU_;
+#endif
 
     std::array<std::vector<double>, NumPeelOffKinds> peelOffEnergyByKind_;
+    std::array<std::vector<double>, NumPeelOffKinds> peelOffEnergyByKindWeightSq_;
     std::array<std::vector<size_t>, NumPeelOffKinds> peelOffCountByKind_;
     std::array<std::vector<std::vector<double>>, NumPeelOffKinds> peelOffGroupEnergyByKind_;
+    std::array<std::vector<std::vector<double>>, NumPeelOffKinds> peelOffGroupEnergyByKindWeightSq_;
+#ifdef MONTECARLO_POLARIZATION
+    std::array<std::vector<double>, NumPeelOffKinds> peelOffStokesQByKind_;
+    std::array<std::vector<double>, NumPeelOffKinds> peelOffStokesUByKind_;
+#endif
 
     double emittedEnergy_ = 0.0;
     double absorbedEnergy_ = 0.0;
@@ -217,8 +264,105 @@ private:
     double timedOutEnergy_ = 0.0;
     double cutoffEnergy_ = 0.0;
 
+public:
+    struct RunningScalarStats
+    {
+        double sum = 0.0;
+        double sumSq = 0.0;
+    };
+
+    struct RunningVectorStats
+    {
+        std::vector<double> sum;
+        std::vector<double> sumSq;
+    };
+
+    struct RunningMatrixStats
+    {
+        std::vector<std::vector<double>> sum;
+        std::vector<std::vector<double>> sumSq;
+    };
+
+private:
+    struct GenerationStatistics
+    {
+        size_t samples = 0;
+        RunningVectorStats energy;
+        RunningVectorStats luminosity;
+        RunningVectorStats isoLuminosity;
+        RunningVectorStats flux;
+        RunningMatrixStats groupEnergy;
+        RunningMatrixStats groupLuminosity;
+#ifdef MONTECARLO_POLARIZATION
+        RunningVectorStats stokesQ;
+        RunningVectorStats stokesU;
+        RunningVectorStats q;
+        RunningVectorStats u;
+        RunningVectorStats stokesQLuminosity;
+        RunningVectorStats stokesULuminosity;
+        RunningVectorStats polarizationDegree;
+        RunningVectorStats polarizationAngle;
+        RunningMatrixStats groupStokesQ;
+        RunningMatrixStats groupStokesU;
+        RunningMatrixStats groupQ;
+        RunningMatrixStats groupU;
+        RunningMatrixStats groupQLuminosity;
+        RunningMatrixStats groupULuminosity;
+        RunningMatrixStats groupPolarizationDegree;
+        RunningMatrixStats groupPolarizationAngle;
+#endif
+        RunningVectorStats peelOffEnergy;
+        RunningVectorStats peelOffLuminosity;
+        RunningVectorStats peelOffIsoLuminosity;
+#ifdef MONTECARLO_POLARIZATION
+        RunningVectorStats peelOffStokesQ;
+        RunningVectorStats peelOffStokesU;
+        RunningVectorStats peelOffQ;
+        RunningVectorStats peelOffU;
+        RunningVectorStats peelOffQLuminosity;
+        RunningVectorStats peelOffULuminosity;
+        RunningVectorStats peelOffPolarizationDegree;
+        RunningVectorStats peelOffPolarizationAngle;
+#endif
+        RunningMatrixStats peelOffGroupEnergy;
+        RunningScalarStats totalEnergy;
+        RunningScalarStats totalLuminosity;
+        RunningScalarStats emittedEnergy;
+        RunningScalarStats absorbedEnergy;
+        RunningScalarStats boxEscapeEnergy;
+        RunningScalarStats timedOutEnergy;
+        RunningScalarStats cutoffEnergy;
+        RunningScalarStats transportSinkResidual;
+        RunningScalarStats timedOutFraction;
+        std::vector<double> energyWeightSqSum;
+        std::vector<std::vector<double>> groupEnergyWeightSqSum;
+        std::vector<double> peelOffEnergyWeightSqSum;
+        std::vector<std::vector<double>> peelOffGroupEnergyWeightSqSum;
+        double totalEnergyWeightSqSum = 0.0;
+        std::vector<size_t> observerCrossingCountSum;
+        std::vector<std::vector<size_t>> groupCrossingCountSum;
+        std::vector<size_t> peelOffCountSum;
+        std::array<std::vector<double>, NumPeelOffKinds> peelOffEnergyByKindSum;
+        std::array<std::vector<std::vector<double>>, NumPeelOffKinds> peelOffGroupEnergyByKindSum;
+        std::array<std::vector<size_t>, NumPeelOffKinds> peelOffCountByKindSum;
+        std::vector<double> observerMaxPacketEnergyMax;
+#ifdef MONTECARLO_POLARIZATION
+        std::vector<double> observerSumWeightSqSum;
+        std::vector<double> observerSumWQ2Sum;
+        std::vector<double> observerSumWU2Sum;
+        std::vector<double> mismatchWeightedSumSum;
+        std::vector<double> mismatchWeighted2SumSum;
+        std::vector<double> mismatchMaxMax;
+        std::array<std::vector<double>, NumPeelOffKinds> peelOffStokesQByKindSum;
+        std::array<std::vector<double>, NumPeelOffKinds> peelOffStokesUByKindSum;
+#endif
+    };
+
+    GenerationStatistics generationStats_;
+
     size_t findNearestObserver(Vector3D const& crossingPoint) const;
     size_t findGroup(double frequency) const;
+    void recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy);
 };
 
 #endif // SPHERICAL_OBSERVER_HPP

@@ -691,6 +691,7 @@ std::vector<typename TwoSidedMonteCarloManager<T, Grid>::MCParticle> TwoSidedMon
             }
 
             bool isEmpty = this->HandleAll(data);
+            this->physics->drainPendingCollectiveWork();
 
             amountManager.Decrease(static_cast<AmountManager::counter_t>(this->localDecrementAmount));
             this->localDecrementAmount = 0;

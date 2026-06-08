@@ -5,7 +5,11 @@
 #include "monte/utils/GhostMap.hpp"
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -25,6 +29,88 @@ namespace {
     inline void SetInitialWeightFromWeight(RadiationIMC::Particle &particle)
     {
         particle.initialWeight = std::abs(particle.weight);
+    }
+
+    static constexpr size_t PeelOffProgressSourceChunk = 1024;
+    static constexpr double PeelOffProgressPrintInterval = 10.0;
+    static constexpr size_t PeelOffProgressFields = 16;
+
+    enum PeelOffProgressField : size_t
+    {
+        POP_SOURCE_DONE = 0,
+        POP_SOURCE_TOTAL,
+        POP_DIRS,
+        POP_PHASE_OK,
+        POP_PHASE_REJ,
+        POP_OBS_MISS,
+        POP_TIME_REJ,
+        POP_RAYS_STARTED,
+        POP_RAYS_COMPLETED,
+        POP_RECORDED,
+        POP_FAILED,
+        POP_TAU_CLIP,
+        POP_MPI_CROSS,
+        POP_PENDING_REMOTE,
+        POP_SOURCE_RECORDED,
+        POP_ELASTIC_RECORDED
+    };
+
+    static_assert(POP_ELASTIC_RECORDED + 1 == PeelOffProgressFields,
+                  "Update PeelOffProgressFields when adding progress fields");
+
+    std::array<unsigned long long, PeelOffProgressFields>
+    BuildPeelOffProgressArray(MonteCarloPeelOffProgressSnapshot const& s)
+    {
+        std::array<unsigned long long, PeelOffProgressFields> out{};
+        out[POP_SOURCE_DONE] = s.sourceEventsDone;
+        out[POP_SOURCE_TOTAL] = s.sourceEventsTotal;
+        out[POP_DIRS] = s.directionsConsidered;
+        out[POP_PHASE_OK] = s.phaseAccepted;
+        out[POP_PHASE_REJ] = s.phaseRejected;
+        out[POP_OBS_MISS] = s.observerMissed;
+        out[POP_TIME_REJ] = s.timeRejected;
+        out[POP_RAYS_STARTED] = s.raysStarted;
+        out[POP_RAYS_COMPLETED] = s.raysCompleted;
+        out[POP_RECORDED] = s.recorded;
+        out[POP_FAILED] = s.rayFailed;
+        out[POP_TAU_CLIP] = s.tauClipped;
+        out[POP_MPI_CROSS] = s.mpiBoundaryCrossings;
+        out[POP_PENDING_REMOTE] = s.pendingRemote;
+        out[POP_SOURCE_RECORDED] = s.sourceRecorded;
+        out[POP_ELASTIC_RECORDED] = s.elasticRecorded;
+        return out;
+    }
+
+    void PrintPeelOffSourceProgress(double elapsed,
+                                    std::array<unsigned long long, PeelOffProgressFields> const& g)
+    {
+        double const done = static_cast<double>(g[POP_SOURCE_DONE]);
+        double const total = static_cast<double>(g[POP_SOURCE_TOTAL]);
+        double const remaining = std::max(0.0, total - done);
+        double const rate = (elapsed > 0.0) ? done / elapsed : 0.0;
+        double const eta = (rate > 0.0) ? remaining / rate : 0.0;
+        std::cout << "[PeelOffProgress][prestep-source] "
+                  << std::fixed << std::setprecision(1)
+                  << "t=" << elapsed << "s "
+                  << "sources=" << g[POP_SOURCE_DONE] << "/" << g[POP_SOURCE_TOTAL] << " "
+                  << "rate=" << rate << "/s "
+                  << "eta=" << eta << "s "
+                  << std::defaultfloat
+                  << "dirs=" << g[POP_DIRS] << " "
+                  << "phaseOk=" << g[POP_PHASE_OK] << " "
+                  << "phaseRej=" << g[POP_PHASE_REJ] << " "
+                  << "obsMiss=" << g[POP_OBS_MISS] << " "
+                  << "timeRej=" << g[POP_TIME_REJ] << " "
+                  << "raysStarted=" << g[POP_RAYS_STARTED] << " "
+                  << "raysCompleted=" << g[POP_RAYS_COMPLETED] << " "
+                  << "recorded=" << g[POP_RECORDED] << " "
+                  << "failed=" << g[POP_FAILED] << " "
+                  << "tauClip=" << g[POP_TAU_CLIP] << " "
+                  << "mpiCross=" << g[POP_MPI_CROSS] << " "
+                  << "pendingRemote=" << g[POP_PENDING_REMOTE] << " "
+                  << "sourceRecorded=" << g[POP_SOURCE_RECORDED] << " "
+                  << "elasticRecorded=" << g[POP_ELASTIC_RECORDED]
+                  << std::endl;
     }
 
     std::vector<double> BuildComptonTemperatures()
@@ -336,6 +422,139 @@ bool RadiationIMC::isPostProcessMode() const
     return postProcess_.enabled;
 }
 
+void RadiationIMC::setAdaptiveSourceCellScores(
+    std::unordered_map<size_t, double> scores,
+    double strength, double maxFactor,
+    double learnedReserveFrac,
+    double learnedMinFactor)
+{
+    adaptiveSourceScoreByCellID_ = std::move(scores);
+    adaptiveSourceStrength_ = std::clamp(strength, 0.0, 1.0);
+    adaptiveSourceMaxFactor_ = std::max(1.0, maxFactor);
+    adaptiveSourceLearnedReserveFrac_ = std::clamp(learnedReserveFrac, 0.0, 1.0);
+    adaptiveSourceLearnedMinFactor_ = std::max(1.0, learnedMinFactor);
+    adaptiveSourceCellsEnabled_ =
+        adaptiveSourceStrength_ > 0.0 && !adaptiveSourceScoreByCellID_.empty();
+}
+
+void RadiationIMC::clearAdaptiveSourceCellScores()
+{
+    adaptiveSourceCellsEnabled_ = false;
+    adaptiveSourceStrength_ = 0.0;
+    adaptiveSourceLearnedReserveFrac_ = 0.0;
+    adaptiveSourceLearnedMinFactor_ = 1.0;
+    adaptiveSourceScoreByCellID_.clear();
+}
+
+void RadiationIMC::setNewPhotonsPerCell(size_t newPhotonsPerCell)
+{
+    this->newPhotonsPerCell = std::max<size_t>(1, newPhotonsPerCell);
+}
+
+void RadiationIMC::setSourceEmissionControl(bool learnedCellsOnly,
+                                            bool forceUniformPhotons,
+                                            size_t uniformPhotons,
+                                            size_t learnedMinPhotons,
+                                            size_t learnedMaxPhotons)
+{
+    sourceLearnedCellsOnly_ = learnedCellsOnly;
+    sourceForceUniformPhotons_ = forceUniformPhotons;
+    sourceUniformPhotons_ = std::max<size_t>(1, uniformPhotons);
+    sourceLearnedMinPhotons_ = learnedMinPhotons;
+    sourceLearnedMaxPhotons_ = learnedMaxPhotons;
+}
+
+void RadiationIMC::clearSourceEmissionControl()
+{
+    sourceLearnedCellsOnly_ = false;
+    sourceForceUniformPhotons_ = false;
+    sourceUniformPhotons_ = 1;
+    sourceLearnedMinPhotons_ = 0;
+    sourceLearnedMaxPhotons_ = 0;
+}
+
+RadiationIMC::SourceAllocationSummary
+RadiationIMC::getLastSourceAllocationSummary() const
+{
+    return lastSourceAllocationSummary_;
+}
+
+std::vector<size_t> const& RadiationIMC::getLastSourcePhotonsPerCell() const
+{
+    return lastSourcePhotonsPerCell_;
+}
+
+void RadiationIMC::queueExternalSourcePeelOffEvents(
+    std::vector<Particle> const& particles,
+    double eventTimeLeft)
+{
+    if (!postProcess_.enabled || !postProcess_.peelOff.enabled ||
+        !postProcess_.peelOff.sourceEmission || !observer_)
+        return;
+    if (!(eventTimeLeft > 0.0) || !std::isfinite(eventTimeLeft))
+        return;
+
+    pendingExternalSourcePeelOff_.reserve(
+        pendingExternalSourcePeelOff_.size() + particles.size());
+    for (auto const& p : particles)
+    {
+        PeelOffSource source;
+        source.sourceCellIndex = p.cellIndex;
+        source.sourceLocation = p.location;
+        source.labFrequency = p.frequency;
+        source.labWeight = p.weight;
+        source.eventTimeLeft = eventTimeLeft;
+        source.kind = PeelOffEventKind::SOURCE_EMISSION;
+        source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
+#ifdef MONTECARLO_POLARIZATION
+        source.stokesQ = p.stokesQ;
+        source.stokesU = p.stokesU;
+        source.polarizationBasis = p.polarizationBasis;
+        source.polarizationInitialized = p.polarizationInitialized;
+#endif
+        pendingExternalSourcePeelOff_.push_back(source);
+    }
+}
+
+void RadiationIMC::drainPendingCollectiveWork()
+{
+    if (postProcess_.enabled && postProcess_.peelOff.enabled)
+        processPendingPeelOffRays();
+}
+
+bool RadiationIMC::isPeelOffProgressEnabled() const
+{
+    return postProcess_.enabled && postProcess_.peelOff.enabled;
+}
+
+MonteCarloPeelOffProgressSnapshot RadiationIMC::getPeelOffProgressSnapshot() const
+{
+    MonteCarloPeelOffProgressSnapshot s;
+    if (!isPeelOffProgressEnabled())
+        return s;
+
+    for (size_t k = 0; k < NumPeelOffKinds; ++k)
+    {
+        s.directionsConsidered += peelOffCounters_.directionsConsidered[k];
+        s.phaseAccepted += peelOffCounters_.phaseAccepted[k];
+        s.phaseRejected += peelOffCounters_.phaseRejected[k];
+        s.observerMissed += peelOffCounters_.observerMissed[k];
+        s.timeRejected += peelOffCounters_.timeRejected[k];
+        s.raysStarted += peelOffCounters_.raysStarted[k];
+        s.raysCompleted += peelOffCounters_.raysCompleted[k];
+        s.recorded += peelOffCounters_.recorded[k];
+        s.rayFailed += peelOffCounters_.rayFailed[k];
+        s.tauClipped += peelOffCounters_.tauClipped[k];
+        s.mpiBoundaryCrossings += peelOffCounters_.mpiBoundaryCrossings[k];
+    }
+    s.pendingRemote = static_cast<unsigned long long>(pendingPeelOffRays_.size());
+    s.sourceRecorded = peelOffCounters_.recorded[
+        static_cast<size_t>(PeelOffEventKind::SOURCE_EMISSION)];
+    s.elasticRecorded = peelOffCounters_.recorded[
+        static_cast<size_t>(PeelOffEventKind::RESOLVED_ELASTIC_SCATTER)];
+    return s;
+}
+
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std::vector<Particle> &particlesToAdd)
 {
     (void)particlesToAdd;
@@ -504,26 +723,33 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     double low_energy_threshold = postProcess_.enabled ? 1e-8 : 1e-3;
     bool lowWeight = std::abs(particle.weight) < particle.initialWeight * low_energy_threshold;
 
+    if (postProcess_.enabled && postProcess_.peelOff.enabled && lowWeight)
+    {
+        if (observer_)
+            observer_->addCutoffEnergy(particle.weight);
+        functionality.change = MonteCarloParticleStatus::REMOVE;
+        return functionality;
+    }
+
     if (postProcess_.enabled && observer_ && min.first == Events::OBSERVER)
     {
+        ObserverCrossingRecord rec;
+        rec.crossingPoint = particle.location;
+        rec.direction = particle.velocity;
+        rec.weight = particle.weight;
+        rec.frequency = particle.frequency;
+        rec.sourceCellID = particle.sourceCellID;
 #ifdef MONTECARLO_POLARIZATION
         if(postProcess_.polarization.enabled)
         {
             IMCPolarization::InitializeIfNeeded(particle);
-            ObserverCrossingRecord rec;
-            rec.crossingPoint = particle.location;
-            rec.direction = particle.velocity;
-            rec.weight = particle.weight;
-            rec.frequency = particle.frequency;
             rec.stokesQ = particle.stokesQ;
             rec.stokesU = particle.stokesU;
             rec.polBasis = particle.polarizationBasis;
             rec.polarizationInitialized = particle.polarizationInitialized;
-            observer_->recordCrossing(rec);
         }
-        else
 #endif
-        observer_->recordCrossing(particle.location, particle.weight, particle.frequency);
+        observer_->recordCrossing(rec);
         Vector3D candidate = PostProcessIMC::ObserverNudgeCandidate(*observer_, particle.location);
         if (this->grid.IsPointInCell(candidate, cellIndex))
             particle.location = candidate;
@@ -582,6 +808,28 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         bool isEffectiveScatter = false;
         if(eventRandom < elasticScatteringOpacity)
         {
+            if (postProcess_.peelOff.enabled &&
+                postProcess_.peelOff.resolvedElasticScattering &&
+                observer_)
+            {
+                PeelOffSource source;
+                source.sourceCellIndex = cellIndex;
+                source.sourceLocation = particle.location;
+                source.labFrequency = particle.frequency;
+                source.labWeight = particle.weight;
+                source.eventTimeLeft = particle.timeLeft;
+                source.kind = PeelOffEventKind::RESOLVED_ELASTIC_SCATTER;
+                source.phaseMode = PeelOffSource::PhaseMode::ElasticScatter;
+                source.incomingDirectionLab = normalize(oldVelocity);
+#ifdef MONTECARLO_POLARIZATION
+                source.stokesQ = particle.stokesQ;
+                source.stokesU = particle.stokesU;
+                source.polarizationBasis = particle.polarizationBasis;
+                source.polarizationInitialized = particle.polarizationInitialized;
+#endif
+                maybeRecordPeelOff(source);
+            }
+
 #ifdef MONTECARLO_POLARIZATION
             if(postProcess_.enabled && postProcess_.polarization.enabled)
             {
@@ -608,22 +856,6 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 #endif
             {
                 particle.velocity = opacity->getNewScatterVelocity(cell, particle);
-            }
-
-            if (postProcess_.peelOff.enabled &&
-                postProcess_.peelOff.resolvedElasticScattering &&
-                observer_)
-            {
-                PeelOffSource source;
-                source.sourceCellIndex = cellIndex;
-                source.sourceLocation = particle.location;
-                source.labFrequency = particle.frequency;
-                source.labWeight = particle.weight;
-                source.eventTimeLeft = particle.timeLeft;
-                source.kind = PeelOffEventKind::RESOLVED_ELASTIC_SCATTER;
-                source.phaseMode = PeelOffSource::PhaseMode::ElasticScatter;
-                source.incomingDirectionLab = normalize(oldVelocity);
-                maybeRecordPeelOff(source);
             }
         }
         else if((eventRandom -= elasticScatteringOpacity) < effectiveAbsorptionOpacity)
@@ -1211,11 +1443,14 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
 
 std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(double fullDt)
 {
+    if(this->withCompton && adaptiveSourceCellsEnabled_)
+        throw UniversalError("Adaptive source-cell sampling does not support Compton transport yet");
     if(this->withCompton)
         return this->generateComptonParticles(fullDt);
 
     std::vector<Particle> newParticles;
     size_t Ncells = this->grid.GetPointNo();
+    lastSourceAllocationSummary_ = SourceAllocationSummary{};
 
     std::vector<double> energyToCreateVec(Ncells);
     std::vector<double> gammaVec(Ncells);
@@ -1244,28 +1479,131 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
 
     double globalTotalEnergy = localTotalEnergy;
     double globalTotalShareWeight = localTotalShareWeight;
+    double localAdaptiveScoreWeight = 0.0;
+    if (adaptiveSourceCellsEnabled_)
+    {
+        for (size_t i = 0; i < Ncells; ++i)
+        {
+            auto it = adaptiveSourceScoreByCellID_.find(this->cells[i].ID);
+            if (it != adaptiveSourceScoreByCellID_.end() && it->second > 0.0 && std::isfinite(it->second))
+                localAdaptiveScoreWeight += it->second;
+        }
+    }
+    double globalAdaptiveScoreWeight = localAdaptiveScoreWeight;
     size_t globalTotalCells = Ncells;
     #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalShareWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &globalAdaptiveScoreWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
+    bool const hasAdaptiveScores =
+        adaptiveSourceCellsEnabled_ && globalAdaptiveScoreWeight > 0.0;
+    bool const useAdaptive = hasAdaptiveScores && globalTotalShareWeight > 0.0;
     size_t totalParticles = globalTotalCells * this->newPhotonsPerCell * 10;
+    size_t const maxFactor = static_cast<size_t>(std::ceil(std::max(
+        1.0, useAdaptive ? adaptiveSourceMaxFactor_ : 20.0)));
+    size_t const maxPhotonsCell =
+        std::max(this->newPhotonsPerCell, this->newPhotonsPerCell * maxFactor);
     std::vector<size_t> nPhotons(Ncells);
     for(size_t i = 0; i < Ncells; i++)
     {
-        size_t proportionalShare = (globalTotalShareWeight > 0)
-            ? static_cast<size_t>(shareWeight[i] / globalTotalShareWeight * totalParticles)
-            : this->newPhotonsPerCell;
-        nPhotons[i] = std::max(this->newPhotonsPerCell, std::min(proportionalShare, this->newPhotonsPerCell * 20));
+        double targetFraction = (globalTotalShareWeight > 0)
+            ? shareWeight[i] / globalTotalShareWeight
+            : 0.0;
+        double adaptiveScore = 0.0;
+        bool learnedCell = false;
+        if (hasAdaptiveScores)
+        {
+            auto it = adaptiveSourceScoreByCellID_.find(this->cells[i].ID);
+            if (it != adaptiveSourceScoreByCellID_.end() && it->second > 0.0 && std::isfinite(it->second))
+            {
+                adaptiveScore = it->second;
+                learnedCell = true;
+            }
+        }
+        if (useAdaptive)
+        {
+            double const adaptiveFraction = adaptiveScore / globalAdaptiveScoreWeight;
+            targetFraction = (1.0 - adaptiveSourceStrength_) * targetFraction
+                           + adaptiveSourceStrength_ * adaptiveFraction;
+        }
+
+        size_t desiredPhotons = 0;
+        if (sourceLearnedCellsOnly_ && !learnedCell)
+        {
+            desiredPhotons = 0;
+        }
+        else if (sourceForceUniformPhotons_)
+        {
+            desiredPhotons = sourceUniformPhotons_;
+        }
+        else
+        {
+            size_t proportionalShare = (targetFraction > 0.0)
+                ? static_cast<size_t>(targetFraction * static_cast<double>(totalParticles))
+                : this->newPhotonsPerCell;
+            desiredPhotons = std::max(this->newPhotonsPerCell, proportionalShare);
+            if (learnedCell && adaptiveScore > 0.0)
+            {
+                double const adaptiveFraction = adaptiveScore / globalAdaptiveScoreWeight;
+                size_t const reserveShare = static_cast<size_t>(
+                    adaptiveSourceLearnedReserveFrac_ * adaptiveFraction *
+                    static_cast<double>(totalParticles));
+                size_t const learnedMinPhotons = static_cast<size_t>(std::ceil(
+                    adaptiveSourceLearnedMinFactor_ *
+                    static_cast<double>(this->newPhotonsPerCell)));
+                desiredPhotons = std::max(desiredPhotons, reserveShare);
+                desiredPhotons = std::max(desiredPhotons, learnedMinPhotons);
+            }
+        }
+        if (learnedCell && sourceLearnedMinPhotons_ > 0)
+            desiredPhotons = std::max(desiredPhotons, sourceLearnedMinPhotons_);
+        size_t cellMaxPhotons = maxPhotonsCell;
+        if (learnedCell && sourceLearnedMaxPhotons_ > 0)
+            cellMaxPhotons = sourceLearnedMaxPhotons_;
+        nPhotons[i] = std::min(desiredPhotons, cellMaxPhotons);
+
+        lastSourceAllocationSummary_.adaptiveEnabled = useAdaptive;
+        if (nPhotons[i] > 0)
+        {
+            lastSourceAllocationSummary_.totalPhotons += static_cast<unsigned long long>(nPhotons[i]);
+            lastSourceAllocationSummary_.sourceCells += 1;
+            if (lastSourceAllocationSummary_.sourceCells == 1 || nPhotons[i] < lastSourceAllocationSummary_.minPhotons)
+                lastSourceAllocationSummary_.minPhotons = nPhotons[i];
+            lastSourceAllocationSummary_.maxPhotons = std::max(lastSourceAllocationSummary_.maxPhotons, nPhotons[i]);
+        }
+        if (useAdaptive && adaptiveScore > 0.0 && nPhotons[i] > this->newPhotonsPerCell)
+            lastSourceAllocationSummary_.boostedCells += 1;
+        if (learnedCell && adaptiveScore > 0.0 && nPhotons[i] > 0)
+        {
+            lastSourceAllocationSummary_.learnedCells += 1;
+            lastSourceAllocationSummary_.learnedPhotons += static_cast<unsigned long long>(nPhotons[i]);
+            if (nPhotons[i] > this->newPhotonsPerCell)
+            {
+                lastSourceAllocationSummary_.learnedBoostedCells += 1;
+                lastSourceAllocationSummary_.learnedExtraPhotons +=
+                    static_cast<unsigned long long>(nPhotons[i] - this->newPhotonsPerCell);
+            }
+            if (lastSourceAllocationSummary_.learnedCells == 1 ||
+                nPhotons[i] < lastSourceAllocationSummary_.learnedMinPhotons)
+                lastSourceAllocationSummary_.learnedMinPhotons = nPhotons[i];
+            lastSourceAllocationSummary_.learnedMaxPhotons =
+                std::max(lastSourceAllocationSummary_.learnedMaxPhotons, nPhotons[i]);
+        }
+        lastSourceAllocationSummary_.adaptiveScoreSum += adaptiveScore;
     }
+    lastSourcePhotonsPerCell_ = nPhotons;
 
     for(size_t i = 0; i < Ncells; i++)
     {
         ComputationalCell3D &cell = this->cells[i];
         double energyToCreate = energyToCreateVec[i];
         double gamma = gammaVec[i];
+        size_t nPhotonsCell = nPhotons[i];
+        if (nPhotonsCell == 0)
+            continue;
 
         if(!this->noHydroFeedback)
         {
@@ -1295,11 +1633,11 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 }
             }
         }
-        size_t nPhotonsCell = nPhotons[i];
         double energyPerPhoton = energyToCreate * gamma / nPhotonsCell;
         for(size_t j = 0; j < nPhotonsCell; j++)
         {
             MCParticle particle = this->generateSingleParticle(i, cell);
+            particle.sourceCellID = cell.ID;
             particle.timeLeft = fullDt * this->dist(this->re);
             if(this->withHydro && !this->MMC)
             {
@@ -1422,6 +1760,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateComptonPartic
                 Particle particle = this->generateSingleParticle(i, cell);
                 particle.timeLeft = fullDt * this->dist(this->re);
                 particle.cellID = cell.ID;
+                particle.sourceCellID = cell.ID;
                 if(this->withHydro && !this->MMC)
                 {
                     double const D = DopplerShift(particle, cell.velocity);
@@ -2046,8 +2385,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         // The ray tracer applies Doppler-shifted opacity along the path.
         if (postProcess_.peelOff.enabled && postProcess_.peelOff.sourceEmission && observer_)
         {
-            for (auto const& p : newParticles)
-            {
+            auto makeGeneratedSource = [](Particle const& p) {
                 PeelOffSource source;
                 source.sourceCellIndex = p.cellIndex;
                 source.sourceLocation = p.location;
@@ -2056,8 +2394,92 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
                 source.eventTimeLeft = p.timeLeft;
                 source.kind = PeelOffEventKind::SOURCE_EMISSION;
                 source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
-                maybeRecordPeelOff(source);
+#ifdef MONTECARLO_POLARIZATION
+                source.stokesQ = p.stokesQ;
+                source.stokesU = p.stokesU;
+                source.polarizationBasis = p.polarizationBasis;
+                source.polarizationInitialized = p.polarizationInitialized;
+#endif
+                return source;
+            };
+
+            size_t const externalCount = pendingExternalSourcePeelOff_.size();
+            size_t const generatedCount = newParticles.size();
+            size_t const localSourceTotal = externalCount + generatedCount;
+            unsigned long long globalSourceTotal =
+                static_cast<unsigned long long>(localSourceTotal);
+            unsigned long long maxLocalSourceTotal =
+                static_cast<unsigned long long>(localSourceTotal);
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, &globalSourceTotal, 1,
+                          MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, &maxLocalSourceTotal, 1,
+                          MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+#endif
+            auto const progressStart = std::chrono::high_resolution_clock::now();
+            double lastProgressPrint = 0.0;
+            unsigned long long localSourceDone = 0;
+            size_t const chunks = static_cast<size_t>(
+                (maxLocalSourceTotal + PeelOffProgressSourceChunk - 1)
+                / PeelOffProgressSourceChunk);
+
+            for (size_t chunk = 0; chunk < chunks; ++chunk)
+            {
+                size_t const begin = chunk * PeelOffProgressSourceChunk;
+                size_t const end = begin + PeelOffProgressSourceChunk;
+                for (size_t i = begin; i < end && i < localSourceTotal; ++i)
+                {
+                    if (i < externalCount)
+                    {
+                        maybeRecordPeelOff(pendingExternalSourcePeelOff_[i]);
+                    }
+                    else
+                    {
+                        PeelOffSource source =
+                            makeGeneratedSource(newParticles[i - externalCount]);
+                        maybeRecordPeelOff(source);
+                    }
+                    ++localSourceDone;
+                }
+
+                processPendingPeelOffRays();
+
+                MonteCarloPeelOffProgressSnapshot snapshot =
+                    getPeelOffProgressSnapshot();
+                snapshot.sourceEventsDone = localSourceDone;
+                snapshot.sourceEventsTotal =
+                    static_cast<unsigned long long>(localSourceTotal);
+                auto localProgress = BuildPeelOffProgressArray(snapshot);
+                auto globalProgress = localProgress;
+#ifdef RICH_MPI
+                MPI_Reduce(localProgress.data(),
+                           globalProgress.data(),
+                           static_cast<int>(globalProgress.size()),
+                           MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+                int rank = 0;
+                MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#else
+                int rank = 0;
+#endif
+                if (rank == 0)
+                {
+                    globalProgress[POP_SOURCE_TOTAL] = globalSourceTotal;
+                    auto const now = std::chrono::high_resolution_clock::now();
+                    double const elapsed = std::chrono::duration<double>(
+                        now - progressStart).count();
+                    if (elapsed - lastProgressPrint >=
+                        PeelOffProgressPrintInterval)
+                    {
+                        lastProgressPrint = elapsed;
+                        PrintPeelOffSourceProgress(elapsed, globalProgress);
+                    }
+                }
             }
+            pendingExternalSourcePeelOff_.clear();
+        }
+        else
+        {
+            pendingExternalSourcePeelOff_.clear();
         }
         if (postProcess_.peelOff.enabled)
             processPendingPeelOffRays();
@@ -2140,6 +2562,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateInitialPartic
                 p.frequency = LinearInterpolation(cumulPlanck, ComputationalCell3D::energyBoundaries, r);
             }
             p.cellID = this->cells[i].ID;
+            p.sourceCellID = this->cells[i].ID;
             p.weight = weightPerPhoton;
             SetInitialWeightFromWeight(p);
             result.push_back(p);
@@ -2300,6 +2723,7 @@ void RadiationIMC::reconcileComptonParticles(std::vector<Particle> &particles)
             {
                 Particle particle = this->generateSingleParticle(i, cell);
                 particle.cellID = cell.ID;
+                particle.sourceCellID = cell.ID;
                 particle.frequency = this->frequencyForComptonGroup(g);
                 particle.weight = packetWeight;
                 SetInitialWeightFromWeight(particle);

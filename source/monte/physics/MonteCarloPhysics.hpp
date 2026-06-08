@@ -1,12 +1,33 @@
 #ifndef MONTE_CARLO_PHYSICS_HPP
 #define MONTE_CARLO_PHYSICS_HPP
 
+#include <array>
 #include <memory>
 #include <string>
 #include <tuple>
 #include "monte/MonteCarloParticle.hpp"
 #include "monte/MonteCarloFunctionality.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
+
+struct MonteCarloPeelOffProgressSnapshot
+{
+    unsigned long long sourceEventsDone = 0;
+    unsigned long long sourceEventsTotal = 0;
+    unsigned long long directionsConsidered = 0;
+    unsigned long long phaseAccepted = 0;
+    unsigned long long phaseRejected = 0;
+    unsigned long long observerMissed = 0;
+    unsigned long long timeRejected = 0;
+    unsigned long long raysStarted = 0;
+    unsigned long long raysCompleted = 0;
+    unsigned long long recorded = 0;
+    unsigned long long rayFailed = 0;
+    unsigned long long tauClipped = 0;
+    unsigned long long mpiBoundaryCrossings = 0;
+    unsigned long long pendingRemote = 0;
+    unsigned long long sourceRecorded = 0;
+    unsigned long long elasticRecorded = 0;
+};
 
 template<typename T, typename Grid>
 class MonteCarloPhysics
@@ -25,6 +46,10 @@ public:
     virtual MonteCarloFunctionality<T, Grid> step(MCParticle &particle, std::vector<MCParticle> &particlesToAdd) = 0;
 
     virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
+
+    virtual void drainPendingCollectiveWork() {}
+    virtual bool isPeelOffProgressEnabled() const { return false; }
+    virtual MonteCarloPeelOffProgressSnapshot getPeelOffProgressSnapshot() const { return {}; }
 
     virtual size_t getRandomWalkStepCount() const { return 0; }
     virtual size_t getDDMCStepCount() const { return 0; }

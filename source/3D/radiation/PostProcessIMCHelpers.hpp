@@ -25,8 +25,9 @@ struct RadiationIMCPostProcessConfig
 
         // [exact] Source emission peel-off (static media only for event modes).
         bool sourceEmission = true;
-        // [exact, static-only] Isotropic elastic scatter peel-off.
-        // Requires non-polarized, isotropic elastic scattering model.
+        // [exact, static-only] Elastic scatter peel-off.
+        // Uses polarized Thomson phase functions when polarization is enabled;
+        // otherwise matches the current isotropic elastic transport sampler.
         bool resolvedElasticScattering = false;
         // [exact, static-only] Effective (absorption+reemission) scatter peel-off.
         bool resolvedEffectiveScattering = false;

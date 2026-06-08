@@ -478,6 +478,7 @@ std::vector<typename MonteCarloManagerSerial<T, Grid>::MCParticle> MonteCarloMan
         while(this->particlesData.th_length != 0)
         {
             this->HandleAll(data);
+            this->physics->drainPendingCollectiveWork();
             ++progressIter;
 
             auto now = std::chrono::high_resolution_clock::now();

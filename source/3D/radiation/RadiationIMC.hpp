@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
@@ -57,6 +58,23 @@ public:
     using GroupCdf = std::array<double, ENERGY_GROUPS_NUM + 1>;
     using GroupMatrix = std::array<GroupArray, ENERGY_GROUPS_NUM>;
     using GroupCdfMatrix = std::array<GroupCdf, ENERGY_GROUPS_NUM>;
+
+    struct SourceAllocationSummary
+    {
+        bool adaptiveEnabled = false;
+        unsigned long long totalPhotons = 0;
+        unsigned long long sourceCells = 0;
+        unsigned long long boostedCells = 0;
+        unsigned long long learnedCells = 0;
+        unsigned long long learnedBoostedCells = 0;
+        unsigned long long learnedPhotons = 0;
+        unsigned long long learnedExtraPhotons = 0;
+        size_t minPhotons = 0;
+        size_t maxPhotons = 0;
+        size_t learnedMinPhotons = 0;
+        size_t learnedMaxPhotons = 0;
+        double adaptiveScoreSum = 0.0;
+    };
 
     struct ComptonCellData
     {
@@ -137,6 +155,25 @@ public:
     void setObserver(std::shared_ptr<SphericalObserver> observer);
     std::shared_ptr<SphericalObserver> getObserver() const;
     bool isPostProcessMode() const;
+    void setAdaptiveSourceCellScores(std::unordered_map<size_t, double> scores,
+                                     double strength, double maxFactor,
+                                     double learnedReserveFrac = 0.0,
+                                     double learnedMinFactor = 1.0);
+    void clearAdaptiveSourceCellScores();
+    void setNewPhotonsPerCell(size_t newPhotonsPerCell);
+    void setSourceEmissionControl(bool learnedCellsOnly,
+                                  bool forceUniformPhotons,
+                                  size_t uniformPhotons,
+                                  size_t learnedMinPhotons = 0,
+                                  size_t learnedMaxPhotons = 0);
+    void clearSourceEmissionControl();
+    SourceAllocationSummary getLastSourceAllocationSummary() const;
+    std::vector<size_t> const& getLastSourcePhotonsPerCell() const;
+    void queueExternalSourcePeelOffEvents(std::vector<Particle> const& particles,
+                                          double eventTimeLeft);
+    void drainPendingCollectiveWork() override;
+    bool isPeelOffProgressEnabled() const override;
+    MonteCarloPeelOffProgressSnapshot getPeelOffProgressSnapshot() const override;
 
 private:    
     struct DDMCFaceLeak
@@ -207,6 +244,19 @@ private:
     bool comptonAngleDependent;
     size_t comptonMatrixSamples;
     bool useTransportVelocities_ = false;
+    bool adaptiveSourceCellsEnabled_ = false;
+    double adaptiveSourceStrength_ = 0.0;
+    double adaptiveSourceMaxFactor_ = 20.0;
+    double adaptiveSourceLearnedReserveFrac_ = 0.0;
+    double adaptiveSourceLearnedMinFactor_ = 1.0;
+    std::unordered_map<size_t, double> adaptiveSourceScoreByCellID_;
+    SourceAllocationSummary lastSourceAllocationSummary_;
+    std::vector<size_t> lastSourcePhotonsPerCell_;
+    bool sourceLearnedCellsOnly_ = false;
+    bool sourceForceUniformPhotons_ = false;
+    size_t sourceUniformPhotons_ = 1;
+    size_t sourceLearnedMinPhotons_ = 0;
+    size_t sourceLearnedMaxPhotons_ = 0;
 
     std::unique_ptr<RandomWalk> randomWalk;
     std::vector<bool> rwCellEligible;
@@ -251,6 +301,10 @@ private:
         PhaseMode phaseMode = PhaseMode::Isotropic;
         Vector3D incomingDirectionLab;
         Vector3D surfaceNormalLab;
+        double stokesQ = 0.0;
+        double stokesU = 0.0;
+        Vector3D polarizationBasis;
+        bool polarizationInitialized = false;
     };
 
     struct PeelOffRayState
@@ -264,6 +318,9 @@ private:
         double tau = 0.0;
         double labFrequency = 0.0;
         double contributionPrefactor = 0.0;
+        double stokesQ = 0.0;
+        double stokesU = 0.0;
+        bool polarizationInitialized = false;
         double eventTimeLeft = -1.0;
         size_t currentLocalCell = std::numeric_limits<size_t>::max();
         int originRank = 0;
@@ -273,7 +330,7 @@ private:
         bool crossedAnyMpiBoundary = false;
         bool valid = true;
 
-        static constexpr size_t PackedDoubles = 20;
+        static constexpr size_t PackedDoubles = 23;
         void packInto(double* buf) const;
         static PeelOffRayState unpack(const double* buf);
     };
@@ -300,6 +357,8 @@ private:
     FaceExitInfo classifyFaceExit(size_t faceGlobalIdx, size_t fromCell) const;
 
     void maybeRecordPeelOff(PeelOffSource const& source);
+    void traceOrQueuePeelOffRay(PeelOffRayState ray);
+    bool recordPeelOffContribution(PeelOffRayState const& ray, double contribution);
 
     LocalTraceOutcome continuePeelOffRayLocally(PeelOffRayState state) const;
 
@@ -307,7 +366,10 @@ private:
 
     double evaluatePeelOffPhasePdf(
         PeelOffSource const& source,
-        Vector3D const& nObsLab) const;
+        Vector3D const& nObsLab,
+        double& qObserver,
+        double& uObserver,
+        bool& polarizationInitialized) const;
 
     double computePeelOffRayOpacity(
         ComputationalCell3D const& cell,
@@ -321,6 +383,7 @@ private:
 
     PeelOffCounters peelOffCounters_;
     std::vector<PeelOffRayState> pendingPeelOffRays_;
+    std::vector<PeelOffSource> pendingExternalSourcePeelOff_;
     unsigned long long nextPeelOffRayId_ = 0;
 
 #ifdef RICH_MPI

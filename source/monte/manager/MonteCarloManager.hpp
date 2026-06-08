@@ -1,10 +1,13 @@
 #ifndef MONTE_CARLO_MANAGER_HPP
 #define MONTE_CARLO_MANAGER_HPP
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <string>
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "Radiation/OpacityCalculator.hpp"
 #include "mpi/mpi_commands.hpp"
@@ -32,7 +35,68 @@
 #define SEND_BUFFER_MIN_SIZE 200
 #define SEND_BUFFER_MIN_CYCLES 100
 #define RW_PROGRESS_TAG 9941
-#define MC_PROGRESS_COUNTERS 6
+#define MC_PROGRESS_COUNTERS 22
+
+enum MCProgressCounterIndex : size_t
+{
+    MC_PROGRESS_RW_STEPS = 0,
+    MC_PROGRESS_DDMC_STEPS,
+    MC_PROGRESS_DDMC_LEAKS,
+    MC_PROGRESS_DDMC_CENSUS,
+    MC_PROGRESS_DDMC_UPSCATTER,
+    MC_PROGRESS_DDMC_FALLBACK,
+    MC_PROGRESS_PEEL_SOURCE_DONE,
+    MC_PROGRESS_PEEL_SOURCE_TOTAL,
+    MC_PROGRESS_PEEL_DIRS,
+    MC_PROGRESS_PEEL_PHASE_OK,
+    MC_PROGRESS_PEEL_PHASE_REJ,
+    MC_PROGRESS_PEEL_OBS_MISS,
+    MC_PROGRESS_PEEL_TIME_REJ,
+    MC_PROGRESS_PEEL_RAYS_STARTED,
+    MC_PROGRESS_PEEL_RAYS_COMPLETED,
+    MC_PROGRESS_PEEL_RECORDED,
+    MC_PROGRESS_PEEL_FAILED,
+    MC_PROGRESS_PEEL_TAU_CLIP,
+    MC_PROGRESS_PEEL_MPI_CROSS,
+    MC_PROGRESS_PEEL_PENDING_REMOTE,
+    MC_PROGRESS_PEEL_SOURCE_RECORDED,
+    MC_PROGRESS_PEEL_ELASTIC_RECORDED,
+    MC_PROGRESS_COUNTER_COUNT
+};
+
+static_assert(MC_PROGRESS_COUNTER_COUNT == MC_PROGRESS_COUNTERS,
+              "Update MC_PROGRESS_COUNTERS when progress fields change");
+
+template<typename T>
+double MaxAxisRelativeDrift(const T &drift, const T &boxSize)
+{
+    double maxRelDrift = 0.0;
+    auto update = [&maxRelDrift](double delta, double size)
+    {
+        if(size > 0.0)
+            maxRelDrift = std::max(maxRelDrift, std::abs(delta) / size);
+    };
+
+    update(std::abs(drift.x), std::abs(boxSize.x));
+    update(std::abs(drift.y), std::abs(boxSize.y));
+    update(std::abs(drift.z), std::abs(boxSize.z));
+    return maxRelDrift;
+}
+
+template<typename T>
+void ComputeBoxDriftDiagnostics(const T &location, const T &boxLL, const T &boxUR,
+                                double &relativeDrift, double &maxAxisRelativeDrift)
+{
+    T boxSize = boxUR - boxLL;
+    T clamped = location;
+    clamped.x = std::max(boxLL.x, std::min(boxUR.x, clamped.x));
+    clamped.y = std::max(boxLL.y, std::min(boxUR.y, clamped.y));
+    clamped.z = std::max(boxLL.z, std::min(boxUR.z, clamped.z));
+
+    T drift = location - clamped;
+    relativeDrift = abs(drift) / abs(boxSize);
+    maxAxisRelativeDrift = MaxAxisRelativeDrift(drift, boxSize);
+}
 
 template<typename Grid>
 std::vector<rank_t> GetNeighborList(const Grid &tess, const boost::container::flat_map<size_t, std::pair<rank_t, size_t>> &ghostsMap)
@@ -1022,102 +1086,62 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                     const T beforeStepLocation = particle.location;
                     const T beforeStepVelocity = particle.velocity;
                     const dt_t beforeStepTimeLeft = particle.timeLeft;
-                    if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location) &&
-                                      (particle.cellIndex >= this->Ncells ||
-                                       !this->grid.IsPointInCell(particle.location, particle.cellIndex))))
+                    if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
                     {
                         auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
-                        constexpr double clampTol = 1e-13;
-                        T boxSize = boxUR - boxLL;
-                        T clamped = particle.location;
-                        clamped.x = std::max(boxLL.x, std::min(boxUR.x, clamped.x));
-                        clamped.y = std::max(boxLL.y, std::min(boxUR.y, clamped.y));
-                        clamped.z = std::max(boxLL.z, std::min(boxUR.z, clamped.z));
-                        T drift = particle.location - clamped;
-                        double relDrift = abs(drift) / abs(boxSize);
-                        if(relDrift < clampTol)
+                        double relDrift = 0.0;
+                        double maxAxisRelDrift = 0.0;
+                        ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+                        UniversalError eo("MonteCarloManager: particle outside box before physics step");
+                        eo.addEntry("Rank", this->rank_world);
+                        eo.addEntry("Particle before step", particle);
+                        eo.addEntry("Location before step", beforeStepLocation);
+                        eo.addEntry("Velocity before step", beforeStepVelocity);
+                        eo.addEntry("Time left before step", beforeStepTimeLeft);
+                        eo.addEntry("Box lower", boxLL);
+                        eo.addEntry("Box upper", boxUR);
+                        eo.addEntry("Relative drift", relDrift);
+                        eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+                        eo.addEntry("Cell count", this->Ncells);
+                        if(particle.cellIndex < this->Ncells)
                         {
-                            particle.location = clamped;
-                            constexpr double inwardNudge = 1e-10;
-                            particle.location.x += (particle.location.x <= boxLL.x ? inwardNudge * boxSize.x :
-                                                    (particle.location.x >= boxUR.x ? -inwardNudge * boxSize.x : 0.0));
-                            particle.location.y += (particle.location.y <= boxLL.y ? inwardNudge * boxSize.y :
-                                                    (particle.location.y >= boxUR.y ? -inwardNudge * boxSize.y : 0.0));
-                            particle.location.z += (particle.location.z <= boxLL.z ? inwardNudge * boxSize.z :
-                                                    (particle.location.z >= boxUR.z ? -inwardNudge * boxSize.z : 0.0));
-                            particle.cellIndex = this->grid.GetContainingCell(particle.location);
+                            eo.addEntry("Cell index", particle.cellIndex);
+                            eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                            eo.addEntry("Inside declared cell before step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
                         }
-                        else
-                        {
-                            UniversalError eo("MonteCarloManager: particle outside box before physics step");
-                            eo.addEntry("Rank", this->rank_world);
-                            eo.addEntry("Particle before step", particle);
-                            eo.addEntry("Location before step", beforeStepLocation);
-                            eo.addEntry("Velocity before step", beforeStepVelocity);
-                            eo.addEntry("Time left before step", beforeStepTimeLeft);
-                            eo.addEntry("Box lower", boxLL);
-                            eo.addEntry("Box upper", boxUR);
-                            eo.addEntry("Relative drift", relDrift);
-                            eo.addEntry("Cell count", this->Ncells);
-                            if(particle.cellIndex < this->Ncells)
-                            {
-                                eo.addEntry("Cell index", particle.cellIndex);
-                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
-                                eo.addEntry("Inside declared cell before step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
-                            }
-                            throw eo;
-                        }
+                        throw eo;
                     }
                     MonteCarloFunctionality<T, Grid> functionality = this->physics->step(particle, particlesToAdd);
                     if(BOOST_UNLIKELY(functionality.change != MonteCarloParticleStatus::REMOVE &&
                                       functionality.change != MonteCarloParticleStatus::CELL_MOVE &&
-                                      this->grid.IsPointOutsideBox(particle.location) &&
-                                      (particle.cellIndex >= this->Ncells ||
-                                       !this->grid.IsPointInCell(particle.location, particle.cellIndex))))
+                                      this->grid.IsPointOutsideBox(particle.location)))
                     {
                         auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
-                        constexpr double clampTol = 1e-8;
-                        T boxSize = boxUR - boxLL;
-                        T clamped = particle.location;
-                        clamped.x = std::max(boxLL.x, std::min(boxUR.x, clamped.x));
-                        clamped.y = std::max(boxLL.y, std::min(boxUR.y, clamped.y));
-                        clamped.z = std::max(boxLL.z, std::min(boxUR.z, clamped.z));
-                        T drift = particle.location - clamped;
-                        double relDrift = abs(drift) / abs(boxSize);
-                        if(relDrift < clampTol)
+                        double relDrift = 0.0;
+                        double maxAxisRelDrift = 0.0;
+                        ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+                        UniversalError eo("MonteCarloManager: physics step moved particle outside the box");
+                        eo.addEntry("Rank", this->rank_world);
+                        eo.addEntry("Particle after step", particle);
+                        eo.addEntry("Functionality", MonteCarloParticleStatusToString(functionality.change));
+                        eo.addEntry("Next cell index", functionality.nextCellIndex);
+                        eo.addEntry("Location before step", beforeStepLocation);
+                        eo.addEntry("Velocity before step", beforeStepVelocity);
+                        eo.addEntry("Time left before step", beforeStepTimeLeft);
+                        eo.addEntry("Box lower", boxLL);
+                        eo.addEntry("Box upper", boxUR);
+                        eo.addEntry("Relative drift", relDrift);
+                        eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+                        eo.addEntry("Cell count", this->Ncells);
+                        if(particle.cellIndex < this->Ncells)
                         {
-                            particle.location = clamped;
-                            constexpr double inwardNudge = 1e-10;
-                            particle.location.x += (particle.location.x <= boxLL.x ? inwardNudge * boxSize.x :
-                                                    (particle.location.x >= boxUR.x ? -inwardNudge * boxSize.x : 0.0));
-                            particle.location.y += (particle.location.y <= boxLL.y ? inwardNudge * boxSize.y :
-                                                    (particle.location.y >= boxUR.y ? -inwardNudge * boxSize.y : 0.0));
-                            particle.location.z += (particle.location.z <= boxLL.z ? inwardNudge * boxSize.z :
-                                                    (particle.location.z >= boxUR.z ? -inwardNudge * boxSize.z : 0.0));
-                            particle.cellIndex = this->grid.GetContainingCell(particle.location);
+                            eo.addEntry("Cell index", particle.cellIndex);
+                            eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                            eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
                         }
-                        else
-                        {
-                            UniversalError eo("MonteCarloManager: physics step moved particle outside the box");
-                            eo.addEntry("Rank", this->rank_world);
-                            eo.addEntry("Particle after step", particle);
-                            eo.addEntry("Functionality", MonteCarloParticleStatusToString(functionality.change));
-                            eo.addEntry("Next cell index", functionality.nextCellIndex);
-                            eo.addEntry("Location before step", beforeStepLocation);
-                            eo.addEntry("Velocity before step", beforeStepVelocity);
-                            eo.addEntry("Time left before step", beforeStepTimeLeft);
-                            eo.addEntry("Box lower", boxLL);
-                            eo.addEntry("Box upper", boxUR);
-                            eo.addEntry("Relative drift", relDrift);
-                            eo.addEntry("Cell count", this->Ncells);
-                            if(particle.cellIndex < this->Ncells)
-                            {
-                                eo.addEntry("Cell index", particle.cellIndex);
-                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
-                                eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
-                            }
-                            throw eo;
-                        }
+                        throw eo;
                     }
 
                     if(particle.on_track)
@@ -1143,9 +1167,41 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
     
                         assert(nextCellIndex != particle.cellIndex);
                         assert(particle.timeLeft >= 0);
+
+                        auto throwCellMoveOutsideBox = [&](const std::string &cellMoveTarget)
+                        {
+                            auto const [boxLL, boxUR] = this->grid.GetBoxCoordinates();
+                            double relDrift = 0.0;
+                            double maxAxisRelDrift = 0.0;
+                            ComputeBoxDriftDiagnostics(particle.location, boxLL, boxUR, relDrift, maxAxisRelDrift);
+
+                            UniversalError eo("MonteCarloManager: CELL_MOVE moved particle outside box before a non-boundary cell move");
+                            eo.addEntry("Rank", this->rank_world);
+                            eo.addEntry("Particle after step", particle);
+                            eo.addEntry("Cell move target", cellMoveTarget);
+                            eo.addEntry("Next cell index", nextCellIndex);
+                            eo.addEntry("Location before step", beforeStepLocation);
+                            eo.addEntry("Velocity before step", beforeStepVelocity);
+                            eo.addEntry("Time left before step", beforeStepTimeLeft);
+                            eo.addEntry("Box lower", boxLL);
+                            eo.addEntry("Box upper", boxUR);
+                            eo.addEntry("Relative drift", relDrift);
+                            eo.addEntry("Max axis relative drift", maxAxisRelDrift);
+                            eo.addEntry("Cell count", this->Ncells);
+                            if(particle.cellIndex < this->Ncells)
+                            {
+                                eo.addEntry("Cell index", particle.cellIndex);
+                                eo.addEntry("Cell center", this->grid.GetMeshPoint(particle.cellIndex));
+                                eo.addEntry("Inside declared cell after step", this->grid.IsPointInCell(particle.location, particle.cellIndex));
+                            }
+                            throw eo;
+                        };
         
                         if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                         {
+                            if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
+                                throwCellMoveOutsideBox("local cell move");
+
                             // local neighbor
                             #ifdef MONTECARLO_DEBUG
                             size_t previousCell = particle.cellIndex;
@@ -1220,6 +1276,9 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                 }
                                 break;    
                             }
+
+                            if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
+                                throwCellMoveOutsideBox("remote rank transfer");
     
                             particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                             auto [otherRank, neighborIndexInRank] = it->second;
@@ -1750,6 +1809,43 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
     double progressLastReportSendTime = 0.0;
 #endif
 
+    auto buildProgressCounters = [this]()
+    {
+        std::array<unsigned long long, MC_PROGRESS_COUNTERS> counters{};
+        counters[MC_PROGRESS_RW_STEPS] =
+            static_cast<unsigned long long>(this->physics->getRandomWalkStepCount());
+        counters[MC_PROGRESS_DDMC_STEPS] =
+            static_cast<unsigned long long>(this->physics->getDDMCStepCount());
+        counters[MC_PROGRESS_DDMC_LEAKS] =
+            static_cast<unsigned long long>(this->physics->getDDMCLeakCount());
+        counters[MC_PROGRESS_DDMC_CENSUS] =
+            static_cast<unsigned long long>(this->physics->getDDMCCensusCount());
+        counters[MC_PROGRESS_DDMC_UPSCATTER] =
+            static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
+        counters[MC_PROGRESS_DDMC_FALLBACK] =
+            static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
+
+        MonteCarloPeelOffProgressSnapshot const peel =
+            this->physics->getPeelOffProgressSnapshot();
+        counters[MC_PROGRESS_PEEL_SOURCE_DONE] = peel.sourceEventsDone;
+        counters[MC_PROGRESS_PEEL_SOURCE_TOTAL] = peel.sourceEventsTotal;
+        counters[MC_PROGRESS_PEEL_DIRS] = peel.directionsConsidered;
+        counters[MC_PROGRESS_PEEL_PHASE_OK] = peel.phaseAccepted;
+        counters[MC_PROGRESS_PEEL_PHASE_REJ] = peel.phaseRejected;
+        counters[MC_PROGRESS_PEEL_OBS_MISS] = peel.observerMissed;
+        counters[MC_PROGRESS_PEEL_TIME_REJ] = peel.timeRejected;
+        counters[MC_PROGRESS_PEEL_RAYS_STARTED] = peel.raysStarted;
+        counters[MC_PROGRESS_PEEL_RAYS_COMPLETED] = peel.raysCompleted;
+        counters[MC_PROGRESS_PEEL_RECORDED] = peel.recorded;
+        counters[MC_PROGRESS_PEEL_FAILED] = peel.rayFailed;
+        counters[MC_PROGRESS_PEEL_TAU_CLIP] = peel.tauClipped;
+        counters[MC_PROGRESS_PEEL_MPI_CROSS] = peel.mpiBoundaryCrossings;
+        counters[MC_PROGRESS_PEEL_PENDING_REMOTE] = peel.pendingRemote;
+        counters[MC_PROGRESS_PEEL_SOURCE_RECORDED] = peel.sourceRecorded;
+        counters[MC_PROGRESS_PEEL_ELASTIC_RECORDED] = peel.elasticRecorded;
+        return counters;
+    };
+
     const bool &verify = amountManager.GetVerifyRef();
     const bool &done = amountManager.GetDoneRef();
 
@@ -1763,6 +1859,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             this->HandleAll(data);
 
             this->FlushSendBuffers();
+            this->physics->drainPendingCollectiveWork();
 
             amountManager.Decrease(this->localDecrementAmount);
             this->localDecrementAmount = 0;
@@ -1775,14 +1872,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 #ifdef RICH_MPI
             if(this->rank_world == 0)
             {
-                progressCountersByRank[0] = {
-                    static_cast<unsigned long long>(this->physics->getRandomWalkStepCount()),
-                    static_cast<unsigned long long>(this->physics->getDDMCStepCount()),
-                    static_cast<unsigned long long>(this->physics->getDDMCLeakCount()),
-                    static_cast<unsigned long long>(this->physics->getDDMCCensusCount()),
-                    static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount()),
-                    static_cast<unsigned long long>(this->physics->getDDMCFallbackCount())
-                };
+                progressCountersByRank[0] = buildProgressCounters();
 
                 int hasMsg = 0;
                 MPI_Status status;
@@ -1808,14 +1898,7 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 }
                 if(progressReportSendReq == MPI_REQUEST_NULL)
                 {
-                    progressReportSendValue = {
-                        static_cast<unsigned long long>(this->physics->getRandomWalkStepCount()),
-                        static_cast<unsigned long long>(this->physics->getDDMCStepCount()),
-                        static_cast<unsigned long long>(this->physics->getDDMCLeakCount()),
-                        static_cast<unsigned long long>(this->physics->getDDMCCensusCount()),
-                        static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount()),
-                        static_cast<unsigned long long>(this->physics->getDDMCFallbackCount())
-                    };
+                    progressReportSendValue = buildProgressCounters();
                     MPI_Isend(progressReportSendValue.data(), MC_PROGRESS_COUNTERS, MPI_UNSIGNED_LONG_LONG, 0,
                               RW_PROGRESS_TAG, this->comm_world, &progressReportSendReq);
                     progressLastReportSendTime = elapsed_s;
@@ -1826,29 +1909,15 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             if(this->rank_world == 0 && elapsed_s - this->lastProgressPrintTime_ >= 10.0)
             {
                 this->lastProgressPrintTime_ = elapsed_s;
-                unsigned long long globalRwSteps = 0;
-                unsigned long long globalDDMCSteps = 0;
-                unsigned long long globalDDMCLeaks = 0;
-                unsigned long long globalDDMCCensus = 0;
-                unsigned long long globalDDMCUpscatter = 0;
-                unsigned long long globalDDMCFallback = 0;
+                std::array<unsigned long long, MC_PROGRESS_COUNTERS> globalCounters{};
 #ifdef RICH_MPI
                 for(const auto &counters : progressCountersByRank)
                 {
-                    globalRwSteps += counters[0];
-                    globalDDMCSteps += counters[1];
-                    globalDDMCLeaks += counters[2];
-                    globalDDMCCensus += counters[3];
-                    globalDDMCUpscatter += counters[4];
-                    globalDDMCFallback += counters[5];
+                    for(size_t i = 0; i < globalCounters.size(); ++i)
+                        globalCounters[i] += counters[i];
                 }
 #else
-                globalRwSteps = static_cast<unsigned long long>(this->physics->getRandomWalkStepCount());
-                globalDDMCSteps = static_cast<unsigned long long>(this->physics->getDDMCStepCount());
-                globalDDMCLeaks = static_cast<unsigned long long>(this->physics->getDDMCLeakCount());
-                globalDDMCCensus = static_cast<unsigned long long>(this->physics->getDDMCCensusCount());
-                globalDDMCUpscatter = static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
-                globalDDMCFallback = static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
+                globalCounters = buildProgressCounters();
 #endif
                 int64_t globalRemaining = amountManager.GetValue();
                 int64_t globalDone = globalInitialForProgress - globalRemaining;
@@ -1857,20 +1926,49 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 double eta = (rate > 0) ? static_cast<double>(globalRemaining) / rate : 0.0;
                 RankHandler_t *selfHandler = this->rankHandlers[this->rank_world];
                 int localRemaining = selfHandler ? selfHandler->th_length : 0;
-                std::cerr << "[Progress] ~"
-                          << (done_frac * 100.0) << "% done, "
-                          << elapsed_s << "s elapsed, "
-                          << "~" << eta << "s ETA, "
-                          << "global_done=" << globalDone << "/" << globalInitialForProgress
-                          << " rank0_local_remaining=" << localRemaining
-                          << " rw_steps_total=" << globalRwSteps
-                          << " ddmc_steps_total=" << globalDDMCSteps
-                          << " ddmc_leaks=" << globalDDMCLeaks
-                          << " ddmc_census=" << globalDDMCCensus
-                          << " ddmc_upscatter=" << globalDDMCUpscatter
-                          << " ddmc_fallback=" << globalDDMCFallback
-                          << " eta_is_count_based=1"
-                          << std::endl;
+                if(this->physics->isPeelOffProgressEnabled())
+                {
+                    std::cout << "[PeelOffProgress][transport] "
+                              << std::fixed << std::setprecision(1)
+                              << "t=" << elapsed_s << "s "
+                              << "particles=" << globalDone << "/" << globalInitialForProgress << " "
+                              << "rate=" << rate << "/s "
+                              << "eta=" << eta << "s "
+                              << std::defaultfloat
+                              << "active=" << globalRemaining << " "
+                              << "dirs=" << globalCounters[MC_PROGRESS_PEEL_DIRS] << " "
+                              << "phaseOk=" << globalCounters[MC_PROGRESS_PEEL_PHASE_OK] << " "
+                              << "phaseRej=" << globalCounters[MC_PROGRESS_PEEL_PHASE_REJ] << " "
+                              << "obsMiss=" << globalCounters[MC_PROGRESS_PEEL_OBS_MISS] << " "
+                              << "timeRej=" << globalCounters[MC_PROGRESS_PEEL_TIME_REJ] << " "
+                              << "raysStarted=" << globalCounters[MC_PROGRESS_PEEL_RAYS_STARTED] << " "
+                              << "raysCompleted=" << globalCounters[MC_PROGRESS_PEEL_RAYS_COMPLETED] << " "
+                              << "recorded=" << globalCounters[MC_PROGRESS_PEEL_RECORDED] << " "
+                              << "failed=" << globalCounters[MC_PROGRESS_PEEL_FAILED] << " "
+                              << "tauClip=" << globalCounters[MC_PROGRESS_PEEL_TAU_CLIP] << " "
+                              << "mpiCross=" << globalCounters[MC_PROGRESS_PEEL_MPI_CROSS] << " "
+                              << "pendingRemote=" << globalCounters[MC_PROGRESS_PEEL_PENDING_REMOTE] << " "
+                              << "sourceRecorded=" << globalCounters[MC_PROGRESS_PEEL_SOURCE_RECORDED] << " "
+                              << "elasticRecorded=" << globalCounters[MC_PROGRESS_PEEL_ELASTIC_RECORDED]
+                              << std::endl;
+                }
+                else
+                {
+                    std::cerr << "[Progress] ~"
+                              << (done_frac * 100.0) << "% done, "
+                              << elapsed_s << "s elapsed, "
+                              << "~" << eta << "s ETA, "
+                              << "global_done=" << globalDone << "/" << globalInitialForProgress
+                              << " rank0_local_remaining=" << localRemaining
+                              << " rw_steps_total=" << globalCounters[MC_PROGRESS_RW_STEPS]
+                              << " ddmc_steps_total=" << globalCounters[MC_PROGRESS_DDMC_STEPS]
+                              << " ddmc_leaks=" << globalCounters[MC_PROGRESS_DDMC_LEAKS]
+                              << " ddmc_census=" << globalCounters[MC_PROGRESS_DDMC_CENSUS]
+                              << " ddmc_upscatter=" << globalCounters[MC_PROGRESS_DDMC_UPSCATTER]
+                              << " ddmc_fallback=" << globalCounters[MC_PROGRESS_DDMC_FALLBACK]
+                              << " eta_is_count_based=1"
+                              << std::endl;
+                }
             }
 
             if(verify)

@@ -20,6 +20,309 @@ namespace {
 
 struct Triangle { size_t a, b, c; };
 
+void addScalarStat(SphericalObserver::RunningScalarStats& stat, double value)
+{
+    stat.sum += value;
+    stat.sumSq += value * value;
+}
+
+double scalarMean(SphericalObserver::RunningScalarStats const& stat, size_t samples)
+{
+    return samples > 0 ? stat.sum / static_cast<double>(samples) : 0.0;
+}
+
+double scalarStderr(SphericalObserver::RunningScalarStats const& stat, size_t samples)
+{
+    if (samples <= 1)
+        return 0.0;
+    double const n = static_cast<double>(samples);
+    double const var = std::max(0.0, (stat.sumSq - stat.sum * stat.sum / n) / (n - 1.0));
+    return std::sqrt(var / n);
+}
+
+void initVectorStat(SphericalObserver::RunningVectorStats& stat, size_t n)
+{
+    if (stat.sum.size() != n) {
+        stat.sum.assign(n, 0.0);
+        stat.sumSq.assign(n, 0.0);
+    }
+}
+
+void addVectorStat(SphericalObserver::RunningVectorStats& stat, std::vector<double> const& values)
+{
+    initVectorStat(stat, values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        stat.sum[i] += values[i];
+        stat.sumSq[i] += values[i] * values[i];
+    }
+}
+
+std::vector<double> vectorMean(SphericalObserver::RunningVectorStats const& stat, size_t samples)
+{
+    std::vector<double> result(stat.sum.size(), 0.0);
+    if (samples == 0)
+        return result;
+    double const inv = 1.0 / static_cast<double>(samples);
+    for (size_t i = 0; i < result.size(); ++i)
+        result[i] = stat.sum[i] * inv;
+    return result;
+}
+
+std::vector<double> vectorStderr(SphericalObserver::RunningVectorStats const& stat, size_t samples)
+{
+    std::vector<double> result(stat.sum.size(), 0.0);
+    if (samples <= 1)
+        return result;
+    double const n = static_cast<double>(samples);
+    for (size_t i = 0; i < result.size(); ++i) {
+        double const var = std::max(0.0, (stat.sumSq[i] - stat.sum[i] * stat.sum[i] / n) / (n - 1.0));
+        result[i] = std::sqrt(var / n);
+    }
+    return result;
+}
+
+std::vector<double> relativeError(std::vector<double> const& mean,
+                                  std::vector<double> const& stderr)
+{
+    std::vector<double> result(mean.size(), 0.0);
+    for (size_t i = 0; i < mean.size(); ++i)
+        result[i] = (mean[i] != 0.0) ? stderr[i] / std::abs(mean[i]) : 0.0;
+    return result;
+}
+
+double relativeError(double mean, double stderr)
+{
+    return (mean != 0.0) ? stderr / std::abs(mean) : 0.0;
+}
+
+void initMatrixStat(SphericalObserver::RunningMatrixStats& stat, size_t n, size_t m)
+{
+    if (stat.sum.size() != n || (!stat.sum.empty() && stat.sum[0].size() != m)) {
+        stat.sum.assign(n, std::vector<double>(m, 0.0));
+        stat.sumSq.assign(n, std::vector<double>(m, 0.0));
+    }
+}
+
+void addMatrixStat(SphericalObserver::RunningMatrixStats& stat,
+                   std::vector<std::vector<double>> const& values)
+{
+    size_t const n = values.size();
+    size_t const m = n > 0 ? values[0].size() : 0;
+    initMatrixStat(stat, n, m);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < m; ++j) {
+            stat.sum[i][j] += values[i][j];
+            stat.sumSq[i][j] += values[i][j] * values[i][j];
+        }
+    }
+}
+
+std::vector<std::vector<double>> matrixMean(SphericalObserver::RunningMatrixStats const& stat,
+                                            size_t samples)
+{
+    std::vector<std::vector<double>> result = stat.sum;
+    if (samples == 0)
+        return result;
+    double const inv = 1.0 / static_cast<double>(samples);
+    for (auto& row : result)
+        for (auto& value : row)
+            value *= inv;
+    return result;
+}
+
+std::vector<std::vector<double>> matrixStderr(SphericalObserver::RunningMatrixStats const& stat,
+                                              size_t samples)
+{
+    std::vector<std::vector<double>> result = stat.sum;
+    for (auto& row : result)
+        std::fill(row.begin(), row.end(), 0.0);
+    if (samples <= 1)
+        return result;
+    double const n = static_cast<double>(samples);
+    for (size_t i = 0; i < result.size(); ++i) {
+        for (size_t j = 0; j < result[i].size(); ++j) {
+            double const var = std::max(
+                0.0, (stat.sumSq[i][j] - stat.sum[i][j] * stat.sum[i][j] / n) / (n - 1.0));
+            result[i][j] = std::sqrt(var / n);
+        }
+    }
+    return result;
+}
+
+std::vector<std::vector<double>> relativeError(
+    std::vector<std::vector<double>> const& mean,
+    std::vector<std::vector<double>> const& stderr)
+{
+    std::vector<std::vector<double>> result = mean;
+    for (size_t i = 0; i < result.size(); ++i)
+        for (size_t j = 0; j < result[i].size(); ++j)
+            result[i][j] = (mean[i][j] != 0.0) ? stderr[i][j] / std::abs(mean[i][j]) : 0.0;
+    return result;
+}
+
+std::vector<double> scaleVector(std::vector<double> values, double factor)
+{
+    for (auto& v : values)
+        v *= factor;
+    return values;
+}
+
+std::vector<std::vector<double>> scaleMatrix(std::vector<std::vector<double>> values, double factor)
+{
+    for (auto& row : values)
+        for (auto& v : row)
+            v *= factor;
+    return values;
+}
+
+std::vector<double> multiplyByObserverFactor(
+    std::vector<double> const& values,
+    std::vector<double> const& factor)
+{
+    std::vector<double> result(values.size(), 0.0);
+    for (size_t i = 0; i < values.size(); ++i)
+        result[i] = values[i] * factor[i];
+    return result;
+}
+
+std::vector<double> log10Luminosity(std::vector<double> const& lum)
+{
+    std::vector<double> result(lum.size(), -99.0);
+    for (size_t i = 0; i < lum.size(); ++i)
+        if (lum[i] > 0.0)
+            result[i] = std::log10(lum[i]);
+    return result;
+}
+
+std::vector<double> log10Stderr(std::vector<double> const& lum,
+                                std::vector<double> const& lumStderr)
+{
+    std::vector<double> result(lum.size(), 0.0);
+    double const invLn10 = 1.0 / std::log(10.0);
+    for (size_t i = 0; i < lum.size(); ++i)
+        if (lum[i] > 0.0)
+            result[i] = lumStderr[i] * invLn10 / lum[i];
+    return result;
+}
+
+std::vector<double> packetStderr(std::vector<double> const& weightSqSum, size_t samples,
+                                 double factor = 1.0)
+{
+    std::vector<double> result(weightSqSum.size(), 0.0);
+    if (samples == 0)
+        return result;
+    double const invSamples = 1.0 / static_cast<double>(samples);
+    for (size_t i = 0; i < result.size(); ++i)
+        result[i] = std::sqrt(std::max(0.0, weightSqSum[i])) * invSamples * factor;
+    return result;
+}
+
+std::vector<double> packetNeff(std::vector<double> const& mean,
+                               std::vector<double> const& stderr)
+{
+    std::vector<double> result(mean.size(), 0.0);
+    for (size_t i = 0; i < mean.size(); ++i) {
+        double const var = stderr[i] * stderr[i];
+        result[i] = (var > 0.0) ? mean[i] * mean[i] / var : 0.0;
+    }
+    return result;
+}
+
+std::vector<std::vector<double>> packetStderr(
+    std::vector<std::vector<double>> const& weightSqSum,
+    size_t samples,
+    double factor = 1.0)
+{
+    std::vector<std::vector<double>> result = weightSqSum;
+    if (samples == 0) {
+        for (auto& row : result)
+            std::fill(row.begin(), row.end(), 0.0);
+        return result;
+    }
+    double const invSamples = 1.0 / static_cast<double>(samples);
+    for (auto& row : result)
+        for (auto& v : row)
+            v = std::sqrt(std::max(0.0, v)) * invSamples * factor;
+    return result;
+}
+
+std::vector<std::vector<double>> packetNeff(
+    std::vector<std::vector<double>> const& mean,
+    std::vector<std::vector<double>> const& stderr)
+{
+    std::vector<std::vector<double>> result = mean;
+    for (size_t i = 0; i < result.size(); ++i) {
+        for (size_t j = 0; j < result[i].size(); ++j) {
+            double const var = stderr[i][j] * stderr[i][j];
+            result[i][j] = (var > 0.0) ? mean[i][j] * mean[i][j] / var : 0.0;
+        }
+    }
+    return result;
+}
+
+void writeVectorStatErrors(HDF5Writer& writer, std::string const& path,
+                           SphericalObserver::RunningVectorStats const& stat,
+                           std::vector<double> const& mean,
+                           size_t samples)
+{
+    auto stderr = vectorStderr(stat, samples);
+    writer.WriteElement(path + "_stderr_gen", stderr);
+    writer.WriteElement(path + "_relerr_gen", relativeError(mean, stderr));
+}
+
+void writeMatrixStatErrors(HDF5Writer& writer, std::string const& path,
+                           SphericalObserver::RunningMatrixStats const& stat,
+                           std::vector<std::vector<double>> const& mean,
+                           size_t samples)
+{
+    auto stderr = matrixStderr(stat, samples);
+    writer.WriteElement(path + "_stderr_gen", stderr);
+    writer.WriteElement(path + "_relerr_gen", relativeError(mean, stderr));
+}
+
+void writeScalarStatErrors(HDF5Writer& writer, std::string const& path,
+                           SphericalObserver::RunningScalarStats const& stat,
+                           double mean,
+                           size_t samples)
+{
+    double const stderr = scalarStderr(stat, samples);
+    writer.WriteElement(path + "_stderr_gen", stderr);
+    writer.WriteElement(path + "_relerr_gen", relativeError(mean, stderr));
+}
+
+void writeVectorPacketErrors(HDF5Writer& writer, std::string const& path,
+                             std::vector<double> const& mean,
+                             std::vector<double> const& weightSqSum,
+                             size_t samples,
+                             double factor = 1.0)
+{
+    auto stderr = packetStderr(weightSqSum, samples, factor);
+    writer.WriteElement(path + "_stderr_packet", stderr);
+    writer.WriteElement(path + "_relerr_packet", relativeError(mean, stderr));
+    writer.WriteElement(path + "_neff", packetNeff(mean, stderr));
+}
+
+void writeMatrixPacketErrors(HDF5Writer& writer, std::string const& path,
+                             std::vector<std::vector<double>> const& mean,
+                             std::vector<std::vector<double>> const& weightSqSum,
+                             size_t samples,
+                             double factor = 1.0)
+{
+    auto stderr = packetStderr(weightSqSum, samples, factor);
+    writer.WriteElement(path + "_stderr_packet", stderr);
+    writer.WriteElement(path + "_relerr_packet", relativeError(mean, stderr));
+    writer.WriteElement(path + "_neff", packetNeff(mean, stderr));
+}
+
+void writeScalarVtk(std::ofstream& file, std::string const& name,
+                    std::vector<double> const& values)
+{
+    file << "SCALARS " << name << " double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (double v : values)
+        file << v << "\n";
+}
+
 std::vector<Triangle> convexHullTriangulation(const std::vector<Vector3D>& pts)
 {
     size_t N = pts.size();
@@ -199,15 +502,21 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     }
 
     observerEnergy_.assign(numObservers_, 0.0);
+    observerEnergyWeightSq_.assign(numObservers_, 0.0);
     observerMaxPacketEnergy_.assign(numObservers_, 0.0);
     observerCrossingCount_.assign(numObservers_, 0);
     observerSolidAngle_ = computePerObserverSolidAngles(directions_, numObservers_);
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupEnergyWeightSq_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
     peelOffEnergy_.assign(numObservers_, 0.0);
+    peelOffEnergyWeightSq_.assign(numObservers_, 0.0);
     peelOffCount_.assign(numObservers_, 0);
     peelOffGroupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    peelOffGroupEnergyWeightSq_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
 #ifdef MONTECARLO_POLARIZATION
+    peelOffStokesQ_.assign(numObservers_, 0.0);
+    peelOffStokesU_.assign(numObservers_, 0.0);
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
     observerSumWeightSq_.assign(numObservers_, 0.0);
@@ -279,12 +588,14 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
         return;
     size_t obs = findNearestObserver(crossingPoint);
     observerEnergy_[obs] += weight;
+    observerEnergyWeightSq_[obs] += weight * weight;
     if (weight > observerMaxPacketEnergy_[obs])
         observerMaxPacketEnergy_[obs] = weight;
     ++observerCrossingCount_[obs];
     if (numGroups_ > 1) {
         size_t g = findGroup(frequency);
         groupEnergy_[obs][g] += weight;
+        groupEnergyWeightSq_[obs][g] += weight * weight;
         ++groupCrossingCount_[obs][g];
     }
 #endif
@@ -303,6 +614,8 @@ void SphericalObserver::recordCrossing(ObserverCrossingRecord const& rec)
 
     size_t obs = findNearestObserver(rec.crossingPoint);
     observerEnergy_[obs] += rec.weight;
+    observerEnergyWeightSq_[obs] += rec.weight * rec.weight;
+    recordGenerationSourceCellEscape(obs, rec.sourceCellID, rec.weight);
     if (rec.weight > observerMaxPacketEnergy_[obs])
         observerMaxPacketEnergy_[obs] = rec.weight;
     ++observerCrossingCount_[obs];
@@ -310,6 +623,7 @@ void SphericalObserver::recordCrossing(ObserverCrossingRecord const& rec)
     if (numGroups_ > 1) {
         size_t g = findGroup(rec.frequency);
         groupEnergy_[obs][g] += rec.weight;
+        groupEnergyWeightSq_[obs][g] += rec.weight * rec.weight;
         ++groupCrossingCount_[obs][g];
     }
 
@@ -346,6 +660,8 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
 
     size_t obs = findNearestObserver(crossingPoint);
     observerEnergy_[obs] += weight;
+    observerEnergyWeightSq_[obs] += weight * weight;
+    // No source cell is available on this legacy overload.
     if (weight > observerMaxPacketEnergy_[obs])
         observerMaxPacketEnergy_[obs] = weight;
     observerStokesQ_[obs] += weight * qObserver;
@@ -358,6 +674,7 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
     if (numGroups_ > 1) {
         size_t g = findGroup(frequency);
         groupEnergy_[obs][g] += weight;
+        groupEnergyWeightSq_[obs][g] += weight * weight;
         groupStokesQ_[obs][g] += weight * qObserver;
         groupStokesU_[obs][g] += weight * uObserver;
         ++groupCrossingCount_[obs][g];
@@ -514,6 +831,381 @@ void SphericalObserver::addBoxEscapeEnergy(double energy) { boxEscapeEnergy_ += 
 void SphericalObserver::addTimedOutEnergy(double energy) { timedOutEnergy_ += energy; }
 void SphericalObserver::addCutoffEnergy(double energy) { cutoffEnergy_ += energy; }
 
+void SphericalObserver::resetGenerationSourceCellEscapeStats()
+{
+    generationSourceCellEscape_.clear();
+}
+
+std::vector<SphericalObserver::SourceCellEscapeStat>
+SphericalObserver::getGenerationSourceCellEscapeStats() const
+{
+    std::vector<SourceCellEscapeStat> result;
+    size_t totalStats = 0;
+    for (auto const& byObserver : generationSourceCellEscape_)
+        totalStats += byObserver.second.size();
+    result.reserve(totalStats);
+    for (auto const& byObserver : generationSourceCellEscape_) {
+        for (auto const& kv : byObserver.second)
+            result.push_back(kv.second);
+    }
+    return result;
+}
+
+void SphericalObserver::resetTallies()
+{
+    std::fill(observerEnergy_.begin(), observerEnergy_.end(), 0.0);
+    std::fill(observerEnergyWeightSq_.begin(), observerEnergyWeightSq_.end(), 0.0);
+    std::fill(observerMaxPacketEnergy_.begin(), observerMaxPacketEnergy_.end(), 0.0);
+    std::fill(observerCrossingCount_.begin(), observerCrossingCount_.end(), 0);
+    for (auto& row : groupEnergy_)
+        std::fill(row.begin(), row.end(), 0.0);
+    for (auto& row : groupEnergyWeightSq_)
+        std::fill(row.begin(), row.end(), 0.0);
+    for (auto& row : groupCrossingCount_)
+        std::fill(row.begin(), row.end(), 0);
+    std::fill(peelOffEnergy_.begin(), peelOffEnergy_.end(), 0.0);
+    std::fill(peelOffEnergyWeightSq_.begin(), peelOffEnergyWeightSq_.end(), 0.0);
+    std::fill(peelOffCount_.begin(), peelOffCount_.end(), 0);
+    for (auto& row : peelOffGroupEnergy_)
+        std::fill(row.begin(), row.end(), 0.0);
+    for (auto& row : peelOffGroupEnergyWeightSq_)
+        std::fill(row.begin(), row.end(), 0.0);
+#ifdef MONTECARLO_POLARIZATION
+    std::fill(observerStokesQ_.begin(), observerStokesQ_.end(), 0.0);
+    std::fill(observerStokesU_.begin(), observerStokesU_.end(), 0.0);
+    std::fill(observerSumWeightSq_.begin(), observerSumWeightSq_.end(), 0.0);
+    std::fill(observerSumWQ2_.begin(), observerSumWQ2_.end(), 0.0);
+    std::fill(observerSumWU2_.begin(), observerSumWU2_.end(), 0.0);
+    std::fill(mismatchWeightedSum_.begin(), mismatchWeightedSum_.end(), 0.0);
+    std::fill(mismatchWeighted2Sum_.begin(), mismatchWeighted2Sum_.end(), 0.0);
+    std::fill(mismatchMax_.begin(), mismatchMax_.end(), 0.0);
+    for (auto& row : groupStokesQ_)
+        std::fill(row.begin(), row.end(), 0.0);
+    for (auto& row : groupStokesU_)
+        std::fill(row.begin(), row.end(), 0.0);
+    std::fill(peelOffStokesQ_.begin(), peelOffStokesQ_.end(), 0.0);
+    std::fill(peelOffStokesU_.begin(), peelOffStokesU_.end(), 0.0);
+#endif
+    if (peelOffPerKindEnabled_) {
+        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
+            std::fill(peelOffEnergyByKind_[k].begin(), peelOffEnergyByKind_[k].end(), 0.0);
+            std::fill(peelOffEnergyByKindWeightSq_[k].begin(), peelOffEnergyByKindWeightSq_[k].end(), 0.0);
+            std::fill(peelOffCountByKind_[k].begin(), peelOffCountByKind_[k].end(), 0);
+            for (auto& row : peelOffGroupEnergyByKind_[k])
+                std::fill(row.begin(), row.end(), 0.0);
+            for (auto& row : peelOffGroupEnergyByKindWeightSq_[k])
+                std::fill(row.begin(), row.end(), 0.0);
+#ifdef MONTECARLO_POLARIZATION
+            std::fill(peelOffStokesQByKind_[k].begin(), peelOffStokesQByKind_[k].end(), 0.0);
+            std::fill(peelOffStokesUByKind_[k].begin(), peelOffStokesUByKind_[k].end(), 0.0);
+#endif
+        }
+    }
+    emittedEnergy_ = 0.0;
+    absorbedEnergy_ = 0.0;
+    boxEscapeEnergy_ = 0.0;
+    timedOutEnergy_ = 0.0;
+    cutoffEnergy_ = 0.0;
+    peelOffNeedsMpiReduction_ = false;
+}
+
+void SphericalObserver::clearGenerationStatistics()
+{
+    generationStats_ = GenerationStatistics{};
+}
+
+void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
+{
+    double const invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+    double const fourPi = 4.0 * M_PI;
+    std::vector<double> lum = scaleVector(observerEnergy_, invDt);
+    std::vector<double> iso(numObservers_, 0.0);
+    std::vector<double> flux(numObservers_, 0.0);
+    for (size_t i = 0; i < numObservers_; ++i) {
+        iso[i] = (observerSolidAngle_[i] > 0.0)
+            ? lum[i] * fourPi / observerSolidAngle_[i] : 0.0;
+        double const patchArea = observerSolidAngle_[i] * radiusSquared_;
+        flux[i] = (patchArea > 0.0) ? lum[i] / patchArea : 0.0;
+    }
+    addVectorStat(generationStats_.energy, observerEnergy_);
+    addVectorStat(generationStats_.luminosity, lum);
+    addVectorStat(generationStats_.isoLuminosity, iso);
+    addVectorStat(generationStats_.flux, flux);
+    addMatrixStat(generationStats_.groupEnergy, groupEnergy_);
+    addMatrixStat(generationStats_.groupLuminosity, scaleMatrix(groupEnergy_, invDt));
+
+#ifdef MONTECARLO_POLARIZATION
+    if (polarizationOutputEnabled_) {
+        std::vector<double> q(numObservers_, 0.0), u(numObservers_, 0.0);
+        std::vector<double> qLum(numObservers_, 0.0), uLum(numObservers_, 0.0);
+        std::vector<double> polDegree(numObservers_, 0.0), polAngle(numObservers_, 0.0);
+        for (size_t i = 0; i < numObservers_; ++i) {
+            double const invI = (observerEnergy_[i] > 0.0) ? 1.0 / observerEnergy_[i] : 0.0;
+            q[i] = observerStokesQ_[i] * invI;
+            u[i] = observerStokesU_[i] * invI;
+            qLum[i] = observerStokesQ_[i] * invDt;
+            uLum[i] = observerStokesU_[i] * invDt;
+            polDegree[i] = PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]);
+            polAngle[i] = PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]);
+        }
+        addVectorStat(generationStats_.stokesQ, observerStokesQ_);
+        addVectorStat(generationStats_.stokesU, observerStokesU_);
+        addVectorStat(generationStats_.q, q);
+        addVectorStat(generationStats_.u, u);
+        addVectorStat(generationStats_.stokesQLuminosity, qLum);
+        addVectorStat(generationStats_.stokesULuminosity, uLum);
+        addVectorStat(generationStats_.polarizationDegree, polDegree);
+        addVectorStat(generationStats_.polarizationAngle, polAngle);
+
+        std::vector<std::vector<double>> gQ(numObservers_, std::vector<double>(numGroups_, 0.0));
+        std::vector<std::vector<double>> gU(numObservers_, std::vector<double>(numGroups_, 0.0));
+        std::vector<std::vector<double>> gQLum = scaleMatrix(groupStokesQ_, invDt);
+        std::vector<std::vector<double>> gULum = scaleMatrix(groupStokesU_, invDt);
+        std::vector<std::vector<double>> gDegree(numObservers_, std::vector<double>(numGroups_, 0.0));
+        std::vector<std::vector<double>> gAngle(numObservers_, std::vector<double>(numGroups_, 0.0));
+        for (size_t i = 0; i < numObservers_; ++i) {
+            for (size_t g = 0; g < numGroups_; ++g) {
+                double const invI = (groupEnergy_[i][g] > 0.0) ? 1.0 / groupEnergy_[i][g] : 0.0;
+                gQ[i][g] = groupStokesQ_[i][g] * invI;
+                gU[i][g] = groupStokesU_[i][g] * invI;
+                gDegree[i][g] = PolarizationDegree(groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g]);
+                gAngle[i][g] = PolarizationAngle(groupStokesQ_[i][g], groupStokesU_[i][g]);
+            }
+        }
+        addMatrixStat(generationStats_.groupStokesQ, groupStokesQ_);
+        addMatrixStat(generationStats_.groupStokesU, groupStokesU_);
+        addMatrixStat(generationStats_.groupQ, gQ);
+        addMatrixStat(generationStats_.groupU, gU);
+        addMatrixStat(generationStats_.groupQLuminosity, gQLum);
+        addMatrixStat(generationStats_.groupULuminosity, gULum);
+        addMatrixStat(generationStats_.groupPolarizationDegree, gDegree);
+        addMatrixStat(generationStats_.groupPolarizationAngle, gAngle);
+    }
+#endif
+
+    if (peelOffOutputEnabled_) {
+        std::vector<double> peelLum = scaleVector(peelOffEnergy_, invDt);
+        std::vector<double> peelIso(numObservers_, 0.0);
+        for (size_t i = 0; i < numObservers_; ++i)
+            peelIso[i] = (observerSolidAngle_[i] > 0.0)
+                ? peelLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
+        addVectorStat(generationStats_.peelOffEnergy, peelOffEnergy_);
+        addVectorStat(generationStats_.peelOffLuminosity, peelLum);
+        addVectorStat(generationStats_.peelOffIsoLuminosity, peelIso);
+        addMatrixStat(generationStats_.peelOffGroupEnergy, peelOffGroupEnergy_);
+#ifdef MONTECARLO_POLARIZATION
+        if (polarizationOutputEnabled_) {
+            std::vector<double> q(numObservers_, 0.0), u(numObservers_, 0.0);
+            std::vector<double> qLum(numObservers_, 0.0), uLum(numObservers_, 0.0);
+            std::vector<double> pDegree(numObservers_, 0.0), pAngle(numObservers_, 0.0);
+            for (size_t i = 0; i < numObservers_; ++i) {
+                double const invI = (peelOffEnergy_[i] > 0.0) ? 1.0 / peelOffEnergy_[i] : 0.0;
+                q[i] = peelOffStokesQ_[i] * invI;
+                u[i] = peelOffStokesU_[i] * invI;
+                qLum[i] = peelOffStokesQ_[i] * invDt;
+                uLum[i] = peelOffStokesU_[i] * invDt;
+                pDegree[i] = PolarizationDegree(peelOffEnergy_[i], peelOffStokesQ_[i], peelOffStokesU_[i]);
+                pAngle[i] = PolarizationAngle(peelOffStokesQ_[i], peelOffStokesU_[i]);
+            }
+            addVectorStat(generationStats_.peelOffStokesQ, peelOffStokesQ_);
+            addVectorStat(generationStats_.peelOffStokesU, peelOffStokesU_);
+            addVectorStat(generationStats_.peelOffQ, q);
+            addVectorStat(generationStats_.peelOffU, u);
+            addVectorStat(generationStats_.peelOffQLuminosity, qLum);
+            addVectorStat(generationStats_.peelOffULuminosity, uLum);
+            addVectorStat(generationStats_.peelOffPolarizationDegree, pDegree);
+            addVectorStat(generationStats_.peelOffPolarizationAngle, pAngle);
+        }
+#endif
+    }
+
+    double const totalEnergy = getTotalCrossingEnergy();
+    addScalarStat(generationStats_.totalEnergy, totalEnergy);
+    addScalarStat(generationStats_.totalLuminosity, totalEnergy * invDt);
+    addScalarStat(generationStats_.emittedEnergy, emittedEnergy_);
+    addScalarStat(generationStats_.absorbedEnergy, absorbedEnergy_);
+    addScalarStat(generationStats_.boxEscapeEnergy, boxEscapeEnergy_);
+    addScalarStat(generationStats_.timedOutEnergy, timedOutEnergy_);
+    addScalarStat(generationStats_.cutoffEnergy, cutoffEnergy_);
+    double const transportSinkResidual = emittedEnergy_ - absorbedEnergy_
+        - boxEscapeEnergy_ - timedOutEnergy_ - cutoffEnergy_;
+    double const timedOutFraction = (emittedEnergy_ > 0.0)
+        ? timedOutEnergy_ / emittedEnergy_ : 0.0;
+    addScalarStat(generationStats_.transportSinkResidual, transportSinkResidual);
+    addScalarStat(generationStats_.timedOutFraction, timedOutFraction);
+
+    if (generationStats_.samples == 0) {
+        generationStats_.energyWeightSqSum.assign(numObservers_, 0.0);
+        generationStats_.groupEnergyWeightSqSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.peelOffEnergyWeightSqSum.assign(numObservers_, 0.0);
+        generationStats_.peelOffGroupEnergyWeightSqSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.observerCrossingCountSum.assign(numObservers_, 0);
+        generationStats_.groupCrossingCountSum.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
+        generationStats_.peelOffCountSum.assign(numObservers_, 0);
+        generationStats_.observerMaxPacketEnergyMax.assign(numObservers_, 0.0);
+        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
+            generationStats_.peelOffEnergyByKindSum[k].assign(numObservers_, 0.0);
+            generationStats_.peelOffGroupEnergyByKindSum[k].assign(numObservers_,
+                std::vector<double>(numGroups_, 0.0));
+            generationStats_.peelOffCountByKindSum[k].assign(numObservers_, 0);
+        }
+#ifdef MONTECARLO_POLARIZATION
+        generationStats_.observerSumWeightSqSum.assign(numObservers_, 0.0);
+        generationStats_.observerSumWQ2Sum.assign(numObservers_, 0.0);
+        generationStats_.observerSumWU2Sum.assign(numObservers_, 0.0);
+        generationStats_.mismatchWeightedSumSum.assign(numObservers_, 0.0);
+        generationStats_.mismatchWeighted2SumSum.assign(numObservers_, 0.0);
+        generationStats_.mismatchMaxMax.assign(numObservers_, 0.0);
+        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
+            generationStats_.peelOffStokesQByKindSum[k].assign(numObservers_, 0.0);
+            generationStats_.peelOffStokesUByKindSum[k].assign(numObservers_, 0.0);
+        }
+#endif
+    }
+    for (size_t i = 0; i < numObservers_; ++i) {
+        generationStats_.energyWeightSqSum[i] += observerEnergyWeightSq_[i];
+        generationStats_.peelOffEnergyWeightSqSum[i] += peelOffEnergyWeightSq_[i];
+        generationStats_.observerCrossingCountSum[i] += observerCrossingCount_[i];
+        generationStats_.peelOffCountSum[i] += peelOffCount_[i];
+        generationStats_.observerMaxPacketEnergyMax[i] =
+            std::max(generationStats_.observerMaxPacketEnergyMax[i], observerMaxPacketEnergy_[i]);
+        for (size_t g = 0; g < numGroups_; ++g) {
+            generationStats_.groupEnergyWeightSqSum[i][g] += groupEnergyWeightSq_[i][g];
+            generationStats_.peelOffGroupEnergyWeightSqSum[i][g] += peelOffGroupEnergyWeightSq_[i][g];
+            generationStats_.groupCrossingCountSum[i][g] += groupCrossingCount_[i][g];
+        }
+#ifdef MONTECARLO_POLARIZATION
+        generationStats_.observerSumWeightSqSum[i] += observerSumWeightSq_[i];
+        generationStats_.observerSumWQ2Sum[i] += observerSumWQ2_[i];
+        generationStats_.observerSumWU2Sum[i] += observerSumWU2_[i];
+        generationStats_.mismatchWeightedSumSum[i] += mismatchWeightedSum_[i];
+        generationStats_.mismatchWeighted2SumSum[i] += mismatchWeighted2Sum_[i];
+        generationStats_.mismatchMaxMax[i] =
+            std::max(generationStats_.mismatchMaxMax[i], mismatchMax_[i]);
+#endif
+    }
+    if (peelOffPerKindEnabled_) {
+        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
+            for (size_t i = 0; i < numObservers_; ++i) {
+                generationStats_.peelOffEnergyByKindSum[k][i] += peelOffEnergyByKind_[k][i];
+                generationStats_.peelOffCountByKindSum[k][i] += peelOffCountByKind_[k][i];
+                for (size_t g = 0; g < numGroups_; ++g)
+                    generationStats_.peelOffGroupEnergyByKindSum[k][i][g] +=
+                        peelOffGroupEnergyByKind_[k][i][g];
+#ifdef MONTECARLO_POLARIZATION
+                generationStats_.peelOffStokesQByKindSum[k][i] += peelOffStokesQByKind_[k][i];
+                generationStats_.peelOffStokesUByKindSum[k][i] += peelOffStokesUByKind_[k][i];
+#endif
+            }
+        }
+    }
+    generationStats_.totalEnergyWeightSqSum +=
+        std::accumulate(observerEnergyWeightSq_.begin(), observerEnergyWeightSq_.end(), 0.0);
+    generationStats_.samples += 1;
+}
+
+void SphericalObserver::loadStatisticalMeanTallies()
+{
+    size_t const samples = generationStats_.samples;
+    if (samples == 0)
+        return;
+    observerEnergy_ = vectorMean(generationStats_.energy, samples);
+    groupEnergy_ = matrixMean(generationStats_.groupEnergy, samples);
+    emittedEnergy_ = scalarMean(generationStats_.emittedEnergy, samples);
+    absorbedEnergy_ = scalarMean(generationStats_.absorbedEnergy, samples);
+    boxEscapeEnergy_ = scalarMean(generationStats_.boxEscapeEnergy, samples);
+    timedOutEnergy_ = scalarMean(generationStats_.timedOutEnergy, samples);
+    cutoffEnergy_ = scalarMean(generationStats_.cutoffEnergy, samples);
+    observerEnergyWeightSq_ = generationStats_.energyWeightSqSum;
+    groupEnergyWeightSq_ = generationStats_.groupEnergyWeightSqSum;
+    observerCrossingCount_ = generationStats_.observerCrossingCountSum;
+    groupCrossingCount_ = generationStats_.groupCrossingCountSum;
+    observerMaxPacketEnergy_ = generationStats_.observerMaxPacketEnergyMax;
+    if (peelOffOutputEnabled_) {
+        peelOffEnergy_ = vectorMean(generationStats_.peelOffEnergy, samples);
+        peelOffGroupEnergy_ = matrixMean(generationStats_.peelOffGroupEnergy, samples);
+        peelOffEnergyWeightSq_ = generationStats_.peelOffEnergyWeightSqSum;
+        peelOffGroupEnergyWeightSq_ = generationStats_.peelOffGroupEnergyWeightSqSum;
+        peelOffCount_ = generationStats_.peelOffCountSum;
+        if (peelOffPerKindEnabled_) {
+            double const invSamples = 1.0 / static_cast<double>(samples);
+            for (size_t k = 0; k < NumPeelOffKinds; ++k) {
+                peelOffCountByKind_[k] = generationStats_.peelOffCountByKindSum[k];
+                peelOffEnergyByKind_[k] = generationStats_.peelOffEnergyByKindSum[k];
+                for (auto& e : peelOffEnergyByKind_[k])
+                    e *= invSamples;
+                peelOffGroupEnergyByKind_[k] = generationStats_.peelOffGroupEnergyByKindSum[k];
+                for (auto& row : peelOffGroupEnergyByKind_[k])
+                    for (auto& e : row)
+                        e *= invSamples;
+#ifdef MONTECARLO_POLARIZATION
+                peelOffStokesQByKind_[k] = generationStats_.peelOffStokesQByKindSum[k];
+                peelOffStokesUByKind_[k] = generationStats_.peelOffStokesUByKindSum[k];
+                for (auto& e : peelOffStokesQByKind_[k])
+                    e *= invSamples;
+                for (auto& e : peelOffStokesUByKind_[k])
+                    e *= invSamples;
+#endif
+            }
+        }
+    }
+#ifdef MONTECARLO_POLARIZATION
+    if (polarizationOutputEnabled_) {
+        observerStokesQ_ = vectorMean(generationStats_.stokesQ, samples);
+        observerStokesU_ = vectorMean(generationStats_.stokesU, samples);
+        groupStokesQ_ = matrixMean(generationStats_.groupStokesQ, samples);
+        groupStokesU_ = matrixMean(generationStats_.groupStokesU, samples);
+        double const invSamples = 1.0 / static_cast<double>(samples);
+        double const invSamplesSq = invSamples * invSamples;
+        observerSumWeightSq_ = generationStats_.observerSumWeightSqSum;
+        observerSumWQ2_ = generationStats_.observerSumWQ2Sum;
+        observerSumWU2_ = generationStats_.observerSumWU2Sum;
+        mismatchWeightedSum_ = generationStats_.mismatchWeightedSumSum;
+        mismatchWeighted2Sum_ = generationStats_.mismatchWeighted2SumSum;
+        mismatchMax_ = generationStats_.mismatchMaxMax;
+        for (auto& e : observerSumWeightSq_) e *= invSamplesSq;
+        for (auto& e : observerSumWQ2_) e *= invSamples;
+        for (auto& e : observerSumWU2_) e *= invSamples;
+        for (auto& e : mismatchWeightedSum_) e *= invSamples;
+        for (auto& e : mismatchWeighted2Sum_) e *= invSamples;
+        if (peelOffOutputEnabled_) {
+            peelOffStokesQ_ = vectorMean(generationStats_.peelOffStokesQ, samples);
+            peelOffStokesU_ = vectorMean(generationStats_.peelOffStokesU, samples);
+        }
+    }
+#endif
+}
+
+size_t SphericalObserver::getStatisticsSamples() const
+{
+    return generationStats_.samples;
+}
+
+double SphericalObserver::getTotalLuminosityStderrGen(double sourceDt) const
+{
+    (void)sourceDt;
+    return scalarStderr(generationStats_.totalLuminosity, generationStats_.samples);
+}
+
+double SphericalObserver::getTotalLuminosityRelErrGen(double sourceDt) const
+{
+    double const mean = (sourceDt > 0.0) ? getTotalCrossingEnergy() / sourceDt : 0.0;
+    return relativeError(mean, getTotalLuminosityStderrGen(sourceDt));
+}
+
+void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy)
+{
+    if (observerIndex == std::numeric_limits<size_t>::max() ||
+        cellID == std::numeric_limits<size_t>::max() ||
+        !(energy > 0.0) || !std::isfinite(energy))
+        return;
+    auto& stat = generationSourceCellEscape_[observerIndex][cellID];
+    stat.cellID = cellID;
+    stat.observerIndex = observerIndex;
+    stat.energy += energy;
+    ++stat.count;
+}
+
 size_t SphericalObserver::findNearestObserver(Vector3D const& crossingPoint) const
 {
     Vector3D u = crossingPoint - center_;
@@ -604,18 +1296,35 @@ std::vector<double> const& SphericalObserver::getMaxPacketEnergy() const
 void SphericalObserver::scale(double factor)
 {
     for (auto& e : observerEnergy_) e *= factor;
+    for (auto& e : observerEnergyWeightSq_) e *= factor * factor;
     for (auto& gv : groupEnergy_)
         for (auto& e : gv) e *= factor;
+    for (auto& gv : groupEnergyWeightSq_)
+        for (auto& e : gv) e *= factor * factor;
     for (auto& e : peelOffEnergy_) e *= factor;
+    for (auto& e : peelOffEnergyWeightSq_) e *= factor * factor;
     for (auto& gv : peelOffGroupEnergy_)
         for (auto& e : gv) e *= factor;
+    for (auto& gv : peelOffGroupEnergyWeightSq_)
+        for (auto& e : gv) e *= factor * factor;
+#ifdef MONTECARLO_POLARIZATION
+    for (auto& e : peelOffStokesQ_) e *= factor;
+    for (auto& e : peelOffStokesU_) e *= factor;
+#endif
     if (peelOffPerKindEnabled_)
     {
         for (size_t k = 0; k < NumPeelOffKinds; ++k)
         {
             for (auto& e : peelOffEnergyByKind_[k]) e *= factor;
+            for (auto& e : peelOffEnergyByKindWeightSq_[k]) e *= factor * factor;
             for (auto& gv : peelOffGroupEnergyByKind_[k])
                 for (auto& e : gv) e *= factor;
+            for (auto& gv : peelOffGroupEnergyByKindWeightSq_[k])
+                for (auto& e : gv) e *= factor * factor;
+#ifdef MONTECARLO_POLARIZATION
+            for (auto& e : peelOffStokesQByKind_[k]) e *= factor;
+            for (auto& e : peelOffStokesUByKind_[k]) e *= factor;
+#endif
         }
     }
 #ifdef MONTECARLO_POLARIZATION
@@ -647,9 +1356,16 @@ void SphericalObserver::setPeelOffMetadata(bool enabled, bool writePerKindTallie
         for (size_t k = 0; k < NumPeelOffKinds; ++k)
         {
             peelOffEnergyByKind_[k].assign(numObservers_, 0.0);
+            peelOffEnergyByKindWeightSq_[k].assign(numObservers_, 0.0);
             peelOffCountByKind_[k].assign(numObservers_, 0);
             peelOffGroupEnergyByKind_[k].assign(numObservers_,
                 std::vector<double>(numGroups_, 0.0));
+            peelOffGroupEnergyByKindWeightSq_[k].assign(numObservers_,
+                std::vector<double>(numGroups_, 0.0));
+#ifdef MONTECARLO_POLARIZATION
+            peelOffStokesQByKind_[k].assign(numObservers_, 0.0);
+            peelOffStokesUByKind_[k].assign(numObservers_, 0.0);
+#endif
         }
     }
 }
@@ -680,26 +1396,85 @@ bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy,
 
     peelOffNeedsMpiReduction_ = true;
     peelOffEnergy_[observerIndex] += energy;
+    peelOffEnergyWeightSq_[observerIndex] += energy * energy;
     peelOffCount_[observerIndex] += 1;
     if (numGroups_ > 1)
     {
         size_t g = findGroup(frequency);
         peelOffGroupEnergy_[observerIndex][g] += energy;
+        peelOffGroupEnergyWeightSq_[observerIndex][g] += energy * energy;
     }
 
     size_t k = static_cast<size_t>(kind);
     if (peelOffPerKindEnabled_ && k < NumPeelOffKinds)
     {
         peelOffEnergyByKind_[k][observerIndex] += energy;
+        peelOffEnergyByKindWeightSq_[k][observerIndex] += energy * energy;
         peelOffCountByKind_[k][observerIndex] += 1;
         if (numGroups_ > 1)
         {
             size_t g = findGroup(frequency);
             peelOffGroupEnergyByKind_[k][observerIndex][g] += energy;
+            peelOffGroupEnergyByKindWeightSq_[k][observerIndex][g] += energy * energy;
         }
     }
     return true;
 }
+
+#ifdef MONTECARLO_POLARIZATION
+bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy,
+                                      double frequency, double qObserver,
+                                      double uObserver, PeelOffEventKind kind)
+{
+    if (observerIndex >= numObservers_)
+        return false;
+    if (!(energy > 0.0) || !std::isfinite(energy) ||
+        !(frequency > 0.0) || !std::isfinite(frequency))
+        return false;
+    if (!std::isfinite(qObserver))
+        qObserver = 0.0;
+    if (!std::isfinite(uObserver))
+        uObserver = 0.0;
+
+    double const p2 = qObserver * qObserver + uObserver * uObserver;
+    if (p2 > 1.0)
+    {
+        double const invP = 1.0 / std::sqrt(p2);
+        qObserver *= invP;
+        uObserver *= invP;
+    }
+
+    peelOffNeedsMpiReduction_ = true;
+    peelOffEnergy_[observerIndex] += energy;
+    peelOffEnergyWeightSq_[observerIndex] += energy * energy;
+    peelOffCount_[observerIndex] += 1;
+    peelOffStokesQ_[observerIndex] += energy * qObserver;
+    peelOffStokesU_[observerIndex] += energy * uObserver;
+    if (numGroups_ > 1)
+    {
+        size_t g = findGroup(frequency);
+        peelOffGroupEnergy_[observerIndex][g] += energy;
+        peelOffGroupEnergyWeightSq_[observerIndex][g] += energy * energy;
+    }
+
+    size_t k = static_cast<size_t>(kind);
+    if (peelOffPerKindEnabled_ && k < NumPeelOffKinds)
+    {
+        peelOffEnergyByKind_[k][observerIndex] += energy;
+        peelOffEnergyByKindWeightSq_[k][observerIndex] += energy * energy;
+        peelOffCountByKind_[k][observerIndex] += 1;
+        peelOffStokesQByKind_[k][observerIndex] += energy * qObserver;
+        peelOffStokesUByKind_[k][observerIndex] += energy * uObserver;
+        if (numGroups_ > 1)
+        {
+            size_t g = findGroup(frequency);
+            peelOffGroupEnergyByKind_[k][observerIndex][g] += energy;
+            peelOffGroupEnergyByKindWeightSq_[k][observerIndex][g] += energy * energy;
+        }
+    }
+    return true;
+}
+#endif
 
 void SphericalObserver::mpiReduceToRank0()
 {
@@ -717,6 +1492,11 @@ void SphericalObserver::mpiReduceToRank0()
                MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (rank == 0)
         observerEnergy_ = recvBuf;
+
+    MPI_Reduce(observerEnergyWeightSq_.data(), recvBuf.data(), count,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        observerEnergyWeightSq_ = recvBuf;
 
     std::vector<double> maxRecvBuf(static_cast<size_t>(count), 0.0);
     MPI_Reduce(observerMaxPacketEnergy_.data(), maxRecvBuf.data(), count,
@@ -791,6 +1571,18 @@ void SphericalObserver::mpiReduceToRank0()
                 groupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
     }
 
+    for (size_t i = 0; i < numObservers_; ++i)
+        for (size_t g = 0; g < numGroups_; ++g)
+            flatSend[i * numGroups_ + g] = groupEnergyWeightSq_[i][g];
+    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (size_t i = 0; i < numObservers_; ++i)
+            for (size_t g = 0; g < numGroups_; ++g)
+                groupEnergyWeightSq_[i][g] = flatRecv[i * numGroups_ + g];
+    }
+
 #ifdef MONTECARLO_POLARIZATION
     for (size_t i = 0; i < numObservers_; ++i)
         for (size_t g = 0; g < numGroups_; ++g)
@@ -837,10 +1629,27 @@ void SphericalObserver::mpiReduceToRank0()
         if (rank == 0)
             peelOffEnergy_ = recvBuf;
 
+        MPI_Reduce(peelOffEnergyWeightSq_.data(), recvBuf.data(), count,
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            peelOffEnergyWeightSq_ = recvBuf;
+
         MPI_Reduce(peelOffCount_.data(), countRecvBuf.data(), count,
                    MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         if (rank == 0)
             peelOffCount_ = countRecvBuf;
+
+#ifdef MONTECARLO_POLARIZATION
+        MPI_Reduce(peelOffStokesQ_.data(), recvBuf.data(), count,
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            peelOffStokesQ_ = recvBuf;
+
+        MPI_Reduce(peelOffStokesU_.data(), recvBuf.data(), count,
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            peelOffStokesU_ = recvBuf;
+#endif
 
         if (numGroups_ > 1) {
             for (size_t i = 0; i < numObservers_; ++i)
@@ -854,6 +1663,18 @@ void SphericalObserver::mpiReduceToRank0()
                     for (size_t g = 0; g < numGroups_; ++g)
                         peelOffGroupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
             }
+
+            for (size_t i = 0; i < numObservers_; ++i)
+                for (size_t g = 0; g < numGroups_; ++g)
+                    flatSend[i * numGroups_ + g] = peelOffGroupEnergyWeightSq_[i][g];
+            std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+            MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+                       MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            if (rank == 0) {
+                for (size_t i = 0; i < numObservers_; ++i)
+                    for (size_t g = 0; g < numGroups_; ++g)
+                        peelOffGroupEnergyWeightSq_[i][g] = flatRecv[i * numGroups_ + g];
+            }
         }
 
         if (peelOffPerKindEnabled_) {
@@ -864,11 +1685,31 @@ void SphericalObserver::mpiReduceToRank0()
                 if (rank == 0)
                     peelOffEnergyByKind_[k] = recvBuf;
 
+                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
+                MPI_Reduce(peelOffEnergyByKindWeightSq_[k].data(), recvBuf.data(),
+                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+                if (rank == 0)
+                    peelOffEnergyByKindWeightSq_[k] = recvBuf;
+
                 std::fill(countRecvBuf.begin(), countRecvBuf.end(), 0);
                 MPI_Reduce(peelOffCountByKind_[k].data(), countRecvBuf.data(),
                            count, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
                 if (rank == 0)
                     peelOffCountByKind_[k] = countRecvBuf;
+
+#ifdef MONTECARLO_POLARIZATION
+                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
+                MPI_Reduce(peelOffStokesQByKind_[k].data(), recvBuf.data(),
+                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+                if (rank == 0)
+                    peelOffStokesQByKind_[k] = recvBuf;
+
+                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
+                MPI_Reduce(peelOffStokesUByKind_[k].data(), recvBuf.data(),
+                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+                if (rank == 0)
+                    peelOffStokesUByKind_[k] = recvBuf;
+#endif
 
                 if (numGroups_ > 1) {
                     for (size_t i = 0; i < numObservers_; ++i)
@@ -883,6 +1724,21 @@ void SphericalObserver::mpiReduceToRank0()
                         for (size_t i = 0; i < numObservers_; ++i)
                             for (size_t g = 0; g < numGroups_; ++g)
                                 peelOffGroupEnergyByKind_[k][i][g] =
+                                    flatRecv[i * numGroups_ + g];
+                    }
+
+                    for (size_t i = 0; i < numObservers_; ++i)
+                        for (size_t g = 0; g < numGroups_; ++g)
+                            flatSend[i * numGroups_ + g] =
+                                peelOffGroupEnergyByKindWeightSq_[k][i][g];
+                    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+                    MPI_Reduce(flatSend.data(), flatRecv.data(),
+                               static_cast<int>(flatSize),
+                               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+                    if (rank == 0) {
+                        for (size_t i = 0; i < numObservers_; ++i)
+                            for (size_t g = 0; g < numGroups_; ++g)
+                                peelOffGroupEnergyByKindWeightSq_[k][i][g] =
                                     flatRecv[i * numGroups_ + g];
                     }
                 }
@@ -1006,6 +1862,7 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         flux[i] = (patchArea_i > 0.0) ? lum[i] / patchArea_i : 0.0;
     }
     writer.WriteElement("/tally/flux", flux);
+    writer.WriteElement("/tally/log10_luminosity", log10Luminosity(lum));
 
     if (numGroups_ > 1) {
         writer.WriteElement("/tally/multigroup/group_boundaries", groupBoundaries_);
@@ -1065,6 +1922,38 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         for (size_t i = 0; i < numObservers_; ++i)
             peelOffLum[i] = peelOffEnergy_[i] * invSourceDt;
         writer.WriteElement("/tally/peeloff/luminosity", peelOffLum);
+#ifdef MONTECARLO_POLARIZATION
+        if (polarizationOutputEnabled_)
+        {
+            std::vector<double> peelOffQNorm(numObservers_, 0.0);
+            std::vector<double> peelOffUNorm(numObservers_, 0.0);
+            std::vector<double> peelOffQLum(numObservers_, 0.0);
+            std::vector<double> peelOffULum(numObservers_, 0.0);
+            std::vector<double> peelOffPDegree(numObservers_, 0.0);
+            std::vector<double> peelOffPAngle(numObservers_, 0.0);
+            for (size_t i = 0; i < numObservers_; ++i)
+            {
+                double const invI = (peelOffEnergy_[i] > 0.0)
+                    ? 1.0 / peelOffEnergy_[i] : 0.0;
+                peelOffQNorm[i] = peelOffStokesQ_[i] * invI;
+                peelOffUNorm[i] = peelOffStokesU_[i] * invI;
+                peelOffQLum[i] = peelOffStokesQ_[i] * invSourceDt;
+                peelOffULum[i] = peelOffStokesU_[i] * invSourceDt;
+                peelOffPDegree[i] = PolarizationDegree(
+                    peelOffEnergy_[i], peelOffStokesQ_[i], peelOffStokesU_[i]);
+                peelOffPAngle[i] = PolarizationAngle(
+                    peelOffStokesQ_[i], peelOffStokesU_[i]);
+            }
+            writer.WriteElement("/tally/peeloff/stokes_Q", peelOffStokesQ_);
+            writer.WriteElement("/tally/peeloff/stokes_U", peelOffStokesU_);
+            writer.WriteElement("/tally/peeloff/q", peelOffQNorm);
+            writer.WriteElement("/tally/peeloff/u", peelOffUNorm);
+            writer.WriteElement("/tally/peeloff/Q_luminosity", peelOffQLum);
+            writer.WriteElement("/tally/peeloff/U_luminosity", peelOffULum);
+            writer.WriteElement("/tally/peeloff/polarization_degree", peelOffPDegree);
+            writer.WriteElement("/tally/peeloff/polarization_angle", peelOffPAngle);
+        }
+#endif
         std::vector<double> peelOffIsoEquiv(numObservers_);
         for (size_t i = 0; i < numObservers_; ++i)
             peelOffIsoEquiv[i] = (observerSolidAngle_[i] > 0.0)
@@ -1089,6 +1978,32 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                 for (size_t i = 0; i < numObservers_; ++i)
                     kindLum[i] = peelOffEnergyByKind_[k][i] * invSourceDt;
                 writer.WriteElement(prefix + "/luminosity", kindLum);
+#ifdef MONTECARLO_POLARIZATION
+                if (polarizationOutputEnabled_)
+                {
+                    std::vector<double> kindQNorm(numObservers_, 0.0);
+                    std::vector<double> kindUNorm(numObservers_, 0.0);
+                    std::vector<double> kindQLum(numObservers_, 0.0);
+                    std::vector<double> kindULum(numObservers_, 0.0);
+                    for (size_t i = 0; i < numObservers_; ++i)
+                    {
+                        double const invI = (peelOffEnergyByKind_[k][i] > 0.0)
+                            ? 1.0 / peelOffEnergyByKind_[k][i] : 0.0;
+                        kindQNorm[i] = peelOffStokesQByKind_[k][i] * invI;
+                        kindUNorm[i] = peelOffStokesUByKind_[k][i] * invI;
+                        kindQLum[i] = peelOffStokesQByKind_[k][i] * invSourceDt;
+                        kindULum[i] = peelOffStokesUByKind_[k][i] * invSourceDt;
+                    }
+                    writer.WriteElement(prefix + "/stokes_Q",
+                                        peelOffStokesQByKind_[k]);
+                    writer.WriteElement(prefix + "/stokes_U",
+                                        peelOffStokesUByKind_[k]);
+                    writer.WriteElement(prefix + "/q", kindQNorm);
+                    writer.WriteElement(prefix + "/u", kindUNorm);
+                    writer.WriteElement(prefix + "/Q_luminosity", kindQLum);
+                    writer.WriteElement(prefix + "/U_luminosity", kindULum);
+                }
+#endif
                 std::vector<double> kindCountDbl(numObservers_);
                 for (size_t i = 0; i < numObservers_; ++i)
                     kindCountDbl[i] = static_cast<double>(
@@ -1270,6 +2185,255 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/diagnostics/snapshot_time", diagnostics.snapshotTime);
     writer.WriteElement("/diagnostics/snapshot_cycle", diagnostics.snapshotCycle);
     writer.WriteElement("/diagnostics/n_generations", diagnostics.nGenerations);
+    writer.WriteElement("/diagnostics/included_final_generations", diagnostics.includedFinalGenerations);
+    writer.WriteElement("/diagnostics/discarded_burnin_generations", diagnostics.discardedBurninGenerations);
+    writer.WriteElement("/diagnostics/adaptive_only_final_output", diagnostics.adaptiveOnlyFinalOutput);
+    if (generationStats_.samples > 0) {
+        size_t const samples = generationStats_.samples;
+        writer.WriteElement("/diagnostics/statistics/included_generations",
+                            static_cast<double>(samples));
+        writeVectorStatErrors(writer, "/tally/energy",
+                              generationStats_.energy, observerEnergy_, samples);
+        writeVectorStatErrors(writer, "/tally/luminosity",
+                              generationStats_.luminosity, lum, samples);
+        writeVectorStatErrors(writer, "/tally/isotropic_equivalent_luminosity",
+                              generationStats_.isoLuminosity, isoEquiv, samples);
+        writeVectorStatErrors(writer, "/tally/flux",
+                              generationStats_.flux, flux, samples);
+        auto lumGenStderr = vectorStderr(generationStats_.luminosity, samples);
+        auto logLum = log10Luminosity(lum);
+        auto logLumGenStderr = log10Stderr(lum, lumGenStderr);
+        writer.WriteElement("/tally/log10_luminosity_stderr_gen", logLumGenStderr);
+        writer.WriteElement("/tally/log10_luminosity_relerr_gen",
+                            relativeError(logLum, logLumGenStderr));
+
+        writeVectorPacketErrors(writer, "/tally/energy",
+                                observerEnergy_, generationStats_.energyWeightSqSum, samples);
+        writeVectorPacketErrors(writer, "/tally/luminosity",
+                                lum, generationStats_.energyWeightSqSum, samples,
+                                (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
+        auto energyPacketStderr = packetStderr(generationStats_.energyWeightSqSum, samples);
+        auto lumPacketStderr = packetStderr(generationStats_.energyWeightSqSum, samples,
+                                            (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
+        std::vector<double> isoFactor(numObservers_, 0.0);
+        std::vector<double> fluxFactor(numObservers_, 0.0);
+        for (size_t i = 0; i < numObservers_; ++i) {
+            isoFactor[i] = (observerSolidAngle_[i] > 0.0)
+                ? ((sourceDt > 0.0) ? 1.0 / sourceDt : 0.0) * fourPi / observerSolidAngle_[i] : 0.0;
+            double const patchArea = observerSolidAngle_[i] * radiusSquared_;
+            fluxFactor[i] = (patchArea > 0.0)
+                ? ((sourceDt > 0.0) ? 1.0 / sourceDt : 0.0) / patchArea : 0.0;
+        }
+        auto isoPacketStderr = multiplyByObserverFactor(energyPacketStderr, isoFactor);
+        auto fluxPacketStderr = multiplyByObserverFactor(energyPacketStderr, fluxFactor);
+        writer.WriteElement("/tally/isotropic_equivalent_luminosity_stderr_packet", isoPacketStderr);
+        writer.WriteElement("/tally/isotropic_equivalent_luminosity_relerr_packet",
+                            relativeError(isoEquiv, isoPacketStderr));
+        writer.WriteElement("/tally/isotropic_equivalent_luminosity_neff",
+                            packetNeff(isoEquiv, isoPacketStderr));
+        writer.WriteElement("/tally/flux_stderr_packet", fluxPacketStderr);
+        writer.WriteElement("/tally/flux_relerr_packet", relativeError(flux, fluxPacketStderr));
+        writer.WriteElement("/tally/flux_neff", packetNeff(flux, fluxPacketStderr));
+        auto logLumPacketStderr = log10Stderr(lum, lumPacketStderr);
+        writer.WriteElement("/tally/log10_luminosity_stderr_packet", logLumPacketStderr);
+        writer.WriteElement("/tally/log10_luminosity_relerr_packet",
+                            relativeError(logLum, logLumPacketStderr));
+        writer.WriteElement("/tally/log10_luminosity_neff",
+                            packetNeff(logLum, logLumPacketStderr));
+
+        writeScalarStatErrors(writer, "/tally/total_energy",
+                              generationStats_.totalEnergy, totalEnergy, samples);
+        writeScalarStatErrors(writer, "/tally/total_luminosity",
+                              generationStats_.totalLuminosity, totalLum, samples);
+        writeScalarStatErrors(writer, "/diagnostics/sphere_crossing_energy",
+                              generationStats_.totalEnergy, totalEnergy, samples);
+        writeScalarStatErrors(writer, "/diagnostics/transport_sink_residual",
+                              generationStats_.transportSinkResidual, residual, samples);
+        writeScalarStatErrors(writer, "/diagnostics/timed_out_fraction",
+                              generationStats_.timedOutFraction, timedOutFraction, samples);
+        double const totalEnergyPacketStderr =
+            std::sqrt(std::max(0.0, generationStats_.totalEnergyWeightSqSum)) /
+            static_cast<double>(samples);
+        double const totalLumPacketStderr = totalEnergyPacketStderr *
+            ((sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
+        writer.WriteElement("/tally/total_energy_stderr_packet", totalEnergyPacketStderr);
+        writer.WriteElement("/tally/total_energy_relerr_packet",
+                            relativeError(totalEnergy, totalEnergyPacketStderr));
+        writer.WriteElement("/tally/total_energy_neff",
+                            (totalEnergyPacketStderr > 0.0)
+                                ? totalEnergy * totalEnergy /
+                                  (totalEnergyPacketStderr * totalEnergyPacketStderr)
+                                : 0.0);
+        writer.WriteElement("/diagnostics/sphere_crossing_energy_stderr_packet",
+                            totalEnergyPacketStderr);
+        writer.WriteElement("/diagnostics/sphere_crossing_energy_relerr_packet",
+                            relativeError(totalEnergy, totalEnergyPacketStderr));
+        writer.WriteElement("/diagnostics/sphere_crossing_energy_neff",
+                            (totalEnergyPacketStderr > 0.0)
+                                ? totalEnergy * totalEnergy /
+                                  (totalEnergyPacketStderr * totalEnergyPacketStderr)
+                                : 0.0);
+        writer.WriteElement("/tally/total_luminosity_stderr_packet", totalLumPacketStderr);
+        writer.WriteElement("/tally/total_luminosity_relerr_packet",
+                            relativeError(totalLum, totalLumPacketStderr));
+        writer.WriteElement("/tally/total_luminosity_neff",
+                            (totalLumPacketStderr > 0.0)
+                                ? totalLum * totalLum /
+                                  (totalLumPacketStderr * totalLumPacketStderr)
+                                : 0.0);
+
+        if (numGroups_ > 1) {
+            auto gLum = getGroupLuminosity(sourceDt);
+            writeMatrixStatErrors(writer, "/tally/multigroup/group_energy",
+                                  generationStats_.groupEnergy, groupEnergy_, samples);
+            writeMatrixStatErrors(writer, "/tally/multigroup/group_luminosity",
+                                  generationStats_.groupLuminosity, gLum, samples);
+            writeMatrixPacketErrors(writer, "/tally/multigroup/group_energy",
+                                    groupEnergy_, generationStats_.groupEnergyWeightSqSum, samples);
+            writeMatrixPacketErrors(writer, "/tally/multigroup/group_luminosity",
+                                    gLum, generationStats_.groupEnergyWeightSqSum, samples,
+                                    (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
+        }
+
+#ifdef MONTECARLO_POLARIZATION
+        if (polarizationOutputEnabled_) {
+            std::vector<double> qNorm(numObservers_, 0.0), uNorm(numObservers_, 0.0);
+            std::vector<double> qLum(numObservers_, 0.0), uLum(numObservers_, 0.0);
+            std::vector<double> polDegree(numObservers_, 0.0), polAngle(numObservers_, 0.0);
+            double const invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+            for (size_t i = 0; i < numObservers_; ++i) {
+                double const invI = (observerEnergy_[i] > 0.0) ? 1.0 / observerEnergy_[i] : 0.0;
+                qNorm[i] = observerStokesQ_[i] * invI;
+                uNorm[i] = observerStokesU_[i] * invI;
+                qLum[i] = observerStokesQ_[i] * invDt;
+                uLum[i] = observerStokesU_[i] * invDt;
+                polDegree[i] = PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]);
+                polAngle[i] = PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]);
+            }
+            writeVectorStatErrors(writer, "/tally/observer_stokes_Q",
+                                  generationStats_.stokesQ, observerStokesQ_, samples);
+            writeVectorStatErrors(writer, "/tally/observer_stokes_U",
+                                  generationStats_.stokesU, observerStokesU_, samples);
+            writeVectorStatErrors(writer, "/tally/observer_q",
+                                  generationStats_.q, qNorm, samples);
+            writeVectorStatErrors(writer, "/tally/observer_u",
+                                  generationStats_.u, uNorm, samples);
+            writeVectorStatErrors(writer, "/tally/observer_Q_luminosity",
+                                  generationStats_.stokesQLuminosity, qLum, samples);
+            writeVectorStatErrors(writer, "/tally/observer_U_luminosity",
+                                  generationStats_.stokesULuminosity, uLum, samples);
+            writeVectorStatErrors(writer, "/tally/observer_polarization_degree",
+                                  generationStats_.polarizationDegree, polDegree, samples);
+            writeVectorStatErrors(writer, "/tally/observer_polarization_angle",
+                                  generationStats_.polarizationAngle, polAngle, samples);
+            if (numGroups_ > 1) {
+                std::vector<std::vector<double>> gQ(numObservers_, std::vector<double>(numGroups_, 0.0));
+                std::vector<std::vector<double>> gU(numObservers_, std::vector<double>(numGroups_, 0.0));
+                std::vector<std::vector<double>> gQLum = scaleMatrix(groupStokesQ_, invDt);
+                std::vector<std::vector<double>> gULum = scaleMatrix(groupStokesU_, invDt);
+                std::vector<std::vector<double>> gDegree(numObservers_, std::vector<double>(numGroups_, 0.0));
+                std::vector<std::vector<double>> gAngle(numObservers_, std::vector<double>(numGroups_, 0.0));
+                for (size_t i = 0; i < numObservers_; ++i) {
+                    for (size_t g = 0; g < numGroups_; ++g) {
+                        double const invI = (groupEnergy_[i][g] > 0.0) ? 1.0 / groupEnergy_[i][g] : 0.0;
+                        gQ[i][g] = groupStokesQ_[i][g] * invI;
+                        gU[i][g] = groupStokesU_[i][g] * invI;
+                        gDegree[i][g] = PolarizationDegree(groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g]);
+                        gAngle[i][g] = PolarizationAngle(groupStokesQ_[i][g], groupStokesU_[i][g]);
+                    }
+                }
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_stokes_Q",
+                                      generationStats_.groupStokesQ, groupStokesQ_, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_stokes_U",
+                                      generationStats_.groupStokesU, groupStokesU_, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_q",
+                                      generationStats_.groupQ, gQ, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_u",
+                                      generationStats_.groupU, gU, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_Q_luminosity",
+                                      generationStats_.groupQLuminosity, gQLum, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_U_luminosity",
+                                      generationStats_.groupULuminosity, gULum, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_polarization_degree",
+                                      generationStats_.groupPolarizationDegree, gDegree, samples);
+                writeMatrixStatErrors(writer, "/tally/multigroup/group_polarization_angle",
+                                      generationStats_.groupPolarizationAngle, gAngle, samples);
+            }
+        }
+#endif
+
+        if (peelOffOutputEnabled_) {
+            std::vector<double> peelLum = scaleVector(peelOffEnergy_,
+                (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
+            std::vector<double> peelIso(numObservers_, 0.0);
+            for (size_t i = 0; i < numObservers_; ++i)
+                peelIso[i] = (observerSolidAngle_[i] > 0.0)
+                    ? peelLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
+            writeVectorStatErrors(writer, "/tally/peeloff/energy",
+                                  generationStats_.peelOffEnergy, peelOffEnergy_, samples);
+            writeVectorStatErrors(writer, "/tally/peeloff/luminosity",
+                                  generationStats_.peelOffLuminosity, peelLum, samples);
+            writeVectorStatErrors(writer, "/tally/peeloff/isotropic_equivalent_luminosity",
+                                  generationStats_.peelOffIsoLuminosity, peelIso, samples);
+            writeVectorPacketErrors(writer, "/tally/peeloff/energy",
+                                    peelOffEnergy_, generationStats_.peelOffEnergyWeightSqSum, samples);
+            writeVectorPacketErrors(writer, "/tally/peeloff/luminosity",
+                                    peelLum, generationStats_.peelOffEnergyWeightSqSum, samples,
+                                    (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
+            if (numGroups_ > 1) {
+                writeMatrixStatErrors(writer, "/tally/peeloff/group_energy",
+                                      generationStats_.peelOffGroupEnergy, peelOffGroupEnergy_, samples);
+                writeMatrixPacketErrors(writer, "/tally/peeloff/group_energy",
+                                        peelOffGroupEnergy_,
+                                        generationStats_.peelOffGroupEnergyWeightSqSum,
+                                        samples);
+            }
+#ifdef MONTECARLO_POLARIZATION
+            if (polarizationOutputEnabled_) {
+                std::vector<double> peelQ(numObservers_, 0.0), peelU(numObservers_, 0.0);
+                std::vector<double> peelQLum(numObservers_, 0.0), peelULum(numObservers_, 0.0);
+                std::vector<double> peelPDegree(numObservers_, 0.0), peelPAngle(numObservers_, 0.0);
+                double const invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+                for (size_t i = 0; i < numObservers_; ++i) {
+                    double const invI = (peelOffEnergy_[i] > 0.0) ? 1.0 / peelOffEnergy_[i] : 0.0;
+                    peelQ[i] = peelOffStokesQ_[i] * invI;
+                    peelU[i] = peelOffStokesU_[i] * invI;
+                    peelQLum[i] = peelOffStokesQ_[i] * invDt;
+                    peelULum[i] = peelOffStokesU_[i] * invDt;
+                    peelPDegree[i] = PolarizationDegree(peelOffEnergy_[i], peelOffStokesQ_[i], peelOffStokesU_[i]);
+                    peelPAngle[i] = PolarizationAngle(peelOffStokesQ_[i], peelOffStokesU_[i]);
+                }
+                writeVectorStatErrors(writer, "/tally/peeloff/stokes_Q",
+                                      generationStats_.peelOffStokesQ, peelOffStokesQ_, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/stokes_U",
+                                      generationStats_.peelOffStokesU, peelOffStokesU_, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/q",
+                                      generationStats_.peelOffQ, peelQ, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/u",
+                                      generationStats_.peelOffU, peelU, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/Q_luminosity",
+                                      generationStats_.peelOffQLuminosity, peelQLum, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/U_luminosity",
+                                      generationStats_.peelOffULuminosity, peelULum, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/polarization_degree",
+                                      generationStats_.peelOffPolarizationDegree, peelPDegree, samples);
+                writeVectorStatErrors(writer, "/tally/peeloff/polarization_angle",
+                                      generationStats_.peelOffPolarizationAngle, peelPAngle, samples);
+            }
+#endif
+        }
+
+        writeScalarStatErrors(writer, "/diagnostics/emitted_energy",
+                              generationStats_.emittedEnergy, diagnostics.emittedEnergy, samples);
+        writeScalarStatErrors(writer, "/diagnostics/absorbed_energy",
+                              generationStats_.absorbedEnergy, diagnostics.absorbedEnergy, samples);
+        writeScalarStatErrors(writer, "/diagnostics/box_escape_energy",
+                              generationStats_.boxEscapeEnergy, diagnostics.boxEscapeEnergy, samples);
+        writeScalarStatErrors(writer, "/diagnostics/timed_out_energy",
+                              generationStats_.timedOutEnergy, diagnostics.timedOutEnergy, samples);
+        writeScalarStatErrors(writer, "/diagnostics/cutoff_energy",
+                              generationStats_.cutoffEnergy, diagnostics.cutoffEnergy, samples);
+    }
 #ifdef MONTECARLO_POLARIZATION
     writer.WriteElement("/diagnostics/polarization_compiled", 1);
     writer.WriteElement("/diagnostics/polarization_enabled", polarizationOutputEnabled_ ? 1 : 0);
@@ -1523,6 +2687,132 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             double isoEq = (observerSolidAngle_[i] > 0.0)
                 ? peelOffEnergy_[i] * invDt * fourPi / observerSolidAngle_[i] : 0.0;
             file << isoEq << "\n";
+        }
+    }
+
+    if (generationStats_.samples > 0) {
+        size_t const samples = generationStats_.samples;
+        std::vector<double> lum = scaleVector(observerEnergy_, invDt);
+        std::vector<double> iso(N, 0.0), flux(N, 0.0);
+        for (size_t i = 0; i < N; ++i) {
+            iso[i] = (observerSolidAngle_[i] > 0.0)
+                ? lum[i] * fourPi / observerSolidAngle_[i] : 0.0;
+            double const patchArea = observerSolidAngle_[i] * radiusSquared_;
+            flux[i] = (patchArea > 0.0) ? lum[i] / patchArea : 0.0;
+        }
+        auto lumStderr = vectorStderr(generationStats_.luminosity, samples);
+        auto energyStderr = vectorStderr(generationStats_.energy, samples);
+        auto isoStderr = vectorStderr(generationStats_.isoLuminosity, samples);
+        auto fluxStderr = vectorStderr(generationStats_.flux, samples);
+        auto logLum = log10Luminosity(lum);
+        auto logLumStderr = log10Stderr(lum, lumStderr);
+        writeScalarVtk(file, "luminosity_stderr_gen", lumStderr);
+        writeScalarVtk(file, "luminosity_relerr_gen", relativeError(lum, lumStderr));
+        writeScalarVtk(file, "energy_stderr_gen", energyStderr);
+        writeScalarVtk(file, "energy_relerr_gen", relativeError(observerEnergy_, energyStderr));
+        writeScalarVtk(file, "isotropic_equivalent_luminosity_stderr_gen", isoStderr);
+        writeScalarVtk(file, "isotropic_equivalent_luminosity_relerr_gen", relativeError(iso, isoStderr));
+        writeScalarVtk(file, "flux_stderr_gen", fluxStderr);
+        writeScalarVtk(file, "flux_relerr_gen", relativeError(flux, fluxStderr));
+        writeScalarVtk(file, "log10_luminosity_stderr_gen", logLumStderr);
+        writeScalarVtk(file, "log10_luminosity_relerr_gen", relativeError(logLum, logLumStderr));
+
+        auto energyPacket = packetStderr(generationStats_.energyWeightSqSum, samples);
+        auto lumPacket = packetStderr(generationStats_.energyWeightSqSum, samples, invDt);
+        writeScalarVtk(file, "energy_stderr_packet", energyPacket);
+        writeScalarVtk(file, "energy_relerr_packet", relativeError(observerEnergy_, energyPacket));
+        writeScalarVtk(file, "energy_neff", packetNeff(observerEnergy_, energyPacket));
+        writeScalarVtk(file, "luminosity_stderr_packet", lumPacket);
+        writeScalarVtk(file, "luminosity_relerr_packet", relativeError(lum, lumPacket));
+        writeScalarVtk(file, "luminosity_neff", packetNeff(lum, lumPacket));
+
+        std::vector<double> isoFactor(N, 0.0), fluxFactor(N, 0.0);
+        for (size_t i = 0; i < N; ++i) {
+            isoFactor[i] = (observerSolidAngle_[i] > 0.0)
+                ? invDt * fourPi / observerSolidAngle_[i] : 0.0;
+            double const patchArea = observerSolidAngle_[i] * radiusSquared_;
+            fluxFactor[i] = (patchArea > 0.0) ? invDt / patchArea : 0.0;
+        }
+        auto isoPacket = multiplyByObserverFactor(energyPacket, isoFactor);
+        auto fluxPacket = multiplyByObserverFactor(energyPacket, fluxFactor);
+        writeScalarVtk(file, "isotropic_equivalent_luminosity_stderr_packet", isoPacket);
+        writeScalarVtk(file, "isotropic_equivalent_luminosity_relerr_packet", relativeError(iso, isoPacket));
+        writeScalarVtk(file, "isotropic_equivalent_luminosity_neff", packetNeff(iso, isoPacket));
+        writeScalarVtk(file, "flux_stderr_packet", fluxPacket);
+        writeScalarVtk(file, "flux_relerr_packet", relativeError(flux, fluxPacket));
+        writeScalarVtk(file, "flux_neff", packetNeff(flux, fluxPacket));
+        auto logPacket = log10Stderr(lum, lumPacket);
+        writeScalarVtk(file, "log10_luminosity_stderr_packet", logPacket);
+        writeScalarVtk(file, "log10_luminosity_relerr_packet", relativeError(logLum, logPacket));
+        writeScalarVtk(file, "log10_luminosity_neff", packetNeff(logLum, logPacket));
+
+#ifdef MONTECARLO_POLARIZATION
+        if (polarizationOutputEnabled_) {
+            std::vector<double> polDegree(N, 0.0), polAngle(N, 0.0);
+            for (size_t i = 0; i < N; ++i) {
+                polDegree[i] = PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]);
+                polAngle[i] = PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]);
+            }
+            auto stokesQStderr = vectorStderr(generationStats_.stokesQ, samples);
+            auto stokesUStderr = vectorStderr(generationStats_.stokesU, samples);
+            auto polDegreeStderr = vectorStderr(generationStats_.polarizationDegree, samples);
+            auto polAngleStderr = vectorStderr(generationStats_.polarizationAngle, samples);
+            writeScalarVtk(file, "stokes_Q_stderr_gen", stokesQStderr);
+            writeScalarVtk(file, "stokes_Q_relerr_gen", relativeError(observerStokesQ_, stokesQStderr));
+            writeScalarVtk(file, "stokes_U_stderr_gen", stokesUStderr);
+            writeScalarVtk(file, "stokes_U_relerr_gen", relativeError(observerStokesU_, stokesUStderr));
+            writeScalarVtk(file, "polarization_degree_stderr_gen", polDegreeStderr);
+            writeScalarVtk(file, "polarization_degree_relerr_gen", relativeError(polDegree, polDegreeStderr));
+            writeScalarVtk(file, "polarization_angle_stderr_gen", polAngleStderr);
+            writeScalarVtk(file, "polarization_angle_relerr_gen", relativeError(polAngle, polAngleStderr));
+        }
+#endif
+
+        if (numGroups_ > 1) {
+            auto groupLum = getGroupLuminosity(sourceDt);
+            auto groupLumStderr = matrixStderr(generationStats_.groupLuminosity, samples);
+            auto groupLumPacket = packetStderr(generationStats_.groupEnergyWeightSqSum, samples, invDt);
+            for (size_t g = 0; g < numGroups_; ++g) {
+                std::vector<double> meanG(N), stderrG(N), relG(N), packetG(N), relPacketG(N), neffG(N);
+                for (size_t i = 0; i < N; ++i) {
+                    meanG[i] = groupLum[i][g];
+                    stderrG[i] = groupLumStderr[i][g];
+                    packetG[i] = groupLumPacket[i][g];
+                }
+                relG = relativeError(meanG, stderrG);
+                relPacketG = relativeError(meanG, packetG);
+                neffG = packetNeff(meanG, packetG);
+                writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_stderr_gen", stderrG);
+                writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_relerr_gen", relG);
+                writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_stderr_packet", packetG);
+                writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_relerr_packet", relPacketG);
+                writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_neff", neffG);
+            }
+        }
+
+        if (peelOffOutputEnabled_) {
+            std::vector<double> peelLum = scaleVector(peelOffEnergy_, invDt);
+            std::vector<double> peelIso(N, 0.0);
+            for (size_t i = 0; i < N; ++i)
+                peelIso[i] = (observerSolidAngle_[i] > 0.0)
+                    ? peelLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
+            auto peelLumStderr = vectorStderr(generationStats_.peelOffLuminosity, samples);
+            auto peelEnergyStderr = vectorStderr(generationStats_.peelOffEnergy, samples);
+            auto peelIsoStderr = vectorStderr(generationStats_.peelOffIsoLuminosity, samples);
+            writeScalarVtk(file, "peeloff_luminosity_stderr_gen", peelLumStderr);
+            writeScalarVtk(file, "peeloff_luminosity_relerr_gen", relativeError(peelLum, peelLumStderr));
+            writeScalarVtk(file, "peeloff_energy_stderr_gen", peelEnergyStderr);
+            writeScalarVtk(file, "peeloff_energy_relerr_gen", relativeError(peelOffEnergy_, peelEnergyStderr));
+            writeScalarVtk(file, "peeloff_isotropic_equivalent_luminosity_stderr_gen", peelIsoStderr);
+            writeScalarVtk(file, "peeloff_isotropic_equivalent_luminosity_relerr_gen", relativeError(peelIso, peelIsoStderr));
+            auto peelEnergyPacket = packetStderr(generationStats_.peelOffEnergyWeightSqSum, samples);
+            auto peelLumPacket = packetStderr(generationStats_.peelOffEnergyWeightSqSum, samples, invDt);
+            writeScalarVtk(file, "peeloff_energy_stderr_packet", peelEnergyPacket);
+            writeScalarVtk(file, "peeloff_energy_relerr_packet", relativeError(peelOffEnergy_, peelEnergyPacket));
+            writeScalarVtk(file, "peeloff_energy_neff", packetNeff(peelOffEnergy_, peelEnergyPacket));
+            writeScalarVtk(file, "peeloff_luminosity_stderr_packet", peelLumPacket);
+            writeScalarVtk(file, "peeloff_luminosity_relerr_packet", relativeError(peelLum, peelLumPacket));
+            writeScalarVtk(file, "peeloff_luminosity_neff", packetNeff(peelLum, peelLumPacket));
         }
     }
 }
