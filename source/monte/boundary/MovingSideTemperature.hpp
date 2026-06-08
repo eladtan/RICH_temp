@@ -123,30 +123,17 @@ MonteCarloParticleStatus MovingSideTemperature<T, Grid>::apply(MonteCarloParticl
     MonteCarloParticleStatus result = MonteCarloParticleStatus::DONE;
     for (const typename Grid::Face_T &face : faces)
     {
-        const T &onFace = face.vertices[0];
-        T u = face.vertices[1] - face.vertices[0];
-        T v = face.vertices[2] - face.vertices[0];
-        T normal = CrossProduct(u, v);
-        double absU = std::min(abs(v), abs(u));
-        if (std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
+        T normal;
+        double faceScale = 0.0;
+        if (this->getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
         {
-            normal /= abs(normal);
             if (std::abs(normal.x) > 0.99)
             {
                 if (std::abs(particle.location.x - ll.x) < std::abs(ur.x - particle.location.x))
                     return MonteCarloParticleStatus::REMOVE;
             }
-            const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
-            particle.location -= 2 * unsignedDistance * normal;
-            T boxCenter = 0.5 * (ll + ur);
-            constexpr double nudge = 1e-6;
-            particle.location = particle.location * (1 - nudge) + nudge * boxCenter;
-            // Box face normals point inward (see BuildBox in Voronoi3D.cpp).
-            // vn > 0 means velocity is already directed inward — no reflection needed.
-            double vn = ScalarProd(particle.velocity, normal);
-            if (vn <= 0)
-                particle.velocity -= 2 * vn * normal;
-            result = MonteCarloParticleStatus::REFLECT;
+            if (this->reflectParticleOnBoxFace(particle, face))
+                result = MonteCarloParticleStatus::REFLECT;
         }
     }
     if(result == MonteCarloParticleStatus::REFLECT)
@@ -208,6 +195,9 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                     {
                         MonteCarloParticle<T, Grid> p;
                         p.location = RandomPointOnFace(this->grid, faceIdx);
+                        // The moving face coordinate is nonzero, so convex
+                        // interpolation can land a few ulps outside the box.
+                        p.location -= 1e-12 * std::sqrt(area) * nOut;
                         p.weight = packetEnergyFace;
                         p.timeLeft = fullDt * unif(re);
                         p.cellIndex = i;

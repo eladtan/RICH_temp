@@ -3,6 +3,7 @@
 
 #include "monte/MonteCarloParticle.hpp"
 #include "monte/MonteCarloParticleStatus.hpp"
+#include <algorithm>
 #include <cmath>
 
 // DDMCBoundaryFaceBehavior describes how DDMC should treat an outside-box
@@ -46,6 +47,60 @@ public:
 
 protected:
     const Grid &grid;
+
+    bool getInwardBoxFaceNormalIfClose(
+        const typename Grid::Face_T &face,
+        const T &location,
+        T &normal,
+        double &faceScale) const
+    {
+        const T &onFace = face.vertices[0];
+        T u = face.vertices[1] - face.vertices[0];
+        T v = face.vertices[2] - face.vertices[0];
+        normal = CrossProduct(u, v);
+        faceScale = std::min(abs(u), abs(v));
+
+        double const normalNorm = abs(normal);
+        if (!(normalNorm > 0.0) || !std::isfinite(normalNorm) ||
+            !(faceScale > 0.0) || !std::isfinite(faceScale))
+            return false;
+
+        double const planeDistance = ScalarProd(normal, location - onFace);
+        if (std::fabs(planeDistance) >= EPSILON * faceScale * faceScale * faceScale)
+            return false;
+
+        normal *= 1.0 / normalNorm;
+
+        const auto &[boxLL, boxUR] = this->grid.GetBoxCoordinates();
+        T const boxCenter = 0.5 * (boxLL + boxUR);
+        if (ScalarProd(normal, boxCenter - onFace) < 0.0)
+            normal *= -1.0;
+
+        return true;
+    }
+
+    bool reflectParticleOnBoxFace(
+        MonteCarloParticle<T, Grid> &particle,
+        const typename Grid::Face_T &face) const
+    {
+        T normal;
+        double faceScale = 0.0;
+        if (!getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
+            return false;
+
+        const T &onFace = face.vertices[0];
+        double const signedDistance = ScalarProd(particle.location - onFace, normal);
+        particle.location -= signedDistance * normal;
+
+        constexpr double nudge = 1e-12;
+        particle.location += nudge * faceScale * normal;
+
+        double const vn = ScalarProd(particle.velocity, normal);
+        if (vn < 0.0)
+            particle.velocity -= 2.0 * vn * normal;
+
+        return true;
+    }
 
     bool getDDMCOrientedOutwardNormal(
         size_t /*faceIdx*/,

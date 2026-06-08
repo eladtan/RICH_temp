@@ -90,39 +90,21 @@ TwoSidesTemperature<T, Grid>::TwoSidesTemperature(const Grid &grid, const std::v
 template<typename T, typename Grid>
 MonteCarloParticleStatus TwoSidesTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
-    const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     size_t reflectsHad = 0;
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     for(const typename Grid::Face_T &face : faces)
     {
-        const T &onFace = face.vertices[0];
-        T u = face.vertices[1] - face.vertices[0];
-        T v = face.vertices[2] - face.vertices[0];
-        T normal = CrossProduct(u, v);
-        double absU = abs(u);
-        if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
+        T normal;
+        double faceScale = 0.0;
+        if(this->getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
         {
-            normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
                 return MonteCarloParticleStatus::REMOVE;
             }
-            reflectsHad++;
-            const double unsignedDistance = std::abs(ScalarProd(particle.location - onFace, normal));
-            particle.location -= 2 * unsignedDistance * normal;
-            // Box face normals point inward (see BuildBox in Voronoi3D.cpp).
-            // vn > 0 means velocity is already directed inward — no reflection needed.
-            double vn = ScalarProd(particle.velocity, normal);
-            if (vn <= 0)
-                particle.velocity -= 2 * vn * normal;
+            if(this->reflectParticleOnBoxFace(particle, face))
+                reflectsHad++;
         }
-    }
-
-    if(reflectsHad > 0)
-    {
-        T boxCenter = 0.5 * (ll + ur);
-        constexpr double nudge = 1e-6;
-        particle.location = particle.location + nudge * (boxCenter - particle.location);
     }
     if(reflectsHad > 0)
     {
