@@ -35,7 +35,7 @@
 #define SEND_BUFFER_MIN_SIZE 200
 #define SEND_BUFFER_MIN_CYCLES 100
 #define RW_PROGRESS_TAG 9941
-#define MC_PROGRESS_COUNTERS 22
+#define MC_PROGRESS_COUNTERS 6
 
 enum MCProgressCounterIndex : size_t
 {
@@ -45,22 +45,6 @@ enum MCProgressCounterIndex : size_t
     MC_PROGRESS_DDMC_CENSUS,
     MC_PROGRESS_DDMC_UPSCATTER,
     MC_PROGRESS_DDMC_FALLBACK,
-    MC_PROGRESS_PEEL_SOURCE_DONE,
-    MC_PROGRESS_PEEL_SOURCE_TOTAL,
-    MC_PROGRESS_PEEL_DIRS,
-    MC_PROGRESS_PEEL_PHASE_OK,
-    MC_PROGRESS_PEEL_PHASE_REJ,
-    MC_PROGRESS_PEEL_OBS_MISS,
-    MC_PROGRESS_PEEL_TIME_REJ,
-    MC_PROGRESS_PEEL_RAYS_STARTED,
-    MC_PROGRESS_PEEL_RAYS_COMPLETED,
-    MC_PROGRESS_PEEL_RECORDED,
-    MC_PROGRESS_PEEL_FAILED,
-    MC_PROGRESS_PEEL_TAU_CLIP,
-    MC_PROGRESS_PEEL_MPI_CROSS,
-    MC_PROGRESS_PEEL_PENDING_REMOTE,
-    MC_PROGRESS_PEEL_SOURCE_RECORDED,
-    MC_PROGRESS_PEEL_ELASTIC_RECORDED,
     MC_PROGRESS_COUNTER_COUNT
 };
 
@@ -1824,25 +1808,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             static_cast<unsigned long long>(this->physics->getDDMCUpscatterCount());
         counters[MC_PROGRESS_DDMC_FALLBACK] =
             static_cast<unsigned long long>(this->physics->getDDMCFallbackCount());
-
-        MonteCarloPeelOffProgressSnapshot const peel =
-            this->physics->getPeelOffProgressSnapshot();
-        counters[MC_PROGRESS_PEEL_SOURCE_DONE] = peel.sourceEventsDone;
-        counters[MC_PROGRESS_PEEL_SOURCE_TOTAL] = peel.sourceEventsTotal;
-        counters[MC_PROGRESS_PEEL_DIRS] = peel.directionsConsidered;
-        counters[MC_PROGRESS_PEEL_PHASE_OK] = peel.phaseAccepted;
-        counters[MC_PROGRESS_PEEL_PHASE_REJ] = peel.phaseRejected;
-        counters[MC_PROGRESS_PEEL_OBS_MISS] = peel.observerMissed;
-        counters[MC_PROGRESS_PEEL_TIME_REJ] = peel.timeRejected;
-        counters[MC_PROGRESS_PEEL_RAYS_STARTED] = peel.raysStarted;
-        counters[MC_PROGRESS_PEEL_RAYS_COMPLETED] = peel.raysCompleted;
-        counters[MC_PROGRESS_PEEL_RECORDED] = peel.recorded;
-        counters[MC_PROGRESS_PEEL_FAILED] = peel.rayFailed;
-        counters[MC_PROGRESS_PEEL_TAU_CLIP] = peel.tauClipped;
-        counters[MC_PROGRESS_PEEL_MPI_CROSS] = peel.mpiBoundaryCrossings;
-        counters[MC_PROGRESS_PEEL_PENDING_REMOTE] = peel.pendingRemote;
-        counters[MC_PROGRESS_PEEL_SOURCE_RECORDED] = peel.sourceRecorded;
-        counters[MC_PROGRESS_PEEL_ELASTIC_RECORDED] = peel.elasticRecorded;
         return counters;
     };
 
@@ -1859,7 +1824,6 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
             this->HandleAll(data);
 
             this->FlushSendBuffers();
-            this->physics->drainPendingCollectiveWork();
 
             amountManager.Decrease(this->localDecrementAmount);
             this->localDecrementAmount = 0;
@@ -1926,49 +1890,20 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
                 double eta = (rate > 0) ? static_cast<double>(globalRemaining) / rate : 0.0;
                 RankHandler_t *selfHandler = this->rankHandlers[this->rank_world];
                 int localRemaining = selfHandler ? selfHandler->th_length : 0;
-                if(this->physics->isPeelOffProgressEnabled())
-                {
-                    std::cout << "[PeelOffProgress][transport] "
-                              << std::fixed << std::setprecision(1)
-                              << "t=" << elapsed_s << "s "
-                              << "particles=" << globalDone << "/" << globalInitialForProgress << " "
-                              << "rate=" << rate << "/s "
-                              << "eta=" << eta << "s "
-                              << std::defaultfloat
-                              << "active=" << globalRemaining << " "
-                              << "dirs=" << globalCounters[MC_PROGRESS_PEEL_DIRS] << " "
-                              << "phaseOk=" << globalCounters[MC_PROGRESS_PEEL_PHASE_OK] << " "
-                              << "phaseRej=" << globalCounters[MC_PROGRESS_PEEL_PHASE_REJ] << " "
-                              << "obsMiss=" << globalCounters[MC_PROGRESS_PEEL_OBS_MISS] << " "
-                              << "timeRej=" << globalCounters[MC_PROGRESS_PEEL_TIME_REJ] << " "
-                              << "raysStarted=" << globalCounters[MC_PROGRESS_PEEL_RAYS_STARTED] << " "
-                              << "raysCompleted=" << globalCounters[MC_PROGRESS_PEEL_RAYS_COMPLETED] << " "
-                              << "recorded=" << globalCounters[MC_PROGRESS_PEEL_RECORDED] << " "
-                              << "failed=" << globalCounters[MC_PROGRESS_PEEL_FAILED] << " "
-                              << "tauClip=" << globalCounters[MC_PROGRESS_PEEL_TAU_CLIP] << " "
-                              << "mpiCross=" << globalCounters[MC_PROGRESS_PEEL_MPI_CROSS] << " "
-                              << "pendingRemote=" << globalCounters[MC_PROGRESS_PEEL_PENDING_REMOTE] << " "
-                              << "sourceRecorded=" << globalCounters[MC_PROGRESS_PEEL_SOURCE_RECORDED] << " "
-                              << "elasticRecorded=" << globalCounters[MC_PROGRESS_PEEL_ELASTIC_RECORDED]
-                              << std::endl;
-                }
-                else
-                {
-                    std::cerr << "[Progress] ~"
-                              << (done_frac * 100.0) << "% done, "
-                              << elapsed_s << "s elapsed, "
-                              << "~" << eta << "s ETA, "
-                              << "global_done=" << globalDone << "/" << globalInitialForProgress
-                              << " rank0_local_remaining=" << localRemaining
-                              << " rw_steps_total=" << globalCounters[MC_PROGRESS_RW_STEPS]
-                              << " ddmc_steps_total=" << globalCounters[MC_PROGRESS_DDMC_STEPS]
-                              << " ddmc_leaks=" << globalCounters[MC_PROGRESS_DDMC_LEAKS]
-                              << " ddmc_census=" << globalCounters[MC_PROGRESS_DDMC_CENSUS]
-                              << " ddmc_upscatter=" << globalCounters[MC_PROGRESS_DDMC_UPSCATTER]
-                              << " ddmc_fallback=" << globalCounters[MC_PROGRESS_DDMC_FALLBACK]
-                              << " eta_is_count_based=1"
-                              << std::endl;
-                }
+                std::cerr << "[Progress] ~"
+                          << (done_frac * 100.0) << "% done, "
+                          << elapsed_s << "s elapsed, "
+                          << "~" << eta << "s ETA, "
+                          << "global_done=" << globalDone << "/" << globalInitialForProgress
+                          << " rank0_local_remaining=" << localRemaining
+                          << " rw_steps_total=" << globalCounters[MC_PROGRESS_RW_STEPS]
+                          << " ddmc_steps_total=" << globalCounters[MC_PROGRESS_DDMC_STEPS]
+                          << " ddmc_leaks=" << globalCounters[MC_PROGRESS_DDMC_LEAKS]
+                          << " ddmc_census=" << globalCounters[MC_PROGRESS_DDMC_CENSUS]
+                          << " ddmc_upscatter=" << globalCounters[MC_PROGRESS_DDMC_UPSCATTER]
+                          << " ddmc_fallback=" << globalCounters[MC_PROGRESS_DDMC_FALLBACK]
+                          << " eta_is_count_based=1"
+                          << std::endl;
             }
 
             if(verify)

@@ -472,38 +472,6 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
 #endif
     }
 
-    if (postProcess_.peelOff.enabled && observer_)
-    {
-        bool record = false;
-        PeelOffEventKind poKind = PeelOffEventKind::RW_CLOSURE;
-
-        // RW closure peel-off is rejected by validation (unsupported).
-        // This branch is unreachable unless validation is bypassed.
-        if (rwEvent == RW_LEAK && postProcess_.peelOff.randomWalkClosureEvents)
-        {
-            record = true;
-            poKind = PeelOffEventKind::RW_CLOSURE;
-        }
-        if (rwEvent == RW_UPSCATTER && postProcess_.peelOff.randomWalkUpscatterEvents)
-        {
-            record = true;
-            poKind = PeelOffEventKind::RW_UPSCATTER;
-        }
-
-        if (record)
-        {
-            PeelOffSource source;
-            source.sourceCellIndex = cellIndex;
-            source.sourceLocation = materialParticle.location;
-            source.labFrequency = materialParticle.frequency;
-            source.labWeight = materialParticle.weight;
-            source.eventTimeLeft = materialParticle.timeLeft;
-            source.kind = poKind;
-            source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
-            maybeRecordPeelOff(source);
-        }
-    }
-
     if(rwEvent == RW_CENSUS)
         functionality.change = MonteCarloParticleStatus::DONE;
 

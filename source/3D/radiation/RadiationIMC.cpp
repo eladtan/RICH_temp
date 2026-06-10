@@ -2,14 +2,11 @@
 #include "SphericalObserver.hpp"
 #include "PostProcessIMCHelpers.hpp"
 #include "IMCPolarization.hpp"
-#include "monte/utils/GhostMap.hpp"
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -30,89 +27,6 @@ namespace {
     {
         particle.initialWeight = std::abs(particle.weight);
     }
-
-    static constexpr size_t PeelOffProgressSourceChunk = 1024;
-    static constexpr double PeelOffProgressPrintInterval = 10.0;
-    static constexpr size_t PeelOffProgressFields = 16;
-
-    enum PeelOffProgressField : size_t
-    {
-        POP_SOURCE_DONE = 0,
-        POP_SOURCE_TOTAL,
-        POP_DIRS,
-        POP_PHASE_OK,
-        POP_PHASE_REJ,
-        POP_OBS_MISS,
-        POP_TIME_REJ,
-        POP_RAYS_STARTED,
-        POP_RAYS_COMPLETED,
-        POP_RECORDED,
-        POP_FAILED,
-        POP_TAU_CLIP,
-        POP_MPI_CROSS,
-        POP_PENDING_REMOTE,
-        POP_SOURCE_RECORDED,
-        POP_ELASTIC_RECORDED
-    };
-
-    static_assert(POP_ELASTIC_RECORDED + 1 == PeelOffProgressFields,
-                  "Update PeelOffProgressFields when adding progress fields");
-
-    std::array<unsigned long long, PeelOffProgressFields>
-    BuildPeelOffProgressArray(MonteCarloPeelOffProgressSnapshot const& s)
-    {
-        std::array<unsigned long long, PeelOffProgressFields> out{};
-        out[POP_SOURCE_DONE] = s.sourceEventsDone;
-        out[POP_SOURCE_TOTAL] = s.sourceEventsTotal;
-        out[POP_DIRS] = s.directionsConsidered;
-        out[POP_PHASE_OK] = s.phaseAccepted;
-        out[POP_PHASE_REJ] = s.phaseRejected;
-        out[POP_OBS_MISS] = s.observerMissed;
-        out[POP_TIME_REJ] = s.timeRejected;
-        out[POP_RAYS_STARTED] = s.raysStarted;
-        out[POP_RAYS_COMPLETED] = s.raysCompleted;
-        out[POP_RECORDED] = s.recorded;
-        out[POP_FAILED] = s.rayFailed;
-        out[POP_TAU_CLIP] = s.tauClipped;
-        out[POP_MPI_CROSS] = s.mpiBoundaryCrossings;
-        out[POP_PENDING_REMOTE] = s.pendingRemote;
-        out[POP_SOURCE_RECORDED] = s.sourceRecorded;
-        out[POP_ELASTIC_RECORDED] = s.elasticRecorded;
-        return out;
-    }
-
-    void PrintPeelOffSourceProgress(double elapsed,
-                                    std::array<unsigned long long, PeelOffProgressFields> const& g)
-    {
-        double const done = static_cast<double>(g[POP_SOURCE_DONE]);
-        double const total = static_cast<double>(g[POP_SOURCE_TOTAL]);
-        double const remaining = std::max(0.0, total - done);
-        double const rate = (elapsed > 0.0) ? done / elapsed : 0.0;
-        double const eta = (rate > 0.0) ? remaining / rate : 0.0;
-        std::cout << "[PeelOffProgress][prestep-source] "
-                  << std::fixed << std::setprecision(1)
-                  << "t=" << elapsed << "s "
-                  << "sources=" << g[POP_SOURCE_DONE] << "/" << g[POP_SOURCE_TOTAL] << " "
-                  << "rate=" << rate << "/s "
-                  << "eta=" << eta << "s "
-                  << std::defaultfloat
-                  << "dirs=" << g[POP_DIRS] << " "
-                  << "phaseOk=" << g[POP_PHASE_OK] << " "
-                  << "phaseRej=" << g[POP_PHASE_REJ] << " "
-                  << "obsMiss=" << g[POP_OBS_MISS] << " "
-                  << "timeRej=" << g[POP_TIME_REJ] << " "
-                  << "raysStarted=" << g[POP_RAYS_STARTED] << " "
-                  << "raysCompleted=" << g[POP_RAYS_COMPLETED] << " "
-                  << "recorded=" << g[POP_RECORDED] << " "
-                  << "failed=" << g[POP_FAILED] << " "
-                  << "tauClip=" << g[POP_TAU_CLIP] << " "
-                  << "mpiCross=" << g[POP_MPI_CROSS] << " "
-                  << "pendingRemote=" << g[POP_PENDING_REMOTE] << " "
-                  << "sourceRecorded=" << g[POP_SOURCE_RECORDED] << " "
-                  << "elasticRecorded=" << g[POP_ELASTIC_RECORDED]
-                  << std::endl;
-    }
-
     std::vector<double> BuildComptonTemperatures()
     {
         std::vector<double> temperatures;
@@ -231,11 +145,6 @@ namespace {
         (parameters.withHydro && !parameters.MMC) ||
         (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities);
 
-    if(postProcess_.peelOff.enabled && !postProcess_.enabled)
-    {
-        throw UniversalError("PostProcess peel-off requires postProcess.enabled");
-    }
-
     if(postProcess_.enabled)
     {
         PostProcessIMC::NormalizeAndValidateConfig(postProcess_, withCompton, parameters.withMultigroupOpacity, withRandomWalk, withDDMC);
@@ -243,49 +152,6 @@ namespace {
         diffusionPressureGradient = false;
         MMC = false;
         noHydroFeedback = true;
-
-        if(postProcess_.peelOff.enabled)
-        {
-            int rank = 0;
-#ifdef RICH_MPI
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            // Ghost map is built once here and remains valid for the entire
-            // RadiationIMC lifetime. INVARIANT: the mesh topology (cell/face
-            // connectivity, ghost cell ownership) is frozen during the radiation
-            // timestep. Repartition, remap, and AMR occur in separate
-            // operator-split phases outside this object's scope.
-            peelOffGhostMap_ = GetGhostMap(this->grid);
-#endif
-            if(rank == 0)
-            {
-                using PeelOff = RadiationIMCPostProcessConfig::PeelOffConfig;
-                std::cout << "PeelOff config: sourceEmission=" << postProcess_.peelOff.sourceEmission
-                          << " resolvedElastic=" << postProcess_.peelOff.resolvedElasticScattering
-                          << " resolvedEffective=" << postProcess_.peelOff.resolvedEffectiveScattering
-                          << " rwClosure=" << postProcess_.peelOff.randomWalkClosureEvents
-                          << " rwUpscatter=" << postProcess_.peelOff.randomWalkUpscatterEvents
-                          << " ddmcLeak=" << postProcess_.peelOff.ddmcLeakEvents
-                          << " ddmcUpscatter=" << postProcess_.peelOff.ddmcUpscatterEvents
-                          << " maxTau=" << postProcess_.peelOff.maxTau
-                          << " maxRayCells=" << postProcess_.peelOff.maxRayCells
-                          << " maxDistributedExchangeRounds=" << postProcess_.peelOff.maxDistributedExchangeRounds
-                          << " mpiRayPolicy=" << PeelOff::mpiRayPolicyName(postProcess_.peelOff.mpiRayPolicy)
-                          << " writePerKindTallies=" << postProcess_.peelOff.writePerKindTallies
-                          << std::endl;
-            }
-        }
-
-        if(postProcess_.peelOff.enabled && this->useTransportVelocities_)
-        {
-            bool anyEvent =
-                postProcess_.peelOff.resolvedElasticScattering ||
-                postProcess_.peelOff.resolvedEffectiveScattering ||
-                postProcess_.peelOff.randomWalkUpscatterEvents ||
-                postProcess_.peelOff.ddmcLeakEvents ||
-                postProcess_.peelOff.ddmcUpscatterEvents;
-            if(anyEvent)
-                throw UniversalError("PostProcess peel-off: event peel-off requires useTransportVelocities_=false (check withHydro, MMC, and useCellVelocities)");
-        }
     }
     if(this->withCompton && this->withRandomWalk)
     {
@@ -324,8 +190,6 @@ namespace {
                       << postProcess_.useCellVelocities
                       << ", useTransportVelocities_="
                       << this->useTransportVelocities_
-                      << ", peelOff="
-                      << postProcess_.peelOff.enabled
                       << std::endl;
         }
 #ifdef MONTECARLO_POLARIZATION
@@ -368,32 +232,6 @@ namespace {
 void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
 {
     observer_ = std::move(observer);
-    if(observer_)
-    {
-        observer_->setPeelOffMetadata(postProcess_.enabled && postProcess_.peelOff.enabled,
-                                      postProcess_.peelOff.writePerKindTallies);
-        if (postProcess_.enabled && postProcess_.peelOff.enabled)
-        {
-            using PeelOff = RadiationIMCPostProcessConfig::PeelOffConfig;
-            SphericalObserver::PeelOffConfigSnapshot snap;
-            snap.sourceEmission = postProcess_.peelOff.sourceEmission;
-            snap.resolvedElastic = postProcess_.peelOff.resolvedElasticScattering;
-            snap.resolvedEffective = postProcess_.peelOff.resolvedEffectiveScattering;
-            snap.rwClosure = postProcess_.peelOff.randomWalkClosureEvents;
-            snap.rwUpscatter = postProcess_.peelOff.randomWalkUpscatterEvents;
-            snap.ddmcLeak = postProcess_.peelOff.ddmcLeakEvents;
-            snap.ddmcUpscatter = postProcess_.peelOff.ddmcUpscatterEvents;
-            snap.maxTau = postProcess_.peelOff.maxTau;
-            snap.rayNudgeFraction = postProcess_.peelOff.rayNudgeFraction;
-            snap.maxRayCells = postProcess_.peelOff.maxRayCells;
-            snap.mpiRayPolicy = PeelOff::mpiRayPolicyName(postProcess_.peelOff.mpiRayPolicy);
-            snap.mpiRayPolicyId = static_cast<int>(postProcess_.peelOff.mpiRayPolicy);
-            snap.allowApproximateMpiPeelOff = postProcess_.peelOff.allowApproximateMpiPeelOff;
-            snap.maxDistributedExchangeRounds = postProcess_.peelOff.maxDistributedExchangeRounds;
-            snap.writePerKindTallies = postProcess_.peelOff.writePerKindTallies;
-            observer_->setPeelOffConfig(snap);
-        }
-    }
 #ifdef MONTECARLO_POLARIZATION
     if(observer_)
     {
@@ -426,13 +264,15 @@ void RadiationIMC::setAdaptiveSourceCellScores(
     std::unordered_map<size_t, double> scores,
     double strength, double maxFactor,
     double learnedReserveFrac,
-    double learnedMinFactor)
+    double learnedMinFactor,
+    double budgetMultiplier)
 {
     adaptiveSourceScoreByCellID_ = std::move(scores);
     adaptiveSourceStrength_ = std::clamp(strength, 0.0, 1.0);
     adaptiveSourceMaxFactor_ = std::max(1.0, maxFactor);
     adaptiveSourceLearnedReserveFrac_ = std::clamp(learnedReserveFrac, 0.0, 1.0);
     adaptiveSourceLearnedMinFactor_ = std::max(1.0, learnedMinFactor);
+    adaptiveSourceBudgetMultiplier_ = std::max(1.0, budgetMultiplier);
     adaptiveSourceCellsEnabled_ =
         adaptiveSourceStrength_ > 0.0 && !adaptiveSourceScoreByCellID_.empty();
 }
@@ -443,6 +283,7 @@ void RadiationIMC::clearAdaptiveSourceCellScores()
     adaptiveSourceStrength_ = 0.0;
     adaptiveSourceLearnedReserveFrac_ = 0.0;
     adaptiveSourceLearnedMinFactor_ = 1.0;
+    adaptiveSourceBudgetMultiplier_ = 1.0;
     adaptiveSourceScoreByCellID_.clear();
 }
 
@@ -484,76 +325,6 @@ std::vector<size_t> const& RadiationIMC::getLastSourcePhotonsPerCell() const
     return lastSourcePhotonsPerCell_;
 }
 
-void RadiationIMC::queueExternalSourcePeelOffEvents(
-    std::vector<Particle> const& particles,
-    double eventTimeLeft)
-{
-    if (!postProcess_.enabled || !postProcess_.peelOff.enabled ||
-        !postProcess_.peelOff.sourceEmission || !observer_)
-        return;
-    if (!(eventTimeLeft > 0.0) || !std::isfinite(eventTimeLeft))
-        return;
-
-    pendingExternalSourcePeelOff_.reserve(
-        pendingExternalSourcePeelOff_.size() + particles.size());
-    for (auto const& p : particles)
-    {
-        PeelOffSource source;
-        source.sourceCellIndex = p.cellIndex;
-        source.sourceLocation = p.location;
-        source.labFrequency = p.frequency;
-        source.labWeight = p.weight;
-        source.eventTimeLeft = eventTimeLeft;
-        source.kind = PeelOffEventKind::SOURCE_EMISSION;
-        source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
-#ifdef MONTECARLO_POLARIZATION
-        source.stokesQ = p.stokesQ;
-        source.stokesU = p.stokesU;
-        source.polarizationBasis = p.polarizationBasis;
-        source.polarizationInitialized = p.polarizationInitialized;
-#endif
-        pendingExternalSourcePeelOff_.push_back(source);
-    }
-}
-
-void RadiationIMC::drainPendingCollectiveWork()
-{
-    if (postProcess_.enabled && postProcess_.peelOff.enabled)
-        processPendingPeelOffRays();
-}
-
-bool RadiationIMC::isPeelOffProgressEnabled() const
-{
-    return postProcess_.enabled && postProcess_.peelOff.enabled;
-}
-
-MonteCarloPeelOffProgressSnapshot RadiationIMC::getPeelOffProgressSnapshot() const
-{
-    MonteCarloPeelOffProgressSnapshot s;
-    if (!isPeelOffProgressEnabled())
-        return s;
-
-    for (size_t k = 0; k < NumPeelOffKinds; ++k)
-    {
-        s.directionsConsidered += peelOffCounters_.directionsConsidered[k];
-        s.phaseAccepted += peelOffCounters_.phaseAccepted[k];
-        s.phaseRejected += peelOffCounters_.phaseRejected[k];
-        s.observerMissed += peelOffCounters_.observerMissed[k];
-        s.timeRejected += peelOffCounters_.timeRejected[k];
-        s.raysStarted += peelOffCounters_.raysStarted[k];
-        s.raysCompleted += peelOffCounters_.raysCompleted[k];
-        s.recorded += peelOffCounters_.recorded[k];
-        s.rayFailed += peelOffCounters_.rayFailed[k];
-        s.tauClipped += peelOffCounters_.tauClipped[k];
-        s.mpiBoundaryCrossings += peelOffCounters_.mpiBoundaryCrossings[k];
-    }
-    s.pendingRemote = static_cast<unsigned long long>(pendingPeelOffRays_.size());
-    s.sourceRecorded = peelOffCounters_.recorded[
-        static_cast<size_t>(PeelOffEventKind::SOURCE_EMISSION)];
-    s.elasticRecorded = peelOffCounters_.recorded[
-        static_cast<size_t>(PeelOffEventKind::RESOLVED_ELASTIC_SCATTER)];
-    return s;
-}
 
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std::vector<Particle> &particlesToAdd)
 {
@@ -723,14 +494,6 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     double low_energy_threshold = postProcess_.enabled ? 1e-8 : 1e-3;
     bool lowWeight = std::abs(particle.weight) < particle.initialWeight * low_energy_threshold;
 
-    if (postProcess_.enabled && postProcess_.peelOff.enabled && lowWeight)
-    {
-        if (observer_)
-            observer_->addCutoffEnergy(particle.weight);
-        functionality.change = MonteCarloParticleStatus::REMOVE;
-        return functionality;
-    }
-
     if (postProcess_.enabled && observer_ && min.first == Events::OBSERVER)
     {
         ObserverCrossingRecord rec;
@@ -808,28 +571,6 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
         bool isEffectiveScatter = false;
         if(eventRandom < elasticScatteringOpacity)
         {
-            if (postProcess_.peelOff.enabled &&
-                postProcess_.peelOff.resolvedElasticScattering &&
-                observer_)
-            {
-                PeelOffSource source;
-                source.sourceCellIndex = cellIndex;
-                source.sourceLocation = particle.location;
-                source.labFrequency = particle.frequency;
-                source.labWeight = particle.weight;
-                source.eventTimeLeft = particle.timeLeft;
-                source.kind = PeelOffEventKind::RESOLVED_ELASTIC_SCATTER;
-                source.phaseMode = PeelOffSource::PhaseMode::ElasticScatter;
-                source.incomingDirectionLab = normalize(oldVelocity);
-#ifdef MONTECARLO_POLARIZATION
-                source.stokesQ = particle.stokesQ;
-                source.stokesU = particle.stokesU;
-                source.polarizationBasis = particle.polarizationBasis;
-                source.polarizationInitialized = particle.polarizationInitialized;
-#endif
-                maybeRecordPeelOff(source);
-            }
-
 #ifdef MONTECARLO_POLARIZATION
             if(postProcess_.enabled && postProcess_.polarization.enabled)
             {
@@ -893,22 +634,6 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
                 ClampFrequencyToBounds(particle.frequency);
             }
         }
-        if (isEffectiveScatter &&
-            postProcess_.peelOff.enabled &&
-            postProcess_.peelOff.resolvedEffectiveScattering &&
-            observer_)
-        {
-            PeelOffSource source;
-            source.sourceCellIndex = cellIndex;
-            source.sourceLocation = particle.location;
-            source.labFrequency = particle.frequency;
-            source.labWeight = particle.weight;
-            source.eventTimeLeft = particle.timeLeft;
-            source.kind = PeelOffEventKind::RESOLVED_EFFECTIVE_SCATTER;
-            source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
-            maybeRecordPeelOff(source);
-        }
-
 #ifdef MONTECARLO_POLARIZATION
         if(postProcess_.enabled && postProcess_.polarization.enabled && isEffectiveScatter)
             IMCPolarization::ResetUnpolarized(particle);
@@ -994,168 +719,6 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
         if (observer_)
             observer_->addTimedOutEnergy(timedOut);
         printAccelerationStats();
-        if (postProcess_.peelOff.enabled)
-        {
-            // Drain pending rays before final reporting
-            processPendingPeelOffRays();
-
-            if (!pendingPeelOffRays_.empty())
-            {
-                std::string msg = "PeelOff: pending rays remain after drain ("
-                    + std::to_string(pendingPeelOffRays_.size()) + " rays); "
-                    "this indicates a logic error in processPendingPeelOffRays";
-#ifdef RICH_MPI
-                std::cerr << msg << std::endl;
-                MPI_Abort(MPI_COMM_WORLD, 1);
-#else
-                throw std::runtime_error(msg);
-#endif
-            }
-
-            int rank = 0;
-#ifdef RICH_MPI
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            static constexpr size_t nFields = 21;
-            static constexpr size_t nTotal = nFields * NumPeelOffKinds;
-            unsigned long long localBuf[nTotal];
-            for (size_t k = 0; k < NumPeelOffKinds; ++k)
-            {
-                localBuf[k + 0  * NumPeelOffKinds] = peelOffCounters_.directionsConsidered[k];
-                localBuf[k + 1  * NumPeelOffKinds] = peelOffCounters_.phaseAccepted[k];
-                localBuf[k + 2  * NumPeelOffKinds] = peelOffCounters_.phaseRejected[k];
-                localBuf[k + 3  * NumPeelOffKinds] = peelOffCounters_.observerMissed[k];
-                localBuf[k + 4  * NumPeelOffKinds] = peelOffCounters_.timeRejected[k];
-                localBuf[k + 5  * NumPeelOffKinds] = peelOffCounters_.raysStarted[k];
-                localBuf[k + 6  * NumPeelOffKinds] = peelOffCounters_.raysCompleted[k];
-                localBuf[k + 7  * NumPeelOffKinds] = peelOffCounters_.recorded[k];
-                localBuf[k + 8  * NumPeelOffKinds] = peelOffCounters_.tauClipped[k];
-                localBuf[k + 9  * NumPeelOffKinds] = peelOffCounters_.rayFailed[k];
-                localBuf[k + 10 * NumPeelOffKinds] = peelOffCounters_.noExitFace[k];
-                localBuf[k + 11 * NumPeelOffKinds] = peelOffCounters_.maxCellsExceeded[k];
-                localBuf[k + 12 * NumPeelOffKinds] = peelOffCounters_.unsupportedBoundary[k];
-                localBuf[k + 13 * NumPeelOffKinds] = peelOffCounters_.lostRemoteCell[k];
-                localBuf[k + 14 * NumPeelOffKinds] = peelOffCounters_.distributedExchangeLimitExceeded[k];
-                localBuf[k + 15 * NumPeelOffKinds] = peelOffCounters_.raysCrossedMpiBoundary[k];
-                localBuf[k + 16 * NumPeelOffKinds] = peelOffCounters_.mpiBoundaryCrossings[k];
-                localBuf[k + 17 * NumPeelOffKinds] = peelOffCounters_.physicalVacuumExits[k];
-                localBuf[k + 18 * NumPeelOffKinds] = peelOffCounters_.invalidState[k];
-                localBuf[k + 19 * NumPeelOffKinds] = peelOffCounters_.sourceExitClassFailed[k];
-                localBuf[k + 20 * NumPeelOffKinds] = peelOffCounters_.mpiBoundaryRejected[k];
-            }
-            if (rank == 0)
-                MPI_Reduce(MPI_IN_PLACE, localBuf, static_cast<int>(nTotal),
-                           MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-            else
-                MPI_Reduce(localBuf, nullptr, static_cast<int>(nTotal),
-                           MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-            if (rank == 0)
-            {
-                for (size_t k = 0; k < NumPeelOffKinds; ++k)
-                {
-                    peelOffCounters_.directionsConsidered[k]       = localBuf[k + 0  * NumPeelOffKinds];
-                    peelOffCounters_.phaseAccepted[k]              = localBuf[k + 1  * NumPeelOffKinds];
-                    peelOffCounters_.phaseRejected[k]              = localBuf[k + 2  * NumPeelOffKinds];
-                    peelOffCounters_.observerMissed[k]             = localBuf[k + 3  * NumPeelOffKinds];
-                    peelOffCounters_.timeRejected[k]               = localBuf[k + 4  * NumPeelOffKinds];
-                    peelOffCounters_.raysStarted[k]                = localBuf[k + 5  * NumPeelOffKinds];
-                    peelOffCounters_.raysCompleted[k]              = localBuf[k + 6  * NumPeelOffKinds];
-                    peelOffCounters_.recorded[k]                   = localBuf[k + 7  * NumPeelOffKinds];
-                    peelOffCounters_.tauClipped[k]                 = localBuf[k + 8  * NumPeelOffKinds];
-                    peelOffCounters_.rayFailed[k]                  = localBuf[k + 9  * NumPeelOffKinds];
-                    peelOffCounters_.noExitFace[k]                 = localBuf[k + 10 * NumPeelOffKinds];
-                    peelOffCounters_.maxCellsExceeded[k]           = localBuf[k + 11 * NumPeelOffKinds];
-                    peelOffCounters_.unsupportedBoundary[k]        = localBuf[k + 12 * NumPeelOffKinds];
-                    peelOffCounters_.lostRemoteCell[k]             = localBuf[k + 13 * NumPeelOffKinds];
-                    peelOffCounters_.distributedExchangeLimitExceeded[k] = localBuf[k + 14 * NumPeelOffKinds];
-                    peelOffCounters_.raysCrossedMpiBoundary[k]     = localBuf[k + 15 * NumPeelOffKinds];
-                    peelOffCounters_.mpiBoundaryCrossings[k]       = localBuf[k + 16 * NumPeelOffKinds];
-                    peelOffCounters_.physicalVacuumExits[k]        = localBuf[k + 17 * NumPeelOffKinds];
-                    peelOffCounters_.invalidState[k]               = localBuf[k + 18 * NumPeelOffKinds];
-                    peelOffCounters_.sourceExitClassFailed[k]      = localBuf[k + 19 * NumPeelOffKinds];
-                    peelOffCounters_.mpiBoundaryRejected[k]       = localBuf[k + 20 * NumPeelOffKinds];
-                }
-            }
-#endif
-            if (rank == 0)
-            {
-                std::cout << "PeelOff: directions=" << peelOffCounters_.totalDirectionsConsidered()
-                          << " raysStarted=" << peelOffCounters_.totalRaysStarted()
-                          << " recorded=" << peelOffCounters_.totalRecorded()
-                          << " tauClipped=" << peelOffCounters_.totalTauClipped()
-                          << " rayFailed=" << peelOffCounters_.totalRayFailed()
-                          << std::endl;
-                for (size_t k = 0; k < NumPeelOffKinds; ++k)
-                {
-                    if (peelOffCounters_.directionsConsidered[k] > 0)
-                    {
-                        std::cout << "  " << peelOffKindName(static_cast<PeelOffEventKind>(k))
-                                  << ": dirs=" << peelOffCounters_.directionsConsidered[k]
-                                  << " phaseOk=" << peelOffCounters_.phaseAccepted[k]
-                                  << " phaseRej=" << peelOffCounters_.phaseRejected[k]
-                                  << " obsMiss=" << peelOffCounters_.observerMissed[k]
-                                  << " timeRej=" << peelOffCounters_.timeRejected[k]
-                                  << " started=" << peelOffCounters_.raysStarted[k]
-                                  << " completed=" << peelOffCounters_.raysCompleted[k]
-                                  << " recorded=" << peelOffCounters_.recorded[k]
-                                  << " tauClip=" << peelOffCounters_.tauClipped[k]
-                                  << " noExit=" << peelOffCounters_.noExitFace[k]
-                                  << " maxCells=" << peelOffCounters_.maxCellsExceeded[k]
-                                  << " unsupBnd=" << peelOffCounters_.unsupportedBoundary[k]
-                                  << " lostRemote=" << peelOffCounters_.lostRemoteCell[k]
-                                  << " exchLimitExc=" << peelOffCounters_.distributedExchangeLimitExceeded[k]
-                                  << " mpiRejected=" << peelOffCounters_.mpiBoundaryRejected[k]
-                                  << " mpiRays=" << peelOffCounters_.raysCrossedMpiBoundary[k]
-                                  << " mpiCrossings=" << peelOffCounters_.mpiBoundaryCrossings[k]
-                                  << " vacExits=" << peelOffCounters_.physicalVacuumExits[k]
-                                  << " invalidSt=" << peelOffCounters_.invalidState[k]
-                                  << " | srcExitFail=" << peelOffCounters_.sourceExitClassFailed[k]
-                                  << std::endl;
-                    }
-                }
-                {
-                    unsigned long long totalMpiHops = 0;
-                    for (auto v : peelOffCounters_.mpiBoundaryCrossings) totalMpiHops += v;
-                    if (totalMpiHops > 0)
-                    {
-                        using MpiPolicy = RadiationIMCPostProcessConfig::PeelOffConfig::MpiRayPolicy;
-                        if (postProcess_.peelOff.mpiRayPolicy == MpiPolicy::DistributedExact)
-                            std::cout << "PeelOff: " << totalMpiHops
-                                      << " MPI boundary crossings handled via DistributedExact"
-                                      << std::endl;
-                        else if (postProcess_.peelOff.mpiRayPolicy == MpiPolicy::StrictAbort)
-                            std::cout << "PeelOff WARNING: " << totalMpiHops
-                                      << " rays crossed non-local cell boundaries and were rejected (StrictAbort)"
-                                      << std::endl;
-                        else
-                            std::cout << "PeelOff WARNING: " << totalMpiHops
-                                      << " rays crossed non-local cell boundaries and used approximate "
-                                      << "local-vacuum continuation (LocalConservativeVacuum)"
-                                      << std::endl;
-                    }
-                }
-            }
-#ifdef RICH_MPI
-            if (rank == 0)
-#endif
-            {
-                // Counter invariants are global post-reduction invariants in
-                // DistributedExact MPI: raysStarted and raysCompleted/rayFailed
-                // may occur on different ranks, so only the reduced sum on
-                // rank 0 is expected to satisfy them.
-                std::string invariantMsg;
-                if (!peelOffCounters_.validateInvariants(invariantMsg))
-                {
-                    std::cerr << "PeelOff counter invariant violation: " << invariantMsg << std::endl;
-#ifdef RICH_MPI
-                    MPI_Abort(MPI_COMM_WORLD, 1);
-#else
-                    throw std::runtime_error("PeelOff counter invariant violation: " + invariantMsg);
-#endif
-                }
-                if (observer_)
-                    observer_->setPeelOffCounters(peelOffCounters_);
-            }
-        }
         return;
     }
 
@@ -1501,7 +1064,13 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     bool const hasAdaptiveScores =
         adaptiveSourceCellsEnabled_ && globalAdaptiveScoreWeight > 0.0;
     bool const useAdaptive = hasAdaptiveScores && globalTotalShareWeight > 0.0;
-    size_t totalParticles = globalTotalCells * this->newPhotonsPerCell * 10;
+    double totalParticlesTarget =
+        static_cast<double>(globalTotalCells) *
+        static_cast<double>(this->newPhotonsPerCell) * 10.0;
+    if (useAdaptive)
+        totalParticlesTarget *= adaptiveSourceBudgetMultiplier_;
+    size_t totalParticles = static_cast<size_t>(std::ceil(
+        std::max(1.0, totalParticlesTarget)));
     size_t const maxFactor = static_cast<size_t>(std::ceil(std::max(
         1.0, useAdaptive ? adaptiveSourceMaxFactor_ : 20.0)));
     size_t const maxPhotonsCell =
@@ -2375,114 +1944,6 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         double emitted = PostProcessIMC::PrepareGeneratedParticles(newParticles, postProcess_.transportTime);
         if (observer_)
             observer_->addEmittedEnergy(emitted);
-
-        resetPeelOffCounters();
-
-        // Source emission peel-off: RICH's generateParticles() samples
-        // emission directions uniformly on the unit sphere in the lab frame
-        // (see RadiationIMC::generateParticles / generateIsotropicDirection).
-        // The peel-off phase PDF is therefore 1/(4*pi) in lab coordinates.
-        // The ray tracer applies Doppler-shifted opacity along the path.
-        if (postProcess_.peelOff.enabled && postProcess_.peelOff.sourceEmission && observer_)
-        {
-            auto makeGeneratedSource = [](Particle const& p) {
-                PeelOffSource source;
-                source.sourceCellIndex = p.cellIndex;
-                source.sourceLocation = p.location;
-                source.labFrequency = p.frequency;
-                source.labWeight = p.weight;
-                source.eventTimeLeft = p.timeLeft;
-                source.kind = PeelOffEventKind::SOURCE_EMISSION;
-                source.phaseMode = PeelOffSource::PhaseMode::Isotropic;
-#ifdef MONTECARLO_POLARIZATION
-                source.stokesQ = p.stokesQ;
-                source.stokesU = p.stokesU;
-                source.polarizationBasis = p.polarizationBasis;
-                source.polarizationInitialized = p.polarizationInitialized;
-#endif
-                return source;
-            };
-
-            size_t const externalCount = pendingExternalSourcePeelOff_.size();
-            size_t const generatedCount = newParticles.size();
-            size_t const localSourceTotal = externalCount + generatedCount;
-            unsigned long long globalSourceTotal =
-                static_cast<unsigned long long>(localSourceTotal);
-            unsigned long long maxLocalSourceTotal =
-                static_cast<unsigned long long>(localSourceTotal);
-#ifdef RICH_MPI
-            MPI_Allreduce(MPI_IN_PLACE, &globalSourceTotal, 1,
-                          MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-            MPI_Allreduce(MPI_IN_PLACE, &maxLocalSourceTotal, 1,
-                          MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
-#endif
-            auto const progressStart = std::chrono::high_resolution_clock::now();
-            double lastProgressPrint = 0.0;
-            unsigned long long localSourceDone = 0;
-            size_t const chunks = static_cast<size_t>(
-                (maxLocalSourceTotal + PeelOffProgressSourceChunk - 1)
-                / PeelOffProgressSourceChunk);
-
-            for (size_t chunk = 0; chunk < chunks; ++chunk)
-            {
-                size_t const begin = chunk * PeelOffProgressSourceChunk;
-                size_t const end = begin + PeelOffProgressSourceChunk;
-                for (size_t i = begin; i < end && i < localSourceTotal; ++i)
-                {
-                    if (i < externalCount)
-                    {
-                        maybeRecordPeelOff(pendingExternalSourcePeelOff_[i]);
-                    }
-                    else
-                    {
-                        PeelOffSource source =
-                            makeGeneratedSource(newParticles[i - externalCount]);
-                        maybeRecordPeelOff(source);
-                    }
-                    ++localSourceDone;
-                }
-
-                processPendingPeelOffRays();
-
-                MonteCarloPeelOffProgressSnapshot snapshot =
-                    getPeelOffProgressSnapshot();
-                snapshot.sourceEventsDone = localSourceDone;
-                snapshot.sourceEventsTotal =
-                    static_cast<unsigned long long>(localSourceTotal);
-                auto localProgress = BuildPeelOffProgressArray(snapshot);
-                auto globalProgress = localProgress;
-#ifdef RICH_MPI
-                MPI_Reduce(localProgress.data(),
-                           globalProgress.data(),
-                           static_cast<int>(globalProgress.size()),
-                           MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-                int rank = 0;
-                MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-#else
-                int rank = 0;
-#endif
-                if (rank == 0)
-                {
-                    globalProgress[POP_SOURCE_TOTAL] = globalSourceTotal;
-                    auto const now = std::chrono::high_resolution_clock::now();
-                    double const elapsed = std::chrono::duration<double>(
-                        now - progressStart).count();
-                    if (elapsed - lastProgressPrint >=
-                        PeelOffProgressPrintInterval)
-                    {
-                        lastProgressPrint = elapsed;
-                        PrintPeelOffSourceProgress(elapsed, globalProgress);
-                    }
-                }
-            }
-            pendingExternalSourcePeelOff_.clear();
-        }
-        else
-        {
-            pendingExternalSourcePeelOff_.clear();
-        }
-        if (postProcess_.peelOff.enabled)
-            processPendingPeelOffRays();
 
         return newParticles;
     }

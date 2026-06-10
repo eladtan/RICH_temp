@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -323,6 +324,15 @@ void writeScalarVtk(std::ofstream& file, std::string const& name,
         file << v << "\n";
 }
 
+#ifdef MONTECARLO_POLARIZATION
+std::string groupScalarName(std::string const& prefix, size_t group)
+{
+    std::ostringstream name;
+    name << prefix << std::setw(3) << std::setfill('0') << group;
+    return name.str();
+}
+#endif
+
 std::vector<Triangle> convexHullTriangulation(const std::vector<Vector3D>& pts)
 {
     size_t N = pts.size();
@@ -509,14 +519,7 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupEnergyWeightSq_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
-    peelOffEnergy_.assign(numObservers_, 0.0);
-    peelOffEnergyWeightSq_.assign(numObservers_, 0.0);
-    peelOffCount_.assign(numObservers_, 0);
-    peelOffGroupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-    peelOffGroupEnergyWeightSq_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
 #ifdef MONTECARLO_POLARIZATION
-    peelOffStokesQ_.assign(numObservers_, 0.0);
-    peelOffStokesU_.assign(numObservers_, 0.0);
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
     observerSumWeightSq_.assign(numObservers_, 0.0);
@@ -527,6 +530,8 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     mismatchMax_.assign(numObservers_, 0.0);
     groupStokesQ_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupStokesU_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupSumWQ2_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupSumWU2_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     buildSkyBases();
 #endif
 }
@@ -612,7 +617,12 @@ void SphericalObserver::recordCrossing(ObserverCrossingRecord const& rec)
         return;
     rhat = rhat * (1.0 / rnorm);
 
-    size_t obs = findNearestObserver(rec.crossingPoint);
+    double const dirNorm = abs(rec.direction);
+    if (dirNorm <= 0.0 || !std::isfinite(dirNorm))
+        return;
+    Vector3D const khat = rec.direction * (1.0 / dirNorm);
+
+    size_t obs = findNearestObserverDirection(khat);
     observerEnergy_[obs] += rec.weight;
     observerEnergyWeightSq_[obs] += rec.weight * rec.weight;
     recordGenerationSourceCellEscape(obs, rec.sourceCellID, rec.weight);
@@ -677,6 +687,8 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
         groupEnergyWeightSq_[obs][g] += weight * weight;
         groupStokesQ_[obs][g] += weight * qObserver;
         groupStokesU_[obs][g] += weight * uObserver;
+        groupSumWQ2_[obs][g] += weight * qObserver * qObserver;
+        groupSumWU2_[obs][g] += weight * uObserver * uObserver;
         ++groupCrossingCount_[obs][g];
     }
 }
@@ -790,6 +802,8 @@ void SphericalObserver::rotateAndAccumulate(ObserverCrossingRecord const& rec,
         size_t g = findGroup(rec.frequency);
         groupStokesQ_[obs][g] += rec.weight * qRot;
         groupStokesU_[obs][g] += rec.weight * uRot;
+        groupSumWQ2_[obs][g] += rec.weight * qRot * qRot;
+        groupSumWU2_[obs][g] += rec.weight * uRot * uRot;
     }
 }
 
@@ -851,6 +865,35 @@ SphericalObserver::getGenerationSourceCellEscapeStats() const
     return result;
 }
 
+SphericalObserver::ObserverQualitySnapshot
+SphericalObserver::getObserverQualitySnapshot() const
+{
+    ObserverQualitySnapshot snap;
+    snap.energy = observerEnergy_;
+    snap.energyWeightSq = observerEnergyWeightSq_;
+    snap.crossingCount.resize(observerCrossingCount_.size());
+    for (size_t i = 0; i < observerCrossingCount_.size(); ++i)
+        snap.crossingCount[i] = static_cast<unsigned long long>(observerCrossingCount_[i]);
+
+    size_t const n = observerEnergy_.size();
+    snap.stokesQ.assign(n, 0.0);
+    snap.stokesU.assign(n, 0.0);
+    snap.polarizationWeightSq.assign(n, 0.0);
+    snap.sumWQ2.assign(n, 0.0);
+    snap.sumWU2.assign(n, 0.0);
+#ifdef MONTECARLO_POLARIZATION
+    snap.polarizationEnabled = polarizationOutputEnabled_;
+    if (polarizationOutputEnabled_) {
+        snap.stokesQ = observerStokesQ_;
+        snap.stokesU = observerStokesU_;
+        snap.polarizationWeightSq = observerSumWeightSq_;
+        snap.sumWQ2 = observerSumWQ2_;
+        snap.sumWU2 = observerSumWU2_;
+    }
+#endif
+    return snap;
+}
+
 void SphericalObserver::resetTallies()
 {
     std::fill(observerEnergy_.begin(), observerEnergy_.end(), 0.0);
@@ -863,13 +906,6 @@ void SphericalObserver::resetTallies()
         std::fill(row.begin(), row.end(), 0.0);
     for (auto& row : groupCrossingCount_)
         std::fill(row.begin(), row.end(), 0);
-    std::fill(peelOffEnergy_.begin(), peelOffEnergy_.end(), 0.0);
-    std::fill(peelOffEnergyWeightSq_.begin(), peelOffEnergyWeightSq_.end(), 0.0);
-    std::fill(peelOffCount_.begin(), peelOffCount_.end(), 0);
-    for (auto& row : peelOffGroupEnergy_)
-        std::fill(row.begin(), row.end(), 0.0);
-    for (auto& row : peelOffGroupEnergyWeightSq_)
-        std::fill(row.begin(), row.end(), 0.0);
 #ifdef MONTECARLO_POLARIZATION
     std::fill(observerStokesQ_.begin(), observerStokesQ_.end(), 0.0);
     std::fill(observerStokesU_.begin(), observerStokesU_.end(), 0.0);
@@ -883,30 +919,16 @@ void SphericalObserver::resetTallies()
         std::fill(row.begin(), row.end(), 0.0);
     for (auto& row : groupStokesU_)
         std::fill(row.begin(), row.end(), 0.0);
-    std::fill(peelOffStokesQ_.begin(), peelOffStokesQ_.end(), 0.0);
-    std::fill(peelOffStokesU_.begin(), peelOffStokesU_.end(), 0.0);
+    for (auto& row : groupSumWQ2_)
+        std::fill(row.begin(), row.end(), 0.0);
+    for (auto& row : groupSumWU2_)
+        std::fill(row.begin(), row.end(), 0.0);
 #endif
-    if (peelOffPerKindEnabled_) {
-        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
-            std::fill(peelOffEnergyByKind_[k].begin(), peelOffEnergyByKind_[k].end(), 0.0);
-            std::fill(peelOffEnergyByKindWeightSq_[k].begin(), peelOffEnergyByKindWeightSq_[k].end(), 0.0);
-            std::fill(peelOffCountByKind_[k].begin(), peelOffCountByKind_[k].end(), 0);
-            for (auto& row : peelOffGroupEnergyByKind_[k])
-                std::fill(row.begin(), row.end(), 0.0);
-            for (auto& row : peelOffGroupEnergyByKindWeightSq_[k])
-                std::fill(row.begin(), row.end(), 0.0);
-#ifdef MONTECARLO_POLARIZATION
-            std::fill(peelOffStokesQByKind_[k].begin(), peelOffStokesQByKind_[k].end(), 0.0);
-            std::fill(peelOffStokesUByKind_[k].begin(), peelOffStokesUByKind_[k].end(), 0.0);
-#endif
-        }
-    }
     emittedEnergy_ = 0.0;
     absorbedEnergy_ = 0.0;
     boxEscapeEnergy_ = 0.0;
     timedOutEnergy_ = 0.0;
     cutoffEnergy_ = 0.0;
-    peelOffNeedsMpiReduction_ = false;
 }
 
 void SphericalObserver::clearGenerationStatistics()
@@ -983,42 +1005,6 @@ void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
     }
 #endif
 
-    if (peelOffOutputEnabled_) {
-        std::vector<double> peelLum = scaleVector(peelOffEnergy_, invDt);
-        std::vector<double> peelIso(numObservers_, 0.0);
-        for (size_t i = 0; i < numObservers_; ++i)
-            peelIso[i] = (observerSolidAngle_[i] > 0.0)
-                ? peelLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
-        addVectorStat(generationStats_.peelOffEnergy, peelOffEnergy_);
-        addVectorStat(generationStats_.peelOffLuminosity, peelLum);
-        addVectorStat(generationStats_.peelOffIsoLuminosity, peelIso);
-        addMatrixStat(generationStats_.peelOffGroupEnergy, peelOffGroupEnergy_);
-#ifdef MONTECARLO_POLARIZATION
-        if (polarizationOutputEnabled_) {
-            std::vector<double> q(numObservers_, 0.0), u(numObservers_, 0.0);
-            std::vector<double> qLum(numObservers_, 0.0), uLum(numObservers_, 0.0);
-            std::vector<double> pDegree(numObservers_, 0.0), pAngle(numObservers_, 0.0);
-            for (size_t i = 0; i < numObservers_; ++i) {
-                double const invI = (peelOffEnergy_[i] > 0.0) ? 1.0 / peelOffEnergy_[i] : 0.0;
-                q[i] = peelOffStokesQ_[i] * invI;
-                u[i] = peelOffStokesU_[i] * invI;
-                qLum[i] = peelOffStokesQ_[i] * invDt;
-                uLum[i] = peelOffStokesU_[i] * invDt;
-                pDegree[i] = PolarizationDegree(peelOffEnergy_[i], peelOffStokesQ_[i], peelOffStokesU_[i]);
-                pAngle[i] = PolarizationAngle(peelOffStokesQ_[i], peelOffStokesU_[i]);
-            }
-            addVectorStat(generationStats_.peelOffStokesQ, peelOffStokesQ_);
-            addVectorStat(generationStats_.peelOffStokesU, peelOffStokesU_);
-            addVectorStat(generationStats_.peelOffQ, q);
-            addVectorStat(generationStats_.peelOffU, u);
-            addVectorStat(generationStats_.peelOffQLuminosity, qLum);
-            addVectorStat(generationStats_.peelOffULuminosity, uLum);
-            addVectorStat(generationStats_.peelOffPolarizationDegree, pDegree);
-            addVectorStat(generationStats_.peelOffPolarizationAngle, pAngle);
-        }
-#endif
-    }
-
     double const totalEnergy = getTotalCrossingEnergy();
     addScalarStat(generationStats_.totalEnergy, totalEnergy);
     addScalarStat(generationStats_.totalLuminosity, totalEnergy * invDt);
@@ -1037,67 +1023,42 @@ void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
     if (generationStats_.samples == 0) {
         generationStats_.energyWeightSqSum.assign(numObservers_, 0.0);
         generationStats_.groupEnergyWeightSqSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-        generationStats_.peelOffEnergyWeightSqSum.assign(numObservers_, 0.0);
-        generationStats_.peelOffGroupEnergyWeightSqSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
         generationStats_.observerCrossingCountSum.assign(numObservers_, 0);
         generationStats_.groupCrossingCountSum.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
-        generationStats_.peelOffCountSum.assign(numObservers_, 0);
         generationStats_.observerMaxPacketEnergyMax.assign(numObservers_, 0.0);
-        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
-            generationStats_.peelOffEnergyByKindSum[k].assign(numObservers_, 0.0);
-            generationStats_.peelOffGroupEnergyByKindSum[k].assign(numObservers_,
-                std::vector<double>(numGroups_, 0.0));
-            generationStats_.peelOffCountByKindSum[k].assign(numObservers_, 0);
-        }
 #ifdef MONTECARLO_POLARIZATION
         generationStats_.observerSumWeightSqSum.assign(numObservers_, 0.0);
         generationStats_.observerSumWQ2Sum.assign(numObservers_, 0.0);
         generationStats_.observerSumWU2Sum.assign(numObservers_, 0.0);
+        generationStats_.groupSumWQ2Sum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.groupSumWU2Sum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
         generationStats_.mismatchWeightedSumSum.assign(numObservers_, 0.0);
         generationStats_.mismatchWeighted2SumSum.assign(numObservers_, 0.0);
         generationStats_.mismatchMaxMax.assign(numObservers_, 0.0);
-        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
-            generationStats_.peelOffStokesQByKindSum[k].assign(numObservers_, 0.0);
-            generationStats_.peelOffStokesUByKindSum[k].assign(numObservers_, 0.0);
-        }
 #endif
     }
     for (size_t i = 0; i < numObservers_; ++i) {
         generationStats_.energyWeightSqSum[i] += observerEnergyWeightSq_[i];
-        generationStats_.peelOffEnergyWeightSqSum[i] += peelOffEnergyWeightSq_[i];
         generationStats_.observerCrossingCountSum[i] += observerCrossingCount_[i];
-        generationStats_.peelOffCountSum[i] += peelOffCount_[i];
         generationStats_.observerMaxPacketEnergyMax[i] =
             std::max(generationStats_.observerMaxPacketEnergyMax[i], observerMaxPacketEnergy_[i]);
         for (size_t g = 0; g < numGroups_; ++g) {
             generationStats_.groupEnergyWeightSqSum[i][g] += groupEnergyWeightSq_[i][g];
-            generationStats_.peelOffGroupEnergyWeightSqSum[i][g] += peelOffGroupEnergyWeightSq_[i][g];
             generationStats_.groupCrossingCountSum[i][g] += groupCrossingCount_[i][g];
         }
 #ifdef MONTECARLO_POLARIZATION
         generationStats_.observerSumWeightSqSum[i] += observerSumWeightSq_[i];
         generationStats_.observerSumWQ2Sum[i] += observerSumWQ2_[i];
         generationStats_.observerSumWU2Sum[i] += observerSumWU2_[i];
+        for (size_t g = 0; g < numGroups_; ++g) {
+            generationStats_.groupSumWQ2Sum[i][g] += groupSumWQ2_[i][g];
+            generationStats_.groupSumWU2Sum[i][g] += groupSumWU2_[i][g];
+        }
         generationStats_.mismatchWeightedSumSum[i] += mismatchWeightedSum_[i];
         generationStats_.mismatchWeighted2SumSum[i] += mismatchWeighted2Sum_[i];
         generationStats_.mismatchMaxMax[i] =
             std::max(generationStats_.mismatchMaxMax[i], mismatchMax_[i]);
 #endif
-    }
-    if (peelOffPerKindEnabled_) {
-        for (size_t k = 0; k < NumPeelOffKinds; ++k) {
-            for (size_t i = 0; i < numObservers_; ++i) {
-                generationStats_.peelOffEnergyByKindSum[k][i] += peelOffEnergyByKind_[k][i];
-                generationStats_.peelOffCountByKindSum[k][i] += peelOffCountByKind_[k][i];
-                for (size_t g = 0; g < numGroups_; ++g)
-                    generationStats_.peelOffGroupEnergyByKindSum[k][i][g] +=
-                        peelOffGroupEnergyByKind_[k][i][g];
-#ifdef MONTECARLO_POLARIZATION
-                generationStats_.peelOffStokesQByKindSum[k][i] += peelOffStokesQByKind_[k][i];
-                generationStats_.peelOffStokesUByKindSum[k][i] += peelOffStokesUByKind_[k][i];
-#endif
-            }
-        }
     }
     generationStats_.totalEnergyWeightSqSum +=
         std::accumulate(observerEnergyWeightSq_.begin(), observerEnergyWeightSq_.end(), 0.0);
@@ -1121,34 +1082,6 @@ void SphericalObserver::loadStatisticalMeanTallies()
     observerCrossingCount_ = generationStats_.observerCrossingCountSum;
     groupCrossingCount_ = generationStats_.groupCrossingCountSum;
     observerMaxPacketEnergy_ = generationStats_.observerMaxPacketEnergyMax;
-    if (peelOffOutputEnabled_) {
-        peelOffEnergy_ = vectorMean(generationStats_.peelOffEnergy, samples);
-        peelOffGroupEnergy_ = matrixMean(generationStats_.peelOffGroupEnergy, samples);
-        peelOffEnergyWeightSq_ = generationStats_.peelOffEnergyWeightSqSum;
-        peelOffGroupEnergyWeightSq_ = generationStats_.peelOffGroupEnergyWeightSqSum;
-        peelOffCount_ = generationStats_.peelOffCountSum;
-        if (peelOffPerKindEnabled_) {
-            double const invSamples = 1.0 / static_cast<double>(samples);
-            for (size_t k = 0; k < NumPeelOffKinds; ++k) {
-                peelOffCountByKind_[k] = generationStats_.peelOffCountByKindSum[k];
-                peelOffEnergyByKind_[k] = generationStats_.peelOffEnergyByKindSum[k];
-                for (auto& e : peelOffEnergyByKind_[k])
-                    e *= invSamples;
-                peelOffGroupEnergyByKind_[k] = generationStats_.peelOffGroupEnergyByKindSum[k];
-                for (auto& row : peelOffGroupEnergyByKind_[k])
-                    for (auto& e : row)
-                        e *= invSamples;
-#ifdef MONTECARLO_POLARIZATION
-                peelOffStokesQByKind_[k] = generationStats_.peelOffStokesQByKindSum[k];
-                peelOffStokesUByKind_[k] = generationStats_.peelOffStokesUByKindSum[k];
-                for (auto& e : peelOffStokesQByKind_[k])
-                    e *= invSamples;
-                for (auto& e : peelOffStokesUByKind_[k])
-                    e *= invSamples;
-#endif
-            }
-        }
-    }
 #ifdef MONTECARLO_POLARIZATION
     if (polarizationOutputEnabled_) {
         observerStokesQ_ = vectorMean(generationStats_.stokesQ, samples);
@@ -1160,18 +1093,25 @@ void SphericalObserver::loadStatisticalMeanTallies()
         observerSumWeightSq_ = generationStats_.observerSumWeightSqSum;
         observerSumWQ2_ = generationStats_.observerSumWQ2Sum;
         observerSumWU2_ = generationStats_.observerSumWU2Sum;
+        groupSumWQ2_ = generationStats_.groupSumWQ2Sum;
+        groupSumWU2_ = generationStats_.groupSumWU2Sum;
         mismatchWeightedSum_ = generationStats_.mismatchWeightedSumSum;
         mismatchWeighted2Sum_ = generationStats_.mismatchWeighted2SumSum;
         mismatchMax_ = generationStats_.mismatchMaxMax;
         for (auto& e : observerSumWeightSq_) e *= invSamplesSq;
+        for (auto& row : groupEnergyWeightSq_)
+            for (auto& e : row)
+                e *= invSamplesSq;
         for (auto& e : observerSumWQ2_) e *= invSamples;
         for (auto& e : observerSumWU2_) e *= invSamples;
+        for (auto& row : groupSumWQ2_)
+            for (auto& e : row)
+                e *= invSamples;
+        for (auto& row : groupSumWU2_)
+            for (auto& e : row)
+                e *= invSamples;
         for (auto& e : mismatchWeightedSum_) e *= invSamples;
         for (auto& e : mismatchWeighted2Sum_) e *= invSamples;
-        if (peelOffOutputEnabled_) {
-            peelOffStokesQ_ = vectorMean(generationStats_.peelOffStokesQ, samples);
-            peelOffStokesU_ = vectorMean(generationStats_.peelOffStokesU, samples);
-        }
     }
 #endif
 }
@@ -1206,11 +1146,11 @@ void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, s
     ++stat.count;
 }
 
-size_t SphericalObserver::findNearestObserver(Vector3D const& crossingPoint) const
+size_t SphericalObserver::findNearestObserverDirection(Vector3D const& direction) const
 {
-    Vector3D u = crossingPoint - center_;
+    Vector3D u = direction;
     double norm = abs(u);
-    if (norm <= 0.0)
+    if (norm <= 0.0 || !std::isfinite(norm))
         return 0;
     u = u * (1.0 / norm);
 
@@ -1224,6 +1164,11 @@ size_t SphericalObserver::findNearestObserver(Vector3D const& crossingPoint) con
         }
     }
     return best;
+}
+
+size_t SphericalObserver::findNearestObserver(Vector3D const& crossingPoint) const
+{
+    return findNearestObserverDirection(crossingPoint - center_);
 }
 
 size_t SphericalObserver::findGroup(double frequency) const
@@ -1301,32 +1246,6 @@ void SphericalObserver::scale(double factor)
         for (auto& e : gv) e *= factor;
     for (auto& gv : groupEnergyWeightSq_)
         for (auto& e : gv) e *= factor * factor;
-    for (auto& e : peelOffEnergy_) e *= factor;
-    for (auto& e : peelOffEnergyWeightSq_) e *= factor * factor;
-    for (auto& gv : peelOffGroupEnergy_)
-        for (auto& e : gv) e *= factor;
-    for (auto& gv : peelOffGroupEnergyWeightSq_)
-        for (auto& e : gv) e *= factor * factor;
-#ifdef MONTECARLO_POLARIZATION
-    for (auto& e : peelOffStokesQ_) e *= factor;
-    for (auto& e : peelOffStokesU_) e *= factor;
-#endif
-    if (peelOffPerKindEnabled_)
-    {
-        for (size_t k = 0; k < NumPeelOffKinds; ++k)
-        {
-            for (auto& e : peelOffEnergyByKind_[k]) e *= factor;
-            for (auto& e : peelOffEnergyByKindWeightSq_[k]) e *= factor * factor;
-            for (auto& gv : peelOffGroupEnergyByKind_[k])
-                for (auto& e : gv) e *= factor;
-            for (auto& gv : peelOffGroupEnergyByKindWeightSq_[k])
-                for (auto& e : gv) e *= factor * factor;
-#ifdef MONTECARLO_POLARIZATION
-            for (auto& e : peelOffStokesQByKind_[k]) e *= factor;
-            for (auto& e : peelOffStokesUByKind_[k]) e *= factor;
-#endif
-        }
-    }
 #ifdef MONTECARLO_POLARIZATION
     for (auto& e : observerStokesQ_) e *= factor;
     for (auto& e : observerStokesU_) e *= factor;
@@ -1339,6 +1258,10 @@ void SphericalObserver::scale(double factor)
         for (auto& e : gv) e *= factor;
     for (auto& gv : groupStokesU_)
         for (auto& e : gv) e *= factor;
+    for (auto& gv : groupSumWQ2_)
+        for (auto& e : gv) e *= factor;
+    for (auto& gv : groupSumWU2_)
+        for (auto& e : gv) e *= factor;
 #endif
     emittedEnergy_ *= factor;
     absorbedEnergy_ *= factor;
@@ -1346,135 +1269,6 @@ void SphericalObserver::scale(double factor)
     timedOutEnergy_ *= factor;
     cutoffEnergy_ *= factor;
 }
-
-void SphericalObserver::setPeelOffMetadata(bool enabled, bool writePerKindTallies)
-{
-    peelOffOutputEnabled_ = enabled;
-    peelOffPerKindEnabled_ = enabled && writePerKindTallies;
-    if (peelOffPerKindEnabled_)
-    {
-        for (size_t k = 0; k < NumPeelOffKinds; ++k)
-        {
-            peelOffEnergyByKind_[k].assign(numObservers_, 0.0);
-            peelOffEnergyByKindWeightSq_[k].assign(numObservers_, 0.0);
-            peelOffCountByKind_[k].assign(numObservers_, 0);
-            peelOffGroupEnergyByKind_[k].assign(numObservers_,
-                std::vector<double>(numGroups_, 0.0));
-            peelOffGroupEnergyByKindWeightSq_[k].assign(numObservers_,
-                std::vector<double>(numGroups_, 0.0));
-#ifdef MONTECARLO_POLARIZATION
-            peelOffStokesQByKind_[k].assign(numObservers_, 0.0);
-            peelOffStokesUByKind_[k].assign(numObservers_, 0.0);
-#endif
-        }
-    }
-}
-
-void SphericalObserver::setPeelOffConfig(PeelOffConfigSnapshot const& snap)
-{
-    peelOffConfigSnap_ = snap;
-}
-
-void SphericalObserver::setPeelOffCounters(PeelOffCounters const& counters)
-{
-    peelOffCounters_ = counters;
-}
-
-bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy, double frequency)
-{
-    return recordPeelOff(observerIndex, energy, frequency, PeelOffEventKind::SOURCE_EMISSION);
-}
-
-bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy,
-                                       double frequency, PeelOffEventKind kind)
-{
-    if (observerIndex >= numObservers_)
-        return false;
-    if (!(energy > 0.0) || !std::isfinite(energy) ||
-        !(frequency > 0.0) || !std::isfinite(frequency))
-        return false;
-
-    peelOffNeedsMpiReduction_ = true;
-    peelOffEnergy_[observerIndex] += energy;
-    peelOffEnergyWeightSq_[observerIndex] += energy * energy;
-    peelOffCount_[observerIndex] += 1;
-    if (numGroups_ > 1)
-    {
-        size_t g = findGroup(frequency);
-        peelOffGroupEnergy_[observerIndex][g] += energy;
-        peelOffGroupEnergyWeightSq_[observerIndex][g] += energy * energy;
-    }
-
-    size_t k = static_cast<size_t>(kind);
-    if (peelOffPerKindEnabled_ && k < NumPeelOffKinds)
-    {
-        peelOffEnergyByKind_[k][observerIndex] += energy;
-        peelOffEnergyByKindWeightSq_[k][observerIndex] += energy * energy;
-        peelOffCountByKind_[k][observerIndex] += 1;
-        if (numGroups_ > 1)
-        {
-            size_t g = findGroup(frequency);
-            peelOffGroupEnergyByKind_[k][observerIndex][g] += energy;
-            peelOffGroupEnergyByKindWeightSq_[k][observerIndex][g] += energy * energy;
-        }
-    }
-    return true;
-}
-
-#ifdef MONTECARLO_POLARIZATION
-bool SphericalObserver::recordPeelOff(size_t observerIndex, double energy,
-                                      double frequency, double qObserver,
-                                      double uObserver, PeelOffEventKind kind)
-{
-    if (observerIndex >= numObservers_)
-        return false;
-    if (!(energy > 0.0) || !std::isfinite(energy) ||
-        !(frequency > 0.0) || !std::isfinite(frequency))
-        return false;
-    if (!std::isfinite(qObserver))
-        qObserver = 0.0;
-    if (!std::isfinite(uObserver))
-        uObserver = 0.0;
-
-    double const p2 = qObserver * qObserver + uObserver * uObserver;
-    if (p2 > 1.0)
-    {
-        double const invP = 1.0 / std::sqrt(p2);
-        qObserver *= invP;
-        uObserver *= invP;
-    }
-
-    peelOffNeedsMpiReduction_ = true;
-    peelOffEnergy_[observerIndex] += energy;
-    peelOffEnergyWeightSq_[observerIndex] += energy * energy;
-    peelOffCount_[observerIndex] += 1;
-    peelOffStokesQ_[observerIndex] += energy * qObserver;
-    peelOffStokesU_[observerIndex] += energy * uObserver;
-    if (numGroups_ > 1)
-    {
-        size_t g = findGroup(frequency);
-        peelOffGroupEnergy_[observerIndex][g] += energy;
-        peelOffGroupEnergyWeightSq_[observerIndex][g] += energy * energy;
-    }
-
-    size_t k = static_cast<size_t>(kind);
-    if (peelOffPerKindEnabled_ && k < NumPeelOffKinds)
-    {
-        peelOffEnergyByKind_[k][observerIndex] += energy;
-        peelOffEnergyByKindWeightSq_[k][observerIndex] += energy * energy;
-        peelOffCountByKind_[k][observerIndex] += 1;
-        peelOffStokesQByKind_[k][observerIndex] += energy * qObserver;
-        peelOffStokesUByKind_[k][observerIndex] += energy * uObserver;
-        if (numGroups_ > 1)
-        {
-            size_t g = findGroup(frequency);
-            peelOffGroupEnergyByKind_[k][observerIndex][g] += energy;
-            peelOffGroupEnergyByKindWeightSq_[k][observerIndex][g] += energy * energy;
-        }
-    }
-    return true;
-}
-#endif
 
 void SphericalObserver::mpiReduceToRank0()
 {
@@ -1607,6 +1401,30 @@ void SphericalObserver::mpiReduceToRank0()
             for (size_t g = 0; g < numGroups_; ++g)
                 groupStokesU_[i][g] = flatRecv[i * numGroups_ + g];
     }
+
+    for (size_t i = 0; i < numObservers_; ++i)
+        for (size_t g = 0; g < numGroups_; ++g)
+            flatSend[i * numGroups_ + g] = groupSumWQ2_[i][g];
+    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (size_t i = 0; i < numObservers_; ++i)
+            for (size_t g = 0; g < numGroups_; ++g)
+                groupSumWQ2_[i][g] = flatRecv[i * numGroups_ + g];
+    }
+
+    for (size_t i = 0; i < numObservers_; ++i)
+        for (size_t g = 0; g < numGroups_; ++g)
+            flatSend[i * numGroups_ + g] = groupSumWU2_[i][g];
+    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (size_t i = 0; i < numObservers_; ++i)
+            for (size_t g = 0; g < numGroups_; ++g)
+                groupSumWU2_[i][g] = flatRecv[i * numGroups_ + g];
+    }
 #endif
 
     std::vector<size_t> flatCountSend(flatSize, 0);
@@ -1621,131 +1439,6 @@ void SphericalObserver::mpiReduceToRank0()
         for (size_t i = 0; i < numObservers_; ++i)
             for (size_t g = 0; g < numGroups_; ++g)
                 groupCrossingCount_[i][g] = flatCountRecv[i * numGroups_ + g];
-    }
-
-    if (peelOffOutputEnabled_) {
-        MPI_Reduce(peelOffEnergy_.data(), recvBuf.data(), count,
-                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        if (rank == 0)
-            peelOffEnergy_ = recvBuf;
-
-        MPI_Reduce(peelOffEnergyWeightSq_.data(), recvBuf.data(), count,
-                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        if (rank == 0)
-            peelOffEnergyWeightSq_ = recvBuf;
-
-        MPI_Reduce(peelOffCount_.data(), countRecvBuf.data(), count,
-                   MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-        if (rank == 0)
-            peelOffCount_ = countRecvBuf;
-
-#ifdef MONTECARLO_POLARIZATION
-        MPI_Reduce(peelOffStokesQ_.data(), recvBuf.data(), count,
-                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        if (rank == 0)
-            peelOffStokesQ_ = recvBuf;
-
-        MPI_Reduce(peelOffStokesU_.data(), recvBuf.data(), count,
-                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-        if (rank == 0)
-            peelOffStokesU_ = recvBuf;
-#endif
-
-        if (numGroups_ > 1) {
-            for (size_t i = 0; i < numObservers_; ++i)
-                for (size_t g = 0; g < numGroups_; ++g)
-                    flatSend[i * numGroups_ + g] = peelOffGroupEnergy_[i][g];
-            std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
-            MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
-                       MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-            if (rank == 0) {
-                for (size_t i = 0; i < numObservers_; ++i)
-                    for (size_t g = 0; g < numGroups_; ++g)
-                        peelOffGroupEnergy_[i][g] = flatRecv[i * numGroups_ + g];
-            }
-
-            for (size_t i = 0; i < numObservers_; ++i)
-                for (size_t g = 0; g < numGroups_; ++g)
-                    flatSend[i * numGroups_ + g] = peelOffGroupEnergyWeightSq_[i][g];
-            std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
-            MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
-                       MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-            if (rank == 0) {
-                for (size_t i = 0; i < numObservers_; ++i)
-                    for (size_t g = 0; g < numGroups_; ++g)
-                        peelOffGroupEnergyWeightSq_[i][g] = flatRecv[i * numGroups_ + g];
-            }
-        }
-
-        if (peelOffPerKindEnabled_) {
-            for (size_t k = 0; k < NumPeelOffKinds; ++k) {
-                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
-                MPI_Reduce(peelOffEnergyByKind_[k].data(), recvBuf.data(),
-                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-                if (rank == 0)
-                    peelOffEnergyByKind_[k] = recvBuf;
-
-                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
-                MPI_Reduce(peelOffEnergyByKindWeightSq_[k].data(), recvBuf.data(),
-                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-                if (rank == 0)
-                    peelOffEnergyByKindWeightSq_[k] = recvBuf;
-
-                std::fill(countRecvBuf.begin(), countRecvBuf.end(), 0);
-                MPI_Reduce(peelOffCountByKind_[k].data(), countRecvBuf.data(),
-                           count, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-                if (rank == 0)
-                    peelOffCountByKind_[k] = countRecvBuf;
-
-#ifdef MONTECARLO_POLARIZATION
-                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
-                MPI_Reduce(peelOffStokesQByKind_[k].data(), recvBuf.data(),
-                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-                if (rank == 0)
-                    peelOffStokesQByKind_[k] = recvBuf;
-
-                std::fill(recvBuf.begin(), recvBuf.end(), 0.0);
-                MPI_Reduce(peelOffStokesUByKind_[k].data(), recvBuf.data(),
-                           count, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-                if (rank == 0)
-                    peelOffStokesUByKind_[k] = recvBuf;
-#endif
-
-                if (numGroups_ > 1) {
-                    for (size_t i = 0; i < numObservers_; ++i)
-                        for (size_t g = 0; g < numGroups_; ++g)
-                            flatSend[i * numGroups_ + g] =
-                                peelOffGroupEnergyByKind_[k][i][g];
-                    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
-                    MPI_Reduce(flatSend.data(), flatRecv.data(),
-                               static_cast<int>(flatSize),
-                               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-                    if (rank == 0) {
-                        for (size_t i = 0; i < numObservers_; ++i)
-                            for (size_t g = 0; g < numGroups_; ++g)
-                                peelOffGroupEnergyByKind_[k][i][g] =
-                                    flatRecv[i * numGroups_ + g];
-                    }
-
-                    for (size_t i = 0; i < numObservers_; ++i)
-                        for (size_t g = 0; g < numGroups_; ++g)
-                            flatSend[i * numGroups_ + g] =
-                                peelOffGroupEnergyByKindWeightSq_[k][i][g];
-                    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
-                    MPI_Reduce(flatSend.data(), flatRecv.data(),
-                               static_cast<int>(flatSize),
-                               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-                    if (rank == 0) {
-                        for (size_t i = 0; i < numObservers_; ++i)
-                            for (size_t g = 0; g < numGroups_; ++g)
-                                peelOffGroupEnergyByKindWeightSq_[k][i][g] =
-                                    flatRecv[i * numGroups_ + g];
-                    }
-                }
-            }
-        }
-        if (rank == 0)
-            peelOffNeedsMpiReduction_ = false;
     }
 
     double scalars[5] = {emittedEnergy_, absorbedEnergy_, boxEscapeEnergy_,
@@ -1901,265 +1594,6 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/tally/multigroup/group_polarization_angle", gAngle);
         }
 #endif
-    }
-
-    if (peelOffOutputEnabled_) {
-#ifdef RICH_MPI
-        writer.WriteElement("/diagnostics/peeloff/status/mpi_reduction_complete",
-            peelOffNeedsMpiReduction_ ? 0 : 1);
-        if (peelOffNeedsMpiReduction_)
-        {
-            std::cerr << "PeelOff FATAL: SphericalObserver::writeHDF5 called with peel-off "
-                      << "data that has not been MPI-reduced." << std::endl;
-            MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-#endif
-        writer.WriteElement("/tally/peeloff/energy", peelOffEnergy_);
-        double peelOffTotal = std::accumulate(peelOffEnergy_.begin(), peelOffEnergy_.end(), 0.0);
-        writer.WriteElement("/tally/peeloff/total_energy", peelOffTotal);
-        std::vector<double> peelOffLum(numObservers_);
-        double invSourceDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
-        for (size_t i = 0; i < numObservers_; ++i)
-            peelOffLum[i] = peelOffEnergy_[i] * invSourceDt;
-        writer.WriteElement("/tally/peeloff/luminosity", peelOffLum);
-#ifdef MONTECARLO_POLARIZATION
-        if (polarizationOutputEnabled_)
-        {
-            std::vector<double> peelOffQNorm(numObservers_, 0.0);
-            std::vector<double> peelOffUNorm(numObservers_, 0.0);
-            std::vector<double> peelOffQLum(numObservers_, 0.0);
-            std::vector<double> peelOffULum(numObservers_, 0.0);
-            std::vector<double> peelOffPDegree(numObservers_, 0.0);
-            std::vector<double> peelOffPAngle(numObservers_, 0.0);
-            for (size_t i = 0; i < numObservers_; ++i)
-            {
-                double const invI = (peelOffEnergy_[i] > 0.0)
-                    ? 1.0 / peelOffEnergy_[i] : 0.0;
-                peelOffQNorm[i] = peelOffStokesQ_[i] * invI;
-                peelOffUNorm[i] = peelOffStokesU_[i] * invI;
-                peelOffQLum[i] = peelOffStokesQ_[i] * invSourceDt;
-                peelOffULum[i] = peelOffStokesU_[i] * invSourceDt;
-                peelOffPDegree[i] = PolarizationDegree(
-                    peelOffEnergy_[i], peelOffStokesQ_[i], peelOffStokesU_[i]);
-                peelOffPAngle[i] = PolarizationAngle(
-                    peelOffStokesQ_[i], peelOffStokesU_[i]);
-            }
-            writer.WriteElement("/tally/peeloff/stokes_Q", peelOffStokesQ_);
-            writer.WriteElement("/tally/peeloff/stokes_U", peelOffStokesU_);
-            writer.WriteElement("/tally/peeloff/q", peelOffQNorm);
-            writer.WriteElement("/tally/peeloff/u", peelOffUNorm);
-            writer.WriteElement("/tally/peeloff/Q_luminosity", peelOffQLum);
-            writer.WriteElement("/tally/peeloff/U_luminosity", peelOffULum);
-            writer.WriteElement("/tally/peeloff/polarization_degree", peelOffPDegree);
-            writer.WriteElement("/tally/peeloff/polarization_angle", peelOffPAngle);
-        }
-#endif
-        std::vector<double> peelOffIsoEquiv(numObservers_);
-        for (size_t i = 0; i < numObservers_; ++i)
-            peelOffIsoEquiv[i] = (observerSolidAngle_[i] > 0.0)
-                ? peelOffLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
-        writer.WriteElement("/tally/peeloff/isotropic_equivalent_luminosity", peelOffIsoEquiv);
-        std::vector<double> peelOffCountDbl(numObservers_);
-        for (size_t i = 0; i < numObservers_; ++i)
-            peelOffCountDbl[i] = static_cast<double>(peelOffCount_[i]);
-        writer.WriteElement("/tally/peeloff/contribution_count", peelOffCountDbl);
-        if (numGroups_ > 1)
-            writer.WriteElement("/tally/peeloff/group_energy", peelOffGroupEnergy_);
-
-        if (peelOffPerKindEnabled_)
-        {
-            for (size_t k = 0; k < NumPeelOffKinds; ++k)
-            {
-                std::string prefix = std::string("/tally/peeloff/by_kind/")
-                    + peelOffKindName(static_cast<PeelOffEventKind>(k));
-                writer.WriteElement(prefix + "/energy",
-                                    peelOffEnergyByKind_[k]);
-                std::vector<double> kindLum(numObservers_);
-                for (size_t i = 0; i < numObservers_; ++i)
-                    kindLum[i] = peelOffEnergyByKind_[k][i] * invSourceDt;
-                writer.WriteElement(prefix + "/luminosity", kindLum);
-#ifdef MONTECARLO_POLARIZATION
-                if (polarizationOutputEnabled_)
-                {
-                    std::vector<double> kindQNorm(numObservers_, 0.0);
-                    std::vector<double> kindUNorm(numObservers_, 0.0);
-                    std::vector<double> kindQLum(numObservers_, 0.0);
-                    std::vector<double> kindULum(numObservers_, 0.0);
-                    for (size_t i = 0; i < numObservers_; ++i)
-                    {
-                        double const invI = (peelOffEnergyByKind_[k][i] > 0.0)
-                            ? 1.0 / peelOffEnergyByKind_[k][i] : 0.0;
-                        kindQNorm[i] = peelOffStokesQByKind_[k][i] * invI;
-                        kindUNorm[i] = peelOffStokesUByKind_[k][i] * invI;
-                        kindQLum[i] = peelOffStokesQByKind_[k][i] * invSourceDt;
-                        kindULum[i] = peelOffStokesUByKind_[k][i] * invSourceDt;
-                    }
-                    writer.WriteElement(prefix + "/stokes_Q",
-                                        peelOffStokesQByKind_[k]);
-                    writer.WriteElement(prefix + "/stokes_U",
-                                        peelOffStokesUByKind_[k]);
-                    writer.WriteElement(prefix + "/q", kindQNorm);
-                    writer.WriteElement(prefix + "/u", kindUNorm);
-                    writer.WriteElement(prefix + "/Q_luminosity", kindQLum);
-                    writer.WriteElement(prefix + "/U_luminosity", kindULum);
-                }
-#endif
-                std::vector<double> kindCountDbl(numObservers_);
-                for (size_t i = 0; i < numObservers_; ++i)
-                    kindCountDbl[i] = static_cast<double>(
-                        peelOffCountByKind_[k][i]);
-                writer.WriteElement(prefix + "/contribution_count", kindCountDbl);
-                if (numGroups_ > 1)
-                    writer.WriteElement(prefix + "/group_energy",
-                                        peelOffGroupEnergyByKind_[k]);
-            }
-        }
-
-        for (size_t k = 0; k < NumPeelOffKinds; ++k)
-        {
-            std::string dp = std::string("/diagnostics/peeloff/by_kind/")
-                + peelOffKindName(static_cast<PeelOffEventKind>(k));
-            writer.WriteElement(dp + "/directions_considered",
-                static_cast<double>(peelOffCounters_.directionsConsidered[k]));
-            writer.WriteElement(dp + "/phase_accepted",
-                static_cast<double>(peelOffCounters_.phaseAccepted[k]));
-            writer.WriteElement(dp + "/phase_rejected",
-                static_cast<double>(peelOffCounters_.phaseRejected[k]));
-            writer.WriteElement(dp + "/observer_missed",
-                static_cast<double>(peelOffCounters_.observerMissed[k]));
-            writer.WriteElement(dp + "/time_rejected",
-                static_cast<double>(peelOffCounters_.timeRejected[k]));
-            writer.WriteElement(dp + "/rays_started",
-                static_cast<double>(peelOffCounters_.raysStarted[k]));
-            writer.WriteElement(dp + "/rays_completed",
-                static_cast<double>(peelOffCounters_.raysCompleted[k]));
-            writer.WriteElement(dp + "/recorded",
-                static_cast<double>(peelOffCounters_.recorded[k]));
-            writer.WriteElement(dp + "/tau_clipped",
-                static_cast<double>(peelOffCounters_.tauClipped[k]));
-            writer.WriteElement(dp + "/ray_failed",
-                static_cast<double>(peelOffCounters_.rayFailed[k]));
-            writer.WriteElement(dp + "/no_exit_face",
-                static_cast<double>(peelOffCounters_.noExitFace[k]));
-            writer.WriteElement(dp + "/max_cells_exceeded",
-                static_cast<double>(peelOffCounters_.maxCellsExceeded[k]));
-            writer.WriteElement(dp + "/unsupported_boundary",
-                static_cast<double>(peelOffCounters_.unsupportedBoundary[k]));
-            writer.WriteElement(dp + "/lost_remote_cell",
-                static_cast<double>(peelOffCounters_.lostRemoteCell[k]));
-            writer.WriteElement(dp + "/distributed_exchange_limit_exceeded",
-                static_cast<double>(peelOffCounters_.distributedExchangeLimitExceeded[k]));
-            writer.WriteElement(dp + "/mpi_boundary_rejected",
-                static_cast<double>(peelOffCounters_.mpiBoundaryRejected[k]));
-            writer.WriteElement(dp + "/rays_crossed_mpi_boundary",
-                static_cast<double>(peelOffCounters_.raysCrossedMpiBoundary[k]));
-            writer.WriteElement(dp + "/mpi_boundary_crossings",
-                static_cast<double>(peelOffCounters_.mpiBoundaryCrossings[k]));
-            writer.WriteElement(dp + "/physical_vacuum_exits",
-                static_cast<double>(peelOffCounters_.physicalVacuumExits[k]));
-            writer.WriteElement(dp + "/invalid_state",
-                static_cast<double>(peelOffCounters_.invalidState[k]));
-            writer.WriteElement(dp + "/source_exit_class_failed",
-                static_cast<double>(peelOffCounters_.sourceExitClassFailed[k]));
-        }
-
-        writer.WriteElement("/diagnostics/peeloff/config/source_emission",
-            peelOffConfigSnap_.sourceEmission ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/resolved_elastic",
-            peelOffConfigSnap_.resolvedElastic ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/resolved_effective",
-            peelOffConfigSnap_.resolvedEffective ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/rw_closure",
-            peelOffConfigSnap_.rwClosure ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/rw_upscatter",
-            peelOffConfigSnap_.rwUpscatter ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/ddmc_leak",
-            peelOffConfigSnap_.ddmcLeak ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/ddmc_upscatter",
-            peelOffConfigSnap_.ddmcUpscatter ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/max_tau",
-            peelOffConfigSnap_.maxTau);
-        writer.WriteElement("/diagnostics/peeloff/config/ray_nudge_fraction",
-            peelOffConfigSnap_.rayNudgeFraction);
-        writer.WriteElement("/diagnostics/peeloff/config/max_ray_cells",
-            static_cast<double>(peelOffConfigSnap_.maxRayCells));
-        writer.WriteElement("/diagnostics/peeloff/config/max_distributed_exchange_rounds",
-            static_cast<double>(peelOffConfigSnap_.maxDistributedExchangeRounds));
-        writer.WriteElement("/diagnostics/peeloff/config/write_per_kind_tallies",
-            peelOffConfigSnap_.writePerKindTallies ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/mpi_ray_policy_id",
-            peelOffConfigSnap_.mpiRayPolicyId);
-        writer.WriteElement("/diagnostics/peeloff/config/mpi_ray_policy",
-            peelOffConfigSnap_.mpiRayPolicy);
-        {
-            bool exactMpi = (peelOffConfigSnap_.mpiRayPolicyId == 2);
-#ifndef RICH_MPI
-            exactMpi = false;
-#endif
-            writer.WriteElement("/diagnostics/peeloff/config/requested_exact_mpi_ray_tracing",
-                exactMpi ? 1 : 0);
-
-            bool noDistributedFailures = true;
-            bool noSourceClassFailures = true;
-            for (size_t kk = 0; kk < NumPeelOffKinds; ++kk)
-            {
-                if (peelOffCounters_.lostRemoteCell[kk] > 0 ||
-                    peelOffCounters_.distributedExchangeLimitExceeded[kk] > 0 ||
-                    peelOffCounters_.mpiBoundaryRejected[kk] > 0 ||
-                    peelOffCounters_.unsupportedBoundary[kk] > 0 ||
-                    peelOffCounters_.invalidState[kk] > 0)
-                    noDistributedFailures = false;
-                if (peelOffCounters_.sourceExitClassFailed[kk] > 0)
-                    noSourceClassFailures = false;
-            }
-            writer.WriteElement("/diagnostics/peeloff/status/exact_mpi_no_distributed_failures",
-                (exactMpi && noDistributedFailures && noSourceClassFailures) ? 1 : 0);
-            // mpi_exact_output: no MPI-related failure occurred (routing,
-            // classification, exchange cap, source exit). Does NOT imply
-            // tally_complete (which also requires no tau-clip, no maxCells, etc.).
-            bool exactOutput = exactMpi && noDistributedFailures && noSourceClassFailures;
-            writer.WriteElement("/diagnostics/peeloff/status/mpi_exact_output",
-                exactOutput ? 1 : 0);
-        }
-
-        {
-            bool noRayFailures = true;
-            for (size_t kk = 0; kk < NumPeelOffKinds; ++kk)
-            {
-                if (peelOffCounters_.rayFailed[kk] > 0 ||
-                    peelOffCounters_.sourceExitClassFailed[kk] > 0)
-                {
-                    noRayFailures = false;
-                    break;
-                }
-            }
-            writer.WriteElement("/diagnostics/peeloff/status/tally_complete",
-                noRayFailures ? 1 : 0);
-        }
-        {
-            std::string msg;
-            writer.WriteElement("/diagnostics/peeloff/status/counter_invariants_valid",
-                peelOffCounters_.validateInvariants(msg) ? 1 : 0);
-        }
-        writer.WriteElement("/diagnostics/peeloff/config/allow_approximate_mpi_peeloff",
-            peelOffConfigSnap_.allowApproximateMpiPeelOff ? 1 : 0);
-        writer.WriteElement("/diagnostics/peeloff/config/compiled_with_mpi",
-#ifdef RICH_MPI
-            1
-#else
-            0
-#endif
-        );
-        writer.WriteElement("/diagnostics/peeloff/config/ddmc_leak_spatial_estimator",
-            std::string("face_center_approximation"));
-        writer.WriteElement("/diagnostics/peeloff/config/source_emission_angular_frame",
-            std::string("lab"));
-        writer.WriteElement("/diagnostics/peeloff/config/source_emission_pdf",
-            std::string("isotropic_1_over_4pi"));
-        writer.WriteElement("/diagnostics/peeloff/config/counter_schema_version",
-            PeelOffCounterSchemaVersion);
-
-        writer.WriteElement("/diagnostics/peeloff_enabled", 1);
     }
 
     writer.WriteElement("/diagnostics/source_dt", diagnostics.sourceDt);
@@ -2361,67 +1795,6 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             }
         }
 #endif
-
-        if (peelOffOutputEnabled_) {
-            std::vector<double> peelLum = scaleVector(peelOffEnergy_,
-                (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
-            std::vector<double> peelIso(numObservers_, 0.0);
-            for (size_t i = 0; i < numObservers_; ++i)
-                peelIso[i] = (observerSolidAngle_[i] > 0.0)
-                    ? peelLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
-            writeVectorStatErrors(writer, "/tally/peeloff/energy",
-                                  generationStats_.peelOffEnergy, peelOffEnergy_, samples);
-            writeVectorStatErrors(writer, "/tally/peeloff/luminosity",
-                                  generationStats_.peelOffLuminosity, peelLum, samples);
-            writeVectorStatErrors(writer, "/tally/peeloff/isotropic_equivalent_luminosity",
-                                  generationStats_.peelOffIsoLuminosity, peelIso, samples);
-            writeVectorPacketErrors(writer, "/tally/peeloff/energy",
-                                    peelOffEnergy_, generationStats_.peelOffEnergyWeightSqSum, samples);
-            writeVectorPacketErrors(writer, "/tally/peeloff/luminosity",
-                                    peelLum, generationStats_.peelOffEnergyWeightSqSum, samples,
-                                    (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0);
-            if (numGroups_ > 1) {
-                writeMatrixStatErrors(writer, "/tally/peeloff/group_energy",
-                                      generationStats_.peelOffGroupEnergy, peelOffGroupEnergy_, samples);
-                writeMatrixPacketErrors(writer, "/tally/peeloff/group_energy",
-                                        peelOffGroupEnergy_,
-                                        generationStats_.peelOffGroupEnergyWeightSqSum,
-                                        samples);
-            }
-#ifdef MONTECARLO_POLARIZATION
-            if (polarizationOutputEnabled_) {
-                std::vector<double> peelQ(numObservers_, 0.0), peelU(numObservers_, 0.0);
-                std::vector<double> peelQLum(numObservers_, 0.0), peelULum(numObservers_, 0.0);
-                std::vector<double> peelPDegree(numObservers_, 0.0), peelPAngle(numObservers_, 0.0);
-                double const invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
-                for (size_t i = 0; i < numObservers_; ++i) {
-                    double const invI = (peelOffEnergy_[i] > 0.0) ? 1.0 / peelOffEnergy_[i] : 0.0;
-                    peelQ[i] = peelOffStokesQ_[i] * invI;
-                    peelU[i] = peelOffStokesU_[i] * invI;
-                    peelQLum[i] = peelOffStokesQ_[i] * invDt;
-                    peelULum[i] = peelOffStokesU_[i] * invDt;
-                    peelPDegree[i] = PolarizationDegree(peelOffEnergy_[i], peelOffStokesQ_[i], peelOffStokesU_[i]);
-                    peelPAngle[i] = PolarizationAngle(peelOffStokesQ_[i], peelOffStokesU_[i]);
-                }
-                writeVectorStatErrors(writer, "/tally/peeloff/stokes_Q",
-                                      generationStats_.peelOffStokesQ, peelOffStokesQ_, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/stokes_U",
-                                      generationStats_.peelOffStokesU, peelOffStokesU_, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/q",
-                                      generationStats_.peelOffQ, peelQ, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/u",
-                                      generationStats_.peelOffU, peelU, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/Q_luminosity",
-                                      generationStats_.peelOffQLuminosity, peelQLum, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/U_luminosity",
-                                      generationStats_.peelOffULuminosity, peelULum, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/polarization_degree",
-                                      generationStats_.peelOffPolarizationDegree, peelPDegree, samples);
-                writeVectorStatErrors(writer, "/tally/peeloff/polarization_angle",
-                                      generationStats_.peelOffPolarizationAngle, peelPAngle, samples);
-            }
-#endif
-        }
 
         writeScalarStatErrors(writer, "/diagnostics/emitted_energy",
                               generationStats_.emittedEnergy, diagnostics.emittedEnergy, samples);
@@ -2668,26 +2041,40 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             for (size_t i = 0; i < N; ++i)
                 file << static_cast<double>(groupCrossingCount_[i][g]) << "\n";
         }
-    }
 
-    if (peelOffOutputEnabled_) {
-        file << "SCALARS peeloff_luminosity double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i)
-            file << peelOffEnergy_[i] * invDt << "\n";
+#ifdef MONTECARLO_POLARIZATION
+        if (polarizationOutputEnabled_) {
+            for (size_t g = 0; g < numGroups_; ++g) {
+                std::vector<double> values(N, 0.0);
+                for (size_t i = 0; i < N; ++i)
+                    values[i] = PolarizationDegree(groupEnergy_[i][g],
+                                                   groupStokesQ_[i][g],
+                                                   groupStokesU_[i][g]);
+                writeScalarVtk(file, groupScalarName("polarization_degree_group_", g), values);
+            }
 
-        file << "SCALARS peeloff_energy double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i)
-            file << peelOffEnergy_[i] << "\n";
-
-        file << "SCALARS peeloff_isotropic_equivalent_luminosity double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i) {
-            double isoEq = (observerSolidAngle_[i] > 0.0)
-                ? peelOffEnergy_[i] * invDt * fourPi / observerSolidAngle_[i] : 0.0;
-            file << isoEq << "\n";
+            for (size_t g = 0; g < numGroups_; ++g) {
+                std::vector<double> values(N, 0.0);
+                for (size_t i = 0; i < N; ++i) {
+                    double const Iv = groupEnergy_[i][g];
+                    double const W2 = groupEnergyWeightSq_[i][g];
+                    if (Iv <= 0.0 || W2 <= 0.0)
+                        continue;
+                    double const q = groupStokesQ_[i][g] / Iv;
+                    double const u = groupStokesU_[i][g] / Iv;
+                    double const p = std::sqrt(q * q + u * u);
+                    double varQ = groupSumWQ2_[i][g] / Iv - q * q;
+                    double varU = groupSumWU2_[i][g] / Iv - u * u;
+                    if (varQ < 0.0) varQ = 0.0;
+                    if (varU < 0.0) varU = 0.0;
+                    double const neff = Iv * Iv / W2;
+                    double const sigP = std::sqrt(varQ / neff + varU / neff);
+                    values[i] = (sigP > 0.0) ? p / sigP : 0.0;
+                }
+                writeScalarVtk(file, groupScalarName("polarization_snr_group_", g), values);
+            }
         }
+#endif
     }
 
     if (generationStats_.samples > 0) {
@@ -2788,31 +2175,6 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
                 writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_relerr_packet", relPacketG);
                 writeScalarVtk(file, "group_" + std::to_string(g) + "_luminosity_neff", neffG);
             }
-        }
-
-        if (peelOffOutputEnabled_) {
-            std::vector<double> peelLum = scaleVector(peelOffEnergy_, invDt);
-            std::vector<double> peelIso(N, 0.0);
-            for (size_t i = 0; i < N; ++i)
-                peelIso[i] = (observerSolidAngle_[i] > 0.0)
-                    ? peelLum[i] * fourPi / observerSolidAngle_[i] : 0.0;
-            auto peelLumStderr = vectorStderr(generationStats_.peelOffLuminosity, samples);
-            auto peelEnergyStderr = vectorStderr(generationStats_.peelOffEnergy, samples);
-            auto peelIsoStderr = vectorStderr(generationStats_.peelOffIsoLuminosity, samples);
-            writeScalarVtk(file, "peeloff_luminosity_stderr_gen", peelLumStderr);
-            writeScalarVtk(file, "peeloff_luminosity_relerr_gen", relativeError(peelLum, peelLumStderr));
-            writeScalarVtk(file, "peeloff_energy_stderr_gen", peelEnergyStderr);
-            writeScalarVtk(file, "peeloff_energy_relerr_gen", relativeError(peelOffEnergy_, peelEnergyStderr));
-            writeScalarVtk(file, "peeloff_isotropic_equivalent_luminosity_stderr_gen", peelIsoStderr);
-            writeScalarVtk(file, "peeloff_isotropic_equivalent_luminosity_relerr_gen", relativeError(peelIso, peelIsoStderr));
-            auto peelEnergyPacket = packetStderr(generationStats_.peelOffEnergyWeightSqSum, samples);
-            auto peelLumPacket = packetStderr(generationStats_.peelOffEnergyWeightSqSum, samples, invDt);
-            writeScalarVtk(file, "peeloff_energy_stderr_packet", peelEnergyPacket);
-            writeScalarVtk(file, "peeloff_energy_relerr_packet", relativeError(peelOffEnergy_, peelEnergyPacket));
-            writeScalarVtk(file, "peeloff_energy_neff", packetNeff(peelOffEnergy_, peelEnergyPacket));
-            writeScalarVtk(file, "peeloff_luminosity_stderr_packet", peelLumPacket);
-            writeScalarVtk(file, "peeloff_luminosity_relerr_packet", relativeError(peelLum, peelLumPacket));
-            writeScalarVtk(file, "peeloff_luminosity_neff", packetNeff(peelLum, peelLumPacket));
         }
     }
 }
