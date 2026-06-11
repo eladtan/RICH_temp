@@ -1143,6 +1143,8 @@ void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, s
     stat.cellID = cellID;
     stat.observerIndex = observerIndex;
     stat.energy += energy;
+    stat.weightSq += energy * energy;
+    stat.maxWeight = std::max(stat.maxWeight, energy);
     ++stat.count;
 }
 

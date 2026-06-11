@@ -219,6 +219,8 @@ private:
     size_t startParticleCount_ = 0;
     size_t endParticleCount_ = 0;
     size_t handlerMemoryBytes_ = 0;
+    std::vector<rank_t> activeRanks_;
+    std::vector<rank_t> nextActiveRanks_;
 
     boost::container::flat_map<rank_t, std::vector<MCParticle>> sendBuffers;
     size_t sendBufferCycleCounter;
@@ -794,8 +796,8 @@ void MonteCarloManager<T, Grid>::MonteCarloManager::TransferParticles(const std:
 template<typename T, typename Grid>
 bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFinalData &stepData)
 {
-    static std::vector<rank_t> active_ranks;
-    static std::vector<rank_t> next_active_ranks;
+    std::vector<rank_t> &active_ranks = this->activeRanks_;
+    std::vector<rank_t> &next_active_ranks = this->nextActiveRanks_;
     static std::vector<std::vector<size_t>> removeParticlesVec;
     static std::vector<std::vector<rank_t>> transferToRanks;
     static std::vector<std::vector<size_t>> transferParticlesVec;
@@ -1418,6 +1420,8 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
 template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::MonteCarloManager::ResetAllBuffers(void)
 {
+    this->activeRanks_.clear();
+    this->nextActiveRanks_.clear();
     for(RankHandler_t *handler : this->rankHandlers)
     {
         if(handler != nullptr)

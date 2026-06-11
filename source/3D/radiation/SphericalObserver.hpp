@@ -70,6 +70,8 @@ public:
         size_t cellID = std::numeric_limits<size_t>::max();
         size_t observerIndex = std::numeric_limits<size_t>::max();
         double energy = 0.0;
+        double weightSq = 0.0;
+        double maxWeight = 0.0;
         size_t count = 0;
     };
 
