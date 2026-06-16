@@ -148,6 +148,646 @@ namespace {
         }
         return true;
     }
+
+    struct BoundedSolverDiagnostics
+    {
+        bool used = false;
+        bool directSolveFailed = false;
+        bool materialCapActive = false;
+        size_t iterations = 0;
+        size_t activeVariables = 0;
+        double minUnconstrained = 0.0;
+        double relativeResidual = 0.0;
+        double absoluteResidual = 0.0;
+        double unweightedRelativeResidual = 0.0;
+        double maxGroupResidualFraction = 0.0;
+        double maxBoundViolation = 0.0;
+        double sumEnergy = 0.0;
+        double materialCap = 0.0;
+        double capLambda = 0.0;
+        double capEqualityResidual = 0.0;
+        double capLambdaSpread = 0.0;
+        double minPassivePivot = std::numeric_limits<double>::infinity();
+    };
+
+    using GroupMask = std::array<bool, ENERGY_GROUPS_NUM>;
+
+    static double Dot(RadiationIMC::GroupArray const &a, RadiationIMC::GroupArray const &b)
+    {
+        double s = 0.0;
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+            s += a[g] * b[g];
+        return s;
+    }
+
+    static double Norm2(RadiationIMC::GroupArray const &a)
+    {
+        return std::sqrt(Dot(a, a));
+    }
+
+    static void MatVec(RadiationIMC::GroupMatrix const &A,
+                       RadiationIMC::GroupArray const &x,
+                       RadiationIMC::GroupArray &y)
+    {
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+        {
+            y[g] = 0.0;
+            for(size_t h = 0; h < ENERGY_GROUPS_NUM; h++)
+                y[g] += A[g][h] * x[h];
+        }
+    }
+
+    static double SumGroups(RadiationIMC::GroupArray const &x)
+    {
+        double s = 0.0;
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+            s += x[g];
+        return s;
+    }
+
+    static double MinGroups(RadiationIMC::GroupArray const &x)
+    {
+        double m = x[0];
+        for(size_t g = 1; g < ENERGY_GROUPS_NUM; g++)
+            m = std::min(m, x[g]);
+        return m;
+    }
+
+    static double MaxAbsGroups(RadiationIMC::GroupArray const &x)
+    {
+        double m = 0.0;
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+            m = std::max(m, std::abs(x[g]));
+        return m;
+    }
+
+    static bool SolvePassiveSubsystem(
+        RadiationIMC::GroupMatrix const &WA,
+        RadiationIMC::GroupArray const &Wd,
+        size_t const passiveIndices[],
+        size_t nPassive,
+        double z[],
+        double &outMinPivot)
+    {
+        constexpr size_t N = ENERGY_GROUPS_NUM;
+        std::array<std::array<double, N>, N> H{};
+        std::array<double, N> q{};
+        outMinPivot = std::numeric_limits<double>::infinity();
+
+        for(size_t a = 0; a < nPassive; a++)
+        {
+            size_t const ia = passiveIndices[a];
+            for(size_t b = 0; b <= a; b++)
+            {
+                double hval = 0.0;
+                size_t const ib = passiveIndices[b];
+                for(size_t r = 0; r < N; r++)
+                    hval += WA[r][ia] * WA[r][ib];
+                H[a][b] = hval;
+                H[b][a] = hval;
+            }
+            double qval = 0.0;
+            for(size_t r = 0; r < N; r++)
+                qval += WA[r][ia] * Wd[r];
+            q[a] = qval;
+        }
+
+        for(size_t col = 0; col < nPassive; col++)
+        {
+            size_t pivot = col;
+            double pivotAbs = std::abs(H[col][col]);
+            for(size_t row = col + 1; row < nPassive; row++)
+            {
+                double const cand = std::abs(H[row][col]);
+                if(cand > pivotAbs) { pivot = row; pivotAbs = cand; }
+            }
+            if(pivotAbs <= 1e-200)
+                return false;
+            outMinPivot = std::min(outMinPivot, pivotAbs);
+            if(pivot != col)
+            {
+                std::swap(H[pivot], H[col]);
+                std::swap(q[pivot], q[col]);
+            }
+            double const pv = H[col][col];
+            for(size_t row = col + 1; row < nPassive; row++)
+            {
+                double const factor = H[row][col] / pv;
+                H[row][col] = 0.0;
+                for(size_t j = col + 1; j < nPassive; j++)
+                    H[row][j] -= factor * H[col][j];
+                q[row] -= factor * q[col];
+            }
+        }
+
+        for(size_t rev = 0; rev < nPassive; rev++)
+        {
+            size_t const row = nPassive - 1 - rev;
+            double val = q[row];
+            for(size_t col = row + 1; col < nPassive; col++)
+                val -= H[row][col] * z[col];
+            z[row] = val / H[row][row];
+            if(!std::isfinite(z[row]))
+                return false;
+        }
+        return true;
+    }
+
+    static bool SolvePassiveWithCap(
+        RadiationIMC::GroupMatrix const &WA,
+        RadiationIMC::GroupArray const &Wd,
+        size_t const passiveIndices[],
+        size_t nPassive,
+        double capValue,
+        double z[],
+        double &lambda,
+        double &outMinPivot)
+    {
+        constexpr size_t N = ENERGY_GROUPS_NUM;
+        size_t const n = nPassive + 1;
+        std::array<std::array<double, N + 1>, N + 1> M{};
+        std::array<double, N + 1> b{};
+        outMinPivot = std::numeric_limits<double>::infinity();
+
+        for(size_t a = 0; a < nPassive; a++)
+        {
+            size_t const ia = passiveIndices[a];
+            for(size_t bb = 0; bb <= a; bb++)
+            {
+                double hval = 0.0;
+                size_t const ib = passiveIndices[bb];
+                for(size_t r = 0; r < N; r++)
+                    hval += WA[r][ia] * WA[r][ib];
+                M[a][bb] = hval;
+                M[bb][a] = hval;
+            }
+            double qval = 0.0;
+            for(size_t r = 0; r < N; r++)
+                qval += WA[r][ia] * Wd[r];
+            b[a] = qval;
+            M[a][nPassive] = 1.0;
+            M[nPassive][a] = 1.0;
+        }
+        M[nPassive][nPassive] = 0.0;
+        b[nPassive] = capValue;
+
+        for(size_t col = 0; col < n; col++)
+        {
+            size_t pivot = col;
+            double pivotAbs = std::abs(M[col][col]);
+            for(size_t row = col + 1; row < n; row++)
+            {
+                double const cand = std::abs(M[row][col]);
+                if(cand > pivotAbs) { pivot = row; pivotAbs = cand; }
+            }
+            if(pivotAbs <= 1e-200)
+                return false;
+            outMinPivot = std::min(outMinPivot, pivotAbs);
+            if(pivot != col)
+            {
+                std::swap(M[pivot], M[col]);
+                std::swap(b[pivot], b[col]);
+            }
+            double const pv = M[col][col];
+            for(size_t row = col + 1; row < n; row++)
+            {
+                double const factor = M[row][col] / pv;
+                M[row][col] = 0.0;
+                for(size_t j = col + 1; j < n; j++)
+                    M[row][j] -= factor * M[col][j];
+                b[row] -= factor * b[col];
+            }
+        }
+
+        std::array<double, N + 1> sol{};
+        for(size_t rev = 0; rev < n; rev++)
+        {
+            size_t const row = n - 1 - rev;
+            double val = b[row];
+            for(size_t col = row + 1; col < n; col++)
+                val -= M[row][col] * sol[col];
+            sol[row] = val / M[row][row];
+            if(!std::isfinite(sol[row]))
+                return false;
+        }
+
+        for(size_t a = 0; a < nPassive; a++)
+            z[a] = sol[a];
+        lambda = sol[nPassive];
+        return true;
+    }
+
+    static bool SolveNNLS(
+        RadiationIMC::GroupMatrix const &WA,
+        RadiationIMC::GroupArray const &Wd,
+        RadiationIMC::GroupArray &solution,
+        size_t &totalIterations,
+        double &outMinPivot)
+    {
+        constexpr size_t N = ENERGY_GROUPS_NUM;
+        constexpr size_t maxIter = 3 * N * N + N;
+        outMinPivot = std::numeric_limits<double>::infinity();
+
+        GroupMask passive{};
+        RadiationIMC::GroupArray x{};
+        x.fill(0.0);
+        passive.fill(false);
+
+        RadiationIMC::GroupArray w0{};
+        for(size_t g = 0; g < N; g++)
+            for(size_t r = 0; r < N; r++)
+                w0[g] += WA[r][g] * Wd[r];
+        double maxInitialGrad = 0.0;
+        for(size_t g = 0; g < N; g++)
+            maxInitialGrad = std::max(maxInitialGrad, std::abs(w0[g]));
+        double const gradTol = 1e-12 * std::max(1.0, maxInitialGrad);
+
+        totalIterations = 0;
+        while(totalIterations < maxIter)
+        {
+            RadiationIMC::GroupArray Ax{};
+            MatVec(WA, x, Ax);
+            RadiationIMC::GroupArray w{};
+            for(size_t g = 0; g < N; g++)
+                for(size_t r = 0; r < N; r++)
+                    w[g] += WA[r][g] * (Wd[r] - Ax[r]);
+
+            double maxGradZ = -std::numeric_limits<double>::infinity();
+            size_t maxGradIdx = 0;
+            bool anyZero = false;
+            for(size_t g = 0; g < N; g++)
+            {
+                if(!passive[g])
+                {
+                    anyZero = true;
+                    if(w[g] > maxGradZ) { maxGradZ = w[g]; maxGradIdx = g; }
+                }
+            }
+            if(!anyZero || maxGradZ <= gradTol)
+            {
+                solution = x;
+                return true;
+            }
+
+            passive[maxGradIdx] = true;
+
+            for(;;)
+            {
+                totalIterations++;
+                if(totalIterations >= maxIter) { solution = x; return false; }
+
+                size_t passiveIndices[N];
+                size_t nP = 0;
+                for(size_t g = 0; g < N; g++)
+                    if(passive[g]) passiveIndices[nP++] = g;
+
+                if(nP == 0) { x.fill(0.0); break; }
+
+                double z[N]{};
+                double subPivot = 0.0;
+                if(!SolvePassiveSubsystem(WA, Wd, passiveIndices, nP, z, subPivot))
+                {
+                    solution = x;
+                    return false;
+                }
+                outMinPivot = std::min(outMinPivot, subPivot);
+
+                bool allPositive = true;
+                for(size_t a = 0; a < nP; a++)
+                    if(z[a] <= 0.0) { allPositive = false; break; }
+
+                if(allPositive)
+                {
+                    for(size_t g = 0; g < N; g++) x[g] = 0.0;
+                    for(size_t a = 0; a < nP; a++) x[passiveIndices[a]] = z[a];
+                    break;
+                }
+
+                double alpha = std::numeric_limits<double>::infinity();
+                for(size_t a = 0; a < nP; a++)
+                {
+                    if(z[a] <= 0.0)
+                    {
+                        double const xg = x[passiveIndices[a]];
+                        double const denom = xg - z[a];
+                        if(denom > 0.0)
+                            alpha = std::min(alpha, xg / denom);
+                    }
+                }
+                if(!std::isfinite(alpha) || alpha <= 0.0) alpha = 0.0;
+
+                for(size_t a = 0; a < nP; a++)
+                {
+                    size_t const g = passiveIndices[a];
+                    x[g] += alpha * (z[a] - x[g]);
+                    if(x[g] <= 0.0) { x[g] = 0.0; passive[g] = false; }
+                }
+            }
+        }
+        solution = x;
+        return false;
+    }
+
+    static bool SolveCapConstrainedNNLS(
+        RadiationIMC::GroupMatrix const &WA,
+        RadiationIMC::GroupArray const &Wd,
+        RadiationIMC::GroupArray const &nnlsSolution,
+        double capValue,
+        RadiationIMC::GroupArray &solution,
+        size_t &totalIterations,
+        double &outMinPivot)
+    {
+        constexpr size_t N = ENERGY_GROUPS_NUM;
+        constexpr size_t maxIter = 3 * N * N + N;
+        outMinPivot = std::numeric_limits<double>::infinity();
+
+        if(capValue <= 0.0) { solution.fill(0.0); totalIterations = 0; return true; }
+
+        RadiationIMC::GroupArray w0c{};
+        for(size_t g = 0; g < N; g++)
+            for(size_t r = 0; r < N; r++)
+                w0c[g] += WA[r][g] * Wd[r];
+        double maxInitGradCap = 0.0;
+        for(size_t g = 0; g < N; g++)
+            maxInitGradCap = std::max(maxInitGradCap, std::abs(w0c[g]));
+        double const gradTol = 1e-12 * std::max(1.0, maxInitGradCap);
+
+        GroupMask passive{};
+        size_t nPassiveInit = 0;
+        for(size_t g = 0; g < N; g++)
+        {
+            passive[g] = (nnlsSolution[g] > 0.0);
+            if(passive[g]) nPassiveInit++;
+        }
+        if(nPassiveInit == 0)
+        {
+            RadiationIMC::GroupArray w{};
+            for(size_t g = 0; g < N; g++)
+                for(size_t r = 0; r < N; r++)
+                    w[g] += WA[r][g] * Wd[r];
+            size_t maxG = 0;
+            for(size_t g = 1; g < N; g++)
+                if(w[g] > w[maxG]) maxG = g;
+            passive[maxG] = true;
+        }
+
+        totalIterations = 0;
+        RadiationIMC::GroupArray x{};
+
+        while(totalIterations < maxIter)
+        {
+            totalIterations++;
+            size_t passiveIndices[N];
+            size_t nP = 0;
+            for(size_t g = 0; g < N; g++)
+                if(passive[g]) passiveIndices[nP++] = g;
+            if(nP == 0) { solution.fill(0.0); return false; }
+
+            double z[N]{};
+            double lambda = 0.0;
+            double capSubPivot = 0.0;
+            if(!SolvePassiveWithCap(WA, Wd, passiveIndices, nP, capValue, z, lambda, capSubPivot))
+            {
+                solution = x;
+                return false;
+            }
+            outMinPivot = std::min(outMinPivot, capSubPivot);
+
+            bool needRemove = true;
+            while(needRemove && totalIterations < maxIter)
+            {
+                needRemove = false;
+                double worstZ = 0.0;
+                size_t worstA = 0;
+                for(size_t a = 0; a < nP; a++)
+                    if(z[a] < worstZ) { worstZ = z[a]; worstA = a; }
+                if(worstZ < 0.0)
+                {
+                    totalIterations++;
+                    passive[passiveIndices[worstA]] = false;
+                    nP = 0;
+                    for(size_t g = 0; g < N; g++)
+                        if(passive[g]) passiveIndices[nP++] = g;
+                    if(nP == 0) { solution.fill(0.0); return false; }
+                    if(!SolvePassiveWithCap(WA, Wd, passiveIndices, nP, capValue, z, lambda, capSubPivot))
+                    {
+                        solution = x;
+                        return false;
+                    }
+                    outMinPivot = std::min(outMinPivot, capSubPivot);
+                    needRemove = true;
+                }
+            }
+
+            x.fill(0.0);
+            for(size_t a = 0; a < nP; a++)
+                x[passiveIndices[a]] = z[a];
+
+            RadiationIMC::GroupArray Ax{};
+            MatVec(WA, x, Ax);
+            RadiationIMC::GroupArray grad{};
+            for(size_t g = 0; g < N; g++)
+                for(size_t r = 0; r < N; r++)
+                    grad[g] += WA[r][g] * (Ax[r] - Wd[r]);
+
+            double worstViolation = 0.0;
+            size_t worstViolIdx = 0;
+            for(size_t g = 0; g < N; g++)
+            {
+                if(!passive[g])
+                {
+                    double const kktVal = grad[g] + lambda;
+                    if(kktVal < -gradTol && kktVal < worstViolation)
+                    {
+                        worstViolation = kktVal;
+                        worstViolIdx = g;
+                    }
+                }
+            }
+            if(worstViolation >= -gradTol)
+            {
+                solution = x;
+                return true;
+            }
+            passive[worstViolIdx] = true;
+        }
+        solution = x;
+        return false;
+    }
+
+    static bool SolveBoundedComptonCorrection(
+        RadiationIMC::GroupMatrix const &A,
+        RadiationIMC::GroupArray const &rhs,
+        RadiationIMC::GroupArray const &rawGroupEnergy,
+        RadiationIMC::GroupArray const &solveInputGroupEnergy,
+        RadiationIMC::GroupArray const &supportFloorEnergy,
+        double materialCap,
+        RadiationIMC::GroupArray const &initialGuess,
+        RadiationIMC::GroupArray &solution,
+        BoundedSolverDiagnostics &bdiag)
+    {
+        constexpr size_t N = ENERGY_GROUPS_NUM;
+        bdiag.used = true;
+        bdiag.materialCap = materialCap;
+
+        if(std::isfinite(materialCap) && materialCap < 0.0)
+            return false;
+
+        double const cellEnergyScale = std::max({
+            1.0,
+            SumGroups(rawGroupEnergy),
+            SumGroups(solveInputGroupEnergy),
+            Norm2(rhs),
+            MaxAbsGroups(rhs),
+            MaxAbsGroups(rawGroupEnergy),
+            MaxAbsGroups(solveInputGroupEnergy)
+        });
+        double const residualAbsFloor = std::max(1.0, 1e-9 * cellEnergyScale);
+
+        RadiationIMC::GroupArray W{};
+        for(size_t g = 0; g < N; g++)
+        {
+            double rowL1 = 0.0;
+            for(size_t h = 0; h < N; h++)
+                rowL1 += std::abs(A[g][h]);
+            double const denom = std::max({std::abs(rhs[g]),
+                                           rawGroupEnergy[g],
+                                           solveInputGroupEnergy[g],
+                                           supportFloorEnergy[g],
+                                           rowL1 * cellEnergyScale * 1e-12,
+                                           residualAbsFloor});
+            W[g] = 1.0 / denom;
+        }
+
+        RadiationIMC::GroupMatrix WA{};
+        RadiationIMC::GroupArray Wd{};
+        for(size_t g = 0; g < N; g++)
+        {
+            for(size_t h = 0; h < N; h++)
+                WA[g][h] = W[g] * A[g][h];
+            Wd[g] = W[g] * rhs[g];
+        }
+
+        size_t nnlsIter = 0;
+        double nnlsMinPivot = 0.0;
+        RadiationIMC::GroupArray nnlsSolution{};
+        if(!SolveNNLS(WA, Wd, nnlsSolution, nnlsIter, nnlsMinPivot))
+        {
+            solution = nnlsSolution;
+            bdiag.iterations = nnlsIter;
+            bdiag.minPassivePivot = nnlsMinPivot;
+            return false;
+        }
+        bdiag.iterations = nnlsIter;
+        bdiag.minPassivePivot = nnlsMinPivot;
+
+        double const capTol = 1e-10 * std::max(1.0, std::abs(materialCap));
+        if(!std::isfinite(materialCap) || SumGroups(nnlsSolution) <= materialCap + capTol)
+        {
+            solution = nnlsSolution;
+            bdiag.materialCapActive = false;
+        }
+        else
+        {
+            size_t capIter = 0;
+            double capMinPivot = 0.0;
+            if(!SolveCapConstrainedNNLS(WA, Wd, nnlsSolution, materialCap, solution, capIter, capMinPivot))
+            {
+                bdiag.iterations += capIter;
+                bdiag.minPassivePivot = std::min(bdiag.minPassivePivot, capMinPivot);
+                return false;
+            }
+            bdiag.iterations += capIter;
+            bdiag.minPassivePivot = std::min(bdiag.minPassivePivot, capMinPivot);
+            bdiag.materialCapActive = true;
+
+            bdiag.capEqualityResidual = std::abs(SumGroups(solution) - materialCap);
+            RadiationIMC::GroupArray capAx{};
+            MatVec(WA, solution, capAx);
+            double lambdaMin = std::numeric_limits<double>::infinity();
+            double lambdaMax = -std::numeric_limits<double>::infinity();
+            double const activeTol = 1e-14 * cellEnergyScale;
+            for(size_t g = 0; g < N; g++)
+            {
+                if(solution[g] > activeTol)
+                {
+                    double grad_g = 0.0;
+                    for(size_t r = 0; r < N; r++)
+                        grad_g += WA[r][g] * (capAx[r] - Wd[r]);
+                    double const impliedLambda = -grad_g;
+                    lambdaMin = std::min(lambdaMin, impliedLambda);
+                    lambdaMax = std::max(lambdaMax, impliedLambda);
+                }
+            }
+            if(std::isfinite(lambdaMin))
+            {
+                bdiag.capLambda = 0.5 * (lambdaMin + lambdaMax);
+                bdiag.capLambdaSpread = lambdaMax - lambdaMin;
+            }
+
+            double const capEqTol = 1e-10 * std::max(1.0, std::abs(materialCap));
+            if(bdiag.capEqualityResidual > capEqTol)
+                return false;
+            double const capGradScale = 1e-12 * std::max(1.0, MaxAbsGroups(Wd));
+            if(bdiag.capLambda < -capGradScale)
+                return false;
+            double const capSpreadTol = 1e-8 * std::max({1.0,
+                std::abs(bdiag.capLambda), MaxAbsGroups(Wd)});
+            if(bdiag.capLambdaSpread > capSpreadTol)
+                return false;
+        }
+
+        double const boundTol = 1e-12 * cellEnergyScale;
+        bdiag.maxBoundViolation = 0.0;
+        bdiag.activeVariables = 0;
+        for(size_t g = 0; g < N; g++)
+        {
+            if(solution[g] < 0.0)
+            {
+                bdiag.maxBoundViolation = std::max(bdiag.maxBoundViolation, -solution[g]);
+                if(solution[g] < -boundTol)
+                    return false;
+                solution[g] = 0.0;
+            }
+            if(solution[g] > 0.0)
+                bdiag.activeVariables++;
+            if(!std::isfinite(solution[g]))
+                return false;
+        }
+
+        bdiag.sumEnergy = SumGroups(solution);
+        if(std::isfinite(materialCap) && bdiag.sumEnergy > materialCap + capTol)
+            return false;
+
+        bdiag.minUnconstrained = MinGroups(initialGuess);
+        if(!std::isfinite(bdiag.minPassivePivot))
+            bdiag.minPassivePivot = 0.0;
+
+        RadiationIMC::GroupArray Ax{};
+        MatVec(A, solution, Ax);
+        RadiationIMC::GroupArray resid{};
+        RadiationIMC::GroupArray wResid{};
+        RadiationIMC::GroupArray wRhs{};
+        bdiag.maxGroupResidualFraction = 0.0;
+        for(size_t g = 0; g < N; g++)
+        {
+            resid[g] = Ax[g] - rhs[g];
+            wResid[g] = W[g] * resid[g];
+            wRhs[g] = W[g] * rhs[g];
+            double const groupDenom = std::max({std::abs(rhs[g]),
+                rawGroupEnergy[g], solveInputGroupEnergy[g], supportFloorEnergy[g],
+                residualAbsFloor});
+            bdiag.maxGroupResidualFraction = std::max(bdiag.maxGroupResidualFraction,
+                                                       std::abs(resid[g]) / groupDenom);
+        }
+
+        bdiag.absoluteResidual = Norm2(wResid);
+        bdiag.relativeResidual = bdiag.absoluteResidual / std::max(Norm2(wRhs), 1.0);
+        double const unweightedResidNorm = Norm2(resid);
+        bdiag.unweightedRelativeResidual = unweightedResidNorm / std::max(Norm2(rhs), cellEnergyScale);
+
+        return true;
+    }
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
@@ -917,6 +1557,19 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
     if(this->comptonData.size() != Ncells)
         throw UniversalError("Compton data not initialized in applyComptonEndOfStepCorrection");
 
+    size_t boundedCellCount = 0;
+    size_t directFailedCount = 0;
+    size_t directInadmissibleCount = 0;
+    size_t materialCapActiveCount = 0;
+    size_t residualWarningCount = 0;
+    size_t directTinyClampCount = 0;
+    size_t directTinyClampGroupCount = 0;
+    double maxDirectClampMassFraction = 0.0;
+    bool haveWorstBounded = false;
+    size_t worstCellIndex = 0;
+    double worstScore = 0.0;
+    BoundedSolverDiagnostics worstBdiag;
+
     for(size_t i = 0; i < Ncells; i++)
     {
         ComptonCellData const &cd = this->comptonData[i];
@@ -988,78 +1641,248 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             }
         }
 
-        SolverDiagnostics diag;
-        if(!SolveComptonGroupSystem(residualMatrix, rhs, solvedGroupEnergy, diag))
-        {
-            UniversalError eo("Failed to solve end-of-step Compton group system");
-            eo.addEntry("Cell index", static_cast<double>(i));
-            eo.addEntry("Full dt", fullDt);
-            eo.addEntry("Gamma", cd.Gamma);
-            eo.addEntry("Fleck", cd.fleck);
-            eo.addEntry("Upsilon", cd.Upsilon);
-            eo.addEntry("Use N=0 fallback", static_cast<double>(cd.useNZero));
-            eo.addEntry("Use Planck induced", static_cast<double>(cd.usePlanckInduced));
-            eo.addEntry("Planck opacity cdt", cd.planckOpacity * units::clight * fullDt);
-            eo.addEntry("Total raw Erad", totalPostTransportErad);
-            eo.addEntry("Total time-avg Erad", totalTimeAvgErad);
-            eo.addEntry("Min pivot", diag.minPivot);
-            eo.addEntry("Max coefficient", diag.maxCoeff);
-            throw eo;
-        }
-
-        double totalErad = 0.0;
-        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
-            totalErad += rawGroupEnergy[g];
-
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
         {
-            double finalGroupEnergy = solvedGroupEnergy[g];
-            if(finalGroupEnergy < 0.0)
+            if(!std::isfinite(rhs[g]))
             {
-                // Relaxed from 1e-4 to tolerate small residuals from bcorrScale clamping
-                if(std::abs(finalGroupEnergy) > 1e-2 * std::max(totalErad, rawGroupEnergy[g]))
+                UniversalError eo("Nonfinite RHS in Compton end-of-step correction");
+                eo.addEntry("Cell index", static_cast<double>(i));
+                eo.addEntry("Group", static_cast<double>(g));
+                eo.addEntry("RHS value", rhs[g]);
+                throw eo;
+            }
+            for(size_t h = 0; h < ENERGY_GROUPS_NUM; h++)
+            {
+                if(!std::isfinite(residualMatrix[g][h]))
                 {
-                    UniversalError eo("End-of-step correction produced significant negative group energy");
+                    UniversalError eo("Nonfinite matrix in Compton end-of-step correction");
                     eo.addEntry("Cell index", static_cast<double>(i));
-                    eo.addEntry("Group", static_cast<double>(g));
-                    eo.addEntry("Eg_raw", rawGroupEnergy[g]);
-                    eo.addEntry("Solve input energy", solveInputGroupEnergy[g]);
-                    eo.addEntry("RHS", rhs[g]);
-                    eo.addEntry("Solved energy", finalGroupEnergy);
-                    eo.addEntry("Total Erad", totalErad);
-                    eo.addEntry("Total time-avg Erad", totalTimeAvgErad);
-                    eo.addEntry("bcorrScale", bcorrScale);
-                    eo.addEntry("Fleck", cd.fleck);
-                    eo.addEntry("Upsilon", cd.Upsilon);
-                    eo.addEntry("Use N=0 fallback", static_cast<double>(cd.useNZero));
-                    eo.addEntry("Use Planck induced", static_cast<double>(cd.usePlanckInduced));
-                    eo.addEntry("Planck opacity cdt", cd.planckOpacity * units::clight * fullDt);
-                    eo.addEntry("Planck opacity", cd.planckOpacity);
-                    eo.addEntry("Gamma", cd.Gamma);
-                    eo.addEntry("Min pivot", diag.minPivot);
-                    eo.addEntry("Max coefficient", diag.maxCoeff);
-                    if(i < this->lastComptonPacketCounts_.size() &&
-                       i < this->lastComptonMaxPacketWeight_.size())
-                    {
-                        eo.addEntry("Group packet count", static_cast<double>(this->lastComptonPacketCounts_[i][g]));
-                        eo.addEntry("Group max packet weight", this->lastComptonMaxPacketWeight_[i][g]);
-                    }
-                    if(i < this->Eg_time_avg.size())
-                    {
-                        eo.addEntry("Group time-avg energy", timeAvgGroupEnergy[g]);
-                    }
-                    eo.addEntry("Group support floor", supportFloorEnergy[g]);
-                    eo.addEntry("Compton risk score", cd.riskScore[g]);
-                    eo.addEntry("Compton risk target packets", static_cast<double>(cd.riskTargetPackets[g]));
-                    eo.addEntry("Cell volume", this->grid.GetVolume(i));
-                    eo.addEntry("Cell", this->cells[i]);
+                    eo.addEntry("Row", static_cast<double>(g));
+                    eo.addEntry("Col", static_cast<double>(h));
+                    eo.addEntry("Value", residualMatrix[g][h]);
                     throw eo;
                 }
-                finalGroupEnergy = 0.0;
+            }
+        }
+
+        SolverDiagnostics diag;
+        GroupArray directSolution{};
+        bool const directOk = SolveComptonGroupSystem(residualMatrix, rhs, directSolution, diag);
+
+        double const cellEnergyScale = std::max({
+            1.0,
+            totalPostTransportErad,
+            SumGroups(solveInputGroupEnergy),
+            Norm2(rhs),
+            MaxAbsGroups(rhs),
+            MaxAbsGroups(rawGroupEnergy)
+        });
+        double const directTinyNegativeTol = 1e-6 * cellEnergyScale;
+        double const directTinyNegativeMassTol = 1e-5 * cellEnergyScale;
+
+        double const materialCap = this->noHydroFeedback
+            ? std::numeric_limits<double>::infinity()
+            : SumGroups(rawGroupEnergy) + this->conserved[i].internal_energy;
+
+        double const materialCapTol = std::isfinite(materialCap)
+            ? 1e-12 * std::max(1.0, std::abs(materialCap))
+            : std::numeric_limits<double>::infinity();
+
+        GroupArray directClamped{};
+        double directNegativeMass = 0.0;
+        double directMin = 0.0;
+        if(directOk)
+        {
+            directClamped = directSolution;
+            directMin = MinGroups(directSolution);
+            for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+            {
+                if(directClamped[g] < 0.0)
+                {
+                    directNegativeMass += -directClamped[g];
+                    directClamped[g] = 0.0;
+                }
+            }
+        }
+
+        bool const directTinyNegativeOnly = directOk
+            && directMin >= -directTinyNegativeTol
+            && directNegativeMass <= directTinyNegativeMassTol;
+        bool const directCapOk = !std::isfinite(materialCap)
+            || SumGroups(directClamped) <= materialCap + materialCapTol;
+        bool const directAdmissible = directTinyNegativeOnly && directCapOk;
+
+        if(directAdmissible)
+        {
+            solvedGroupEnergy = directClamped;
+            if(directNegativeMass > 0.0)
+            {
+                directTinyClampCount++;
+                for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+                    if(directSolution[g] < 0.0) directTinyClampGroupCount++;
+                maxDirectClampMassFraction = std::max(maxDirectClampMassFraction,
+                    directNegativeMass / cellEnergyScale);
+            }
+        }
+        else
+        {
+            BoundedSolverDiagnostics bdiag;
+            bdiag.directSolveFailed = !directOk;
+            bool const boundedOk = SolveBoundedComptonCorrection(
+                residualMatrix, rhs, rawGroupEnergy,
+                solveInputGroupEnergy, supportFloorEnergy,
+                materialCap, directSolution, solvedGroupEnergy, bdiag);
+
+            auto addBoundedDiagnostics = [&](UniversalError &eo)
+            {
+                eo.addEntry("Cell index", static_cast<double>(i));
+                eo.addEntry("Cell", this->cells[i]);
+                eo.addEntry("Cell volume", this->grid.GetVolume(i));
+                eo.addEntry("Planck opacity", cd.planckOpacity);
+                eo.addEntry("Planck opacity cdt", cd.planckOpacity * units::clight * fullDt);
+                eo.addEntry("Full dt", fullDt);
+                eo.addEntry("Gamma", cd.Gamma);
+                eo.addEntry("Fleck", cd.fleck);
+                eo.addEntry("Upsilon", cd.Upsilon);
+                eo.addEntry("Use N=0 fallback", static_cast<double>(cd.useNZero));
+                eo.addEntry("Use Planck induced", static_cast<double>(cd.usePlanckInduced));
+                eo.addEntry("bcorrScale", bcorrScale);
+                eo.addEntry("Total raw Erad", totalPostTransportErad);
+                eo.addEntry("Total solve-input Erad", SumGroups(solveInputGroupEnergy));
+                eo.addEntry("Total time-avg Erad", totalTimeAvgErad);
+                eo.addEntry("Material energy before correction", this->conserved[i].internal_energy);
+                eo.addEntry("Material cap", materialCap);
+                eo.addEntry("Direct solver ok", static_cast<double>(directOk));
+                if(directOk)
+                    eo.addEntry("Direct min solution", MinGroups(directSolution));
+                eo.addEntry("Min pivot", diag.minPivot);
+                eo.addEntry("Max coefficient", diag.maxCoeff);
+                eo.addEntry("Bounded iterations", static_cast<double>(bdiag.iterations));
+                eo.addEntry("Bounded weighted relative residual", bdiag.relativeResidual);
+                eo.addEntry("Bounded unweighted relative residual", bdiag.unweightedRelativeResidual);
+                eo.addEntry("Bounded max group residual fraction", bdiag.maxGroupResidualFraction);
+                eo.addEntry("Bounded min passive pivot", bdiag.minPassivePivot);
+                eo.addEntry("Bounded material cap active", static_cast<double>(bdiag.materialCapActive));
+                eo.addEntry("Bounded max bound violation", bdiag.maxBoundViolation);
+                if(bdiag.materialCapActive)
+                {
+                    eo.addEntry("Cap lambda", bdiag.capLambda);
+                    eo.addEntry("Cap lambda spread", bdiag.capLambdaSpread);
+                    eo.addEntry("Cap equality residual", bdiag.capEqualityResidual);
+                }
+
+                size_t worstDirectG = 0;
+                if(directOk)
+                {
+                    for(size_t g = 1; g < ENERGY_GROUPS_NUM; g++)
+                        if(directSolution[g] < directSolution[worstDirectG])
+                            worstDirectG = g;
+                }
+                else
+                {
+                    for(size_t g = 1; g < ENERGY_GROUPS_NUM; g++)
+                        if(std::abs(rhs[g]) > std::abs(rhs[worstDirectG]))
+                            worstDirectG = g;
+                }
+
+                size_t worstResidG = 0;
+                if(boundedOk)
+                {
+                    GroupArray Asol{};
+                    MatVec(residualMatrix, solvedGroupEnergy, Asol);
+                    double worstResidVal = 0.0;
+                    for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+                    {
+                        double const rv = std::abs(Asol[g] - rhs[g]);
+                        if(rv > worstResidVal) { worstResidVal = rv; worstResidG = g; }
+                    }
+                }
+
+                auto addGroupInfo = [&](size_t g, std::string const &prefix)
+                {
+                    eo.addEntry(prefix + " group", static_cast<double>(g));
+                    eo.addEntry(prefix + " Eg_raw", rawGroupEnergy[g]);
+                    eo.addEntry(prefix + " solveInput", solveInputGroupEnergy[g]);
+                    eo.addEntry(prefix + " supportFloor", supportFloorEnergy[g]);
+                    eo.addEntry(prefix + " RHS", rhs[g]);
+                    eo.addEntry(prefix + " directSolution", directSolution[g]);
+                    eo.addEntry(prefix + " boundedSolution", solvedGroupEnergy[g]);
+                    if(i < this->lastComptonPacketCounts_.size())
+                        eo.addEntry(prefix + " packetCount",
+                            static_cast<double>(this->lastComptonPacketCounts_[i][g]));
+                    if(i < this->lastComptonMaxPacketWeight_.size())
+                        eo.addEntry(prefix + " maxPacketWeight",
+                            this->lastComptonMaxPacketWeight_[i][g]);
+                    if(i < this->Eg_time_avg.size())
+                        eo.addEntry(prefix + " timeAvgEnergy", timeAvgGroupEnergy[g]);
+                    eo.addEntry(prefix + " riskScore", cd.riskScore[g]);
+                    eo.addEntry(prefix + " riskTargetPackets",
+                        static_cast<double>(cd.riskTargetPackets[g]));
+                };
+                addGroupInfo(worstDirectG, "DirectWorst");
+                if(boundedOk && worstResidG != worstDirectG)
+                    addGroupInfo(worstResidG, "ResidWorst");
+            };
+
+            if(!boundedOk)
+            {
+                UniversalError eo("Failed bounded end-of-step Compton correction");
+                addBoundedDiagnostics(eo);
+                throw eo;
             }
 
-            totalCorrectionToRadiation += finalGroupEnergy - rawGroupEnergy[g];
-            this->conserved[i].Eg[g] = finalGroupEnergy;
+            // The bounded path is a rare admissibility repair; these thresholds reject any
+            // fallback that is not close to the original linear correction. The weighted and
+            // unweighted global norms are strict (1e-3). The per-group threshold is looser
+            // (1e-2) because it tests the single worst group against a group-local denominator
+            // (with a 1.0 absolute floor), so it is noisier for near-empty groups.
+            constexpr double boundedWeightedRelThrow = 1e-3;
+            constexpr double boundedUnweightedRelThrow = 1e-3;
+            constexpr double boundedGroupRelThrow = 1e-2;
+            constexpr double boundedResidualWarn = 1e-5;
+            double const stricterWeightedThrow = directOk ? boundedWeightedRelThrow : 1e-4;
+
+            bool const residualAcceptable =
+                std::isfinite(bdiag.relativeResidual) &&
+                std::isfinite(bdiag.unweightedRelativeResidual) &&
+                std::isfinite(bdiag.maxGroupResidualFraction) &&
+                bdiag.relativeResidual <= stricterWeightedThrow &&
+                bdiag.unweightedRelativeResidual <= boundedUnweightedRelThrow &&
+                bdiag.maxGroupResidualFraction <= boundedGroupRelThrow;
+
+            if(!residualAcceptable)
+            {
+                UniversalError eo("Bounded Compton correction residual too large");
+                addBoundedDiagnostics(eo);
+                throw eo;
+            }
+
+            boundedCellCount++;
+            if(!directOk) directFailedCount++;
+            else directInadmissibleCount++;
+            if(bdiag.materialCapActive) materialCapActiveCount++;
+            if(bdiag.relativeResidual > boundedResidualWarn ||
+               bdiag.unweightedRelativeResidual > boundedResidualWarn ||
+               bdiag.maxGroupResidualFraction > boundedResidualWarn)
+                residualWarningCount++;
+
+            double const cellScore = std::max({
+                bdiag.relativeResidual / boundedWeightedRelThrow,
+                bdiag.unweightedRelativeResidual / boundedUnweightedRelThrow,
+                bdiag.maxGroupResidualFraction / boundedGroupRelThrow});
+            if(!haveWorstBounded || cellScore > worstScore)
+            {
+                haveWorstBounded = true;
+                worstScore = cellScore;
+                worstCellIndex = i;
+                worstBdiag = bdiag;
+            }
+        }
+
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+        {
+            totalCorrectionToRadiation += solvedGroupEnergy[g] - rawGroupEnergy[g];
+            this->conserved[i].Eg[g] = solvedGroupEnergy[g];
         }
 
         this->conserved[i].Erad += totalCorrectionToRadiation;
@@ -1084,6 +1907,95 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             cell.temperature = this->eos->de2T(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
             cell.pressure = this->eos->de2p(cell.density, cell.internal_energy, cell.tracers, cell.tracerNames);
         }
+    }
+
+    {
+        int rank = 0;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        unsigned long long counts[7] = {
+            static_cast<unsigned long long>(boundedCellCount),
+            static_cast<unsigned long long>(directFailedCount),
+            static_cast<unsigned long long>(directInadmissibleCount),
+            static_cast<unsigned long long>(materialCapActiveCount),
+            static_cast<unsigned long long>(residualWarningCount),
+            static_cast<unsigned long long>(directTinyClampCount),
+            static_cast<unsigned long long>(directTinyClampGroupCount)
+        };
+        if(rank == 0)
+            MPI_Reduce(MPI_IN_PLACE, counts, 7, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        else
+            MPI_Reduce(counts, nullptr, 7, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        double globalMaxClampFrac = maxDirectClampMassFraction;
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &globalMaxClampFrac,
+                   rank == 0 ? &globalMaxClampFrac : nullptr,
+                   1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+        double const localWorstValue = haveWorstBounded
+            ? worstScore
+            : -std::numeric_limits<double>::max();
+        struct { double val; int rank; } localWorst = {localWorstValue, rank};
+        struct { double val; int rank; } globalWorst;
+        MPI_Allreduce(&localWorst, &globalWorst, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+
+        if(rank == 0 && (counts[0] > 0 || counts[5] > 0))
+        {
+            if(counts[0] > 0)
+                std::cout << "[Compton bounded correction] " << counts[0]
+                          << " cells (directFailed=" << counts[1]
+                          << " directInadmissible=" << counts[2]
+                          << " capActive=" << counts[3]
+                          << " residWarn=" << counts[4]
+                          << "), worstScore=" << globalWorst.val
+                          << " onRank=" << globalWorst.rank
+                          << std::endl;
+            if(counts[5] > 0)
+                std::cout << "[Compton direct tiny clamp] " << counts[5]
+                          << " cells " << counts[6]
+                          << " groups maxMassFrac=" << globalMaxClampFrac
+                          << std::endl;
+        }
+        if(haveWorstBounded && rank == globalWorst.rank)
+        {
+            std::cout << "[Compton bounded correction worst local]"
+                      << " rank=" << rank
+                      << " cell=" << worstCellIndex
+                      << " cellID=" << this->cells[worstCellIndex].ID
+                      << " score=" << worstScore
+                      << " relResid=" << worstBdiag.relativeResidual
+                      << " unwRelResid=" << worstBdiag.unweightedRelativeResidual
+                      << " maxGroupFrac=" << worstBdiag.maxGroupResidualFraction
+                      << " active=" << worstBdiag.activeVariables
+                      << " directFailed=" << worstBdiag.directSolveFailed
+                      << " capActive=" << worstBdiag.materialCapActive
+                      << " cap=" << worstBdiag.materialCap
+                      << " sumEnergy=" << worstBdiag.sumEnergy
+                      << " minPivot=" << worstBdiag.minPassivePivot
+                      << std::endl;
+        }
+#else
+        if(boundedCellCount > 0)
+        {
+            std::cout << "[Compton bounded correction] " << boundedCellCount
+                      << " cells (directFailed=" << directFailedCount
+                      << " directInadmissible=" << directInadmissibleCount
+                      << " capActive=" << materialCapActiveCount
+                      << " residWarn=" << residualWarningCount
+                      << "), worst relResid=" << worstBdiag.relativeResidual
+                      << " unwRelResid=" << worstBdiag.unweightedRelativeResidual
+                      << " maxGroupFrac=" << worstBdiag.maxGroupResidualFraction
+                      << " minPivot=" << worstBdiag.minPassivePivot
+                      << " score=" << worstScore
+                      << " cell=" << worstCellIndex << std::endl;
+        }
+        if(directTinyClampCount > 0)
+        {
+            std::cout << "[Compton direct tiny clamp] " << directTinyClampCount
+                      << " cells " << directTinyClampGroupCount
+                      << " groups maxMassFrac=" << maxDirectClampMassFraction
+                      << std::endl;
+        }
+#endif
     }
 }
 
