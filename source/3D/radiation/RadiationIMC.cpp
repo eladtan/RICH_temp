@@ -1563,11 +1563,13 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
     size_t boundedCellCount = 0;
     size_t directFailedCount = 0;
     size_t directInadmissibleCount = 0;
+    size_t directNegativeFallbackCount = 0;
     size_t materialCapActiveCount = 0;
     size_t residualWarningCount = 0;
-    size_t directSmallNegClampCount = 0;
-    size_t directSmallNegClampGroupCount = 0;
+    size_t directSupportAwareClampCount = 0;
+    size_t directSupportAwareClampGroupCount = 0;
     double maxDirectClampMassFraction = 0.0;
+    size_t historyEndpointMismatchCount = 0;
     bool haveWorstBounded = false;
     size_t worstCellIndex = 0;
     double worstScore = 0.0;
@@ -1680,9 +1682,14 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             MaxAbsGroups(rhs),
             MaxAbsGroups(rawGroupEnergy)
         });
-        constexpr double supportedGroupFloorFrac = 1e-8;
-        constexpr double supportedClampFrac = 1e-8;
-        constexpr double unsupportedTailClampFrac = 1e-4;
+        constexpr double tailSupportFrac = 1e-8;
+        constexpr double weakSupportFrac = 1e-6;
+        constexpr double moderateSupportFrac = 1e-4;
+        constexpr double tailClampFrac = 1e-3;
+        constexpr double weakClampFrac = 1e-4;
+        constexpr double moderateClampFrac = 1e-4;
+        constexpr double strongClampFrac = 1e-4;
+        constexpr double totalDirectNegativeClampFrac = 1e-3;
         constexpr double supportAbsFloor = 1.0;
 
         double const materialCap = this->noHydroFeedback
@@ -1710,14 +1717,21 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             }
         }
 
-        double supportedNegMass = 0.0;
-        double unsupportedNegMass = 0.0;
-        double supportedWorstNeg = 0.0;
-        double unsupportedWorstNeg = 0.0;
-        size_t supportedWorstGroup = ENERGY_GROUPS_NUM;
-        size_t unsupportedWorstGroup = ENERGY_GROUPS_NUM;
-        size_t supportedNegGroupCount = 0;
-        size_t unsupportedNegGroupCount = 0;
+        double tailNegMass = 0.0, weakNegMass = 0.0;
+        double moderateNegMass = 0.0, strongNegMass = 0.0;
+        double totalNegMass = 0.0;
+        double tailWorstNeg = 0.0, weakWorstNeg = 0.0;
+        double moderateWorstNeg = 0.0, strongWorstNeg = 0.0;
+        size_t tailWorstGroup = ENERGY_GROUPS_NUM;
+        size_t weakWorstGroup = ENERGY_GROUPS_NUM;
+        size_t moderateWorstGroup = ENERGY_GROUPS_NUM;
+        size_t strongWorstGroup = ENERGY_GROUPS_NUM;
+        size_t tailNegGroupCount = 0, weakNegGroupCount = 0;
+        size_t moderateNegGroupCount = 0, strongNegGroupCount = 0;
+        double tailWorstEndpointFrac = 0.0, weakWorstEndpointFrac = 0.0;
+        double moderateWorstEndpointFrac = 0.0, strongWorstEndpointFrac = 0.0;
+        double tailWorstHistoryFrac = 0.0, weakWorstHistoryFrac = 0.0;
+        double moderateWorstHistoryFrac = 0.0, strongWorstHistoryFrac = 0.0;
 
         if(directOk)
         {
@@ -1726,51 +1740,85 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 if(directSolution[g] >= 0.0)
                     continue;
                 double const neg = -directSolution[g];
-                double const supportScale = std::max({
+                totalNegMass += neg;
+                double const endpointSupportScale = std::max({
                     rawGroupEnergy[g],
                     solveInputGroupEnergy[g],
                     supportFloorEnergy[g],
-                    timeAvgGroupEnergy[g],
                     std::abs(rhs[g]),
                     supportAbsFloor
                 });
-                bool const supported =
-                    supportScale > supportedGroupFloorFrac * cellEnergyScale;
-                if(supported)
+                double const historySupportScale = std::max({
+                    endpointSupportScale,
+                    timeAvgGroupEnergy[g]
+                });
+                double const epFrac = endpointSupportScale / cellEnergyScale;
+                double const hiFrac = historySupportScale / cellEnergyScale;
+
+                if(hiFrac > 1e-4 && epFrac < 1e-6)
+                    ++historyEndpointMismatchCount;
+
+                auto record = [&](double &mass, double &worstNeg,
+                                  size_t &worstGrp, size_t &count,
+                                  double &wEpFrac, double &wHiFrac)
                 {
-                    supportedNegMass += neg;
-                    supportedNegGroupCount++;
-                    if(neg > supportedWorstNeg)
+                    mass += neg;
+                    count++;
+                    if(neg > worstNeg)
                     {
-                        supportedWorstNeg = neg;
-                        supportedWorstGroup = g;
+                        worstNeg = neg;
+                        worstGrp = g;
+                        wEpFrac = epFrac;
+                        wHiFrac = hiFrac;
                     }
+                };
+
+                if(epFrac < tailSupportFrac)
+                {
+                    record(tailNegMass, tailWorstNeg, tailWorstGroup,
+                           tailNegGroupCount, tailWorstEndpointFrac,
+                           tailWorstHistoryFrac);
+                }
+                else if(epFrac < weakSupportFrac)
+                {
+                    record(weakNegMass, weakWorstNeg, weakWorstGroup,
+                           weakNegGroupCount, weakWorstEndpointFrac,
+                           weakWorstHistoryFrac);
+                }
+                else if(epFrac < moderateSupportFrac)
+                {
+                    record(moderateNegMass, moderateWorstNeg, moderateWorstGroup,
+                           moderateNegGroupCount, moderateWorstEndpointFrac,
+                           moderateWorstHistoryFrac);
                 }
                 else
                 {
-                    unsupportedNegMass += neg;
-                    unsupportedNegGroupCount++;
-                    if(neg > unsupportedWorstNeg)
-                    {
-                        unsupportedWorstNeg = neg;
-                        unsupportedWorstGroup = g;
-                    }
+                    record(strongNegMass, strongWorstNeg, strongWorstGroup,
+                           strongNegGroupCount, strongWorstEndpointFrac,
+                           strongWorstHistoryFrac);
                 }
             }
         }
 
-        bool const supportedNegativesTiny =
-            supportedNegMass <= supportedClampFrac * cellEnergyScale &&
-            supportedWorstNeg <= supportedClampFrac * cellEnergyScale;
-
-        bool const unsupportedTailNegativesSmall =
-            unsupportedNegMass <= unsupportedTailClampFrac * cellEnergyScale &&
-            unsupportedWorstNeg <= unsupportedTailClampFrac * cellEnergyScale;
+        bool const tailOk =
+            tailNegMass <= tailClampFrac * cellEnergyScale &&
+            tailWorstNeg <= tailClampFrac * cellEnergyScale;
+        bool const weakOk =
+            weakNegMass <= weakClampFrac * cellEnergyScale &&
+            weakWorstNeg <= weakClampFrac * cellEnergyScale;
+        bool const moderateOk =
+            moderateNegMass <= moderateClampFrac * cellEnergyScale &&
+            moderateWorstNeg <= moderateClampFrac * cellEnergyScale;
+        bool const strongOk =
+            strongNegMass <= strongClampFrac * cellEnergyScale &&
+            strongWorstNeg <= strongClampFrac * cellEnergyScale;
+        bool const totalNegativeOk =
+            totalNegMass <= totalDirectNegativeClampFrac * cellEnergyScale;
 
         bool const directClampAcceptable =
             directOk &&
-            supportedNegativesTiny &&
-            unsupportedTailNegativesSmall;
+            tailOk && weakOk && moderateOk && strongOk &&
+            totalNegativeOk;
 
         bool const directCapOk = !std::isfinite(materialCap)
             || SumGroups(directClamped) <= materialCap + materialCapTol;
@@ -1781,19 +1829,22 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
         if(directAdmissible)
         {
             solvedGroupEnergy = directClamped;
-            double const totalClampedMass = supportedNegMass + unsupportedNegMass;
-            if(totalClampedMass > 0.0)
+            if(totalNegMass > 0.0)
             {
-                directSmallNegClampCount++;
-                directSmallNegClampGroupCount +=
-                    supportedNegGroupCount + unsupportedNegGroupCount;
+                directSupportAwareClampCount++;
+                directSupportAwareClampGroupCount +=
+                    tailNegGroupCount + weakNegGroupCount +
+                    moderateNegGroupCount + strongNegGroupCount;
                 maxDirectClampMassFraction = std::max(
                     maxDirectClampMassFraction,
-                    totalClampedMass / cellEnergyScale);
+                    totalNegMass / cellEnergyScale);
             }
         }
-        else if(!directOk || !directCapOk)
+        else
         {
+            bool const directRejectedForNegativity =
+                directOk && !directClampAcceptable;
+
             BoundedSolverDiagnostics bdiag;
             bdiag.directSolveFailed = !directOk;
             bool const boundedOk = SolveBoundedComptonCorrection(
@@ -1848,6 +1899,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 eo.addEntry("Material cap", materialCap);
                 eo.addEntry("Cell energy scale", cellEnergyScale);
                 eo.addEntry("Direct solver ok", static_cast<double>(directOk));
+                eo.addEntry("Direct rejected for negativity",
+                    static_cast<double>(directRejectedForNegativity));
                 if(directOk)
                 {
                     eo.addEntry("Direct min solution", directMin);
@@ -1856,18 +1909,16 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                         directNegativeMass / cellEnergyScale);
                     eo.addEntry("Direct min fraction",
                         -std::min(0.0, directMin) / cellEnergyScale);
-                    eo.addEntry("Supported negative mass", supportedNegMass);
-                    eo.addEntry("Unsupported negative mass", unsupportedNegMass);
-                    eo.addEntry("Supported negative mass fraction",
-                        supportedNegMass / cellEnergyScale);
-                    eo.addEntry("Unsupported negative mass fraction",
-                        unsupportedNegMass / cellEnergyScale);
-                    eo.addEntry("Supported worst negative", supportedWorstNeg);
-                    eo.addEntry("Unsupported worst negative", unsupportedWorstNeg);
-                    eo.addEntry("Supported negative group count",
-                        static_cast<double>(supportedNegGroupCount));
-                    eo.addEntry("Unsupported negative group count",
-                        static_cast<double>(unsupportedNegGroupCount));
+                    eo.addEntry("Tail negative mass", tailNegMass);
+                    eo.addEntry("Weak negative mass", weakNegMass);
+                    eo.addEntry("Moderate negative mass", moderateNegMass);
+                    eo.addEntry("Strong negative mass", strongNegMass);
+                    eo.addEntry("Total direct negative mass", totalNegMass);
+                    eo.addEntry("Tail negative mass fraction", tailNegMass / cellEnergyScale);
+                    eo.addEntry("Weak negative mass fraction", weakNegMass / cellEnergyScale);
+                    eo.addEntry("Moderate negative mass fraction", moderateNegMass / cellEnergyScale);
+                    eo.addEntry("Strong negative mass fraction", strongNegMass / cellEnergyScale);
+                    eo.addEntry("Total direct negative mass fraction", totalNegMass / cellEnergyScale);
                 }
                 eo.addEntry("Min pivot", diag.minPivot);
                 eo.addEntry("Max coefficient", diag.maxCoeff);
@@ -1944,11 +1995,30 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                    bdiag.maxDirectDeviationGroup != worstDirectG &&
                    bdiag.maxDirectDeviationGroup != worstResidG)
                     addGroupInfo(bdiag.maxDirectDeviationGroup, "DirectDeviationWorst");
-                if(supportedWorstGroup < ENERGY_GROUPS_NUM)
-                    addGroupInfo(supportedWorstGroup, "SupportedNegWorst");
-                if(unsupportedWorstGroup < ENERGY_GROUPS_NUM &&
-                   unsupportedWorstGroup != supportedWorstGroup)
-                    addGroupInfo(unsupportedWorstGroup, "UnsupportedNegWorst");
+                if(tailWorstGroup < ENERGY_GROUPS_NUM)
+                {
+                    addGroupInfo(tailWorstGroup, "TailNegWorst");
+                    eo.addEntry("TailNegWorst endpointSupportFraction", tailWorstEndpointFrac);
+                    eo.addEntry("TailNegWorst historySupportFraction", tailWorstHistoryFrac);
+                }
+                if(weakWorstGroup < ENERGY_GROUPS_NUM)
+                {
+                    addGroupInfo(weakWorstGroup, "WeakNegWorst");
+                    eo.addEntry("WeakNegWorst endpointSupportFraction", weakWorstEndpointFrac);
+                    eo.addEntry("WeakNegWorst historySupportFraction", weakWorstHistoryFrac);
+                }
+                if(moderateWorstGroup < ENERGY_GROUPS_NUM)
+                {
+                    addGroupInfo(moderateWorstGroup, "ModerateNegWorst");
+                    eo.addEntry("ModerateNegWorst endpointSupportFraction", moderateWorstEndpointFrac);
+                    eo.addEntry("ModerateNegWorst historySupportFraction", moderateWorstHistoryFrac);
+                }
+                if(strongWorstGroup < ENERGY_GROUPS_NUM)
+                {
+                    addGroupInfo(strongWorstGroup, "StrongNegWorst");
+                    eo.addEntry("StrongNegWorst endpointSupportFraction", strongWorstEndpointFrac);
+                    eo.addEntry("StrongNegWorst historySupportFraction", strongWorstHistoryFrac);
+                }
             };
 
             if(!boundedOk)
@@ -1965,6 +2035,7 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             double const stricterWeightedThrow = directOk ? boundedWeightedRelThrow : 1e-4;
 
             bool const boundedDirectDeviationOk = !directOk
+                || directRejectedForNegativity
                 || bdiag.maxDirectDeviationFraction <= maxBoundedDirectDeviation;
 
             bool const residualAcceptable =
@@ -1985,6 +2056,7 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
 
             boundedCellCount++;
             if(!directOk) directFailedCount++;
+            else if(directRejectedForNegativity) directNegativeFallbackCount++;
             else directInadmissibleCount++;
             if(bdiag.materialCapActive) materialCapActiveCount++;
             if(bdiag.relativeResidual > boundedResidualWarn ||
@@ -1996,7 +2068,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 bdiag.relativeResidual / boundedWeightedRelThrow,
                 bdiag.unweightedRelativeResidual / boundedUnweightedRelThrow,
                 bdiag.maxGroupResidualFraction / boundedGroupRelThrow,
-                directOk ? bdiag.maxDirectDeviationFraction / maxBoundedDirectDeviation : 0.0});
+                (directOk && !directRejectedForNegativity)
+                    ? bdiag.maxDirectDeviationFraction / maxBoundedDirectDeviation : 0.0});
             if(!haveWorstBounded || cellScore > worstScore)
             {
                 haveWorstBounded = true;
@@ -2004,47 +2077,6 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 worstCellIndex = i;
                 worstBdiag = bdiag;
             }
-        }
-        else
-        {
-            UniversalError eo("Direct Compton correction has negative groups too large to clamp");
-            eo.addEntry("Cell index", static_cast<double>(i));
-            eo.addEntry("Cell", this->cells[i]);
-            eo.addEntry("Cell energy scale", cellEnergyScale);
-            eo.addEntry("Direct solver ok", static_cast<double>(directOk));
-            eo.addEntry("Direct min solution", directMin);
-            eo.addEntry("Direct negative mass", directNegativeMass);
-            eo.addEntry("Direct negative mass fraction",
-                directNegativeMass / cellEnergyScale);
-            eo.addEntry("Supported negative mass", supportedNegMass);
-            eo.addEntry("Unsupported negative mass", unsupportedNegMass);
-            eo.addEntry("Supported negative mass fraction",
-                supportedNegMass / cellEnergyScale);
-            eo.addEntry("Unsupported negative mass fraction",
-                unsupportedNegMass / cellEnergyScale);
-            eo.addEntry("Supported worst negative", supportedWorstNeg);
-            eo.addEntry("Unsupported worst negative", unsupportedWorstNeg);
-            eo.addEntry("Supported negative group count",
-                static_cast<double>(supportedNegGroupCount));
-            eo.addEntry("Unsupported negative group count",
-                static_cast<double>(unsupportedNegGroupCount));
-            auto addGroupInfoThrow = [&](size_t g, std::string const &prefix)
-            {
-                eo.addEntry(prefix + " group", static_cast<double>(g));
-                eo.addEntry(prefix + " Eg_raw", rawGroupEnergy[g]);
-                eo.addEntry(prefix + " solveInput", solveInputGroupEnergy[g]);
-                eo.addEntry(prefix + " supportFloor", supportFloorEnergy[g]);
-                eo.addEntry(prefix + " RHS", rhs[g]);
-                eo.addEntry(prefix + " directSolution", directSolution[g]);
-                eo.addEntry(prefix + " directClamped", directClamped[g]);
-                if(i < this->Eg_time_avg.size())
-                    eo.addEntry(prefix + " timeAvgEnergy", timeAvgGroupEnergy[g]);
-            };
-            if(supportedWorstGroup < ENERGY_GROUPS_NUM)
-                addGroupInfoThrow(supportedWorstGroup, "SupportedNegWorst");
-            if(unsupportedWorstGroup < ENERGY_GROUPS_NUM)
-                addGroupInfoThrow(unsupportedWorstGroup, "UnsupportedNegWorst");
-            throw eo;
         }
 
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
@@ -2081,19 +2113,21 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
         int rank = 0;
 #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        unsigned long long counts[7] = {
+        unsigned long long counts[9] = {
             static_cast<unsigned long long>(boundedCellCount),
             static_cast<unsigned long long>(directFailedCount),
             static_cast<unsigned long long>(directInadmissibleCount),
             static_cast<unsigned long long>(materialCapActiveCount),
             static_cast<unsigned long long>(residualWarningCount),
-            static_cast<unsigned long long>(directSmallNegClampCount),
-            static_cast<unsigned long long>(directSmallNegClampGroupCount)
+            static_cast<unsigned long long>(directSupportAwareClampCount),
+            static_cast<unsigned long long>(directSupportAwareClampGroupCount),
+            static_cast<unsigned long long>(historyEndpointMismatchCount),
+            static_cast<unsigned long long>(directNegativeFallbackCount)
         };
         if(rank == 0)
-            MPI_Reduce(MPI_IN_PLACE, counts, 7, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(MPI_IN_PLACE, counts, 9, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         else
-            MPI_Reduce(counts, nullptr, 7, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(counts, nullptr, 9, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         double globalMaxClampFrac = maxDirectClampMassFraction;
         MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &globalMaxClampFrac,
                    rank == 0 ? &globalMaxClampFrac : nullptr,
@@ -2111,6 +2145,7 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             if(counts[0] > 0)
                 std::cout << "[Compton bounded correction] " << counts[0]
                           << " cells (directFailed=" << counts[1]
+                          << " directNegative=" << counts[8]
                           << " directInadmissible=" << counts[2]
                           << " capActive=" << counts[3]
                           << " residWarn=" << counts[4]
@@ -2118,9 +2153,10 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                           << " onRank=" << globalWorst.rank
                           << std::endl;
             if(counts[5] > 0)
-                std::cout << "[Compton direct small-negative clamp] " << counts[5]
+                std::cout << "[Compton direct support-aware clamp] " << counts[5]
                           << " cells " << counts[6]
                           << " groups maxMassFrac=" << globalMaxClampFrac
+                          << " histEpMismatch=" << counts[7]
                           << std::endl;
         }
         if(haveWorstBounded && rank == globalWorst.rank)
@@ -2148,6 +2184,7 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
         {
             std::cout << "[Compton bounded correction] " << boundedCellCount
                       << " cells (directFailed=" << directFailedCount
+                      << " directNegative=" << directNegativeFallbackCount
                       << " directInadmissible=" << directInadmissibleCount
                       << " capActive=" << materialCapActiveCount
                       << " residWarn=" << residualWarningCount
@@ -2160,11 +2197,12 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                       << " score=" << worstScore
                       << " cell=" << worstCellIndex << std::endl;
         }
-        if(directSmallNegClampCount > 0)
+        if(directSupportAwareClampCount > 0)
         {
-            std::cout << "[Compton direct small-negative clamp] " << directSmallNegClampCount
-                      << " cells " << directSmallNegClampGroupCount
+            std::cout << "[Compton direct support-aware clamp] " << directSupportAwareClampCount
+                      << " cells " << directSupportAwareClampGroupCount
                       << " groups maxMassFrac=" << maxDirectClampMassFraction
+                      << " histEpMismatch=" << historyEndpointMismatchCount
                       << std::endl;
         }
 #endif
