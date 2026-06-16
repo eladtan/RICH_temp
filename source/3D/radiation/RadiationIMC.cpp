@@ -168,6 +168,8 @@ namespace {
         double capEqualityResidual = 0.0;
         double capLambdaSpread = 0.0;
         double minPassivePivot = std::numeric_limits<double>::infinity();
+        double maxDirectDeviationFraction = 0.0;
+        size_t maxDirectDeviationGroup = 0;
     };
 
     using GroupMask = std::array<bool, ENERGY_GROUPS_NUM>;
@@ -642,7 +644,8 @@ namespace {
             MaxAbsGroups(rawGroupEnergy),
             MaxAbsGroups(solveInputGroupEnergy)
         });
-        double const residualAbsFloor = std::max(1.0, 1e-9 * cellEnergyScale);
+        constexpr double boundedResidualFloorFrac = 1e-6;
+        double const residualAbsFloor = std::max(1.0, boundedResidualFloorFrac * cellEnergyScale);
 
         RadiationIMC::GroupArray W{};
         for(size_t g = 0; g < N; g++)
@@ -1562,8 +1565,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
     size_t directInadmissibleCount = 0;
     size_t materialCapActiveCount = 0;
     size_t residualWarningCount = 0;
-    size_t directTinyClampCount = 0;
-    size_t directTinyClampGroupCount = 0;
+    size_t directSmallNegClampCount = 0;
+    size_t directSmallNegClampGroupCount = 0;
     double maxDirectClampMassFraction = 0.0;
     bool haveWorstBounded = false;
     size_t worstCellIndex = 0;
@@ -1677,8 +1680,10 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             MaxAbsGroups(rhs),
             MaxAbsGroups(rawGroupEnergy)
         });
-        double const directTinyNegativeTol = 1e-6 * cellEnergyScale;
-        double const directTinyNegativeMassTol = 1e-5 * cellEnergyScale;
+        constexpr double directClampMassFrac = 1e-5;
+        constexpr double directClampGroupFrac = 1e-5;
+        double const directClampMassTol = directClampMassFrac * cellEnergyScale;
+        double const directClampGroupTol = directClampGroupFrac * cellEnergyScale;
 
         double const materialCap = this->noHydroFeedback
             ? std::numeric_limits<double>::infinity()
@@ -1705,21 +1710,25 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             }
         }
 
-        bool const directTinyNegativeOnly = directOk
-            && directMin >= -directTinyNegativeTol
-            && directNegativeMass <= directTinyNegativeMassTol;
+        bool const directSmallNegativeMass = directOk
+            && directNegativeMass <= directClampMassTol;
+        bool const directNoHugeSingleNegative = directOk
+            && directMin >= -directClampGroupTol;
         bool const directCapOk = !std::isfinite(materialCap)
             || SumGroups(directClamped) <= materialCap + materialCapTol;
-        bool const directAdmissible = directTinyNegativeOnly && directCapOk;
+        bool const directAdmissible = directOk
+            && directSmallNegativeMass
+            && directNoHugeSingleNegative
+            && directCapOk;
 
         if(directAdmissible)
         {
             solvedGroupEnergy = directClamped;
             if(directNegativeMass > 0.0)
             {
-                directTinyClampCount++;
+                directSmallNegClampCount++;
                 for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
-                    if(directSolution[g] < 0.0) directTinyClampGroupCount++;
+                    if(directSolution[g] < 0.0) directSmallNegClampGroupCount++;
                 maxDirectClampMassFraction = std::max(maxDirectClampMassFraction,
                     directNegativeMass / cellEnergyScale);
             }
@@ -1732,6 +1741,32 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 residualMatrix, rhs, rawGroupEnergy,
                 solveInputGroupEnergy, supportFloorEnergy,
                 materialCap, directSolution, solvedGroupEnergy, bdiag);
+
+            constexpr double significantGroupFrac = 1e-6;
+            constexpr double maxBoundedDirectDeviation = 1e-2;
+            double const significantFloor = significantGroupFrac * cellEnergyScale;
+
+            bdiag.maxDirectDeviationFraction = 0.0;
+            bdiag.maxDirectDeviationGroup = 0;
+            if(directOk && boundedOk)
+            {
+                for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                {
+                    double const groupScale = std::max({
+                        std::abs(directClamped[g]),
+                        rawGroupEnergy[g],
+                        solveInputGroupEnergy[g],
+                        std::abs(rhs[g]),
+                        significantFloor
+                    });
+                    double const deviation = std::abs(solvedGroupEnergy[g] - directClamped[g]) / groupScale;
+                    if(deviation > bdiag.maxDirectDeviationFraction)
+                    {
+                        bdiag.maxDirectDeviationFraction = deviation;
+                        bdiag.maxDirectDeviationGroup = g;
+                    }
+                }
+            }
 
             auto addBoundedDiagnostics = [&](UniversalError &eo)
             {
@@ -1752,9 +1787,19 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 eo.addEntry("Total time-avg Erad", totalTimeAvgErad);
                 eo.addEntry("Material energy before correction", this->conserved[i].internal_energy);
                 eo.addEntry("Material cap", materialCap);
+                eo.addEntry("Cell energy scale", cellEnergyScale);
                 eo.addEntry("Direct solver ok", static_cast<double>(directOk));
                 if(directOk)
-                    eo.addEntry("Direct min solution", MinGroups(directSolution));
+                {
+                    eo.addEntry("Direct min solution", directMin);
+                    eo.addEntry("Direct negative mass", directNegativeMass);
+                    eo.addEntry("Direct negative mass fraction",
+                        directNegativeMass / cellEnergyScale);
+                    eo.addEntry("Direct min fraction",
+                        -std::min(0.0, directMin) / cellEnergyScale);
+                    eo.addEntry("Direct clamp mass tolerance", directClampMassTol);
+                    eo.addEntry("Direct clamp group tolerance", directClampGroupTol);
+                }
                 eo.addEntry("Min pivot", diag.minPivot);
                 eo.addEntry("Max coefficient", diag.maxCoeff);
                 eo.addEntry("Bounded iterations", static_cast<double>(bdiag.iterations));
@@ -1764,6 +1809,9 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 eo.addEntry("Bounded min passive pivot", bdiag.minPassivePivot);
                 eo.addEntry("Bounded material cap active", static_cast<double>(bdiag.materialCapActive));
                 eo.addEntry("Bounded max bound violation", bdiag.maxBoundViolation);
+                eo.addEntry("Bounded max direct deviation fraction", bdiag.maxDirectDeviationFraction);
+                eo.addEntry("Bounded max direct deviation group",
+                    static_cast<double>(bdiag.maxDirectDeviationGroup));
                 if(bdiag.materialCapActive)
                 {
                     eo.addEntry("Cap lambda", bdiag.capLambda);
@@ -1807,6 +1855,7 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                     eo.addEntry(prefix + " RHS", rhs[g]);
                     eo.addEntry(prefix + " directSolution", directSolution[g]);
                     eo.addEntry(prefix + " boundedSolution", solvedGroupEnergy[g]);
+                    eo.addEntry(prefix + " directClamped", directClamped[g]);
                     if(i < this->lastComptonPacketCounts_.size())
                         eo.addEntry(prefix + " packetCount",
                             static_cast<double>(this->lastComptonPacketCounts_[i][g]));
@@ -1822,6 +1871,10 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 addGroupInfo(worstDirectG, "DirectWorst");
                 if(boundedOk && worstResidG != worstDirectG)
                     addGroupInfo(worstResidG, "ResidWorst");
+                if(boundedOk && directOk &&
+                   bdiag.maxDirectDeviationGroup != worstDirectG &&
+                   bdiag.maxDirectDeviationGroup != worstResidG)
+                    addGroupInfo(bdiag.maxDirectDeviationGroup, "DirectDeviationWorst");
             };
 
             if(!boundedOk)
@@ -1831,16 +1884,14 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 throw eo;
             }
 
-            // The bounded path is a rare admissibility repair; these thresholds reject any
-            // fallback that is not close to the original linear correction. The weighted and
-            // unweighted global norms are strict (1e-3). The per-group threshold is looser
-            // (1e-2) because it tests the single worst group against a group-local denominator
-            // (with a 1.0 absolute floor), so it is noisier for near-empty groups.
             constexpr double boundedWeightedRelThrow = 1e-3;
             constexpr double boundedUnweightedRelThrow = 1e-3;
             constexpr double boundedGroupRelThrow = 1e-2;
             constexpr double boundedResidualWarn = 1e-5;
             double const stricterWeightedThrow = directOk ? boundedWeightedRelThrow : 1e-4;
+
+            bool const boundedDirectDeviationOk = !directOk
+                || bdiag.maxDirectDeviationFraction <= maxBoundedDirectDeviation;
 
             bool const residualAcceptable =
                 std::isfinite(bdiag.relativeResidual) &&
@@ -1848,7 +1899,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                 std::isfinite(bdiag.maxGroupResidualFraction) &&
                 bdiag.relativeResidual <= stricterWeightedThrow &&
                 bdiag.unweightedRelativeResidual <= boundedUnweightedRelThrow &&
-                bdiag.maxGroupResidualFraction <= boundedGroupRelThrow;
+                bdiag.maxGroupResidualFraction <= boundedGroupRelThrow &&
+                boundedDirectDeviationOk;
 
             if(!residualAcceptable)
             {
@@ -1869,7 +1921,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             double const cellScore = std::max({
                 bdiag.relativeResidual / boundedWeightedRelThrow,
                 bdiag.unweightedRelativeResidual / boundedUnweightedRelThrow,
-                bdiag.maxGroupResidualFraction / boundedGroupRelThrow});
+                bdiag.maxGroupResidualFraction / boundedGroupRelThrow,
+                directOk ? bdiag.maxDirectDeviationFraction / maxBoundedDirectDeviation : 0.0});
             if(!haveWorstBounded || cellScore > worstScore)
             {
                 haveWorstBounded = true;
@@ -1919,8 +1972,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             static_cast<unsigned long long>(directInadmissibleCount),
             static_cast<unsigned long long>(materialCapActiveCount),
             static_cast<unsigned long long>(residualWarningCount),
-            static_cast<unsigned long long>(directTinyClampCount),
-            static_cast<unsigned long long>(directTinyClampGroupCount)
+            static_cast<unsigned long long>(directSmallNegClampCount),
+            static_cast<unsigned long long>(directSmallNegClampGroupCount)
         };
         if(rank == 0)
             MPI_Reduce(MPI_IN_PLACE, counts, 7, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -1950,7 +2003,7 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                           << " onRank=" << globalWorst.rank
                           << std::endl;
             if(counts[5] > 0)
-                std::cout << "[Compton direct tiny clamp] " << counts[5]
+                std::cout << "[Compton direct small-negative clamp] " << counts[5]
                           << " cells " << counts[6]
                           << " groups maxMassFrac=" << globalMaxClampFrac
                           << std::endl;
@@ -1971,6 +2024,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                       << " cap=" << worstBdiag.materialCap
                       << " sumEnergy=" << worstBdiag.sumEnergy
                       << " minPivot=" << worstBdiag.minPassivePivot
+                      << " maxDirectDevFrac=" << worstBdiag.maxDirectDeviationFraction
+                      << " maxDirectDevGroup=" << worstBdiag.maxDirectDeviationGroup
                       << std::endl;
         }
 #else
@@ -1985,13 +2040,15 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                       << " unwRelResid=" << worstBdiag.unweightedRelativeResidual
                       << " maxGroupFrac=" << worstBdiag.maxGroupResidualFraction
                       << " minPivot=" << worstBdiag.minPassivePivot
+                      << " maxDirectDevFrac=" << worstBdiag.maxDirectDeviationFraction
+                      << " maxDirectDevGroup=" << worstBdiag.maxDirectDeviationGroup
                       << " score=" << worstScore
                       << " cell=" << worstCellIndex << std::endl;
         }
-        if(directTinyClampCount > 0)
+        if(directSmallNegClampCount > 0)
         {
-            std::cout << "[Compton direct tiny clamp] " << directTinyClampCount
-                      << " cells " << directTinyClampGroupCount
+            std::cout << "[Compton direct small-negative clamp] " << directSmallNegClampCount
+                      << " cells " << directSmallNegClampGroupCount
                       << " groups maxMassFrac=" << maxDirectClampMassFraction
                       << std::endl;
         }
