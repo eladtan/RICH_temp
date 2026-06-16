@@ -27,6 +27,7 @@ struct Parameters {
     double predictiveWeight = 0.0;
     double grayZeroStepInflation = 2.0;
     double multigroupZeroStepInflation = 5.0;
+    double maxCellImbalance = 2.5;
     bool useMedianClamp = true;
 };
 

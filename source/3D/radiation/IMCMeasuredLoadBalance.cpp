@@ -61,6 +61,13 @@ void ClampCosts(std::unordered_map<size_t, double>& costByID,
         kv.second = std::min(std::max(kv.second, floorCost), maxCost);
 }
 
+double CellCountFloor(double meanCost, Parameters const& params)
+{
+    if (!(params.maxCellImbalance > 0.0) || !std::isfinite(params.maxCellImbalance))
+        return params.floorCost;
+    return std::max(params.floorCost, meanCost / params.maxCellImbalance);
+}
+
 } // anonymous namespace
 
 std::unordered_map<size_t, double> BuildMeasuredCosts(
@@ -70,13 +77,18 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
 {
     auto costByID = BuildRawCosts(measurements, params, multigroup);
 
-    if (params.useMedianClamp && !costByID.empty()) {
+    if (!costByID.empty()) {
         double localSum = 0.0;
         for (auto const& kv : costByID)
             localSum += kv.second;
         double localMean = localSum / static_cast<double>(costByID.size());
-        double maxCost = params.medianClampFactor * std::max(localMean, params.floorCost);
-        ClampCosts(costByID, params.floorCost, maxCost);
+        double minCost = CellCountFloor(localMean, params);
+        double maxCost = std::numeric_limits<double>::infinity();
+        if (params.useMedianClamp) {
+            maxCost = params.medianClampFactor * std::max(localMean, params.floorCost);
+            minCost = std::max(minCost, localMean / params.medianClampFactor);
+        }
+        ClampCosts(costByID, minCost, maxCost);
     }
 
     return costByID;
@@ -91,7 +103,7 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
 {
     auto costByID = BuildRawCosts(measurements, params, multigroup);
 
-    if (params.useMedianClamp) {
+    {
         double localSum = 0.0;
         uint64_t localCount = 0;
         for (auto const& kv : costByID) {
@@ -108,8 +120,12 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
             ? globalSum / static_cast<double>(globalCount)
             : params.floorCost;
 
-        double maxCost = params.medianClampFactor * std::max(globalMean, params.floorCost);
-        double minCost = std::max(globalMean / params.medianClampFactor, params.floorCost);
+        double maxCost = std::numeric_limits<double>::infinity();
+        double minCost = CellCountFloor(globalMean, params);
+        if (params.useMedianClamp) {
+            maxCost = params.medianClampFactor * std::max(globalMean, params.floorCost);
+            minCost = std::max(minCost, globalMean / params.medianClampFactor);
+        }
 
         int rank = 0;
         MPI_Comm_rank(comm, &rank);
@@ -119,6 +135,8 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
                       << " clamp_factor=" << params.medianClampFactor
                       << " clamp_ceiling=" << maxCost
                       << " clamp_floor=" << minCost
+                      << " cell_floor=" << CellCountFloor(globalMean, params)
+                      << " max_cell_imbalance=" << params.maxCellImbalance
                       << " effective_ratio=" << (minCost > 0 ? maxCost / minCost : 0)
                       << " global_cells=" << globalCount
                       << "\n";
@@ -332,10 +350,33 @@ void PrintPostRepartitionDiagnosticsFromWeights(
                0, comm);
 
     if (rank == 0) {
+        uint64_t minRankCells = gatheredCells.empty() ? 0 : gatheredCells.front();
+        uint64_t maxRankCells = 0;
+        int minCellRank = 0;
+        int maxCellRank = 0;
+        for (int r = 0; r < mpiSize; ++r) {
+            uint64_t const cells = gatheredCells[static_cast<size_t>(r)];
+            if (cells < minRankCells) {
+                minRankCells = cells;
+                minCellRank = r;
+            }
+            if (cells > maxRankCells) {
+                maxRankCells = cells;
+                maxCellRank = r;
+            }
+        }
+        double const meanRankCells =
+            static_cast<double>(globalNewCells) / std::max(mpiSize, 1);
+
         std::cerr << "MEASURED_LB_AFTER_SUMMARY"
                   << " total_cells=" << globalNewCells
                   << " mode=" << (multigroup ? "multigroup" : "gray")
                   << " weight_compression=" << weightCompression
+                  << " local_cells_min=" << minRankCells
+                  << " local_cells_min_rank=" << minCellRank
+                  << " local_cells_mean=" << meanRankCells
+                  << " local_cells_max=" << maxRankCells
+                  << " local_cells_max_rank=" << maxCellRank
                   << " max_rank_cost=" << maxRankRawCost
                   << " mean_rank_cost=" << meanRankRawCost
                   << " max_over_mean=" << (meanRankRawCost > 0.0 ? maxRankRawCost / meanRankRawCost : 0.0)
