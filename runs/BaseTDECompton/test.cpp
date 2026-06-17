@@ -56,10 +56,43 @@ namespace
 		double Rsmooth = std::max(Rt * 0.4, std::min(Rt - Rstar * 15, Rt * smooth_factor));
 		std::vector<Conserved3D> &extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
-		size_t const N = sim.getTessellation().GetPointNo();
+		Tessellation3D const& tess = sim.getTessellation();
+		size_t const N = tess.GetPointNo();
+		// constexpr double alpha_relax = 0.05;
+		// std::vector<Vector3D> smoothed_vel(N);
+		// std::vector<size_t> neigh_buf;
+		// for(size_t i = 0; i < N; ++i)
+		// {
+		// 	double R = fastabs(tess.GetCellCM(i));
+		// 	if(R < Rsmooth)
+		// 	{
+		// 		tess.GetNeighbors(i, neigh_buf);
+		// 		double total_mass = 0;
+		// 		Vector3D v_avg(0, 0, 0);
+		// 		for(size_t j = 0; j < neigh_buf.size(); ++j)
+		// 		{
+		// 			size_t n = neigh_buf[j];
+		// 			// if(n < N)
+					
+		// 				double m = cells[n].density * tess.GetVolume(n);
+		// 				v_avg += m * cells[n].velocity;
+		// 				total_mass += m;
+					
+		// 		}
+		// 		if(total_mass > 0)
+		// 			v_avg *= 1.0 / total_mass;
+		// 		else
+		// 			v_avg = cells[i].velocity;
+		// 		smoothed_vel[i] = (1.0 - alpha_relax) * cells[i].velocity + alpha_relax * v_avg;
+		// 	}
+		// 	else
+		// 	{
+		// 		smoothed_vel[i] = cells[i].velocity;
+		// 	}
+		// }
 		for(size_t i = 0; i < N; ++i)
 		{
-			double R = fastabs(sim.getTessellation().GetCellCM(i));
+			double R = fastabs(tess.GetCellCM(i));
 			if(R < Rsmooth)
 			{
 				double new_density = std::max(1e-20, cells[i].density * 0.8);
@@ -71,8 +104,11 @@ namespace
 				cells[i].density = new_density;
 				cells[i].tracers[2] /= new_density;
 				cells[i].temperature = new_T;
-				if(fastabs(cells[i].velocity) > 300)
-					cells[i].velocity *= 0.9;
+				{
+					double f = std::min(1.0, R / Rsmooth);
+					double damp_strength = 1.0 - 0.1 * f * f;
+					cells[i].velocity *= damp_strength;
+				}
 				cells[i].internal_energy = eos.dT2e(new_density, new_T, cells[i].tracers, ComputationalCell3D::tracerNames);
 				cells[i].pressure = eos.de2p(new_density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
 				cells[i].tracers[0] = eos.dp2s(new_density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
@@ -92,13 +128,13 @@ namespace
 					cells[i].internal_energy = eos.dT2e(cells[i].density, cells[i].temperature, cells[i].tracers, ComputationalCell3D::tracerNames);
 					cells[i].pressure = eos.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
 					cells[i].tracers[0] = eos.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
-					PrimitiveToConserved(cells[i], sim.getTessellation().GetVolume(i), extensives[i]);
+					PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
 				}
 			}
 		}
 #ifdef RICH_MPI
-		MPI_exchange_data(sim.getTessellation(), cells, true);
-		MPI_exchange_data(sim.getTessellation(), extensives, true);
+		MPI_exchange_data(tess, cells, true);
+		MPI_exchange_data(tess, extensives, true);
 #endif
 	}
 	class DissipationDiag: public DiagnosticAppendix3D
@@ -440,8 +476,9 @@ namespace
 			}
 		}
 
-		double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, size_t const group) const override
+		double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override
 		{
+			size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
@@ -451,23 +488,24 @@ namespace
 				T = T_.back();
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
-				double const scattering = CalcScatteringCoefficientGroup(cell, group);
+				double const scattering = CalcScatteringOpacity(cell, energy);
 				double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
          		return CG::speed_of_light / (3 * std::max(sig, scattering));
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
 			return CG::speed_of_light / (3 * sig);
 		}
 
-		double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
+		double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
 		{
+			size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
@@ -500,19 +538,20 @@ namespace
 			return sig;
 		}
 
-		double CalcScatteringCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
+		double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
 		{
+			size_t const group = findGroup(energy);
 			double T = std::log(cell.temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			if(T < T_[0])
@@ -633,7 +672,7 @@ namespace
 				}
 				if((r_dist < 0.5 * apocenter && ((V > 0.01 * z_abs * z_abs * z_abs) || (z_abs < 20))))
 				{
-					if(V > std::min(2000.0, target_volume * std::pow(r_dist / Rt, 1.5)))
+					if(V > std::min(2000.0, 4 * target_volume * std::pow(r_dist / Rt, 1.5)))
 					{
 						res.push_back(i);
 						continue;
@@ -680,6 +719,7 @@ namespace
 #endif
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0) / beta_;
+			double const smooth = Rt * smooth_factor / beta_;
 			double const time_Rt = std::sqrt(Rt * Rt * Rt / Mbh_);
 			double const apocenter_time = std::sqrt(apocenter * apocenter * apocenter / Mbh_);
 			double min_cell_size = Rt * 1e-2;
@@ -709,10 +749,14 @@ namespace
 				// Do we have little mass amount?
 				if (Norg < 500)
 					continue;
+				double d_CM = fastabs(tess.GetMeshPoint(i) - tess.GetCellCM(i));
 				double const r_org = fastabs(tess.GetMeshPoint(i));
 				double w = tess.GetWidth(i);
 				double Vol = tess.GetVolume(i);
-				if(w < 0.6 * min_cell_size || (w < min_cell_size && r_org < 0.58 * Rt))
+				bool shape_ok = (d_CM < 0.2 * w);
+				if(!shape_ok && r_org < smooth && cells[i].density < 1e-18)
+					shape_ok = true;
+				if((w < 0.6 * min_cell_size || (w < min_cell_size && r_org < 0.58 * Rt)) && shape_ok)
 				{
 					res.push_back(i);
 					merits.push_back(1.0 / Vol);
@@ -743,7 +787,7 @@ namespace
 				}
 				if((r_i < 0.5 * apocenter && ((Vol > 0.01 * z_abs * z_abs * z_abs) || z_abs < 20)))
 				{
-					if(Vol > std::min(500.0, target_volume * std::pow(r_i / Rt, 1.5)))
+					if(Vol > std::min(500.0, 4 * target_volume * std::pow(r_i / Rt, 1.5)))
 					{
 						continue;
 					}
@@ -764,8 +808,7 @@ namespace
 				}
 				if (good)
 				{
-					// Make sure we are not too high aspect ratio
-					if (fastabs(tess.GetMeshPoint(i) - tess.GetCellCM(i)) > 0.15 * tess.GetWidth(i))
+					if (d_CM > 0.15 * w && !(r_org < smooth && cells[i].density < 1e-18))
 						good = false;
 				}
 				if (good)
@@ -904,17 +947,29 @@ namespace
 			// Calc the tidal force
 			size_t N = acc.size();
 			double smooth = Rt * smooth_factor / beta_;
+			double delta = 0.2 * smooth;
+			double r_lo = smooth - delta;
+			double r_hi = smooth + delta;
 			for (size_t i = 0; i < N; ++i)
 			{
 				Vector3D const &point = tess.GetCellCM(i);
 				Vector3D full_point = point + Rcm;
 				double r_i = std::max(abs(full_point), Rg * 4);
-				if (r_i > smooth)
+				if (r_i >= r_hi)
+				{
 					acc[i] += -(Mbh_ / (r_i * (r_i - Rg) * (r_i - Rg))) * full_point - Acm;
+				}
+				else if (r_i <= r_lo)
+				{
+					acc[i] += -(Mbh_ / (smooth * (smooth - Rg) * (smooth - Rg))) * full_point - Acm;
+				}
 				else
 				{
-					double h = smooth;
-					acc[i] += -(Mbh_ / (h * (h - Rg) * (h - Rg))) * full_point - Acm;
+					double t = (r_i - r_lo) / (r_hi - r_lo);
+					double s = t * t * (3.0 - 2.0 * t);
+					Vector3D f_in = -(Mbh_ / (smooth * (smooth - Rg) * (smooth - Rg))) * full_point;
+					Vector3D f_out = -(Mbh_ / (r_i * (r_i - Rg) * (r_i - Rg))) * full_point;
+					acc[i] += (1.0 - s) * f_in + s * f_out - Acm;
 				}
 				if (cells[i].density < mindensity || cells[i].tracers[1] < 0.1)
 					acc[i] = Vector3D(0, 0, 0);
@@ -1138,7 +1193,7 @@ int main(void)
 	double Tmin = 1e3;
 
 	Lagrangian3D bpm;
-	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25);
+	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25, 0.01, std::vector<std::string>(), 150);
 
 	MultigroupDiffusionOpenBoundary D_boundary;
 	bool const hydro_on = true;
@@ -1175,7 +1230,7 @@ int main(void)
 	forces.push_back(gravity_force);
 	// forces.push_back(zero_force);
 	SeveralSources3D force(forces);
-	auto tsf = std::make_shared<CourantFriedrichsLewy>(0.3, 1, force, std::vector<std::string> (), false);
+	auto tsf = std::make_shared<CourantFriedrichsLewy>(0.4, 1, force, std::vector<std::string> (), false);
 
 	Simulation simulation(tess, cells, eos, !restart);
 	simulation.SetTimeStepFunction(tsf);
@@ -1191,13 +1246,13 @@ int main(void)
 		sim = std::make_unique<HDSim3D>(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 		simulation.SetTime(tstart);
 	}
+	auto hydroStep = std::make_shared<HydroStep>(*sim, HydroStep::TIMEADVANCE_2);
 	auto radStep = std::make_shared<RadiationStep>(tess, simulation.getCells(), simulation.getExtensives(),
 		simulation.getTracker(),
 #ifdef RICH_MPI
-		nullptr,
+		hydroStep->getCost(),
 #endif
 		matrix_builder, false);
-	auto hydroStep = std::make_shared<HydroStep>(*sim, HydroStep::TIMEADVANCE_2);
 	simulation.addPhysics(hydroStep);
 	simulation.addPhysics(radStep);
 	double init_dt = 1e-4;
@@ -1248,7 +1303,7 @@ int main(void)
 	double old_t = simulation.GetTime();
 	double old_dt = init_dt;
 	double step_time = 0;
-	double const restart_wtime = 15000;
+	double const restart_wtime = 10000;
 	double const min_dt_output = 0.025 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
 	// if(not restart)
 	// {
