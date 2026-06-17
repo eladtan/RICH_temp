@@ -1679,7 +1679,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 
 					Vector3D face_er, face_et, face_ep;
 					sph_basis_at(face_sph_cache[j].y, face_sph_cache[j].z, face_er, face_et, face_ep);
-					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, face_er, etheta_[i], ephi_[i]);
+					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, face_er, face_et, face_ep);
 					CheckCell(*cell_ref);
 				}
 				catch (UniversalError &eo)
@@ -1780,7 +1780,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 
 				Vector3D bface_er, bface_et, bface_ep;
 				sph_basis_at(face_sc.y, face_sc.z, bface_er, bface_et, bface_ep);
-				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, bface_er, g_et, g_ep);
+				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, bface_er, bface_et, bface_ep);
 			}
 			else
 			{
