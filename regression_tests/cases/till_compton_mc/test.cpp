@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <exception>
 #include <fenv.h>
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <system_error>
 #include <string_view>
 #include <vector>
 
@@ -40,23 +42,109 @@ double radiation_temperature(const ComputationalCell3D& cell)
   return std::pow(std::max(0.0, cell.Erad * cell.density) / CG::radiation_constant, 0.25);
 }
 
-std::optional<double> parse_optional_dt(int argc, char* argv[])
+std::string shell_quote(std::string const& value)
 {
-  if (argc < 2) {
+  std::string quoted = "'";
+  for (char const c : value) {
+    if (c == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += c;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+struct RuntimeOptions {
+  std::optional<double> force_time_step;
+  bool include_plasma_cutoff = true;
+};
+
+std::optional<double> parse_positive_double(std::string_view value)
+{
+  double parsed = -1.0;
+  auto const result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || parsed <= 0.0) {
     return {};
   }
 
-  double time_step = -1.0;
-  std::string_view time_step_sv = argv[1];
-  std::from_chars(time_step_sv.data(), time_step_sv.data() + time_step_sv.size(), time_step);
-  if (time_step <= 0.0) {
-    std::cout << "Ignoring non-positive forced timestep: " << argv[1] << std::endl;
-    return {};
+  return parsed;
+}
+
+std::optional<bool> parse_plasma_cutoff_value(std::string_view value)
+{
+  if (value == "1" || value == "true" || value == "on" || value == "yes") {
+    return true;
+  }
+  if (value == "0" || value == "false" || value == "off" || value == "no") {
+    return false;
+  }
+  return {};
+}
+
+RuntimeOptions parse_runtime_options(int argc, char* argv[])
+{
+  RuntimeOptions options;
+
+  for (int i = 1; i < argc; ++i) {
+    std::string_view const arg = argv[i];
+    constexpr std::string_view plasma_prefix = "--plasma-cutoff=";
+    constexpr std::string_view dt_prefix = "--dt=";
+
+    if (arg == "--plasma-cutoff") {
+      options.include_plasma_cutoff = true;
+      continue;
+    }
+    if (arg == "--no-plasma-cutoff") {
+      options.include_plasma_cutoff = false;
+      continue;
+    }
+    if (arg.size() > plasma_prefix.size() && arg.substr(0, plasma_prefix.size()) == plasma_prefix) {
+      std::optional<bool> const parsed = parse_plasma_cutoff_value(arg.substr(plasma_prefix.size()));
+      if (parsed.has_value()) {
+        options.include_plasma_cutoff = *parsed;
+      } else {
+        std::cout << "Ignoring invalid plasma cutoff value: " << arg << std::endl;
+      }
+      continue;
+    }
+    if (arg.size() > dt_prefix.size() && arg.substr(0, dt_prefix.size()) == dt_prefix) {
+      std::optional<double> const parsed = parse_positive_double(arg.substr(dt_prefix.size()));
+      if (parsed.has_value()) {
+        options.force_time_step = *parsed;
+      } else {
+        std::cout << "Ignoring non-positive forced timestep: " << arg << std::endl;
+      }
+      continue;
+    }
+    if (arg == "--dt" && i + 1 < argc) {
+      std::string_view const dt_value = argv[++i];
+      std::optional<double> const parsed = parse_positive_double(dt_value);
+      if (parsed.has_value()) {
+        options.force_time_step = *parsed;
+      } else {
+        std::cout << "Ignoring non-positive forced timestep: " << dt_value << std::endl;
+      }
+      continue;
+    }
+
+    std::optional<double> const parsed_dt = parse_positive_double(arg);
+    if (parsed_dt.has_value()) {
+      options.force_time_step = *parsed_dt;
+      continue;
+    }
+
+    std::cout << "Ignoring unrecognized argument: " << arg << std::endl;
   }
 
-  std::cout << "Force Time Step ON" << std::endl;
-  std::cout << "Time step = " << time_step << std::endl;
-  return time_step;
+  if (options.force_time_step.has_value()) {
+    std::cout << "Force Time Step ON" << std::endl;
+    std::cout << "Time step = " << *options.force_time_step << std::endl;
+  }
+  std::cout << "Plasma cutoff = " << (options.include_plasma_cutoff ? "ON" : "OFF") << std::endl;
+
+  return options;
 }
 
 }  // namespace
@@ -74,7 +162,8 @@ int main(int argc, char* argv[])
     std::cout << "Running case: Till MC" << std::endl;
     std::cout << "T_mat = 1 KeV, T_rad = 10 KeV, compton = ON, absorption = ON" << std::endl;
 
-    std::optional<double> const force_time_step = parse_optional_dt(argc, argv);
+    RuntimeOptions const runtime_options = parse_runtime_options(argc, argv);
+    std::optional<double> const force_time_step = runtime_options.force_time_step;
 
     std::vector<double> energy_groups_center(G);
     std::vector<double> energy_groups_boundary(G + 1);
@@ -103,7 +192,7 @@ int main(int argc, char* argv[])
     }
 
     double constexpr m_p = 1.6726231e-24;
-    double constexpr cv = 3.0 * CG::boltzmann_constant / m_p;
+    double constexpr cv = 1.3 * 3.0 * CG::boltzmann_constant / m_p;
     IdealGas eos(5.0 / 3.0, /*f=*/cv, /*beta=*/1.0, /*mu=*/0.0);
 
     double const width = 1.0;
@@ -145,7 +234,11 @@ int main(int argc, char* argv[])
 
     auto eos_ptr = std::make_shared<IdealGas>(eos);
     auto opacity_ptr =
-        std::make_shared<FreeFreeAbsorptionOpacityMultigroup>(1.0, energy_groups_center, energy_groups_boundary);
+        std::make_shared<FreeFreeAbsorptionOpacityMultigroup>(1.0,
+                                                              energy_groups_center,
+                                                              energy_groups_boundary,
+                                                              runtime_options.include_plasma_cutoff,
+                                                              true);
     auto boundary_cond = std::make_shared<RigidBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
     RadiationIMCParameters imc_params = {
@@ -175,7 +268,7 @@ int main(int argc, char* argv[])
         initial_particles, initial_photons_per_cell, false);
     simulation.addPhysics(mc_step);
 
-    double init_dt = 1e-12;
+    double init_dt = 1e-13;
     double const tf = 3e-8;
     double old_dt = force_time_step.value_or(init_dt);
     simulation.SetTimeStep(old_dt);
@@ -214,11 +307,25 @@ int main(int argc, char* argv[])
       old_dt = force_time_step.value_or(std::min(old_dt * 1.2, 1e-10));
     }
 
-    std::string const case_dir = fs::path(__FILE__).parent_path().string();
-    write_vector(time, case_dir + "/time.txt");
-    write_vector(Tgas, case_dir + "/Tgas.txt");
-    write_vector(Trad, case_dir + "/Trad.txt");
-    write_vector(Etotal, case_dir + "/Etotal.txt");
+    fs::path const case_dir = fs::path(__FILE__).parent_path();
+    write_vector(time, (case_dir / "time.txt").string());
+    write_vector(Tgas, (case_dir / "Tgas.txt").string());
+    write_vector(Trad, (case_dir / "Trad.txt").string());
+    write_vector(Etotal, (case_dir / "Etotal.txt").string());
+
+    fs::path const root_dir = case_dir.parent_path().parent_path().parent_path();
+    fs::path const plot_script = root_dir / "regression_tests" / "plot_results.py";
+    fs::path const plot_dir = root_dir / "regression_tests" / "plots";
+    std::string const plot_command =
+        "python3 " + shell_quote(plot_script.string()) +
+        " --test till_compton_mc --output-dir " + shell_quote(plot_dir.string());
+    std::cout << "Generating Till MC plot: " << plot_command << std::endl;
+    int const plot_status = std::system(plot_command.c_str());
+    if (plot_status != 0) {
+      std::cerr << "Failed to generate Till MC plot" << std::endl;
+      return 1;
+    }
+
     std::cout << "Done" << std::endl;
     return 0;
   } catch (UniversalError const& eo) {

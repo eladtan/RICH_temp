@@ -1154,6 +1154,12 @@ def main():
         action="store_true",
         help="Plot all tests regardless of what is in regression_results.",
     )
+    parser.add_argument(
+        "--test",
+        action="append",
+        choices=sorted(ALL_PLOTTERS.keys()),
+        help="Plot only this test id. May be passed more than once.",
+    )
     args = parser.parse_args()
 
     root = repo_root()
@@ -1164,7 +1170,9 @@ def main():
     else:
         results_path = find_latest_results(root)
 
-    if args.all:
+    if args.test:
+        tests_to_plot = set(args.test)
+    elif args.all:
         tests_to_plot = set(ALL_PLOTTERS.keys())
     elif results_path and results_path.is_dir():
         tests_to_plot = tests_in_results(results_path)

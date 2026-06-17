@@ -1028,6 +1028,59 @@ check_spherical_gauss_linear_case() {
     return 0
 }
 
+check_spherical_gauss_tangential_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_gauss_tangential_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_gauss_tangential_metrics.txt"
+        return 1
+    fi
+
+    local max_abs max_rel faces pass_flag
+    max_abs=$(awk '$1 == "sph_tangential_velocity_max_abs" { print $2 }' "$metrics_file")
+    max_rel=$(awk '$1 == "sph_tangential_velocity_max_rel" { print $2 }' "$metrics_file")
+    faces=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_abs" || -z "$max_rel" || -z "$faces" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse spherical tangential metrics"
+        return 1
+    fi
+    if ! is_finite_number "$max_abs" || ! is_finite_number "$max_rel"; then
+        set_check_msg "spherical tangential metrics are not finite"
+        return 1
+    fi
+    if ! awk -v n="$faces" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "spherical tangential checked zero faces"
+        return 1
+    fi
+
+    local max_abs_allowed="${SPH_TANGENTIAL_MAX_ABS:-1e-8}"
+    local max_rel_allowed="${SPH_TANGENTIAL_MAX_REL:-1e-8}"
+    if ! awk -v e="$max_abs" -v t="$max_abs_allowed" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "spherical tangential abs error too large: ${max_abs} >= ${max_abs_allowed}"
+        return 1
+    fi
+    if ! awk -v e="$max_rel" -v t="$max_rel_allowed" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "spherical tangential rel error too large: ${max_rel} >= ${max_rel_allowed}"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical tangential test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Spherical tangential face-basis check passed (abs=${max_abs}, rel=${max_rel})"
+    return 0
+}
+
 check_cartesian_gauss_linear_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

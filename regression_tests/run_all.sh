@@ -24,6 +24,7 @@ slurm_job_name() {
     n="${n/desmore2012_mc/dsm_mpi}"
     n="${n/spherical_collapse_hires/sphc_hi}"
     n="${n/spherical_collapse/sphc}"
+    n="${n/spherical_gauss_tangential/sph_gtan}"
     n="${n/spherical_gauss_linear/sph_glin}"
     n="${n/cartesian_gauss_linear/crt_glin}"
     n="${n/rayleigh_taylor_mpi/rt_mpi}"
