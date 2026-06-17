@@ -1,5 +1,6 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
+#include "IMCPolarization.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <algorithm>
 #include <cassert>
@@ -150,6 +151,22 @@ void RadiationIMC::precomputeDDMCData()
             size_t const nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
             if(this->grid.IsPointOutsideBox(nextCellIndex))
             {
+                DDMCBoundaryFaceBehavior const faceBehavior =
+                    this->boundary->getDDMCBoundaryFaceBehavior(
+                        faceIdx, i, nextCellIndex);
+
+                if(faceBehavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
+                {
+                    ++data.rigidBoundaryFaceCount;
+                    continue;
+                }
+
+                ++data.unsupportedBoundaryFaceCount;
+                if(data.firstUnsupportedBoundaryFace ==
+                   std::numeric_limits<size_t>::max())
+                {
+                    data.firstUnsupportedBoundaryFace = faceIdx;
+                }
                 data.boundaryExcluded = true;
                 continue;
             }
@@ -191,6 +208,81 @@ void RadiationIMC::precomputeDDMCData()
     }
 }
 
+double RadiationIMC::computeMinSignedDistanceToAllCellFaces(
+    size_t cellIndex,
+    Vector3D const &location) const
+{
+    if(cellIndex >= this->gridData.normalsOfCells.size() ||
+       cellIndex >= this->gridData.pointsOnFaces.size())
+        return -std::numeric_limits<double>::infinity();
+
+    const auto &normals = this->gridData.normalsOfCells[cellIndex];
+    const auto &facePoints = this->gridData.pointsOnFaces[cellIndex];
+
+    if(normals.size() != facePoints.size() || normals.empty())
+        return -std::numeric_limits<double>::infinity();
+
+    double minSignedDistance = std::numeric_limits<double>::max();
+    for(size_t f = 0; f < normals.size(); ++f)
+    {
+        double const d = ScalarProd(location - facePoints[f], normals[f]);
+        minSignedDistance = std::min(minSignedDistance, d);
+    }
+
+    return minSignedDistance;
+}
+
+double RadiationIMC::computeDDMCGeometryTolerance(size_t cellIndex) const
+{
+    double scale = 0.0;
+
+    if(cellIndex < this->grid.GetPointNo())
+    {
+        Vector3D const cellCenter = this->grid.GetMeshPoint(cellIndex);
+        for(size_t faceIdx : this->grid.GetCellFaces(cellIndex))
+            scale = std::max(scale, abs(this->grid.FaceCM(faceIdx) - cellCenter));
+    }
+
+    if(!(scale > 0.0) || !std::isfinite(scale))
+        scale = 1.0;
+
+    return std::max(1e-12 * scale, 1e-14);
+}
+
+double RadiationIMC::computeMinDistanceToDDMCLeakFaces(
+    size_t cellIndex,
+    Vector3D const &location,
+    DDMCCellData const &data) const
+{
+    (void)cellIndex;
+
+    if(data.faceLeaks.empty())
+        return std::numeric_limits<double>::infinity();
+
+    double minDistance = std::numeric_limits<double>::max();
+
+    for(DDMCFaceLeak const &faceLeak : data.faceLeaks)
+    {
+        if(faceLeak.faceIndex == std::numeric_limits<size_t>::max())
+            continue;
+
+        Vector3D normal = this->grid.Normal(faceLeak.faceIndex);
+        double const normalMag = abs(normal);
+        if(!(normalMag > 0.0) || !std::isfinite(normalMag))
+            continue;
+
+        normal = normal / normalMag;
+
+        Vector3D const faceCenter = this->grid.FaceCM(faceLeak.faceIndex);
+        double const distance = std::abs(ScalarProd(location - faceCenter, normal));
+
+        if(std::isfinite(distance))
+            minDistance = std::min(minDistance, distance);
+    }
+
+    return minDistance;
+}
+
 bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift)
 {
     (void)dopplerShift;
@@ -226,17 +318,35 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             ClampFrequencyToBoundsDDMC(materialParticle.frequency);
     }
 
-    const auto &normals = this->gridData.normalsOfCells[cellIndex];
-    const auto &facePoints = this->gridData.pointsOnFaces[cellIndex];
-    double Ro = std::numeric_limits<double>::max();
-    for(size_t f = 0; f < normals.size(); ++f)
-    {
-        double const d = ScalarProd(particle.location - facePoints[f], normals[f]);
-        Ro = std::min(Ro, d);
-    }
-    if(!(Ro > 0.0) || Ro * data.sigmaT < this->ddmcMinParticleOpticalDepth)
+    double const insideDistanceAllFaces =
+        this->computeMinSignedDistanceToAllCellFaces(cellIndex, particle.location);
+
+    double const insideTolerance =
+        this->computeDDMCGeometryTolerance(cellIndex);
+
+    if(!std::isfinite(insideDistanceAllFaces) ||
+       insideDistanceAllFaces < -insideTolerance)
     {
         ++this->ddmcFallbackCount;
+        ++this->ddmcFallbackOutsideCellCount;
+        return false;
+    }
+
+    double const leakDistanceActiveFaces =
+        this->computeMinDistanceToDDMCLeakFaces(cellIndex, particle.location, data);
+
+    if(!std::isfinite(leakDistanceActiveFaces) ||
+       leakDistanceActiveFaces == std::numeric_limits<double>::max())
+    {
+        ++this->ddmcFallbackCount;
+        ++this->ddmcFallbackInvalidLeakFaceDistanceCount;
+        return false;
+    }
+
+    if(leakDistanceActiveFaces * data.sigmaT < this->ddmcMinParticleOpticalDepth)
+    {
+        ++this->ddmcFallbackCount;
+        ++this->ddmcFallbackLeakFaceDistanceCount;
         return false;
     }
 
@@ -361,6 +471,16 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.frequency = finalLabParticle.frequency;
         particle.weight    = finalLabParticle.weight;
         particle.timeLeft  = finalLabParticle.timeLeft;
+#ifdef MONTECARLO_POLARIZATION
+        particle.stokesQ = finalLabParticle.stokesQ;
+        particle.stokesU = finalLabParticle.stokesU;
+        particle.polarizationBasis = finalLabParticle.polarizationBasis;
+        particle.polarizationInitialized = finalLabParticle.polarizationInitialized;
+        if(particle.polarizationInitialized)
+            particle.polarizationBasis =
+                IMCPolarization::ProjectBasisToDirection(particle.polarizationBasis,
+                                                         particle.velocity);
+#endif
 
         if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
         {
@@ -395,6 +515,28 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     if(censusEvent)
     {
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+        {
+            IMCPolarization::InitializeIfNeeded(materialParticle);
+            materialParticle.polarizationBasis =
+                IMCPolarization::ProjectBasisToDirection(materialParticle.polarizationBasis,
+                                                         materialParticle.velocity);
+
+            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
+            double const sigmaReset = (1.0 - f) * data.sigmaA;
+            IMCPolarization::ApplyAcceleratedPolarizationHistory(
+                materialParticle,
+                dtCo,
+                scatOp,
+                sigmaReset,
+                materialParticle.velocity,
+                this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+                this->postProcess_.polarization.depolarizationScatterings,
+                this->re,
+                this->dist);
+        }
+#endif
         functionality.change = MonteCarloParticleStatus::DONE;
         ++this->ddmcCensusCount;
         return finalizeAccelerationStep(false);
@@ -463,13 +605,38 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             + sinTheta * std::sin(phiLeak) * e2;
 
         materialParticle.location = leakFaceCenter;
-        materialParticle.velocity = normalize(dir) * units::clight;
+        Vector3D const oldVelocityCoForPol = materialParticle.velocity;
+        Vector3D const finalVelocityCoForPol = normalize(dir) * units::clight;
+        materialParticle.velocity = finalVelocityCoForPol;
+
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+        {
+            materialParticle.velocity = oldVelocityCoForPol;
+
+            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
+            double const sigmaReset = (1.0 - f) * data.sigmaA;
+            IMCPolarization::ApplyAcceleratedPolarizationHistory(
+                materialParticle,
+                dtCo,
+                scatOp,
+                sigmaReset,
+                finalVelocityCoForPol,
+                this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+                this->postProcess_.polarization.depolarizationScatterings,
+                this->re,
+                this->dist);
+        }
+#endif
+
+        materialParticle.velocity = finalVelocityCoForPol;
 
         assert(ScalarProd(materialParticle.velocity, nOut) > 0.0);
 
         functionality.change = MonteCarloParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
         ++this->ddmcLeakCount;
+
     }
     else
     {
@@ -498,7 +665,12 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         }
         ClampFrequencyToBoundsDDMC(materialParticle.frequency);
         materialParticle.velocity = this->opacity->getRandomVelocity(cell);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+            IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
         ++this->ddmcUpscatterCount;
+
     }
 
     return finalizeAccelerationStep(false);
@@ -526,11 +698,19 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
        << " eligible=" << data.eligible
        << " observer_excluded=" << data.observerExcluded
        << " boundary_excluded=" << data.boundaryExcluded
+       << " rigid_boundary_faces=" << data.rigidBoundaryFaceCount
+       << " unsupported_boundary_faces=" << data.unsupportedBoundaryFaceCount
+       << " first_unsupported_boundary_face=" << data.firstUnsupportedBoundaryFace
        << " sigmaT=" << data.sigmaT
        << " sigmaA=" << data.sigmaA
        << " D=" << data.diffusionCoefficient
        << " leak_rate=" << data.totalLeakRate
        << " faces=" << data.faceLeaks.size();
+
+    os << " ddmc_fallback_total=" << this->ddmcFallbackCount
+       << " ddmc_fallback_outside_cell=" << this->ddmcFallbackOutsideCellCount
+       << " ddmc_fallback_leak_distance=" << this->ddmcFallbackLeakFaceDistanceCount
+       << " ddmc_fallback_invalid_leak_face=" << this->ddmcFallbackInvalidLeakFaceDistanceCount;
 
     if(this->multigroupOpacity && this->ddmcUseMultigroupPGRW)
     {

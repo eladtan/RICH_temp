@@ -191,7 +191,7 @@ int main(int argc, char* argv[])
         std::unique_ptr<MultigroupDiffusion> diffusion;
 
         double dt = 1e-14;
-        double dt_max = 1e-13;
+        double dt_max = 1e-11;
         if (mode == Mode::MC || mode == Mode::MCIsotropic) {
             constexpr std::size_t new_photons   = 50;
             constexpr std::size_t init_photons  = 20;
@@ -215,13 +215,17 @@ int main(int argc, char* argv[])
                 .comptonUseInduced = true,
                 .comptonAllowNZeroFallback = true,
                 .comptonAngleDependent = (mode == Mode::MC),
-                .comptonMatrixSamples = 100000,
+                .comptonMatrixSamples = 500000,
             };
 
             mc_physics = std::make_shared<RadiationIMC>(
                 tess, boundary_cond, cells, extensives, eos_ptr, opacity_ptr, imc_params);
 
-            auto pop_control = std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, 1000);
+            auto group_classifier = [opacity_ptr](const Particle3D& particle) -> std::size_t {
+                return opacity_ptr->findGroup(particle.frequency);
+            };
+            auto pop_control = std::make_shared<StratifiedCombPopulationControl<Vector3D, Tessellation3D>>(
+                tess, ENERGY_GROUPS_NUM, group_classifier, 1000, 2.0, 2);
             std::vector<Particle3D> initial_particles;
             auto mc_step = std::make_shared<RadiationMCStep>(
                 tess, cells, extensives, mc_physics, pop_control, boundary_cond,
@@ -343,10 +347,7 @@ int main(int argc, char* argv[])
 
 #ifdef RICH_MPI
         MPI_Barrier(MPI_COMM_WORLD);
-        MPI_Finalize();
-        _exit(0); // skip atexit/static destructors that hang on IB verbs cleanup
 #endif
-        return 0;
     } catch (UniversalError const& eo) {
         reportError(eo);
 #ifdef RICH_MPI
@@ -360,4 +361,10 @@ int main(int argc, char* argv[])
 #endif
         return 1;
     }
+
+#ifdef RICH_MPI
+    MPI_Finalize();
+    _exit(0); // skip atexit/static destructors after local MPI resources are released
+#endif
+    return 0;
 }

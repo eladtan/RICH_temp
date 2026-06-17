@@ -105,7 +105,7 @@ public:
 
     void setImbalanceTolerance(double tolerance);
 
-    void reportImbalance(void) const;
+    void reportImbalance(size_t localPointCount) const;
 
     bool checkForRebalance(double myWeight) const;
 

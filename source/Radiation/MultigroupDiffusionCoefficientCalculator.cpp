@@ -1,6 +1,8 @@
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "misc/simple_io.hpp"
 
+#include <cmath>
+#include <limits>
 
 double interpolateTable(double const T,
                         double const d,
@@ -159,14 +161,25 @@ double GrayPowerLawOpacity::CalcScatteringOpacity(ComputationalCell3D const& cel
 
 FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup(double const Z_,
                                                                          std::vector<double> const& energy_groups_center_,
-                                                                         std::vector<double> const& energy_groups_boundary_) :
-    Z(Z_) {
+                                                                         std::vector<double> const& energy_groups_boundary_,
+                                                                         bool const include_plasma_cutoff,
+                                                                         bool const use_free_free_cgs_formula) :
+    Z(Z_),
+    include_plasma_cutoff_(include_plasma_cutoff),
+    use_free_free_cgs_formula_(use_free_free_cgs_formula) {
     energy_groups_center = energy_groups_center_;
     energy_groups_boundary = energy_groups_boundary_;
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const {
-    return CG::speed_of_light / (3.0 * (CalcAbsorptionOpacity(cell, energy) + CalcScatteringOpacity(cell, energy)));
+    double const total_opacity = CalcAbsorptionOpacity(cell, energy) + CalcScatteringOpacity(cell, energy);
+    double constexpr max_diffusion_coefficient = 1e100;
+    if (!std::isfinite(total_opacity) || total_opacity <= 0.0)
+        return max_diffusion_coefficient;
+    double const min_transport_opacity = CG::speed_of_light / (3.0 * max_diffusion_coefficient);
+    if (total_opacity < min_transport_opacity)
+        return max_diffusion_coefficient;
+    return CG::speed_of_light / (3.0 * total_opacity);
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
@@ -176,11 +189,27 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalC
 
     double const m_p = 1.6726231e-24;
     double const n_i = cell.density/m_p;
-    double const n_e = n_i;
+    double const n_e = Z*n_i;
 
     double g_ff = std::max(1.0, std::log(std::exp(5.960) * std::pow(cell.temperature, 1.5) / (nu_g * Z)));
 
-    return g_ff * 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(cell.temperature)*(1.-std::exp(-e/(CG::boltzmann_constant*cell.temperature)))*std::pow(e/h, -3);
+    double plasma_cutoff_factor = 1.0;
+    if (include_plasma_cutoff_) {
+        double const nu_p = std::sqrt(4.0*pi*n_e*q_e*q_e/m_e)/(2.0*pi);
+        if (nu_g <= nu_p) {
+            return 0.0;
+        }
+        double const plasma_ratio = nu_p/nu_g;
+        plasma_cutoff_factor = 1.0/std::sqrt(1.0 - plasma_ratio*plasma_ratio);
+    }
+
+    double const absorption_opacity =
+        use_free_free_cgs_formula_
+            ? 3.7e8*Z*Z*n_e*n_i/std::sqrt(cell.temperature)*(1.-std::exp(-e/kT))*std::pow(nu_g, -3)
+            : 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(cell.temperature)*
+                  (1.-std::exp(-e/kT))*std::pow(nu_g, -3);
+
+    return g_ff * absorption_opacity * plasma_cutoff_factor;
 }
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {

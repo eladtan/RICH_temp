@@ -187,10 +187,14 @@ ClipBounds computeBounds(const std::vector<Face> &faces)
 std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
 {
     Face out, clip_points;
-    int n = face.vertices.size();
+    const size_t n = face.vertices.size();
+    if(n < 3)
+    {
+        return {out, clip_points};
+    }
     double old_d = plane.signedDistance(face.vertices[0]);
     double maxR = 0;
-    for(int i = 0; i < n; i++)
+    for(size_t i = 0; i < n; i++)
     {
         const Vector3D &curr = face.vertices[i];
         const Vector3D &next = face.vertices[(i + 1) % n];
@@ -198,7 +202,7 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
         maxR = std::max(maxR, R);
     }
     double maxD = std::abs(old_d);
-    for(int i = 0; i < n; i++)
+    for(size_t i = 0; i < n; i++)
     {
         const Vector3D &curr = face.vertices[i];
         const Vector3D &next = face.vertices[(i + 1) % n];
@@ -375,6 +379,10 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
     }
     for(const Face &face : faces)
     {
+        if(face.vertices.size() < 3)
+        {
+            continue;
+        }
         if(print)
         {
             std::cout << "Clipping face " << face << std::endl;
@@ -406,7 +414,7 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
         bottom2 = CleanFace(bottom2);
         if(bottom2.vertices.size() > 2)
         {
-            result.push_back(CleanFace(bottom2));
+            result.push_back(bottom2);
         }
     }
     // std::cout << "Final result: " << std::endl;
@@ -436,6 +444,10 @@ void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vec
     }
     for(const Face &face : faces)
     {
+        if(face.vertices.size() < 3)
+        {
+            continue;
+        }
         if(print)
         {
             std::cout << "Clipping face " << face << std::endl;
@@ -467,7 +479,7 @@ void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vec
         bottom2 = CleanFace(bottom2);
         if(bottom2.vertices.size() > 2)
         {
-            result.push_back(CleanFace(bottom2));
+            result.push_back(bottom2);
         }
     }
 }

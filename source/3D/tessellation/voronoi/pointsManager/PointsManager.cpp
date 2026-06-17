@@ -7,7 +7,7 @@ void PointsManager::setImbalanceTolerance(double tolerance)
     this->imbalanceTolerance = tolerance;
 }
 
-void PointsManager::reportImbalance(void) const
+void PointsManager::reportImbalance(size_t localPointCount) const
 {
     struct
     {
@@ -21,9 +21,16 @@ void PointsManager::reportImbalance(void) const
     double avgWeight;
     MPI_Allreduce(&this->totalWeight, &avgWeight, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     avgWeight /= static_cast<double>(this->size);
+
+    size_t maxRankPointCount = localPointCount;
+    MPI_Bcast(&maxRankPointCount, 1, MPI_UNSIGNED_LONG_LONG, maxWeighted.rank, MPI_COMM_WORLD);
+
     if(this->rank == 0)
     {
-        std::cout << "Imbalance report: max weight is " << maxWeighted.weight << " in rank " << maxWeighted.rank << ", min weight is " << minWeighted.weight << " in rank " << minWeighted.rank << ", average weight is " << avgWeight << std::endl;
+        std::cout << "Imbalance report: max weight is " << maxWeighted.weight << " in rank " << maxWeighted.rank
+                  << " (" << maxRankPointCount << " points)"
+                  << ", min weight is " << minWeighted.weight << " in rank " << minWeighted.rank
+                  << ", average weight is " << avgWeight << std::endl;
     }
 }
 
@@ -95,7 +102,7 @@ PointsExchangeResult PointsManager::update(const std::vector<Vector3D> &allPoint
         {
             std::cout << "Time for load balancing: " << std::chrono::duration<double>(end - start).count() << " seconds" << std::endl;
         }
-        this->reportImbalance();
+        this->reportImbalance(result.newPoints.size());
     }
     // std::cout << "total weight of rank " << this->rank << " is " << this->totalWeight << " with " << result.newPoints.size() << " points" << std::endl;
     return result;

@@ -1,6 +1,7 @@
 #ifndef MONTE_CARLO_PHYSICS_HPP
 #define MONTE_CARLO_PHYSICS_HPP
 
+#include <array>
 #include <memory>
 #include <string>
 #include <tuple>

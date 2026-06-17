@@ -2,15 +2,36 @@
 
 #include "HilbertLoadBalancer.hpp"
 
+#include <algorithm>
+
+namespace
+{
+    // CurveLoadBalancer::getOwner uses std::upper_bound on boundaries, so the
+    // boundaries vector must be sorted.  rescale()/changeBox() map every old cut
+    // point through d -> xyz -> d after changing the Hilbert convertor box.
+    // Hilbert order is not coordinate-wise monotone under that mapping, so two
+    // adjacent cuts can swap.  Keeping the swapped order corrupts owner lookup
+    // and can route particles/ghosts to the wrong rank.
+    inline void SortHilbertBoundaries(std::vector<curve_index_t> &boundaries)
+    {
+        std::sort(boundaries.begin(), boundaries.end());
+    }
+}
+
 HilbertLoadBalancer::HilbertLoadBalancer(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing, const std::vector<curve_index_t> &boundaries)
     : CurveLoadBalancer(boundaries), indexing(indexing)
 {
+    SortHilbertBoundaries(this->boundaries);
     this->initializeConvertor(ll, ur, points);
 }
 
 HilbertLoadBalancer::HilbertLoadBalancer(std::shared_ptr<HilbertConvertor3D> convertor, std::shared_ptr<const Kernelization3D::IndexingKernel3D> indexing, const std::vector<curve_index_t> &boundaries)
     : CurveLoadBalancer(boundaries), convertor(std::move(convertor)), indexing(std::move(indexing))
-{}
+{
+    SortHilbertBoundaries(this->boundaries);
+}
+
+// Duplicates are allowed and are meaningful for empty/zero-width rank regions.
 
 void HilbertLoadBalancer::initializeConvertor(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points)
 {
@@ -80,22 +101,13 @@ void HilbertLoadBalancer::rebalance(const std::vector<Vector3D> &points, const s
         indices.push_back(this->convertor->xyz2d((*this->indexing)(point)));
     }
 
-    int dont_do_weights = (weights.empty() and std::all_of(weights.cbegin(), weights.cend(), [&weights](const double &x){return x == weights[0];}))? 1 : 0;
-    MPI_Allreduce(MPI_IN_PLACE, &dont_do_weights, 1, MPI_INT, MPI_MAX, this->comm);
     if(this->rank == 0)
     {
         std::cout << "Running rebalancing" << std::endl;
     }
-    if(dont_do_weights)
-    {
-        // responsibilityRange = getBorders(indices);
-        this->boundaries = getWeightedBorders2(indices, std::vector<double>(points.size(), 1.0));
-    }
-    else
-    {
         // responsibilityRange = getWeightedBorders(indices, weights);
-        this->boundaries = getWeightedBorders2(indices, weights);
-    }
+    this->boundaries = getWeightedBorders2(indices, weights);
+    SortHilbertBoundaries(this->boundaries);
 }
 
 curve_index_t HilbertLoadBalancer::getCurveIndex(const Vector3D &point) const
@@ -131,6 +143,7 @@ void HilbertLoadBalancer::rescale(const Vector3D &ll, const Vector3D &ur, const 
     {
         boundaries[i] = convertor->xyz2d(rescaled[i]);
     }
+    SortHilbertBoundaries(this->boundaries);
 }
 
 void HilbertLoadBalancer::changeBox(const std::pair<Vector3D, Vector3D> &newBox)
@@ -179,6 +192,7 @@ void HilbertLoadBalancer::changeBox(const std::pair<Vector3D, Vector3D> &newBox)
     {
         boundaries[i] = convertor->xyz2d(rescaled[i]);
     }
+    SortHilbertBoundaries(this->boundaries);
 }
 
 void HilbertLoadBalancer::setIndexing(const std::shared_ptr<const Kernelization3D::IndexingKernel3D>& newIndexing)

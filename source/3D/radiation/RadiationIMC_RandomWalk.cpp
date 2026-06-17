@@ -1,5 +1,6 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
+#include "IMCPolarization.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <iostream>
 
@@ -321,6 +322,16 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
         particle.frequency = finalLabParticle.frequency;
         particle.weight    = finalLabParticle.weight;
         particle.timeLeft  = finalLabParticle.timeLeft;
+#ifdef MONTECARLO_POLARIZATION
+        particle.stokesQ = finalLabParticle.stokesQ;
+        particle.stokesU = finalLabParticle.stokesU;
+        particle.polarizationBasis = finalLabParticle.polarizationBasis;
+        particle.polarizationInitialized = finalLabParticle.polarizationInitialized;
+        if(particle.polarizationInitialized)
+            particle.polarizationBasis =
+                IMCPolarization::ProjectBasisToDirection(particle.polarizationBasis,
+                                                         particle.velocity);
+#endif
 
         if(useVelocityTransport && !this->diffusionPressureGradient && !this->noHydroFeedback)
         {
@@ -409,7 +420,32 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     }
 
     materialParticle.location = newLocation;
-    materialParticle.velocity = this->opacity->getRandomVelocity(cell);
+    Vector3D const finalVelocityCo = this->opacity->getRandomVelocity(cell);
+
+#ifdef MONTECARLO_POLARIZATION
+    if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+    {
+        IMCPolarization::InitializeIfNeeded(materialParticle);
+        materialParticle.polarizationBasis =
+            IMCPolarization::ProjectBasisToDirection(materialParticle.polarizationBasis,
+                                                     materialParticle.velocity);
+
+        double const scatOp = this->opacity->CalcScatteringOpacity(cell);
+        double const sigmaReset = (1.0 - f) * sigma_a_eff;
+        IMCPolarization::ApplyAcceleratedPolarizationHistory(
+            materialParticle,
+            dtCo,
+            scatOp,
+            sigmaReset,
+            finalVelocityCo,
+            this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+            this->postProcess_.polarization.depolarizationScatterings,
+            this->re,
+            this->dist);
+    }
+#endif
+
+    materialParticle.velocity = finalVelocityCo;
 
     if(rwEvent == RW_UPSCATTER && isPGRW)
     {
@@ -430,6 +466,10 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
                 std::numeric_limits<double>::max());
         }
         ClampFrequencyToBounds(materialParticle.frequency);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+            IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
     }
 
     if(rwEvent == RW_CENSUS)

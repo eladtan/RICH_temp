@@ -166,6 +166,8 @@ check_till_case() {
     local final_tgas
     local final_trad
     local rel_diff
+    local max_temp_rel_diff="${TILL_MAX_TEMP_REL_DIFF:-1e-2}"
+    local max_energy_rel_err="${TILL_MAX_ENERGY_REL_ERR:-1e-8}"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
@@ -224,12 +226,12 @@ check_till_case() {
             }'
     )
 
-    if ! awk -v r="$rel_diff" 'BEGIN { exit !(r < 1e-2) }'; then
-        set_check_msg "Till final Tgas/Trad mismatch >= 1%"
+    if ! awk -v r="$rel_diff" -v t="$max_temp_rel_diff" 'BEGIN { exit !(r < t) }'; then
+        set_check_msg "Till final Tgas/Trad mismatch: ${rel_diff} >= ${max_temp_rel_diff}"
         return 1
     fi
 
-    # Energy conservation check: |E_final - E_initial| / E_initial < 1e-8
+    # Energy conservation check: |E_final - E_initial| / E_initial below the selected Till threshold.
     local etotal_file="${run_dir}/Etotal.txt"
     if is_nonempty_and_newer "$etotal_file" "$run_start_epoch"; then
         local e_initial
@@ -255,15 +257,21 @@ check_till_case() {
                     printf "%.12e", val;
                 }'
         )
-        if ! awk -v r="$energy_rel_err" 'BEGIN { exit !(r < 1e-8) }'; then
-            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= 1e-8"
+        if ! awk -v r="$energy_rel_err" -v t="$max_energy_rel_err" 'BEGIN { exit !(r < t) }'; then
+            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= ${max_energy_rel_err}"
             return 1
         fi
-        set_check_msg "Till passed: Tgas/Trad agree within 1%, energy conserved (rel err ${energy_rel_err})"
+        set_check_msg "Till passed: Tgas/Trad rel diff ${rel_diff}, energy rel err ${energy_rel_err}"
     else
-        set_check_msg "Till final Tgas and Trad agree within 1% (Etotal.txt not found, energy check skipped)"
+        set_check_msg "Till final Tgas/Trad rel diff ${rel_diff} (Etotal.txt not found, energy check skipped)"
     fi
     return 0
+}
+
+check_till_mc_case() {
+    TILL_MAX_TEMP_REL_DIFF="${TILL_MC_MAX_TEMP_REL_DIFF:-2e-1}" \
+    TILL_MAX_ENERGY_REL_ERR="${TILL_MC_MAX_ENERGY_REL_ERR:-5e-2}" \
+    check_till_case "$@"
 }
 
 check_amr_random_case() {
@@ -1017,6 +1025,59 @@ check_spherical_gauss_linear_case() {
     fi
 
     set_check_msg "Spherical Gauss linear test passed (sph_scalar_rel=${scalar_err}, cart_scalar_rel=${cart_scalar_err}, sph_vel_rel=${vel_err}, cart_vel_rel=${cart_vel_err}, faces=${faces_checked})"
+    return 0
+}
+
+check_spherical_gauss_tangential_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_gauss_tangential_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_gauss_tangential_metrics.txt"
+        return 1
+    fi
+
+    local max_abs max_rel faces pass_flag
+    max_abs=$(awk '$1 == "sph_tangential_velocity_max_abs" { print $2 }' "$metrics_file")
+    max_rel=$(awk '$1 == "sph_tangential_velocity_max_rel" { print $2 }' "$metrics_file")
+    faces=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_abs" || -z "$max_rel" || -z "$faces" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse spherical tangential metrics"
+        return 1
+    fi
+    if ! is_finite_number "$max_abs" || ! is_finite_number "$max_rel"; then
+        set_check_msg "spherical tangential metrics are not finite"
+        return 1
+    fi
+    if ! awk -v n="$faces" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "spherical tangential checked zero faces"
+        return 1
+    fi
+
+    local max_abs_allowed="${SPH_TANGENTIAL_MAX_ABS:-1e-8}"
+    local max_rel_allowed="${SPH_TANGENTIAL_MAX_REL:-1e-8}"
+    if ! awk -v e="$max_abs" -v t="$max_abs_allowed" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "spherical tangential abs error too large: ${max_abs} >= ${max_abs_allowed}"
+        return 1
+    fi
+    if ! awk -v e="$max_rel" -v t="$max_rel_allowed" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "spherical tangential rel error too large: ${max_rel} >= ${max_rel_allowed}"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical tangential test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Spherical tangential face-basis check passed (abs=${max_abs}, rel=${max_rel})"
     return 0
 }
 

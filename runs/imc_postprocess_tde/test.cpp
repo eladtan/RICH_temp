@@ -1,0 +1,2769 @@
+#include <algorithm>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
+#include <numeric>
+#include <exception>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "source/3D/output/read3D.hpp"
+#include "source/3D/output/Snapshot3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "source/3D/monte/MonteCarloManager3D.hpp"
+#include "source/3D/radiation/RadiationIMC.hpp"
+#include "source/3D/radiation/SphericalObserver.hpp"
+#include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
+#include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
+#include "source/monte/boundary/Vacuum.hpp"
+#include "source/monte/population/NoControl.hpp"
+#include "source/newtonian/three_dimensional/OndrejEOS.hpp"
+#include "source/newtonian/three_dimensional/computational_cell.hpp"
+#include "source/newtonian/three_dimensional/conserved_3d.hpp"
+#include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
+#include "source/Radiation/STAgreyOpacity.hpp"
+#include "source/Radiation/Diffusion.hpp"
+#include "source/Radiation/CMMC/src/units/units.hpp"
+#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/misc/universal_error.hpp"
+#include "source/misc/simple_io.hpp"
+#include "source/misc/utils.hpp"
+
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <unordered_map>
+
+#ifdef RICH_MPI
+#include <mpi.h>
+#include "source/mpi/mpi_commands.hpp"
+#endif
+
+namespace {
+
+// ============================================================
+// STA multigroup opacity from BaseTDECompton
+// ============================================================
+class STAMGopacityMC : public OpacityCalculator
+{
+private:
+    std::vector<double> rho_, T_;
+    std::vector<std::vector<std::vector<double>>> planck_, scatter_;
+    std::unordered_map<size_t, double> rosselandScale_;
+
+public:
+    void SetRosselandScaleFactors(std::unordered_map<size_t, double> factors)
+    {
+        rosselandScale_ = std::move(factors);
+    }
+
+    STAMGopacityMC(std::string const& file_directory)
+    {
+        energy_groups_boundary = read_vector(file_directory + "frequency_edges.txt");
+        for (double& Egb : energy_groups_boundary)
+            Egb *= 11604.5 * CG::boltzmann_constant;
+        energy_groups_center.resize(energy_groups_boundary.size() - 1);
+        for (size_t i = 0; i < energy_groups_boundary.size() - 1; ++i)
+            energy_groups_center[i] = std::sqrt(energy_groups_boundary[i] * energy_groups_boundary[i + 1]);
+        size_t const Ng = energy_groups_boundary.size() - 1;
+
+        T_ = read_vector(file_directory + "T.txt");
+        for (size_t i = 0; i < T_.size(); ++i)
+        {
+            T_[i] *= 11604.5;
+            T_[i] = std::log(T_[i]);
+        }
+        size_t const Nt = T_.size();
+
+        rho_ = read_vector(file_directory + "rho.txt");
+        size_t const Nrho = rho_.size();
+        for (size_t i = 0; i < Nrho; ++i)
+            rho_[i] = std::log(rho_[i]);
+
+        planck_.resize(Ng);
+        scatter_.resize(Ng);
+        for (size_t i = 0; i < Ng; ++i)
+        {
+            auto temp_planck = read_vector(file_directory + "sigma_absorption_rossland_" + std::to_string(i + 1) + ".txt");
+            auto temp_scatter = read_vector(file_directory + "sigma_scattering_planck_" + std::to_string(i + 1) + ".txt");
+            planck_[i].resize(Nrho);
+            scatter_[i].resize(Nrho);
+            for (size_t j = 0; j < Nrho; ++j)
+            {
+                planck_[i][j].resize(Nt);
+                scatter_[i][j].resize(Nt);
+                for (size_t k = 0; k < Nt; ++k)
+                {
+                    planck_[i][j][k] = std::log(temp_planck[j * Nt + k]) + rho_[j];
+                    scatter_[i][j][k] = std::log(temp_scatter[j * Nt + k]) + rho_[j];
+                }
+            }
+        }
+    }
+
+    double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
+    {
+        size_t const group = findGroup(energy);
+        double T = std::log(cell.temperature);
+        double d = std::log(cell.density);
+        double d_ratio = 1;
+        double T_ratio = 1;
+        if (d < rho_[0])
+        {
+            d_ratio = cell.density / std::exp(rho_[0]);
+            d = rho_[0];
+        }
+        if (d > rho_.back())
+        {
+            d_ratio = cell.density / std::exp(rho_.back());
+            d = rho_.back();
+        }
+        if (T < T_[0])
+            T = T_[0];
+        if (T > T_.back())
+        {
+            T_ratio = std::pow(cell.temperature / std::exp(T_.back()), -1.5);
+            T = T_.back();
+        }
+        double result = std::exp(BiLinearInterpolation(rho_, T_, planck_[group], d, T)) * d_ratio * T_ratio;
+        if (!rosselandScale_.empty()) {
+            auto it = rosselandScale_.find(cell.ID);
+            if (it != rosselandScale_.end())
+                result *= it->second;
+            else
+                throw UniversalError("Cell ID not found in rosselandScale_");
+        }
+        return result;
+    }
+
+    double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
+    {
+        size_t const group = findGroup(energy);
+        double T = std::log(cell.temperature);
+        double d = std::log(cell.density);
+        double d_ratio = 1;
+        if (d < rho_[0])
+        {
+            d_ratio = cell.density / std::exp(rho_[0]);
+            d = rho_[0];
+        }
+        if (d > rho_.back())
+        {
+            d_ratio = cell.density / std::exp(rho_.back());
+            d = rho_.back();
+        }
+        if (T < T_[0])
+            T = T_[0];
+        if (T > T_.back())
+            T = T_.back();
+        return std::exp(BiLinearInterpolation(rho_, T_, scatter_[group], d, T)) * d_ratio;
+    }
+
+    double CalcScatteringOpacity(ComputationalCell3D const& cell) const override
+    {
+        double avg = 0.0;
+        for (size_t g = 0; g < energy_groups_center.size(); ++g)
+            avg += CalcScatteringOpacity(cell, energy_groups_center[g]);
+        return avg / static_cast<double>(energy_groups_center.size());
+    }
+
+    double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+    {
+        double kT = CG::boltzmann_constant * cell.temperature;
+        double weightedSum = 0.0;
+        double totalWeight = 0.0;
+        for (size_t g = 0; g < energy_groups_center.size(); ++g)
+        {
+            double nu = energy_groups_center[g];
+            double x = nu / kT;
+            double planckWeight = (x > 0.0 && x < 500.0) ? x * x * x / std::expm1(x) : 0.0;
+            weightedSum += CalcAbsorptionOpacity(cell, nu) * planckWeight;
+            totalWeight += planckWeight;
+        }
+        return (totalWeight > 0.0) ? weightedSum / totalWeight : 0.0;
+    }
+};
+
+// ============================================================
+// CLI Config
+// ============================================================
+enum class OpacityScaleMode { None, Rosseland, Planck };
+
+struct Config
+{
+    std::string inputPath = "/home/elads/TDEMG/R0.47M0.5BH1e+06beta1S50n1.5Compton/snap_full_136.h5";
+    std::string outputPath = "tde_postprocess_output.h5";
+    std::string vtkOutput;
+    std::string opacityDir = "/home/elads/RICH/data/STA/MG/";
+    std::string greyOpacityDir;
+    std::string eosDir = "/home/elads/RICH/data/EOS/";
+    double radius = 5e14;
+    size_t nObservers = 256;
+    double sourceDt = 1.0;
+    double transportTime = 0.0;
+    Vector3D center = Vector3D(0, 0, 0);
+    size_t photonsPerCell = 100;
+    bool compton = false;
+    size_t comptonSamples = 200000;
+    bool comptonAngleDependent = true;
+    size_t nGenerations = 1;
+    bool ddmc = true;
+    bool randomWalk = true;
+    bool useCellVelocities = true;
+    bool polarization = true;
+    int polarizationManualScatterings = 128;
+    double polarizationDepolarizationScatterings = 0.5;
+    std::string polarizationClosure = "damped_last_scatterings";
+    bool measuredLoadBalance = true;
+    OpacityScaleMode opacityScaleMode = OpacityScaleMode::Planck;
+    bool adaptiveSourceCells = false;
+    size_t adaptiveSourceBurnin = 3;
+    double adaptiveSourceStrength = 0.75;
+    double adaptiveSourceEma = 0.5;
+    double adaptiveSourceMinEscapedFrac = 1e-10;
+    double adaptiveSourceMaxFactor = 1000.0;
+    size_t adaptiveSourceBurninPhotonMultiplier = 2;
+    double adaptiveSourceLearnedReserveFrac = 0.25;
+    double adaptiveSourceLearnedMinFactor = 20.0;
+    bool adaptiveObserverEquity = true;
+    double adaptiveObserverExtraBudgetFrac = 0.25;
+    double adaptiveObserverTargetNeff = 100000.0;
+    double adaptiveObserverTargetPolSnr = 5.0;
+    double adaptiveObserverDeficitMax = 10.0;
+    double adaptiveObserverDeficitEma = 0.5;
+    double measuredLBWeightCompression = -1.0;
+    double adaptiveLBImbalanceThreshold = 2.0;
+    size_t adaptiveLBCooldownGenerations = 2;
+    size_t adaptiveLBMaxRebalances = 6;
+};
+
+void printUsage(int rank)
+{
+    if (rank != 0) return;
+    std::cerr << "Usage: rich [options]\n"
+              << "Options:\n"
+              << "  --input PATH             Input HDF5 snapshot (default: TDE snap_full_136.h5)\n"
+              << "  --output PATH            Output HDF5 file (default: tde_postprocess_output.h5)\n"
+              << "  --opacity-dir PATH       STA opacity table directory\n"
+              << "  --grey-opacity-dir PATH  Grey STA opacity directory (default: parent of opacity-dir)\n"
+              << "  --eos-dir PATH           EOS table directory\n"
+              << "  --radius R               Observer sphere radius [cm] (default: 5e14)\n"
+              << "  --n-observers N          Observer patches (default: 256)\n"
+              << "  --source-dt DT           Source emission dt [s] (default: 1.0)\n"
+              << "  --transport-time T       Max transport time [s] (default: 2*R/c)\n"
+              << "  --center X Y Z           Observer sphere center [cm]\n"
+              << "  --photons-per-cell N     Packets per cell (default: 100)\n"
+              << "  --compton                Enable Compton (requires multigroup build)\n"
+              << "  --compton-samples N      Compton matrix samples (default: 200000)\n"
+              << "  --n-generations N        Split transport into N generations (default: 1)\n"
+              << "  --no-ddmc                Disable DDMC thick-cell acceleration\n"
+              << "  --no-random-walk         Disable random-walk thick-cell acceleration\n"
+              << "  --no-velocity            Ignore cell velocities (no Doppler shifts)\n"
+              << "  --polarization           Enable postprocess linear polarization\n"
+              << "  --polarization-manual-scatterings N\n"
+              << "  --polarization-depolarization-scatterings N\n"
+              << "  --polarization-closure NAME\n"
+              << "  --no-measured-lb         Disable first-generation measured load balance\n"
+              << "  --no-opacity-scale       Disable MG absorption scaling\n"
+              << "  --opacity-scale-mode M   Normalization mode: planck (default) or rosseland\n"
+              << "  --adaptive-source-cells  Learn escaping source cells across generations\n"
+              << "  --no-adaptive-source-cells\n"
+              << "  --adaptive-source-burnin N       Legacy flag accepted; fixed adaptive cadence ignores it\n"
+              << "  --adaptive-source-strength F     Learned-score allocation fraction (default: 0.75)\n"
+              << "  --adaptive-source-ema F          Learned score EMA update factor (default: 0.5)\n"
+              << "  --adaptive-source-min-escaped-frac F (default: 1e-10)\n"
+              << "  --adaptive-source-max-factor F   Max photons/cell boost over base (default: 1000)\n"
+              << "  --adaptive-source-burnin-photon-multiplier N Legacy flag accepted; fixed cadence ignores it\n"
+              << "  --adaptive-source-learned-reserve-frac F (default: 0.25)\n"
+              << "  --adaptive-source-learned-min-factor F (default: 20)\n"
+              << "  --adaptive-observer-equity       Boost cells feeding low-stat observers (default)\n"
+              << "  --no-adaptive-observer-equity\n"
+              << "  --adaptive-observer-extra-budget-frac F (default: 0.25)\n"
+              << "  --adaptive-observer-target-neff F (default: 100000)\n"
+              << "  --adaptive-observer-target-pol-snr F (default: 5)\n"
+              << "  --adaptive-observer-deficit-max F (default: 10)\n"
+              << "  --adaptive-observer-deficit-ema F (default: 0.5)\n"
+              << "  --measured-lb-weight-compression F (default: adaptive=1, non-adaptive=0.5)\n"
+              << "  --adaptive-lb-imbalance-threshold F Legacy flag accepted; fixed 5-step cadence ignores it\n"
+              << "  --adaptive-lb-cooldown-gens N Legacy flag accepted; fixed 5-step cadence ignores it\n"
+              << "  --adaptive-lb-max-rebalances N Legacy flag accepted; fixed 5-step cadence ignores it\n";
+}
+
+bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
+{
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--input" && i + 1 < argc) { cfg.inputPath = argv[++i]; }
+        else if (arg == "--output" && i + 1 < argc) { cfg.outputPath = argv[++i]; }
+        else if (arg == "--opacity-dir" && i + 1 < argc) { cfg.opacityDir = argv[++i]; }
+        else if (arg == "--grey-opacity-dir" && i + 1 < argc) { cfg.greyOpacityDir = argv[++i]; }
+        else if (arg == "--eos-dir" && i + 1 < argc) { cfg.eosDir = argv[++i]; }
+        else if (arg == "--radius" && i + 1 < argc) { cfg.radius = std::atof(argv[++i]); }
+        else if (arg == "--n-observers" && i + 1 < argc) { cfg.nObservers = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--source-dt" && i + 1 < argc) { cfg.sourceDt = std::atof(argv[++i]); }
+        else if (arg == "--transport-time" && i + 1 < argc) { cfg.transportTime = std::atof(argv[++i]); }
+        else if (arg == "--center" && i + 3 < argc) {
+            double x = std::atof(argv[++i]);
+            double y = std::atof(argv[++i]);
+            double z = std::atof(argv[++i]);
+            cfg.center = Vector3D(x, y, z);
+        }
+        else if (arg == "--photons-per-cell" && i + 1 < argc) { cfg.photonsPerCell = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--compton") { cfg.compton = true; }
+        else if (arg == "--compton-samples" && i + 1 < argc) { cfg.comptonSamples = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--compton-angle-dependent" && i + 1 < argc) { cfg.comptonAngleDependent = (std::atoi(argv[++i]) != 0); }
+        else if (arg == "--vtk-output" && i + 1 < argc) { cfg.vtkOutput = argv[++i]; }
+        else if (arg == "--n-generations" && i + 1 < argc) { cfg.nGenerations = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--no-ddmc") { cfg.ddmc = false; }
+        else if (arg == "--no-random-walk") { cfg.randomWalk = false; }
+        else if (arg == "--no-velocity") { cfg.useCellVelocities = false; }
+        else if (arg == "--polarization") { cfg.polarization = true; }
+        else if (arg == "--polarization-manual-scatterings" && i + 1 < argc) { cfg.polarizationManualScatterings = std::atoi(argv[++i]); }
+        else if (arg == "--polarization-depolarization-scatterings" && i + 1 < argc) { cfg.polarizationDepolarizationScatterings = std::atof(argv[++i]); }
+        else if (arg == "--polarization-closure" && i + 1 < argc) { cfg.polarizationClosure = argv[++i]; }
+        else if (arg == "--no-measured-lb") { cfg.measuredLoadBalance = false; }
+        else if (arg == "--peel-off" || arg == "--no-peel-off") {
+            if (rank == 0)
+                std::cerr << "Error: " << arg << " was removed from this branch\n";
+            return false;
+        }
+        else if (arg == "--adaptive-source-cells") { cfg.adaptiveSourceCells = true; }
+        else if (arg == "--no-adaptive-source-cells") { cfg.adaptiveSourceCells = false; }
+        else if (arg == "--adaptive-source-burnin" && i + 1 < argc) { cfg.adaptiveSourceBurnin = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--adaptive-source-strength" && i + 1 < argc) { cfg.adaptiveSourceStrength = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-ema" && i + 1 < argc) { cfg.adaptiveSourceEma = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-min-escaped-frac" && i + 1 < argc) { cfg.adaptiveSourceMinEscapedFrac = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-max-factor" && i + 1 < argc) { cfg.adaptiveSourceMaxFactor = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-burnin-photon-multiplier" && i + 1 < argc) { cfg.adaptiveSourceBurninPhotonMultiplier = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--adaptive-source-learned-reserve-frac" && i + 1 < argc) { cfg.adaptiveSourceLearnedReserveFrac = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-learned-min-factor" && i + 1 < argc) { cfg.adaptiveSourceLearnedMinFactor = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-equity") { cfg.adaptiveObserverEquity = true; }
+        else if (arg == "--no-adaptive-observer-equity") { cfg.adaptiveObserverEquity = false; }
+        else if (arg == "--adaptive-observer-extra-budget-frac" && i + 1 < argc) { cfg.adaptiveObserverExtraBudgetFrac = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-target-neff" && i + 1 < argc) { cfg.adaptiveObserverTargetNeff = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-target-pol-snr" && i + 1 < argc) { cfg.adaptiveObserverTargetPolSnr = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-deficit-max" && i + 1 < argc) { cfg.adaptiveObserverDeficitMax = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-deficit-ema" && i + 1 < argc) { cfg.adaptiveObserverDeficitEma = std::atof(argv[++i]); }
+        else if (arg == "--measured-lb-weight-compression" && i + 1 < argc) { cfg.measuredLBWeightCompression = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-lb-imbalance-threshold" && i + 1 < argc) { cfg.adaptiveLBImbalanceThreshold = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-lb-cooldown-gens" && i + 1 < argc) { cfg.adaptiveLBCooldownGenerations = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--adaptive-lb-max-rebalances" && i + 1 < argc) { cfg.adaptiveLBMaxRebalances = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--no-rosseland-scale" || arg == "--no-opacity-scale") { cfg.opacityScaleMode = OpacityScaleMode::None; }
+        else if (arg == "--opacity-scale-mode" && i + 1 < argc) {
+            std::string m = argv[++i];
+            if (m == "planck") cfg.opacityScaleMode = OpacityScaleMode::Planck;
+            else if (m == "rosseland") cfg.opacityScaleMode = OpacityScaleMode::Rosseland;
+            else if (m == "none") cfg.opacityScaleMode = OpacityScaleMode::None;
+            else { if (rank == 0) std::cerr << "Unknown opacity-scale-mode: " << m << " (planck|rosseland|none)\n"; return false; }
+        }
+        else { if (rank == 0) std::cerr << "Unknown argument: " << arg << "\n"; return false; }
+    }
+
+    if (cfg.radius <= 0.0) { if (rank == 0) std::cerr << "--radius must be positive\n"; return false; }
+    if (cfg.nObservers == 0) { if (rank == 0) std::cerr << "--n-observers must be > 0\n"; return false; }
+    if (cfg.sourceDt <= 0.0) { if (rank == 0) std::cerr << "--source-dt must be positive\n"; return false; }
+    if (cfg.photonsPerCell == 0) { if (rank == 0) std::cerr << "--photons-per-cell must be > 0\n"; return false; }
+    if (cfg.nGenerations == 0) { if (rank == 0) std::cerr << "--n-generations must be >= 1\n"; return false; }
+    if (cfg.adaptiveSourceStrength < 0.0 || cfg.adaptiveSourceStrength > 1.0 || !std::isfinite(cfg.adaptiveSourceStrength)) { if (rank == 0) std::cerr << "--adaptive-source-strength must be finite in [0,1]\n"; return false; }
+    if (cfg.adaptiveSourceEma <= 0.0 || cfg.adaptiveSourceEma > 1.0 || !std::isfinite(cfg.adaptiveSourceEma)) { if (rank == 0) std::cerr << "--adaptive-source-ema must be finite in (0,1]\n"; return false; }
+    if (cfg.adaptiveSourceMinEscapedFrac < 0.0 || !std::isfinite(cfg.adaptiveSourceMinEscapedFrac)) { if (rank == 0) std::cerr << "--adaptive-source-min-escaped-frac must be finite and nonnegative\n"; return false; }
+    if (cfg.adaptiveSourceMaxFactor < 1.0 || !std::isfinite(cfg.adaptiveSourceMaxFactor)) { if (rank == 0) std::cerr << "--adaptive-source-max-factor must be finite and >= 1\n"; return false; }
+    if (cfg.adaptiveSourceLearnedReserveFrac < 0.0 || cfg.adaptiveSourceLearnedReserveFrac > 1.0 || !std::isfinite(cfg.adaptiveSourceLearnedReserveFrac)) { if (rank == 0) std::cerr << "--adaptive-source-learned-reserve-frac must be finite in [0,1]\n"; return false; }
+    if (cfg.adaptiveSourceLearnedMinFactor < 1.0 || !std::isfinite(cfg.adaptiveSourceLearnedMinFactor)) { if (rank == 0) std::cerr << "--adaptive-source-learned-min-factor must be finite and >= 1\n"; return false; }
+    if (cfg.adaptiveObserverExtraBudgetFrac < 0.0 || !std::isfinite(cfg.adaptiveObserverExtraBudgetFrac)) { if (rank == 0) std::cerr << "--adaptive-observer-extra-budget-frac must be finite and nonnegative\n"; return false; }
+    if (cfg.adaptiveObserverTargetNeff <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetNeff)) { if (rank == 0) std::cerr << "--adaptive-observer-target-neff must be finite and positive\n"; return false; }
+    if (cfg.adaptiveObserverTargetPolSnr <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetPolSnr)) { if (rank == 0) std::cerr << "--adaptive-observer-target-pol-snr must be finite and positive\n"; return false; }
+    if (cfg.adaptiveObserverDeficitMax < 1.0 || !std::isfinite(cfg.adaptiveObserverDeficitMax)) { if (rank == 0) std::cerr << "--adaptive-observer-deficit-max must be finite and >= 1\n"; return false; }
+    if (cfg.adaptiveObserverDeficitEma <= 0.0 || cfg.adaptiveObserverDeficitEma > 1.0 || !std::isfinite(cfg.adaptiveObserverDeficitEma)) { if (rank == 0) std::cerr << "--adaptive-observer-deficit-ema must be finite in (0,1]\n"; return false; }
+    if (cfg.measuredLBWeightCompression != -1.0 && (cfg.measuredLBWeightCompression <= 0.0 || !std::isfinite(cfg.measuredLBWeightCompression))) { if (rank == 0) std::cerr << "--measured-lb-weight-compression must be finite and > 0\n"; return false; }
+
+    if (cfg.greyOpacityDir.empty()) {
+        std::string d = cfg.opacityDir;
+        if (d.size() > 3 && d.substr(d.size() - 3) == "MG/")
+            d = d.substr(0, d.size() - 3);
+        else if (d.size() > 2 && d.substr(d.size() - 2) == "MG")
+            d = d.substr(0, d.size() - 2);
+        cfg.greyOpacityDir = d;
+    }
+
+    if (cfg.transportTime <= 0.0)
+        cfg.transportTime = 2.0 * cfg.radius / units::clight;
+
+#if ENERGY_GROUPS_NUM <= 1
+    if (cfg.compton) { if (rank == 0) std::cerr << "--compton requires ENERGY_GROUPS_NUM > 1\n"; return false; }
+#endif
+    if (cfg.compton && cfg.adaptiveSourceCells) {
+        if (rank == 0) std::cerr << "--adaptive-source-cells does not support --compton yet\n";
+        return false;
+    }
+
+    return true;
+}
+
+struct AdaptiveSourceState
+{
+    std::unordered_map<size_t, double> scoreByCellID;
+    std::vector<double> observerDeficitByIndex;
+    double observerBudgetMultiplier = 1.0;
+    bool burninCompletePrinted = false;
+    bool postAdaptiveMeasuredLBDone = false;
+    size_t adaptiveMeasuredLBCount = 0;
+    size_t lastAdaptiveMeasuredLBGeneration = std::numeric_limits<size_t>::max();
+};
+
+struct ObserverQualityDiagnostics
+{
+    bool enabled = false;
+    bool polarizationMode = false;
+    size_t observerCount = 0;
+    size_t weakObservers = 0;
+    size_t zeroStatObservers = 0;
+    double budgetMultiplier = 1.0;
+    double deficitMin = 1.0;
+    double deficitAvg = 1.0;
+    double deficitMax = 1.0;
+    double neffP05 = 0.0;
+    double neffMedian = 0.0;
+    double neffP95 = 0.0;
+    double snrP05 = 0.0;
+    double snrMedian = 0.0;
+    double snrP95 = 0.0;
+    std::vector<double> deficitByObserver;
+    std::vector<double> neffByObserver;
+    std::vector<double> snrByObserver;
+    std::vector<unsigned long long> crossingsByObserver;
+};
+
+double EffectiveMeasuredLBWeightCompression(Config const& cfg)
+{
+    if (cfg.measuredLBWeightCompression > 0.0)
+        return cfg.measuredLBWeightCompression;
+    return cfg.adaptiveSourceCells ? 1.0 : 0.5;
+}
+
+struct RankStepImbalance
+{
+    unsigned long long localSteps = 0;
+    unsigned long long globalSteps = 0;
+    double meanRankSteps = 0.0;
+    double maxRankSteps = 0.0;
+    double maxOverMean = 0.0;
+};
+
+RankStepImbalance ComputeRankStepImbalance(
+    std::string const& label,
+    size_t gen,
+    std::vector<size_t> const& localSteps,
+    int rank)
+{
+    RankStepImbalance out;
+    for (size_t s : localSteps)
+        out.localSteps += static_cast<unsigned long long>(s);
+
+#ifdef RICH_MPI
+    unsigned long long globalSteps = out.localSteps;
+    MPI_Allreduce(MPI_IN_PLACE, &globalSteps, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    out.globalSteps = globalSteps;
+
+    double localStepsD = static_cast<double>(out.localSteps);
+    MPI_Allreduce(&localStepsD, &out.maxRankSteps, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    int mpiSize = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+    out.meanRankSteps = static_cast<double>(out.globalSteps) / std::max(mpiSize, 1);
+#else
+    out.globalSteps = out.localSteps;
+    out.maxRankSteps = static_cast<double>(out.localSteps);
+    out.meanRankSteps = static_cast<double>(out.localSteps);
+#endif
+
+    out.maxOverMean = (out.meanRankSteps > 0.0)
+        ? out.maxRankSteps / out.meanRankSteps : 0.0;
+    if (rank == 0) {
+        std::cout << label << " rank_step_imbalance after generation " << (gen + 1)
+                  << ": global_steps=" << out.globalSteps
+                  << " mean_rank_steps=" << out.meanRankSteps
+                  << " max_rank_steps=" << out.maxRankSteps
+                  << " max_over_mean=" << out.maxOverMean
+                  << std::endl;
+    }
+    return out;
+}
+
+bool AdaptiveLBCooldownSatisfied(AdaptiveSourceState const& state,
+                                 Config const& cfg,
+                                 size_t gen)
+{
+    if (state.lastAdaptiveMeasuredLBGeneration == std::numeric_limits<size_t>::max())
+        return true;
+    return gen >= state.lastAdaptiveMeasuredLBGeneration + cfg.adaptiveLBCooldownGenerations;
+}
+
+void AppendZeroVtkScalar(std::ofstream& file, std::string const& name, size_t n)
+{
+    file << "SCALARS " << name << " double 1\n"
+         << "LOOKUP_TABLE default\n";
+    for (size_t i = 0; i < n; ++i)
+        file << 0.0 << "\n";
+}
+
+struct PackedSourceEscapeStat
+{
+    unsigned long long cellID = 0;
+    unsigned long long observerIndex = 0;
+    double energy = 0.0;
+    unsigned long long count = 0;
+};
+
+std::vector<SphericalObserver::SourceCellEscapeStat>
+CollectGlobalSourceStats(std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats)
+{
+    std::vector<PackedSourceEscapeStat> packed;
+    packed.reserve(localStats.size());
+    for (auto const& s : localStats) {
+        PackedSourceEscapeStat p;
+        p.cellID = static_cast<unsigned long long>(s.cellID);
+        p.observerIndex = static_cast<unsigned long long>(s.observerIndex);
+        p.energy = s.energy;
+        p.count = static_cast<unsigned long long>(s.count);
+        packed.push_back(p);
+    }
+
+#ifdef RICH_MPI
+    int rank = 0;
+    int ranks = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+    unsigned long long localBytes64 =
+        static_cast<unsigned long long>(packed.size()) * sizeof(PackedSourceEscapeStat);
+    if (localBytes64 > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
+        throw UniversalError("Adaptive source stat packet too large for MPI_Gatherv");
+    int localBytes = static_cast<int>(localBytes64);
+    std::vector<int> counts;
+    if (rank == 0)
+        counts.assign(static_cast<size_t>(ranks), 0);
+    MPI_Gather(&localBytes, 1, MPI_INT,
+               rank == 0 ? counts.data() : nullptr, 1, MPI_INT,
+               0, MPI_COMM_WORLD);
+    std::vector<int> displs(static_cast<size_t>(ranks), 0);
+    int totalCount = 0;
+    if (rank == 0) {
+        for (int r = 0; r < ranks; ++r) {
+            displs[static_cast<size_t>(r)] = totalCount;
+            totalCount += counts[static_cast<size_t>(r)];
+        }
+    }
+    std::vector<PackedSourceEscapeStat> gathered;
+    if (rank == 0)
+        gathered.resize(static_cast<size_t>(totalCount) / sizeof(PackedSourceEscapeStat));
+    MPI_Gatherv(packed.empty() ? nullptr : packed.data(), localBytes, MPI_BYTE,
+                rank == 0 && !gathered.empty() ? gathered.data() : nullptr,
+                rank == 0 ? counts.data() : nullptr,
+                rank == 0 ? displs.data() : nullptr,
+                MPI_BYTE, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        packed.swap(gathered);
+    else
+        packed.clear();
+#endif
+
+    std::unordered_map<size_t, std::unordered_map<size_t, SphericalObserver::SourceCellEscapeStat>> byObserver;
+    for (auto const& p : packed) {
+        size_t cellID = static_cast<size_t>(p.cellID);
+        size_t observerIndex = static_cast<size_t>(p.observerIndex);
+        double energy = p.energy;
+        size_t count = static_cast<size_t>(p.count);
+        if (!(energy > 0.0) || count == 0)
+            continue;
+        auto& s = byObserver[observerIndex][cellID];
+        s.cellID = cellID;
+        s.observerIndex = observerIndex;
+        s.energy += energy;
+        s.count += count;
+    }
+
+    std::vector<SphericalObserver::SourceCellEscapeStat> result;
+    size_t totalStats = 0;
+    for (auto const& byCell : byObserver)
+        totalStats += byCell.second.size();
+    result.reserve(totalStats);
+    for (auto const& byCell : byObserver) {
+        for (auto const& kv : byCell.second)
+            result.push_back(kv.second);
+    }
+
+#ifdef RICH_MPI
+    unsigned long long resultCount = static_cast<unsigned long long>(result.size());
+    MPI_Bcast(&resultCount, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    unsigned long long resultBytes64 = resultCount * sizeof(PackedSourceEscapeStat);
+    if (resultBytes64 > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
+        throw UniversalError("Adaptive source aggregate too large for MPI_Bcast");
+    std::vector<PackedSourceEscapeStat> resultPacked(static_cast<size_t>(resultCount));
+    if (rank == 0) {
+        for (size_t i = 0; i < result.size(); ++i) {
+            resultPacked[i].cellID = static_cast<unsigned long long>(result[i].cellID);
+            resultPacked[i].observerIndex = static_cast<unsigned long long>(result[i].observerIndex);
+            resultPacked[i].energy = result[i].energy;
+            resultPacked[i].count = static_cast<unsigned long long>(result[i].count);
+        }
+    }
+    int resultBytes = static_cast<int>(resultBytes64);
+    MPI_Bcast(resultPacked.empty() ? nullptr : resultPacked.data(),
+              resultBytes, MPI_BYTE, 0, MPI_COMM_WORLD);
+    if (rank != 0) {
+        result.clear();
+        result.reserve(resultPacked.size());
+        for (auto const& p : resultPacked) {
+            SphericalObserver::SourceCellEscapeStat s;
+            s.cellID = static_cast<size_t>(p.cellID);
+            s.observerIndex = static_cast<size_t>(p.observerIndex);
+            s.energy = p.energy;
+            s.count = static_cast<size_t>(p.count);
+            result.push_back(s);
+        }
+    }
+#endif
+
+    std::sort(result.begin(), result.end(),
+              [](auto const& a, auto const& b) { return a.energy > b.energy; });
+    return result;
+}
+
+void ReduceDoubleVector(std::vector<double>& values)
+{
+#ifdef RICH_MPI
+    if (!values.empty())
+        MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#else
+    (void)values;
+#endif
+}
+
+void ReduceUnsignedLongLongVector(std::vector<unsigned long long>& values)
+{
+#ifdef RICH_MPI
+    if (!values.empty())
+        MPI_Allreduce(MPI_IN_PLACE, values.data(), static_cast<int>(values.size()),
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#else
+    (void)values;
+#endif
+}
+
+SphericalObserver::ObserverQualitySnapshot
+CollectGlobalObserverQuality(SphericalObserver::ObserverQualitySnapshot local)
+{
+    ReduceDoubleVector(local.energy);
+    ReduceDoubleVector(local.energyWeightSq);
+    ReduceUnsignedLongLongVector(local.crossingCount);
+    ReduceDoubleVector(local.stokesQ);
+    ReduceDoubleVector(local.stokesU);
+    ReduceDoubleVector(local.polarizationWeightSq);
+    ReduceDoubleVector(local.sumWQ2);
+    ReduceDoubleVector(local.sumWU2);
+#ifdef RICH_MPI
+    int polEnabled = local.polarizationEnabled ? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &polEnabled, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    local.polarizationEnabled = (polEnabled != 0);
+#endif
+    return local;
+}
+
+double Percentile(std::vector<double> values, double p)
+{
+    values.erase(std::remove_if(values.begin(), values.end(),
+                 [](double x) { return !std::isfinite(x); }), values.end());
+    if (values.empty())
+        return 0.0;
+    std::sort(values.begin(), values.end());
+    double const pos = std::clamp(p, 0.0, 1.0) *
+                       static_cast<double>(values.size() - 1);
+    size_t const lo = static_cast<size_t>(std::floor(pos));
+    size_t const hi = std::min(values.size() - 1, lo + 1);
+    double const t = pos - static_cast<double>(lo);
+    return values[lo] * (1.0 - t) + values[hi] * t;
+}
+
+ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
+    SphericalObserver::ObserverQualitySnapshot const& snap,
+    Config const& cfg,
+    AdaptiveSourceState& state)
+{
+    ObserverQualityDiagnostics diag;
+    diag.enabled = cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity;
+    diag.polarizationMode = diag.enabled && cfg.polarization && snap.polarizationEnabled;
+    diag.observerCount = snap.energy.size();
+    diag.budgetMultiplier = 1.0;
+
+    if (!diag.enabled || diag.observerCount == 0) {
+        state.observerBudgetMultiplier = 1.0;
+        return diag;
+    }
+
+    std::vector<double> rawDeficit(diag.observerCount, 1.0);
+    diag.neffByObserver.assign(diag.observerCount, 0.0);
+    diag.snrByObserver.assign(diag.observerCount, 0.0);
+    diag.crossingsByObserver = snap.crossingCount;
+
+    for (size_t i = 0; i < diag.observerCount; ++i) {
+        double const energy = snap.energy[i];
+        double const w2 = diag.polarizationMode
+            ? ((i < snap.polarizationWeightSq.size()) ? snap.polarizationWeightSq[i] : 0.0)
+            : ((i < snap.energyWeightSq.size()) ? snap.energyWeightSq[i] : 0.0);
+        double neff = 0.0;
+        if (energy > 0.0 && w2 > 0.0 && std::isfinite(energy) && std::isfinite(w2))
+            neff = energy * energy / w2;
+        diag.neffByObserver[i] = neff;
+
+        double deficit = 1.0;
+        if (neff > 0.0)
+            deficit = std::max(deficit, cfg.adaptiveObserverTargetNeff / neff);
+        else
+            deficit = cfg.adaptiveObserverDeficitMax;
+
+        if (diag.polarizationMode && energy > 0.0 && w2 > 0.0) {
+            double const q = (i < snap.stokesQ.size()) ? snap.stokesQ[i] / energy : 0.0;
+            double const u = (i < snap.stokesU.size()) ? snap.stokesU[i] / energy : 0.0;
+            double varQ = (i < snap.sumWQ2.size()) ? snap.sumWQ2[i] / energy - q * q : 0.0;
+            double varU = (i < snap.sumWU2.size()) ? snap.sumWU2[i] / energy - u * u : 0.0;
+            varQ = std::max(0.0, varQ);
+            varU = std::max(0.0, varU);
+            double const sigQ = (neff > 0.0) ? std::sqrt(varQ / neff) : 0.0;
+            double const sigU = (neff > 0.0) ? std::sqrt(varU / neff) : 0.0;
+            double const sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
+            double const polDegree = std::sqrt(q * q + u * u);
+            double const snr = (sigP > 0.0) ? polDegree / sigP : 0.0;
+            diag.snrByObserver[i] = snr;
+            if (snr > 0.0)
+                deficit = std::max(deficit, cfg.adaptiveObserverTargetPolSnr / snr);
+            else
+                deficit = cfg.adaptiveObserverDeficitMax;
+        }
+
+        rawDeficit[i] = std::clamp(deficit, 1.0, cfg.adaptiveObserverDeficitMax);
+    }
+
+    if (state.observerDeficitByIndex.size() != diag.observerCount)
+        state.observerDeficitByIndex.assign(diag.observerCount, 1.0);
+    diag.deficitByObserver.resize(diag.observerCount, 1.0);
+
+    double deficitSum = 0.0;
+    diag.deficitMin = std::numeric_limits<double>::max();
+    diag.deficitMax = 1.0;
+    for (size_t i = 0; i < diag.observerCount; ++i) {
+        double const oldDeficit = state.observerDeficitByIndex[i];
+        double const smooth = oldDeficit * (1.0 - cfg.adaptiveObserverDeficitEma)
+                            + rawDeficit[i] * cfg.adaptiveObserverDeficitEma;
+        double const finalDeficit = std::clamp(smooth, 1.0, cfg.adaptiveObserverDeficitMax);
+        state.observerDeficitByIndex[i] = finalDeficit;
+        diag.deficitByObserver[i] = finalDeficit;
+        deficitSum += finalDeficit;
+        diag.deficitMin = std::min(diag.deficitMin, finalDeficit);
+        diag.deficitMax = std::max(diag.deficitMax, finalDeficit);
+        if (finalDeficit > 1.0001)
+            ++diag.weakObservers;
+        unsigned long long const crossings =
+            (i < diag.crossingsByObserver.size()) ? diag.crossingsByObserver[i] : 0ULL;
+        if (diag.neffByObserver[i] <= 0.0 || crossings == 0)
+            ++diag.zeroStatObservers;
+    }
+    if (diag.deficitMin == std::numeric_limits<double>::max())
+        diag.deficitMin = 1.0;
+    diag.deficitAvg = deficitSum / static_cast<double>(diag.observerCount);
+
+    diag.neffP05 = Percentile(diag.neffByObserver, 0.05);
+    diag.neffMedian = Percentile(diag.neffByObserver, 0.50);
+    diag.neffP95 = Percentile(diag.neffByObserver, 0.95);
+    diag.snrP05 = Percentile(diag.snrByObserver, 0.05);
+    diag.snrMedian = Percentile(diag.snrByObserver, 0.50);
+    diag.snrP95 = Percentile(diag.snrByObserver, 0.95);
+
+    double const weakFrac = static_cast<double>(diag.weakObservers) /
+                            static_cast<double>(diag.observerCount);
+    diag.budgetMultiplier = 1.0 + cfg.adaptiveObserverExtraBudgetFrac * weakFrac;
+    state.observerBudgetMultiplier = diag.budgetMultiplier;
+    return diag;
+}
+
+RadiationIMC::SourceAllocationSummary
+ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
+{
+#ifdef RICH_MPI
+    unsigned long long const localSourceCells = local.sourceCells;
+    unsigned long long const localLearnedCells = local.learnedCells;
+    unsigned long long sums[8] = {
+        local.totalPhotons,
+        local.sourceCells,
+        local.boostedCells,
+        local.learnedCells,
+        local.learnedBoostedCells,
+        local.learnedPhotons,
+        local.learnedExtraPhotons,
+        0
+    };
+    MPI_Allreduce(MPI_IN_PLACE, sums, 8, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    local.totalPhotons = sums[0];
+    local.sourceCells = sums[1];
+    local.boostedCells = sums[2];
+    local.learnedCells = sums[3];
+    local.learnedBoostedCells = sums[4];
+    local.learnedPhotons = sums[5];
+    local.learnedExtraPhotons = sums[6];
+
+    unsigned long long minPhotons = localSourceCells > 0
+        ? static_cast<unsigned long long>(local.minPhotons)
+        : ULLONG_MAX;
+    unsigned long long maxPhotons = static_cast<unsigned long long>(local.maxPhotons);
+    unsigned long long learnedMinPhotons = localLearnedCells > 0
+        ? static_cast<unsigned long long>(local.learnedMinPhotons)
+        : ULLONG_MAX;
+    unsigned long long learnedMaxPhotons = static_cast<unsigned long long>(local.learnedMaxPhotons);
+    MPI_Allreduce(MPI_IN_PLACE, &minPhotons, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &maxPhotons, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &learnedMinPhotons, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &learnedMaxPhotons, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    local.minPhotons = (minPhotons == ULLONG_MAX) ? 0 : static_cast<size_t>(minPhotons);
+    local.maxPhotons = static_cast<size_t>(maxPhotons);
+    local.learnedMinPhotons = (learnedMinPhotons == ULLONG_MAX) ? 0 : static_cast<size_t>(learnedMinPhotons);
+    local.learnedMaxPhotons = static_cast<size_t>(learnedMaxPhotons);
+
+    MPI_Allreduce(MPI_IN_PLACE, &local.adaptiveScoreSum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    int adaptive = local.adaptiveEnabled ? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &adaptive, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    local.adaptiveEnabled = adaptive != 0;
+#endif
+    return local;
+}
+
+void UpdateAdaptiveSourceScores(
+    std::vector<SphericalObserver::SourceCellEscapeStat> const& stats,
+    Config const& cfg,
+    AdaptiveSourceState& state,
+    ObserverQualityDiagnostics const& observerQuality,
+    double& totalEscapedEnergy,
+    unsigned long long& totalCrossings,
+    size_t& passedCells,
+    size_t& newCells,
+    size_t& retainedCells,
+    size_t& decayedCells,
+    bool decayExistingScores)
+{
+    totalEscapedEnergy = 0.0;
+    totalCrossings = 0;
+    std::unordered_map<size_t, double> energyByObserver;
+    for (auto const& s : stats) {
+        totalEscapedEnergy += s.energy;
+        totalCrossings += static_cast<unsigned long long>(s.count);
+        energyByObserver[s.observerIndex] += s.energy;
+    }
+
+    passedCells = newCells = retainedCells = decayedCells = 0;
+    if (!cfg.adaptiveSourceCells)
+        return;
+
+    if (decayExistingScores) {
+        double const decay = 1.0 - cfg.adaptiveSourceEma;
+        for (auto& kv : state.scoreByCellID) {
+            kv.second *= decay;
+            ++decayedCells;
+        }
+    }
+
+    for (auto const& s : stats) {
+        auto observerTotalIt = energyByObserver.find(s.observerIndex);
+        if (observerTotalIt == energyByObserver.end() || !(observerTotalIt->second > 0.0))
+            continue;
+        double observerBoost = 1.0;
+        if (observerQuality.enabled &&
+            s.observerIndex < observerQuality.deficitByObserver.size() &&
+            observerQuality.deficitByObserver[s.observerIndex] > 0.0 &&
+            std::isfinite(observerQuality.deficitByObserver[s.observerIndex]))
+        {
+            observerBoost = observerQuality.deficitByObserver[s.observerIndex];
+        }
+        double const minEnergy =
+            cfg.adaptiveSourceMinEscapedFrac * observerTotalIt->second /
+            std::max(1.0, observerBoost);
+        if (s.energy < minEnergy)
+            continue;
+        ++passedCells;
+        auto it = state.scoreByCellID.find(s.cellID);
+        bool existed = (it != state.scoreByCellID.end() && it->second > 0.0);
+        double& score = state.scoreByCellID[s.cellID];
+        score += cfg.adaptiveSourceEma *
+                 observerBoost *
+                 (s.energy / observerTotalIt->second);
+        if (existed) ++retainedCells;
+        else ++newCells;
+    }
+
+    for (auto it = state.scoreByCellID.begin(); it != state.scoreByCellID.end(); ) {
+        if (!(it->second > 0.0) || !std::isfinite(it->second))
+            it = state.scoreByCellID.erase(it);
+        else
+            ++it;
+    }
+}
+
+void PrintAdaptiveGenerationStart(
+    std::string const& label,
+    Config const& cfg,
+    AdaptiveSourceState const& state,
+    size_t gen,
+    size_t totalGenerations,
+    size_t burninGenerations,
+    bool adaptiveActive,
+    int rank)
+{
+    if (rank != 0 || !cfg.adaptiveSourceCells)
+        return;
+    std::string mode = "burn-in";
+    if (adaptiveActive)
+        mode = (gen == burninGenerations) ? "first adaptive" : "adaptive";
+    std::string postAdaptiveLB = "disabled";
+    if (cfg.measuredLoadBalance)
+        postAdaptiveLB = state.postAdaptiveMeasuredLBDone ? "done" : "pending";
+    size_t burninRemaining = (gen < burninGenerations)
+        ? burninGenerations - gen : 0;
+    std::cout << label << " adaptive generation state: gen " << (gen + 1)
+              << "/" << totalGenerations
+              << " mode=" << mode
+              << " burnin_remaining=" << burninRemaining
+              << " learned_cells=" << state.scoreByCellID.size()
+              << " post_adaptive_LB="
+              << postAdaptiveLB
+              << std::endl;
+    if (gen == burninGenerations && !state.burninCompletePrinted)
+        std::cout << label << " adaptive source weights active for first time" << std::endl;
+}
+
+void PrintAdaptiveGenerationStats(
+    std::string const& label,
+    Config const& cfg,
+    AdaptiveSourceState const& state,
+    std::vector<SphericalObserver::SourceCellEscapeStat> const& stats,
+    RadiationIMC::SourceAllocationSummary allocation,
+    ObserverQualityDiagnostics const& observerQuality,
+    size_t gen,
+    double totalEscapedEnergy,
+    unsigned long long totalCrossings,
+    size_t passedCells,
+    size_t newCells,
+    size_t retainedCells,
+    size_t decayedCells,
+    int rank)
+{
+    if (rank != 0 || !cfg.adaptiveSourceCells)
+        return;
+    double avgPhotons = allocation.sourceCells > 0
+        ? static_cast<double>(allocation.totalPhotons) / static_cast<double>(allocation.sourceCells)
+        : 0.0;
+    double learnedAvgPhotons = allocation.learnedCells > 0
+        ? static_cast<double>(allocation.learnedPhotons) / static_cast<double>(allocation.learnedCells)
+        : 0.0;
+    double learnedPhotonFrac = allocation.totalPhotons > 0
+        ? static_cast<double>(allocation.learnedPhotons) / static_cast<double>(allocation.totalPhotons)
+        : 0.0;
+    std::unordered_map<size_t, bool> observersWithCrossings;
+    for (auto const& s : stats)
+        observersWithCrossings[s.observerIndex] = true;
+    std::cout << label << " adaptive stats after generation " << (gen + 1)
+              << ": crossing_energy=" << totalEscapedEnergy
+              << " crossing_count=" << totalCrossings
+              << " source_cell_observer_pairs=" << stats.size()
+              << " observers_with_crossings=" << observersWithCrossings.size()
+              << " cells_passing_filter=" << passedCells
+              << " learned_cells=" << state.scoreByCellID.size()
+              << " new=" << newCells
+              << " retained=" << retainedCells
+              << " decayed=" << decayedCells << "\n"
+              << label << " source allocation used: adaptive="
+              << (allocation.adaptiveEnabled ? "yes" : "no")
+              << " total_photons=" << allocation.totalPhotons
+              << " boosted_cells=" << allocation.boostedCells
+              << " learned_cells_allocated=" << allocation.learnedCells
+              << " learned_boosted_cells=" << allocation.learnedBoostedCells
+              << " learned_photons=" << allocation.learnedPhotons
+              << " learned_photon_frac=" << learnedPhotonFrac
+              << " learned_extra_photons=" << allocation.learnedExtraPhotons
+              << " photons/cell min/avg/max=" << allocation.minPhotons
+              << "/" << avgPhotons
+              << "/" << allocation.maxPhotons
+              << " learned photons/cell min/avg/max=" << allocation.learnedMinPhotons
+              << "/" << learnedAvgPhotons
+              << "/" << allocation.learnedMaxPhotons
+              << std::endl;
+
+    if (observerQuality.enabled) {
+        std::cout << label << " observer-equity stats: mode="
+                  << (observerQuality.polarizationMode ? "polarization" : "luminosity")
+                  << " weak_observers=" << observerQuality.weakObservers
+                  << "/" << observerQuality.observerCount
+                  << " zero_stat_observers=" << observerQuality.zeroStatObservers
+                  << " deficit min/avg/max=" << observerQuality.deficitMin
+                  << "/" << observerQuality.deficitAvg
+                  << "/" << observerQuality.deficitMax
+                  << " neff p05/med/p95=" << observerQuality.neffP05
+                  << "/" << observerQuality.neffMedian
+                  << "/" << observerQuality.neffP95;
+        if (observerQuality.polarizationMode)
+            std::cout << " pol_snr p05/med/p95=" << observerQuality.snrP05
+                      << "/" << observerQuality.snrMedian
+                      << "/" << observerQuality.snrP95;
+        std::cout << " next_adaptive_budget_multiplier="
+                  << observerQuality.budgetMultiplier
+                  << std::endl;
+
+        std::vector<size_t> order(observerQuality.deficitByObserver.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](size_t a, size_t b) {
+                      return observerQuality.deficitByObserver[a] >
+                             observerQuality.deficitByObserver[b];
+                  });
+        size_t const topWeak = std::min<size_t>(10, order.size());
+        if (topWeak > 0) {
+            std::cout << label << " weakest observers:" << std::endl;
+            for (size_t j = 0; j < topWeak; ++j) {
+                size_t const obs = order[j];
+                double const neff = (obs < observerQuality.neffByObserver.size())
+                    ? observerQuality.neffByObserver[obs] : 0.0;
+                double const snr = (obs < observerQuality.snrByObserver.size())
+                    ? observerQuality.snrByObserver[obs] : 0.0;
+                unsigned long long crossings =
+                    (obs < observerQuality.crossingsByObserver.size())
+                    ? observerQuality.crossingsByObserver[obs] : 0ULL;
+                std::cout << "  observer=" << obs
+                          << " deficit=" << observerQuality.deficitByObserver[obs]
+                          << " crossing_count=" << crossings
+                          << " neff=" << neff;
+                if (observerQuality.polarizationMode)
+                    std::cout << " pol_snr=" << snr;
+                std::cout << std::endl;
+            }
+        }
+    }
+
+    size_t const topN = std::min<size_t>(10, stats.size());
+    if (topN > 0) {
+        std::cout << label << " top escaping source cells:" << std::endl;
+        for (size_t i = 0; i < topN; ++i) {
+            auto const& s = stats[i];
+            double frac = (totalEscapedEnergy > 0.0) ? s.energy / totalEscapedEnergy : 0.0;
+            auto it = state.scoreByCellID.find(s.cellID);
+            double score = (it != state.scoreByCellID.end()) ? it->second : 0.0;
+            std::cout << "  observer=" << s.observerIndex
+                      << " cellID=" << s.cellID
+                      << " escaped_energy=" << s.energy
+                      << " escaped_frac=" << frac
+                      << " crossings=" << s.count
+                      << " adaptive_score=" << score
+                      << std::endl;
+        }
+    }
+}
+
+// Rosseland weight fraction for a single group with dimensionless boundaries [a, b].
+// Uses: integral_a^b x^4 e^x/(e^x-1)^2 dx = a^4/(e^a-1) - b^4/(e^b-1) + 4*(pi^4/15)*planck_integral(a,b)
+// Normalized by the full-spectrum integral 4*pi^4/15.
+double RosselandWeightFraction(double a, double b)
+{
+    double const fullIntegral = 4.0 * std::pow(M_PI, 4) / 15.0;
+    double boundaryTerm = 0.0;
+    if (a > 0.0 && a < 500.0)
+        boundaryTerm += std::pow(a, 4) / std::expm1(a);
+    if (b > 0.0 && b < 500.0)
+        boundaryTerm -= std::pow(b, 4) / std::expm1(b);
+    double planckTerm = 4.0 * (std::pow(M_PI, 4) / 15.0) * planck_integral::planck_integral(a, b);
+    return (boundaryTerm + planckTerm) / fullIntegral;
+}
+
+// Solve for alpha such that:
+//   sum_g [ f_g / (alpha * sigmaA[g] + sigmaS[g]) ] = 1/kappaRGrey
+// F(alpha) is monotonically decreasing, so bisection converges.
+double SolveRosselandAlpha(
+    std::vector<double> const& sigmaA,
+    std::vector<double> const& sigmaS,
+    std::vector<double> const& fRoss,
+    double kappaRGrey)
+{
+    double const target = 1.0 / kappaRGrey;
+
+    auto evalF = [&](double alpha) {
+        double sum = 0.0;
+        for (size_t g = 0; g < sigmaA.size(); ++g) {
+            double denom = alpha * sigmaA[g] + sigmaS[g];
+            if (denom > 0.0)
+                sum += fRoss[g] / denom;
+        }
+        return sum - target;
+    };
+
+    // F is decreasing: F(0) = sum(f_g/sigmaS_g) - target (large positive if scattering << grey)
+    //                   F(inf) → -target (negative)
+    // Find bracket
+    double lo = 0.0, hi = 1.0;
+    while (evalF(hi) > 0.0 && hi < 1e10)
+        hi *= 2.0;
+
+    if (evalF(lo) <= 0.0)
+        return lo;
+    if (evalF(hi) >= 0.0)
+        return hi;
+
+    for (int iter = 0; iter < 100; ++iter) {
+        double mid = 0.5 * (lo + hi);
+        if (evalF(mid) > 0.0)
+            lo = mid;
+        else
+            hi = mid;
+        if ((hi - lo) < 1e-12 * (lo + hi + 1e-300))
+            break;
+    }
+    return 0.5 * (lo + hi);
+}
+
+// Planck weight fraction for a single group with dimensionless boundaries [a, b].
+// Returns the fraction of the Planck spectrum integral_a^b x^3/(e^x-1) dx
+// normalised by the full-spectrum integral pi^4/15.
+double PlanckWeightFraction(double a, double b)
+{
+    return planck_integral::planck_integral(a, b);
+}
+
+// Solve for alpha such that the Planck-weighted MG absorption matches the grey Planck:
+//   sum_g [ f_planck_g * alpha * sigmaA[g] ] = kappaPGrey
+// This is a simple ratio (no iteration needed).
+double SolvePlanckAlpha(
+    std::vector<double> const& sigmaA,
+    std::vector<double> const& fPlanck,
+    double kappaPGrey)
+{
+    double mgPlanck = 0.0;
+    for (size_t g = 0; g < sigmaA.size(); ++g)
+        mgPlanck += fPlanck[g] * sigmaA[g];
+    if (mgPlanck <= 0.0)
+        return 1.0;
+    return kappaPGrey / mgPlanck;
+}
+
+template <class GreyOpacityT>
+void RecomputeOpacityScaleFactors(
+    STAMGopacityMC& opacity,
+    GreyOpacityT const& greyOpacity,
+    std::vector<ComputationalCell3D> const& cells,
+    size_t const Ncells,
+    int const rank,
+    OpacityScaleMode mode,
+    std::string const& label)
+{
+  // The scale-factor map is rank-local and keyed by cell.ID.  Clear it first so
+  // CalcAbsorptionOpacity below samples the unscaled MG opacity, then rebuild it
+  // for the cells currently owned by this rank.
+  opacity.SetRosselandScaleFactors(std::unordered_map<size_t, double>());
+
+  size_t const Ng = opacity.energy_groups_boundary.size() - 1;
+  std::unordered_map<size_t, double> scaleFactors;
+  scaleFactors.reserve(Ncells);
+
+  double alphaMin = std::numeric_limits<double>::max();
+  double alphaMax = 0.0;
+  double alphaSum = 0.0;
+  size_t alphaCount = 0;
+  size_t alphaOutliers = 0;
+
+  bool const usePlanck = (mode == OpacityScaleMode::Planck);
+
+  for (size_t i = 0; i < Ncells; ++i) {
+    double const kT = CG::boltzmann_constant * cells[i].temperature;
+    if (kT <= 0.0 || !std::isfinite(kT)) continue;
+
+    std::vector<double> fWeight(Ng);
+    double fTotal = 0.0;
+    for (size_t g = 0; g < Ng; ++g) {
+      double a = opacity.energy_groups_boundary[g] / kT;
+      double b = opacity.energy_groups_boundary[g + 1] / kT;
+      if (a >= b || a > 500.0) {
+        fWeight[g] = 0.0;
+        continue;
+      }
+      b = std::min(b, 500.0);
+      fWeight[g] = usePlanck ? PlanckWeightFraction(a, b)
+                             : RosselandWeightFraction(a, b);
+      fTotal += fWeight[g];
+    }
+    if (fTotal <= 0.0) continue;
+    for (double& f : fWeight) f /= fTotal;
+
+    std::vector<double> sigA(Ng);
+    for (size_t g = 0; g < Ng; ++g)
+      sigA[g] = opacity.CalcAbsorptionOpacity(cells[i], opacity.energy_groups_center[g]);
+
+    double alpha;
+    if (usePlanck) {
+      double const kappaPGrey = greyOpacity.CalcPlanckOpacity(cells[i]);
+      if (kappaPGrey <= 0.0 || !std::isfinite(kappaPGrey)) continue;
+      alpha = 4 * SolvePlanckAlpha(sigA, fWeight, kappaPGrey); // 2 is ad hoc factor to match the gray luminosity
+    } else {
+      std::vector<double> sigS(Ng);
+      for (size_t g = 0; g < Ng; ++g)
+        sigS[g] = opacity.CalcScatteringOpacity(cells[i], opacity.energy_groups_center[g]);
+      double const D_grey = greyOpacity.CalcDiffusionCoefficient(cells[i]);
+      if (D_grey <= 0.0 || !std::isfinite(D_grey)) continue;
+      double const kappaRGrey = CG::speed_of_light / (3.0 * D_grey);
+      alpha = SolveRosselandAlpha(sigA, sigS, fWeight, kappaRGrey);
+    }
+
+    scaleFactors[cells[i].ID] = alpha;
+
+    alphaMin = std::min(alphaMin, alpha);
+    alphaMax = std::max(alphaMax, alpha);
+    alphaSum += alpha;
+    ++alphaCount;
+    if (alpha < 0.5 || alpha > 2.0) ++alphaOutliers;
+  }
+
+  opacity.SetRosselandScaleFactors(std::move(scaleFactors));
+
+  double globalMin = 0.0, globalMax = 0.0, globalSum = 0.0;
+  size_t globalCount = 0, globalOutliers = 0;
+  MPI_Reduce(&alphaMin, &globalMin, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+  MPI_Reduce(&alphaMax, &globalMax, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+  MPI_Reduce(&alphaSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+  MPI_Reduce(&alphaCount, &globalCount, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+  MPI_Reduce(&alphaOutliers, &globalOutliers, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
+  if (rank == 0) {
+    char const* modeStr = usePlanck ? "Planck" : "Rosseland";
+    double const alphaMean = (globalCount > 0) ? globalSum / static_cast<double>(globalCount) : 1.0;
+    std::cout << modeStr << " scale " << label << ": alpha min=" << globalMin
+              << " max=" << globalMax << " mean=" << alphaMean
+              << " outliers(>2x)=" << globalOutliers << "/" << globalCount
+              << std::endl;
+  }
+}
+
+bool MeasuredLBDebugMemory()
+{
+    static int cached = -1;
+    if (cached < 0) {
+        char const* val = std::getenv("RICH_MEASURED_LB_DEBUG_MEMORY");
+        cached = (val != nullptr && std::string(val) != "0" && std::string(val) != "false") ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+void PrintVmRSS(std::string const& label, int rank) {
+    if (!MeasuredLBDebugMemory())
+        return;
+#ifdef __linux__
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::cerr << "MEMORY_RSS rank=" << rank
+                      << " label=" << label
+                      << " " << line << "\n";
+            break;
+        }
+    }
+#endif
+}
+
+} // anonymous namespace
+
+int main(int argc, char* argv[])
+{
+#ifdef RICH_MPI
+    MPI_Init(&argc, &argv);
+    int rank = 0, mpiSize = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+#else
+    int rank = 0, mpiSize = 1;
+#endif
+
+    try {
+        Config cfg;
+        if (!parseArgs(argc, argv, cfg, rank)) {
+            printUsage(rank);
+#ifdef RICH_MPI
+            MPI_Finalize();
+#endif
+            return 1;
+        }
+
+        if (rank == 0) {
+            std::cout << "=== TDE IMC Post-Processing ===\n"
+                      << "Input:           " << cfg.inputPath << "\n"
+                      << "Output:          " << cfg.outputPath << "\n"
+                      << "Opacity dir:     " << cfg.opacityDir << "\n"
+                      << "Grey opacity:    " << cfg.greyOpacityDir << "\n"
+                      << "EOS dir:         " << cfg.eosDir << "\n"
+                      << "Radius:          " << cfg.radius << " cm\n"
+                      << "Observers:       " << cfg.nObservers << "\n"
+                      << "Source dt:       " << cfg.sourceDt << " s\n"
+                      << "Transport time:  " << cfg.transportTime << " s\n"
+                      << "Photons/cell:    " << cfg.photonsPerCell << "\n"
+                      << "Center:          (" << cfg.center.x << ", " << cfg.center.y << ", " << cfg.center.z << ")\n"
+                      << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
+                      << "DDMC:            " << (cfg.ddmc ? "yes" : "no") << "\n"
+                      << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
+                      << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
+                      << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
+                      << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
+                      << "  adaptive cadence: learned-only probe LB, then learned-final step 5 and 10 LB only\n"
+                      << "Opacity scale:   " << (cfg.opacityScaleMode == OpacityScaleMode::Planck ? "planck" :
+                                                  cfg.opacityScaleMode == OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
+                      << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
+                      << "  MG schedule:   1 exact-1 burn-in, 14 exact-3 burn-in, learned-only exact-75 probe, LB, "
+                      << (10 * cfg.nGenerations + 20) << " learned-only final steps (min=500 max=2000)\n"
+                      << "  final LB cadence: learned-final steps 5 and 10 only\n"
+                      << "  min esc frac:  " << cfg.adaptiveSourceMinEscapedFrac << "\n"
+                      << "  strength:      " << cfg.adaptiveSourceStrength << "\n"
+                      << "  EMA:           " << cfg.adaptiveSourceEma << "\n"
+                      << "  max factor:    " << cfg.adaptiveSourceMaxFactor << "\n"
+                      << "  learned reserve frac:      " << cfg.adaptiveSourceLearnedReserveFrac << "\n"
+                      << "  learned min factor:        " << cfg.adaptiveSourceLearnedMinFactor << "\n"
+                      << "  observer equity:           " << ((cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) ? "enabled" : "disabled") << "\n"
+                      << "  observer target neff:      " << cfg.adaptiveObserverTargetNeff << "\n"
+                      << "  observer target pol SNR:   " << cfg.adaptiveObserverTargetPolSnr << "\n"
+                      << "  observer deficit max/EMA:  " << cfg.adaptiveObserverDeficitMax << "/" << cfg.adaptiveObserverDeficitEma << "\n"
+                      << "  observer extra budget max: " << cfg.adaptiveObserverExtraBudgetFrac << "\n"
+                      << "  burnin/adapt LB: " << ((cfg.adaptiveSourceCells && cfg.measuredLoadBalance) ? "requested" : "disabled") << "\n"
+                      << "Requested generations: " << cfg.nGenerations << "\n"
+                      << "MPI ranks:       " << mpiSize << "\n"
+                      << std::endl;
+        }
+
+        // ============================================================
+        // Code-unit scale factors (for snapshot → CGS conversion)
+        // ============================================================
+        double const lscale = 7e10;   // cm
+        double const mscale = 2e33;   // g
+        double const tscale = 1603;   // s
+
+        double const rho_factor = mscale / (lscale * lscale * lscale);
+        double const vel_factor = lscale / tscale;
+        double const energy_factor = lscale * lscale / (tscale * tscale);
+
+        // ============================================================
+        // Load EOS (identity scales: inputs will already be CGS)
+        // ============================================================
+        auto eos = std::make_shared<OndrejEOS>(
+            cfg.eosDir + "density.txt",
+            cfg.eosDir + "Pfile.txt",
+            cfg.eosDir + "csfile.txt",
+            cfg.eosDir + "Sfile.txt",
+            cfg.eosDir + "Ufile.txt",
+            cfg.eosDir + "Tfile.txt",
+            cfg.eosDir + "CVfile.txt",
+            1.0, 1.0, 1.0);
+
+        if (rank == 0)
+            std::cout << "EOS loaded (CGS mode, lscale=" << lscale << " mscale=" << mscale << " tscale=" << tscale << ")." << std::endl;
+
+        // ============================================================
+        // Load STA multigroup opacity
+        // ============================================================
+        auto opacity = std::make_shared<STAMGopacityMC>(cfg.opacityDir);
+
+#if ENERGY_GROUPS_NUM > 1
+        if (opacity->energy_groups_boundary.size() != ENERGY_GROUPS_NUM + 1)
+        {
+            UniversalError eo("STA opacity table group count does not match ENERGY_GROUPS_NUM");
+            eo.addEntry("Table boundaries", opacity->energy_groups_boundary.size());
+            eo.addEntry("Expected boundaries", ENERGY_GROUPS_NUM + 1);
+            throw eo;
+        }
+        for (size_t g = 0; g <= ENERGY_GROUPS_NUM; ++g)
+            ComputationalCell3D::energyBoundaries[g] = opacity->energy_groups_boundary[g];
+#endif
+
+        if (rank == 0)
+        {
+            std::cout << "Opacity loaded: " << opacity->energy_groups_center.size() << " groups." << std::endl;
+            std::cout << "ENERGY_GROUPS_NUM=" << ENERGY_GROUPS_NUM << "  energyBoundaries:";
+            for (size_t g = 0; g <= ENERGY_GROUPS_NUM; ++g)
+                std::cout << " " << ComputationalCell3D::energyBoundaries[g];
+            std::cout << std::endl;
+        }
+
+        // ============================================================
+        // Read snapshot (MPI-written)
+        // ============================================================
+        if (rank == 0)
+            std::cout << "Reading snapshot..." << std::endl;
+
+        Snapshot3D snapshot;
+#ifdef RICH_MPI
+        snapshot = ReadSnapshot3DParallel(cfg.inputPath);
+        int const fileRanks = GetNumberOfRanksInHDF(cfg.inputPath);
+        if (mpiSize < fileRanks && rank == 0) {
+            for (int fileRank = mpiSize; fileRank < fileRanks; ++fileRank) {
+                Snapshot3D extra = ReadSnapshot3DParallel(cfg.inputPath, fileRank);
+                snapshot.cells.insert(snapshot.cells.end(),
+                                      extra.cells.begin(), extra.cells.end());
+                snapshot.mesh_points.insert(snapshot.mesh_points.end(),
+                                            extra.mesh_points.begin(),
+                                            extra.mesh_points.end());
+            }
+        }
+#else
+        snapshot = ReadSnapshot3D(cfg.inputPath);
+#endif
+
+        if (snapshot.mesh_points.empty()) {
+            if (rank == 0) std::cerr << "Empty snapshot\n";
+#ifdef RICH_MPI
+            MPI_Finalize();
+#endif
+            return 1;
+        }
+
+        if (rank == 0)
+            std::cout << "Snapshot read: " << snapshot.mesh_points.size() << " points, time=" << snapshot.time << std::endl;
+
+        // ============================================================
+        // Convert snapshot from code units to CGS
+        // ============================================================
+        snapshot.ll = snapshot.ll * lscale;
+        snapshot.ur = snapshot.ur * lscale;
+        snapshot.time *= tscale;
+
+        for (auto& pt : snapshot.mesh_points)
+            pt = pt * lscale;
+
+        for (auto& c : snapshot.cells) {
+            c.density *= rho_factor;
+            c.pressure *= mscale / (tscale * tscale * lscale);
+            c.internal_energy *= energy_factor;
+            c.velocity = c.velocity * vel_factor;
+            c.Erad *= energy_factor;
+            for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                c.Eg[g] *= energy_factor;
+        }
+
+        if (rank == 0)
+            std::cout << "Converted snapshot to CGS." << std::endl;
+
+        // ============================================================
+        // Rebuild tessellation (two-pass for weighted load balancing)
+        // ============================================================
+#ifdef RICH_MPI
+        ComputationalCell3D dummyCell;
+        std::vector<double> lbWeights;
+        std::vector<Vector3D> localPoints;
+        {
+            Voronoi3D tempTess(snapshot.ll, snapshot.ur);
+            tempTess.BuildParallel(snapshot.mesh_points);
+            MPI_exchange_data(tempTess, snapshot.cells, false, 1, &dummyCell);
+
+            size_t N = tempTess.GetPointNo();
+
+            std::vector<double> tauScatVec(N, 0.0);
+            std::vector<double> tauPlanckLocal(N, 0.0);
+            for (size_t i = 0; i < N; ++i)
+            {
+                double charLen = std::cbrt(tempTess.GetVolume(i));
+                tauPlanckLocal[i] = opacity->CalcPlanckOpacity(snapshot.cells[i]) * charLen;
+                tauScatVec[i] = opacity->CalcScatteringOpacity(snapshot.cells[i]) * charLen;
+            }
+
+            MPI_exchange_data(tempTess, tauScatVec, true);
+            size_t Ntot = tauScatVec.size();
+
+            lbWeights.resize(N);
+            localPoints.resize(N);
+            for (size_t i = 0; i < N; ++i)
+            {
+                localPoints[i] = tempTess.GetMeshPoint(i);
+
+                std::vector<size_t> neighbors = tempTess.GetNeighbors(i);
+                double avgTauScat = 0.0;
+                size_t count = 0;
+                avgTauScat += tauScatVec[i];
+                ++count;
+
+                for (size_t nb : neighbors)
+                {
+                    if (nb < N || !tempTess.IsPointOutsideBox(nb)) 
+                    {
+                        avgTauScat += 0.5 * (tauScatVec[nb] + tauScatVec[i]);
+                        ++count;
+                    }
+                }
+                avgTauScat /= static_cast<double>(count);
+
+                double const tauPlanck = tauPlanckLocal[i];
+                double maxweight = 3;
+                if (avgTauScat > 5.0)
+                {
+                    maxweight = std::max(maxweight, 0.05 * avgTauScat);
+                    lbWeights[i] = 1.0 + (tauPlanck < tauScatVec[i] * 0.1 ? std::min(maxweight, avgTauScat) : 0.0);
+                }
+            }
+        }
+        snapshot.mesh_points.clear();
+        snapshot.mesh_points.shrink_to_fit();
+
+        Voronoi3D tess(snapshot.ll, snapshot.ur);
+        tess.BuildParallel(localPoints, lbWeights);
+
+        localPoints.clear();
+        localPoints.shrink_to_fit();
+        lbWeights.clear();
+        lbWeights.shrink_to_fit();
+
+        MPI_exchange_data(tess, snapshot.cells, false, 1, &dummyCell);
+#else
+        Voronoi3D tess(snapshot.ll, snapshot.ur);
+        tess.Build(snapshot.mesh_points);
+#endif
+
+        size_t Ncells = tess.GetPointNo();
+        std::vector<ComputationalCell3D> &cells = snapshot.cells;
+        if (cells.size() < Ncells)
+            throw UniversalError("Snapshot cell count is smaller than tessellation cell count");
+
+        if (rank == 0)
+            std::cout << "Tessellation built: " << Ncells << " local cells." << std::endl;
+
+        // Validate cells
+        size_t badCells = 0;
+        for (size_t i = 0; i < Ncells; ++i) {
+            if (cells[i].density <= 0.0 || !std::isfinite(cells[i].density) ||
+                cells[i].temperature <= 0.0 || !std::isfinite(cells[i].temperature)) {
+                ++badCells;
+            }
+        }
+        if (badCells > 0) {
+            UniversalError eo("Invalid density or temperature in post-process snapshot");
+            eo.addEntry("Invalid local cells", badCells);
+            throw eo;
+        }
+
+        // ============================================================
+        // Compute grey FLD luminosity per observer patch
+        // ============================================================
+        auto greyOpacity = std::make_shared<STAgreyOpacity>(cfg.greyOpacityDir);
+        if (rank == 0)
+            std::cout << "Grey opacity loaded for FLD luminosity." << std::endl;
+
+        // ============================================================
+        // Scale MG absorption to match grey mean
+        // ============================================================
+#if ENERGY_GROUPS_NUM > 1
+        if (cfg.opacityScaleMode != OpacityScaleMode::None) {
+            RecomputeOpacityScaleFactors(
+                *opacity, *greyOpacity, cells, Ncells, rank, cfg.opacityScaleMode, "initial");
+        }
+#endif
+
+        // Per-cell radiation energy density, diffusion coefficient, and FLD flux vector
+        std::vector<double> Er_vol(Ncells);
+        std::vector<double> D_cell(Ncells);
+        std::vector<Vector3D> fldFlux(Ncells);
+
+        for (size_t i = 0; i < Ncells; ++i) {
+            Er_vol[i] = cells[i].density * cells[i].Erad;
+            D_cell[i] = greyOpacity->CalcDiffusionCoefficient(cells[i]);
+        }
+
+#ifdef RICH_MPI
+        MPI_exchange_data(tess, Er_vol, true);
+#endif
+
+        // Green-Gauss gradient of E_r
+        std::vector<Vector3D> gradEr(Ncells);
+        {
+            std::vector<size_t> neighbors;
+            for (size_t i = 0; i < Ncells; ++i) {
+                auto const& faces = tess.GetCellFaces(i);
+                tess.GetNeighbors(i, neighbors);
+                Vector3D grad(0, 0, 0);
+                for (size_t j = 0; j < neighbors.size(); ++j) {
+                    size_t nb = neighbors[j];
+                    if (tess.IsPointOutsideBox(nb))
+                        continue;
+                    double Er_face = 0.5 * (Er_vol[i] + Er_vol[nb]);
+                    Vector3D r_ij = tess.GetMeshPoint(nb) - tess.GetMeshPoint(i);
+                    double dist = fastabs(r_ij);
+                    if (dist < 1e-200)
+                        continue;
+                    Vector3D nhat = r_ij * (1.0 / dist);
+                    grad += nhat * (tess.GetArea(faces[j]) * Er_face);
+                }
+                double vol = tess.GetVolume(i);
+                if (vol > 0.0)
+                    grad *= 1.0 / vol;
+                gradEr[i] = grad;
+            }
+        }
+
+        // Apply flux limiter and compute FLD flux vector F = -lambda * D * grad(Er)
+        for (size_t i = 0; i < Ncells; ++i) {
+            double lambda = CG::CalcSingleFluxLimiter(gradEr[i], D_cell[i], Er_vol[i]);
+            fldFlux[i] = gradEr[i] * (-lambda * D_cell[i]);
+        }
+
+        if (rank == 0)
+            std::cout << "FLD flux computed for " << Ncells << " cells." << std::endl;
+
+        // ============================================================
+        // Build extensives
+        // ============================================================
+        std::vector<Conserved3D> extensives(Ncells);
+        for (size_t i = 0; i < Ncells; ++i)
+            PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+        // ============================================================
+        // Energy group boundaries
+        // ============================================================
+        std::vector<double> groupBoundaries;
+#if ENERGY_GROUPS_NUM > 1
+        groupBoundaries.resize(ENERGY_GROUPS_NUM + 1);
+        for (size_t g = 0; g <= ENERGY_GROUPS_NUM; ++g)
+            groupBoundaries[g] = ComputationalCell3D::energyBoundaries[g];
+#endif
+
+        // ============================================================
+        // Construct observer
+        // ============================================================
+        auto observer = std::make_shared<SphericalObserver>(
+            cfg.center, cfg.radius, cfg.nObservers, groupBoundaries);
+
+        // ============================================================
+        // Map FLD flux to observer patches
+        // ============================================================
+        size_t nObs = observer->getNumObservers();
+        std::vector<Vector3D> const& obsDirections = observer->getDirections();
+        std::vector<double> const& obsSolidAngles = observer->getObserverSolidAngles();
+
+        std::vector<double> fldLuminosity(nObs, 0.0);
+        std::vector<double> patchMinDist(nObs, std::numeric_limits<double>::max());
+
+        for (size_t p = 0; p < nObs; ++p) {
+            Vector3D spherePoint = cfg.center + obsDirections[p] * cfg.radius;
+            double patchArea_p = obsSolidAngles[p] * cfg.radius * cfg.radius;
+            for (size_t i = 0; i < Ncells; ++i) {
+                double dist = fastabs(tess.GetMeshPoint(i) - spherePoint);
+                if (dist < patchMinDist[p]) {
+                    patchMinDist[p] = dist;
+                    double radialFlux = ScalarProd(fldFlux[i], obsDirections[p]);
+                    fldLuminosity[p] = std::max(0.0, radialFlux) * patchArea_p;
+                }
+            }
+        }
+
+#ifdef RICH_MPI
+        {
+            struct DistVal { double dist; int rank; };
+            std::vector<DistVal> localDV(nObs), globalDV(nObs);
+            for (size_t p = 0; p < nObs; ++p) {
+                localDV[p].dist = patchMinDist[p];
+                localDV[p].rank = rank;
+            }
+            MPI_Allreduce(localDV.data(), globalDV.data(),
+                          static_cast<int>(nObs), MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+            for (size_t p = 0; p < nObs; ++p) {
+                if (globalDV[p].rank != rank)
+                    fldLuminosity[p] = 0.0;
+            }
+            MPI_Allreduce(MPI_IN_PLACE, fldLuminosity.data(),
+                          static_cast<int>(nObs), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        }
+#endif
+
+        // Free FLD intermediates no longer needed
+        Er_vol.clear(); Er_vol.shrink_to_fit();
+        D_cell.clear(); D_cell.shrink_to_fit();
+        gradEr.clear(); gradEr.shrink_to_fit();
+        fldFlux.clear(); fldFlux.shrink_to_fit();
+        patchMinDist.clear(); patchMinDist.shrink_to_fit();
+
+        double totalFldLum = 0.0;
+        for (size_t p = 0; p < nObs; ++p)
+            totalFldLum += fldLuminosity[p];
+
+        if (rank == 0)
+            std::cout << "FLD luminosity mapped to " << nObs << " patches, total = "
+                      << totalFldLum << " erg/s" << std::endl;
+
+        // ============================================================
+        // Construct boundary condition
+        // ============================================================
+        auto boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+        // ============================================================
+        // Construct RadiationIMC
+        // ============================================================
+        RadiationIMCParameters params;
+        size_t genPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / cfg.nGenerations);
+        params.newPhotonsPerCell = genPhotonsPerCell;
+        params.withHydro = false;
+        params.noHydroFeedback = true;
+        params.withRandomWalk = cfg.randomWalk;
+        params.rwMinCellOpticalDepth = 15;
+        params.withDDMC = cfg.ddmc;
+        params.ddmcMinCellOpticalDepth = 15;
+        params.ddmcMinParticleOpticalDepth = 5;
+        params.ddmcUseMultigroupPGRW = true;
+        params.MMC = false;
+        params.diffusionPressureGradient = false;
+#if ENERGY_GROUPS_NUM > 1
+        params.withMultigroupOpacity = true;
+#else
+        params.withMultigroupOpacity = false;
+#endif
+        params.withCompton = cfg.compton;
+        params.comptonMatrixSamples = cfg.comptonSamples;
+        params.comptonAngleDependent = cfg.comptonAngleDependent;
+
+        params.postProcess.enabled = true;
+        params.postProcess.sourceDt = cfg.sourceDt;
+        params.postProcess.transportTime = cfg.transportTime;
+        params.postProcess.useCellVelocities = cfg.useCellVelocities;
+        params.postProcess.polarization.enabled = cfg.polarization;
+        params.postProcess.polarization.manualScatteringsAfterAcceleration = cfg.polarizationManualScatterings;
+        params.postProcess.polarization.depolarizationScatterings = cfg.polarizationDepolarizationScatterings;
+        params.postProcess.polarization.acceleratedClosure = cfg.polarizationClosure;
+
+        auto physics = std::make_shared<RadiationIMC>(
+            tess, boundary, cells, extensives, eos, opacity, params);
+        physics->setObserver(observer);
+
+        auto popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+        // ============================================================
+        // Construct manager
+        // ============================================================
+        std::shared_ptr<MonteCarloManager3D> manager;
+#ifdef RICH_MPI
+        manager = std::make_shared<RDMAMonteCarloManager3D>(
+            tess, physics, popControl, boundary);
+#else
+        manager = std::make_shared<MonteCarloManagerSerial3D>(
+            tess, physics, popControl, boundary);
+#endif
+
+        if (rank == 0)
+        {
+            std::cout << "Starting transport..." << std::endl;
+            size_t diagCells = std::min<size_t>(5, cells.size());
+            for (size_t ci = 0; ci < diagCells; ++ci)
+            {
+                auto const& cc = cells[ci];
+                double vol = tess.GetVolume(ci);
+                double charLen = std::cbrt(vol);
+                double sigAbs = opacity->CalcAbsorptionOpacity(cc, opacity->energy_groups_center[0]);
+                double sigScat = opacity->CalcScatteringOpacity(cc, opacity->energy_groups_center[0]);
+                double sigScatGrey = opacity->CalcScatteringOpacity(cc);
+                double tauAbs = sigAbs * charLen;
+                double tauScat = sigScat * charLen;
+                std::cerr << "[DIAG] cell " << ci
+                          << ": rho=" << cc.density
+                          << " T=" << cc.temperature
+                          << " vol=" << vol
+                          << " L=" << charLen
+                          << " sig_abs(g0)=" << sigAbs
+                          << " sig_scat(g0)=" << sigScat
+                          << " sig_scat_grey=" << sigScatGrey
+                          << " tau_abs=" << tauAbs
+                          << " tau_scat=" << tauScat
+                          << "\n";
+            }
+            std::cerr << std::flush;
+        }
+
+        // ============================================================
+        // Run transport (generation loop)
+        // ============================================================
+        using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
+
+        bool const measuredLBActive =
+            cfg.measuredLoadBalance && (cfg.adaptiveSourceCells || cfg.nGenerations > 1);
+#if ENERGY_GROUPS_NUM > 1
+        bool const isMultigroup = true;
+#else
+        bool const isMultigroup = false;
+#endif
+
+        if (rank == 0)
+            std::cout << "Measured LB active: " << (measuredLBActive ? "yes" : "no") << std::endl;
+
+        imc_measured_lb::Parameters measuredLBParams;
+        measuredLBParams.floorCost = 1.0;
+        measuredLBParams.stepWeight = 1.0;
+        measuredLBParams.particleWeight = cfg.adaptiveSourceCells ? 1.0 : 0.0;
+        measuredLBParams.medianClampFactor = isMultigroup ? 30.0 : 20.0;
+        measuredLBParams.missingCellCost = isMultigroup ? 5.0 : 2.0;
+        measuredLBParams.grayZeroStepInflation = 2.0;
+        measuredLBParams.multigroupZeroStepInflation = 5.0;
+        measuredLBParams.useMedianClamp = true;
+        double const measuredLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
+
+        AdaptiveSourceState mgAdaptive;
+        observer->clearGenerationStatistics();
+        size_t mgIncludedFinalGenerations = 0;
+        size_t mgDiscardedBurninGenerations = 0;
+        size_t const mgInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
+        size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 14 : 0;
+        size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
+        size_t const mgLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
+        size_t const mgFinalStartGeneration = mgBurninGenerations + mgLearnedProbeGenerations;
+        size_t const mgFinalGenerations = cfg.adaptiveSourceCells
+            ? 10 * cfg.nGenerations + 20
+            : cfg.nGenerations;
+        size_t const mgTotalGenerations = cfg.adaptiveSourceCells
+            ? mgFinalStartGeneration + mgFinalGenerations
+            : cfg.nGenerations;
+        for (size_t gen = 0; gen < mgTotalGenerations; ++gen)
+        {
+            bool const firstBurninThisGen =
+                cfg.adaptiveSourceCells && gen < mgInitialBurninGenerations;
+            bool const uniformBurninThisGen =
+                cfg.adaptiveSourceCells &&
+                gen >= mgInitialBurninGenerations &&
+                gen < mgBurninGenerations;
+            bool const burninThisGen = firstBurninThisGen || uniformBurninThisGen;
+            bool const learnedProbeThisGen =
+                cfg.adaptiveSourceCells &&
+                gen >= mgBurninGenerations &&
+                gen < mgFinalStartGeneration;
+            bool const finalThisGen =
+                !cfg.adaptiveSourceCells || gen >= mgFinalStartGeneration;
+            size_t const finalGenerationIndex = finalThisGen
+                ? (cfg.adaptiveSourceCells ? gen - mgFinalStartGeneration : gen)
+                : 0;
+            bool const adaptiveActiveThisGen =
+                cfg.adaptiveSourceCells &&
+                (learnedProbeThisGen || finalThisGen) &&
+                !mgAdaptive.scoreByCellID.empty();
+            size_t const photonsThisGen = firstBurninThisGen ? 1
+                : (uniformBurninThisGen ? 3
+                   : (learnedProbeThisGen ? 75
+                      : (cfg.adaptiveSourceCells ? 1 : genPhotonsPerCell)));
+            std::string phase = "final";
+            if (firstBurninThisGen)
+                phase = "burnin_exact1";
+            else if (uniformBurninThisGen)
+                phase = "burnin_exact3";
+            else if (learnedProbeThisGen)
+                phase = "learned_only_probe_exact75";
+            else if (cfg.adaptiveSourceCells)
+                phase = "learned_only_final";
+            physics->setNewPhotonsPerCell(photonsThisGen);
+            if (rank == 0)
+                std::cout << "Generation " << (gen + 1) << "/" << mgTotalGenerations
+                          << " phase=" << phase
+                          << " photons_per_cell_this_gen=" << photonsThisGen;
+            if (rank == 0 && finalThisGen)
+                std::cout << " final_step=" << (finalGenerationIndex + 1)
+                          << "/" << mgFinalGenerations;
+            if (rank == 0)
+                std::cout << std::endl;
+            PrintAdaptiveGenerationStart("MG", cfg, mgAdaptive, gen, mgTotalGenerations,
+                                         mgBurninGenerations,
+                                         adaptiveActiveThisGen, rank);
+
+            if (adaptiveActiveThisGen)
+                physics->setAdaptiveSourceCellScores(
+                    mgAdaptive.scoreByCellID,
+                    cfg.adaptiveSourceStrength,
+                    cfg.adaptiveSourceMaxFactor,
+                    cfg.adaptiveSourceLearnedReserveFrac,
+                    cfg.adaptiveSourceLearnedMinFactor,
+                    mgAdaptive.observerBudgetMultiplier);
+            else
+                physics->clearAdaptiveSourceCellScores();
+            if (firstBurninThisGen)
+                physics->setSourceEmissionControl(false, true, 1);
+            else if (uniformBurninThisGen)
+                physics->setSourceEmissionControl(false, true, 3);
+            else if (learnedProbeThisGen)
+                physics->setSourceEmissionControl(true, true, 75);
+            else if (cfg.adaptiveSourceCells && finalThisGen)
+                physics->setSourceEmissionControl(true, false, 1, 500, 2000);
+            else
+                physics->clearSourceEmissionControl();
+            observer->resetGenerationSourceCellEscapeStats();
+
+            physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
+
+            std::vector<Particle3D> empty;
+            auto remaining = manager->step(std::move(empty), cells, cfg.transportTime);
+            (void)remaining;
+
+            auto mgAllocation = ReduceSourceAllocationSummary(
+                physics->getLastSourceAllocationSummary());
+            auto mgSourceStats = CollectGlobalSourceStats(
+                observer->getGenerationSourceCellEscapeStats());
+            ObserverQualityDiagnostics mgObserverQuality;
+            if (cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
+                mgObserverQuality = BuildObserverQualityDiagnostics(
+                    CollectGlobalObserverQuality(observer->getObserverQualitySnapshot()),
+                    cfg, mgAdaptive);
+            }
+            double mgGenerationEscapedEnergy = 0.0;
+            unsigned long long mgGenerationCrossings = 0;
+            size_t mgPassedCells = 0;
+            size_t mgNewCells = 0;
+            size_t mgRetainedCells = 0;
+            size_t mgDecayedCells = 0;
+            UpdateAdaptiveSourceScores(
+                mgSourceStats, cfg, mgAdaptive, mgObserverQuality,
+                mgGenerationEscapedEnergy, mgGenerationCrossings,
+                mgPassedCells, mgNewCells, mgRetainedCells, mgDecayedCells,
+                !burninThisGen);
+            PrintAdaptiveGenerationStats(
+                "MG", cfg, mgAdaptive, mgSourceStats, mgAllocation,
+                mgObserverQuality, gen,
+                mgGenerationEscapedEnergy, mgGenerationCrossings,
+                mgPassedCells, mgNewCells, mgRetainedCells, mgDecayedCells,
+                rank);
+            if (rank == 0 && cfg.adaptiveSourceCells)
+                std::cout << "MG learned cells after iteration " << (gen + 1)
+                          << ": " << mgAdaptive.scoreByCellID.size() << std::endl;
+            observer->addBoxEscapeEnergy(boundary->getEscapedEnergy());
+            boundary->resetEscapedEnergy();
+            observer->mpiReduceToRank0();
+            bool const includeGenerationInFinal = finalThisGen;
+            if (includeGenerationInFinal) {
+                if (rank == 0)
+                    observer->accumulateCurrentTalliesForStatistics(cfg.sourceDt);
+                ++mgIncludedFinalGenerations;
+            } else {
+                ++mgDiscardedBurninGenerations;
+            }
+            observer->resetTallies();
+            if (cfg.adaptiveSourceCells && !mgAdaptive.burninCompletePrinted &&
+                gen + 1 == mgBurninGenerations)
+            {
+                if (rank == 0)
+                    std::cout << "MG adaptive source burn-in complete" << std::endl;
+                mgAdaptive.burninCompletePrinted = true;
+            }
+
+#ifdef RICH_MPI
+            RankStepImbalance const mgStepImbalance =
+                ComputeRankStepImbalance("MG", gen, manager->GetCellsStepsCounters(), rank);
+            bool const doInitialMeasuredLB =
+                (gen == 0 && measuredLBActive && !cfg.adaptiveSourceCells);
+            bool const doPostAdaptiveMeasuredLB =
+                measuredLBActive &&
+                cfg.adaptiveSourceCells &&
+                learnedProbeThisGen &&
+                !mgAdaptive.postAdaptiveMeasuredLBDone;
+            bool const doAdaptivePeriodicMeasuredLB =
+                measuredLBActive &&
+                cfg.adaptiveSourceCells &&
+                finalThisGen &&
+                finalGenerationIndex + 1 < mgFinalGenerations &&
+                finalGenerationIndex + 1 <= 10 &&
+                (finalGenerationIndex + 1) % 5 == 0;
+            std::string const mgLBLabel = doPostAdaptiveMeasuredLB
+                ? "MEASURED_LB_ADAPTIVE"
+                : (doAdaptivePeriodicMeasuredLB
+                    ? "MEASURED_LB_ADAPTIVE_PERIODIC"
+                    : "MEASURED_LB");
+            if (rank == 0 && doPostAdaptiveMeasuredLB)
+                std::cout << "MG learned-only probe complete; running measured LB before final calculation" << std::endl;
+            if (rank == 0 && doAdaptivePeriodicMeasuredLB)
+                std::cout << "MG periodic final measured LB after final step "
+                          << (finalGenerationIndex + 1)
+                          << ": rank_step_imbalance="
+                          << mgStepImbalance.maxOverMean
+                          << std::endl;
+            // The just-finished generation has already been recorded into the
+            // final-output statistics accumulator when it is eligible. Its step
+            // counters are used here only to repartition later generations.
+            // Repartition assumptions:
+            //   - Each generation is independent (no census particles carried between them).
+            //   - noHydroFeedback is true: gas state is not modified by MC generations.
+            //   - Extensives can be rebuilt from cell primitives after repartition.
+            //   - The observer statistics accumulator and adaptive scores are preserved.
+            if (doInitialMeasuredLB ||
+                doPostAdaptiveMeasuredLB || doAdaptivePeriodicMeasuredLB) {
+                if (!params.noHydroFeedback) {
+                    throw UniversalError("Measured load balance repartition requires noHydroFeedback=true");
+                }
+
+                PrintVmRSS("before_measured_lb", rank);
+
+                std::vector<double> measuredWeightsForExchange;
+
+                {
+                    auto const& localSteps = manager->GetCellsStepsCounters();
+
+                    std::vector<size_t> cellIDs(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        cellIDs[i] = cells[i].ID;
+
+                    auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(
+                        cellIDs, localSteps, physics->getLastSourcePhotonsPerCell());
+
+                    uint64_t localTotalSteps = 0;
+                    for (auto const& m : localMeasurements)
+                        localTotalSteps += static_cast<uint64_t>(m.stepCount);
+
+                    uint64_t globalTotalSteps = 0;
+                    MPI_Allreduce(&localTotalSteps, &globalTotalSteps, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                    if (globalTotalSteps == 0) {
+                        if (rank == 0)
+                            std::cerr << mgLBLabel
+                                      << ": measured generation had zero total steps, skipping repartition\n";
+                    } else {
+                        // Global-mean-based clamp via MPI_Allreduce (no per-cell allgather).
+                        auto localCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                            localMeasurements, measuredLBParams, isMultigroup, MPI_COMM_WORLD);
+
+                        imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                            localMeasurements, localCostByCellID, isMultigroup, MPI_COMM_WORLD);
+
+                        PrintVmRSS("after_local_costs", rank);
+
+                        size_t localMissingCosts = 0;
+                        for (size_t i = 0; i < Ncells; ++i) {
+                            if (localCostByCellID.find(cells[i].ID) == localCostByCellID.end())
+                                ++localMissingCosts;
+                        }
+                        uint64_t localMissing64 = static_cast<uint64_t>(localMissingCosts);
+                        uint64_t globalMissingCosts = 0;
+                        MPI_Allreduce(&localMissing64, &globalMissingCosts, 1,
+                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                        if (rank == 0 && globalMissingCosts != 0) {
+                            std::cerr << "MEASURED_LB_WARNING missing local measured costs before repartition: "
+                                      << globalMissingCosts << "\n";
+                        }
+
+                        IMCStepCounterCostCalculator::Parameters costCalcParams;
+                        costCalcParams.floorCost = measuredLBParams.floorCost;
+                        costCalcParams.missingCellCost = measuredLBParams.missingCellCost;
+                        IMCStepCounterCostCalculator measuredCostCalc(std::move(localCostByCellID), costCalcParams);
+
+                        std::vector<Vector3D> currentPoints(Ncells);
+                        for (size_t i = 0; i < Ncells; ++i)
+                            currentPoints[i] = tess.GetMeshPoint(i);
+
+                        auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
+
+                        if (lbWeightsNew.size() != Ncells) {
+                            throw UniversalError("Measured LB weight count mismatch before BuildParallel");
+                        }
+
+                        measuredWeightsForExchange = lbWeightsNew;
+
+                        for (auto& w : lbWeightsNew)
+                            w = std::pow(w, measuredLBWeightCompression);
+
+                        tess.BuildParallel(currentPoints, lbWeightsNew);
+                    }
+                }
+
+                PrintVmRSS("after_build_parallel", rank);
+
+                if (!measuredWeightsForExchange.empty()) {
+                    MPI_exchange_data(tess, cells, false, 1, &dummyCell);
+
+                    double dummyWeight = measuredLBParams.missingCellCost;
+                    MPI_exchange_data(tess, measuredWeightsForExchange, false, 1, &dummyWeight);
+
+                    Ncells = tess.GetPointNo();
+
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    if (measuredWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(measuredWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        measuredWeightsForExchange, measuredLBWeightCompression,
+                        isMultigroup, MPI_COMM_WORLD);
+
+                    PrintVmRSS("after_exchange", rank);
+
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+#if ENERGY_GROUPS_NUM > 1
+                    if (cfg.opacityScaleMode != OpacityScaleMode::None) {
+                        // Measured LB changes which cell IDs are local to each MPI rank.
+                        // The alpha table is local and ID-keyed, so refresh it
+                        // before rebuilding physics and before the next transport step.
+                        RecomputeOpacityScaleFactors(
+                            *opacity, *greyOpacity, cells, Ncells, rank, cfg.opacityScaleMode, "after measured LB repartition");
+                    }
+#endif
+
+                    observer->addBoxEscapeEnergy(boundary->getEscapedEnergy());
+                    boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    physics = std::make_shared<RadiationIMC>(
+                        tess, boundary, cells, extensives, eos, opacity, params);
+                    physics->setObserver(observer);
+
+                    popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+                    manager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, physics, popControl, boundary);
+
+                    if (rank == 0)
+                        std::cout << mgLBLabel
+                                  << ": repartitioned, new local cells=" << Ncells << std::endl;
+
+                    PrintVmRSS("after_rebuild_physics", rank);
+                }
+                if (doPostAdaptiveMeasuredLB) {
+                    mgAdaptive.postAdaptiveMeasuredLBDone = true;
+                    mgAdaptive.adaptiveMeasuredLBCount += 1;
+                    mgAdaptive.lastAdaptiveMeasuredLBGeneration = gen;
+                    if (rank == 0)
+                        std::cout << "MG post-adaptive measured load balance complete" << std::endl;
+                }
+                if (doAdaptivePeriodicMeasuredLB) {
+                    mgAdaptive.adaptiveMeasuredLBCount += 1;
+                    mgAdaptive.lastAdaptiveMeasuredLBGeneration = gen;
+                    if (rank == 0)
+                        std::cout << "MG periodic measured load balance complete" << std::endl;
+                }
+            }
+#endif // RICH_MPI
+        }
+
+        // ============================================================
+        // Finish diagnostics
+        // ============================================================
+        if (rank == 0)
+            observer->loadStatisticalMeanTallies();
+
+        if (rank == 0) {
+            SphericalObserver::Diagnostics diag;
+            diag.sourceDt = cfg.sourceDt;
+            diag.transportTime = cfg.transportTime;
+            diag.mpiRanks = mpiSize;
+            diag.comptonEnabled = cfg.compton ? 1 : 0;
+            diag.emittedEnergy = observer->getEmittedEnergy();
+            diag.absorbedEnergy = observer->getAbsorbedEnergy();
+            diag.boxEscapeEnergy = observer->getBoxEscapeEnergy();
+            diag.timedOutEnergy = observer->getTimedOutEnergy();
+            diag.cutoffEnergy = observer->getCutoffEnergy();
+            diag.snapshotTime = snapshot.time;
+            diag.snapshotCycle = snapshot.cycle;
+            diag.nGenerations = static_cast<int>(mgFinalGenerations);
+            diag.includedFinalGenerations = static_cast<int>(mgIncludedFinalGenerations);
+            diag.discardedBurninGenerations = static_cast<int>(mgDiscardedBurninGenerations);
+            diag.adaptiveOnlyFinalOutput = cfg.adaptiveSourceCells ? 1 : 0;
+
+            observer->writeHDF5(cfg.outputPath, diag);
+
+            if (!cfg.vtkOutput.empty()) {
+                observer->writeVTK(cfg.vtkOutput, cfg.sourceDt);
+
+                // Append FLD luminosity scalars to the VTK file
+                std::ofstream vtkAppend(cfg.vtkOutput, std::ios::app);
+                if (vtkAppend.is_open()) {
+                    vtkAppend << std::scientific << std::setprecision(12);
+
+                    double fourPi = 4.0 * M_PI;
+
+                    vtkAppend << "SCALARS fld_surface_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p)
+                        vtkAppend << fldLuminosity[p] << "\n";
+
+                    vtkAppend << "SCALARS fld_surface_isotropic_equivalent_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double isoEquiv = (obsSolidAngles[p] > 0.0)
+                            ? fldLuminosity[p] * fourPi / obsSolidAngles[p] : 0.0;
+                        vtkAppend << isoEquiv << "\n";
+                    }
+
+                    vtkAppend << "SCALARS log10_fld_surface_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double val = (fldLuminosity[p] > 0.0) ? std::log10(fldLuminosity[p]) : -99.0;
+                        vtkAppend << val << "\n";
+                    }
+
+                    vtkAppend << "SCALARS fld_surface_flux double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double patchArea_p = obsSolidAngles[p] * cfg.radius * cfg.radius;
+                        double flux = (patchArea_p > 0.0) ? fldLuminosity[p] / patchArea_p : 0.0;
+                        vtkAppend << flux << "\n";
+                    }
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_relerr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_stderr_packet", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_relerr_packet", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_neff", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_isotropic_equivalent_luminosity_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_isotropic_equivalent_luminosity_relerr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_flux_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_flux_relerr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "log10_fld_surface_luminosity_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "log10_fld_surface_luminosity_relerr_gen", nObs);
+                }
+            }
+
+            double totalLum = observer->getTotalCrossingEnergy() / cfg.sourceDt;
+            double residual = diag.emittedEnergy - diag.absorbedEnergy
+                            - diag.boxEscapeEnergy - diag.timedOutEnergy - diag.cutoffEnergy;
+            double timedOutFrac = (diag.emittedEnergy > 0.0)
+                ? diag.timedOutEnergy / diag.emittedEnergy : 0.0;
+
+            std::cout << "\n=== TDE Post-Processing Results ===\n"
+                      << "Generations:              " << mgFinalGenerations << "\n"
+                      << "Final included generations: " << mgIncludedFinalGenerations << "\n"
+                      << "Discarded burn-in generations: " << mgDiscardedBurninGenerations << "\n"
+                      << "Final average policy:     " << (cfg.adaptiveSourceCells ? "adaptive_only" : "all_generations") << "\n"
+                      << "Photons/cell/gen:         " << genPhotonsPerCell << "\n"
+                      << "Total crossing luminosity: " << totalLum << " +/- "
+                      << observer->getTotalLuminosityStderrGen(cfg.sourceDt)
+                      << " erg/s (rel=" << observer->getTotalLuminosityRelErrGen(cfg.sourceDt) << ")\n"
+                      << "Total FLD luminosity:     " << totalFldLum << " erg/s\n"
+                      << "Emitted energy:           " << diag.emittedEnergy << " erg\n"
+                      << "Absorbed energy:          " << diag.absorbedEnergy << " erg\n"
+                      << "Box escape energy:        " << diag.boxEscapeEnergy << " erg\n"
+                      << "Timed-out energy:         " << diag.timedOutEnergy << " erg\n"
+                      << "Cutoff energy:            " << diag.cutoffEnergy << " erg\n"
+                      << "Sink residual:            " << residual << " erg\n"
+                      << "Timed-out fraction:       " << timedOutFrac << "\n"
+                      << "Output written to:        " << cfg.outputPath << "\n"
+                      << std::endl;
+        }
+
+        // ============================================================
+        // Release MG objects before grey run to avoid OOM
+        // ============================================================
+        manager.reset();
+        physics.reset();
+        popControl.reset();
+        observer.reset();
+        boundary.reset();
+        opacity.reset();
+
+        if (rank == 0)
+            std::cout << "MG resources released." << std::endl;
+
+        // ============================================================
+        // Grey IMC run (half generations)
+        // ============================================================
+        size_t nGreyGens = cfg.adaptiveSourceCells
+            ? 10 * cfg.nGenerations
+            : std::max<size_t>(1, cfg.nGenerations / 2);
+        size_t greyPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / (2 * nGreyGens));
+
+        if (rank == 0)
+            std::cout << "\n=== Starting Grey IMC run (" << nGreyGens << " generations) ===" << std::endl;
+
+        auto greyObserver = std::make_shared<SphericalObserver>(
+            cfg.center, cfg.radius, cfg.nObservers, std::vector<double>());
+
+        auto greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+        RadiationIMCParameters greyParams;
+        greyParams.newPhotonsPerCell = greyPhotonsPerCell;
+        greyParams.withHydro = false;
+        greyParams.noHydroFeedback = true;
+        greyParams.withRandomWalk = cfg.randomWalk;
+        greyParams.rwMinCellOpticalDepth = 15;
+        greyParams.withDDMC = cfg.ddmc;
+        greyParams.ddmcMinCellOpticalDepth = 15;
+        greyParams.ddmcMinParticleOpticalDepth = 5;
+        greyParams.ddmcUseMultigroupPGRW = false;
+        greyParams.MMC = false;
+        greyParams.diffusionPressureGradient = false;
+        greyParams.withMultigroupOpacity = false;
+        greyParams.withCompton = false;
+        greyParams.postProcess.enabled = true;
+        greyParams.postProcess.sourceDt = cfg.sourceDt;
+        greyParams.postProcess.transportTime = cfg.transportTime;
+        greyParams.postProcess.useCellVelocities = cfg.useCellVelocities;
+        greyParams.postProcess.polarization.enabled = cfg.polarization;
+        greyParams.postProcess.polarization.manualScatteringsAfterAcceleration = cfg.polarizationManualScatterings;
+        greyParams.postProcess.polarization.depolarizationScatterings = cfg.polarizationDepolarizationScatterings;
+        greyParams.postProcess.polarization.acceleratedClosure = cfg.polarizationClosure;
+
+        auto greyPhysics = std::make_shared<RadiationIMC>(
+            tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
+        greyPhysics->setObserver(greyObserver);
+
+        auto greyPopControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+        std::shared_ptr<MonteCarloManager3D> greyManager;
+#ifdef RICH_MPI
+        greyManager = std::make_shared<RDMAMonteCarloManager3D>(
+            tess, greyPhysics, greyPopControl, greyBoundary);
+#else
+        greyManager = std::make_shared<MonteCarloManagerSerial3D>(
+            tess, greyPhysics, greyPopControl, greyBoundary);
+#endif
+
+        bool const greyMeasuredLBActive =
+            cfg.measuredLoadBalance && (cfg.adaptiveSourceCells || nGreyGens > 1);
+
+        if (rank == 0)
+            std::cout << "Grey measured LB active: " << (greyMeasuredLBActive ? "yes" : "no") << std::endl;
+
+        imc_measured_lb::Parameters greyLBParams;
+        greyLBParams.floorCost = 1.0;
+        greyLBParams.stepWeight = 1.0;
+        greyLBParams.particleWeight = cfg.adaptiveSourceCells ? 1.0 : 0.0;
+        greyLBParams.medianClampFactor = 30.0;
+        greyLBParams.missingCellCost = 2.0;
+        greyLBParams.grayZeroStepInflation = 2.0;
+        greyLBParams.multigroupZeroStepInflation = 5.0;
+        greyLBParams.useMedianClamp = true;
+        double const greyLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
+
+        AdaptiveSourceState greyAdaptive;
+        bool greyBurninMeasuredLBDone = false;
+        bool greyFirstNonBurninMeasuredLBDone = false;
+        greyObserver->clearGenerationStatistics();
+        size_t greyIncludedFinalGenerations = 0;
+        size_t greyDiscardedBurninGenerations = 0;
+        size_t const greyInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
+        size_t const greyUniformBurninGenerations = cfg.adaptiveSourceCells ? 14 : 0;
+        size_t const greyBurninGenerations = greyInitialBurninGenerations + greyUniformBurninGenerations;
+        size_t const greyLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
+        size_t const greyFinalStartGeneration = greyBurninGenerations + greyLearnedProbeGenerations;
+        size_t const greyTotalGenerations = cfg.adaptiveSourceCells
+            ? greyFinalStartGeneration + nGreyGens
+            : nGreyGens;
+        for (size_t gen = 0; gen < greyTotalGenerations; ++gen) {
+            bool const greyFirstBurninThisGen =
+                cfg.adaptiveSourceCells && gen < greyInitialBurninGenerations;
+            bool const greyUniformBurninThisGen =
+                cfg.adaptiveSourceCells &&
+                gen >= greyInitialBurninGenerations &&
+                gen < greyBurninGenerations;
+            bool const greyBurninThisGen =
+                greyFirstBurninThisGen || greyUniformBurninThisGen;
+            bool const greyLearnedProbeThisGen =
+                cfg.adaptiveSourceCells &&
+                gen >= greyBurninGenerations &&
+                gen < greyFinalStartGeneration;
+            bool const greyFinalThisGen =
+                !cfg.adaptiveSourceCells || gen >= greyFinalStartGeneration;
+            size_t const greyFinalGenerationIndex = greyFinalThisGen
+                ? (cfg.adaptiveSourceCells ? gen - greyFinalStartGeneration : gen)
+                : 0;
+            bool const greyAdaptiveActiveThisGen =
+                cfg.adaptiveSourceCells &&
+                (greyLearnedProbeThisGen || greyFinalThisGen) &&
+                !greyAdaptive.scoreByCellID.empty();
+            size_t const greyPhotonsThisGen = greyFirstBurninThisGen ? 1
+                : (greyUniformBurninThisGen ? 3
+                   : (greyLearnedProbeThisGen ? 75
+                      : (cfg.adaptiveSourceCells ? 1 : greyPhotonsPerCell)));
+            std::string greyPhase = "final";
+            if (greyFirstBurninThisGen)
+                greyPhase = "burnin_exact1";
+            else if (greyUniformBurninThisGen)
+                greyPhase = "burnin_exact3";
+            else if (greyLearnedProbeThisGen)
+                greyPhase = "learned_only_probe_exact75";
+            else if (cfg.adaptiveSourceCells)
+                greyPhase = "learned_only_final";
+            greyPhysics->setNewPhotonsPerCell(greyPhotonsThisGen);
+            if (rank == 0)
+                std::cout << "Grey generation " << (gen + 1) << "/" << greyTotalGenerations
+                          << " phase=" << greyPhase
+                          << " photons_per_cell_this_gen=" << greyPhotonsThisGen;
+            if (rank == 0 && greyFinalThisGen)
+                std::cout << " final_step=" << (greyFinalGenerationIndex + 1)
+                          << "/" << nGreyGens;
+            if (rank == 0)
+                std::cout << std::endl;
+            PrintAdaptiveGenerationStart("Grey", cfg, greyAdaptive, gen, greyTotalGenerations,
+                                         greyBurninGenerations,
+                                         greyAdaptiveActiveThisGen, rank);
+
+            if (greyAdaptiveActiveThisGen)
+                greyPhysics->setAdaptiveSourceCellScores(
+                    greyAdaptive.scoreByCellID,
+                    cfg.adaptiveSourceStrength,
+                    cfg.adaptiveSourceMaxFactor,
+                    cfg.adaptiveSourceLearnedReserveFrac,
+                    cfg.adaptiveSourceLearnedMinFactor,
+                    greyAdaptive.observerBudgetMultiplier);
+            else
+                greyPhysics->clearAdaptiveSourceCellScores();
+            if (greyFirstBurninThisGen)
+                greyPhysics->setSourceEmissionControl(false, true, 1);
+            else if (greyUniformBurninThisGen)
+                greyPhysics->setSourceEmissionControl(false, true, 3);
+            else if (greyLearnedProbeThisGen)
+                greyPhysics->setSourceEmissionControl(true, true, 75);
+            else if (cfg.adaptiveSourceCells && greyFinalThisGen)
+                greyPhysics->setSourceEmissionControl(true, false, 1, 100, 2000);
+            else
+                greyPhysics->clearSourceEmissionControl();
+            greyObserver->resetGenerationSourceCellEscapeStats();
+
+            greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
+
+            std::vector<Particle3D> empty;
+            auto remaining = greyManager->step(std::move(empty), cells, cfg.transportTime);
+            (void)remaining;
+
+            auto greyAllocation = ReduceSourceAllocationSummary(
+                greyPhysics->getLastSourceAllocationSummary());
+            auto greySourceStats = CollectGlobalSourceStats(
+                greyObserver->getGenerationSourceCellEscapeStats());
+            ObserverQualityDiagnostics greyObserverQuality;
+            if (cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
+                greyObserverQuality = BuildObserverQualityDiagnostics(
+                    CollectGlobalObserverQuality(greyObserver->getObserverQualitySnapshot()),
+                    cfg, greyAdaptive);
+            }
+            double greyGenerationEscapedEnergy = 0.0;
+            unsigned long long greyGenerationCrossings = 0;
+            size_t greyPassedCells = 0;
+            size_t greyNewCells = 0;
+            size_t greyRetainedCells = 0;
+            size_t greyDecayedCells = 0;
+            UpdateAdaptiveSourceScores(
+                greySourceStats, cfg, greyAdaptive, greyObserverQuality,
+                greyGenerationEscapedEnergy, greyGenerationCrossings,
+                greyPassedCells, greyNewCells, greyRetainedCells, greyDecayedCells,
+                !greyBurninThisGen);
+            PrintAdaptiveGenerationStats(
+                "Grey", cfg, greyAdaptive, greySourceStats, greyAllocation,
+                greyObserverQuality, gen,
+                greyGenerationEscapedEnergy, greyGenerationCrossings,
+                greyPassedCells, greyNewCells, greyRetainedCells, greyDecayedCells,
+                rank);
+            if (rank == 0 && cfg.adaptiveSourceCells)
+                std::cout << "Grey learned cells after iteration " << (gen + 1)
+                          << ": " << greyAdaptive.scoreByCellID.size() << std::endl;
+            greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
+            greyBoundary->resetEscapedEnergy();
+            greyObserver->mpiReduceToRank0();
+            bool const greyIncludeGenerationInFinal = greyFinalThisGen;
+            if (greyIncludeGenerationInFinal) {
+                if (rank == 0)
+                    greyObserver->accumulateCurrentTalliesForStatistics(cfg.sourceDt);
+                ++greyIncludedFinalGenerations;
+            } else {
+                ++greyDiscardedBurninGenerations;
+            }
+            greyObserver->resetTallies();
+            if (cfg.adaptiveSourceCells && !greyAdaptive.burninCompletePrinted &&
+                greyBurninGenerations > 0 &&
+                gen + 1 == greyBurninGenerations)
+            {
+                if (rank == 0)
+                    std::cout << "Grey adaptive source burn-in complete" << std::endl;
+                greyAdaptive.burninCompletePrinted = true;
+            }
+
+#ifdef RICH_MPI
+            RankStepImbalance const greyStepImbalance =
+                ComputeRankStepImbalance("Grey", gen, greyManager->GetCellsStepsCounters(), rank);
+            bool const greyDoBurninMeasuredLB =
+                greyMeasuredLBActive &&
+                cfg.adaptiveSourceCells &&
+                greyFirstBurninThisGen &&
+                !greyBurninMeasuredLBDone;
+            bool const greyDoInitialMeasuredLB =
+                (gen == 0 && greyMeasuredLBActive && !cfg.adaptiveSourceCells);
+            bool const greyDoPostAdaptiveMeasuredLB =
+                greyMeasuredLBActive &&
+                cfg.adaptiveSourceCells &&
+                !greyBurninThisGen &&
+                !greyFirstNonBurninMeasuredLBDone;
+            bool const greyDoAdaptivePeriodicMeasuredLB =
+                greyMeasuredLBActive &&
+                cfg.adaptiveSourceCells &&
+                greyFinalThisGen &&
+                greyFinalGenerationIndex + 1 < nGreyGens &&
+                (greyFinalGenerationIndex + 1) % 50 == 0;
+            std::string const greyLBLabel = greyDoBurninMeasuredLB
+                ? "MEASURED_LB_GREY_BURNIN"
+                : (greyDoPostAdaptiveMeasuredLB
+                    ? "MEASURED_LB_GREY_FIRST_NON_BURNIN"
+                    : (greyDoAdaptivePeriodicMeasuredLB
+                        ? "MEASURED_LB_GREY_ADAPTIVE_PERIODIC"
+                        : "MEASURED_LB_GREY"));
+            if (rank == 0 && greyDoBurninMeasuredLB)
+                std::cout << "Grey first burn-in step complete; running measured LB" << std::endl;
+            if (rank == 0 && greyDoPostAdaptiveMeasuredLB)
+                std::cout << "Grey first non-burn-in step complete; running measured LB" << std::endl;
+            if (rank == 0 && greyDoAdaptivePeriodicMeasuredLB)
+                std::cout << "Grey periodic final measured LB after final step "
+                          << (greyFinalGenerationIndex + 1)
+                          << ": rank_step_imbalance="
+                          << greyStepImbalance.maxOverMean
+                          << std::endl;
+            if (greyDoInitialMeasuredLB || greyDoBurninMeasuredLB ||
+                greyDoPostAdaptiveMeasuredLB || greyDoAdaptivePeriodicMeasuredLB) {
+                if (!greyParams.noHydroFeedback) {
+                    throw UniversalError("Grey measured load balance repartition requires noHydroFeedback=true");
+                }
+
+                PrintVmRSS("grey_before_measured_lb", rank);
+
+                std::vector<double> greyWeightsForExchange;
+
+                {
+                    auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
+
+                    std::vector<size_t> greyCellIDs(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        greyCellIDs[i] = cells[i].ID;
+
+                    auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(
+                        greyCellIDs, greyLocalSteps, greyPhysics->getLastSourcePhotonsPerCell());
+
+                    uint64_t greyLocalTotalSteps = 0;
+                    for (auto const& m : greyLocalMeas)
+                        greyLocalTotalSteps += static_cast<uint64_t>(m.stepCount);
+
+                    uint64_t greyGlobalTotalSteps = 0;
+                    MPI_Allreduce(&greyLocalTotalSteps, &greyGlobalTotalSteps, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                    if (greyGlobalTotalSteps == 0) {
+                        if (rank == 0)
+                            std::cerr << greyLBLabel
+                                      << ": measured generation had zero total steps, skipping repartition\n";
+                    } else {
+                        auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                            greyLocalMeas, greyLBParams, false, MPI_COMM_WORLD);
+
+                        imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                            greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
+
+                        IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
+                        greyCostCalcParams.floorCost = greyLBParams.floorCost;
+                        greyCostCalcParams.missingCellCost = greyLBParams.missingCellCost;
+                        IMCStepCounterCostCalculator greyCostCalc(std::move(greyCostByCellID), greyCostCalcParams);
+
+                        std::vector<Vector3D> greyCurrentPoints(Ncells);
+                        for (size_t i = 0; i < Ncells; ++i)
+                            greyCurrentPoints[i] = tess.GetMeshPoint(i);
+
+                        auto greyLBWeights = greyCostCalc.CalculateCost(tess, cells);
+
+                        if (greyLBWeights.size() != Ncells) {
+                            throw UniversalError("Grey measured LB weight count mismatch before BuildParallel");
+                        }
+
+                        greyWeightsForExchange = greyLBWeights;
+
+                        for (auto& w : greyLBWeights)
+                            w = std::pow(w, greyLBWeightCompression);
+
+                        tess.BuildParallel(greyCurrentPoints, greyLBWeights);
+                    }
+                }
+
+                if (!greyWeightsForExchange.empty()) {
+                    MPI_exchange_data(tess, cells, false, 1, &dummyCell);
+
+                    double greyDummyWeight = greyLBParams.missingCellCost;
+                    MPI_exchange_data(tess, greyWeightsForExchange, false, 1, &greyDummyWeight);
+
+                    Ncells = tess.GetPointNo();
+
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after grey measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    if (greyWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Grey measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(greyWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        greyWeightsForExchange, greyLBWeightCompression,
+                        false, MPI_COMM_WORLD);
+
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+                    greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
+                    greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    greyPhysics = std::make_shared<RadiationIMC>(
+                        tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
+                    greyPhysics->setObserver(greyObserver);
+
+                    greyPopControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+                    greyManager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, greyPhysics, greyPopControl, greyBoundary);
+
+                    if (rank == 0)
+                        std::cout << greyLBLabel
+                                  << ": repartitioned, new local cells=" << Ncells << std::endl;
+
+                    PrintVmRSS("grey_after_rebuild_physics", rank);
+                }
+                if (greyDoBurninMeasuredLB) {
+                    greyBurninMeasuredLBDone = true;
+                    if (rank == 0)
+                        std::cout << "Grey burn-in measured load balance complete" << std::endl;
+                }
+                if (greyDoPostAdaptiveMeasuredLB) {
+                    greyFirstNonBurninMeasuredLBDone = true;
+                    greyAdaptive.postAdaptiveMeasuredLBDone = true;
+                    greyAdaptive.adaptiveMeasuredLBCount += 1;
+                    greyAdaptive.lastAdaptiveMeasuredLBGeneration = gen;
+                    if (rank == 0)
+                        std::cout << "Grey post-adaptive measured load balance complete" << std::endl;
+                }
+                if (greyDoAdaptivePeriodicMeasuredLB) {
+                    greyAdaptive.adaptiveMeasuredLBCount += 1;
+                    greyAdaptive.lastAdaptiveMeasuredLBGeneration = gen;
+                    if (rank == 0)
+                        std::cout << "Grey periodic measured load balance complete" << std::endl;
+                }
+            }
+#endif // RICH_MPI
+        }
+        if (rank == 0)
+            greyObserver->loadStatisticalMeanTallies();
+
+        if (rank == 0) {
+            std::string greyVtk;
+            if (!cfg.vtkOutput.empty()) {
+                size_t dotPos = cfg.vtkOutput.rfind('.');
+                if (dotPos != std::string::npos)
+                    greyVtk = cfg.vtkOutput.substr(0, dotPos) + "_grey" + cfg.vtkOutput.substr(dotPos);
+                else
+                    greyVtk = cfg.vtkOutput + "_grey";
+            }
+
+            if (!greyVtk.empty()) {
+                greyObserver->writeVTK(greyVtk, cfg.sourceDt);
+
+                std::vector<double> const& greySolidAngles = greyObserver->getObserverSolidAngles();
+                std::ofstream vtkAppend(greyVtk, std::ios::app);
+                if (vtkAppend.is_open()) {
+                    vtkAppend << std::scientific << std::setprecision(12);
+
+                    double fourPi = 4.0 * M_PI;
+
+                    vtkAppend << "SCALARS fld_surface_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p)
+                        vtkAppend << fldLuminosity[p] << "\n";
+
+                    vtkAppend << "SCALARS fld_surface_isotropic_equivalent_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double isoEquiv = (greySolidAngles[p] > 0.0)
+                            ? fldLuminosity[p] * fourPi / greySolidAngles[p] : 0.0;
+                        vtkAppend << isoEquiv << "\n";
+                    }
+
+                    vtkAppend << "SCALARS log10_fld_surface_luminosity double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double val = (fldLuminosity[p] > 0.0) ? std::log10(fldLuminosity[p]) : -99.0;
+                        vtkAppend << val << "\n";
+                    }
+
+                    vtkAppend << "SCALARS fld_surface_flux double 1\n"
+                              << "LOOKUP_TABLE default\n";
+                    for (size_t p = 0; p < nObs; ++p) {
+                        double patchArea_p = greySolidAngles[p] * cfg.radius * cfg.radius;
+                        double flux = (patchArea_p > 0.0) ? fldLuminosity[p] / patchArea_p : 0.0;
+                        vtkAppend << flux << "\n";
+                    }
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_relerr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_stderr_packet", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_relerr_packet", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_luminosity_neff", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_isotropic_equivalent_luminosity_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_isotropic_equivalent_luminosity_relerr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_flux_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "fld_surface_flux_relerr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "log10_fld_surface_luminosity_stderr_gen", nObs);
+                    AppendZeroVtkScalar(vtkAppend, "log10_fld_surface_luminosity_relerr_gen", nObs);
+                }
+            }
+
+            double greyTotalLum = greyObserver->getTotalCrossingEnergy() / cfg.sourceDt;
+            double greyEmitted = greyObserver->getEmittedEnergy();
+            double greyAbsorbed = greyObserver->getAbsorbedEnergy();
+            double greyBoxEscape = greyObserver->getBoxEscapeEnergy();
+            double greyTimedOut = greyObserver->getTimedOutEnergy();
+            double greyCutoff = greyObserver->getCutoffEnergy();
+            double greyResidual = greyEmitted - greyAbsorbed - greyBoxEscape - greyTimedOut - greyCutoff;
+            double greyTimedOutFrac = (greyEmitted > 0.0) ? greyTimedOut / greyEmitted : 0.0;
+
+            std::cout << "\n=== Grey IMC Results ===\n"
+                      << "Generations:              " << nGreyGens << "\n"
+                      << "Final included generations: " << greyIncludedFinalGenerations << "\n"
+                      << "Discarded burn-in generations: " << greyDiscardedBurninGenerations << "\n";
+            if (cfg.adaptiveSourceCells)
+                std::cout << "Schedule burn-in/probe/final: " << greyBurninGenerations
+                          << "/" << greyLearnedProbeGenerations
+                          << "/" << nGreyGens << "\n";
+            std::cout << "Final average policy:     " << (cfg.adaptiveSourceCells ? "adaptive_only" : "all_generations") << "\n"
+                      << "Photons/cell/gen:         " << greyPhotonsPerCell << "\n"
+                      << "Total crossing luminosity: " << greyTotalLum << " +/- "
+                      << greyObserver->getTotalLuminosityStderrGen(cfg.sourceDt)
+                      << " erg/s (rel=" << greyObserver->getTotalLuminosityRelErrGen(cfg.sourceDt) << ")\n"
+                      << "Total FLD luminosity:     " << totalFldLum << " erg/s\n"
+                      << "Emitted energy:           " << greyEmitted << " erg\n"
+                      << "Absorbed energy:          " << greyAbsorbed << " erg\n"
+                      << "Box escape energy:        " << greyBoxEscape << " erg\n"
+                      << "Timed-out energy:         " << greyTimedOut << " erg\n"
+                      << "Cutoff energy:            " << greyCutoff << " erg\n"
+                      << "Sink residual:            " << greyResidual << " erg\n"
+                      << "Timed-out fraction:       " << greyTimedOutFrac << "\n"
+                      << "Grey VTK written to:      " << greyVtk << "\n"
+                      << std::endl;
+        }
+
+    } catch (UniversalError const& eo) {
+        std::cerr << "UniversalError on rank " << rank << ":\n";
+        reportError(eo, std::cerr);
+#ifdef RICH_MPI
+        MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+        return 1;
+    } catch (std::exception const& e) {
+        std::cerr << "Exception on rank " << rank << ": " << e.what() << "\n";
+#ifdef RICH_MPI
+        MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+        return 1;
+    }
+
+#ifdef RICH_MPI
+    MPI_Finalize();
+#endif
+    return 0;
+}

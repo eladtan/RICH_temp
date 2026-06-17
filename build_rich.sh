@@ -115,6 +115,9 @@ for arg in "${@:2}"; do
         --assert)
             CMAKE_FLAGS+=" -DFORCE_ASSERT=1 "
             ;;
+        --montecarlo-polarization)
+            CMAKE_FLAGS+=" -DRICH_MONTECARLO_POLARIZATION=ON "
+            ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
             ;;

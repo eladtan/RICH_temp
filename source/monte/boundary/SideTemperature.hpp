@@ -20,6 +20,25 @@ public:
 
     std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
 
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        T nOut;
+        if (!this->getDDMCOrientedOutwardNormal(
+                faceIdx, insideCellIndex, outsidePointIndex, nOut))
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        // Left x boundary: thermal source / removal face.
+        if (nOut.x < -0.99)
+            return DDMCBoundaryFaceBehavior::Unsupported;
+
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
+
+    void SetTemperature(double temp) { temperature = temp; }
+
 private:
     const std::vector<ComputationalCell3D> &cells;
     double temperature;
@@ -61,19 +80,14 @@ template<typename T, typename Grid>
 MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
-    MonteCarloParticleStatus status;
+    MonteCarloParticleStatus status = MonteCarloParticleStatus::DONE;
     const std::vector<typename Grid::Face_T> &faces = this->grid.GetBoxFaces();
     for(const typename Grid::Face_T &face : faces)
     {
-        const T &onFace = face.vertices[0];
-        T u = face.vertices[1] - face.vertices[0];
-        T v = face.vertices[2] - face.vertices[0];
-        T normal = CrossProduct(u, v);
-        double absU = abs(u);
-        if(std::fabs(ScalarProd(normal, particle.location - onFace)) < EPSILON * absU * absU * absU)
+        T normal;
+        double faceScale = 0.0;
+        if(this->getInwardBoxFaceNormalIfClose(face, particle.location, normal, faceScale))
         {
-            // intersects this face
-            normal /= abs(normal);
             if(std::abs(normal.x) > 0.99)
             {
                 if(std::abs(particle.location.x - ll.x) < std::abs(ur.x - particle.location.x))
@@ -81,18 +95,13 @@ MonteCarloParticleStatus SideTemperature<T, Grid>::apply(MonteCarloParticle<T, G
                     return MonteCarloParticleStatus::REMOVE;
                 }
             }
-            const double signedDistance = ScalarProd(particle.location - onFace, normal);
-            particle.location -= 2 * signedDistance * normal;
-            particle.velocity -= 2 * ScalarProd(particle.velocity, normal) * normal;
-            const T &center = this->grid.GetMeshPoint(particle.cellIndex);
-            constexpr double nudge = 1e-6;
-            particle.location = particle.location * (1 - nudge) + nudge * center;
-            status = MonteCarloParticleStatus::REFLECT;
-            return status;
+            if(this->reflectParticleOnBoxFace(particle, face))
+                status = MonteCarloParticleStatus::REFLECT;
         }
     }
+    if(status == MonteCarloParticleStatus::REFLECT)
+        return status;
 
-    // should not reach here
     std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
     exit(1);
 }

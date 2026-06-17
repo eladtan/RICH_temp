@@ -1338,6 +1338,47 @@ namespace
 		ComputationalCellAddMult(slope.zderivative, temp.zderivative, e_phi.z * inv_rsint);
 	}
 
+	// Converts a Cartesian-coordinate slope (d/dx, d/dy, d/dz with Cartesian
+	// velocity components) to spherical (d/dr, d/dtheta, d/dphi with spherical
+	// velocity). Modifies slope in-place using temp as scratch space.
+	void coord_cart_slope_to_sph(Slope3D &slope,
+		double r, double theta,
+		Vector3D const& e_r, Vector3D const& e_theta, Vector3D const& e_phi,
+		Slope3D &temp)
+	{
+		double st = std::sin(theta);
+
+		// Step 1: apply the forward Jacobian to transform derivative directions
+		// from (d/dx, d/dy, d/dz) to (d/dr, d/dtheta, d/dphi).
+		ReplaceComputationalCell(temp.xderivative, slope.xderivative);
+		ReplaceComputationalCell(temp.yderivative, slope.yderivative);
+		ReplaceComputationalCell(temp.zderivative, slope.zderivative);
+
+		// d/dr = e_r.x * d/dx + e_r.y * d/dy + e_r.z * d/dz
+		ReplaceComputationalCell(slope.xderivative, temp.xderivative);
+		slope.xderivative *= e_r.x;
+		ComputationalCellAddMult(slope.xderivative, temp.yderivative, e_r.y);
+		ComputationalCellAddMult(slope.xderivative, temp.zderivative, e_r.z);
+
+		// d/dtheta = r * (e_theta.x * d/dx + e_theta.y * d/dy + e_theta.z * d/dz)
+		ReplaceComputationalCell(slope.yderivative, temp.xderivative);
+		slope.yderivative *= r * e_theta.x;
+		ComputationalCellAddMult(slope.yderivative, temp.yderivative, r * e_theta.y);
+		ComputationalCellAddMult(slope.yderivative, temp.zderivative, r * e_theta.z);
+
+		// d/dphi = r*sin(theta) * (e_phi.x * d/dx + e_phi.y * d/dy + e_phi.z * d/dz)
+		double rsint = r * st;
+		ReplaceComputationalCell(slope.zderivative, temp.xderivative);
+		slope.zderivative *= rsint * e_phi.x;
+		ComputationalCellAddMult(slope.zderivative, temp.yderivative, rsint * e_phi.y);
+		ComputationalCellAddMult(slope.zderivative, temp.zderivative, rsint * e_phi.z);
+
+		// Step 2: rotate velocity from Cartesian to spherical basis
+		slope.xderivative.velocity = cart_to_sph_vec(slope.xderivative.velocity, e_r, e_theta, e_phi);
+		slope.yderivative.velocity = cart_to_sph_vec(slope.yderivative.velocity, e_r, e_theta, e_phi);
+		slope.zderivative.velocity = cart_to_sph_vec(slope.zderivative.velocity, e_r, e_theta, e_phi);
+	}
+
 #ifdef RICH_MPI
 	void exchange_ghost_slopes(Tessellation3D const& tess, vector<Slope3D> & slopes)
 	{
@@ -1638,7 +1679,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 
 					Vector3D face_er, face_et, face_ep;
 					sph_basis_at(face_sph_cache[j].y, face_sph_cache[j].z, face_er, face_et, face_ep);
-					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, face_er, etheta_[i], ephi_[i]);
+					cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, face_er, face_et, face_ep);
 					CheckCell(*cell_ref);
 				}
 				catch (UniversalError &eo)
@@ -1739,7 +1780,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 
 				Vector3D bface_er, bface_et, bface_ep;
 				sph_basis_at(face_sc.y, face_sc.z, bface_er, bface_et, bface_ep);
-				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, bface_er, g_et, g_ep);
+				cell_ref->velocity = sph_to_cart_vec(cell_ref->velocity, bface_er, bface_et, bface_ep);
 			}
 			else
 			{
