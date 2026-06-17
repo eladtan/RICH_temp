@@ -791,6 +791,285 @@ namespace {
 
         return true;
     }
+
+    struct ComptonSubcycleDiagnostics
+    {
+        bool used = false;
+        bool success = false;
+        bool earlyStopped = false;
+        bool usedPartialCorrection = false;
+        bool returnedRawNoCorrection = false;
+
+        size_t subcycles = 0;
+        size_t rejectedSteps = 0;
+        size_t directSolveFailures = 0;
+
+        double consumedFraction = 0.0;
+        double minAcceptedFraction = std::numeric_limits<double>::infinity();
+        double maxAcceptedFraction = 0.0;
+        double finalMinGroupEnergy = 0.0;
+        double finalRadiationDelta = 0.0;
+        double finalMaterialDeposit = 0.0;
+        double maxNegativeTrialMass = 0.0;
+        double worstTrialMin = std::numeric_limits<double>::infinity();
+    };
+
+    struct SubcycleTrialResult
+    {
+        bool finite = false;
+        bool positive = false;
+        bool capOk = false;
+        bool acceptable = false;
+
+        RadiationIMC::GroupArray Etrial{};
+        double minValue = 0.0;
+        double negativeMass = 0.0;
+        double sumEnergy = 0.0;
+    };
+
+    static SubcycleTrialResult EvaluateSubcycleTrial(
+        RadiationIMC::GroupArray const &Etrial,
+        double materialCap,
+        double cellEnergyScale)
+    {
+        SubcycleTrialResult result;
+        result.Etrial = Etrial;
+        result.finite = true;
+        result.minValue = MinGroups(Etrial);
+        result.sumEnergy = SumGroups(Etrial);
+        result.negativeMass = 0.0;
+
+        constexpr double tinyNegFrac = 1e-13;
+        constexpr double tinyNegMassFrac = 1e-12;
+        double const tinyNegAbs = tinyNegFrac * std::max(1.0, cellEnergyScale);
+        double const tinyNegMass = tinyNegMassFrac * std::max(1.0, cellEnergyScale);
+
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            if(!std::isfinite(Etrial[g]))
+                result.finite = false;
+            if(Etrial[g] < 0.0)
+                result.negativeMass += -Etrial[g];
+        }
+
+        result.positive =
+            result.finite &&
+            result.minValue >= -tinyNegAbs &&
+            result.negativeMass <= tinyNegMass;
+
+        double const materialCapTol = std::isfinite(materialCap)
+            ? 1e-12 * std::max(1.0, std::abs(materialCap))
+            : std::numeric_limits<double>::infinity();
+
+        result.capOk =
+            !std::isfinite(materialCap) ||
+            result.sumEnergy <= materialCap + materialCapTol;
+
+        result.acceptable = result.positive && result.capOk;
+        return result;
+    }
+
+    static void ClampTinyNegativeGroups(
+        RadiationIMC::GroupArray &E,
+        double cellEnergyScale)
+    {
+        constexpr double tinyNegFrac = 1e-13;
+        double const tinyNegAbs = tinyNegFrac * std::max(1.0, cellEnergyScale);
+
+        for(double &v : E)
+        {
+            if(v < 0.0 && v >= -tinyNegAbs)
+                v = 0.0;
+        }
+    }
+
+    static double ComputeSubcycleShrinkFraction(
+        RadiationIMC::GroupArray const &Ecurrent,
+        RadiationIMC::GroupArray const &Etrial,
+        double currentFraction,
+        double materialCap)
+    {
+        double theta = 1.0;
+
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            if(Etrial[g] < 0.0)
+            {
+                double const denom = Ecurrent[g] - Etrial[g];
+                if(denom > 0.0)
+                    theta = std::min(theta, Ecurrent[g] / denom);
+                else
+                    theta = 0.0;
+            }
+        }
+
+        if(std::isfinite(materialCap))
+        {
+            double const sumCurrent = SumGroups(Ecurrent);
+            double const sumTrial = SumGroups(Etrial);
+            if(sumTrial > materialCap)
+            {
+                double const dsum = sumTrial - sumCurrent;
+                if(dsum > 0.0)
+                    theta = std::min(theta, (materialCap - sumCurrent) / dsum);
+                else
+                    theta = 0.0;
+            }
+        }
+
+        constexpr double safety = 0.8;
+        constexpr double minShrink = 0.1;
+        constexpr double maxShrink = 0.7;
+
+        double const rawNew = safety * theta * currentFraction;
+        return std::clamp(rawNew, minShrink * currentFraction, maxShrink * currentFraction);
+    }
+
+    static bool SolveComptonCorrectionByAdaptiveSubcycling(
+        RadiationIMC::GroupArray const &rawGroupEnergy,
+        RadiationIMC::GroupArray const &solveInputGroupEnergy,
+        RadiationIMC::GroupArray const &Btotal,
+        RadiationIMC::GroupMatrix const &residualKernel,
+        double fullDt,
+        double materialCap,
+        double cellEnergyScale,
+        RadiationIMC::GroupArray &solution,
+        ComptonSubcycleDiagnostics &sdiag)
+    {
+        sdiag.used = true;
+
+        constexpr size_t maxSubcycles = 256;
+        constexpr double minFraction = 1e-12;
+        constexpr double growFactor = 1.5;
+
+        RadiationIMC::GroupArray E = solveInputGroupEnergy;
+        ClampTinyNegativeGroups(E, cellEnergyScale);
+
+        if(MinGroups(E) < 0.0)
+            return false;
+
+        double const materialCapTol = std::isfinite(materialCap)
+            ? 1e-12 * std::max(1.0, std::abs(materialCap))
+            : std::numeric_limits<double>::infinity();
+
+        if(std::isfinite(materialCap) &&
+           SumGroups(E) > materialCap + materialCapTol)
+        {
+            solution = rawGroupEnergy;
+            sdiag.earlyStopped = true;
+            sdiag.usedPartialCorrection = true;
+            sdiag.returnedRawNoCorrection = true;
+            sdiag.success = true;
+            sdiag.consumedFraction = 0.0;
+            sdiag.finalMinGroupEnergy = MinGroups(solution);
+            sdiag.finalRadiationDelta = 0.0;
+            sdiag.finalMaterialDeposit = 0.0;
+            return true;
+        }
+
+        double tau = 0.0;
+        double fraction = 1.0;
+
+        while(tau < 1.0 - 1e-14 && sdiag.subcycles < maxSubcycles)
+        {
+            fraction = std::min(fraction, 1.0 - tau);
+
+            RadiationIMC::GroupMatrix A{};
+            RadiationIMC::GroupArray rhs_sub{};
+
+            for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+            {
+                rhs_sub[g] = E[g] + fraction * Btotal[g];
+
+                for(size_t h = 0; h < ENERGY_GROUPS_NUM; ++h)
+                {
+                    A[g][h] = ((g == h) ? 1.0 : 0.0)
+                        - fraction * fullDt * units::clight * residualKernel[h][g];
+                }
+            }
+
+            SolverDiagnostics localDiag;
+            RadiationIMC::GroupArray Etrial{};
+            bool const solveOk = SolveComptonGroupSystem(A, rhs_sub, Etrial, localDiag);
+
+            if(!solveOk)
+            {
+                sdiag.directSolveFailures++;
+                sdiag.rejectedSteps++;
+                fraction *= 0.5;
+                if(fraction < minFraction)
+                    break;
+                continue;
+            }
+
+            SubcycleTrialResult trial =
+                EvaluateSubcycleTrial(Etrial, materialCap, cellEnergyScale);
+
+            sdiag.maxNegativeTrialMass =
+                std::max(sdiag.maxNegativeTrialMass, trial.negativeMass);
+            sdiag.worstTrialMin =
+                std::min(sdiag.worstTrialMin, trial.minValue);
+
+            if(trial.acceptable)
+            {
+                ClampTinyNegativeGroups(Etrial, cellEnergyScale);
+                E = Etrial;
+                tau += fraction;
+
+                sdiag.subcycles++;
+                sdiag.consumedFraction = tau;
+                sdiag.minAcceptedFraction =
+                    std::min(sdiag.minAcceptedFraction, fraction);
+                sdiag.maxAcceptedFraction =
+                    std::max(sdiag.maxAcceptedFraction, fraction);
+
+                fraction = std::min(growFactor * fraction, 1.0 - tau);
+                continue;
+            }
+
+            sdiag.rejectedSteps++;
+            double const newFraction =
+                ComputeSubcycleShrinkFraction(E, Etrial, fraction, materialCap);
+
+            if(newFraction < minFraction || newFraction >= 0.99 * fraction)
+                break;
+
+            fraction = newFraction;
+        }
+
+        // If only a microscopic correction fraction was accepted, return the
+        // physical endpoint spectrum rather than the support-floor-conditioned
+        // solve input.  This prevents numerical support floors from reshaping
+        // the spectrum when the Compton correction could not make meaningful
+        // progress.
+        constexpr double minUsefulConsumedFraction = 1e-6;
+
+        if(tau >= 1.0 - 1e-12)
+        {
+            solution = E;
+            sdiag.success = true;
+        }
+        else if(sdiag.subcycles > 0 && tau >= minUsefulConsumedFraction)
+        {
+            solution = E;
+            sdiag.earlyStopped = true;
+            sdiag.usedPartialCorrection = true;
+            sdiag.success = true;
+        }
+        else
+        {
+            solution = rawGroupEnergy;
+            sdiag.earlyStopped = true;
+            sdiag.usedPartialCorrection = true;
+            sdiag.returnedRawNoCorrection = true;
+            sdiag.success = true;
+        }
+
+        sdiag.finalMinGroupEnergy = MinGroups(solution);
+        sdiag.finalRadiationDelta = SumGroups(solution) - SumGroups(rawGroupEnergy);
+        sdiag.finalMaterialDeposit = -sdiag.finalRadiationDelta;
+        return true;
+    }
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
@@ -1560,6 +1839,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
     if(this->comptonData.size() != Ncells)
         throw UniversalError("Compton data not initialized in applyComptonEndOfStepCorrection");
 
+    // Bounded-NNLS counters (retained for diagnostics even though the primary
+    // fallback is now adaptive subcycling).
     size_t boundedCellCount = 0;
     size_t directFailedCount = 0;
     size_t directInadmissibleCount = 0;
@@ -1574,6 +1855,20 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
     size_t worstCellIndex = 0;
     double worstScore = 0.0;
     BoundedSolverDiagnostics worstBdiag;
+
+    size_t subcycleCellCount = 0;
+    size_t subcyclePartialCount = 0;
+    size_t subcycleReturnedRawCount = 0;
+    size_t subcycleRejectedCount = 0;
+    size_t subcycleMaxCount = 0;
+    size_t subcycleDirectFailedCount = 0;
+    size_t subcycleDirectNegativeCount = 0;
+    size_t subcycleDirectCapCount = 0;
+    size_t subcycleDirectOtherCount = 0;
+    double minSubcycleFraction = std::numeric_limits<double>::infinity();
+    double maxSubcycleNegativeTrialMass = 0.0;
+    double minSubcycleConsumedFraction = std::numeric_limits<double>::infinity();
+    double maxSubcycleConsumedFraction = 0.0;
 
     for(size_t i = 0; i < Ncells; i++)
     {
@@ -1845,102 +2140,158 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
         }
         else
         {
-            bool const directRejectedForNegativity =
-                directOk && !directClampAcceptable;
+            // Disabled as the primary fallback for non-admissible direct Compton corrections.
+            // The bounded NNLS active-set path was observed to select ill-conditioned active
+            // sets and zero large, well-supported positive groups. Keep the helper code for
+            // possible future diagnostics, but use adaptive Compton subcycling as the
+            // production positivity-preserving fallback.
+            //
+            // bool const directRejectedForNegativity =
+            //     directOk && !directClampAcceptable;
+            //
+            // BoundedSolverDiagnostics bdiag;
+            // bdiag.directSolveFailed = !directOk;
+            // bool const boundedOk = SolveBoundedComptonCorrection(
+            //     residualMatrix, rhs, rawGroupEnergy,
+            //     solveInputGroupEnergy, supportFloorEnergy,
+            //     materialCap, directSolution, solvedGroupEnergy, bdiag);
+            //
+            // constexpr double significantGroupFrac = 1e-6;
+            // constexpr double maxBoundedDirectDeviation = 1e-2;
+            // double const significantFloor = significantGroupFrac * cellEnergyScale;
+            //
+            // bdiag.maxDirectDeviationFraction = 0.0;
+            // bdiag.maxDirectDeviationGroup = 0;
+            // if(directOk && boundedOk)
+            // {
+            //     for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+            //     {
+            //         double const groupScale = std::max({
+            //             std::abs(directClamped[g]),
+            //             rawGroupEnergy[g],
+            //             solveInputGroupEnergy[g],
+            //             std::abs(rhs[g]),
+            //             significantFloor
+            //         });
+            //         double const deviation = std::abs(solvedGroupEnergy[g] - directClamped[g]) / groupScale;
+            //         if(deviation > bdiag.maxDirectDeviationFraction)
+            //         {
+            //             bdiag.maxDirectDeviationFraction = deviation;
+            //             bdiag.maxDirectDeviationGroup = g;
+            //         }
+            //     }
+            // }
+            //
+            // if(!boundedOk)
+            // {
+            //     UniversalError eo("Failed bounded end-of-step Compton correction");
+            //     throw eo;
+            // }
+            //
+            // constexpr double boundedWeightedRelThrow = 1e-3;
+            // constexpr double boundedUnweightedRelThrow = 1e-3;
+            // constexpr double boundedGroupRelThrow = 1e-2;
+            // constexpr double boundedResidualWarn = 1e-5;
+            // double const stricterWeightedThrow = directOk ? boundedWeightedRelThrow : 1e-4;
+            //
+            // bool const boundedDirectDeviationOk = !directOk
+            //     || directRejectedForNegativity
+            //     || bdiag.maxDirectDeviationFraction <= maxBoundedDirectDeviation;
+            //
+            // bool const residualAcceptable = ...;
+            //
+            // if(!residualAcceptable)
+            // {
+            //     UniversalError eo("Bounded Compton correction residual too large");
+            //     throw eo;
+            // }
+            //
+            // boundedCellCount++;
+            // ...counter updates...
 
-            BoundedSolverDiagnostics bdiag;
-            bdiag.directSolveFailed = !directOk;
-            bool const boundedOk = SolveBoundedComptonCorrection(
-                residualMatrix, rhs, rawGroupEnergy,
-                solveInputGroupEnergy, supportFloorEnergy,
-                materialCap, directSolution, solvedGroupEnergy, bdiag);
+            GroupArray Btotal{};
+            for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                Btotal[g] = bcorrScale * cd.Bcorr[g];
 
-            constexpr double significantGroupFrac = 1e-6;
-            constexpr double maxBoundedDirectDeviation = 1e-2;
-            double const significantFloor = significantGroupFrac * cellEnergyScale;
+            ComptonSubcycleDiagnostics sdiag;
+            bool const subcycleOk = SolveComptonCorrectionByAdaptiveSubcycling(
+                rawGroupEnergy,
+                solveInputGroupEnergy,
+                Btotal,
+                cd.residualKernel,
+                fullDt,
+                materialCap,
+                cellEnergyScale,
+                solvedGroupEnergy,
+                sdiag);
 
-            bdiag.maxDirectDeviationFraction = 0.0;
-            bdiag.maxDirectDeviationGroup = 0;
-            if(directOk && boundedOk)
+            if(!subcycleOk)
             {
-                for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
-                {
-                    double const groupScale = std::max({
-                        std::abs(directClamped[g]),
-                        rawGroupEnergy[g],
-                        solveInputGroupEnergy[g],
-                        std::abs(rhs[g]),
-                        significantFloor
-                    });
-                    double const deviation = std::abs(solvedGroupEnergy[g] - directClamped[g]) / groupScale;
-                    if(deviation > bdiag.maxDirectDeviationFraction)
-                    {
-                        bdiag.maxDirectDeviationFraction = deviation;
-                        bdiag.maxDirectDeviationGroup = g;
-                    }
-                }
-            }
-
-            auto addBoundedDiagnostics = [&](UniversalError &eo)
-            {
+                UniversalError eo("Adaptive Compton subcycling failed");
                 eo.addEntry("Cell index", static_cast<double>(i));
                 eo.addEntry("Cell", this->cells[i]);
                 eo.addEntry("Cell volume", this->grid.GetVolume(i));
+                eo.addEntry("Cell energy scale", cellEnergyScale);
                 eo.addEntry("Planck opacity", cd.planckOpacity);
                 eo.addEntry("Planck opacity cdt", cd.planckOpacity * units::clight * fullDt);
                 eo.addEntry("Full dt", fullDt);
                 eo.addEntry("Gamma", cd.Gamma);
                 eo.addEntry("Fleck", cd.fleck);
                 eo.addEntry("Upsilon", cd.Upsilon);
-                eo.addEntry("Use N=0 fallback", static_cast<double>(cd.useNZero));
-                eo.addEntry("Use Planck induced", static_cast<double>(cd.usePlanckInduced));
                 eo.addEntry("bcorrScale", bcorrScale);
+                eo.addEntry("Direct solver ok", static_cast<double>(directOk));
+                eo.addEntry("Direct negative mass", directNegativeMass);
+                eo.addEntry("Material cap", materialCap);
                 eo.addEntry("Total raw Erad", totalPostTransportErad);
                 eo.addEntry("Total solve-input Erad", SumGroups(solveInputGroupEnergy));
                 eo.addEntry("Total time-avg Erad", totalTimeAvgErad);
+                eo.addEntry("Sum raw radiation", SumGroups(rawGroupEnergy));
+                eo.addEntry("Sum solved radiation", SumGroups(solvedGroupEnergy));
+                eo.addEntry("Radiation delta vs raw", SumGroups(solvedGroupEnergy) - SumGroups(rawGroupEnergy));
+                eo.addEntry("Material deposit", -(SumGroups(solvedGroupEnergy) - SumGroups(rawGroupEnergy)));
                 eo.addEntry("Material energy before correction", this->conserved[i].internal_energy);
-                eo.addEntry("Material cap", materialCap);
-                eo.addEntry("Cell energy scale", cellEnergyScale);
-                eo.addEntry("Direct solver ok", static_cast<double>(directOk));
-                eo.addEntry("Direct rejected for negativity",
-                    static_cast<double>(directRejectedForNegativity));
+                eo.addEntry("Predicted material energy after correction",
+                    this->conserved[i].internal_energy - (SumGroups(solvedGroupEnergy) - SumGroups(rawGroupEnergy)));
+                eo.addEntry("Subcycle consumed fraction", sdiag.consumedFraction);
+                eo.addEntry("Subcycle count", static_cast<double>(sdiag.subcycles));
+                eo.addEntry("Subcycle rejected steps", static_cast<double>(sdiag.rejectedSteps));
+                eo.addEntry("noHydroFeedback", static_cast<double>(this->noHydroFeedback));
                 if(directOk)
                 {
                     eo.addEntry("Direct min solution", directMin);
-                    eo.addEntry("Direct negative mass", directNegativeMass);
                     eo.addEntry("Direct negative mass fraction",
                         directNegativeMass / cellEnergyScale);
-                    eo.addEntry("Direct min fraction",
-                        -std::min(0.0, directMin) / cellEnergyScale);
                     eo.addEntry("Tail negative mass", tailNegMass);
                     eo.addEntry("Weak negative mass", weakNegMass);
                     eo.addEntry("Moderate negative mass", moderateNegMass);
                     eo.addEntry("Strong negative mass", strongNegMass);
                     eo.addEntry("Total direct negative mass", totalNegMass);
-                    eo.addEntry("Tail negative mass fraction", tailNegMass / cellEnergyScale);
-                    eo.addEntry("Weak negative mass fraction", weakNegMass / cellEnergyScale);
-                    eo.addEntry("Moderate negative mass fraction", moderateNegMass / cellEnergyScale);
-                    eo.addEntry("Strong negative mass fraction", strongNegMass / cellEnergyScale);
-                    eo.addEntry("Total direct negative mass fraction", totalNegMass / cellEnergyScale);
                 }
                 eo.addEntry("Min pivot", diag.minPivot);
                 eo.addEntry("Max coefficient", diag.maxCoeff);
-                eo.addEntry("Bounded iterations", static_cast<double>(bdiag.iterations));
-                eo.addEntry("Bounded weighted relative residual", bdiag.relativeResidual);
-                eo.addEntry("Bounded unweighted relative residual", bdiag.unweightedRelativeResidual);
-                eo.addEntry("Bounded max group residual fraction", bdiag.maxGroupResidualFraction);
-                eo.addEntry("Bounded min passive pivot", bdiag.minPassivePivot);
-                eo.addEntry("Bounded material cap active", static_cast<double>(bdiag.materialCapActive));
-                eo.addEntry("Bounded max bound violation", bdiag.maxBoundViolation);
-                eo.addEntry("Bounded max direct deviation fraction", bdiag.maxDirectDeviationFraction);
-                eo.addEntry("Bounded max direct deviation group",
-                    static_cast<double>(bdiag.maxDirectDeviationGroup));
-                if(bdiag.materialCapActive)
+
+                auto addGroupInfo = [&](size_t g, std::string const &prefix)
                 {
-                    eo.addEntry("Cap lambda", bdiag.capLambda);
-                    eo.addEntry("Cap lambda spread", bdiag.capLambdaSpread);
-                    eo.addEntry("Cap equality residual", bdiag.capEqualityResidual);
-                }
+                    eo.addEntry(prefix + " group", static_cast<double>(g));
+                    eo.addEntry(prefix + " Eg_raw", rawGroupEnergy[g]);
+                    eo.addEntry(prefix + " solveInput", solveInputGroupEnergy[g]);
+                    eo.addEntry(prefix + " supportFloor", supportFloorEnergy[g]);
+                    eo.addEntry(prefix + " RHS", rhs[g]);
+                    eo.addEntry(prefix + " directSolution", directSolution[g]);
+                    eo.addEntry(prefix + " subcycleSolution", solvedGroupEnergy[g]);
+                    eo.addEntry(prefix + " directClamped", directClamped[g]);
+                    if(i < this->lastComptonPacketCounts_.size())
+                        eo.addEntry(prefix + " packetCount",
+                            static_cast<double>(this->lastComptonPacketCounts_[i][g]));
+                    if(i < this->lastComptonMaxPacketWeight_.size())
+                        eo.addEntry(prefix + " maxPacketWeight",
+                            this->lastComptonMaxPacketWeight_[i][g]);
+                    if(i < this->Eg_time_avg.size())
+                        eo.addEntry(prefix + " timeAvgEnergy", timeAvgGroupEnergy[g]);
+                    eo.addEntry(prefix + " riskScore", cd.riskScore[g]);
+                    eo.addEntry(prefix + " riskTargetPackets",
+                        static_cast<double>(cd.riskTargetPackets[g]));
+                };
 
                 size_t worstDirectG = 0;
                 if(directOk)
@@ -1955,49 +2306,8 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                         if(std::abs(rhs[g]) > std::abs(rhs[worstDirectG]))
                             worstDirectG = g;
                 }
-
-                size_t worstResidG = 0;
-                if(boundedOk)
-                {
-                    GroupArray Asol{};
-                    MatVec(residualMatrix, solvedGroupEnergy, Asol);
-                    double worstResidVal = 0.0;
-                    for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
-                    {
-                        double const rv = std::abs(Asol[g] - rhs[g]);
-                        if(rv > worstResidVal) { worstResidVal = rv; worstResidG = g; }
-                    }
-                }
-
-                auto addGroupInfo = [&](size_t g, std::string const &prefix)
-                {
-                    eo.addEntry(prefix + " group", static_cast<double>(g));
-                    eo.addEntry(prefix + " Eg_raw", rawGroupEnergy[g]);
-                    eo.addEntry(prefix + " solveInput", solveInputGroupEnergy[g]);
-                    eo.addEntry(prefix + " supportFloor", supportFloorEnergy[g]);
-                    eo.addEntry(prefix + " RHS", rhs[g]);
-                    eo.addEntry(prefix + " directSolution", directSolution[g]);
-                    eo.addEntry(prefix + " boundedSolution", solvedGroupEnergy[g]);
-                    eo.addEntry(prefix + " directClamped", directClamped[g]);
-                    if(i < this->lastComptonPacketCounts_.size())
-                        eo.addEntry(prefix + " packetCount",
-                            static_cast<double>(this->lastComptonPacketCounts_[i][g]));
-                    if(i < this->lastComptonMaxPacketWeight_.size())
-                        eo.addEntry(prefix + " maxPacketWeight",
-                            this->lastComptonMaxPacketWeight_[i][g]);
-                    if(i < this->Eg_time_avg.size())
-                        eo.addEntry(prefix + " timeAvgEnergy", timeAvgGroupEnergy[g]);
-                    eo.addEntry(prefix + " riskScore", cd.riskScore[g]);
-                    eo.addEntry(prefix + " riskTargetPackets",
-                        static_cast<double>(cd.riskTargetPackets[g]));
-                };
                 addGroupInfo(worstDirectG, "DirectWorst");
-                if(boundedOk && worstResidG != worstDirectG)
-                    addGroupInfo(worstResidG, "ResidWorst");
-                if(boundedOk && directOk &&
-                   bdiag.maxDirectDeviationGroup != worstDirectG &&
-                   bdiag.maxDirectDeviationGroup != worstResidG)
-                    addGroupInfo(bdiag.maxDirectDeviationGroup, "DirectDeviationWorst");
+
                 if(tailWorstGroup < ENERGY_GROUPS_NUM)
                 {
                     addGroupInfo(tailWorstGroup, "TailNegWorst");
@@ -2022,64 +2332,43 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                     eo.addEntry("StrongNegWorst endpointSupportFraction", strongWorstEndpointFrac);
                     eo.addEntry("StrongNegWorst historySupportFraction", strongWorstHistoryFrac);
                 }
-            };
-
-            if(!boundedOk)
-            {
-                UniversalError eo("Failed bounded end-of-step Compton correction");
-                addBoundedDiagnostics(eo);
                 throw eo;
             }
 
-            constexpr double boundedWeightedRelThrow = 1e-3;
-            constexpr double boundedUnweightedRelThrow = 1e-3;
-            constexpr double boundedGroupRelThrow = 1e-2;
-            constexpr double boundedResidualWarn = 1e-5;
-            double const stricterWeightedThrow = directOk ? boundedWeightedRelThrow : 1e-4;
+            subcycleCellCount++;
+            subcycleRejectedCount += sdiag.rejectedSteps;
+            subcycleMaxCount = std::max(subcycleMaxCount, sdiag.subcycles);
 
-            bool const boundedDirectDeviationOk = !directOk
-                || directRejectedForNegativity
-                || bdiag.maxDirectDeviationFraction <= maxBoundedDirectDeviation;
+            if(sdiag.usedPartialCorrection)
+                subcyclePartialCount++;
 
-            bool const residualAcceptable =
-                std::isfinite(bdiag.relativeResidual) &&
-                std::isfinite(bdiag.unweightedRelativeResidual) &&
-                std::isfinite(bdiag.maxGroupResidualFraction) &&
-                bdiag.relativeResidual <= stricterWeightedThrow &&
-                bdiag.unweightedRelativeResidual <= boundedUnweightedRelThrow &&
-                bdiag.maxGroupResidualFraction <= boundedGroupRelThrow &&
-                boundedDirectDeviationOk;
+            if(sdiag.returnedRawNoCorrection)
+                subcycleReturnedRawCount++;
 
-            if(!residualAcceptable)
-            {
-                UniversalError eo("Bounded Compton correction residual too large");
-                addBoundedDiagnostics(eo);
-                throw eo;
-            }
+            if(std::isfinite(sdiag.minAcceptedFraction))
+                minSubcycleFraction = std::min(minSubcycleFraction, sdiag.minAcceptedFraction);
 
-            boundedCellCount++;
-            if(!directOk) directFailedCount++;
-            else if(directRejectedForNegativity) directNegativeFallbackCount++;
-            else directInadmissibleCount++;
-            if(bdiag.materialCapActive) materialCapActiveCount++;
-            if(bdiag.relativeResidual > boundedResidualWarn ||
-               bdiag.unweightedRelativeResidual > boundedResidualWarn ||
-               bdiag.maxGroupResidualFraction > boundedResidualWarn)
-                residualWarningCount++;
+            maxSubcycleNegativeTrialMass =
+                std::max(maxSubcycleNegativeTrialMass, sdiag.maxNegativeTrialMass);
 
-            double const cellScore = std::max({
-                bdiag.relativeResidual / boundedWeightedRelThrow,
-                bdiag.unweightedRelativeResidual / boundedUnweightedRelThrow,
-                bdiag.maxGroupResidualFraction / boundedGroupRelThrow,
-                (directOk && !directRejectedForNegativity)
-                    ? bdiag.maxDirectDeviationFraction / maxBoundedDirectDeviation : 0.0});
-            if(!haveWorstBounded || cellScore > worstScore)
-            {
-                haveWorstBounded = true;
-                worstScore = cellScore;
-                worstCellIndex = i;
-                worstBdiag = bdiag;
-            }
+            minSubcycleConsumedFraction =
+                std::min(minSubcycleConsumedFraction, sdiag.consumedFraction);
+            maxSubcycleConsumedFraction =
+                std::max(maxSubcycleConsumedFraction, sdiag.consumedFraction);
+
+            bool const directRejectedForNegativity =
+                directOk && !directClampAcceptable;
+            bool const directRejectedForCap =
+                directOk && directClampAcceptable && !directCapOk;
+
+            if(!directOk)
+                subcycleDirectFailedCount++;
+            else if(directRejectedForNegativity)
+                subcycleDirectNegativeCount++;
+            else if(directRejectedForCap)
+                subcycleDirectCapCount++;
+            else
+                subcycleDirectOtherCount++;
         }
 
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
@@ -2182,6 +2471,67 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                       << " maxDirectDevGroup=" << worstBdiag.maxDirectDeviationGroup
                       << std::endl;
         }
+
+        {
+            unsigned long long scCounts[8] = {
+                static_cast<unsigned long long>(subcycleCellCount),
+                static_cast<unsigned long long>(subcyclePartialCount),
+                static_cast<unsigned long long>(subcycleReturnedRawCount),
+                static_cast<unsigned long long>(subcycleRejectedCount),
+                static_cast<unsigned long long>(subcycleDirectFailedCount),
+                static_cast<unsigned long long>(subcycleDirectNegativeCount),
+                static_cast<unsigned long long>(subcycleDirectCapCount),
+                static_cast<unsigned long long>(subcycleDirectOtherCount)
+            };
+            if(rank == 0)
+                MPI_Reduce(MPI_IN_PLACE, scCounts, 8, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            else
+                MPI_Reduce(scCounts, nullptr, 8, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+
+            unsigned long long globalMaxSub = static_cast<unsigned long long>(subcycleMaxCount);
+            MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &globalMaxSub,
+                       rank == 0 ? &globalMaxSub : nullptr,
+                       1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+
+            double scDoubles[4] = {
+                minSubcycleFraction,
+                maxSubcycleNegativeTrialMass,
+                minSubcycleConsumedFraction,
+                maxSubcycleConsumedFraction
+            };
+            for(int d = 0; d < 4; ++d)
+            {
+                MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &scDoubles[d],
+                           rank == 0 ? &scDoubles[d] : nullptr,
+                           1, MPI_DOUBLE,
+                           d % 2 == 0 ? MPI_MIN : MPI_MAX,
+                           0, MPI_COMM_WORLD);
+            }
+
+            if(rank == 0 && scCounts[0] > 0)
+            {
+                double const printableMinFrac = std::isfinite(scDoubles[0])
+                    ? scDoubles[0] : 0.0;
+                double const printableMinConsumed = std::isfinite(scDoubles[2])
+                    ? scDoubles[2] : 0.0;
+
+                std::cout << "[Compton adaptive subcycle]"
+                          << " cells=" << scCounts[0]
+                          << " directFailed=" << scCounts[4]
+                          << " directNegative=" << scCounts[5]
+                          << " directCap=" << scCounts[6]
+                          << " directOther=" << scCounts[7]
+                          << " partial=" << scCounts[1]
+                          << " returnedRaw=" << scCounts[2]
+                          << " minConsumedFrac=" << printableMinConsumed
+                          << " maxConsumedFrac=" << scDoubles[3]
+                          << " maxSubcycles=" << globalMaxSub
+                          << " rejected=" << scCounts[3]
+                          << " minAcceptedFrac=" << printableMinFrac
+                          << " maxNegativeTrialMass=" << scDoubles[1]
+                          << std::endl;
+            }
+        }
 #else
         if(boundedCellCount > 0)
         {
@@ -2206,6 +2556,28 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
                       << " cells " << directSupportAwareClampGroupCount
                       << " groups maxMassFrac=" << maxDirectClampMassFraction
                       << " histEpMismatch=" << historyEndpointMismatchCount
+                      << std::endl;
+        }
+        if(subcycleCellCount > 0)
+        {
+            double const printableMinFrac = std::isfinite(minSubcycleFraction)
+                ? minSubcycleFraction : 0.0;
+            double const printableMinConsumed = std::isfinite(minSubcycleConsumedFraction)
+                ? minSubcycleConsumedFraction : 0.0;
+            std::cout << "[Compton adaptive subcycle]"
+                      << " cells=" << subcycleCellCount
+                      << " directFailed=" << subcycleDirectFailedCount
+                      << " directNegative=" << subcycleDirectNegativeCount
+                      << " directCap=" << subcycleDirectCapCount
+                      << " directOther=" << subcycleDirectOtherCount
+                      << " partial=" << subcyclePartialCount
+                      << " returnedRaw=" << subcycleReturnedRawCount
+                      << " minConsumedFrac=" << printableMinConsumed
+                      << " maxConsumedFrac=" << maxSubcycleConsumedFraction
+                      << " maxSubcycles=" << subcycleMaxCount
+                      << " rejected=" << subcycleRejectedCount
+                      << " minAcceptedFrac=" << printableMinFrac
+                      << " maxNegativeTrialMass=" << maxSubcycleNegativeTrialMass
                       << std::endl;
         }
 #endif
