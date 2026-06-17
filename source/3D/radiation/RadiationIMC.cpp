@@ -1627,12 +1627,15 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
             {
                 double const renormalization = totalPostTransportErad / solveInputTotal;
                 for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+                {
                     solveInputGroupEnergy[g] *= renormalization;
+                    supportFloorEnergy[g] *= renormalization;
+                }
             }
         }
         double const preStepExtensive = totalPreStepErad * cd.volume;
         double const bcorrScale = (preStepExtensive > 0.0)
-            ? std::clamp(totalPostTransportErad / preStepExtensive, 0.01, 1.0)
+            ? std::clamp(totalPostTransportErad / preStepExtensive, 0.0, 1.0)
             : 1.0;
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
             rhs[g] = solveInputGroupEnergy[g] + bcorrScale * cd.Bcorr[g];
