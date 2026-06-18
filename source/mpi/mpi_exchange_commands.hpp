@@ -126,6 +126,7 @@ inline std::vector<T> MPI_Exchange_data_with_data_function(const std::vector<int
         size_t index = std::distance(destinations.cbegin(), std::find(destinations.cbegin(), destinations.cend(), _rank));
         TranslateSerializableVector<T>(dataToReturn, recvData.cbegin() + recvDisplacements[index], recvData.cend() + recvDisplacements[index] + recvCounts[index]);
     }
+    MPI_Comm_free(&graphComm);
     return dataToReturn;
 }
 

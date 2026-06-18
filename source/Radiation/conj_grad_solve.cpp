@@ -565,12 +565,18 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             build_M_crs(A_row_ptr, A_col_idx, A_values, M);
         else
             build_M(A, A_indeces, M);
+
+        std::vector<double> &A_diag = workspace.A_diag;
+        A_diag.resize(Nlocal);
+        for(size_t j = 0; j < Nlocal; ++j)
+            A_diag[j] = A[j][0];
+        release_container_memory(A);
+        release_container_memory(A_indeces);
+
+        // After releasing A/A_indeces only CRS matvec is valid (use_crs_matvec must be true)
         auto matvec = [&](const std::vector<double> &in, std::vector<double> &out)
         {
-            if(use_crs_matvec)
-                mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, in, out);
-            else
-                mat_times_vec(A, A_indeces, in, out);
+            mat_times_vec_crs(A_row_ptr, A_col_idx, A_values, in, out);
         };
         std::vector<double> &r_old = workspace.r_old;
         std::vector<double> &sub_a_times_p = workspace.sub_a_times_p;
@@ -582,9 +588,8 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         MPI_exchange_data(tess, sub_x, true, slice);
 #endif
         matvec(sub_x, sub_a_times_p);
-        // Find maximum value of A, this is used for normalization of the error
         double maxA[2] = {0, 0};
-        for(size_t i = 0; i < A.size(); ++i)
+        for(size_t i = 0; i < Nlocal; ++i)
         {
             maxA[0] = std::max(maxA[0], std::abs(sub_x[i]));
             maxA[1] = std::max(maxA[1], std::abs(b[i]));
@@ -752,9 +757,9 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             bool any_fixed_local = false;
             for(size_t j = 0; j < Nlocal; ++j)
             {
-                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5))))
+                if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A_diag[j] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5))))
                 {
-                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A[j][0] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5)));
+                    max_data[1].val = std::abs(sub_r[j]) / (std::abs(A_diag[j] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5)));
                     max_loc1 = j;
                 }
                 if(sub_x[j] < -max_sub_x * 1e-10)

@@ -64,6 +64,18 @@ public:
 
 	void BuildSlopes(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double time) override;
 
+	/*! \brief Compute per-cell dissipation without materializing face pairs.
+	    Precondition: BuildSlopes(tess, cells, time) must have been called
+	    for the same tessellation/cells/time before this method.
+	    Reuses new_cells_ and rslopes_ prepared by that call.
+	*/
+	std::vector<double> CalcDissipationStreamingFromPreparedSlopes(
+		const Tessellation3D& tess,
+		const std::vector<ComputationalCell3D>& cells,
+		double time,
+		class Hllc3D const& rs,
+		const EquationOfState& eos) const;
+
 private:
 	EquationOfState const& eos_;
 	Ghost3D const& ghost_;

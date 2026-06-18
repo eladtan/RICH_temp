@@ -988,4 +988,31 @@ inline void release_container_memory(Container &v)
     v.swap(empty);
 }
 
+template<class Vec>
+inline void release_if_very_stale(Vec& v, size_t target_size)
+{
+    constexpr double STALE_FACTOR = 3.0;
+    constexpr size_t MIN_STALE_BYTES = 64ull * 1024ull * 1024ull;
+    const size_t elem = sizeof(typename Vec::value_type);
+    const size_t stale_bytes =
+        (v.capacity() > target_size) ? (v.capacity() - target_size) * elem : 0;
+    if(v.capacity() > static_cast<size_t>(STALE_FACTOR * std::max<size_t>(target_size, 1)) &&
+       stale_bytes > MIN_STALE_BYTES)
+    {
+        Vec tmp;
+        tmp.reserve(target_size);
+        v.swap(tmp);
+    }
+}
+
+#if defined(__linux__) && !defined(RICH_NO_TRIM_AFTER_RARE_SPIKES)
+#include <malloc.h>
+inline void rich_trim_after_rare_spike()
+{
+    malloc_trim(0);
+}
+#else
+inline void rich_trim_after_rare_spike() {}
+#endif
+
 #endif // UTILS_HPP

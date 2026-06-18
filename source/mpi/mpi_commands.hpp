@@ -17,11 +17,64 @@ using rank_t = int;
 
 using std::vector;
 
+namespace rich_mpi_detail {
+
+constexpr size_t SOFT_RELEASE_BYTES = 32ull  * 1024ull * 1024ull;
+constexpr size_t HARD_RELEASE_BYTES = 128ull * 1024ull * 1024ull;
+constexpr size_t WASTE_FACTOR = 4;
+
+inline bool should_release_serializer(const Serializer& s)
+{
+	const size_t cap = s.capacity();
+	const size_t live = s.size();
+	if(cap >= HARD_RELEASE_BYTES)
+		return true;
+	if(cap >= SOFT_RELEASE_BYTES && cap > WASTE_FACTOR * std::max<size_t>(live, 1))
+		return true;
+	return false;
+}
+
+inline void release_changed_neighbor_slots(
+	std::vector<Serializer>& senders,
+	std::vector<Serializer>& receivers,
+	const std::vector<rank_t>& prev,
+	const std::vector<rank_t>& curr)
+{
+	for(size_t i = curr.size(); i < prev.size(); ++i)
+	{
+		if(i < senders.size())   senders[i].release();
+		if(i < receivers.size()) receivers[i].release();
+	}
+	const size_t common = std::min(prev.size(), curr.size());
+	for(size_t i = 0; i < common; ++i)
+	{
+		if(prev[i] != curr[i])
+		{
+			if(i < senders.size())   senders[i].release();
+			if(i < receivers.size()) receivers[i].release();
+		}
+	}
+}
+
+inline void release_oversized_serializers(std::vector<Serializer>& bufs)
+{
+	for(auto& s : bufs)
+		if(should_release_serializer(s))
+			s.release();
+}
+
+} // namespace rich_mpi_detail
+
 template<typename T, typename Index_T = size_t>
 std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> &correspondents, const std::vector<T> &data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
 {
-	std::vector<MPI_Request> req(correspondents.size());
 	static std::vector<Serializer> senders;
+	static std::vector<Serializer> receivers;
+	static std::vector<rank_t> previous_correspondents;
+
+	rich_mpi_detail::release_changed_neighbor_slots(senders, receivers, previous_correspondents, correspondents);
+
+	std::vector<MPI_Request> req(correspondents.size());
 	senders.resize(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
@@ -30,7 +83,6 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> 
 		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
 
-	static std::vector<Serializer> receivers;
 	receivers.resize(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
 		receivers[i].reset();
@@ -61,6 +113,9 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> 
 	{
 		MPI_Waitall(static_cast<int>(correspondents.size()), &req[0], MPI_STATUSES_IGNORE);
 	}
+	rich_mpi_detail::release_oversized_serializers(senders);
+	rich_mpi_detail::release_oversized_serializers(receivers);
+	previous_correspondents.assign(correspondents.begin(), correspondents.end());
 	MPI_Barrier(MPI_COMM_WORLD);
 	return result;
 }
@@ -68,8 +123,13 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> 
 template<typename T>
 std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& correspondents, const std::vector<std::vector<T>>& data)
 {
-	std::vector<MPI_Request> req(correspondents.size());
 	static std::vector<Serializer> senders;
+	static std::vector<Serializer> receivers;
+	static std::vector<rank_t> previous_correspondents;
+
+	rich_mpi_detail::release_changed_neighbor_slots(senders, receivers, previous_correspondents, correspondents);
+
+	std::vector<MPI_Request> req(correspondents.size());
 	senders.resize(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
@@ -78,7 +138,6 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 		MPI_Isend((senders[i].size() > 0)? senders[i].getData() : NULL, senders[i].size(), MPI_CHAR, correspondents[i], MPI_EXCHANGE_TAG, MPI_COMM_WORLD, &req[i]);
 	}
 
-	static std::vector<Serializer> receivers;
 	receivers.resize(correspondents.size());
 	for(size_t i = 0; i < correspondents.size(); ++i)
 		receivers[i].reset();
@@ -109,6 +168,9 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 	{
 		MPI_Waitall(static_cast<int>(correspondents.size()), &req[0], MPI_STATUSES_IGNORE);
 	}
+	rich_mpi_detail::release_oversized_serializers(senders);
+	rich_mpi_detail::release_oversized_serializers(receivers);
+	previous_correspondents.assign(correspondents.begin(), correspondents.end());
 	MPI_Barrier(MPI_COMM_WORLD);
 	return result;
 }

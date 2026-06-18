@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <numeric>
 #include <exception>
@@ -10,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "source/3D/output/read3D.hpp"
@@ -223,19 +225,19 @@ struct Config
     OpacityScaleMode opacityScaleMode = OpacityScaleMode::Planck;
     bool adaptiveSourceCells = false;
     size_t adaptiveSourceBurnin = 3;
-    double adaptiveSourceStrength = 0.75;
+    double adaptiveSourceStrength = 0.95;
     double adaptiveSourceEma = 0.5;
-    double adaptiveSourceMinEscapedFrac = 1e-10;
+    double adaptiveSourceMinEscapedFrac = 1e-12;
     double adaptiveSourceMaxFactor = 1000.0;
     size_t adaptiveSourceBurninPhotonMultiplier = 2;
     double adaptiveSourceLearnedReserveFrac = 0.25;
     double adaptiveSourceLearnedMinFactor = 20.0;
     bool adaptiveObserverEquity = true;
-    double adaptiveObserverExtraBudgetFrac = 0.25;
-    double adaptiveObserverTargetNeff = 100000.0;
-    double adaptiveObserverTargetPolSnr = 5.0;
-    double adaptiveObserverDeficitMax = 10.0;
-    double adaptiveObserverDeficitEma = 0.5;
+    double adaptiveObserverExtraBudgetFrac = 2;
+    double adaptiveObserverTargetNeff = 1000000;
+    double adaptiveObserverTargetPolSnr = 10.0;
+    double adaptiveObserverDeficitMax = 100.0;
+    double adaptiveObserverDeficitEma = 0.8;
     double measuredLBWeightCompression = -1.0;
     double adaptiveLBImbalanceThreshold = 2.0;
     size_t adaptiveLBCooldownGenerations = 2;
@@ -439,6 +441,8 @@ struct ObserverQualityDiagnostics
     std::vector<unsigned long long> crossingsByObserver;
 };
 
+constexpr double MEASURED_LB_MAX_CELL_IMBALANCE = 2.5;
+
 double EffectiveMeasuredLBWeightCompression(Config const& cfg)
 {
     if (cfg.measuredLBWeightCompression > 0.0)
@@ -516,122 +520,293 @@ struct PackedSourceEscapeStat
 {
     unsigned long long cellID = 0;
     unsigned long long observerIndex = 0;
+    double weightSq = 0.0;
+    double maxWeight = 0.0;
     double energy = 0.0;
     unsigned long long count = 0;
 };
 
-std::vector<SphericalObserver::SourceCellEscapeStat>
-CollectGlobalSourceStats(std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats)
+struct PackedAdaptiveScoreDelta
 {
-    std::vector<PackedSourceEscapeStat> packed;
-    packed.reserve(localStats.size());
-    for (auto const& s : localStats) {
-        PackedSourceEscapeStat p;
-        p.cellID = static_cast<unsigned long long>(s.cellID);
-        p.observerIndex = static_cast<unsigned long long>(s.observerIndex);
-        p.energy = s.energy;
-        p.count = static_cast<unsigned long long>(s.count);
-        packed.push_back(p);
+    unsigned long long cellID = 0;
+    double delta = 0.0;
+};
+
+struct AdaptiveSourceUpdateSummary
+{
+    double totalEscapedEnergy = 0.0;
+    unsigned long long totalCrossings = 0;
+    size_t sourceCellObserverPairs = 0;
+    size_t observersWithCrossings = 0;
+    size_t passedCells = 0;
+    size_t newCells = 0;
+    size_t retainedCells = 0;
+    size_t decayedCells = 0;
+    unsigned long long maxLocalSourcePairs = 0;
+    unsigned long long maxReceivedShardPairs = 0;
+    unsigned long long maxPackedBytes = 0;
+    size_t scoreDeltaCells = 0;
+    size_t scoreMapCells = 0;
+    std::vector<SphericalObserver::SourceCellEscapeStat> topStats;
+};
+
+uint64_t SplitMix64(uint64_t x);
+
+struct AdaptivePairKey
+{
+    size_t observerIndex = 0;
+    size_t cellID = 0;
+
+    bool operator==(AdaptivePairKey const& other) const
+    {
+        return observerIndex == other.observerIndex && cellID == other.cellID;
     }
+};
+
+struct AdaptivePairKeyHash
+{
+    size_t operator()(AdaptivePairKey const& key) const
+    {
+        uint64_t x = static_cast<uint64_t>(key.cellID);
+        x ^= static_cast<uint64_t>(key.observerIndex) + 0x9e3779b97f4a7c15ULL +
+             (x << 6) + (x >> 2);
+        return static_cast<size_t>(SplitMix64(x));
+    }
+};
+
+uint64_t SplitMix64(uint64_t x)
+{
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+int AdaptiveCellOwner(size_t cellID, int ranks)
+{
+    if (ranks <= 1)
+        return 0;
+    return static_cast<int>(SplitMix64(static_cast<uint64_t>(cellID)) %
+                            static_cast<uint64_t>(ranks));
+}
+
+int CheckedByteCount(size_t count, size_t elementSize, std::string const& label)
+{
+    unsigned long long bytes =
+        static_cast<unsigned long long>(count) * static_cast<unsigned long long>(elementSize);
+    if (bytes > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
+        throw UniversalError(label + " too large for MPI byte count");
+    return static_cast<int>(bytes);
+}
+
+int CheckedByteTotal(unsigned long long bytes, std::string const& label)
+{
+    if (bytes > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
+        throw UniversalError(label + " total too large for MPI byte displacements");
+    return static_cast<int>(bytes);
+}
+
+PackedSourceEscapeStat PackSourceEscapeStat(SphericalObserver::SourceCellEscapeStat const& s)
+{
+    PackedSourceEscapeStat p;
+    p.cellID = static_cast<unsigned long long>(s.cellID);
+    p.observerIndex = static_cast<unsigned long long>(s.observerIndex);
+    p.energy = s.energy;
+    p.count = static_cast<unsigned long long>(s.count);
+    p.weightSq = s.weightSq;
+    p.maxWeight = s.maxWeight;
+    return p;
+}
+
+SphericalObserver::SourceCellEscapeStat UnpackSourceEscapeStat(PackedSourceEscapeStat const& p)
+{
+    SphericalObserver::SourceCellEscapeStat s;
+    s.cellID = static_cast<size_t>(p.cellID);
+    s.observerIndex = static_cast<size_t>(p.observerIndex);
+    s.energy = p.energy;
+    s.count = static_cast<size_t>(p.count);
+    s.weightSq = p.weightSq;
+    s.maxWeight = p.maxWeight;
+    return s;
+}
+
+std::vector<PackedSourceEscapeStat>
+ExchangeSourceStatsByCellOwner(std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats,
+                               AdaptiveSourceUpdateSummary& summary)
+{
+    summary.maxLocalSourcePairs = static_cast<unsigned long long>(localStats.size());
+
+#ifdef RICH_MPI
+    int ranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+
+    std::vector<size_t> sendElements(static_cast<size_t>(ranks), 0);
+    size_t sendTotal = 0;
+    for (auto const& s : localStats) {
+        if (!(s.energy > 0.0) || s.count == 0 || !std::isfinite(s.energy))
+            continue;
+        int owner = AdaptiveCellOwner(s.cellID, ranks);
+        ++sendElements[static_cast<size_t>(owner)];
+        ++sendTotal;
+    }
+
+    std::vector<int> sendCounts(static_cast<size_t>(ranks), 0);
+    std::vector<int> recvCounts(static_cast<size_t>(ranks), 0);
+    for (int r = 0; r < ranks; ++r) {
+        sendCounts[static_cast<size_t>(r)] =
+            CheckedByteCount(sendElements[static_cast<size_t>(r)],
+                             sizeof(PackedSourceEscapeStat),
+                             "Adaptive source shard");
+    }
+    MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    std::vector<int> sendDispls(static_cast<size_t>(ranks), 0);
+    std::vector<int> recvDispls(static_cast<size_t>(ranks), 0);
+    unsigned long long totalSendBytes64 = 0;
+    unsigned long long totalRecvBytes64 = 0;
+    for (int r = 0; r < ranks; ++r) {
+        sendDispls[static_cast<size_t>(r)] =
+            CheckedByteTotal(totalSendBytes64, "Adaptive source shard send");
+        recvDispls[static_cast<size_t>(r)] =
+            CheckedByteTotal(totalRecvBytes64, "Adaptive source shard receive");
+        totalSendBytes64 += static_cast<unsigned long long>(sendCounts[static_cast<size_t>(r)]);
+        totalRecvBytes64 += static_cast<unsigned long long>(recvCounts[static_cast<size_t>(r)]);
+    }
+    int const totalSendBytes = CheckedByteTotal(totalSendBytes64, "Adaptive source shard send");
+    int const totalRecvBytes = CheckedByteTotal(totalRecvBytes64, "Adaptive source shard receive");
+
+    std::vector<PackedSourceEscapeStat> sendData(sendTotal);
+    std::vector<size_t> nextSendIndex(static_cast<size_t>(ranks), 0);
+    for (int r = 0; r < ranks; ++r)
+        nextSendIndex[static_cast<size_t>(r)] =
+            static_cast<size_t>(sendDispls[static_cast<size_t>(r)]) / sizeof(PackedSourceEscapeStat);
+    for (auto const& s : localStats) {
+        if (!(s.energy > 0.0) || s.count == 0 || !std::isfinite(s.energy))
+            continue;
+        int owner = AdaptiveCellOwner(s.cellID, ranks);
+        sendData[nextSendIndex[static_cast<size_t>(owner)]++] = PackSourceEscapeStat(s);
+    }
+    std::vector<PackedSourceEscapeStat> recvData(static_cast<size_t>(totalRecvBytes) /
+                                                 sizeof(PackedSourceEscapeStat));
+
+    MPI_Alltoallv(sendData.empty() ? nullptr : sendData.data(), sendCounts.data(),
+                  sendDispls.data(), MPI_BYTE,
+                  recvData.empty() ? nullptr : recvData.data(), recvCounts.data(),
+                  recvDispls.data(), MPI_BYTE, MPI_COMM_WORLD);
+
+    unsigned long long localPairs = static_cast<unsigned long long>(localStats.size());
+    unsigned long long recvPairs = static_cast<unsigned long long>(recvData.size());
+    unsigned long long packedBytes = totalSendBytes64 + totalRecvBytes64;
+    MPI_Allreduce(&localPairs, &summary.maxLocalSourcePairs, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&recvPairs, &summary.maxReceivedShardPairs, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&packedBytes, &summary.maxPackedBytes, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, MPI_COMM_WORLD);
+    return recvData;
+#else
+    std::vector<PackedSourceEscapeStat> result;
+    result.reserve(localStats.size());
+    for (auto const& s : localStats) {
+        if (!(s.energy > 0.0) || s.count == 0 || !std::isfinite(s.energy))
+            continue;
+        result.push_back(PackSourceEscapeStat(s));
+    }
+    summary.maxReceivedShardPairs = static_cast<unsigned long long>(result.size());
+    summary.maxPackedBytes =
+        static_cast<unsigned long long>(result.size()) * sizeof(PackedSourceEscapeStat);
+    return result;
+#endif
+}
+
+std::vector<PackedAdaptiveScoreDelta>
+AllgatherAdaptiveScoreDeltas(std::vector<PackedAdaptiveScoreDelta> const& localDeltas)
+{
+#ifdef RICH_MPI
+    int ranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+    int localBytes = CheckedByteCount(localDeltas.size(), sizeof(PackedAdaptiveScoreDelta),
+                                      "Adaptive source score delta packet");
+    std::vector<int> counts(static_cast<size_t>(ranks), 0);
+    MPI_Allgather(&localBytes, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    std::vector<int> displs(static_cast<size_t>(ranks), 0);
+    unsigned long long totalBytes64 = 0;
+    for (int r = 0; r < ranks; ++r) {
+        displs[static_cast<size_t>(r)] =
+            CheckedByteTotal(totalBytes64, "Adaptive source score delta");
+        totalBytes64 += static_cast<unsigned long long>(counts[static_cast<size_t>(r)]);
+    }
+    int const totalBytes = CheckedByteTotal(totalBytes64, "Adaptive source score delta");
+
+    std::vector<PackedAdaptiveScoreDelta> result(static_cast<size_t>(totalBytes) /
+                                                 sizeof(PackedAdaptiveScoreDelta));
+    MPI_Allgatherv(localDeltas.empty() ? nullptr : localDeltas.data(), localBytes, MPI_BYTE,
+                   result.empty() ? nullptr : result.data(), counts.data(), displs.data(),
+                   MPI_BYTE, MPI_COMM_WORLD);
+    return result;
+#else
+    return localDeltas;
+#endif
+}
+
+std::vector<SphericalObserver::SourceCellEscapeStat>
+GatherTopSourceStats(std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats)
+{
+    constexpr size_t TOP_N = 10;
+
+    std::vector<SphericalObserver::SourceCellEscapeStat> localTop;
+    localTop.reserve(TOP_N);
+    for (auto const& s : localStats) {
+        if (localTop.size() < TOP_N) {
+            localTop.push_back(s);
+            continue;
+        }
+
+        auto minIt = std::min_element(localTop.begin(), localTop.end(),
+                                      [](auto const& a, auto const& b) {
+                                          return a.energy < b.energy;
+                                      });
+        if (minIt != localTop.end() && s.energy > minIt->energy)
+            *minIt = s;
+    }
+    std::sort(localTop.begin(), localTop.end(),
+              [](auto const& a, auto const& b) { return a.energy > b.energy; });
 
 #ifdef RICH_MPI
     int rank = 0;
     int ranks = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ranks);
-    unsigned long long localBytes64 =
-        static_cast<unsigned long long>(packed.size()) * sizeof(PackedSourceEscapeStat);
-    if (localBytes64 > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
-        throw UniversalError("Adaptive source stat packet too large for MPI_Gatherv");
-    int localBytes = static_cast<int>(localBytes64);
-    std::vector<int> counts;
-    if (rank == 0)
-        counts.assign(static_cast<size_t>(ranks), 0);
-    MPI_Gather(&localBytes, 1, MPI_INT,
-               rank == 0 ? counts.data() : nullptr, 1, MPI_INT,
-               0, MPI_COMM_WORLD);
-    std::vector<int> displs(static_cast<size_t>(ranks), 0);
-    int totalCount = 0;
-    if (rank == 0) {
-        for (int r = 0; r < ranks; ++r) {
-            displs[static_cast<size_t>(r)] = totalCount;
-            totalCount += counts[static_cast<size_t>(r)];
-        }
-    }
-    std::vector<PackedSourceEscapeStat> gathered;
-    if (rank == 0)
-        gathered.resize(static_cast<size_t>(totalCount) / sizeof(PackedSourceEscapeStat));
-    MPI_Gatherv(packed.empty() ? nullptr : packed.data(), localBytes, MPI_BYTE,
-                rank == 0 && !gathered.empty() ? gathered.data() : nullptr,
-                rank == 0 ? counts.data() : nullptr,
-                rank == 0 ? displs.data() : nullptr,
-                MPI_BYTE, 0, MPI_COMM_WORLD);
-    if (rank == 0)
-        packed.swap(gathered);
-    else
-        packed.clear();
-#endif
 
-    std::unordered_map<size_t, std::unordered_map<size_t, SphericalObserver::SourceCellEscapeStat>> byObserver;
-    for (auto const& p : packed) {
-        size_t cellID = static_cast<size_t>(p.cellID);
-        size_t observerIndex = static_cast<size_t>(p.observerIndex);
-        double energy = p.energy;
-        size_t count = static_cast<size_t>(p.count);
-        if (!(energy > 0.0) || count == 0)
-            continue;
-        auto& s = byObserver[observerIndex][cellID];
-        s.cellID = cellID;
-        s.observerIndex = observerIndex;
-        s.energy += energy;
-        s.count += count;
-    }
+    std::vector<PackedSourceEscapeStat> send(TOP_N);
+    for (size_t i = 0; i < localTop.size(); ++i)
+        send[i] = PackSourceEscapeStat(localTop[i]);
+
+    std::vector<PackedSourceEscapeStat> recv;
+    if (rank == 0)
+        recv.resize(TOP_N * static_cast<size_t>(ranks));
+    MPI_Gather(send.data(), static_cast<int>(TOP_N * sizeof(PackedSourceEscapeStat)), MPI_BYTE,
+               rank == 0 ? recv.data() : nullptr,
+               static_cast<int>(TOP_N * sizeof(PackedSourceEscapeStat)), MPI_BYTE,
+               0, MPI_COMM_WORLD);
 
     std::vector<SphericalObserver::SourceCellEscapeStat> result;
-    size_t totalStats = 0;
-    for (auto const& byCell : byObserver)
-        totalStats += byCell.second.size();
-    result.reserve(totalStats);
-    for (auto const& byCell : byObserver) {
-        for (auto const& kv : byCell.second)
-            result.push_back(kv.second);
-    }
-
-#ifdef RICH_MPI
-    unsigned long long resultCount = static_cast<unsigned long long>(result.size());
-    MPI_Bcast(&resultCount, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
-    unsigned long long resultBytes64 = resultCount * sizeof(PackedSourceEscapeStat);
-    if (resultBytes64 > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
-        throw UniversalError("Adaptive source aggregate too large for MPI_Bcast");
-    std::vector<PackedSourceEscapeStat> resultPacked(static_cast<size_t>(resultCount));
     if (rank == 0) {
-        for (size_t i = 0; i < result.size(); ++i) {
-            resultPacked[i].cellID = static_cast<unsigned long long>(result[i].cellID);
-            resultPacked[i].observerIndex = static_cast<unsigned long long>(result[i].observerIndex);
-            resultPacked[i].energy = result[i].energy;
-            resultPacked[i].count = static_cast<unsigned long long>(result[i].count);
+        for (auto const& p : recv) {
+            if (p.count == 0 || !(p.energy > 0.0) || !std::isfinite(p.energy))
+                continue;
+            result.push_back(UnpackSourceEscapeStat(p));
         }
+        std::sort(result.begin(), result.end(),
+                  [](auto const& a, auto const& b) { return a.energy > b.energy; });
+        if (result.size() > TOP_N)
+            result.resize(TOP_N);
     }
-    int resultBytes = static_cast<int>(resultBytes64);
-    MPI_Bcast(resultPacked.empty() ? nullptr : resultPacked.data(),
-              resultBytes, MPI_BYTE, 0, MPI_COMM_WORLD);
-    if (rank != 0) {
-        result.clear();
-        result.reserve(resultPacked.size());
-        for (auto const& p : resultPacked) {
-            SphericalObserver::SourceCellEscapeStat s;
-            s.cellID = static_cast<size_t>(p.cellID);
-            s.observerIndex = static_cast<size_t>(p.observerIndex);
-            s.energy = p.energy;
-            s.count = static_cast<size_t>(p.count);
-            result.push_back(s);
-        }
-    }
-#endif
-
-    std::sort(result.begin(), result.end(),
-              [](auto const& a, auto const& b) { return a.energy > b.energy; });
     return result;
+#else
+    return localTop;
+#endif
 }
 
 void ReduceDoubleVector(std::vector<double>& values)
@@ -785,10 +960,32 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
     diag.snrP95 = Percentile(diag.snrByObserver, 0.95);
 
     double const weakFrac = static_cast<double>(diag.weakObservers) /
-                            static_cast<double>(diag.observerCount);
-    diag.budgetMultiplier = 1.0 + cfg.adaptiveObserverExtraBudgetFrac * weakFrac;
-    state.observerBudgetMultiplier = diag.budgetMultiplier;
-    return diag;
+                        static_cast<double>(diag.observerCount);
+
+// The old weakFrac-only driver barely responds when only a few observers are
+// terrible.  Use deficit severity as well, so low-SNR / low-Neff tails get
+// meaningful extra budget.
+double const deficitTail95 = Percentile(diag.deficitByObserver, 0.95);
+
+double deficitDriver = 0.0;
+deficitDriver = std::max(deficitDriver, diag.deficitAvg - 1.0);
+deficitDriver = std::max(deficitDriver, 0.25 * (deficitTail95 - 1.0));
+deficitDriver = std::max(deficitDriver, 0.10 * (diag.deficitMax - 1.0));
+
+// Keep a small weak-fraction term so many mildly weak observers still increase
+// budget, but do not rely on it for a few pathological observers.
+deficitDriver = std::max(deficitDriver, weakFrac);
+
+diag.budgetMultiplier =
+    1.0 + cfg.adaptiveObserverExtraBudgetFrac * std::max(0.0, deficitDriver);
+
+// Hard safety cap.  Increase this only if you are prepared for the memory/runtime
+// cost.  With --adaptive-observer-extra-budget-frac 2, this can still get large
+// when deficitMax is 100.
+diag.budgetMultiplier = std::min(diag.budgetMultiplier, 10.0);
+
+state.observerBudgetMultiplier = diag.budgetMultiplier;
+return diag;
 }
 
 RadiationIMC::SourceAllocationSummary
@@ -841,44 +1038,105 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
     return local;
 }
 
-void UpdateAdaptiveSourceScores(
-    std::vector<SphericalObserver::SourceCellEscapeStat> const& stats,
+AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
+    std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats,
     Config const& cfg,
     AdaptiveSourceState& state,
     ObserverQualityDiagnostics const& observerQuality,
-    double& totalEscapedEnergy,
-    unsigned long long& totalCrossings,
-    size_t& passedCells,
-    size_t& newCells,
-    size_t& retainedCells,
-    size_t& decayedCells,
     bool decayExistingScores)
 {
-    totalEscapedEnergy = 0.0;
-    totalCrossings = 0;
-    std::unordered_map<size_t, double> energyByObserver;
-    for (auto const& s : stats) {
-        totalEscapedEnergy += s.energy;
-        totalCrossings += static_cast<unsigned long long>(s.count);
+    AdaptiveSourceUpdateSummary summary;
+    size_t const nObs = cfg.nObservers;
+    std::vector<double> energyByObserver(nObs, 0.0);
+    std::vector<double> weightSqByObserver(nObs, 0.0);
+    std::vector<unsigned long long> crossingsByObserver(nObs, 0ULL);
+
+    for (auto const& s : localStats) {
+        if (s.observerIndex >= nObs || !(s.energy > 0.0) || !std::isfinite(s.energy))
+            continue;
+
         energyByObserver[s.observerIndex] += s.energy;
+        double const w2 = (s.weightSq > 0.0 && std::isfinite(s.weightSq))
+            ? s.weightSq
+            : s.energy * s.energy;
+        weightSqByObserver[s.observerIndex] += w2;
+        crossingsByObserver[s.observerIndex] += static_cast<unsigned long long>(s.count);
     }
 
-    passedCells = newCells = retainedCells = decayedCells = 0;
-    if (!cfg.adaptiveSourceCells)
-        return;
+#ifdef RICH_MPI
+    if (!energyByObserver.empty()) {
+        MPI_Allreduce(MPI_IN_PLACE, energyByObserver.data(), static_cast<int>(energyByObserver.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, weightSqByObserver.data(), static_cast<int>(weightSqByObserver.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, crossingsByObserver.data(), static_cast<int>(crossingsByObserver.size()),
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    }
+#endif
+
+    for (size_t obs = 0; obs < nObs; ++obs) {
+        summary.totalEscapedEnergy += energyByObserver[obs];
+        summary.totalCrossings += crossingsByObserver[obs];
+        if (crossingsByObserver[obs] > 0)
+            ++summary.observersWithCrossings;
+    }
+
+    if (!cfg.adaptiveSourceCells) {
+        summary.scoreMapCells = state.scoreByCellID.size();
+        return summary;
+    }
 
     if (decayExistingScores) {
         double const decay = 1.0 - cfg.adaptiveSourceEma;
+        summary.decayedCells = state.scoreByCellID.size();
         for (auto& kv : state.scoreByCellID) {
             kv.second *= decay;
-            ++decayedCells;
         }
     }
 
-    for (auto const& s : stats) {
-        auto observerTotalIt = energyByObserver.find(s.observerIndex);
-        if (observerTotalIt == energyByObserver.end() || !(observerTotalIt->second > 0.0))
+    std::vector<PackedSourceEscapeStat> received = ExchangeSourceStatsByCellOwner(localStats, summary);
+    std::unordered_map<AdaptivePairKey, SphericalObserver::SourceCellEscapeStat, AdaptivePairKeyHash> byPair;
+    byPair.reserve(received.size());
+    for (auto const& p : received) {
+        if (p.count == 0 || !(p.energy > 0.0) || !std::isfinite(p.energy))
             continue;
+        size_t const observerIndex = static_cast<size_t>(p.observerIndex);
+        size_t const cellID = static_cast<size_t>(p.cellID);
+        AdaptivePairKey const key{observerIndex, cellID};
+        auto& s = byPair[key];
+        s.cellID = cellID;
+        s.observerIndex = observerIndex;
+        s.energy += p.energy;
+        s.weightSq += p.weightSq;
+        s.maxWeight = std::max(s.maxWeight, p.maxWeight);
+        s.count += static_cast<size_t>(p.count);
+    }
+    std::vector<PackedSourceEscapeStat>().swap(received);
+
+    std::vector<SphericalObserver::SourceCellEscapeStat> ownedStats;
+    ownedStats.reserve(byPair.size());
+    for (auto const& kv : byPair)
+        ownedStats.push_back(kv.second);
+    std::unordered_map<AdaptivePairKey, SphericalObserver::SourceCellEscapeStat,
+                       AdaptivePairKeyHash>().swap(byPair);
+    summary.topStats = GatherTopSourceStats(ownedStats);
+
+    unsigned long long localPairCount = static_cast<unsigned long long>(ownedStats.size());
+    unsigned long long globalPairCount = localPairCount;
+#ifdef RICH_MPI
+    MPI_Allreduce(&localPairCount, &globalPairCount, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, MPI_COMM_WORLD);
+#endif
+    summary.sourceCellObserverPairs = static_cast<size_t>(globalPairCount);
+
+    std::unordered_map<size_t, double> deltaByCell;
+    std::unordered_set<size_t> touchedNewCells;
+    for (auto const& s : ownedStats) {
+        if (s.observerIndex >= energyByObserver.size() ||
+            !(energyByObserver[s.observerIndex] > 0.0) ||
+            !std::isfinite(energyByObserver[s.observerIndex]))
+            continue;
+
         double observerBoost = 1.0;
         if (observerQuality.enabled &&
             s.observerIndex < observerQuality.deficitByObserver.size() &&
@@ -887,21 +1145,71 @@ void UpdateAdaptiveSourceScores(
         {
             observerBoost = observerQuality.deficitByObserver[s.observerIndex];
         }
-        double const minEnergy =
-            cfg.adaptiveSourceMinEscapedFrac * observerTotalIt->second /
-            std::max(1.0, observerBoost);
-        if (s.energy < minEnergy)
+
+        double const eFrac = s.energy / energyByObserver[s.observerIndex];
+
+        double const w2 = (s.weightSq > 0.0 && std::isfinite(s.weightSq))
+            ? s.weightSq
+            : s.energy * s.energy;
+
+        double const w2Total = weightSqByObserver[s.observerIndex];
+
+        double const w2Frac = (w2Total > 0.0 && std::isfinite(w2Total))
+            ? w2 / w2Total
+            : eFrac;
+
+        // In polarization mode, variance matters much more than energy:
+        // a cell emitting a few huge packets can dominate Q/U uncertainty.
+        double const varianceMix = observerQuality.polarizationMode ? 0.85 : 0.35;
+
+        double const sourceQualityScore =
+            (1.0 - varianceMix) * eFrac + varianceMix * w2Frac;
+
+        double const minScore =
+            cfg.adaptiveSourceMinEscapedFrac / std::max(1.0, observerBoost);
+
+        if (!(sourceQualityScore >= minScore) || !std::isfinite(sourceQualityScore))
             continue;
-        ++passedCells;
+
+        ++summary.passedCells;
+
         auto it = state.scoreByCellID.find(s.cellID);
         bool existed = (it != state.scoreByCellID.end() && it->second > 0.0);
-        double& score = state.scoreByCellID[s.cellID];
-        score += cfg.adaptiveSourceEma *
-                 observerBoost *
-                 (s.energy / observerTotalIt->second);
-        if (existed) ++retainedCells;
-        else ++newCells;
+        bool alreadyTouched = touchedNewCells.find(s.cellID) != touchedNewCells.end();
+        if (existed || alreadyTouched)
+            ++summary.retainedCells;
+        else {
+            ++summary.newCells;
+            touchedNewCells.insert(s.cellID);
+        }
+
+        deltaByCell[s.cellID] += cfg.adaptiveSourceEma * observerBoost * sourceQualityScore;
     }
+
+    std::vector<PackedAdaptiveScoreDelta> localDeltas;
+    localDeltas.reserve(deltaByCell.size());
+    for (auto const& kv : deltaByCell) {
+        if (!(kv.second > 0.0) || !std::isfinite(kv.second))
+            continue;
+        PackedAdaptiveScoreDelta p;
+        p.cellID = static_cast<unsigned long long>(kv.first);
+        p.delta = kv.second;
+        localDeltas.push_back(p);
+    }
+    std::unordered_map<size_t, double>().swap(deltaByCell);
+    std::unordered_set<size_t>().swap(touchedNewCells);
+    std::vector<SphericalObserver::SourceCellEscapeStat>().swap(ownedStats);
+
+    size_t localDeltaCells = localDeltas.size();
+    std::vector<PackedAdaptiveScoreDelta> allDeltas = AllgatherAdaptiveScoreDeltas(localDeltas);
+    std::vector<PackedAdaptiveScoreDelta>().swap(localDeltas);
+    for (auto const& p : allDeltas) {
+        if (!(p.delta > 0.0) || !std::isfinite(p.delta))
+            continue;
+        state.scoreByCellID[static_cast<size_t>(p.cellID)] += p.delta;
+    }
+    size_t const scoreDeltaCells = allDeltas.size();
+    std::vector<PackedAdaptiveScoreDelta>().swap(allDeltas);
 
     for (auto it = state.scoreByCellID.begin(); it != state.scoreByCellID.end(); ) {
         if (!(it->second > 0.0) || !std::isfinite(it->second))
@@ -909,6 +1217,34 @@ void UpdateAdaptiveSourceScores(
         else
             ++it;
     }
+
+    unsigned long long localPassed = static_cast<unsigned long long>(summary.passedCells);
+    unsigned long long localNew = static_cast<unsigned long long>(summary.newCells);
+    unsigned long long localRetained = static_cast<unsigned long long>(summary.retainedCells);
+    unsigned long long globalPassed = localPassed;
+    unsigned long long globalNew = localNew;
+    unsigned long long globalRetained = localRetained;
+#ifdef RICH_MPI
+    MPI_Allreduce(&localPassed, &globalPassed, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&localNew, &globalNew, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&localRetained, &globalRetained, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    summary.passedCells = static_cast<size_t>(globalPassed);
+    summary.newCells = static_cast<size_t>(globalNew);
+    summary.retainedCells = static_cast<size_t>(globalRetained);
+    summary.scoreDeltaCells = scoreDeltaCells;
+    summary.scoreMapCells = state.scoreByCellID.size();
+
+    unsigned long long maxLocalDeltaCells = static_cast<unsigned long long>(localDeltaCells);
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &maxLocalDeltaCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    summary.maxPackedBytes = std::max(
+        summary.maxPackedBytes,
+        (maxLocalDeltaCells + static_cast<unsigned long long>(scoreDeltaCells)) *
+            static_cast<unsigned long long>(sizeof(PackedAdaptiveScoreDelta)));
+
+    return summary;
 }
 
 void PrintAdaptiveGenerationStart(
@@ -947,16 +1283,10 @@ void PrintAdaptiveGenerationStats(
     std::string const& label,
     Config const& cfg,
     AdaptiveSourceState const& state,
-    std::vector<SphericalObserver::SourceCellEscapeStat> const& stats,
+    AdaptiveSourceUpdateSummary const& update,
     RadiationIMC::SourceAllocationSummary allocation,
     ObserverQualityDiagnostics const& observerQuality,
     size_t gen,
-    double totalEscapedEnergy,
-    unsigned long long totalCrossings,
-    size_t passedCells,
-    size_t newCells,
-    size_t retainedCells,
-    size_t decayedCells,
     int rank)
 {
     if (rank != 0 || !cfg.adaptiveSourceCells)
@@ -970,19 +1300,16 @@ void PrintAdaptiveGenerationStats(
     double learnedPhotonFrac = allocation.totalPhotons > 0
         ? static_cast<double>(allocation.learnedPhotons) / static_cast<double>(allocation.totalPhotons)
         : 0.0;
-    std::unordered_map<size_t, bool> observersWithCrossings;
-    for (auto const& s : stats)
-        observersWithCrossings[s.observerIndex] = true;
     std::cout << label << " adaptive stats after generation " << (gen + 1)
-              << ": crossing_energy=" << totalEscapedEnergy
-              << " crossing_count=" << totalCrossings
-              << " source_cell_observer_pairs=" << stats.size()
-              << " observers_with_crossings=" << observersWithCrossings.size()
-              << " cells_passing_filter=" << passedCells
+              << ": crossing_energy=" << update.totalEscapedEnergy
+              << " crossing_count=" << update.totalCrossings
+              << " source_cell_observer_pairs=" << update.sourceCellObserverPairs
+              << " observers_with_crossings=" << update.observersWithCrossings
+              << " cells_passing_filter=" << update.passedCells
               << " learned_cells=" << state.scoreByCellID.size()
-              << " new=" << newCells
-              << " retained=" << retainedCells
-              << " decayed=" << decayedCells << "\n"
+              << " new=" << update.newCells
+              << " retained=" << update.retainedCells
+              << " decayed=" << update.decayedCells << "\n"
               << label << " source allocation used: adaptive="
               << (allocation.adaptiveEnabled ? "yes" : "no")
               << " total_photons=" << allocation.totalPhotons
@@ -998,6 +1325,14 @@ void PrintAdaptiveGenerationStats(
               << " learned photons/cell min/avg/max=" << allocation.learnedMinPhotons
               << "/" << learnedAvgPhotons
               << "/" << allocation.learnedMaxPhotons
+              << std::endl;
+
+    std::cout << label << " adaptive tally memory: max_local_pairs="
+              << update.maxLocalSourcePairs
+              << " max_received_shard_pairs=" << update.maxReceivedShardPairs
+              << " score_delta_cells=" << update.scoreDeltaCells
+              << " score_map_cells=" << update.scoreMapCells
+              << " max_packed_bytes=" << update.maxPackedBytes
               << std::endl;
 
     if (observerQuality.enabled) {
@@ -1050,21 +1385,32 @@ void PrintAdaptiveGenerationStats(
         }
     }
 
+    auto const& stats = update.topStats;
     size_t const topN = std::min<size_t>(10, stats.size());
     if (topN > 0) {
         std::cout << label << " top escaping source cells:" << std::endl;
         for (size_t i = 0; i < topN; ++i) {
             auto const& s = stats[i];
-            double frac = (totalEscapedEnergy > 0.0) ? s.energy / totalEscapedEnergy : 0.0;
+            double frac = (update.totalEscapedEnergy > 0.0) ? s.energy / update.totalEscapedEnergy : 0.0;
             auto it = state.scoreByCellID.find(s.cellID);
             double score = (it != state.scoreByCellID.end()) ? it->second : 0.0;
+            double const sourceNeff = (s.weightSq > 0.0)
+                ? s.energy * s.energy / s.weightSq
+                : 0.0;
+            double const avgWeight = (s.count > 0)
+                ? s.energy / static_cast<double>(s.count)
+                : 0.0;
             std::cout << "  observer=" << s.observerIndex
-                      << " cellID=" << s.cellID
-                      << " escaped_energy=" << s.energy
-                      << " escaped_frac=" << frac
-                      << " crossings=" << s.count
-                      << " adaptive_score=" << score
-                      << std::endl;
+                << " cellID=" << s.cellID
+                << " escaped_energy=" << s.energy
+                << " escaped_frac=" << frac
+                << " crossings=" << s.count
+                << " source_neff=" << sourceNeff
+                << " avg_weight=" << avgWeight
+                << " max_weight=" << s.maxWeight
+                << " weightSq=" << s.weightSq
+                << " adaptive_score=" << score
+                << std::endl;
         }
     }
 }
@@ -1209,7 +1555,7 @@ void RecomputeOpacityScaleFactors(
     if (usePlanck) {
       double const kappaPGrey = greyOpacity.CalcPlanckOpacity(cells[i]);
       if (kappaPGrey <= 0.0 || !std::isfinite(kappaPGrey)) continue;
-      alpha = 4 * SolvePlanckAlpha(sigA, fWeight, kappaPGrey); // 2 is ad hoc factor to match the gray luminosity
+      alpha = 30 * SolvePlanckAlpha(sigA, fWeight, kappaPGrey); // 2 is ad hoc factor to match the gray luminosity
     } else {
       std::vector<double> sigS(Ng);
       for (size_t g = 0; g < Ng; ++g)
@@ -1318,6 +1664,7 @@ int main(int argc, char* argv[])
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
                       << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
+                      << "  max cell imbalance: " << MEASURED_LB_MAX_CELL_IMBALANCE << "\n"
                       << "  adaptive cadence: learned-only probe LB, then learned-final step 5 and 10 LB only\n"
                       << "Opacity scale:   " << (cfg.opacityScaleMode == OpacityScaleMode::Planck ? "planck" :
                                                   cfg.opacityScaleMode == OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
@@ -1806,6 +2153,7 @@ int main(int argc, char* argv[])
         measuredLBParams.missingCellCost = isMultigroup ? 5.0 : 2.0;
         measuredLBParams.grayZeroStepInflation = 2.0;
         measuredLBParams.multigroupZeroStepInflation = 5.0;
+        measuredLBParams.maxCellImbalance = MEASURED_LB_MAX_CELL_IMBALANCE;
         measuredLBParams.useMedianClamp = true;
         double const measuredLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
@@ -1890,7 +2238,7 @@ int main(int argc, char* argv[])
             else if (learnedProbeThisGen)
                 physics->setSourceEmissionControl(true, true, 75);
             else if (cfg.adaptiveSourceCells && finalThisGen)
-                physics->setSourceEmissionControl(true, false, 1, 500, 2000);
+                physics->setSourceEmissionControl(true, false, 1, 1000, 5000);
             else
                 physics->clearSourceEmissionControl();
             observer->resetGenerationSourceCellEscapeStats();
@@ -1903,31 +2251,21 @@ int main(int argc, char* argv[])
 
             auto mgAllocation = ReduceSourceAllocationSummary(
                 physics->getLastSourceAllocationSummary());
-            auto mgSourceStats = CollectGlobalSourceStats(
-                observer->getGenerationSourceCellEscapeStats());
+            auto mgSourceStats = observer->getGenerationSourceCellEscapeStats();
+            observer->resetGenerationSourceCellEscapeStats();
             ObserverQualityDiagnostics mgObserverQuality;
             if (cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
                 mgObserverQuality = BuildObserverQualityDiagnostics(
                     CollectGlobalObserverQuality(observer->getObserverQualitySnapshot()),
                     cfg, mgAdaptive);
             }
-            double mgGenerationEscapedEnergy = 0.0;
-            unsigned long long mgGenerationCrossings = 0;
-            size_t mgPassedCells = 0;
-            size_t mgNewCells = 0;
-            size_t mgRetainedCells = 0;
-            size_t mgDecayedCells = 0;
-            UpdateAdaptiveSourceScores(
+            auto mgUpdate = UpdateAdaptiveSourceScoresDistributed(
                 mgSourceStats, cfg, mgAdaptive, mgObserverQuality,
-                mgGenerationEscapedEnergy, mgGenerationCrossings,
-                mgPassedCells, mgNewCells, mgRetainedCells, mgDecayedCells,
                 !burninThisGen);
+            std::vector<SphericalObserver::SourceCellEscapeStat>().swap(mgSourceStats);
             PrintAdaptiveGenerationStats(
-                "MG", cfg, mgAdaptive, mgSourceStats, mgAllocation,
-                mgObserverQuality, gen,
-                mgGenerationEscapedEnergy, mgGenerationCrossings,
-                mgPassedCells, mgNewCells, mgRetainedCells, mgDecayedCells,
-                rank);
+                "MG", cfg, mgAdaptive, mgUpdate, mgAllocation,
+                mgObserverQuality, gen, rank);
             if (rank == 0 && cfg.adaptiveSourceCells)
                 std::cout << "MG learned cells after iteration " << (gen + 1)
                           << ": " << mgAdaptive.scoreByCellID.size() << std::endl;
@@ -2261,7 +2599,7 @@ int main(int argc, char* argv[])
         observer.reset();
         boundary.reset();
         opacity.reset();
-
+        mgAdaptive = AdaptiveSourceState{};
         if (rank == 0)
             std::cout << "MG resources released." << std::endl;
 
@@ -2333,6 +2671,7 @@ int main(int argc, char* argv[])
         greyLBParams.missingCellCost = 2.0;
         greyLBParams.grayZeroStepInflation = 2.0;
         greyLBParams.multigroupZeroStepInflation = 5.0;
+        greyLBParams.maxCellImbalance = MEASURED_LB_MAX_CELL_IMBALANCE;
         greyLBParams.useMedianClamp = true;
         double const greyLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
@@ -2429,31 +2768,21 @@ int main(int argc, char* argv[])
 
             auto greyAllocation = ReduceSourceAllocationSummary(
                 greyPhysics->getLastSourceAllocationSummary());
-            auto greySourceStats = CollectGlobalSourceStats(
-                greyObserver->getGenerationSourceCellEscapeStats());
+            auto greySourceStats = greyObserver->getGenerationSourceCellEscapeStats();
+            greyObserver->resetGenerationSourceCellEscapeStats();
             ObserverQualityDiagnostics greyObserverQuality;
             if (cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
                 greyObserverQuality = BuildObserverQualityDiagnostics(
                     CollectGlobalObserverQuality(greyObserver->getObserverQualitySnapshot()),
                     cfg, greyAdaptive);
             }
-            double greyGenerationEscapedEnergy = 0.0;
-            unsigned long long greyGenerationCrossings = 0;
-            size_t greyPassedCells = 0;
-            size_t greyNewCells = 0;
-            size_t greyRetainedCells = 0;
-            size_t greyDecayedCells = 0;
-            UpdateAdaptiveSourceScores(
+            auto greyUpdate = UpdateAdaptiveSourceScoresDistributed(
                 greySourceStats, cfg, greyAdaptive, greyObserverQuality,
-                greyGenerationEscapedEnergy, greyGenerationCrossings,
-                greyPassedCells, greyNewCells, greyRetainedCells, greyDecayedCells,
                 !greyBurninThisGen);
+            std::vector<SphericalObserver::SourceCellEscapeStat>().swap(greySourceStats);
             PrintAdaptiveGenerationStats(
-                "Grey", cfg, greyAdaptive, greySourceStats, greyAllocation,
-                greyObserverQuality, gen,
-                greyGenerationEscapedEnergy, greyGenerationCrossings,
-                greyPassedCells, greyNewCells, greyRetainedCells, greyDecayedCells,
-                rank);
+                "Grey", cfg, greyAdaptive, greyUpdate, greyAllocation,
+                greyObserverQuality, gen, rank);
             if (rank == 0 && cfg.adaptiveSourceCells)
                 std::cout << "Grey learned cells after iteration " << (gen + 1)
                           << ": " << greyAdaptive.scoreByCellID.size() << std::endl;
