@@ -37,6 +37,7 @@ namespace CG
     {
         mat A;
         size_t_mat A_indeces;
+        std::vector<double> A_diag;
         std::vector<double> b;
         std::vector<double> sub_x;
         std::vector<size_t> A_row_ptr;

@@ -125,8 +125,33 @@ bool Diffusion::prestep(Tessellation3D const& tess,
 }
 
 bool Diffusion::poststep() const {    
+    const size_t N = cells_temp.size();
+    const size_t Nnz = cg_workspace_.A_values.size();
     cells_temp.clear();
     extensives_temp.clear();
+    release_if_very_stale(cells_temp, N);
+    release_if_very_stale(extensives_temp, N);
+    release_if_very_stale(cg_workspace_.b, N);
+    release_if_very_stale(cg_workspace_.sub_x, N);
+    release_if_very_stale(cg_workspace_.M, N);
+    release_if_very_stale(cg_workspace_.r_old, N);
+    release_if_very_stale(cg_workspace_.sub_a_times_p, N);
+    release_if_very_stale(cg_workspace_.sub_r, N);
+    release_if_very_stale(cg_workspace_.sub_p, N);
+    release_if_very_stale(cg_workspace_.sub_r0, N);
+    release_if_very_stale(cg_workspace_.A_diag, N);
+    release_if_very_stale(cg_workspace_.y, N);
+    release_if_very_stale(cg_workspace_.z, N);
+    release_if_very_stale(cg_workspace_.v, N);
+    release_if_very_stale(cg_workspace_.h, N);
+    release_if_very_stale(cg_workspace_.s, N);
+    release_if_very_stale(cg_workspace_.t, N);
+    release_if_very_stale(cg_workspace_.scratch_rescale1, N);
+    release_if_very_stale(cg_workspace_.scratch_rescale2, N);
+    release_if_very_stale(cg_workspace_.old_x, N);
+    release_if_very_stale(cg_workspace_.A_row_ptr, N + 1);
+    release_if_very_stale(cg_workspace_.A_col_idx, Nnz);
+    release_if_very_stale(cg_workspace_.A_values, Nnz);
 
     return false;
 }

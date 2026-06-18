@@ -1,4 +1,5 @@
 #include "LinearGauss3D.hpp"
+#include "Hllc3D.hpp"
 #include "../../misc/utils.hpp"
 #include <array>
 #include <iostream>
@@ -1256,5 +1257,120 @@ vector<Slope3D>& LinearGauss3D::GetSlopes(void)
 vector<Slope3D>& LinearGauss3D::GetSlopesUnlimited(void)const
 {
 	return naive_rslopes_;
+}
+
+std::vector<double> LinearGauss3D::CalcDissipationStreamingFromPreparedSlopes(
+	const Tessellation3D& tess,
+	const std::vector<ComputationalCell3D>& cells,
+	double time,
+	Hllc3D const& rs,
+	const EquationOfState& eos) const
+{
+	const size_t N = tess.GetPointNo();
+	const size_t Nfaces = tess.GetTotalFacesNumber();
+	std::vector<double> result(N, 0.0);
+
+	size_t energy_index = ComputationalCell3D::tracerNames.size();
+	{
+		vector<string>::const_iterator it = binary_find(ComputationalCell3D::tracerNames.begin(),
+			ComputationalCell3D::tracerNames.end(), string("Energy"));
+		if(it != ComputationalCell3D::tracerNames.end())
+			energy_index = static_cast<size_t>(it - ComputationalCell3D::tracerNames.begin());
+	}
+	bool const energy_fix = energy_index < ComputationalCell3D::tracerNames.size();
+
+	auto reconstruct_side = [&](ComputationalCell3D& out, size_t face_idx, size_t cell_idx)
+	{
+		ReplaceComputationalCell(out, new_cells_[cell_idx]);
+		if(cell_idx < N)
+		{
+			if(pressure_calc_)
+				interp23D(out, rslopes_[cell_idx], tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, true);
+			else
+			{
+				interp23D(out, rslopes_[cell_idx], tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, false);
+				if(energy_fix)
+					out.tracers[energy_index] = out.internal_energy;
+			}
+		}
+		else
+		{
+#ifdef RICH_MPI
+			if(tess.BoundaryFace(face_idx))
+			{
+				if(pressure_calc_)
+					interp23D(out, ghost_.GetGhostGradient(tess, cells, rslopes_, cell_idx, time, face_idx),
+						tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, true);
+				else
+				{
+					interp23D(out, ghost_.GetGhostGradient(tess, cells, rslopes_, cell_idx, time, face_idx),
+						tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, false);
+					if(energy_fix)
+						out.tracers[energy_index] = out.internal_energy;
+				}
+			}
+			else
+			{
+				if(pressure_calc_)
+					interp23D(out, rslopes_[cell_idx], tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, true);
+				else
+				{
+					interp23D(out, rslopes_[cell_idx], tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, false);
+					if(energy_fix)
+						out.tracers[energy_index] = out.internal_energy;
+				}
+			}
+#else
+			if(pressure_calc_)
+				interp23D(out, ghost_.GetGhostGradient(tess, cells, rslopes_, cell_idx, time, face_idx),
+					tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, true);
+			else
+			{
+				interp23D(out, ghost_.GetGhostGradient(tess, cells, rslopes_, cell_idx, time, face_idx),
+					tess.FaceCM(face_idx), tess.GetCellCM(cell_idx), eos_, false);
+				if(energy_fix)
+					out.tracers[energy_index] = out.internal_energy;
+			}
+#endif
+		}
+	};
+
+	ComputationalCell3D left, right;
+
+	for(size_t i = 0; i < Nfaces; ++i)
+	{
+		auto neigh = tess.GetFaceNeighbors(i);
+		bool is_first = neigh.first < N;
+		bool is_second = neigh.second < N;
+		if(!is_first && !is_second)
+			continue;
+
+		reconstruct_side(left, i, neigh.first);
+		reconstruct_side(right, i, neigh.second);
+
+		if(SR_)
+		{
+			double factor = 1.0 / std::sqrt(1 + ScalarProd(left.velocity, left.velocity));
+			left.velocity *= factor;
+			factor = 1.0 / std::sqrt(1 + ScalarProd(right.velocity, right.velocity));
+			right.velocity *= factor;
+		}
+
+		const Vector3D normal = normalize(tess.Normal(i));
+		const double A = tess.GetArea(i);
+		auto UstarPstar = rs.GetUstarPstar(left, right, eos, normal);
+
+		if(is_first)
+			result[neigh.first] -= A * ((UstarPstar.first - ScalarProd(normal, cells[neigh.first].velocity)) * UstarPstar.second
+				- cells[neigh.first].pressure * UstarPstar.first);
+		if(is_second)
+			result[neigh.second] += A * ((UstarPstar.first - ScalarProd(normal, cells[neigh.second].velocity)) * UstarPstar.second
+				- cells[neigh.second].pressure * UstarPstar.first);
+	}
+
+	for(size_t i = 0; i < N; ++i)
+		result[i] /= tess.GetVolume(i);
+
+	return result;
 }
 

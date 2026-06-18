@@ -23,7 +23,9 @@ public:
     Serializer(void) = default;
 
     void reset(){this->internal.clear();};
-    void release(){this->internal.clear(); this->internal.shrink_to_fit();};
+    void release(){std::vector<char>().swap(this->internal);};
+
+    inline size_t capacity() const{return this->internal.capacity();};
 
     char *resize(size_t size);
 

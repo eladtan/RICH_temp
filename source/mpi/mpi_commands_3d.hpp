@@ -8,6 +8,19 @@
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
 #include "misc/utils.hpp"
+
+namespace rich_mpi_3d_detail {
+template<class T>
+inline void compact_to_indices_exact_order(std::vector<T>& data,
+                                           const std::vector<size_t>& keep)
+{
+    std::vector<T> tmp;
+    tmp.reserve(keep.size());
+    for(size_t idx : keep)
+        tmp.push_back(std::move(data[idx]));
+    data.swap(tmp);
+}
+} // namespace rich_mpi_3d_detail
 #include "misc/memory_profile.hpp"
 
 /*!
@@ -41,7 +54,7 @@ inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells,
 	}
 	else
 	{
-		cells = VectorValues(cells, tess.GetSelfIndex());
+		rich_mpi_3d_detail::compact_to_indices_exact_order(cells, tess.GetSelfIndex());
 	}
 	for(size_t i = 0; i < correspondents.size(); ++i)
 	{
