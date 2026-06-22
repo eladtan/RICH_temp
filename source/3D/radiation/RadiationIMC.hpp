@@ -6,21 +6,13 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <vector>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "RandomWalk.hpp"
 #include "Radiation/CMMC/src/compton_matrix_mc.hpp"
-#include "PostProcessIMCHelpers.hpp"
 
 class SphericalObserver;
-
-enum class ComptonInducedMode
-{
-    RadiationField,
-    AdaptivePlanckFallback
-};
 
 struct RadiationIMCParameters
 {
@@ -35,18 +27,33 @@ struct RadiationIMCParameters
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
     double ddmcMinParticleOpticalDepth = 5.0;
-    bool ddmcUseMultigroupPGRW = true;
+    bool ddmcUseMultigroupPGRW = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
-    bool capAbsorptionOpacity = false;
     bool withCompton = false;
     bool comptonUseInduced = true;
-    ComptonInducedMode comptonInducedMode = ComptonInducedMode::AdaptivePlanckFallback;
     bool comptonAllowNZeroFallback = true;
+    bool comptonDebugParityCheck = false;
+    bool comptonCheckSignedTallies = false;
+    bool comptonDiagnostics = false;
     bool comptonAngleDependent = true;
+    double comptonSignedTallyTolerance = 1e-10;
     size_t comptonMatrixSamples = 200000;
 
-    RadiationIMCPostProcessConfig postProcess;
+    struct PostProcessParameters
+    {
+        bool enabled = false;
+        double sourceDt = 0.0;
+        double transportTime = 0.0;
+        bool useCellVelocities = true;
+        struct PolarizationParameters
+        {
+            bool enabled = false;
+            int manualScatteringsAfterAcceleration = 0;
+            double depolarizationScatterings = 0.0;
+            std::string acceleratedClosure;
+        } polarization;
+    } postProcess;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
@@ -65,13 +72,13 @@ public:
     struct SourceAllocationSummary
     {
         bool adaptiveEnabled = false;
-        unsigned long long totalPhotons = 0;
-        unsigned long long sourceCells = 0;
-        unsigned long long boostedCells = 0;
-        unsigned long long learnedCells = 0;
-        unsigned long long learnedBoostedCells = 0;
-        unsigned long long learnedPhotons = 0;
-        unsigned long long learnedExtraPhotons = 0;
+        size_t totalPhotons = 0;
+        size_t sourceCells = 0;
+        size_t boostedCells = 0;
+        size_t learnedCells = 0;
+        size_t learnedBoostedCells = 0;
+        size_t learnedPhotons = 0;
+        size_t learnedExtraPhotons = 0;
         size_t minPhotons = 0;
         size_t maxPhotons = 0;
         size_t learnedMinPhotons = 0;
@@ -98,7 +105,6 @@ public:
         double Gamma = 0.0;
         double betaCdtF = 0.0;
         bool useNZero = false;
-        bool usePlanckInduced = false;
         GroupArray oldRadiationEnergy{};
         GroupArray occupation{};
         GroupArray D{};
@@ -108,29 +114,18 @@ public:
         GroupArray Bbase{};
         GroupArray Bcorr{};
         GroupArray Btotal{};
-        GroupArray Bpos{};
-        GroupArray Bres{};
         GroupArray baseEffectiveOpacity{};
-        GroupArray comptonOutRate{};
-        GroupCdfMatrix comptonTargetCdf{};
+        GroupArray implicitEventRate{};
+        GroupArray implicitDiagonalCorrection{};
+        GroupCdfMatrix implicitEventCdf{};
         GroupMatrix tau{};
         GroupMatrix dtau_dUm{};
         GroupMatrix S{};
         GroupMatrix dSdUm{};
-        GroupMatrix segmentKernel{};
-        GroupMatrix residualKernel{};
-        GroupMatrix Ktotal{};
-        GroupArray comptonMu{};
-        GroupArray comptonMh{};
-        GroupArray riskScore{};
-        std::array<size_t, ENERGY_GROUPS_NUM> riskTargetPackets{};
-    };
-
-    enum class ComptonOccupationMode
-    {
-        Zero,
-        RadiationField,
-        PlanckFunction
+        GroupMatrix Kmat{};
+        GroupMatrix Hbase{};
+        GroupMatrix implicitKernel{};
+        GroupMatrix implicitEventRateMatrix{};
     };
 
     RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters);
@@ -140,14 +135,6 @@ public:
     Functionality step(Particle &particle, std::vector<Particle> &particlesToAdd) override;
 
     void postStep(const std::vector<Particle> &particles, double fullDt) override;
-
-    size_t getRandomWalkStepCount() const override { return this->rwStepCount; }
-    size_t getDDMCStepCount() const override { return this->ddmcStepCount; }
-    size_t getDDMCLeakCount() const override { return this->ddmcLeakCount; }
-    size_t getDDMCCensusCount() const override { return this->ddmcCensusCount; }
-    size_t getDDMCUpscatterCount() const override { return this->ddmcUpscatterCount; }
-    size_t getDDMCFallbackCount() const override { return this->ddmcFallbackCount; }
-    std::string getAccelerationDebugInfo(size_t cellIndex, double frequency) const override;
 
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
 
@@ -165,64 +152,36 @@ public:
 
     inline const GroupArray &getComptonGroupWidths(void) const {return this->comptonGroupWidths;}
 
-    void setObserver(std::shared_ptr<SphericalObserver> observer);
-    std::shared_ptr<SphericalObserver> getObserver() const;
-    bool isPostProcessMode() const;
+    void setObserver(std::shared_ptr<SphericalObserver> observer) { observer_ = std::move(observer); }
+    void setNewPhotonsPerCell(size_t n) { newPhotonsPerCell = n; }
     void setAdaptiveSourceCellScores(std::unordered_map<size_t, double> scores,
                                      double strength, double maxFactor,
-                                     double learnedReserveFrac = 0.0,
-                                     double learnedMinFactor = 1.0,
-                                     double budgetMultiplier = 1.0);
+                                     double learnedReserveFrac,
+                                     double learnedMinFactor,
+                                     double observerBudgetMultiplier);
     void clearAdaptiveSourceCellScores();
-    void setNewPhotonsPerCell(size_t newPhotonsPerCell);
-    void setSourceEmissionControl(bool learnedCellsOnly,
-                                  bool forceUniformPhotons,
-                                  size_t uniformPhotons,
-                                  size_t learnedMinPhotons = 0,
-                                  size_t learnedMaxPhotons = 0);
+    void setSourceEmissionControl(bool useLearnedScores, bool includeUniformBase,
+                                  size_t baseMultiplier,
+                                  size_t learnedBoostFactor = 20,
+                                  size_t learnedExtraBudget = 0);
     void clearSourceEmissionControl();
-    SourceAllocationSummary getLastSourceAllocationSummary() const;
-    std::vector<size_t> const& getLastSourcePhotonsPerCell() const;
+    SourceAllocationSummary getLastSourceAllocationSummary() const { return lastSourceAllocationSummary_; }
+    std::vector<size_t> const &getLastSourcePhotonsPerCell() const { return lastSourcePhotonsPerCell_; }
 
 private:    
-    struct DDMCFaceLeak
-    {
-        size_t faceIndex = std::numeric_limits<size_t>::max();
-        size_t nextCellIndex = std::numeric_limits<size_t>::max();
-        double rate = 0.0;
-    };
-
-    struct DDMCCellData
-    {
-        bool eligible = false;
-        bool observerExcluded = false;
-        bool boundaryExcluded = false;
-        size_t rigidBoundaryFaceCount = 0;
-        size_t unsupportedBoundaryFaceCount = 0;
-        size_t firstUnsupportedBoundaryFace = std::numeric_limits<size_t>::max();
-        double sigmaT = 0.0;
-        double sigmaA = 0.0;
-        double diffusionCoefficient = 0.0;
-        double gamma = 1.0;
-        size_t groupCutoff = 0;
-        double totalLeakRate = 0.0;
-        std::vector<DDMCFaceLeak> faceLeaks;
-    };
-
     std::vector<Particle> generateParticles(double fullDt);
     std::vector<Particle> generateComptonParticles(double fullDt);
     void precomputeComptonData(double fullDt);
     void initializeComptonGroups();
     void initializeComptonMatrixGenerator();
-    void buildComptonMatricesForCell(const ComputationalCell3D &cell, size_t cellIndex, ComptonOccupationMode occupationMode, ComptonCellData &cd);
+    void buildComptonMatricesForCell(const ComputationalCell3D &cell, size_t cellIndex, bool calculateN, ComptonCellData &cd);
     void recomputeComptonContractions(ComptonCellData &cd);
-    void buildComptonEventData(size_t cellIndex, ComptonCellData &cd);
+    void buildComptonInPlaceKernels(size_t cellIndex, ComptonCellData &cd);
     void buildComptonSources(double fullDt, ComptonCellData &cd);
-    void applyComptonScatterEvent(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, const Vector3D &oldVelocity, double oldWeight, double dopplerShift, Particle &particle);
-    void computeComptonRiskForCell(size_t cellIndex, double fullDt, ComptonCellData &cd);
-    void splitComptonRiskyParticles(std::vector<Particle> &particles, double fullDt);
-    void applyComptonEndOfStepCorrection(double fullDt);
-    void reconcileComptonParticles(std::vector<Particle> &particles);
+    void applyImplicitComptonEvent(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, const Vector3D &oldVelocity, double oldWeight, double dopplerShift, Particle &particle);
+    void resetComptonDiagnostics();
+    void printComptonDiagnostics();
+    void validateComptonParity(size_t cellIndex, const ComptonCellData &cd) const;
     double frequencyForComptonGroup(size_t group) const;
     size_t sampleComptonCdf(const GroupCdf &cdf, double random) const;
     static GroupCdf buildSafeComptonCdf(const GroupArray &weights);
@@ -235,10 +194,6 @@ private:
     GroupArray comptonGroupWidths{};
     bool comptonGroupsInitialized = false;
     std::unique_ptr<ComptonMatrixMC> comptonMatrixGen;
-    std::vector<std::array<size_t, ENERGY_GROUPS_NUM>> lastComptonPacketCounts_;
-    std::vector<GroupArray> lastComptonMaxPacketWeight_;
-    double comptonRiskPrecomputeDt_ = -1.0;
-    bool comptonDataReusableInPreStep_ = false;
 
     bool withHydro;
     bool diffusionPressureGradient;
@@ -247,34 +202,33 @@ private:
     bool withRandomWalk;
     double rwMinCellOpticalDepth;
     double rwMinParticleOpticalDepth;
-    bool withDDMC;
-    double ddmcMinCellOpticalDepth;
-    double ddmcMinParticleOpticalDepth;
-    bool ddmcUseMultigroupPGRW;
     bool noHydroFeedback;
     bool withEgTimeAvg;
-    bool capAbsorptionOpacity;
     bool withCompton;
     bool comptonUseInduced;
-    ComptonInducedMode comptonInducedMode;
     bool comptonAllowNZeroFallback;
-    bool comptonAngleDependent;
+    bool comptonDebugParityCheck;
+    bool comptonCheckSignedTallies;
+    bool comptonDiagnostics;
+    double comptonSignedTallyTolerance;
     size_t comptonMatrixSamples;
-    bool useTransportVelocities_ = false;
-    bool adaptiveSourceCellsEnabled_ = false;
-    double adaptiveSourceStrength_ = 0.0;
-    double adaptiveSourceMaxFactor_ = 20.0;
-    double adaptiveSourceLearnedReserveFrac_ = 0.0;
-    double adaptiveSourceLearnedMinFactor_ = 1.0;
-    double adaptiveSourceBudgetMultiplier_ = 1.0;
-    std::unordered_map<size_t, double> adaptiveSourceScoreByCellID_;
-    SourceAllocationSummary lastSourceAllocationSummary_;
-    std::vector<size_t> lastSourcePhotonsPerCell_;
-    bool sourceLearnedCellsOnly_ = false;
-    bool sourceForceUniformPhotons_ = false;
-    size_t sourceUniformPhotons_ = 1;
-    size_t sourceLearnedMinPhotons_ = 0;
-    size_t sourceLearnedMaxPhotons_ = 0;
+    double comptonSourceMaterialExchange = 0.0;
+    double comptonContinuousMaterialExchange = 0.0;
+    double comptonImplicitMaterialExchange = 0.0;
+    double comptonRemovalMaterialExchange = 0.0;
+    double comptonMinGroupEnergy = std::numeric_limits<double>::infinity();
+    double comptonMaxGroupEnergy = -std::numeric_limits<double>::infinity();
+    double comptonProjectedRadiationEnergy = 0.0;
+    double comptonMinFleck = std::numeric_limits<double>::infinity();
+    double comptonMaxFleck = -std::numeric_limits<double>::infinity();
+    double comptonMinGamma = std::numeric_limits<double>::infinity();
+    double comptonMaxGamma = -std::numeric_limits<double>::infinity();
+    double comptonMinUpsilon = std::numeric_limits<double>::infinity();
+    double comptonMaxUpsilon = -std::numeric_limits<double>::infinity();
+    size_t comptonNZeroFallbackCount = 0;
+    size_t comptonImplicitEventCount = 0;
+    size_t comptonOpacityLimitedGroupCount = 0;
+    size_t comptonProjectedNegativeGroupCount = 0;
 
     std::unique_ptr<RandomWalk> randomWalk;
     std::vector<bool> rwCellEligible;
@@ -282,30 +236,25 @@ private:
     std::vector<PGRWCellData> rwCellData;
     size_t rwStepCount = 0;
 
-    std::vector<DDMCCellData> ddmcCellData;
-    size_t ddmcStepCount = 0;
-    size_t ddmcLeakCount = 0;
-    size_t ddmcCensusCount = 0;
-    size_t ddmcUpscatterCount = 0;
-    size_t ddmcFallbackCount = 0;
-    size_t ddmcFallbackOutsideCellCount = 0;
-    size_t ddmcFallbackLeakFaceDistanceCount = 0;
-    size_t ddmcFallbackInvalidLeakFaceDistanceCount = 0;
-
-    RadiationIMCPostProcessConfig postProcess_;
     std::shared_ptr<SphericalObserver> observer_;
+    std::unordered_map<size_t, double> adaptiveSourceScores_;
+    bool adaptiveSourceScoresEnabled_ = false;
+    double adaptiveSourceStrength_ = 0.0;
+    double adaptiveSourceMaxFactor_ = 1.0;
+    double adaptiveSourceLearnedReserveFrac_ = 0.0;
+    double adaptiveSourceLearnedMinFactor_ = 1.0;
+    double adaptiveSourceObserverBudgetMultiplier_ = 1.0;
+    bool sourceEmissionControlEnabled_ = false;
+    bool sourceEmissionUseLearnedScores_ = false;
+    bool sourceEmissionIncludeUniformBase_ = true;
+    size_t sourceEmissionBaseMultiplier_ = 1;
+    size_t sourceEmissionLearnedBoostFactor_ = 20;
+    size_t sourceEmissionLearnedExtraBudget_ = 0;
+    std::vector<size_t> lastSourcePhotonsPerCell_;
+    SourceAllocationSummary lastSourceAllocationSummary_;
 
     bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeRandomWalkData();
-    bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
-    void precomputeDDMCData();
-
-    double computeMinSignedDistanceToAllCellFaces(size_t cellIndex,
-                                                  Vector3D const &location) const;
-    double computeDDMCGeometryTolerance(size_t cellIndex) const;
-    double computeMinDistanceToDDMCLeakFaces(size_t cellIndex,
-                                             Vector3D const &location,
-                                             DDMCCellData const &data) const;
 };
 
 #endif // RADIATION_IMC_HPP

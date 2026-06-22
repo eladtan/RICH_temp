@@ -163,6 +163,8 @@ public:
 #ifdef MONTECARLO_POLARIZATION
     std::vector<double> const& getObserverStokesQ() const { return observerStokesQ_; }
     std::vector<double> const& getObserverStokesU() const { return observerStokesU_; }
+    std::vector<std::vector<double>> const& getGroupStokesQ() const { return groupStokesQ_; }
+    std::vector<std::vector<double>> const& getGroupStokesU() const { return groupStokesU_; }
     std::vector<double> const& getMismatchWeightedSum() const { return mismatchWeightedSum_; }
     std::vector<double> const& getMismatchWeighted2Sum() const { return mismatchWeighted2Sum_; }
     std::vector<double> const& getMismatchMax() const { return mismatchMax_; }
