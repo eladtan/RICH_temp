@@ -1536,7 +1536,8 @@ void ReverseAdjointTransport3D::writeOutputs(std::string const &filename) const
         (config_.multigroupDDMCMode == ReverseMultigroupDDMCMode::PGRWCollapsed)
         ? std::string("collapsed_routed_to_separate_dataset")
         : std::string("resolved_per_group");
-    writer.WriteElement(prefix + "/metadata/pgrw_estimator_group_output_mode", pgrwOutputSemantics);
+    writer.WriteElement(prefix + ReverseOutputStrings::PGRWEstimatorGroupOutputModeMetadataPath,
+                        pgrwOutputSemantics);
 
     writer.Close();
 }

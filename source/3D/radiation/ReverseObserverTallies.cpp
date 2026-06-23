@@ -114,7 +114,7 @@ void ReverseObserverTallies::writeHDF5(HDF5Writer &writer,
         writer.WriteElement(prefix + "/metadata/group_luminosity_below_cutoff_valid", 0.0);
         writer.WriteElement(prefix + "/metadata/group_luminosity_contains_collapsed_pgrw", 1.0);
         writer.WriteElement(prefix + "/metadata/resolved_collapsed_split_available", 1.0);
-        writer.WriteElement(prefix + "/metadata/pgrw_output_semantics",
+        writer.WriteElement(prefix + ReverseOutputStrings::PGRWOutputSemanticsMetadataPath,
             std::string("total_contains_collapsed; resolved_split_available"));
     }
     else

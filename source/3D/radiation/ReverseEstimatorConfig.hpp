@@ -144,6 +144,12 @@ inline constexpr char ResolvedOnlyLegacyAlias[] =
 inline constexpr char GroupISemantics[] =
     "group_N/I is resolved_only; group_N/I_total is resolved+collapsed";
 
+inline constexpr char PGRWOutputSemanticsMetadataPath[] =
+    "/metadata/pgrw_output_semantics";
+
+inline constexpr char PGRWEstimatorGroupOutputModeMetadataPath[] =
+    "/metadata/pgrw_estimator_group_output_mode";
+
 inline constexpr char SigmaSampleSpace[] =
     "launched_packet_count; nonzero_packet_count is NOT effective_sample_size";
 
