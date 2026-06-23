@@ -34,7 +34,16 @@ lscpu
 #mpirun -genv I_MPI_DEBUG=5 -genv I_MPI_SHM_LMT=shm ./test.exe
 #mpirun -genv I_MPI_FABRICS=shm:dapl ./test.exe
 export UCX_TLS=ib
-mpirun -mca btl ^openib ./rich --vtk-output luminosity.vtk --adaptive-source-cells --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 5 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
-# mpirun ./rich
 
+MPI_TMPDIR="$PWD/mpi_tmp/${SLURM_JOB_ID}"
+mkdir -p "$MPI_TMPDIR"
+export TMPDIR="$MPI_TMPDIR"
+export TMP="$MPI_TMPDIR"
+export TEMP="$MPI_TMPDIR"
+export OMPI_MCA_orte_tmpdir_base="$MPI_TMPDIR"
+
+echo before
+mpirun -mca btl ^openib ./rich --postprocess-estimator reverse --reverse-measured-lb --reverse-lb-pilot-packets-per-observer-group 100 --reverse-progress-interval-sec 10 --reverse-ddmc-min-cell-optical-depth 15 --reverse-ddmc-min-particle-optical-depth 10 --vtk-output luminosity.vtk --adaptive-source-cells --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 5 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
+# mpirun ./rich
+echo after
 

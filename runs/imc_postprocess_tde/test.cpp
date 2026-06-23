@@ -35,6 +35,9 @@
 #include "source/misc/universal_error.hpp"
 #include "source/misc/simple_io.hpp"
 #include "source/misc/utils.hpp"
+#include "source/3D/radiation/ReverseAdjointTransport3D.hpp"
+#include "source/3D/radiation/ReverseEstimatorConfig.hpp"
+#include "source/3D/radiation/FleckFactorHelper.hpp"
 
 #include <fstream>
 #include <iomanip>
@@ -242,6 +245,21 @@ struct Config
     double adaptiveLBImbalanceThreshold = 2.0;
     size_t adaptiveLBCooldownGenerations = 2;
     size_t adaptiveLBMaxRebalances = 6;
+
+    PostProcessEstimatorMode estimatorMode = PostProcessEstimatorMode::Forward;
+    size_t reversePacketsPerObserverGroup = 10000;
+    uint64_t reverseSeed = 12345;
+    std::string reverseOutputPrefix = "reverse_tally";
+    bool reverseMeasuredLB = false;
+    size_t reverseLBPilotPacketsPerObserverGroup = 0;
+    double reverseLBWeightCompression = -1.0;
+    double reverseProgressIntervalSec = 5.0;
+    size_t reverseMaxEvents = 500000;
+    double reverseDDMCMinCellOpticalDepth = 15.0;
+    double reverseDDMCMinParticleOpticalDepth = 5.0;
+    bool reverseDDMCObserverExclusion = true;
+    bool reverseDDMCPhotosphereExclusion = true;
+    double reverseDDMCPhotosphereOpticalDepth = 5.0;
 };
 
 void printUsage(int rank)
@@ -293,7 +311,22 @@ void printUsage(int rank)
               << "  --measured-lb-weight-compression F (default: adaptive=1, non-adaptive=0.5)\n"
               << "  --adaptive-lb-imbalance-threshold F Legacy flag accepted; fixed 5-step cadence ignores it\n"
               << "  --adaptive-lb-cooldown-gens N Legacy flag accepted; fixed 5-step cadence ignores it\n"
-              << "  --adaptive-lb-max-rebalances N Legacy flag accepted; fixed 5-step cadence ignores it\n";
+              << "  --adaptive-lb-max-rebalances N Legacy flag accepted; fixed 5-step cadence ignores it\n"
+              << "\n  [Reverse estimator]\n"
+              << "  --postprocess-estimator forward|reverse|both  (default: forward)\n"
+              << "  --reverse-packets-per-observer-group N  (default: 10000)\n"
+              << "  --reverse-seed N                        (default: 12345)\n"
+              << "  --reverse-output-prefix PREFIX           (default: reverse_tally)\n"
+              << "  --reverse-progress-interval-sec X        (default: 5)\n"
+              << "  --reverse-max-events N                   (default: 500000)\n"
+              << "  --reverse-ddmc-min-cell-optical-depth X  (default: 15)\n"
+              << "  --reverse-ddmc-min-particle-optical-depth X (default: 5)\n"
+              << "  --reverse-ddmc-no-observer-exclusion\n"
+              << "  --reverse-ddmc-no-photosphere-exclusion\n"
+              << "  --reverse-ddmc-photosphere-optical-depth X (default: 5)\n"
+              << "  --reverse-measured-lb                    Run pilot reverse pass and repartition\n"
+              << "  --reverse-lb-pilot-packets-per-observer-group N (default: production/100)\n"
+              << "  --reverse-lb-weight-compression X        (default: forward measured-LB default)\n";
 }
 
 bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
@@ -363,6 +396,27 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
             else if (m == "none") cfg.opacityScaleMode = OpacityScaleMode::None;
             else { if (rank == 0) std::cerr << "Unknown opacity-scale-mode: " << m << " (planck|rosseland|none)\n"; return false; }
         }
+        else if (arg == "--postprocess-estimator" && i + 1 < argc) {
+            std::string m = argv[++i];
+            if (m == "forward") cfg.estimatorMode = PostProcessEstimatorMode::Forward;
+            else if (m == "reverse") cfg.estimatorMode = PostProcessEstimatorMode::Reverse;
+            else if (m == "both") cfg.estimatorMode = PostProcessEstimatorMode::Both;
+            else { if (rank == 0) std::cerr << "Unknown --postprocess-estimator: " << m << " (forward|reverse|both)\n"; return false; }
+        }
+        else if (arg == "--reverse-packets-per-observer-group" && i + 1 < argc) { cfg.reversePacketsPerObserverGroup = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--reverse-seed" && i + 1 < argc) { cfg.reverseSeed = static_cast<uint64_t>(std::atoll(argv[++i])); }
+        else if (arg == "--reverse-output-prefix" && i + 1 < argc) { cfg.reverseOutputPrefix = argv[++i]; }
+        else if (arg == "--reverse-progress-interval-sec" && i + 1 < argc) { cfg.reverseProgressIntervalSec = std::atof(argv[++i]); }
+        else if (arg == "--reverse-max-events" && i + 1 < argc) { cfg.reverseMaxEvents = static_cast<size_t>(std::atoll(argv[++i])); }
+        else if (arg == "--reverse-ddmc-min-cell-optical-depth" && i + 1 < argc) { cfg.reverseDDMCMinCellOpticalDepth = std::atof(argv[++i]); }
+        else if (arg == "--reverse-ddmc-min-particle-optical-depth" && i + 1 < argc) { cfg.reverseDDMCMinParticleOpticalDepth = std::atof(argv[++i]); }
+        else if (arg == "--reverse-ddmc-no-observer-exclusion") { cfg.reverseDDMCObserverExclusion = false; }
+        else if (arg == "--reverse-ddmc-no-photosphere-exclusion") { cfg.reverseDDMCPhotosphereExclusion = false; }
+        else if (arg == "--reverse-ddmc-photosphere-optical-depth" && i + 1 < argc) { cfg.reverseDDMCPhotosphereOpticalDepth = std::atof(argv[++i]); }
+        else if (arg == "--reverse-measured-lb") { cfg.reverseMeasuredLB = true; }
+        else if (arg == "--no-reverse-measured-lb") { cfg.reverseMeasuredLB = false; }
+        else if (arg == "--reverse-lb-pilot-packets-per-observer-group" && i + 1 < argc) { cfg.reverseLBPilotPacketsPerObserverGroup = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--reverse-lb-weight-compression" && i + 1 < argc) { cfg.reverseLBWeightCompression = std::atof(argv[++i]); }
         else { if (rank == 0) std::cerr << "Unknown argument: " << arg << "\n"; return false; }
     }
 
@@ -383,6 +437,13 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
     if (cfg.adaptiveObserverDeficitMax < 1.0 || !std::isfinite(cfg.adaptiveObserverDeficitMax)) { if (rank == 0) std::cerr << "--adaptive-observer-deficit-max must be finite and >= 1\n"; return false; }
     if (cfg.adaptiveObserverDeficitEma <= 0.0 || cfg.adaptiveObserverDeficitEma > 1.0 || !std::isfinite(cfg.adaptiveObserverDeficitEma)) { if (rank == 0) std::cerr << "--adaptive-observer-deficit-ema must be finite in (0,1]\n"; return false; }
     if (cfg.measuredLBWeightCompression != -1.0 && (cfg.measuredLBWeightCompression <= 0.0 || !std::isfinite(cfg.measuredLBWeightCompression))) { if (rank == 0) std::cerr << "--measured-lb-weight-compression must be finite and > 0\n"; return false; }
+    if (cfg.reversePacketsPerObserverGroup == 0) { if (rank == 0) std::cerr << "--reverse-packets-per-observer-group must be > 0\n"; return false; }
+    if (cfg.reverseProgressIntervalSec <= 0.0 || !std::isfinite(cfg.reverseProgressIntervalSec)) { if (rank == 0) std::cerr << "--reverse-progress-interval-sec must be finite and > 0\n"; return false; }
+    if (cfg.reverseMaxEvents == 0) { if (rank == 0) std::cerr << "--reverse-max-events must be > 0\n"; return false; }
+    if (cfg.reverseDDMCMinCellOpticalDepth <= 0.0 || !std::isfinite(cfg.reverseDDMCMinCellOpticalDepth)) { if (rank == 0) std::cerr << "--reverse-ddmc-min-cell-optical-depth must be finite and > 0\n"; return false; }
+    if (cfg.reverseDDMCMinParticleOpticalDepth <= 0.0 || !std::isfinite(cfg.reverseDDMCMinParticleOpticalDepth)) { if (rank == 0) std::cerr << "--reverse-ddmc-min-particle-optical-depth must be finite and > 0\n"; return false; }
+    if (cfg.reverseDDMCPhotosphereOpticalDepth <= 0.0 || !std::isfinite(cfg.reverseDDMCPhotosphereOpticalDepth)) { if (rank == 0) std::cerr << "--reverse-ddmc-photosphere-optical-depth must be finite and > 0\n"; return false; }
+    if (cfg.reverseLBWeightCompression != -1.0 && (cfg.reverseLBWeightCompression <= 0.0 || !std::isfinite(cfg.reverseLBWeightCompression))) { if (rank == 0) std::cerr << "--reverse-lb-weight-compression must be finite and > 0\n"; return false; }
 
     if (cfg.greyOpacityDir.empty()) {
         std::string d = cfg.opacityDir;
@@ -1579,11 +1640,19 @@ void RecomputeOpacityScaleFactors(
 
   double globalMin = 0.0, globalMax = 0.0, globalSum = 0.0;
   size_t globalCount = 0, globalOutliers = 0;
+#ifdef RICH_MPI
   MPI_Reduce(&alphaMin, &globalMin, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaMax, &globalMax, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaCount, &globalCount, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaOutliers, &globalOutliers, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+#else
+  globalMin = alphaMin;
+  globalMax = alphaMax;
+  globalSum = alphaSum;
+  globalCount = alphaCount;
+  globalOutliers = alphaOutliers;
+#endif
 
   if (rank == 0) {
     char const* modeStr = usePlanck ? "Planck" : "Rosseland";
@@ -2161,6 +2230,11 @@ int main(int argc, char* argv[])
         observer->clearGenerationStatistics();
         size_t mgIncludedFinalGenerations = 0;
         size_t mgDiscardedBurninGenerations = 0;
+
+        const bool runForwardPostprocess =
+            cfg.estimatorMode == PostProcessEstimatorMode::Forward ||
+            cfg.estimatorMode == PostProcessEstimatorMode::Both;
+
         size_t const mgInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
         size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 14 : 0;
         size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
@@ -2172,6 +2246,8 @@ int main(int argc, char* argv[])
         size_t const mgTotalGenerations = cfg.adaptiveSourceCells
             ? mgFinalStartGeneration + mgFinalGenerations
             : cfg.nGenerations;
+        if (runForwardPostprocess)
+        {
         for (size_t gen = 0; gen < mgTotalGenerations; ++gen)
         {
             bool const firstBurninThisGen =
@@ -2451,7 +2527,6 @@ int main(int argc, char* argv[])
                     }
 #endif
 
-                    observer->addBoxEscapeEnergy(boundary->getEscapedEnergy());
                     boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
                     physics = std::make_shared<RadiationIMC>(
@@ -2588,6 +2663,286 @@ int main(int argc, char* argv[])
                       << "Timed-out fraction:       " << timedOutFrac << "\n"
                       << "Output written to:        " << cfg.outputPath << "\n"
                       << std::endl;
+        }
+        } // end if (runForwardPostprocess)
+
+        // ============================================================
+        // Reverse estimator (if requested)
+        // ============================================================
+        if (cfg.estimatorMode == PostProcessEstimatorMode::Reverse ||
+            cfg.estimatorMode == PostProcessEstimatorMode::Both)
+        {
+            if (rank == 0)
+                std::cout << "\n=== Running Reverse Adjoint Estimator ===\n";
+
+            ReverseEstimatorConfig rcfg;
+            rcfg.packetsPerObserverGroup = cfg.reversePacketsPerObserverGroup;
+            rcfg.seed = cfg.reverseSeed;
+            rcfg.outputPrefix = cfg.reverseOutputPrefix;
+            rcfg.estimatorMode = cfg.estimatorMode;
+            rcfg.progressIntervalSec = cfg.reverseProgressIntervalSec;
+            rcfg.maxEvents = cfg.reverseMaxEvents;
+            rcfg.ddmcMinCellOpticalDepth = cfg.reverseDDMCMinCellOpticalDepth;
+            rcfg.ddmcMinParticleOpticalDepth = cfg.reverseDDMCMinParticleOpticalDepth;
+            rcfg.ddmcObserverExclusion = cfg.reverseDDMCObserverExclusion;
+            rcfg.ddmcPhotosphereExclusion = cfg.reverseDDMCPhotosphereExclusion;
+            rcfg.ddmcPhotosphereOpticalDepth = cfg.reverseDDMCPhotosphereOpticalDepth;
+
+            std::vector<double> reverseFleckFactors;
+            bool fleckFromForward = false;
+
+            auto refreshReverseFleckFactors = [&]() {
+                if (cfg.estimatorMode == PostProcessEstimatorMode::Both &&
+                    runForwardPostprocess && physics && !physics->getFactorFleck().empty())
+                {
+                    reverseFleckFactors = physics->getFactorFleck();
+                    fleckFromForward = true;
+                }
+                else
+                {
+                    reverseFleckFactors = fleck_helper::computeFleckFactors(
+                        cells, *eos, *opacity, cfg.sourceDt);
+                    fleckFromForward = false;
+                }
+            };
+            refreshReverseFleckFactors();
+
+            if (cfg.reverseMeasuredLB)
+            {
+                if (!params.noHydroFeedback) {
+                    throw UniversalError("Reverse measured load balance requires noHydroFeedback=true");
+                }
+
+                size_t const pilotPackets =
+                    ResolveReverseLBPilotPacketsPerObserverGroup(
+                        cfg.reversePacketsPerObserverGroup,
+                        cfg.reverseLBPilotPacketsPerObserverGroup);
+
+                if (pilotPackets == 0) {
+                    if (rank == 0)
+                        std::cerr << "REVERSE_MEASURED_LB_SKIP"
+                                  << " reason=production_packets_too_small"
+                                  << " production_packets_per_observer_group="
+                                  << cfg.reversePacketsPerObserverGroup
+                                  << "\n" << std::flush;
+                }
+                else {
+                if (rank == 0)
+                    std::cerr << "REVERSE_MEASURED_LB_PILOT"
+                              << " packets_per_observer_group=" << pilotPackets
+                              << " production_packets_per_observer_group="
+                              << cfg.reversePacketsPerObserverGroup
+                              << "\n" << std::flush;
+
+                ReverseEstimatorConfig pilotCfg = rcfg;
+                pilotCfg.packetsPerObserverGroup = pilotPackets;
+                pilotCfg.outputPrefix = cfg.reverseOutputPrefix + "_pilot";
+
+                ReverseAdjointTransport3D pilotEstimator(
+                    tess, cells, opacity, observer, pilotCfg,
+                    cfg.sourceDt, cfg.transportTime, reverseFleckFactors,
+                    cfg.useCellVelocities, cfg.ddmc, cfg.polarization,
+                    cfg.compton);
+                pilotEstimator.setFleckFromForwardVector(fleckFromForward);
+                pilotEstimator.run();
+
+                auto toSizeTVector = [](std::vector<uint64_t> const& in) {
+                    std::vector<size_t> out(in.size(), 0);
+                    for (size_t i = 0; i < in.size(); ++i)
+                        out[i] = static_cast<size_t>(in[i]);
+                    return out;
+                };
+
+                std::vector<size_t> cellIDs(Ncells);
+                for (size_t i = 0; i < Ncells; ++i)
+                    cellIDs[i] = cells[i].ID;
+
+                auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(
+                    cellIDs,
+                    toSizeTVector(pilotEstimator.localCellStepCounts()),
+                    toSizeTVector(pilotEstimator.localCellPacketEntries()));
+
+                uint64_t localTotalSteps = 0;
+                for (auto const& m : localMeasurements)
+                    localTotalSteps += static_cast<uint64_t>(m.stepCount);
+
+                uint64_t globalTotalSteps = localTotalSteps;
+#ifdef RICH_MPI
+                MPI_Allreduce(&localTotalSteps, &globalTotalSteps, 1,
+                              MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+#endif
+
+                if (globalTotalSteps == 0) {
+                    if (rank == 0)
+                        std::cerr << "REVERSE_MEASURED_LB_SKIP reason=zero_pilot_steps\n"
+                                  << std::flush;
+                }
+                else {
+#ifdef RICH_MPI
+                    auto localCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                        localMeasurements, measuredLBParams, isMultigroup, MPI_COMM_WORLD);
+
+                    imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                        localMeasurements, localCostByCellID, isMultigroup, MPI_COMM_WORLD);
+
+                    IMCStepCounterCostCalculator::Parameters costCalcParams;
+                    costCalcParams.floorCost = measuredLBParams.floorCost;
+                    costCalcParams.missingCellCost = measuredLBParams.missingCellCost;
+                    IMCStepCounterCostCalculator measuredCostCalc(std::move(localCostByCellID), costCalcParams);
+
+                    std::vector<Vector3D> currentPoints(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        currentPoints[i] = tess.GetMeshPoint(i);
+
+                    auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
+                    if (lbWeightsNew.size() != Ncells) {
+                        throw UniversalError("Reverse measured LB weight count mismatch before BuildParallel");
+                    }
+
+                    std::vector<double> measuredWeightsForExchange = lbWeightsNew;
+                    std::vector<double> forwardFleckForExchange = reverseFleckFactors;
+                    bool const exchangeForwardFleck =
+                        fleckFromForward && forwardFleckForExchange.size() == Ncells;
+
+                    double const reverseLBWeightCompression =
+                        (cfg.reverseLBWeightCompression > 0.0)
+                            ? cfg.reverseLBWeightCompression
+                            : measuredLBWeightCompression;
+                    for (auto& w : lbWeightsNew)
+                        w = std::pow(w, reverseLBWeightCompression);
+
+                    tess.BuildParallel(currentPoints, lbWeightsNew);
+
+                    MPI_exchange_data(tess, cells, false, 1, &dummyCell);
+                    double dummyWeight = measuredLBParams.missingCellCost;
+                    MPI_exchange_data(tess, measuredWeightsForExchange, false, 1, &dummyWeight);
+                    if (exchangeForwardFleck) {
+                        double dummyFleck = 1.0;
+                        MPI_exchange_data(tess, forwardFleckForExchange, false, 1, &dummyFleck);
+                    }
+
+                    Ncells = tess.GetPointNo();
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after reverse measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+                    if (measuredWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Reverse measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(measuredWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        measuredWeightsForExchange, reverseLBWeightCompression,
+                        isMultigroup, MPI_COMM_WORLD);
+
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+
+#if ENERGY_GROUPS_NUM > 1
+                    if (cfg.opacityScaleMode != OpacityScaleMode::None) {
+                        RecomputeOpacityScaleFactors(
+                            *opacity, *greyOpacity, cells, Ncells, rank,
+                            cfg.opacityScaleMode, "after reverse measured LB repartition");
+                    }
+#endif
+
+                    boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    physics = std::make_shared<RadiationIMC>(
+                        tess, boundary, cells, extensives, eos, opacity, params);
+                    physics->setObserver(observer);
+
+                    popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+                    manager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, physics, popControl, boundary);
+
+                    if (exchangeForwardFleck && forwardFleckForExchange.size() == Ncells) {
+                        reverseFleckFactors = std::move(forwardFleckForExchange);
+                        fleckFromForward = true;
+                    }
+                    else {
+                        reverseFleckFactors = fleck_helper::computeFleckFactors(
+                            cells, *eos, *opacity, cfg.sourceDt);
+                        fleckFromForward = false;
+                    }
+
+                    if (rank == 0)
+                        std::cerr << "REVERSE_MEASURED_LB_DONE"
+                                  << " new_local_cells=" << Ncells
+                                  << " weight_compression=" << reverseLBWeightCompression
+                                  << "\n" << std::flush;
+#else
+                    if (rank == 0)
+                        std::cerr << "REVERSE_MEASURED_LB_SERIAL"
+                                  << " pilot_steps=" << globalTotalSteps
+                                  << " repartition=skipped\n" << std::flush;
+#endif
+                }
+                }
+            }
+
+            auto reverseEstimator = std::make_unique<ReverseAdjointTransport3D>(
+                tess, cells, opacity, observer, rcfg,
+                cfg.sourceDt, cfg.transportTime, reverseFleckFactors,
+                cfg.useCellVelocities, cfg.ddmc, cfg.polarization,
+                cfg.compton);
+            reverseEstimator->setFleckFromForwardVector(fleckFromForward);
+
+            reverseEstimator->run();
+
+            // Write comparison BEFORE reverse outputs so metadata is correct
+            if (cfg.estimatorMode == PostProcessEstimatorMode::Both && rank == 0
+                && observer)
+            {
+                std::string cp = "/postprocess_comparison";
+                size_t nObs = observer->getNumObservers();
+
+                auto fwdLum = observer->getLuminosity(cfg.sourceDt);
+                std::vector<double> lumRev(nObs), lumDelta(nObs), lumRelDelta(nObs);
+                double totalFwdLum = 0.0;
+                for (size_t p = 0; p < nObs; ++p)
+                {
+                    lumRev[p] = reverseEstimator->tallies().getObsI(p);
+                    lumDelta[p] = lumRev[p] - fwdLum[p];
+                    totalFwdLum += std::abs(fwdLum[p]);
+                }
+                double floor = totalFwdLum * 1e-12;
+                for (size_t p = 0; p < nObs; ++p)
+                    lumRelDelta[p] = lumDelta[p] / std::max(std::abs(fwdLum[p]), floor);
+
+                std::vector<double> fwdQ(nObs, 0.0), fwdU(nObs, 0.0);
+                std::vector<std::vector<double>> fwdGroupQ, fwdGroupU;
+#ifdef MONTECARLO_POLARIZATION
+                auto const &obsQ = observer->getObserverStokesQ();
+                auto const &obsU = observer->getObserverStokesU();
+                for (size_t p = 0; p < nObs && p < obsQ.size(); ++p)
+                {
+                    fwdQ[p] = obsQ[p];
+                    fwdU[p] = obsU[p];
+                }
+                fwdGroupQ = observer->getGroupStokesQ();
+                fwdGroupU = observer->getGroupStokesU();
+#endif
+                auto fwdGroupLum = observer->getGroupLuminosity(cfg.sourceDt);
+
+                reverseEstimator->writeComparisonOutputs(cfg.outputPath, cp,
+                    fwdLum, lumRev, lumDelta, lumRelDelta, fwdQ, fwdU,
+                    fwdGroupLum, fwdGroupQ, fwdGroupU);
+
+                if (rank == 0)
+                    std::cout << "Comparison outputs written to: " << cfg.outputPath << std::endl;
+            }
+
+            std::string reverseOutputFile = cfg.reverseOutputPrefix + ".h5";
+            reverseEstimator->writeOutputs(reverseOutputFile);
+
+            if (rank == 0)
+                std::cout << "Reverse estimator output: " << reverseOutputFile << std::endl;
         }
 
         // ============================================================
