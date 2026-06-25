@@ -635,6 +635,8 @@ void SphericalObserver::recordCrossing(ObserverCrossingRecord const& rec)
         groupEnergy_[obs][g] += rec.weight;
         groupEnergyWeightSq_[obs][g] += rec.weight * rec.weight;
         ++groupCrossingCount_[obs][g];
+        if (generationSourceCellGroupStatsEnabled_)
+            recordGenerationSourceCellGroupEscape(obs, g, rec.sourceCellID, rec.weight);
     }
 
 #ifdef MONTECARLO_POLARIZATION
@@ -894,6 +896,54 @@ SphericalObserver::getObserverQualitySnapshot() const
     return snap;
 }
 
+void SphericalObserver::resetGenerationSourceCellGroupEscapeStats()
+{
+    generationSourceCellGroupEscape_.clear();
+}
+
+std::vector<SphericalObserver::SourceCellGroupEscapeStat>
+SphericalObserver::getGenerationSourceCellGroupEscapeStats() const
+{
+    std::vector<SourceCellGroupEscapeStat> result;
+    result.reserve(generationSourceCellGroupEscape_.size());
+    for (auto const& kv : generationSourceCellGroupEscape_)
+        result.push_back(kv.second);
+    return result;
+}
+
+void SphericalObserver::setGenerationSourceCellGroupStatsEnabled(bool enabled)
+{
+    generationSourceCellGroupStatsEnabled_ = enabled;
+    if (!enabled)
+        generationSourceCellGroupEscape_.clear();
+}
+
+SphericalObserver::ObserverGroupQualitySnapshot
+SphericalObserver::getObserverGroupQualitySnapshot() const
+{
+    ObserverGroupQualitySnapshot snap;
+    snap.observerCount = numObservers_;
+    snap.groupCount = numGroups_;
+    snap.energy = groupEnergy_;
+    snap.energyWeightSq = groupEnergyWeightSq_;
+    snap.crossingCount = groupCrossingCount_;
+    snap.polarizationEnabled = false;
+    snap.stokesQ.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.stokesU.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.sumWQ2.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.sumWU2.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+#ifdef MONTECARLO_POLARIZATION
+    if (polarizationOutputEnabled_) {
+        snap.polarizationEnabled = true;
+        snap.stokesQ = groupStokesQ_;
+        snap.stokesU = groupStokesU_;
+        snap.sumWQ2 = groupSumWQ2_;
+        snap.sumWU2 = groupSumWU2_;
+    }
+#endif
+    return snap;
+}
+
 void SphericalObserver::resetTallies()
 {
     std::fill(observerEnergy_.begin(), observerEnergy_.end(), 0.0);
@@ -1145,6 +1195,24 @@ void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, s
     stat.energy += energy;
     stat.weightSq += energy * energy;
     stat.maxWeight = std::max(stat.maxWeight, energy);
+    ++stat.count;
+}
+
+void SphericalObserver::recordGenerationSourceCellGroupEscape(size_t observerIndex, size_t groupIndex, size_t cellID, double weight)
+{
+    if (observerIndex == std::numeric_limits<size_t>::max() ||
+        groupIndex == std::numeric_limits<size_t>::max() ||
+        cellID == std::numeric_limits<size_t>::max() ||
+        !(weight > 0.0) || !std::isfinite(weight))
+        return;
+    SourceObserverGroupCellKey key{observerIndex, groupIndex, cellID};
+    auto& stat = generationSourceCellGroupEscape_[key];
+    stat.cellID = cellID;
+    stat.observerIndex = observerIndex;
+    stat.groupIndex = groupIndex;
+    stat.energy += weight;
+    stat.weightSq += weight * weight;
+    stat.maxWeight = std::max(stat.maxWeight, weight);
     ++stat.count;
 }
 
@@ -1624,6 +1692,41 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/diagnostics/included_final_generations", diagnostics.includedFinalGenerations);
     writer.WriteElement("/diagnostics/discarded_burnin_generations", diagnostics.discardedBurninGenerations);
     writer.WriteElement("/diagnostics/adaptive_only_final_output", diagnostics.adaptiveOnlyFinalOutput);
+    writer.WriteElement("/adaptive/config/group_quality_enabled", diagnostics.adaptiveGroupQualityEnabled);
+    writer.WriteElement("/adaptive/config/group_source_cells_enabled", diagnostics.adaptiveGroupSourceCellsEnabled);
+    writer.WriteElement("/adaptive/config/group_frequency_sampling_enabled", diagnostics.adaptiveGroupFrequencySamplingEnabled);
+    writer.WriteElement("/adaptive/config/group_history_enabled", diagnostics.adaptiveGroupHistoryEnabled);
+    writer.WriteElement("/adaptive/config/group_luminosity_normalization", diagnostics.adaptiveGroupLuminosityNormalization);
+    writer.WriteElement("/adaptive/config/group_target_neff", diagnostics.adaptiveGroupTargetNeff);
+    writer.WriteElement("/adaptive/config/group_target_pol_snr", diagnostics.adaptiveGroupTargetPolSnr);
+    writer.WriteElement("/adaptive/config/group_deficit_max", diagnostics.adaptiveGroupDeficitMax);
+    writer.WriteElement("/adaptive/config/group_min_crossings", diagnostics.adaptiveGroupMinCrossings);
+    writer.WriteElement("/adaptive/config/group_min_luminosity", diagnostics.adaptiveGroupMinLuminosity);
+    writer.WriteElement("/adaptive/config/group_min_luminosity_frac_of_group_max", diagnostics.adaptiveGroupMinLuminosityFracOfGroupMax);
+    writer.WriteElement("/adaptive/config/group_latest_weight", diagnostics.adaptiveGroupLatestWeight);
+    writer.WriteElement("/adaptive/config/group_cumulative_weight", diagnostics.adaptiveGroupCumulativeWeight);
+    writer.WriteElement("/adaptive/config/group_ema_weight", diagnostics.adaptiveGroupEmaWeight);
+    writer.WriteElement("/adaptive/group_sampling/enabled", diagnostics.adaptiveGroupFrequencySamplingEnabled);
+    writer.WriteElement("/adaptive/group_sampling/strength", diagnostics.adaptiveGroupSamplingStrength);
+    writer.WriteElement("/adaptive/group_sampling/pdf_floor", diagnostics.adaptiveGroupSamplingPdfFloor);
+    writer.WriteElement("/adaptive/group_sampling/max_bias", diagnostics.adaptiveGroupSamplingMaxBias);
+    writer.WriteElement("/adaptive/group_sampling/max_weight_correction", diagnostics.adaptiveGroupSamplingMaxWeightCorrection);
+    writer.WriteElement("/adaptive/group_sampling/total_sampled", diagnostics.adaptiveGroupSamplingTotalSampled);
+    writer.WriteElement("/adaptive/group_sampling/weight_correction_min", diagnostics.adaptiveGroupWeightCorrectionMin);
+    writer.WriteElement("/adaptive/group_sampling/weight_correction_mean", diagnostics.adaptiveGroupWeightCorrectionMean);
+    writer.WriteElement("/adaptive/group_sampling/weight_correction_max", diagnostics.adaptiveGroupWeightCorrectionMax);
+    writer.WriteElement("/adaptive/group_sampling/weight_correction_capped_fraction", diagnostics.adaptiveGroupWeightCorrectionCappedFraction);
+    writer.WriteElement("/adaptive/group_sampling/weight_correction_fallback_count", diagnostics.adaptiveGroupWeightCorrectionFallbackCount);
+    writer.WriteElement("/adaptive/group_sampling/invalid_pdf_fallback_count", diagnostics.adaptiveGroupInvalidPdfFallbackCount);
+    writer.WriteElement("/adaptive/group_sampling/invalid_pdf_fallback_packet_count", diagnostics.adaptiveGroupInvalidPdfFallbackPacketCount);
+    writer.WriteElement("/adaptive/group_sampling/capped_energy_fraction", diagnostics.adaptiveGroupCappedEnergyFraction);
+    writer.WriteElement("/adaptive/group_sampling/estimator_potentially_biased", diagnostics.adaptiveGroupEstimatorPotentiallyBiased);
+    writer.WriteElement("/adaptive/source/fallback_to_integrated_path", diagnostics.adaptiveGroupFallbackToIntegratedPath);
+    writer.WriteElement("/adaptive/source/fallback_reason", diagnostics.adaptiveGroupFallbackReason);
+    writer.WriteElement("/adaptive/source/local_stats_after_prune", diagnostics.adaptiveGroupSourceLocalStatsAfterPrune);
+    writer.WriteElement("/adaptive/source/local_stats_dropped", diagnostics.adaptiveGroupSourceLocalStatsDropped);
+    writer.WriteElement("/adaptive/source/mpi_stats_exchanged", diagnostics.adaptiveGroupSourceMpiStatsExchanged);
+    writer.WriteElement("/adaptive/source/mpi_packed_bytes", diagnostics.adaptiveGroupSourceMpiPackedBytes);
     if (generationStats_.samples > 0) {
         size_t const samples = generationStats_.samples;
         writer.WriteElement("/diagnostics/statistics/included_generations",

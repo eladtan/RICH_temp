@@ -124,6 +124,31 @@ void RadiationIMC::clearAdaptiveSourceCellScores()
     adaptiveSourceObserverBudgetMultiplier_ = 1.0;
 }
 
+void RadiationIMC::setAdaptiveSourceCellGroupScores(
+    std::unordered_map<size_t, GroupArray> scores,
+    double strength,
+    double pdfFloor,
+    double maxBias,
+    double maxWeightCorrection)
+{
+    adaptiveSourceCellGroupScores_ = std::move(scores);
+    adaptiveGroupStrength_ = std::clamp(strength, 0.0, 1.0);
+    adaptiveGroupPdfFloor_ = std::clamp(pdfFloor, 0.0, 1.0);
+    adaptiveGroupMaxBias_ = std::max(1.0, maxBias);
+    adaptiveGroupMaxWeightCorrection_ = std::max(1.0, maxWeightCorrection);
+    adaptiveSourceCellGroupScoresEnabled_ = !adaptiveSourceCellGroupScores_.empty() && adaptiveGroupStrength_ > 0.0;
+}
+
+void RadiationIMC::clearAdaptiveSourceCellGroupScores()
+{
+    adaptiveSourceCellGroupScores_.clear();
+    adaptiveSourceCellGroupScoresEnabled_ = false;
+    adaptiveGroupStrength_ = 0.0;
+    adaptiveGroupPdfFloor_ = 0.0;
+    adaptiveGroupMaxBias_ = 1.0;
+    adaptiveGroupMaxWeightCorrection_ = 1.0;
+}
+
 void RadiationIMC::setSourceEmissionControl(
     bool useLearnedScores, bool includeUniformBase, size_t baseMultiplier,
     size_t learnedBoostFactor, size_t learnedExtraBudget)
@@ -625,6 +650,10 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     if(this->withCompton)
         return this->generateComptonParticles(fullDt);
 
+    lastGroupSamplingDiagnostics_ = GroupSamplingDiagnostics{};
+    if (adaptiveSourceCellGroupScoresEnabled_)
+        lastGroupSamplingDiagnostics_.cellsWithGroupScores = adaptiveSourceCellGroupScores_.size();
+
     std::vector<Particle> newParticles;
     size_t Ncells = this->grid.GetPointNo();
 
@@ -773,12 +802,209 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             }
         }
         double energyPerPhoton = energyToCreate * gamma / nPhotonsCell;
+
+        bool useGroupFreqSampling = adaptiveSourceCellGroupScoresEnabled_
+            && this->multigroupOpacity
+            && !this->withCompton;
+        GroupArray physicalPdf{};
+        GroupArray samplingPdf{};
+        bool groupPdfValid = false;
+        bool groupScoreAvailable = false;
+        if (useGroupFreqSampling) {
+            auto it = adaptiveSourceCellGroupScores_.find(cell.ID);
+            if (it != adaptiveSourceCellGroupScores_.end()) {
+                groupScoreAvailable = true;
+                physicalPdf = this->multigroupOpacity->GetThermalGroupPdf(cell);
+                double totalPhys = 0.0;
+                size_t nPhysGroups = 0;
+                for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                    if (physicalPdf[g] > 0.0) {
+                        ++nPhysGroups;
+                        totalPhys += physicalPdf[g];
+                    }
+                }
+                if (totalPhys > 0.0 && nPhysGroups > 0) {
+                    for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                        physicalPdf[g] = (physicalPdf[g] > 0.0) ? physicalPdf[g] / totalPhys : 0.0;
+                    GroupArray const& learnedScoreRaw = it->second;
+                    double const scoreFloor = 1e-12;
+                    GroupArray learnedPdf{};
+                    double learnedTotal = 0.0;
+                    for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                        if (physicalPdf[g] > 0.0) {
+                            learnedPdf[g] = std::max(learnedScoreRaw[g], scoreFloor);
+                            learnedTotal += learnedPdf[g];
+                        }
+                    }
+                    if (learnedTotal > 0.0) {
+                        for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                            learnedPdf[g] /= learnedTotal;
+                        for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                            samplingPdf[g] = (1.0 - adaptiveGroupStrength_) * physicalPdf[g]
+                                           + adaptiveGroupStrength_ * learnedPdf[g];
+                        }
+                        double floorPerGroup = (nPhysGroups > 0) ? adaptiveGroupPdfFloor_ / static_cast<double>(nPhysGroups) : 0.0;
+                        GroupArray lowerBound{};
+                        GroupArray upperBound{};
+                        double lowerTotal = 0.0;
+                        double upperTotal = 0.0;
+                        for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                            if (physicalPdf[g] > 0.0) {
+                                lowerBound[g] = std::max(floorPerGroup,
+                                    physicalPdf[g] / adaptiveGroupMaxWeightCorrection_);
+                                upperBound[g] = std::min(1.0, adaptiveGroupMaxBias_ * physicalPdf[g]);
+                                lowerBound[g] = std::min(lowerBound[g], upperBound[g]);
+                                lowerTotal += lowerBound[g];
+                                upperTotal += upperBound[g];
+                            } else {
+                                samplingPdf[g] = 0.0;
+                            }
+                        }
+
+                        if (lowerTotal <= 1.0 + 1e-12 && upperTotal >= 1.0 - 1e-12) {
+                            std::array<bool, ENERGY_GROUPS_NUM> fixed{};
+                            double remaining = 1.0;
+                            for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                                if (!(physicalPdf[g] > 0.0)) {
+                                    fixed[g] = true;
+                                    samplingPdf[g] = 0.0;
+                                }
+                            }
+
+                            for (size_t iter = 0; iter < ENERGY_GROUPS_NUM + 2; ++iter) {
+                                double freeTotal = 0.0;
+                                for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                                    if (!fixed[g])
+                                        freeTotal += std::max(samplingPdf[g], 0.0);
+                                }
+                                if (!(freeTotal > 0.0)) {
+                                    groupPdfValid = false;
+                                    break;
+                                }
+
+                                bool clamped = false;
+                                double const scale = remaining / freeTotal;
+                                for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                                    if (fixed[g])
+                                        continue;
+                                    double const candidate = std::max(samplingPdf[g], 0.0) * scale;
+                                    if (candidate < lowerBound[g]) {
+                                        samplingPdf[g] = lowerBound[g];
+                                        fixed[g] = true;
+                                        remaining -= lowerBound[g];
+                                        clamped = true;
+                                    } else if (candidate > upperBound[g]) {
+                                        samplingPdf[g] = upperBound[g];
+                                        fixed[g] = true;
+                                        remaining -= upperBound[g];
+                                        clamped = true;
+                                    }
+                                }
+
+                                if (!clamped) {
+                                    for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                                        if (!fixed[g])
+                                            samplingPdf[g] = std::max(samplingPdf[g], 0.0) * scale;
+                                    }
+                                    remaining = 0.0;
+                                    break;
+                                }
+                                if (remaining < 0.0)
+                                    break;
+                            }
+                        } else {
+                            for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                                samplingPdf[g] = 0.0;
+                        }
+
+                        double sampTotal = 0.0;
+                        for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                            sampTotal += samplingPdf[g];
+                        if (sampTotal > 0.0) {
+                            for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                                samplingPdf[g] /= sampTotal;
+                            groupPdfValid = true;
+                            for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                                if (physicalPdf[g] > 0.0) {
+                                    double const correction = physicalPdf[g] / samplingPdf[g];
+                                    if (!(samplingPdf[g] > 0.0) ||
+                                        correction > adaptiveGroupMaxWeightCorrection_ * (1.0 + 1e-10) ||
+                                        samplingPdf[g] > adaptiveGroupMaxBias_ * physicalPdf[g] * (1.0 + 1e-10)) {
+                                        groupPdfValid = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (useGroupFreqSampling && groupScoreAvailable && !groupPdfValid) {
+            ++lastGroupSamplingDiagnostics_.invalidPdfFallback;
+            lastGroupSamplingDiagnostics_.invalidPdfFallbackPackets += nPhotonsCell;
+        }
+
         for(size_t j = 0; j < nPhotonsCell; j++)
         {
             MCParticle particle = this->generateSingleParticle(i, cell);
             particle.cellID = cell.ID;
             particle.timeLeft = fullDt * this->dist(this->re);
-            if(this->withHydro && !this->MMC)
+
+            double weightCorrection = 1.0;
+            bool usedGroupFrequencySampling = false;
+
+            if (groupPdfValid) {
+                double rndGroup = this->dist(this->re);
+                double cumul = 0.0;
+                size_t selectedGroup = ENERGY_GROUPS_NUM - 1;
+                for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                    cumul += samplingPdf[g];
+                    if (rndGroup <= cumul) {
+                        selectedGroup = g;
+                        break;
+                    }
+                }
+                double freqCo = 0.0;
+
+                if (samplingPdf[selectedGroup] > 0.0) {
+                    weightCorrection = physicalPdf[selectedGroup] / samplingPdf[selectedGroup];
+                    if (weightCorrection > adaptiveGroupMaxWeightCorrection_) {
+                        ++lastGroupSamplingDiagnostics_.weightCorrectionFallback;
+                    } else if (weightCorrection > 0.0 && std::isfinite(weightCorrection)) {
+                        if (lastGroupSamplingDiagnostics_.weightCorrectionCount == 0)
+                            lastGroupSamplingDiagnostics_.weightCorrectionMin = weightCorrection;
+                        else
+                            lastGroupSamplingDiagnostics_.weightCorrectionMin = std::min(lastGroupSamplingDiagnostics_.weightCorrectionMin, weightCorrection);
+                        if (lastGroupSamplingDiagnostics_.weightCorrectionCount == 0)
+                            lastGroupSamplingDiagnostics_.weightCorrectionMax = weightCorrection;
+                        else
+                            lastGroupSamplingDiagnostics_.weightCorrectionMax = std::max(lastGroupSamplingDiagnostics_.weightCorrectionMax, weightCorrection);
+                        lastGroupSamplingDiagnostics_.weightCorrectionSum += weightCorrection;
+                        ++lastGroupSamplingDiagnostics_.weightCorrectionCount;
+                        ++lastGroupSamplingDiagnostics_.totalSampled;
+                        lastGroupSamplingDiagnostics_.sampledEnergy += energyPerPhoton;
+                        double rndFreq = this->dist(this->re);
+                        freqCo = this->multigroupOpacity->SampleThermalEnergyInGroup(cell, selectedGroup, rndFreq);
+                        usedGroupFrequencySampling = true;
+                    } else {
+                        ++lastGroupSamplingDiagnostics_.weightCorrectionFallback;
+                    }
+                } else {
+                    ++lastGroupSamplingDiagnostics_.weightCorrectionFallback;
+                }
+
+                if (usedGroupFrequencySampling && this->withHydro && !this->MMC) {
+                    double D = DopplerShift(particle, cell.velocity);
+                    particle.frequency = freqCo / D;
+                    particle.weight = energyToCreate / (nPhotonsCell * D) * weightCorrection;
+                } else if (usedGroupFrequencySampling) {
+                    particle.frequency = freqCo;
+                    particle.weight = energyPerPhoton * weightCorrection;
+                }
+            }
+
+            if(!usedGroupFrequencySampling && this->withHydro && !this->MMC)
             {
                 double D = DopplerShift(particle, cell.velocity);
                 if(this->multigroupOpacity)
@@ -789,7 +1015,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 }
                 particle.weight = energyToCreate / (nPhotonsCell * D);
             }
-            else
+            else if(!usedGroupFrequencySampling)
             {
                 if(this->multigroupOpacity)
                 {
@@ -801,6 +1027,13 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             newParticles.push_back(particle);
         }
     }
+    if (lastGroupSamplingDiagnostics_.sampledEnergy > 0.0)
+        lastGroupSamplingDiagnostics_.cappedEnergyFraction =
+            lastGroupSamplingDiagnostics_.cappedEnergy /
+            lastGroupSamplingDiagnostics_.sampledEnergy;
+    lastGroupSamplingDiagnostics_.estimatorPotentiallyBiased =
+        lastGroupSamplingDiagnostics_.weightCorrectionCapped > 0 ||
+        lastGroupSamplingDiagnostics_.cappedEnergy > 0.0;
     return newParticles;
 }
 

@@ -160,6 +160,33 @@ public:
                                      double learnedMinFactor,
                                      double observerBudgetMultiplier);
     void clearAdaptiveSourceCellScores();
+
+    struct GroupSamplingDiagnostics
+    {
+        size_t totalSampled = 0;
+        size_t cellsWithGroupScores = 0;
+        double weightCorrectionMin = 1.0;
+        double weightCorrectionMax = 1.0;
+        double weightCorrectionSum = 0.0;
+        size_t weightCorrectionCount = 0;
+        size_t weightCorrectionCapped = 0;
+        size_t weightCorrectionFallback = 0;
+        size_t invalidPdfFallback = 0;
+        size_t invalidPdfFallbackPackets = 0;
+        double sampledEnergy = 0.0;
+        double cappedEnergy = 0.0;
+        double cappedEnergyFraction = 0.0;
+        bool estimatorPotentiallyBiased = false;
+    };
+
+    void setAdaptiveSourceCellGroupScores(
+        std::unordered_map<size_t, GroupArray> scores,
+        double strength,
+        double pdfFloor,
+        double maxBias,
+        double maxWeightCorrection);
+    void clearAdaptiveSourceCellGroupScores();
+    GroupSamplingDiagnostics getLastGroupSamplingDiagnostics() const { return lastGroupSamplingDiagnostics_; }
     void setSourceEmissionControl(bool useLearnedScores, bool includeUniformBase,
                                   size_t baseMultiplier,
                                   size_t learnedBoostFactor = 20,
@@ -252,6 +279,14 @@ private:
     size_t sourceEmissionLearnedExtraBudget_ = 0;
     std::vector<size_t> lastSourcePhotonsPerCell_;
     SourceAllocationSummary lastSourceAllocationSummary_;
+
+    std::unordered_map<size_t, GroupArray> adaptiveSourceCellGroupScores_;
+    bool adaptiveSourceCellGroupScoresEnabled_ = false;
+    double adaptiveGroupStrength_ = 0.0;
+    double adaptiveGroupPdfFloor_ = 0.0;
+    double adaptiveGroupMaxBias_ = 1.0;
+    double adaptiveGroupMaxWeightCorrection_ = 1.0;
+    GroupSamplingDiagnostics lastGroupSamplingDiagnostics_;
 
     bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeRandomWalkData();

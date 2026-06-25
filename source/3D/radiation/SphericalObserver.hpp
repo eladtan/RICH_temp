@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -63,6 +64,40 @@ public:
         int includedFinalGenerations = 1;
         int discardedBurninGenerations = 0;
         int adaptiveOnlyFinalOutput = 0;
+        int adaptiveGroupQualityEnabled = 0;
+        int adaptiveGroupSourceCellsEnabled = 0;
+        int adaptiveGroupFrequencySamplingEnabled = 0;
+        int adaptiveGroupHistoryEnabled = 0;
+        std::string adaptiveGroupLuminosityNormalization = "mixed";
+        double adaptiveGroupTargetNeff = 0.0;
+        double adaptiveGroupTargetPolSnr = 0.0;
+        double adaptiveGroupDeficitMax = 1.0;
+        int adaptiveGroupMinCrossings = 0;
+        double adaptiveGroupMinLuminosity = 0.0;
+        double adaptiveGroupMinLuminosityFracOfGroupMax = 0.0;
+        double adaptiveGroupLatestWeight = 0.0;
+        double adaptiveGroupCumulativeWeight = 0.0;
+        double adaptiveGroupEmaWeight = 0.0;
+        double adaptiveGroupSamplingStrength = 0.0;
+        double adaptiveGroupSamplingPdfFloor = 0.0;
+        double adaptiveGroupSamplingMaxBias = 1.0;
+        double adaptiveGroupSamplingMaxWeightCorrection = 1.0;
+        unsigned long long adaptiveGroupSamplingTotalSampled = 0;
+        double adaptiveGroupWeightCorrectionMin = 1.0;
+        double adaptiveGroupWeightCorrectionMean = 1.0;
+        double adaptiveGroupWeightCorrectionMax = 1.0;
+        double adaptiveGroupWeightCorrectionCappedFraction = 0.0;
+        unsigned long long adaptiveGroupWeightCorrectionFallbackCount = 0;
+        unsigned long long adaptiveGroupInvalidPdfFallbackCount = 0;
+        unsigned long long adaptiveGroupInvalidPdfFallbackPacketCount = 0;
+        double adaptiveGroupCappedEnergyFraction = 0.0;
+        int adaptiveGroupEstimatorPotentiallyBiased = 0;
+        int adaptiveGroupFallbackToIntegratedPath = 0;
+        std::string adaptiveGroupFallbackReason = "none";
+        unsigned long long adaptiveGroupSourceLocalStatsAfterPrune = 0;
+        unsigned long long adaptiveGroupSourceLocalStatsDropped = 0;
+        unsigned long long adaptiveGroupSourceMpiStatsExchanged = 0;
+        unsigned long long adaptiveGroupSourceMpiPackedBytes = 0;
     };
 
     struct SourceCellEscapeStat
@@ -73,6 +108,46 @@ public:
         double weightSq = 0.0;
         double maxWeight = 0.0;
         size_t count = 0;
+    };
+
+    struct SourceCellGroupEscapeStat
+    {
+        size_t cellID = std::numeric_limits<size_t>::max();
+        size_t observerIndex = std::numeric_limits<size_t>::max();
+        size_t groupIndex = std::numeric_limits<size_t>::max();
+        double energy = 0.0;
+        double weightSq = 0.0;
+        double maxWeight = 0.0;
+        size_t count = 0;
+    };
+
+    struct SourceObserverGroupCellKey
+    {
+        size_t observerIndex = 0;
+        size_t groupIndex = 0;
+        size_t cellID = 0;
+
+        bool operator==(SourceObserverGroupCellKey const& other) const
+        {
+            return observerIndex == other.observerIndex
+                && groupIndex == other.groupIndex
+                && cellID == other.cellID;
+        }
+    };
+
+    struct SourceObserverGroupCellKeyHash
+    {
+        size_t operator()(SourceObserverGroupCellKey const& key) const
+        {
+            uint64_t x = static_cast<uint64_t>(key.cellID);
+            x ^= static_cast<uint64_t>(key.observerIndex) + 0x9e3779b97f4a7c15ULL + (x << 6) + (x >> 2);
+            x ^= static_cast<uint64_t>(key.groupIndex) + 0x9e3779b97f4a7c15ULL + (x << 6) + (x >> 2);
+            x += 0x9e3779b97f4a7c15ULL;
+            x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+            x ^= (x >> 31);
+            return static_cast<size_t>(x);
+        }
     };
 
     struct ObserverQualitySnapshot
@@ -86,6 +161,20 @@ public:
         std::vector<double> polarizationWeightSq;
         std::vector<double> sumWQ2;
         std::vector<double> sumWU2;
+    };
+
+    struct ObserverGroupQualitySnapshot
+    {
+        bool polarizationEnabled = false;
+        size_t observerCount = 0;
+        size_t groupCount = 0;
+        std::vector<std::vector<double>> energy;
+        std::vector<std::vector<double>> energyWeightSq;
+        std::vector<std::vector<size_t>> crossingCount;
+        std::vector<std::vector<double>> stokesQ;
+        std::vector<std::vector<double>> stokesU;
+        std::vector<std::vector<double>> sumWQ2;
+        std::vector<std::vector<double>> sumWU2;
     };
 
     SphericalObserver(Vector3D center, double radius, size_t numObservers,
@@ -120,6 +209,11 @@ public:
     void resetGenerationSourceCellEscapeStats();
     std::vector<SourceCellEscapeStat> getGenerationSourceCellEscapeStats() const;
     ObserverQualitySnapshot getObserverQualitySnapshot() const;
+
+    void resetGenerationSourceCellGroupEscapeStats();
+    std::vector<SourceCellGroupEscapeStat> getGenerationSourceCellGroupEscapeStats() const;
+    ObserverGroupQualitySnapshot getObserverGroupQualitySnapshot() const;
+    void setGenerationSourceCellGroupStatsEnabled(bool enabled);
     void resetTallies();
     void clearGenerationStatistics();
     void accumulateCurrentTalliesForStatistics(double sourceDt);
@@ -183,6 +277,8 @@ private:
     std::vector<double> observerMaxPacketEnergy_;
     std::vector<size_t> observerCrossingCount_;
     std::unordered_map<size_t, std::unordered_map<size_t, SourceCellEscapeStat>> generationSourceCellEscape_;
+    std::unordered_map<SourceObserverGroupCellKey, SourceCellGroupEscapeStat, SourceObserverGroupCellKeyHash> generationSourceCellGroupEscape_;
+    bool generationSourceCellGroupStatsEnabled_ = false;
     std::vector<double> observerSolidAngle_;
     std::vector<std::vector<double>> groupEnergy_;
     std::vector<std::vector<double>> groupEnergyWeightSq_;
@@ -301,6 +397,7 @@ private:
     size_t findNearestObserverDirection(Vector3D const& direction) const;
     size_t findGroup(double frequency) const;
     void recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy);
+    void recordGenerationSourceCellGroupEscape(size_t observerIndex, size_t groupIndex, size_t cellID, double weight);
 };
 
 #endif // SPHERICAL_OBSERVER_HPP

@@ -692,6 +692,7 @@ namespace
 			if (dist_sq < 1e-28)
 				dist_sq = 1e-28;
 			double w = face_areas_cache[i] / dist_sq;
+			w = 1;
 
 			double w_dr = w * dr, w_dt = w * dtheta, w_dp = w * dphi;
 

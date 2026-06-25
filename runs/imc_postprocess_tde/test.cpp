@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -246,6 +247,40 @@ struct Config
     size_t adaptiveLBCooldownGenerations = 2;
     size_t adaptiveLBMaxRebalances = 6;
 
+    bool adaptiveGroupQuality = false;
+    bool adaptiveGroupSourceCells = false;
+    bool adaptiveGroupFrequencySampling = false;
+    bool adaptiveGroupHistory = true;
+    double adaptiveGroupTargetNeff = 1e4;
+    double adaptiveGroupTargetPolSnr = 10.0;
+    double adaptiveGroupDeficitMax = 100.0;
+    size_t adaptiveGroupMinCrossings = 3;
+    double adaptiveGroupMinLuminosity = 0.0;
+    double adaptiveGroupMinLuminosityFracOfGroupMax = 0.01;
+    double adaptiveGroupIneligiblePriorityCap = 2.0;
+    double adaptiveGroupRetainPriorityFloor = 3.0;
+    std::string adaptiveGroupLuminosityNormalization = "mixed";
+    double adaptiveGroupLuminosityGlobalWeight = 0.5;
+    double adaptiveGroupLuminosityPower = 1.0;
+    double adaptiveGroupPolarizationPower = 1.0;
+    double adaptiveGroupLuminosityWeight = 0.5;
+    double adaptiveGroupPolarizationWeight = 0.5;
+    double adaptiveGroupPolarizationFloor = 0.02;
+    double adaptiveGroupHistoryEma = 0.35;
+    double adaptiveGroupLatestWeight = 0.25;
+    double adaptiveGroupCumulativeWeight = 0.50;
+    double adaptiveGroupEmaWeight = 0.25;
+    double adaptiveGroupScoreEma = 0.35;
+    double adaptiveGroupStrength = 0.75;
+    double adaptiveGroupPdfFloor = 0.02;
+    double adaptiveGroupMaxBias = 100.0;
+    double adaptiveGroupMaxWeightCorrection = 100.0;
+    size_t adaptiveGroupMaxLocalStats = 200000;
+    size_t adaptiveGroupStatMinCount = 1;
+    double adaptiveGroupStatPriorityKeep = 2.0;
+    bool adaptiveGroupFallbackToIntegratedOnOverflow = true;
+    bool adaptiveDiagnosticsVerbose = false;
+
     PostProcessEstimatorMode estimatorMode = PostProcessEstimatorMode::Forward;
     size_t reversePacketsPerObserverGroup = 10000;
     uint64_t reverseSeed = 12345;
@@ -312,6 +347,46 @@ void printUsage(int rank)
               << "  --adaptive-lb-imbalance-threshold F Legacy flag accepted; fixed 5-step cadence ignores it\n"
               << "  --adaptive-lb-cooldown-gens N Legacy flag accepted; fixed 5-step cadence ignores it\n"
               << "  --adaptive-lb-max-rebalances N Legacy flag accepted; fixed 5-step cadence ignores it\n"
+              << "\n  [Adaptive group statistics]\n"
+              << "  --adaptive-group-quality                  Build observer/group quality diagnostics\n"
+              << "  --no-adaptive-group-quality\n"
+              << "  --adaptive-group-source-cells             Learn source-cell/group scores; requires --adaptive-source-cells and --adaptive-group-quality\n"
+              << "  --no-adaptive-group-source-cells\n"
+              << "  --adaptive-group-frequency-sampling       Bias source group sampling with p/q correction; requires group source cells and MG, unsupported with --compton\n"
+              << "  --no-adaptive-group-frequency-sampling\n"
+              << "  --adaptive-group-history                  Use latest/cumulative/EMA predictor history (default)\n"
+              << "  --no-adaptive-group-history\n"
+              << "  --adaptive-group-target-neff F            Target observer/group Neff (default: 1e4)\n"
+              << "  --adaptive-group-target-pol-snr F         Target observer/group polarization SNR (default: 10)\n"
+              << "  --adaptive-group-deficit-max F            Max deficit multiplier (default: 100)\n"
+              << "  --adaptive-group-min-crossings N          Minimum crossings for raw bin priority (default: 3)\n"
+              << "  --adaptive-group-min-luminosity F         Absolute luminosity eligibility floor (default: 0)\n"
+              << "  --adaptive-group-min-luminosity-frac F    Group-relative luminosity eligibility floor (default: 0.01)\n"
+              << "  --adaptive-group-min-luminosity-frac-of-group-max F (alias)\n"
+              << "  --adaptive-group-ineligible-priority-cap F (default: 2)\n"
+              << "  --adaptive-group-retain-priority-floor F  Retain historically important bins (default: 3)\n"
+              << "  --adaptive-group-luminosity-normalization global|per-group|mixed\n"
+              << "  --adaptive-group-luminosity-global-weight F (default: 0.5)\n"
+              << "  --adaptive-group-luminosity-power F       Non-negative luminosity priority power (default: 1)\n"
+              << "  --adaptive-group-polarization-power F     Non-negative polarization priority power (default: 1)\n"
+              << "  --adaptive-group-luminosity-weight F      Science priority luminosity weight (default: 0.5)\n"
+              << "  --adaptive-group-polarization-weight F    Science priority polarization weight (default: 0.5)\n"
+              << "  --adaptive-group-polarization-floor F     Polarization importance floor (default: 0.02)\n"
+              << "  --adaptive-group-history-ema F            EMA factor in [0,1] (default: 0.35)\n"
+              << "  --adaptive-group-latest-weight F          Predictor latest weight (renormalized with cumulative/EMA)\n"
+              << "  --adaptive-group-cumulative-weight F      Predictor cumulative weight\n"
+              << "  --adaptive-group-ema-weight F             Predictor EMA weight\n"
+              << "  --adaptive-group-score-ema F              Source-cell/group score EMA factor in [0,1]\n"
+              << "  --adaptive-group-strength F               Group sampling blend strength in [0,1]\n"
+              << "  --adaptive-group-pdf-floor F              Best-effort proposal PDF floor in [0,1]\n"
+              << "  --adaptive-group-max-bias F               Max learned/physical proposal ratio (default: 100)\n"
+              << "  --adaptive-group-max-weight-correction F  Max p/q before physical fallback (default: 100)\n"
+              << "  --adaptive-group-max-local-stats N        Max local source-cell/group stats before pruning/fallback\n"
+              << "  --adaptive-group-stat-min-count N         Min local count retained before MPI exchange\n"
+              << "  --adaptive-group-stat-priority-keep F     Retain low-count stats from high-priority bins\n"
+              << "  --adaptive-group-fallback-to-integrated-on-overflow\n"
+              << "  --no-adaptive-group-fallback-to-integrated-on-overflow\n"
+              << "  --adaptive-diagnostics-verbose\n"
               << "\n  [Reverse estimator]\n"
               << "  --postprocess-estimator forward|reverse|both  (default: forward)\n"
               << "  --reverse-packets-per-observer-group N  (default: 10000)\n"
@@ -388,6 +463,46 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--adaptive-lb-imbalance-threshold" && i + 1 < argc) { cfg.adaptiveLBImbalanceThreshold = std::atof(argv[++i]); }
         else if (arg == "--adaptive-lb-cooldown-gens" && i + 1 < argc) { cfg.adaptiveLBCooldownGenerations = static_cast<size_t>(std::atoi(argv[++i])); }
         else if (arg == "--adaptive-lb-max-rebalances" && i + 1 < argc) { cfg.adaptiveLBMaxRebalances = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--adaptive-group-quality") { cfg.adaptiveGroupQuality = true; }
+        else if (arg == "--no-adaptive-group-quality") { cfg.adaptiveGroupQuality = false; }
+        else if (arg == "--adaptive-group-source-cells") { cfg.adaptiveGroupSourceCells = true; }
+        else if (arg == "--no-adaptive-group-source-cells") { cfg.adaptiveGroupSourceCells = false; }
+        else if (arg == "--adaptive-group-frequency-sampling") { cfg.adaptiveGroupFrequencySampling = true; }
+        else if (arg == "--no-adaptive-group-frequency-sampling") { cfg.adaptiveGroupFrequencySampling = false; }
+        else if (arg == "--adaptive-group-history") { cfg.adaptiveGroupHistory = true; }
+        else if (arg == "--no-adaptive-group-history") { cfg.adaptiveGroupHistory = false; }
+        else if (arg == "--adaptive-group-target-neff" && i + 1 < argc) { cfg.adaptiveGroupTargetNeff = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-target-pol-snr" && i + 1 < argc) { cfg.adaptiveGroupTargetPolSnr = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-deficit-max" && i + 1 < argc) { cfg.adaptiveGroupDeficitMax = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-min-crossings" && i + 1 < argc) { cfg.adaptiveGroupMinCrossings = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--adaptive-group-min-luminosity" && i + 1 < argc) { cfg.adaptiveGroupMinLuminosity = std::atof(argv[++i]); }
+        else if ((arg == "--adaptive-group-min-luminosity-frac" ||
+                  arg == "--adaptive-group-min-luminosity-frac-of-group-max") &&
+                 i + 1 < argc) { cfg.adaptiveGroupMinLuminosityFracOfGroupMax = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-ineligible-priority-cap" && i + 1 < argc) { cfg.adaptiveGroupIneligiblePriorityCap = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-retain-priority-floor" && i + 1 < argc) { cfg.adaptiveGroupRetainPriorityFloor = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-luminosity-normalization" && i + 1 < argc) { cfg.adaptiveGroupLuminosityNormalization = argv[++i]; }
+        else if (arg == "--adaptive-group-luminosity-global-weight" && i + 1 < argc) { cfg.adaptiveGroupLuminosityGlobalWeight = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-luminosity-power" && i + 1 < argc) { cfg.adaptiveGroupLuminosityPower = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-polarization-power" && i + 1 < argc) { cfg.adaptiveGroupPolarizationPower = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-luminosity-weight" && i + 1 < argc) { cfg.adaptiveGroupLuminosityWeight = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-polarization-weight" && i + 1 < argc) { cfg.adaptiveGroupPolarizationWeight = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-polarization-floor" && i + 1 < argc) { cfg.adaptiveGroupPolarizationFloor = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-history-ema" && i + 1 < argc) { cfg.adaptiveGroupHistoryEma = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-latest-weight" && i + 1 < argc) { cfg.adaptiveGroupLatestWeight = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-cumulative-weight" && i + 1 < argc) { cfg.adaptiveGroupCumulativeWeight = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-ema-weight" && i + 1 < argc) { cfg.adaptiveGroupEmaWeight = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-score-ema" && i + 1 < argc) { cfg.adaptiveGroupScoreEma = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-strength" && i + 1 < argc) { cfg.adaptiveGroupStrength = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-pdf-floor" && i + 1 < argc) { cfg.adaptiveGroupPdfFloor = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-max-bias" && i + 1 < argc) { cfg.adaptiveGroupMaxBias = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-max-weight-correction" && i + 1 < argc) { cfg.adaptiveGroupMaxWeightCorrection = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-max-local-stats" && i + 1 < argc) { cfg.adaptiveGroupMaxLocalStats = static_cast<size_t>(std::atoll(argv[++i])); }
+        else if (arg == "--adaptive-group-stat-min-count" && i + 1 < argc) { cfg.adaptiveGroupStatMinCount = static_cast<size_t>(std::atoi(argv[++i])); }
+        else if (arg == "--adaptive-group-stat-priority-keep" && i + 1 < argc) { cfg.adaptiveGroupStatPriorityKeep = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-group-fallback-to-integrated-on-overflow") { cfg.adaptiveGroupFallbackToIntegratedOnOverflow = true; }
+        else if (arg == "--no-adaptive-group-fallback-to-integrated-on-overflow") { cfg.adaptiveGroupFallbackToIntegratedOnOverflow = false; }
+        else if (arg == "--adaptive-diagnostics-verbose") { cfg.adaptiveDiagnosticsVerbose = true; }
         else if (arg == "--no-rosseland-scale" || arg == "--no-opacity-scale") { cfg.opacityScaleMode = OpacityScaleMode::None; }
         else if (arg == "--opacity-scale-mode" && i + 1 < argc) {
             std::string m = argv[++i];
@@ -463,6 +578,103 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
     if (cfg.compton && cfg.adaptiveSourceCells) {
         if (rank == 0) std::cerr << "--adaptive-source-cells does not support --compton yet\n";
         return false;
+    }
+
+    if (cfg.adaptiveGroupSourceCells && !cfg.adaptiveSourceCells) {
+        if (rank == 0) std::cerr << "--adaptive-group-source-cells requires --adaptive-source-cells\n";
+        return false;
+    }
+    if (cfg.adaptiveGroupSourceCells && !cfg.adaptiveGroupQuality) {
+        if (rank == 0) std::cerr << "--adaptive-group-source-cells requires --adaptive-group-quality\n";
+        return false;
+    }
+    if (cfg.adaptiveGroupFrequencySampling && !cfg.adaptiveGroupSourceCells) {
+        if (rank == 0) std::cerr << "--adaptive-group-frequency-sampling requires --adaptive-group-source-cells\n";
+        return false;
+    }
+#if ENERGY_GROUPS_NUM <= 1
+    if (cfg.adaptiveGroupFrequencySampling) {
+        if (rank == 0) std::cerr << "--adaptive-group-frequency-sampling requires ENERGY_GROUPS_NUM > 1\n";
+        return false;
+    }
+#endif
+    if (cfg.adaptiveGroupFrequencySampling && cfg.compton) {
+        if (rank == 0) std::cerr << "--adaptive-group-frequency-sampling with --compton is not supported\n";
+        return false;
+    }
+
+    if (cfg.adaptiveGroupQuality) {
+        auto failGroupValidation = [&](std::string const& msg) {
+            if (rank == 0) std::cerr << msg << "\n";
+            return false;
+        };
+        auto requireRange = [&](double value, double lo, double hi, std::string const& name) {
+            if (!std::isfinite(value) || value < lo || value > hi)
+                return failGroupValidation(name + " must be in [" + std::to_string(lo) + ", " + std::to_string(hi) + "]");
+            return true;
+        };
+        auto requireNonNegative = [&](double value, std::string const& name) {
+            if (!std::isfinite(value) || value < 0.0)
+                return failGroupValidation(name + " must be non-negative");
+            return true;
+        };
+        auto requirePositive = [&](double value, std::string const& name) {
+            if (!std::isfinite(value) || value <= 0.0)
+                return failGroupValidation(name + " must be positive");
+            return true;
+        };
+
+        if (cfg.adaptiveGroupLuminosityNormalization != "global" &&
+            cfg.adaptiveGroupLuminosityNormalization != "per-group" &&
+            cfg.adaptiveGroupLuminosityNormalization != "mixed")
+            return failGroupValidation("--adaptive-group-luminosity-normalization must be global, per-group, or mixed");
+        if (!requirePositive(cfg.adaptiveGroupTargetNeff, "--adaptive-group-target-neff") ||
+            !requirePositive(cfg.adaptiveGroupTargetPolSnr, "--adaptive-group-target-pol-snr") ||
+            !requirePositive(cfg.adaptiveGroupDeficitMax, "--adaptive-group-deficit-max") ||
+            !requireNonNegative(cfg.adaptiveGroupMinLuminosity, "--adaptive-group-min-luminosity") ||
+            !requireRange(cfg.adaptiveGroupMinLuminosityFracOfGroupMax, 0.0, 1.0, "--adaptive-group-min-luminosity-frac") ||
+            !requireNonNegative(cfg.adaptiveGroupIneligiblePriorityCap, "--adaptive-group-ineligible-priority-cap") ||
+            !requireNonNegative(cfg.adaptiveGroupRetainPriorityFloor, "--adaptive-group-retain-priority-floor") ||
+            !requireRange(cfg.adaptiveGroupLuminosityGlobalWeight, 0.0, 1.0, "--adaptive-group-luminosity-global-weight") ||
+            !requireNonNegative(cfg.adaptiveGroupLuminosityPower, "--adaptive-group-luminosity-power") ||
+            !requireNonNegative(cfg.adaptiveGroupPolarizationPower, "--adaptive-group-polarization-power") ||
+            !requireNonNegative(cfg.adaptiveGroupLuminosityWeight, "--adaptive-group-luminosity-weight") ||
+            !requireNonNegative(cfg.adaptiveGroupPolarizationWeight, "--adaptive-group-polarization-weight") ||
+            !requireNonNegative(cfg.adaptiveGroupPolarizationFloor, "--adaptive-group-polarization-floor") ||
+            !requireRange(cfg.adaptiveGroupHistoryEma, 0.0, 1.0, "--adaptive-group-history-ema") ||
+            !requireRange(cfg.adaptiveGroupScoreEma, 0.0, 1.0, "--adaptive-group-score-ema") ||
+            !requireRange(cfg.adaptiveGroupStrength, 0.0, 1.0, "--adaptive-group-strength") ||
+            !requirePositive(cfg.adaptiveGroupMaxBias, "--adaptive-group-max-bias") ||
+            !requirePositive(cfg.adaptiveGroupMaxWeightCorrection, "--adaptive-group-max-weight-correction") ||
+            !requireNonNegative(cfg.adaptiveGroupStatPriorityKeep, "--adaptive-group-stat-priority-keep"))
+            return false;
+        if (!std::isfinite(cfg.adaptiveGroupPdfFloor) ||
+            cfg.adaptiveGroupPdfFloor < 0.0 ||
+            cfg.adaptiveGroupPdfFloor >= 1.0)
+            return failGroupValidation("--adaptive-group-pdf-floor must be in [0, 1)");
+        if (cfg.adaptiveGroupDeficitMax < 1.0)
+            return failGroupValidation("--adaptive-group-deficit-max must be >= 1");
+        if (cfg.adaptiveGroupMaxBias < 1.0)
+            return failGroupValidation("--adaptive-group-max-bias must be >= 1");
+        if (cfg.adaptiveGroupMaxWeightCorrection < 1.0)
+            return failGroupValidation("--adaptive-group-max-weight-correction must be >= 1");
+        if (cfg.adaptiveGroupMaxLocalStats == 0 && cfg.adaptiveGroupSourceCells)
+            return failGroupValidation("--adaptive-group-max-local-stats must be > 0 when group source cells are enabled");
+
+        double wsum = cfg.adaptiveGroupLatestWeight + cfg.adaptiveGroupCumulativeWeight + cfg.adaptiveGroupEmaWeight;
+        if (!std::isfinite(wsum) ||
+            cfg.adaptiveGroupLatestWeight < 0.0 ||
+            cfg.adaptiveGroupCumulativeWeight < 0.0 ||
+            cfg.adaptiveGroupEmaWeight < 0.0)
+            return failGroupValidation("adaptive group predictor weights must be finite and non-negative");
+        if (!(wsum > 0.0))
+            return failGroupValidation("adaptive group predictor weights must not all be zero");
+        if (wsum > 0.0 && std::abs(wsum - 1.0) > 1e-6) {
+            cfg.adaptiveGroupLatestWeight /= wsum;
+            cfg.adaptiveGroupCumulativeWeight /= wsum;
+            cfg.adaptiveGroupEmaWeight /= wsum;
+            if (rank == 0) std::cout << "ADAPTIVE_GROUP: predictor weights renormalized to sum=1\n";
+        }
     }
 
     return true;
@@ -593,6 +805,75 @@ struct PackedAdaptiveScoreDelta
     double delta = 0.0;
 };
 
+struct PackedSourceGroupEscapeStat
+{
+    unsigned long long cellID = 0;
+    unsigned long long observerIndex = 0;
+    unsigned long long groupIndex = 0;
+    double weightSq = 0.0;
+    double maxWeight = 0.0;
+    double energy = 0.0;
+    unsigned long long count = 0;
+};
+
+struct PackedAdaptiveCellGroupScoreDelta
+{
+    unsigned long long cellID = 0;
+    unsigned long long groupIndex = 0;
+    double delta = 0.0;
+};
+
+struct AdaptiveGroupHistory
+{
+    bool initialized = false;
+    size_t observerCount = 0;
+    size_t groupCount = 0;
+    size_t updateCount = 0;
+
+    std::vector<std::vector<double>> emaPriority;
+    std::vector<std::vector<double>> emaDeficit;
+
+    std::vector<std::vector<double>> cumulativeEnergy;
+    std::vector<std::vector<double>> cumulativeWeightSq;
+    std::vector<std::vector<double>> cumulativeStokesQ;
+    std::vector<std::vector<double>> cumulativeStokesU;
+    std::vector<std::vector<double>> cumulativeSumWQ2;
+    std::vector<std::vector<double>> cumulativeSumWU2;
+    std::vector<std::vector<size_t>> cumulativeCrossings;
+};
+
+struct ObserverGroupQualityDiagnostics
+{
+    bool enabled = false;
+    bool polarizationMode = false;
+    size_t observerCount = 0;
+    size_t groupCount = 0;
+
+    std::vector<std::vector<double>> luminosity;
+    std::vector<std::vector<double>> neff;
+    std::vector<std::vector<double>> polarizationDegree;
+    std::vector<std::vector<double>> polarizationSnr;
+    std::vector<std::vector<double>> latestPriority;
+    std::vector<std::vector<double>> cumulativePriority;
+    std::vector<std::vector<double>> predictedPriority;
+    std::vector<std::vector<double>> deficit;
+    std::vector<std::vector<size_t>> crossings;
+    size_t activeBins = 0;
+    size_t highPriorityBins = 0;
+    double neffP05 = 0.0;
+    double neffMedian = 0.0;
+    double neffP95 = 0.0;
+    double polSnrP05 = 0.0;
+    double polSnrMedian = 0.0;
+    double polSnrP95 = 0.0;
+};
+
+struct AdaptiveGroupSourceState
+{
+    std::unordered_map<size_t, std::vector<double>> scoreByCellGroup;
+    std::unordered_map<size_t, double> cellScoreFromGroups;
+};
+
 struct AdaptiveSourceUpdateSummary
 {
     double totalEscapedEnergy = 0.0;
@@ -610,6 +891,34 @@ struct AdaptiveSourceUpdateSummary
     size_t scoreMapCells = 0;
     std::vector<SphericalObserver::SourceCellEscapeStat> topStats;
 };
+
+struct AdaptiveGroupSourceUpdateSummary
+{
+    bool fallbackToIntegratedPath = false;
+    std::string fallbackReason = "none";
+    unsigned long long localStatsInput = 0;
+    unsigned long long localStatsAfterPrune = 0;
+    unsigned long long localStatsDropped = 0;
+    unsigned long long maxLocalSourceGroupStats = 0;
+    unsigned long long maxReceivedShardStats = 0;
+    unsigned long long mpiStatsExchanged = 0;
+    unsigned long long maxPackedBytes = 0;
+    size_t passedStats = 0;
+    size_t scoreDeltaCells = 0;
+    size_t scoreMapCells = 0;
+};
+
+void AccumulateAdaptiveGroupSourceSummary(
+    AdaptiveGroupSourceUpdateSummary& total,
+    AdaptiveGroupSourceUpdateSummary const& gen)
+{
+    total.localStatsAfterPrune += gen.localStatsAfterPrune;
+    total.localStatsDropped += gen.localStatsDropped;
+    total.mpiStatsExchanged += gen.mpiStatsExchanged;
+    total.maxReceivedShardStats =
+        std::max(total.maxReceivedShardStats, gen.maxReceivedShardStats);
+    total.maxPackedBytes = std::max(total.maxPackedBytes, gen.maxPackedBytes);
+}
 
 uint64_t SplitMix64(uint64_t x);
 
@@ -630,6 +939,33 @@ struct AdaptivePairKeyHash
     {
         uint64_t x = static_cast<uint64_t>(key.cellID);
         x ^= static_cast<uint64_t>(key.observerIndex) + 0x9e3779b97f4a7c15ULL +
+             (x << 6) + (x >> 2);
+        return static_cast<size_t>(SplitMix64(x));
+    }
+};
+
+struct AdaptiveSourceGroupKey
+{
+    size_t observerIndex = 0;
+    size_t groupIndex = 0;
+    size_t cellID = 0;
+
+    bool operator==(AdaptiveSourceGroupKey const& other) const
+    {
+        return observerIndex == other.observerIndex
+            && groupIndex == other.groupIndex
+            && cellID == other.cellID;
+    }
+};
+
+struct AdaptiveSourceGroupKeyHash
+{
+    size_t operator()(AdaptiveSourceGroupKey const& key) const
+    {
+        uint64_t x = static_cast<uint64_t>(key.cellID);
+        x ^= static_cast<uint64_t>(key.observerIndex) + 0x9e3779b97f4a7c15ULL +
+             (x << 6) + (x >> 2);
+        x ^= static_cast<uint64_t>(key.groupIndex) + 0x9e3779b97f4a7c15ULL +
              (x << 6) + (x >> 2);
         return static_cast<size_t>(SplitMix64(x));
     }
@@ -689,6 +1025,156 @@ SphericalObserver::SourceCellEscapeStat UnpackSourceEscapeStat(PackedSourceEscap
     s.weightSq = p.weightSq;
     s.maxWeight = p.maxWeight;
     return s;
+}
+
+PackedSourceGroupEscapeStat PackSourceGroupEscapeStat(
+    SphericalObserver::SourceCellGroupEscapeStat const& s)
+{
+    PackedSourceGroupEscapeStat p;
+    p.cellID = static_cast<unsigned long long>(s.cellID);
+    p.observerIndex = static_cast<unsigned long long>(s.observerIndex);
+    p.groupIndex = static_cast<unsigned long long>(s.groupIndex);
+    p.energy = s.energy;
+    p.count = static_cast<unsigned long long>(s.count);
+    p.weightSq = s.weightSq;
+    p.maxWeight = s.maxWeight;
+    return p;
+}
+
+std::vector<PackedSourceGroupEscapeStat>
+ExchangeSourceGroupStatsByCellOwner(
+    std::vector<SphericalObserver::SourceCellGroupEscapeStat> const& localStats,
+    AdaptiveGroupSourceUpdateSummary& summary)
+{
+    summary.maxLocalSourceGroupStats =
+        static_cast<unsigned long long>(localStats.size());
+
+#ifdef RICH_MPI
+    int ranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+
+    std::vector<size_t> sendElements(static_cast<size_t>(ranks), 0);
+    size_t sendTotal = 0;
+    for (auto const& s : localStats) {
+        if (!(s.energy > 0.0) || s.count == 0 || !std::isfinite(s.energy))
+            continue;
+        int owner = AdaptiveCellOwner(s.cellID, ranks);
+        ++sendElements[static_cast<size_t>(owner)];
+        ++sendTotal;
+    }
+
+    std::vector<int> sendCounts(static_cast<size_t>(ranks), 0);
+    std::vector<int> recvCounts(static_cast<size_t>(ranks), 0);
+    for (int r = 0; r < ranks; ++r) {
+        sendCounts[static_cast<size_t>(r)] =
+            CheckedByteCount(sendElements[static_cast<size_t>(r)],
+                             sizeof(PackedSourceGroupEscapeStat),
+                             "Adaptive source-group shard");
+    }
+    MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT,
+                 MPI_COMM_WORLD);
+
+    std::vector<int> sendDispls(static_cast<size_t>(ranks), 0);
+    std::vector<int> recvDispls(static_cast<size_t>(ranks), 0);
+    unsigned long long totalSendBytes64 = 0;
+    unsigned long long totalRecvBytes64 = 0;
+    for (int r = 0; r < ranks; ++r) {
+        sendDispls[static_cast<size_t>(r)] =
+            CheckedByteTotal(totalSendBytes64, "Adaptive source-group shard send");
+        recvDispls[static_cast<size_t>(r)] =
+            CheckedByteTotal(totalRecvBytes64, "Adaptive source-group shard receive");
+        totalSendBytes64 += static_cast<unsigned long long>(sendCounts[static_cast<size_t>(r)]);
+        totalRecvBytes64 += static_cast<unsigned long long>(recvCounts[static_cast<size_t>(r)]);
+    }
+    int const totalSendBytes = CheckedByteTotal(totalSendBytes64,
+                                                "Adaptive source-group shard send");
+    int const totalRecvBytes = CheckedByteTotal(totalRecvBytes64,
+                                                "Adaptive source-group shard receive");
+
+    std::vector<PackedSourceGroupEscapeStat> sendData(sendTotal);
+    std::vector<size_t> nextSendIndex(static_cast<size_t>(ranks), 0);
+    for (int r = 0; r < ranks; ++r)
+        nextSendIndex[static_cast<size_t>(r)] =
+            static_cast<size_t>(sendDispls[static_cast<size_t>(r)]) /
+            sizeof(PackedSourceGroupEscapeStat);
+    for (auto const& s : localStats) {
+        if (!(s.energy > 0.0) || s.count == 0 || !std::isfinite(s.energy))
+            continue;
+        int owner = AdaptiveCellOwner(s.cellID, ranks);
+        sendData[nextSendIndex[static_cast<size_t>(owner)]++] =
+            PackSourceGroupEscapeStat(s);
+    }
+
+    std::vector<PackedSourceGroupEscapeStat> recvData(
+        static_cast<size_t>(totalRecvBytes) / sizeof(PackedSourceGroupEscapeStat));
+    MPI_Alltoallv(sendData.empty() ? nullptr : sendData.data(), sendCounts.data(),
+                  sendDispls.data(), MPI_BYTE,
+                  recvData.empty() ? nullptr : recvData.data(), recvCounts.data(),
+                  recvDispls.data(), MPI_BYTE, MPI_COMM_WORLD);
+
+    unsigned long long localPairs = static_cast<unsigned long long>(localStats.size());
+    unsigned long long recvPairs = static_cast<unsigned long long>(recvData.size());
+    unsigned long long packedBytes = totalSendBytes64 + totalRecvBytes64;
+    MPI_Allreduce(&localPairs, &summary.maxLocalSourceGroupStats, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&recvPairs, &summary.maxReceivedShardStats, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(&recvPairs, &summary.mpiStatsExchanged, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&packedBytes, &summary.maxPackedBytes, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    (void)totalSendBytes;
+    return recvData;
+#else
+    std::vector<PackedSourceGroupEscapeStat> result;
+    result.reserve(localStats.size());
+    for (auto const& s : localStats) {
+        if (!(s.energy > 0.0) || s.count == 0 || !std::isfinite(s.energy))
+            continue;
+        result.push_back(PackSourceGroupEscapeStat(s));
+    }
+    summary.maxReceivedShardStats = static_cast<unsigned long long>(result.size());
+    summary.mpiStatsExchanged = static_cast<unsigned long long>(result.size());
+    summary.maxPackedBytes =
+        static_cast<unsigned long long>(result.size()) *
+        sizeof(PackedSourceGroupEscapeStat);
+    return result;
+#endif
+}
+
+std::vector<PackedAdaptiveCellGroupScoreDelta>
+AllgatherAdaptiveCellGroupScoreDeltas(
+    std::vector<PackedAdaptiveCellGroupScoreDelta> const& localDeltas)
+{
+#ifdef RICH_MPI
+    int ranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+    int localBytes = CheckedByteCount(localDeltas.size(),
+                                      sizeof(PackedAdaptiveCellGroupScoreDelta),
+                                      "Adaptive source-group score delta packet");
+    std::vector<int> counts(static_cast<size_t>(ranks), 0);
+    MPI_Allgather(&localBytes, 1, MPI_INT, counts.data(), 1, MPI_INT,
+                  MPI_COMM_WORLD);
+
+    std::vector<int> displs(static_cast<size_t>(ranks), 0);
+    unsigned long long totalBytes64 = 0;
+    for (int r = 0; r < ranks; ++r) {
+        displs[static_cast<size_t>(r)] =
+            CheckedByteTotal(totalBytes64, "Adaptive source-group score delta");
+        totalBytes64 += static_cast<unsigned long long>(counts[static_cast<size_t>(r)]);
+    }
+    int const totalBytes =
+        CheckedByteTotal(totalBytes64, "Adaptive source-group score delta");
+
+    std::vector<PackedAdaptiveCellGroupScoreDelta> result(
+        static_cast<size_t>(totalBytes) / sizeof(PackedAdaptiveCellGroupScoreDelta));
+    MPI_Allgatherv(localDeltas.empty() ? nullptr : localDeltas.data(), localBytes,
+                   MPI_BYTE, result.empty() ? nullptr : result.data(),
+                   counts.data(), displs.data(), MPI_BYTE, MPI_COMM_WORLD);
+    return result;
+#else
+    return localDeltas;
+#endif
 }
 
 std::vector<PackedSourceEscapeStat>
@@ -1099,6 +1585,104 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
     return local;
 }
 
+RadiationIMC::GroupSamplingDiagnostics
+ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
+{
+#ifdef RICH_MPI
+    size_t const localWeightCorrectionCount = local.weightCorrectionCount;
+    unsigned long long sums[7] = {
+        static_cast<unsigned long long>(local.totalSampled),
+        static_cast<unsigned long long>(local.weightCorrectionCount),
+        static_cast<unsigned long long>(local.weightCorrectionCapped),
+        static_cast<unsigned long long>(local.weightCorrectionFallback),
+        static_cast<unsigned long long>(local.invalidPdfFallback),
+        static_cast<unsigned long long>(local.invalidPdfFallbackPackets),
+        local.estimatorPotentiallyBiased ? 1ULL : 0ULL
+    };
+    MPI_Allreduce(MPI_IN_PLACE, sums, 7, MPI_UNSIGNED_LONG_LONG, MPI_SUM,
+                  MPI_COMM_WORLD);
+    local.totalSampled = static_cast<size_t>(sums[0]);
+    local.weightCorrectionCount = static_cast<size_t>(sums[1]);
+    local.weightCorrectionCapped = static_cast<size_t>(sums[2]);
+    local.weightCorrectionFallback = static_cast<size_t>(sums[3]);
+    local.invalidPdfFallback = static_cast<size_t>(sums[4]);
+    local.invalidPdfFallbackPackets = static_cast<size_t>(sums[5]);
+    local.estimatorPotentiallyBiased = sums[6] > 0;
+
+    unsigned long long cellsWithGroupScores =
+        static_cast<unsigned long long>(local.cellsWithGroupScores);
+    MPI_Allreduce(MPI_IN_PLACE, &cellsWithGroupScores, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    local.cellsWithGroupScores = static_cast<size_t>(cellsWithGroupScores);
+
+    double doubleSums[3] = {
+        local.weightCorrectionSum,
+        local.sampledEnergy,
+        local.cappedEnergy
+    };
+    MPI_Allreduce(MPI_IN_PLACE, doubleSums, 3, MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+    local.weightCorrectionSum = doubleSums[0];
+    local.sampledEnergy = doubleSums[1];
+    local.cappedEnergy = doubleSums[2];
+
+    double minCorr = localWeightCorrectionCount > 0
+        ? local.weightCorrectionMin
+        : std::numeric_limits<double>::infinity();
+    double maxCorr = localWeightCorrectionCount > 0
+        ? local.weightCorrectionMax
+        : 1.0;
+    MPI_Allreduce(MPI_IN_PLACE, &minCorr, 1, MPI_DOUBLE, MPI_MIN,
+                  MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &maxCorr, 1, MPI_DOUBLE, MPI_MAX,
+                  MPI_COMM_WORLD);
+    local.weightCorrectionMin = std::isfinite(minCorr) ? minCorr : 1.0;
+    local.weightCorrectionMax = local.weightCorrectionCount > 0 ? maxCorr : 1.0;
+#endif
+    local.cappedEnergyFraction = local.sampledEnergy > 0.0
+        ? local.cappedEnergy / local.sampledEnergy
+        : 0.0;
+    local.estimatorPotentiallyBiased =
+        local.estimatorPotentiallyBiased ||
+        local.weightCorrectionCapped > 0 ||
+        local.cappedEnergy > 0.0;
+    return local;
+}
+
+void AccumulateGroupSamplingDiagnostics(
+    RadiationIMC::GroupSamplingDiagnostics& total,
+    RadiationIMC::GroupSamplingDiagnostics const& gen)
+{
+    if (gen.weightCorrectionCount > 0) {
+        if (total.weightCorrectionCount == 0) {
+            total.weightCorrectionMin = gen.weightCorrectionMin;
+            total.weightCorrectionMax = gen.weightCorrectionMax;
+        } else {
+            total.weightCorrectionMin =
+                std::min(total.weightCorrectionMin, gen.weightCorrectionMin);
+            total.weightCorrectionMax =
+                std::max(total.weightCorrectionMax, gen.weightCorrectionMax);
+        }
+    }
+
+    total.totalSampled += gen.totalSampled;
+    total.cellsWithGroupScores =
+        std::max(total.cellsWithGroupScores, gen.cellsWithGroupScores);
+    total.weightCorrectionSum += gen.weightCorrectionSum;
+    total.weightCorrectionCount += gen.weightCorrectionCount;
+    total.weightCorrectionCapped += gen.weightCorrectionCapped;
+    total.weightCorrectionFallback += gen.weightCorrectionFallback;
+    total.invalidPdfFallback += gen.invalidPdfFallback;
+    total.invalidPdfFallbackPackets += gen.invalidPdfFallbackPackets;
+    total.sampledEnergy += gen.sampledEnergy;
+    total.cappedEnergy += gen.cappedEnergy;
+    total.estimatorPotentiallyBiased =
+        total.estimatorPotentiallyBiased || gen.estimatorPotentiallyBiased;
+    total.cappedEnergyFraction = total.sampledEnergy > 0.0
+        ? total.cappedEnergy / total.sampledEnergy
+        : 0.0;
+}
+
 AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
     std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats,
     Config const& cfg,
@@ -1474,6 +2058,690 @@ void PrintAdaptiveGenerationStats(
                 << std::endl;
         }
     }
+}
+
+// --- GROUP-AWARE ADAPTIVE FUNCTIONS ---
+
+void CollectGlobalObserverGroupQuality(
+    SphericalObserver::ObserverGroupQualitySnapshot& snap)
+{
+#ifdef RICH_MPI
+    size_t const nObs = snap.observerCount;
+    size_t const nGrp = snap.groupCount;
+    size_t const flat = nObs * nGrp;
+    if (flat == 0) return;
+
+    auto flattenD = [&](std::vector<std::vector<double>>& mat) {
+        std::vector<double> buf(flat, 0.0);
+        for (size_t o = 0; o < nObs; ++o)
+            for (size_t g = 0; g < nGrp; ++g)
+                buf[o * nGrp + g] = mat[o][g];
+        MPI_Allreduce(MPI_IN_PLACE, buf.data(), static_cast<int>(flat), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        for (size_t o = 0; o < nObs; ++o)
+            for (size_t g = 0; g < nGrp; ++g)
+                mat[o][g] = buf[o * nGrp + g];
+    };
+
+    auto flattenSz = [&](std::vector<std::vector<size_t>>& mat) {
+        std::vector<unsigned long long> buf(flat, 0ULL);
+        for (size_t o = 0; o < nObs; ++o)
+            for (size_t g = 0; g < nGrp; ++g)
+                buf[o * nGrp + g] = static_cast<unsigned long long>(mat[o][g]);
+        MPI_Allreduce(MPI_IN_PLACE, buf.data(), static_cast<int>(flat), MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        for (size_t o = 0; o < nObs; ++o)
+            for (size_t g = 0; g < nGrp; ++g)
+                mat[o][g] = static_cast<size_t>(buf[o * nGrp + g]);
+    };
+
+    flattenD(snap.energy);
+    flattenD(snap.energyWeightSq);
+    flattenSz(snap.crossingCount);
+    if (snap.polarizationEnabled) {
+        flattenD(snap.stokesQ);
+        flattenD(snap.stokesU);
+        flattenD(snap.sumWQ2);
+        flattenD(snap.sumWU2);
+    }
+#else
+    (void)snap;
+#endif
+}
+
+ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot(
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    Config const& cfg,
+    AdaptiveGroupHistory& history,
+    double sourceDt)
+{
+    ObserverGroupQualityDiagnostics diag;
+    diag.enabled = cfg.adaptiveGroupQuality;
+    if (!diag.enabled) return diag;
+
+    size_t const nObs = snap.observerCount;
+    size_t const nGrp = snap.groupCount;
+    diag.observerCount = nObs;
+    diag.groupCount = nGrp;
+    diag.polarizationMode = snap.polarizationEnabled;
+
+    auto make2d = [&](double val = 0.0) {
+        return std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, val));
+    };
+
+    diag.luminosity = make2d();
+    diag.neff = make2d();
+    diag.polarizationDegree = make2d();
+    diag.polarizationSnr = make2d();
+    diag.latestPriority = make2d();
+    diag.cumulativePriority = make2d();
+    diag.predictedPriority = make2d(1.0);
+    diag.deficit = make2d(1.0);
+    diag.crossings.assign(nObs, std::vector<size_t>(nGrp, 0));
+
+    double const eps = 1e-30;
+    double invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
+
+    double maxLumGlobal = 0.0;
+    std::vector<double> maxLumPerGroup(nGrp, 0.0);
+    for (size_t o = 0; o < nObs; ++o) {
+        for (size_t g = 0; g < nGrp; ++g) {
+            double L = snap.energy[o][g] * invDt;
+            diag.luminosity[o][g] = L;
+            maxLumGlobal = std::max(maxLumGlobal, L);
+            maxLumPerGroup[g] = std::max(maxLumPerGroup[g], L);
+            diag.crossings[o][g] = snap.crossingCount[o][g];
+
+            double E = snap.energy[o][g];
+            double W2 = snap.energyWeightSq[o][g];
+            diag.neff[o][g] = (W2 > eps) ? (E * E) / W2 : 0.0;
+        }
+    }
+
+    if (snap.polarizationEnabled) {
+        for (size_t o = 0; o < nObs; ++o) {
+            for (size_t g = 0; g < nGrp; ++g) {
+                double E = snap.energy[o][g];
+                if (E <= eps) continue;
+                double q = snap.stokesQ[o][g] / E;
+                double u = snap.stokesU[o][g] / E;
+                double p = std::sqrt(q * q + u * u);
+                diag.polarizationDegree[o][g] = p;
+
+                double varQ = snap.sumWQ2[o][g] / E - q * q;
+                double varU = snap.sumWU2[o][g] / E - u * u;
+                double neff = diag.neff[o][g];
+                double sigQ = std::sqrt(std::max(varQ, 0.0) / std::max(neff, eps));
+                double sigU = std::sqrt(std::max(varU, 0.0) / std::max(neff, eps));
+                double sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
+                diag.polarizationSnr[o][g] = (sigP > eps) ? p / sigP : 0.0;
+            }
+        }
+    }
+
+    double const gw = cfg.adaptiveGroupLuminosityGlobalWeight;
+    for (size_t o = 0; o < nObs; ++o) {
+        for (size_t g = 0; g < nGrp; ++g) {
+            double L = diag.luminosity[o][g];
+            double normGlobal = (maxLumGlobal > 0.0) ? L / maxLumGlobal : 0.0;
+            double normGroup = (maxLumPerGroup[g] > 0.0) ? L / maxLumPerGroup[g] : 0.0;
+            double lumImportance = 0.0;
+            if (cfg.adaptiveGroupLuminosityNormalization == "global")
+                lumImportance = normGlobal;
+            else if (cfg.adaptiveGroupLuminosityNormalization == "per-group")
+                lumImportance = normGroup;
+            else
+                lumImportance = gw * normGlobal + (1.0 - gw) * normGroup;
+
+            double lumComponent = cfg.adaptiveGroupLuminosityWeight
+                * std::pow(lumImportance, cfg.adaptiveGroupLuminosityPower);
+
+            double polComponent = 0.0;
+            if (snap.polarizationEnabled) {
+                double polNorm = std::max(diag.polarizationDegree[o][g], cfg.adaptiveGroupPolarizationFloor);
+                polComponent = cfg.adaptiveGroupPolarizationWeight
+                    * std::pow(polNorm, cfg.adaptiveGroupPolarizationPower);
+            }
+
+            double science = lumComponent + polComponent;
+
+            double defNeff = (diag.neff[o][g] > eps)
+                ? cfg.adaptiveGroupTargetNeff / diag.neff[o][g] : cfg.adaptiveGroupDeficitMax;
+            double defPol = 1.0;
+            if (snap.polarizationEnabled &&
+                diag.polarizationDegree[o][g] >= cfg.adaptiveGroupPolarizationFloor &&
+                snap.crossingCount[o][g] >= cfg.adaptiveGroupMinCrossings) {
+                if (diag.polarizationSnr[o][g] > eps)
+                    defPol = cfg.adaptiveGroupTargetPolSnr / diag.polarizationSnr[o][g];
+                else
+                    defPol = cfg.adaptiveGroupDeficitMax;
+            }
+            double deficitRaw = std::max(defNeff, defPol);
+            deficitRaw = std::clamp(deficitRaw, 1.0, cfg.adaptiveGroupDeficitMax);
+            diag.deficit[o][g] = deficitRaw;
+
+            double priority = science * deficitRaw;
+
+            bool const luminosityEligible =
+                (cfg.adaptiveGroupMinLuminosity > 0.0 &&
+                 L >= cfg.adaptiveGroupMinLuminosity) ||
+                (cfg.adaptiveGroupMinLuminosityFracOfGroupMax > 0.0 &&
+                 maxLumPerGroup[g] > 0.0 &&
+                 L >= cfg.adaptiveGroupMinLuminosityFracOfGroupMax * maxLumPerGroup[g]);
+            bool const retainedHistoryPriority =
+                history.initialized &&
+                o < history.emaPriority.size() &&
+                g < history.emaPriority[o].size() &&
+                history.emaPriority[o][g] >= cfg.adaptiveGroupRetainPriorityFloor;
+            bool eligible = (snap.crossingCount[o][g] >= cfg.adaptiveGroupMinCrossings)
+                || luminosityEligible
+                || retainedHistoryPriority;
+            if (!eligible)
+                priority = std::min(priority, cfg.adaptiveGroupIneligiblePriorityCap);
+
+            diag.latestPriority[o][g] = priority;
+        }
+    }
+
+    if (!history.initialized) {
+        history.initialized = true;
+        history.observerCount = nObs;
+        history.groupCount = nGrp;
+        history.updateCount = 0;
+        history.emaPriority = diag.latestPriority;
+        history.emaDeficit = diag.deficit;
+        history.cumulativeEnergy = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeWeightSq = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeStokesQ = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeStokesU = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeSumWQ2 = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeSumWU2 = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeCrossings.assign(nObs, std::vector<size_t>(nGrp, 0));
+    }
+
+    for (size_t o = 0; o < nObs; ++o) {
+        for (size_t g = 0; g < nGrp; ++g) {
+            history.cumulativeEnergy[o][g] += snap.energy[o][g];
+            history.cumulativeWeightSq[o][g] += snap.energyWeightSq[o][g];
+            if (snap.polarizationEnabled) {
+                history.cumulativeStokesQ[o][g] += snap.stokesQ[o][g];
+                history.cumulativeStokesU[o][g] += snap.stokesU[o][g];
+                history.cumulativeSumWQ2[o][g] += snap.sumWQ2[o][g];
+                history.cumulativeSumWU2[o][g] += snap.sumWU2[o][g];
+            }
+            history.cumulativeCrossings[o][g] += snap.crossingCount[o][g];
+        }
+    }
+
+    double maxCumLumGlobal = 0.0;
+    std::vector<double> maxCumLumPerGroup(nGrp, 0.0);
+    for (size_t o = 0; o < nObs; ++o) {
+        for (size_t g = 0; g < nGrp; ++g) {
+            double const cumL = history.cumulativeEnergy[o][g];
+            maxCumLumGlobal = std::max(maxCumLumGlobal, cumL);
+            maxCumLumPerGroup[g] = std::max(maxCumLumPerGroup[g], cumL);
+        }
+    }
+
+    for (size_t o = 0; o < nObs; ++o) {
+        for (size_t g = 0; g < nGrp; ++g) {
+            double cumE = history.cumulativeEnergy[o][g];
+            double cumW2 = history.cumulativeWeightSq[o][g];
+            double cumNeff = (cumW2 > eps) ? (cumE * cumE) / cumW2 : 0.0;
+            double cumDefNeff = (cumNeff > eps) ? cfg.adaptiveGroupTargetNeff / cumNeff : cfg.adaptiveGroupDeficitMax;
+            double cumDefPol = 1.0;
+            double cumPolDegree = 0.0;
+            double cumPolSnr = 0.0;
+            if (snap.polarizationEnabled && cumE > eps) {
+                double cq = history.cumulativeStokesQ[o][g] / cumE;
+                double cu = history.cumulativeStokesU[o][g] / cumE;
+                cumPolDegree = std::sqrt(cq * cq + cu * cu);
+                double cvQ = history.cumulativeSumWQ2[o][g] / cumE - cq * cq;
+                double cvU = history.cumulativeSumWU2[o][g] / cumE - cu * cu;
+                double csigQ = std::sqrt(std::max(cvQ, 0.0) / std::max(cumNeff, eps));
+                double csigU = std::sqrt(std::max(cvU, 0.0) / std::max(cumNeff, eps));
+                double csigP = std::sqrt(csigQ * csigQ + csigU * csigU);
+                cumPolSnr = (csigP > eps) ? cumPolDegree / csigP : 0.0;
+                if (cumPolDegree >= cfg.adaptiveGroupPolarizationFloor &&
+                    history.cumulativeCrossings[o][g] >= cfg.adaptiveGroupMinCrossings) {
+                    cumDefPol = (cumPolSnr > eps)
+                        ? cfg.adaptiveGroupTargetPolSnr / cumPolSnr
+                        : cfg.adaptiveGroupDeficitMax;
+                }
+            }
+            double cumDef = std::clamp(std::max(cumDefNeff, cumDefPol), 1.0, cfg.adaptiveGroupDeficitMax);
+            double normGlobal = (maxCumLumGlobal > 0.0) ? cumE / maxCumLumGlobal : 0.0;
+            double normGroup = (maxCumLumPerGroup[g] > 0.0) ? cumE / maxCumLumPerGroup[g] : 0.0;
+            double cumLumImportance = 0.0;
+            if (cfg.adaptiveGroupLuminosityNormalization == "global")
+                cumLumImportance = normGlobal;
+            else if (cfg.adaptiveGroupLuminosityNormalization == "per-group")
+                cumLumImportance = normGroup;
+            else
+                cumLumImportance = gw * normGlobal + (1.0 - gw) * normGroup;
+            double const cumLumComponent = cfg.adaptiveGroupLuminosityWeight
+                * std::pow(cumLumImportance, cfg.adaptiveGroupLuminosityPower);
+            double cumPolComponent = 0.0;
+            if (snap.polarizationEnabled) {
+                double const polNorm = std::max(cumPolDegree, cfg.adaptiveGroupPolarizationFloor);
+                cumPolComponent = cfg.adaptiveGroupPolarizationWeight
+                    * std::pow(polNorm, cfg.adaptiveGroupPolarizationPower);
+            }
+            diag.cumulativePriority[o][g] = (cumLumComponent + cumPolComponent) * cumDef;
+        }
+    }
+
+    if (cfg.adaptiveGroupHistory && history.updateCount > 0) {
+        double alpha = cfg.adaptiveGroupHistoryEma;
+        for (size_t o = 0; o < nObs; ++o) {
+            for (size_t g = 0; g < nGrp; ++g) {
+                double combined = cfg.adaptiveGroupLatestWeight * diag.latestPriority[o][g]
+                    + cfg.adaptiveGroupCumulativeWeight * diag.cumulativePriority[o][g]
+                    + cfg.adaptiveGroupEmaWeight * history.emaPriority[o][g];
+                history.emaPriority[o][g] = (1.0 - alpha) * history.emaPriority[o][g] + alpha * combined;
+                history.emaDeficit[o][g] = (1.0 - alpha) * history.emaDeficit[o][g] + alpha * diag.deficit[o][g];
+                diag.predictedPriority[o][g] = std::clamp(history.emaPriority[o][g], 1.0, cfg.adaptiveGroupDeficitMax);
+            }
+        }
+    } else {
+        for (size_t o = 0; o < nObs; ++o)
+            for (size_t g = 0; g < nGrp; ++g)
+                diag.predictedPriority[o][g] = diag.latestPriority[o][g];
+    }
+    ++history.updateCount;
+
+    std::vector<double> allNeff, allPolSnr;
+    for (size_t o = 0; o < nObs; ++o) {
+        for (size_t g = 0; g < nGrp; ++g) {
+            if (snap.crossingCount[o][g] > 0) {
+                allNeff.push_back(diag.neff[o][g]);
+                if (snap.polarizationEnabled)
+                    allPolSnr.push_back(diag.polarizationSnr[o][g]);
+                ++diag.activeBins;
+                if (diag.predictedPriority[o][g] > 5.0)
+                    ++diag.highPriorityBins;
+            }
+        }
+    }
+    auto percentile = [](std::vector<double>& v, double p) -> double {
+        if (v.empty()) return 0.0;
+        std::sort(v.begin(), v.end());
+        size_t idx = static_cast<size_t>(p * static_cast<double>(v.size() - 1));
+        return v[std::min(idx, v.size() - 1)];
+    };
+    diag.neffP05 = percentile(allNeff, 0.05);
+    diag.neffMedian = percentile(allNeff, 0.50);
+    diag.neffP95 = percentile(allNeff, 0.95);
+    diag.polSnrP05 = percentile(allPolSnr, 0.05);
+    diag.polSnrMedian = percentile(allPolSnr, 0.50);
+    diag.polSnrP95 = percentile(allPolSnr, 0.95);
+
+    return diag;
+}
+
+double PredictedGroupPriority(
+    ObserverGroupQualityDiagnostics const& groupQuality,
+    size_t observerIndex,
+    size_t groupIndex)
+{
+    if (observerIndex < groupQuality.predictedPriority.size() &&
+        groupIndex < groupQuality.predictedPriority[observerIndex].size() &&
+        std::isfinite(groupQuality.predictedPriority[observerIndex][groupIndex]) &&
+        groupQuality.predictedPriority[observerIndex][groupIndex] > 0.0)
+        return groupQuality.predictedPriority[observerIndex][groupIndex];
+    return 1.0;
+}
+
+double PreMpiGroupStatScore(
+    SphericalObserver::SourceCellGroupEscapeStat const& s,
+    ObserverGroupQualityDiagnostics const& groupQuality)
+{
+    double const priority =
+        PredictedGroupPriority(groupQuality, s.observerIndex, s.groupIndex);
+    double const energy = (s.energy > 0.0 && std::isfinite(s.energy)) ? s.energy : 0.0;
+    double const weightSq = (s.weightSq > 0.0 && std::isfinite(s.weightSq))
+        ? s.weightSq
+        : energy * energy;
+    return priority * (energy + std::sqrt(std::max(weightSq, 0.0)));
+}
+
+std::vector<SphericalObserver::SourceCellGroupEscapeStat>
+PruneLocalSourceGroupStats(
+    std::vector<SphericalObserver::SourceCellGroupEscapeStat> const& localStats,
+    ObserverGroupQualityDiagnostics const& groupQuality,
+    Config const& cfg,
+    AdaptiveGroupSourceUpdateSummary& summary)
+{
+    summary.localStatsInput = static_cast<unsigned long long>(localStats.size());
+    std::vector<SphericalObserver::SourceCellGroupEscapeStat> pruned;
+    pruned.reserve(std::min(localStats.size(), cfg.adaptiveGroupMaxLocalStats));
+
+    for (auto const& s : localStats) {
+        if (s.observerIndex >= groupQuality.observerCount ||
+            s.groupIndex >= groupQuality.groupCount ||
+            !(s.energy > 0.0) ||
+            !std::isfinite(s.energy))
+            continue;
+        double const priority =
+            PredictedGroupPriority(groupQuality, s.observerIndex, s.groupIndex);
+        if (s.count >= cfg.adaptiveGroupStatMinCount ||
+            priority >= cfg.adaptiveGroupStatPriorityKeep)
+            pruned.push_back(s);
+    }
+
+    if (pruned.size() > cfg.adaptiveGroupMaxLocalStats) {
+        if (cfg.adaptiveGroupFallbackToIntegratedOnOverflow) {
+            summary.fallbackToIntegratedPath = true;
+            summary.fallbackReason = "local_group_stats_overflow";
+            summary.localStatsDropped =
+                static_cast<unsigned long long>(localStats.size());
+            return {};
+        }
+
+        std::sort(pruned.begin(), pruned.end(),
+            [&](auto const& a, auto const& b) {
+                return PreMpiGroupStatScore(a, groupQuality) >
+                       PreMpiGroupStatScore(b, groupQuality);
+            });
+        pruned.resize(cfg.adaptiveGroupMaxLocalStats);
+    }
+
+    summary.localStatsAfterPrune = static_cast<unsigned long long>(pruned.size());
+    summary.localStatsDropped =
+        summary.localStatsInput > summary.localStatsAfterPrune
+            ? summary.localStatsInput - summary.localStatsAfterPrune
+            : 0ULL;
+    return pruned;
+}
+
+void DecayAndPruneGroupSourceState(
+    AdaptiveGroupSourceState& groupState,
+    double decay,
+    double pruneThreshold)
+{
+    for (auto it = groupState.scoreByCellGroup.begin();
+         it != groupState.scoreByCellGroup.end(); ) {
+        double sum = 0.0;
+        double maxAbs = 0.0;
+        for (auto& v : it->second) {
+            v *= decay;
+            if (!std::isfinite(v) || v < 0.0)
+                v = 0.0;
+            sum += v;
+            maxAbs = std::max(maxAbs, std::abs(v));
+        }
+        if (maxAbs < pruneThreshold) {
+            groupState.cellScoreFromGroups.erase(it->first);
+            it = groupState.scoreByCellGroup.erase(it);
+        } else {
+            groupState.cellScoreFromGroups[it->first] = sum;
+            ++it;
+        }
+    }
+
+    for (auto it = groupState.cellScoreFromGroups.begin();
+         it != groupState.cellScoreFromGroups.end(); ) {
+        if (!(it->second > pruneThreshold) || !std::isfinite(it->second))
+            it = groupState.cellScoreFromGroups.erase(it);
+        else
+            ++it;
+    }
+}
+
+AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
+    std::vector<SphericalObserver::SourceCellGroupEscapeStat> const& localGroupStats,
+    ObserverGroupQualityDiagnostics const& groupQuality,
+    Config const& cfg,
+    AdaptiveGroupSourceState& groupState,
+    int rank,
+    [[maybe_unused]] int mpiSize)
+{
+    AdaptiveGroupSourceUpdateSummary summary;
+    if (!cfg.adaptiveGroupSourceCells || !groupQuality.enabled)
+        return summary;
+
+    size_t const nObs = groupQuality.observerCount;
+    size_t const nGrp = groupQuality.groupCount;
+
+    std::vector<std::vector<double>> totalEnergyByOG(nObs, std::vector<double>(nGrp, 0.0));
+    std::vector<std::vector<double>> totalW2ByOG(nObs, std::vector<double>(nGrp, 0.0));
+
+    for (auto const& s : localGroupStats) {
+        if (s.observerIndex < nObs && s.groupIndex < nGrp) {
+            totalEnergyByOG[s.observerIndex][s.groupIndex] += s.energy;
+            totalW2ByOG[s.observerIndex][s.groupIndex] +=
+                (s.weightSq > 0.0 && std::isfinite(s.weightSq))
+                    ? s.weightSq
+                    : s.energy * s.energy;
+        }
+    }
+
+#ifdef RICH_MPI
+    size_t flat = nObs * nGrp;
+    std::vector<double> flatE(flat, 0.0), flatW2(flat, 0.0);
+    for (size_t o = 0; o < nObs; ++o)
+        for (size_t g = 0; g < nGrp; ++g) {
+            flatE[o * nGrp + g] = totalEnergyByOG[o][g];
+            flatW2[o * nGrp + g] = totalW2ByOG[o][g];
+        }
+    MPI_Allreduce(MPI_IN_PLACE, flatE.data(), static_cast<int>(flat), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, flatW2.data(), static_cast<int>(flat), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for (size_t o = 0; o < nObs; ++o)
+        for (size_t g = 0; g < nGrp; ++g) {
+            totalEnergyByOG[o][g] = flatE[o * nGrp + g];
+            totalW2ByOG[o][g] = flatW2[o * nGrp + g];
+        }
+#endif
+
+    double const eps = 1e-30;
+    bool const polMode = groupQuality.polarizationMode;
+    double const varianceMix = polMode ? 0.85 : 0.50;
+    double const ema = cfg.adaptiveGroupScoreEma;
+    double const decay = 1.0 - ema;
+
+    auto prunedLocalStats = PruneLocalSourceGroupStats(
+        localGroupStats, groupQuality, cfg, summary);
+#ifdef RICH_MPI
+    int fallbackLocal = summary.fallbackToIntegratedPath ? 1 : 0;
+    int fallbackGlobal = fallbackLocal;
+    MPI_Allreduce(&fallbackLocal, &fallbackGlobal, 1, MPI_INT, MPI_MAX,
+                  MPI_COMM_WORLD);
+    if (fallbackGlobal != 0) {
+        summary.fallbackToIntegratedPath = true;
+        summary.fallbackReason = "local_group_stats_overflow";
+    }
+#endif
+    if (summary.fallbackToIntegratedPath) {
+        groupState.scoreByCellGroup.clear();
+        groupState.cellScoreFromGroups.clear();
+        return summary;
+    }
+
+    DecayAndPruneGroupSourceState(groupState, decay, 1e-20);
+
+    std::vector<PackedSourceGroupEscapeStat> received =
+        ExchangeSourceGroupStatsByCellOwner(prunedLocalStats, summary);
+    std::vector<SphericalObserver::SourceCellGroupEscapeStat>().swap(prunedLocalStats);
+
+    std::unordered_map<AdaptiveSourceGroupKey,
+                       SphericalObserver::SourceCellGroupEscapeStat,
+                       AdaptiveSourceGroupKeyHash> byGroupCell;
+    byGroupCell.reserve(received.size());
+    for (auto const& p : received) {
+        if (p.count == 0 || !(p.energy > 0.0) || !std::isfinite(p.energy))
+            continue;
+        size_t const observerIndex = static_cast<size_t>(p.observerIndex);
+        size_t const groupIndex = static_cast<size_t>(p.groupIndex);
+        size_t const cellID = static_cast<size_t>(p.cellID);
+        AdaptiveSourceGroupKey const key{observerIndex, groupIndex, cellID};
+        auto& s = byGroupCell[key];
+        s.cellID = cellID;
+        s.observerIndex = observerIndex;
+        s.groupIndex = groupIndex;
+        s.energy += p.energy;
+        s.weightSq += p.weightSq;
+        s.maxWeight = std::max(s.maxWeight, p.maxWeight);
+        s.count += static_cast<size_t>(p.count);
+    }
+    std::vector<PackedSourceGroupEscapeStat>().swap(received);
+
+    std::unordered_map<size_t, std::vector<double>> deltaByCellGroup;
+    for (auto const& kv : byGroupCell) {
+        auto const& s = kv.second;
+        if (s.observerIndex >= nObs || s.groupIndex >= nGrp)
+            continue;
+        if (!(s.energy > 0.0) || s.count < cfg.adaptiveGroupStatMinCount)
+            continue;
+
+        double const totE = totalEnergyByOG[s.observerIndex][s.groupIndex];
+        double const totW2 = totalW2ByOG[s.observerIndex][s.groupIndex];
+        double const eFrac = (totE > eps) ? s.energy / totE : 0.0;
+        double const statW2 = (s.weightSq > 0.0 && std::isfinite(s.weightSq))
+            ? s.weightSq
+            : s.energy * s.energy;
+        double const w2Frac = (totW2 > eps) ? statW2 / totW2 : eFrac;
+        double const sourceQuality = (1.0 - varianceMix) * eFrac + varianceMix * w2Frac;
+
+        double const priority =
+            PredictedGroupPriority(groupQuality, s.observerIndex, s.groupIndex);
+
+        double delta = ema * priority * sourceQuality;
+        if (!(delta > 0.0) || !std::isfinite(delta))
+            continue;
+
+        auto& gvec = deltaByCellGroup[s.cellID];
+        if (gvec.empty()) gvec.assign(nGrp, 0.0);
+        gvec[s.groupIndex] += delta;
+        ++summary.passedStats;
+    }
+    std::unordered_map<AdaptiveSourceGroupKey,
+                       SphericalObserver::SourceCellGroupEscapeStat,
+                       AdaptiveSourceGroupKeyHash>().swap(byGroupCell);
+
+    std::vector<PackedAdaptiveCellGroupScoreDelta> localDeltas;
+    for (auto const& kv : deltaByCellGroup) {
+        size_t const cellID = kv.first;
+        for (size_t g = 0; g < kv.second.size(); ++g) {
+            double const delta = kv.second[g];
+            if (!(delta > 0.0) || !std::isfinite(delta))
+                continue;
+            PackedAdaptiveCellGroupScoreDelta p;
+            p.cellID = static_cast<unsigned long long>(cellID);
+            p.groupIndex = static_cast<unsigned long long>(g);
+            p.delta = delta;
+            localDeltas.push_back(p);
+        }
+    }
+    std::unordered_map<size_t, std::vector<double>>().swap(deltaByCellGroup);
+
+    size_t const localDeltaCells = localDeltas.size();
+    std::vector<PackedAdaptiveCellGroupScoreDelta> allDeltas =
+        AllgatherAdaptiveCellGroupScoreDeltas(localDeltas);
+    std::vector<PackedAdaptiveCellGroupScoreDelta>().swap(localDeltas);
+
+    for (auto const& p : allDeltas) {
+        if (!(p.delta > 0.0) || !std::isfinite(p.delta))
+            continue;
+        size_t const cellID = static_cast<size_t>(p.cellID);
+        size_t const groupIndex = static_cast<size_t>(p.groupIndex);
+        if (groupIndex >= nGrp)
+            continue;
+        auto& gvec = groupState.scoreByCellGroup[cellID];
+        if (gvec.empty()) gvec.assign(nGrp, 0.0);
+        gvec[groupIndex] += p.delta;
+        groupState.cellScoreFromGroups[cellID] += p.delta;
+    }
+    summary.scoreDeltaCells = allDeltas.size();
+    std::vector<PackedAdaptiveCellGroupScoreDelta>().swap(allDeltas);
+
+    DecayAndPruneGroupSourceState(groupState, 1.0, 1e-20);
+    summary.scoreMapCells = groupState.scoreByCellGroup.size();
+
+    unsigned long long maxLocalDeltaCells =
+        static_cast<unsigned long long>(localDeltaCells);
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &maxLocalDeltaCells, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, MPI_COMM_WORLD);
+#endif
+    summary.maxPackedBytes = std::max(
+        summary.maxPackedBytes,
+        (maxLocalDeltaCells + static_cast<unsigned long long>(summary.scoreDeltaCells)) *
+            static_cast<unsigned long long>(sizeof(PackedAdaptiveCellGroupScoreDelta)));
+
+    if (rank == 0 && cfg.adaptiveDiagnosticsVerbose) {
+        std::cout << "GROUP_ADAPT source_group_state: cells_with_group_scores="
+                  << groupState.scoreByCellGroup.size()
+                  << " cells_with_cell_score=" << groupState.cellScoreFromGroups.size()
+                  << " dropped_stats=" << summary.localStatsDropped
+                  << " mpi_bytes_max=" << summary.maxPackedBytes
+                  << std::endl;
+    }
+    return summary;
+}
+
+void PrintAdaptiveGroupGenerationStats(
+    ObserverGroupQualityDiagnostics const& gq,
+    RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    size_t gen,
+    int rank)
+{
+    if (rank != 0 || !gq.enabled) return;
+    std::cout << "GROUP_ADAPT gen=" << (gen + 1)
+              << " groups=" << gq.groupCount
+              << " active_bins=" << gq.activeBins
+              << " high_priority_bins=" << gq.highPriorityBins
+              << " neff_p05/med/p95=" << gq.neffP05 << "/" << gq.neffMedian << "/" << gq.neffP95;
+    if (gq.polarizationMode)
+        std::cout << " pol_snr_p05/med/p95=" << gq.polSnrP05 << "/" << gq.polSnrMedian << "/" << gq.polSnrP95;
+    if (gsd.totalSampled > 0 || gsd.weightCorrectionFallback > 0 || gsd.invalidPdfFallback > 0) {
+        double avgCorr = (gsd.weightCorrectionCount > 0) ? gsd.weightCorrectionSum / gsd.weightCorrectionCount : 1.0;
+        double cappedFrac = (gsd.weightCorrectionCount > 0)
+            ? static_cast<double>(gsd.weightCorrectionCapped) / static_cast<double>(gsd.weightCorrectionCount)
+            : 0.0;
+        std::cout << " weight_corr_min/avg/max=" << gsd.weightCorrectionMin << "/" << avgCorr << "/" << gsd.weightCorrectionMax
+                  << " capped_frac=" << cappedFrac
+                  << " capped_energy_frac=" << gsd.cappedEnergyFraction
+                  << " fallback=" << gsd.weightCorrectionFallback
+                  << " invalid_pdf_cells=" << gsd.invalidPdfFallback
+                  << " biased=" << (gsd.estimatorPotentiallyBiased ? 1 : 0);
+    }
+    std::cout << std::endl;
+}
+
+std::unordered_map<size_t, std::array<double, ENERGY_GROUPS_NUM>>
+BuildGroupScoresForIMC(
+    AdaptiveGroupSourceState const& groupState,
+    std::vector<ComputationalCell3D> const& localCells,
+    size_t nGroups)
+{
+    std::unordered_set<size_t> localCellIDs;
+    localCellIDs.reserve(localCells.size());
+    for (auto const& cell : localCells)
+        localCellIDs.insert(cell.ID);
+
+    std::unordered_map<size_t, std::array<double, ENERGY_GROUPS_NUM>> result;
+    for (auto const& kv : groupState.scoreByCellGroup) {
+        if (localCellIDs.find(kv.first) == localCellIDs.end())
+            continue;
+        std::array<double, ENERGY_GROUPS_NUM> arr{};
+        size_t const copyLen = std::min(kv.second.size(), static_cast<size_t>(ENERGY_GROUPS_NUM));
+        for (size_t g = 0; g < copyLen; ++g)
+            arr[g] = kv.second[g];
+        (void)nGroups;
+        result[kv.first] = arr;
+    }
+    return result;
+}
+
+std::unordered_map<size_t, double>
+BuildCombinedSourceScoresForIMC(
+    AdaptiveSourceState const& integratedState,
+    AdaptiveGroupSourceState const& groupState)
+{
+    std::unordered_map<size_t, double> combined = integratedState.scoreByCellID;
+    for (auto const& kv : groupState.cellScoreFromGroups) {
+        if (kv.second > 0.0 && std::isfinite(kv.second))
+            combined[kv.first] += kv.second;
+    }
+    return combined;
 }
 
 // Rosseland weight fraction for a single group with dimensionless boundaries [a, b].
@@ -2227,6 +3495,13 @@ int main(int argc, char* argv[])
         double const measuredLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
         AdaptiveSourceState mgAdaptive;
+        AdaptiveGroupHistory mgGroupHistory;
+        AdaptiveGroupSourceState mgGroupSourceState;
+        RadiationIMC::GroupSamplingDiagnostics mgLastGroupSamplingDiag;
+        RadiationIMC::GroupSamplingDiagnostics mgFinalGroupSamplingDiag;
+        AdaptiveGroupSourceUpdateSummary mgFinalGroupSourceSummary;
+        bool mgGroupFallbackToIntegrated = false;
+        std::string mgGroupFallbackReason = "none";
         observer->clearGenerationStatistics();
         size_t mgIncludedFinalGenerations = 0;
         size_t mgDiscardedBurninGenerations = 0;
@@ -2297,16 +3572,19 @@ int main(int argc, char* argv[])
                                          mgBurninGenerations,
                                          adaptiveActiveThisGen, rank);
 
-            if (adaptiveActiveThisGen)
+            if (adaptiveActiveThisGen) {
+                auto combinedSourceScores =
+                    BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState);
                 physics->setAdaptiveSourceCellScores(
-                    mgAdaptive.scoreByCellID,
+                    std::move(combinedSourceScores),
                     cfg.adaptiveSourceStrength,
                     cfg.adaptiveSourceMaxFactor,
                     cfg.adaptiveSourceLearnedReserveFrac,
                     cfg.adaptiveSourceLearnedMinFactor,
                     mgAdaptive.observerBudgetMultiplier);
-            else
+            } else {
                 physics->clearAdaptiveSourceCellScores();
+            }
             if (firstBurninThisGen)
                 physics->setSourceEmissionControl(false, true, 1);
             else if (uniformBurninThisGen)
@@ -2318,6 +3596,24 @@ int main(int argc, char* argv[])
             else
                 physics->clearSourceEmissionControl();
             observer->resetGenerationSourceCellEscapeStats();
+            observer->resetGenerationSourceCellGroupEscapeStats();
+            observer->setGenerationSourceCellGroupStatsEnabled(
+                cfg.adaptiveGroupSourceCells && cfg.adaptiveGroupQuality &&
+                ENERGY_GROUPS_NUM > 1 && !burninThisGen);
+
+            if (adaptiveActiveThisGen && cfg.adaptiveGroupFrequencySampling &&
+                !mgGroupSourceState.scoreByCellGroup.empty()) {
+                auto groupScoresForIMC = BuildGroupScoresForIMC(
+                    mgGroupSourceState, cells, static_cast<size_t>(ENERGY_GROUPS_NUM));
+                physics->setAdaptiveSourceCellGroupScores(
+                    std::move(groupScoresForIMC),
+                    cfg.adaptiveGroupStrength,
+                    cfg.adaptiveGroupPdfFloor,
+                    cfg.adaptiveGroupMaxBias,
+                    cfg.adaptiveGroupMaxWeightCorrection);
+            } else {
+                physics->clearAdaptiveSourceCellGroupScores();
+            }
 
             physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
 
@@ -2327,21 +3623,54 @@ int main(int argc, char* argv[])
 
             auto mgAllocation = ReduceSourceAllocationSummary(
                 physics->getLastSourceAllocationSummary());
+            auto mgGroupSamplingDiag = ReduceGroupSamplingDiagnostics(
+                physics->getLastGroupSamplingDiagnostics());
+            mgLastGroupSamplingDiag = mgGroupSamplingDiag;
             auto mgSourceStats = observer->getGenerationSourceCellEscapeStats();
             observer->resetGenerationSourceCellEscapeStats();
+            auto mgGroupSourceStats = observer->getGenerationSourceCellGroupEscapeStats();
+            observer->resetGenerationSourceCellGroupEscapeStats();
             ObserverQualityDiagnostics mgObserverQuality;
             if (cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
                 mgObserverQuality = BuildObserverQualityDiagnostics(
                     CollectGlobalObserverQuality(observer->getObserverQualitySnapshot()),
                     cfg, mgAdaptive);
             }
+
+            ObserverGroupQualityDiagnostics mgGroupQuality;
+            if (cfg.adaptiveGroupQuality && ENERGY_GROUPS_NUM > 1) {
+                auto groupSnap = observer->getObserverGroupQualitySnapshot();
+                CollectGlobalObserverGroupQuality(groupSnap);
+                if (cfg.adaptiveGroupFrequencySampling &&
+                    groupSnap.groupCount != static_cast<size_t>(ENERGY_GROUPS_NUM)) {
+                    throw UniversalError(
+                        "--adaptive-group-frequency-sampling requires observer group count to match ENERGY_GROUPS_NUM");
+                }
+                mgGroupQuality = BuildObserverGroupQualityDiagnosticsFromSnapshot(
+                    groupSnap, cfg, mgGroupHistory, cfg.sourceDt);
+            }
+
             auto mgUpdate = UpdateAdaptiveSourceScoresDistributed(
                 mgSourceStats, cfg, mgAdaptive, mgObserverQuality,
                 !burninThisGen);
             std::vector<SphericalObserver::SourceCellEscapeStat>().swap(mgSourceStats);
+
+            AdaptiveGroupSourceUpdateSummary mgGroupUpdate;
+            if (cfg.adaptiveGroupSourceCells && mgGroupQuality.enabled && !burninThisGen) {
+                mgGroupUpdate = UpdateAdaptiveSourceGroupScores(
+                    mgGroupSourceStats, mgGroupQuality, cfg,
+                    mgGroupSourceState, rank, mpiSize);
+                if (mgGroupUpdate.fallbackToIntegratedPath) {
+                    mgGroupFallbackToIntegrated = true;
+                    mgGroupFallbackReason = mgGroupUpdate.fallbackReason;
+                }
+            }
+            std::vector<SphericalObserver::SourceCellGroupEscapeStat>().swap(mgGroupSourceStats);
+
             PrintAdaptiveGenerationStats(
                 "MG", cfg, mgAdaptive, mgUpdate, mgAllocation,
                 mgObserverQuality, gen, rank);
+            PrintAdaptiveGroupGenerationStats(mgGroupQuality, mgGroupSamplingDiag, gen, rank);
             if (rank == 0 && cfg.adaptiveSourceCells)
                 std::cout << "MG learned cells after iteration " << (gen + 1)
                           << ": " << mgAdaptive.scoreByCellID.size() << std::endl;
@@ -2352,6 +3681,10 @@ int main(int argc, char* argv[])
             if (includeGenerationInFinal) {
                 if (rank == 0)
                     observer->accumulateCurrentTalliesForStatistics(cfg.sourceDt);
+                AccumulateGroupSamplingDiagnostics(
+                    mgFinalGroupSamplingDiag, mgGroupSamplingDiag);
+                AccumulateAdaptiveGroupSourceSummary(
+                    mgFinalGroupSourceSummary, mgGroupUpdate);
                 ++mgIncludedFinalGenerations;
             } else {
                 ++mgDiscardedBurninGenerations;
@@ -2584,6 +3917,62 @@ int main(int argc, char* argv[])
             diag.includedFinalGenerations = static_cast<int>(mgIncludedFinalGenerations);
             diag.discardedBurninGenerations = static_cast<int>(mgDiscardedBurninGenerations);
             diag.adaptiveOnlyFinalOutput = cfg.adaptiveSourceCells ? 1 : 0;
+            diag.adaptiveGroupQualityEnabled = cfg.adaptiveGroupQuality ? 1 : 0;
+            diag.adaptiveGroupSourceCellsEnabled = cfg.adaptiveGroupSourceCells ? 1 : 0;
+            diag.adaptiveGroupFrequencySamplingEnabled = cfg.adaptiveGroupFrequencySampling ? 1 : 0;
+            diag.adaptiveGroupHistoryEnabled = cfg.adaptiveGroupHistory ? 1 : 0;
+            diag.adaptiveGroupLuminosityNormalization = cfg.adaptiveGroupLuminosityNormalization;
+            diag.adaptiveGroupTargetNeff = cfg.adaptiveGroupTargetNeff;
+            diag.adaptiveGroupTargetPolSnr = cfg.adaptiveGroupTargetPolSnr;
+            diag.adaptiveGroupDeficitMax = cfg.adaptiveGroupDeficitMax;
+            diag.adaptiveGroupMinCrossings = static_cast<int>(cfg.adaptiveGroupMinCrossings);
+            diag.adaptiveGroupMinLuminosity = cfg.adaptiveGroupMinLuminosity;
+            diag.adaptiveGroupMinLuminosityFracOfGroupMax =
+                cfg.adaptiveGroupMinLuminosityFracOfGroupMax;
+            diag.adaptiveGroupLatestWeight = cfg.adaptiveGroupLatestWeight;
+            diag.adaptiveGroupCumulativeWeight = cfg.adaptiveGroupCumulativeWeight;
+            diag.adaptiveGroupEmaWeight = cfg.adaptiveGroupEmaWeight;
+            diag.adaptiveGroupSamplingStrength = cfg.adaptiveGroupStrength;
+            diag.adaptiveGroupSamplingPdfFloor = cfg.adaptiveGroupPdfFloor;
+            diag.adaptiveGroupSamplingMaxBias = cfg.adaptiveGroupMaxBias;
+            diag.adaptiveGroupSamplingMaxWeightCorrection = cfg.adaptiveGroupMaxWeightCorrection;
+            diag.adaptiveGroupSamplingTotalSampled =
+                static_cast<unsigned long long>(mgFinalGroupSamplingDiag.totalSampled);
+            diag.adaptiveGroupWeightCorrectionMin =
+                mgFinalGroupSamplingDiag.weightCorrectionMin;
+            diag.adaptiveGroupWeightCorrectionMean =
+                (mgFinalGroupSamplingDiag.weightCorrectionCount > 0)
+                    ? mgFinalGroupSamplingDiag.weightCorrectionSum /
+                      static_cast<double>(mgFinalGroupSamplingDiag.weightCorrectionCount)
+                    : 1.0;
+            diag.adaptiveGroupWeightCorrectionMax =
+                mgFinalGroupSamplingDiag.weightCorrectionMax;
+            diag.adaptiveGroupWeightCorrectionCappedFraction =
+                (mgFinalGroupSamplingDiag.weightCorrectionCount > 0)
+                    ? static_cast<double>(mgFinalGroupSamplingDiag.weightCorrectionCapped) /
+                      static_cast<double>(mgFinalGroupSamplingDiag.weightCorrectionCount)
+                    : 0.0;
+            diag.adaptiveGroupWeightCorrectionFallbackCount =
+                static_cast<unsigned long long>(mgFinalGroupSamplingDiag.weightCorrectionFallback);
+            diag.adaptiveGroupInvalidPdfFallbackCount =
+                static_cast<unsigned long long>(mgFinalGroupSamplingDiag.invalidPdfFallback);
+            diag.adaptiveGroupInvalidPdfFallbackPacketCount =
+                static_cast<unsigned long long>(mgFinalGroupSamplingDiag.invalidPdfFallbackPackets);
+            diag.adaptiveGroupCappedEnergyFraction =
+                mgFinalGroupSamplingDiag.cappedEnergyFraction;
+            diag.adaptiveGroupEstimatorPotentiallyBiased =
+                mgFinalGroupSamplingDiag.estimatorPotentiallyBiased ? 1 : 0;
+            diag.adaptiveGroupFallbackToIntegratedPath =
+                mgGroupFallbackToIntegrated ? 1 : 0;
+            diag.adaptiveGroupFallbackReason = mgGroupFallbackReason;
+            diag.adaptiveGroupSourceLocalStatsAfterPrune =
+                mgFinalGroupSourceSummary.localStatsAfterPrune;
+            diag.adaptiveGroupSourceLocalStatsDropped =
+                mgFinalGroupSourceSummary.localStatsDropped;
+            diag.adaptiveGroupSourceMpiStatsExchanged =
+                mgFinalGroupSourceSummary.mpiStatsExchanged;
+            diag.adaptiveGroupSourceMpiPackedBytes =
+                mgFinalGroupSourceSummary.maxPackedBytes;
 
             observer->writeHDF5(cfg.outputPath, diag);
 
