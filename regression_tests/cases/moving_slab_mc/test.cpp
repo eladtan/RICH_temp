@@ -1,5 +1,5 @@
-#include "3D/environment/kernels/IndexingKernel3D.hpp"
-#include "3D/environment/kernels/Rectangle.hpp"
+#include <MeshDecomposer3D/kernels/IndexingKernel3D.hpp>
+#include <MeshDecomposer3D/kernels/Rectangle.hpp>
 #include <array>
 #include <chrono>
 #include <fstream>

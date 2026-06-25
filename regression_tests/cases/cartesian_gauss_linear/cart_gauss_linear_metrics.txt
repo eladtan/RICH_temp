@@ -1,0 +1,13 @@
+cart_scalar_max_rel_error 1.243243671301e-07
+cart_velocity_max_rel_error 1.526288652510e-04
+cart_density_max_rel 1.243243671301e-07
+cart_ie_max_rel 1.215395183166e-07
+cart_vx_max_abs 1.038335214476e-07
+cart_vy_max_abs 8.659132821887e-08
+cart_vz_max_abs 7.291497317041e-08
+faces_checked 87600
+sph_scalar_max_rel_error 3.135192554437e-02
+sph_velocity_max_rel_error 1.352190368118e-01
+sph_density_max_rel 1.626311227834e-02
+sph_ie_max_rel 3.135192554437e-02
+sph_vel_max_abs 1.681548512347e-01

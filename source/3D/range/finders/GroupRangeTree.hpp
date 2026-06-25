@@ -1,7 +1,7 @@
 #ifndef _GROUP_RANGE_TREE_FINDER_HPP
 #define _GROUP_RANGE_TREE_FINDER_HPP
 
-#include "ds/GroupRangeTree/GroupRangeTree.hpp"
+#include <spatial_ds/GroupRangeTree/GroupRangeTree.hpp>
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 

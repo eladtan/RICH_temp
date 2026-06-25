@@ -4,7 +4,7 @@
 */
 
 #include "3D/elementary/Vector3D.hpp"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 
 #define EPSILON 1e-12
 
@@ -451,7 +451,7 @@ Mat33<T>& Mat33<T>::operator=(Mat33<T> const& A)
 template <typename T>
 bool Mat33<T>::operator==(Mat33<T> const& A) const
 {
-    bool res;
+    bool res = true;
     for (int i =0; i<3; ++i)
     {
         for (int j=0; j<3; ++j)

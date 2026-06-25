@@ -1,8 +1,8 @@
 #ifndef _RANGE_TREE_FINDER_HPP
 #define _RANGE_TREE_FINDER_HPP
 
-#include "ds/BinaryTree.hpp"
-#include "ds/RangeTree/RangeTree.hpp"
+#include <spatial_ds/BinaryTree.hpp>
+#include <spatial_ds/RangeTree/RangeTree.hpp>
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 

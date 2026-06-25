@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <numeric>
 #include "mpi/mpi_commands.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include "newtonian/common/ideal_gas.hpp"
@@ -25,6 +25,7 @@
 #include "monte/boundary/SideTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
+#include "utils/arguments/ArgumentParser.hpp"
 
 /*
  * Desmore 2012 step-opacity test — Monte Carlo (multigroup IMC) version.
@@ -41,7 +42,7 @@
  *   Runtime:     1e-9 s
  *   No hydro.
  *
- * Usage: mpirun -np N ./test <Nx> [output_prefix] [new_photons_per_cell] [max_photons_per_cell]
+ * Usage: mpirun -np N ./test [options] <Nx> [output_prefix] [new_photons_per_cell] [max_photons_per_cell]
  */
 
 namespace
@@ -120,21 +121,59 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ws);
 
-    if(rank == 0 && argc < 2)
+  try
+  {
+    ArgumentParser arguments("Desmore 2012 step-opacity MC benchmark");
+    arguments.addPositional<size_t>("Nx", "number of cells along x").required();
+    arguments.addPositional<std::string>("prefix", "desmore_step_mc", "output prefix");
+    arguments.addPositional<size_t>("new_photons_per_cell", 50, "new photons per cell per step");
+    arguments.addPositional<size_t>("max_photons_per_cell", 200, "population-control photon cap per cell");
+    arguments.addPositional<bool>("with_random_walk", true, "enable random walk acceleration")
+        .optionAlias("random-walk")
+        .flagAlias("rw", true)
+        .flagAlias("no-rw", false);
+    arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
+        .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
+        .flagAlias("new-rdma", "new-rdma-auto")
+        .flagAlias("rdma", "new-rdma-auto")
+        .flagAlias("new-ibv", "new-rdma-ibv")
+        .flagAlias("new_ibv", "new-rdma-ibv")
+        .flagAlias("ibv", "new-rdma-ibv")
+        .flagAlias("p2p", "p2p");
+
+    try
     {
-        std::cerr << "Usage: " << argv[0]
-                  << " <Nx> [output_prefix] [new_photons_per_cell] [max_photons_per_cell] [with_random_walk(0/1)]"
-                  << std::endl;
+        if(!arguments.parse(argc, argv))
+        {
+            if(rank == 0)
+                std::cout << arguments.help() << std::endl;
+            MPI_Finalize();
+            return 0;
+        }
+    }
+    catch(const std::exception &e)
+    {
+        if(rank == 0)
+        {
+            std::cerr << e.what() << std::endl;
+            std::cerr << arguments.help() << std::endl;
+        }
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-  try
-  {
-    size_t Nx = std::stoul(argv[1]);
-    std::string prefix = (argc >= 3) ? argv[2] : "desmore_step_mc";
-    size_t newPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 50;
-    size_t maxPhotonsPerCell = (argc >= 5) ? std::stoul(argv[4]) : 200;
-    bool useRandomWalk = (argc >= 6) ? (std::stoi(argv[5]) != 0) : true;
+    size_t Nx = arguments.get<size_t>("Nx");
+    std::string prefix = arguments.get<std::string>("prefix");
+    size_t newPhotonsPerCell = arguments.get<size_t>("new_photons_per_cell");
+    size_t maxPhotonsPerCell = arguments.get<size_t>("max_photons_per_cell");
+    bool useRandomWalk = arguments.get<bool>("with_random_walk");
+    std::string managerName = arguments.get<std::string>("manager");
+
+    #ifdef RICH_MPI
+        RadiationMCStep::ManagerType managerType =
+            managerName == "p2p" ? RadiationMCStep::ManagerType::P2P :
+            managerName == "new-rdma-ibv" ? RadiationMCStep::ManagerType::NEW_IBV_RDMA :
+            RadiationMCStep::ManagerType::NEW_RDMA;
+    #endif
 
     // --- Energy groups (same as diffusion test) ---
     size_t const G = ENERGY_GROUPS_NUM;
@@ -253,7 +292,7 @@ int main(int argc, char *argv[])
         tess, cells, extensives, physics, popControl, boundaryCond,
         initialParticles, initialParticlesPerCell, withHydro
         #ifdef RICH_MPI
-            , RadiationMCStep::ManagerType::AUTO_RDMA
+            , managerType
         #endif
     );
     sim.addPhysics(mcStep);
@@ -275,6 +314,8 @@ int main(int argc, char *argv[])
                   << ", t_final=" << tf << " s"
                   << ", iterations=" << iterations
                   << "\n  prefix=" << prefix
+                  << ", random_walk=" << useRandomWalk
+                  << ", manager=" << managerName
                   << std::endl;
     }
 

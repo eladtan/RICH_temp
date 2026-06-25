@@ -1,8 +1,9 @@
+#include <cassert>
 #include <iostream>
 #include <random>
 #include <filesystem>
 #include "3D/range/finders/OctTree.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "3D/output/write3D.hpp"
 #include "misc/simple_io.hpp"
 #include "misc/mesh_generator3D.hpp"
@@ -13,7 +14,7 @@
 #include "utils/dup/duplications.hpp"
 #include "utils/validation/validate.hpp"
 #include "utils/ghost/printGhostPoints.hpp"
-#include "mpi/serialize/mpi_commands.hpp"
+#include "mpi/mpi_commands.hpp"
 
 #ifndef RICH_MPI
 using rank_t = int;

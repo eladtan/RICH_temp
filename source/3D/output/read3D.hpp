@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <set>
 #include "Snapshot3D.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp" // includes Tessellation3D as well
+#include "3D/tessellation/Voronoi3D.hpp" // includes Tessellation3D as well
 #include "utils/hdf5/HDF5Reader.hpp"
 #include "newtonian/three_dimensional/simulation/Simulation.hpp"
 

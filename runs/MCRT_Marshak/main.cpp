@@ -1,4 +1,4 @@
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "monte/manager/serial/MonteCarloManagerSerial.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"

@@ -3,7 +3,7 @@
 
 #ifdef RICH_MPI
     
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include <algorithm>
 #include <vector>
 #include <mpi.h>

@@ -4,7 +4,7 @@
 #include <H5Cpp.h>
 #include <string>
 #include <filesystem>
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "misc/hdf5_utils.hpp"
 #include "write_vtu_3d.hpp"
 #include "DiagnosticAppendix3D.hpp"

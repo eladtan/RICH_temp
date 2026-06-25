@@ -3,7 +3,7 @@
 
 #include <cassert>
 #include <chrono>
-#include "3D/hilbert/HilbertOrder3D.hpp"
+#include <MeshDecomposer3D/hilbert/HilbertOrder3D.hpp>
 #include "misc/utils.hpp"
 #include "computational_cell.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"

@@ -24,7 +24,7 @@
 #include <string.h>
 
 #ifdef RICH_MPI
-#include "source/mpi/serialize/mpi_commands.hpp"
+#include "mpi/mpi_commands.hpp"
 #endif
 
 // Gresho vortex test — Lagrangian + RoundCells, restricted to xy plane
@@ -84,16 +84,15 @@ private:
 } // namespace
 
 int main(void)
-{
-    feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
-
+{    
     int rank = 0;
     int nprocs = 1;
-#ifdef RICH_MPI
-    MPI_Init(NULL, NULL);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
-#endif
+    #ifdef RICH_MPI
+        MPI_Init(NULL, NULL);
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+    #endif
+    feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 
     IdealGas eos(5.0 / 3.0);
 

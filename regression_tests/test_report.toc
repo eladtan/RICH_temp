@@ -1,0 +1,30 @@
+\contentsline {section}{\numberline {1}Verification and Validation}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Background and Definitions}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}The V\&V Process}{3}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Role of the RICH Regression Test Suite}{4}{subsection.1.3}%
+\contentsline {section}{\numberline {2}Summary}{5}{section.2}%
+\contentsline {section}{\numberline {3}Sod Shock Tube (1D)}{6}{section.3}%
+\contentsline {section}{\numberline {4}Sedov--Taylor Blast Wave (3D, MPI)}{8}{section.4}%
+\contentsline {section}{\numberline {5}Till Compton Equilibration}{10}{section.5}%
+\contentsline {section}{\numberline {6}AMR Random Refine/Coarsen Consistency}{12}{section.6}%
+\contentsline {section}{\numberline {7}Voronoi Volume Conservation}{14}{section.7}%
+\contentsline {section}{\numberline {8}Lane--Emden Self-Gravity Equilibrium}{16}{section.8}%
+\contentsline {section}{\numberline {9}Mach~2 Radiative Shock -- Gray Diffusion}{18}{section.9}%
+\contentsline {section}{\numberline {10}Mach~2 Radiative Shock -- Multigroup}{20}{section.10}%
+\contentsline {section}{\numberline {11}Marshak Wave Problem~1 (Non-Equilibrium, Uniform Density)}{22}{section.11}%
+\contentsline {section}{\numberline {12}Marshak Wave Problem~2 (Equilibrium Limit, Uniform Density)}{24}{section.12}%
+\contentsline {section}{\numberline {13}Marshak Wave Problem~3 (Non-Uniform Density, Power-Law Profile)}{25}{section.13}%
+\contentsline {section}{\numberline {14}Marshak Wave Problem~4 (Divergent Density, Stretched Grid)}{27}{section.14}%
+\contentsline {section}{\numberline {15}Gresho Vortex (Eulerian)}{28}{section.15}%
+\contentsline {section}{\numberline {16}Gresho Vortex (Lagrangian + RoundCells)}{31}{section.16}%
+\contentsline {section}{\numberline {17}Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo IMC)}{33}{section.17}%
+\contentsline {section}{\numberline {18}Densmore 2012 Heterogeneous Step-Opacity (Serial MC, Random Walk)}{35}{section.18}%
+\contentsline {section}{\numberline {19}Yee Isentropic Vortex (64$\times $64, Lagrangian)}{36}{section.19}%
+\contentsline {section}{\numberline {20}Yee Isentropic Vortex (128$\times $128, Lagrangian)}{38}{section.20}%
+\contentsline {section}{\numberline {21}Spherical LSQ Gradient -- Linear Field Verification}{39}{section.21}%
+\contentsline {section}{\numberline {22}Cartesian LSQ Gradient -- Linear Field Verification}{41}{section.22}%
+\contentsline {section}{\numberline {23}Spherical Shell Collapse (High Resolution, Symmetry Test)}{43}{section.23}%
+\contentsline {section}{\numberline {24}Spherical Shell Collapse (Symmetry Test)}{44}{section.24}%
+\contentsline {section}{\numberline {25}Rayleigh--Taylor Instability (3D, MPI)}{46}{section.25}%
+\contentsline {section}{\numberline {26}1D Eulerian Diffusion Suite (Gray Free--Free, Cooling Limiter)}{48}{section.26}%
+\contentsline {section}{\numberline {27}1D Eulerian Diffusion Suite (Multigroup Free--Free, Cooling Limiter)}{51}{section.27}%

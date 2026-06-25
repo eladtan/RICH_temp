@@ -11,7 +11,7 @@
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "misc/mesh_generator3D.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
@@ -37,6 +37,7 @@
 #include "monte/boundary/TwoSidesTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
+#include "utils/arguments/ArgumentParser.hpp"
 
 /*
  * Mach 2 Radiative Shock benchmark from:
@@ -53,7 +54,7 @@
  * Domain:      x in [-0.21, 0.7] cm, 1024 cells (default)
  * Runtime:     5 ns
  *
- * Usage: mpirun -np N ./test [Np] [prefix] [new/cell] [max/cell] [--resume]
+ * Usage: mpirun -np N ./test [options] [Np] [prefix] [new/cell] [max/cell]
  */
 
 namespace fs = std::filesystem;
@@ -228,25 +229,54 @@ int main(int argc, char *argv[])
 
   try
   {
-    size_t Np = 1024;
-    std::string prefix = "mach2_mc";
-    size_t newPhotonsPerCell = 25;
-    size_t maxPhotonsPerCell = 100;
-    bool doResume = false;
+    ArgumentParser arguments("Mach 2 radiative shock benchmark");
+    arguments.addPositional<size_t>("Np", 1024, "number of cells along x");
+    arguments.addPositional<std::string>("prefix", "mach2_mc", "output prefix");
+    arguments.addPositional<size_t>("new_photons_per_cell", 25, "new photons per cell per step");
+    arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
+    arguments.addFlag("resume", "resume from the checkpoint if it exists");
+    arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
+        .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
+        .flagAlias("new-rdma", "new-rdma-auto")
+        .flagAlias("rdma", "new-rdma-auto")
+        .flagAlias("new-ibv", "new-rdma-ibv")
+        .flagAlias("new_ibv", "new-rdma-ibv")
+        .flagAlias("ibv", "new-rdma-ibv")
+        .flagAlias("p2p", "p2p");
 
-    std::vector<std::string> positionalArgs;
-    for(int a = 1; a < argc; a++)
+    try
     {
-        std::string arg(argv[a]);
-        if(arg == "--resume")
-            doResume = true;
-        else
-            positionalArgs.push_back(arg);
+        if(!arguments.parse(argc, argv))
+        {
+            if(rank == 0)
+                std::cout << arguments.help() << std::endl;
+            MPI_Finalize();
+            return 0;
+        }
     }
-    if(positionalArgs.size() >= 1) Np = std::stoul(positionalArgs[0]);
-    if(positionalArgs.size() >= 2) prefix = positionalArgs[1];
-    if(positionalArgs.size() >= 3) newPhotonsPerCell = std::stoul(positionalArgs[2]);
-    if(positionalArgs.size() >= 4) maxPhotonsPerCell = std::stoul(positionalArgs[3]);
+    catch(const std::exception &e)
+    {
+        if(rank == 0)
+        {
+            std::cerr << e.what() << std::endl;
+            std::cerr << arguments.help() << std::endl;
+        }
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    size_t Np = arguments.get<size_t>("Np");
+    std::string prefix = arguments.get<std::string>("prefix");
+    size_t newPhotonsPerCell = arguments.get<size_t>("new_photons_per_cell");
+    size_t maxPhotonsPerCell = arguments.get<size_t>("max_photons_per_cell");
+    bool doResume = arguments.get<bool>("resume");
+    std::string managerName = arguments.get<std::string>("manager");
+
+    #ifdef RICH_MPI
+        RadiationMCStep::ManagerType managerType =
+            managerName == "p2p" ? RadiationMCStep::ManagerType::P2P :
+            managerName == "new-rdma-ibv" ? RadiationMCStep::ManagerType::NEW_IBV_RDMA :
+            RadiationMCStep::ManagerType::NEW_RDMA;
+    #endif
 
     // --- Physical parameters (arXiv:2108.13453, Section 5.1) ---
     constexpr double gamma_gas = 5.0 / 3.0;
@@ -416,17 +446,23 @@ int main(int argc, char *argv[])
         std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
             tess, cells, T_up, T_dn, boundaryPhotonsPerCell, withHydro);
 
+    RadiationIMCParameters radiationIMCParameters = {
+        .newPhotonsPerCell = newPhotonsPerCell,
+        .withHydro = withHydro,
+        .diffusionPressureGradient = diffusionPressureGradient
+    };
     std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
-        tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, newPhotonsPerCell, withHydro, diffusionPressureGradient);
+        tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
         std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
 
     std::vector<Particle3D> initialParticles;
+    constexpr size_t initialParticlesPerCell = 50;
     auto mcStep = std::make_shared<RadiationMCStep>(
-        tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, withHydro
+        tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, initialParticlesPerCell, withHydro
         #ifdef RICH_MPI
-            , RadiationMCStep::ManagerType::AUTO_RDMA
+            , managerType
         #endif
     );
     #ifdef RICH_MPI
@@ -473,6 +509,7 @@ int main(int argc, char *argv[])
                   << ", dt=" << dt << " s"
                   << ", t_final=" << t_final * 1e9 << " ns"
                   << ", prefix=" << prefix
+                  << ", manager=" << managerName
                   << (doResume ? ", RESUMED" : "")
                   << std::endl;
     }

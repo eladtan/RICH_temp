@@ -1,4 +1,4 @@
-#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
@@ -38,7 +38,7 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include "source/3D/environment/kernels/Rectangle.hpp"
+#include <MeshDecomposer3D/kernels/Rectangle.hpp>
 #include "source/newtonian/three_dimensional/Dissipation.hpp"
 #include <memory>
 
@@ -930,7 +930,6 @@ namespace
 int main(void)
 {
 	// std::cout<<"Here1"<<std::endl;
-	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	// std::cout<<"Here2"<<std::endl;
 	int rank = 0;
 	int ws = 1;
@@ -942,6 +941,7 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	// std::cout<<"Here5"<<std::endl;
 	std::string run_directory("/home/elads/TDEMG/");
 	// std::cout<<"Here6"<<std::endl;

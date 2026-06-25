@@ -1,5 +1,5 @@
 #include "HilbertProcPositions.hpp"
-#include "3D/hilbert/HilbertOrder3D.hpp"
+#include <MeshDecomposer3D/hilbert/HilbertOrder3D.hpp>
 #include "misc/utils.hpp"
 #include <limits>
 #ifdef RICH_MPI

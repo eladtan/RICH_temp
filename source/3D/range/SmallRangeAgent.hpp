@@ -3,17 +3,17 @@
 
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
-#include "3D/environment/EnvironmentAgent.h"
-#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include <MeshDecomposer3D/environment/EnvironmentAgent.hpp>
+#include <MeshDecomposer3D/environment/hilbert/HilbertTreeEnvAgent.hpp>
 #ifdef RICH_MPI
     #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
     #include "utils/queryAgent/ThreePhasesQueryAgent.hpp"
     #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
     #include "utils/queryAgent/BuffersManagerQueryAgent.hpp"
     #include "utils/queryAgent/thread/ThreadsQueryAgent.hpp"
-    #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
+    #include <MeshDecomposer3D/environment/hilbert/DistributedOctEnvAgent.hpp> 
     #include "SentPointsContainer.hpp"
-    #include "mpi/serialize/Serializer.hpp"
+    #include <mpi_utils/serialize/Serializer.hpp>
 #endif // RICH_MPI
 
 #include "RangeQueryData.h"
@@ -128,7 +128,7 @@ private:
             template<typename K, typename V>
             using _map = boost::container::flat_map<K, V>;
 
-            SmallRangeTalkAgent(const std::shared_ptr<EnvironmentAgent> envAgent,         
+            SmallRangeTalkAgent(const std::shared_ptr<EnvironmentAgent<Vector3D>> envAgent,         
                             #ifdef RICH_MPI
                                 const MPI_Comm &comm = MPI_COMM_WORLD
                             #endif // RICH_MPI
@@ -143,10 +143,10 @@ private:
                 #endif // RICH_MPI
             };
 
-            inline EnvironmentAgent::RanksSet getTalkList(const SmallRangeQueryData &query) const override
+            inline EnvironmentAgent<Vector3D>::RanksSet getTalkList(const SmallRangeQueryData &query) const override
             {
                 // check if has 'smartAgent' (an agent that can caluclate distances of ranks as well)
-                EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+                EnvironmentAgent<Vector3D>::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
                 if(intersectingRanks.empty())
                 {
                     throw UniversalError("In range talk agent, should not reach here: the intersecting ranks list should at least contain the rank itself");
@@ -155,7 +155,7 @@ private:
             }
 
         private:
-            const std::shared_ptr<EnvironmentAgent> envAgent;
+            const std::shared_ptr<EnvironmentAgent<Vector3D>> envAgent;
             int rank, size;
         };
     #endif // RICH_MPI
@@ -166,7 +166,7 @@ public:
     using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
-        SmallRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
+        SmallRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent<Vector3D>> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     #else // RICH_MPI
         SmallRangeAgent(const RangeFinder *rangeFinder)
     #endif // RICH_MPI

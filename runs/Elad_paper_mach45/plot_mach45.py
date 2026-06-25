@@ -424,7 +424,7 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
     ax_vx.axhline(V_DN / 1e8, **ref_kw)
 
     if wide:
-        xlim = (1945, 2455)
+        xlim = (1950.0, 2450.0)
     else:
         margin = 120
         xlim = (x_shock - margin, x_shock + 30)

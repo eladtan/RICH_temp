@@ -48,13 +48,13 @@ endif()
 if(DEFINED MC_DEBUG)
     # status message
     message(STATUS "Monte Carlo Debug Mode Enabled")
-    add_definitions("-DMONTECARLO_DEBUG")
-    message(STATUS "Defined 'MONTECARLO_DEBUG'")
+    add_definitions("-DSTORM_DEBUG")
+    message(STATUS "Defined 'STORM_DEBUG'")
 endif()
 
 if(DEFINED MC_TRACE_DEBUG)
     message(STATUS "Monte Carlo Trace Debug Enabled with history size ${MC_TRACE_DEBUG}")
-    add_definitions("-DMC_TRACING_HISTORY=${MC_TRACE_DEBUG}")
+    add_definitions("-DSTORM_WITH_TRACING_HISTORY=${MC_TRACE_DEBUG}")
 endif()
 
 if(DEFINED MEMORY_DEBUG)

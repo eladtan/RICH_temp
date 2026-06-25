@@ -1,0 +1,29 @@
+#include "RectangleIOHandler.hpp"
+#include <MeshDecomposer3D/kernels/Rectangle.hpp>
+#include "KernelIOHandlerFactory.hpp"
+#include "utils/hdf5/HDF5Writer.hpp"
+#include "utils/hdf5/HDF5Reader.hpp"
+
+void RectangleIOHandler::dump(HDF5Writer &writer, const std::string &group, const Kernelization3D::IndexingKernel3D<Vector3D> &kernel) const
+{
+    const auto &rect = static_cast<const Kernelization3D::Rectangle<Vector3D> &>(kernel);
+    KernelIO::writeKernel(writer, group + "/moveIndexing", rect.getMoveIndexing());
+    KernelIO::writeKernel(writer, group + "/scaleIndexing", rect.getScaleIndexing());
+}
+
+std::shared_ptr<Kernelization3D::IndexingKernel3D<Vector3D>> RectangleIOHandler::load(const HDF5Reader &reader, const std::string &group) const
+{
+    auto movePtr = KernelIO::readKernel(reader, group + "/moveIndexing");
+    auto scalePtr = KernelIO::readKernel(reader, group + "/scaleIndexing");
+    auto moveKernel = std::dynamic_pointer_cast<Kernelization3D::Move<Vector3D>>(movePtr);
+    auto scaleKernel = std::dynamic_pointer_cast<Kernelization3D::Scale<Vector3D>>(scalePtr);
+    Vector3D ll = moveKernel->getMoveVec();
+    Vector3D scaleVec = scaleKernel->getScale();
+    Vector3D ur = ll + scaleVec;
+    return std::make_shared<Kernelization3D::Rectangle<Vector3D>>(ll, ur);
+}
+
+namespace
+{
+    static bool reg = (KernelIO::registerHandler("Rectangle", std::make_unique<RectangleIOHandler>()), true);
+}

@@ -6,7 +6,7 @@
 #include <mpi.h>
 #include <vector>
 #include "3D/tessellation/Tessellation3D.hpp"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 
 /*!
 \brief Sends and revs data

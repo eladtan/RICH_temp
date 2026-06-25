@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include "source/3D/environment/kernels/Rectangle.hpp"
+#include <MeshDecomposer3D/kernels/Rectangle.hpp>
 #include "source/newtonian/three_dimensional/Dissipation.hpp"
 
 typedef std::array<double, 4> state_type;
@@ -197,7 +197,6 @@ namespace
 
 int main(int argc, char* argv[])
 {
-	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
@@ -205,6 +204,7 @@ int main(int argc, char* argv[])
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	if(argc < 3)
 		std::cout<<"Error, too few input arguments"<<std::endl;
 	std::string in_name(argv[1]);

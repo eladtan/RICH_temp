@@ -1,0 +1,6 @@
+mode mpi
+rounds 1
+target_points 2000000
+max_drift 2.1311337894402977e-08
+threshold 9.9999999999999995e-07
+pass 1

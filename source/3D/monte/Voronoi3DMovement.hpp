@@ -2,14 +2,14 @@
 #define MONTE_CARLO_VORONOI3D_MOVEMENT
 
 #include "3D/elementary/Vector3D.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "monte/MonteCarloParticle.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
-#include "ds/OctTree/OctTree.hpp"
+#include <spatial_ds/OctTree/OctTree.hpp>
 #include "utils/debug/SmartTimer.hpp"
 #include "MonteCarlo3D.hpp"
 #ifdef RICH_MPI
-    #include "mpi/serialize/mpi_commands.hpp"
+    #include "mpi/mpi_commands.hpp"
     #include "3D/range/finders/utils/RankedIndexedVector.hpp"
     #include "mpi/ExchangeChain.hpp"
 #else // RICH_MPI

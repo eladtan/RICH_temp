@@ -3,7 +3,7 @@
 
 #include "3D/elementary/Vector3D.hpp"
 #ifdef RICH_MPI
-    #include "mpi/serialize/Serializer.hpp"
+    #include <mpi_utils/serialize/Serializer.hpp>
 #endif // RICH_MPI
 
 struct RangeQueryData 

@@ -3,10 +3,10 @@
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
 #include <limits>
+#include <stack>
 #include <unordered_set>
 #include <unordered_map>
 #include "3D/tessellation/utils/PolyClip.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "misc/universal_error.hpp"
 #include "misc/utils.hpp"
 #include "newtonian/three_dimensional/SpatialReconstruction3D.hpp"

@@ -3,8 +3,8 @@
 #include <signal.h>
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
-#include "monte/manager/rdma_legacy/MonteCarloManager.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
+#include "monte/manager/parallel/MonteCarloManagerLegacy.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"

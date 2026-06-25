@@ -3,15 +3,15 @@
 
 #include "3D/range/finders/RangeFinder.hpp"
 #include "3D/range/finders/utils/IndexedVector.hpp"
-#include "3D/environment/EnvironmentAgent.h"
-#include "3D/environment/hilbert/HilbertTreeEnvAgent.hpp"
+#include <MeshDecomposer3D/environment/EnvironmentAgent.hpp>
+#include <MeshDecomposer3D/environment/hilbert/HilbertTreeEnvAgent.hpp>
 #ifdef RICH_MPI
     #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
     #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
     #include "utils/queryAgent/BuffersManagerQueryAgent.hpp"
-    #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
+    #include <MeshDecomposer3D/environment/hilbert/DistributedOctEnvAgent.hpp> 
     #include "SentPointsContainer.hpp"
-    #include "mpi/serialize/Serializer.hpp"
+    #include <mpi_utils/serialize/Serializer.hpp>
 #endif // RICH_MPI
 
 #include "RangeQueryData.h"
@@ -122,7 +122,7 @@ private:
             template<typename K, typename V>
             using _map = boost::container::flat_map<K, V>;
 
-            BigRangeTalkAgent(const std::shared_ptr<EnvironmentAgent> envAgent,         
+            BigRangeTalkAgent(const std::shared_ptr<EnvironmentAgent<Vector3D>> envAgent,         
                             #ifdef RICH_MPI
                                 const MPI_Comm &comm = MPI_COMM_WORLD
                             #endif // RICH_MPI
@@ -136,13 +136,13 @@ private:
                     this->size = 1;
                 #endif // RICH_MPI
 
-                const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent.get());
+                const DistributedOctEnvironmentAgent<Vector3D> *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent<Vector3D>*>(this->envAgent.get());
                 if(distribuedOctEnvAgent != nullptr)
                 {
                     this->supportsFurthestClosestRanks = true;
                     this->getFurthestClosestRanks = [distribuedOctEnvAgent](const Vector3D &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
                 }
-                const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(this->envAgent.get());
+                const HilbertTreeEnvironmentAgent<Vector3D> *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent<Vector3D>*>(this->envAgent.get());
                 if(hilbertTreeEnvAgent != nullptr)
                 {
                     this->supportsFurthestClosestRanks = true;
@@ -150,7 +150,7 @@ private:
                 }
             };
 
-            inline EnvironmentAgent::RanksSet getTalkList(const BigRangeQueryData &query) const override
+            inline EnvironmentAgent<Vector3D>::RanksSet getTalkList(const BigRangeQueryData &query) const override
             {
                 if(std::isnan(query.center.x) or std::isnan(query.center.y) or std::isnan(query.center.z))
                 {
@@ -160,7 +160,7 @@ private:
                 }
                 
                 // std::cout << "rank " << this->rank << " calculates the talk list of query " << query << std::endl;
-                EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
+                EnvironmentAgent<Vector3D>::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
                 if(intersectingRanks.empty())
                 {
                     throw UniversalError("In range talk agent, should not reach here: the intersecting ranks list should at least contain the rank itself");
@@ -193,7 +193,7 @@ private:
                     this->resultCache.insert({query.pointIdx, this->getFurthestClosestRanks(query.originalPoint)});
                     it = this->resultCache.find(query.pointIdx); // todo: can use previous line
                 }
-                HilbertCurveEnvironmentAgent::DistancesVector &distances = (*it).second;
+                HilbertCurveEnvironmentAgent<Vector3D>::DistancesVector &distances = (*it).second;
                 
                 // get the closest rank
                 double minDist = std::numeric_limits<double>::max();
@@ -223,7 +223,7 @@ private:
                 double closestDistThreshold = distances[minDistRank].second;
 
                 // return all the ranks which their closest point to us is in distance of at most `closestDistThreshold`
-                EnvironmentAgent::RanksSet result;
+                EnvironmentAgent<Vector3D>::RanksSet result;
                 for(const int &_rank : intersectingRanks)
                 {
                     if(distances[_rank].first <= (closestDistThreshold * (1 + EPSILON)))
@@ -246,12 +246,12 @@ private:
             }
 
         private:
-            const std::shared_ptr<EnvironmentAgent> envAgent;
+            const std::shared_ptr<EnvironmentAgent<Vector3D>> envAgent;
             mutable _map<size_t, std::vector<std::pair<double, double>>> resultCache;
             int rank, size;
             bool supportsFurthestClosestRanks;
             #ifdef RICH_MPI
-                std::function<HilbertCurveEnvironmentAgent::DistancesVector(const Vector3D&)> getFurthestClosestRanks;
+                std::function<HilbertCurveEnvironmentAgent<Vector3D>::DistancesVector(const Vector3D&)> getFurthestClosestRanks;
             #endif // RICH_MPI
         };
     #endif // RICH_MPI
@@ -262,7 +262,7 @@ public:
     using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
-        BigRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
+        BigRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent<Vector3D>> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     #else // RICH_MPI
         BigRangeAgent(const RangeFinder *rangeFinder)
     #endif // RICH_MPI

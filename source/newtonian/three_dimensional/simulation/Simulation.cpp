@@ -3,7 +3,10 @@
 #include "misc/memory_debug.hpp"
 
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
-     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0), currentBox(tess_.GetBoxCoordinates())
+     tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
+#ifdef RICH_MPI
+     , currentBox(tess_.GetBoxCoordinates())
+#endif
 {
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
@@ -163,6 +166,7 @@ void Simulation::step(void)
         std::string name = physics->getName();
         if(this->rank == 0) std::cout << "Running physics: " << name << std::endl;
 
+        bool didRebalance = false;
         #ifdef RICH_MPI
             // if(this->tracker.getCycle() == this->lastRebalanceCycle + 2)
             // {
@@ -195,7 +199,6 @@ void Simulation::step(void)
 
             bool forceRebalance = this->forceRebalanceSteps > 0 && this->tracker.getCycle() < this->forceRebalanceSteps;
             double rebalanceTime = 0;
-            bool didRebalance = false;
 
             if(physics->allowRebalance() || forceRebalance)
             {
@@ -234,7 +237,7 @@ void Simulation::step(void)
                 }
             }
 
-            std::shared_ptr<LoadBalancer> load = this->tess.GetLoadBalancer();
+            std::shared_ptr<LoadBalancer<Vector3D>> load = this->tess.GetLoadBalancer();
             this->loads[LB] = load;
             this->currentLoad = load;
             this->currentLB = LB;
@@ -325,7 +328,7 @@ void Simulation::step(void)
 }
 
 #ifdef RICH_MPI
-void Simulation::storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer> lb)
+void Simulation::storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer<Vector3D>> lb)
 {
     this->loads[name] = lb;
 }
@@ -366,7 +369,7 @@ void Simulation::setCurrentLoadBalance(const std::string &name)
         this->buildDataTransfer();
     }
 
-    std::shared_ptr<LoadBalancer> load = this->tess.GetLoadBalancer();
+    std::shared_ptr<LoadBalancer<Vector3D>> load = this->tess.GetLoadBalancer();
     this->loads[name] = load;
     this->currentLoad = load;
     this->currentLB = name;
@@ -378,8 +381,8 @@ void Simulation::setCurrentLoadBalance(const std::string &name)
     }
 }
 
-std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>> Simulation::GetLoads(void) const
+std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer<Vector3D>>>> Simulation::GetLoads(void) const
 {
-    return std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>>(this->loads.begin(), this->loads.end());
+    return std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer<Vector3D>>>>(this->loads.begin(), this->loads.end());
 }
 #endif // RICH_MPI

@@ -1,10 +1,11 @@
+#include <cassert>
 #include "Voronoi3DMovement.hpp"
 #include "3D/elementary/Vector3D.hpp"
-#include "3D/environment/EnvironmentAgent.h"
-#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
-#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
+#include <MeshDecomposer3D/environment/EnvironmentAgent.hpp>
+#include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
+#include <MeshDecomposer3D/load_balancing/LoadBalancer.hpp>
 #include "misc/universal_error.hpp"
-#include "mpi/serialize/mpi_commands.hpp"
+#include "mpi/mpi_commands.hpp"
 #include <bits/chrono.h>
 
 #define RADIUSES_FACTOR 2
@@ -351,7 +352,7 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
 
     // MPI_Distribute(particles, MPI_COMM_WORLD);
 
-    const std::shared_ptr<EnvironmentAgent> &envAgent = tess.GetEnvironmentAgent();
+    const std::shared_ptr<EnvironmentAgent<Vector3D>> &envAgent = tess.GetEnvironmentAgent();
     std::vector<Particle3D> newParticles;
     std::vector<Serializer> senders(size);
 
@@ -370,8 +371,8 @@ void FirstInaccurateMovements(const Tessellation3D &tess, std::vector<Particle3D
             sentCounter++;
             // if(sentCounter <= 10)
             // {
-            //     const std::shared_ptr<LoadBalancer> lb = tess.GetLoadBalancer();
-            //     const HilbertLoadBalancer *hlb = dynamic_cast<const HilbertLoadBalancer*>(lb.get());
+            //     const std::shared_ptr<LoadBalancer<Vector3D>> lb = tess.GetLoadBalancer();
+            //     const HilbertLoadBalancer<Vector3D> *hlb = dynamic_cast<const HilbertLoadBalancer<Vector3D>*>(lb.get());
             //     size_t b1 = (approxOwner == 0)? 0 : hlb->boundaries[std::min(approxOwner - 1, size - 1)];
             //     size_t b2 = hlb->boundaries[std::min(approxOwner, size - 1)];
             //     Vector3D b1_xyz = hlb->convertor->d2xyz(b1);

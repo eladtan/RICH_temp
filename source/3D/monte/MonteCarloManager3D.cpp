@@ -1,3 +1,4 @@
+#include <cassert>
 #include "MonteCarloManager3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 

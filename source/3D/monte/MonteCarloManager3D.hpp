@@ -3,7 +3,7 @@
 
 #ifdef RICH_MPI
 #include "monte/manager/rdma_legacy/MonteCarloManager.hpp"
-#include "monte/manager/rdma/RDMAMonteCarloManager.hpp"
+#include "monte/manager/parallel/RDMAMonteCarloManager.hpp"
 #include "monte/manager/two_sided/TwoSidedMonteCarloManager.hpp"
 #endif // RICH_MPI
 #include "monte/manager/serial/MonteCarloManagerSerial.hpp"

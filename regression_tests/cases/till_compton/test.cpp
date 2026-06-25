@@ -84,12 +84,12 @@ Case get_case(std::string_view const case_num_sv) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
   int rank = 0;
 #ifdef RICH_MPI
   MPI_Init(NULL, NULL);
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
+  feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 
   std::size_t const G = ENERGY_GROUPS_NUM;
 

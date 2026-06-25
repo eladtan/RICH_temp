@@ -11,7 +11,7 @@
 #include <cmath>
 #include "../../../misc/universal_error.hpp"
 #include "../GhostPointGenerator.hpp"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 
 //! \brief Linear gauss interpolation
 class LinearGaussImproved : public SpatialReconstruction

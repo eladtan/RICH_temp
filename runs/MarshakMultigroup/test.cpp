@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
@@ -174,7 +174,6 @@ class STAMGopacity: public OpacityCalculator
 
 int main(void)
 {
-	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
@@ -182,6 +181,7 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	
 	std::size_t const G = ENERGY_GROUPS_NUM;
 	std::vector<double> energy_groups_center(G);

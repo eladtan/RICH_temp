@@ -32,7 +32,7 @@ private:
     GravityTree<Vector3D> *gravityTree;
     std::vector<std::vector<GravityNodeData>> boundingBoxesOfRanks;
     mutable std::vector<boost::container::flat_set<int>> relevantRanksByDepths; // used in the recursion. in the i`th vector, saves the relevant ranks for level i in the tree. 
-    mutable EnvironmentAgent::RanksSet tempRanks;
+    mutable EnvironmentAgent<Vector3D>::RanksSet tempRanks;
     const GravityTree<Vector3D>::Node *realRootOfGravityTree;
 
     std::vector<std::vector<GravityNodeData>> calculateBoundingBoxesOfRanks(const Tessellation3D &tess) const;

@@ -9,7 +9,7 @@
 #endif // TIMING
 
 #ifdef RICH_MPI
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 #endif // RICH_MPI
 
 template<typename QueryData>

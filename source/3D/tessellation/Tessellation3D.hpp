@@ -6,15 +6,18 @@
 #ifndef TESSELLATION3D_HPP
 #define TESSELLATION3D_HPP 1
 
+#include <cassert>
 #include <chrono>
 #include <algorithm>
 #include <numeric>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
-#include "3D/environment/EnvironmentAgent.h"
-#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
+#ifdef RICH_MPI
+#include <MeshDecomposer3D/environment/EnvironmentAgent.hpp>
+#include <MeshDecomposer3D/load_balancing/LoadBalancer.hpp>
 #include "mpi/mpi_exchange_commands.hpp"
+#endif // RICH_MPI
 
 //! \brief Container for points defining a face
 typedef boost::container::small_vector<size_t, 24> face_vec;
@@ -56,9 +59,9 @@ public:
 
   virtual void SetImbalanceTolerance(double tolerance) = 0;
 
-  virtual void SetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
+  virtual void SetLoadBalancer(std::shared_ptr<LoadBalancer<Vector3D>> loadBalancer) = 0;
 
-  virtual void PresetLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer) = 0;
+  virtual void PresetLoadBalancer(std::shared_ptr<LoadBalancer<Vector3D>> loadBalancer) = 0;
 
   virtual void Rebalance(const std::vector<double> &weights) = 0;
 
@@ -66,9 +69,9 @@ public:
 
   virtual bool ShouldRebalance(void) const = 0;
 
-  virtual std::shared_ptr<LoadBalancer> GetLoadBalancer(void) = 0;
+  virtual std::shared_ptr<LoadBalancer<Vector3D>> GetLoadBalancer(void) = 0;
 
-  virtual const std::shared_ptr<LoadBalancer> GetLoadBalancer(void) const = 0;
+  virtual const std::shared_ptr<LoadBalancer<Vector3D>> GetLoadBalancer(void) const = 0;
 
   virtual void BuildPartiallyParallel(const std::vector<Vector3D> &allPoints, const std::vector<double> &allWeights, const std::vector<size_t> &indicesToBuild, bool suppressRebalancing = false, bool suppressExchange = false) = 0;
 
@@ -93,7 +96,7 @@ public:
 
   virtual const std::vector<double> &GetPointsBuildWeights() const = 0;
   
-  virtual const std::shared_ptr<EnvironmentAgent> GetEnvironmentAgent() const = 0;
+  virtual const std::shared_ptr<EnvironmentAgent<Vector3D>> GetEnvironmentAgent() const = 0;
 
   virtual void PreparePoints(const std::vector<Vector3D> &points, const std::vector<size_t> &mask) = 0;
 

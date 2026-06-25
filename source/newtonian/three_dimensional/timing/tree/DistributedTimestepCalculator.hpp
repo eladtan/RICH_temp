@@ -5,7 +5,7 @@
 
 #include <mpi.h>
 #include "mpi/mpi_commands.hpp"
-#include "ds/DistributedOctTree/DistributedOctTree.hpp"
+#include <spatial_ds/DistributedOctTree/DistributedOctTree.hpp>
 #include "TimeRequestData.hpp"
 
 #define TIME_POINTS_REQUEST_TAG 606

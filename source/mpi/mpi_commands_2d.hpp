@@ -7,7 +7,7 @@
 #include <vector>
 #include "newtonian/two_dimensional/extensive.hpp"
 #include "tessellation/tessellation.hpp"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 
 /*!
 \brief Sends and revs data

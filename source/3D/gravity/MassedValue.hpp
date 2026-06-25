@@ -3,7 +3,7 @@
 
 #include <array>
 #include "GravityTypes.h"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 
 template<typename T>
 struct MassedValue 

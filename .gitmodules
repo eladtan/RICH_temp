@@ -10,3 +10,22 @@
 [submodule "source/utils/rma"]
 	path = source/utils/rma
 	url = git@github.com:maormizrachi/EasyRMA.git
+[submodule "source/utils/mpi_utils"]
+	path = source/utils/mpi_utils
+	url = git@github.com:maormizrachi/mpi_utils.git
+[submodule "source/utils/spatial_ds"]
+	path = source/utils/spatial_ds
+	url = git@github.com:maormizrachi/spatial_ds.git
+[submodule "source/3D/tessellation/MeshDecomposer3D"]
+	path = source/3D/tessellation/MeshDecomposer3D
+	url = git@github.com:maormizrachi/MeshDecomposer3D.git
+[submodule "source/3D/tessellation/voronoi"]
+	path = source/3D/tessellation/voronoi
+	url = git@github.com:maormizrachi/MadVoro.git
+	branch = cmake
+[submodule "source/3D/tessellation/cartesian"]
+	path = source/3D/tessellation/cartesian
+	url = git@github.com:maormizrachi/MadCart.git
+[submodule "source/monte"]
+	path = source/monte
+	url = git@github.com:maormizrachi/STORM.git

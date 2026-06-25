@@ -5,12 +5,13 @@
 #include <vector>
 #include <string>
 #include <cmath>
+#include <limits>
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
 #include "mpi/mpi_commands.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "3D/GeometryCommon/RoundGrid3D.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "newtonian/common/MixedEos.hpp"
 #include "newtonian/common/ideal_gas.hpp"
@@ -24,6 +25,7 @@
 #include "monte/population/Comb.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "3D/monte/Voronoi3DMovement.hpp"
+#include "utils/arguments/ArgumentParser.hpp"
 #include "CrookedPipeBoundary.hpp"
 #include "CrookedPipeOpacity.hpp"
 
@@ -173,59 +175,57 @@ int main(int argc, char *argv[])
 
     try
     {
-        if(argc != 3 and argc != 4 and argc != 5 and argc != 6)
+        ArgumentParser arguments("Crooked pipe Monte Carlo benchmark");
+        arguments.addPositional<size_t>("points", "number of background mesh points").required();
+        arguments.addPositional<size_t>("particles_per_cell", "population-control photon cap per cell").required();
+        arguments.addOption<std::string>("output", "", "output directory");
+        arguments.addOption<size_t>("iterations", std::numeric_limits<size_t>::max(), "maximum number of cycles");
+        arguments.addOption<bool>("random-walk", false, "enable random walk acceleration")
+            .flagAlias("rw", true)
+            .flagAlias("no-rw", false);
+        arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
+            .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
+            .flagAlias("new-rdma", "new-rdma-auto")
+            .flagAlias("rdma", "new-rdma-auto")
+            .flagAlias("new-ibv", "new-rdma-ibv")
+            .flagAlias("new_ibv", "new-rdma-ibv")
+            .flagAlias("ibv", "new-rdma-ibv")
+            .flagAlias("p2p", "p2p");
+
+        try
         {
-            std::cerr << "Usage: " << argv[0] << " <number of points> <particles per cell> [output? = 1] [RDMA/P2P/NEW_RDMA/NEW_IBV_RDMA] [iterations]" << std::endl;
+            if(!arguments.parse(argc, argv))
+            {
+                if(rank == 0)
+                    std::cout << arguments.help() << std::endl;
+                MPI_Finalize();
+                return 0;
+            }
+        }
+        catch(const std::exception &e)
+        {
+            if(rank == 0)
+            {
+                std::cerr << e.what() << std::endl;
+                std::cerr << arguments.help() << std::endl;
+            }
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
 
-        std::string outputDir;
-        do_output = false;
-        bool useP2P = false;
-        bool useIBV = false;
-        bool withRandomWalk = false;
-        size_t iterations = std::numeric_limits<size_t>::max();
-
-        for(int a = 3; a < argc; a++)
-        {
-            std::string arg(argv[a]);
-            if(arg == "--output" and a + 1 < argc)
-            {
-                outputDir = argv[++a];
-                do_output = true;
-            }
-            else if(arg == "--p2p")
-                useP2P = true;
-            else if(arg == "--ibv")
-                useIBV = true;
-            else if(arg == "--rw")
-                withRandomWalk = true;
-            else if(arg == "--iterations" and a + 1 < argc)
-                iterations = std::stoul(argv[++a]);
-            else
-            {
-                if(rank == 0)
-                    std::cerr << "Unknown argument: " << arg << std::endl;
-                MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-        }
+        size_t N = arguments.get<size_t>("points");
+        size_t particlesPerCell = arguments.get<size_t>("particles_per_cell");
+        std::string outputDir = arguments.get<std::string>("output");
+        do_output = arguments.wasSet("output");
+        bool withRandomWalk = arguments.get<bool>("random-walk");
+        size_t iterations = arguments.get<size_t>("iterations");
+        std::string managerName = arguments.get<std::string>("manager");
 
         #ifdef RICH_MPI
-        RadiationMCStep::ManagerType managerType;
-        if(useP2P)
-            managerType = RadiationMCStep::ManagerType::P2P;
-        }
-        else if(managerTypeStr == "NEW_RDMA")
-        {
-            managerType = RadiationMCStep::ManagerType::NEW_RDMA;
-        }
-        else if(managerTypeStr == "NEW_IBV_RDMA" or managerTypeStr == "NEW_IBV")
-        {
-            managerType = RadiationMCStep::ManagerType::P2P;
-        }
-    }
-    #endif // RICH_MPI
-    size_t iterations = (argc >= 6) ? std::stoul(argv[5]) : std::numeric_limits<size_t>::max();
+        RadiationMCStep::ManagerType managerType =
+            managerName == "p2p" ? RadiationMCStep::ManagerType::P2P :
+            managerName == "new-rdma-ibv" ? RadiationMCStep::ManagerType::NEW_IBV_RDMA :
+            RadiationMCStep::ManagerType::NEW_RDMA;
+        #endif // RICH_MPI
 
         Vector3D ll(0, -2, -2), ur(7, 2, 2);
 
@@ -302,6 +302,16 @@ int main(int argc, char *argv[])
         if(rank == 0 and do_output)
         {
             fs::create_directories(prefix);
+        }
+        if(rank == 0)
+        {
+            std::cout << "Crooked pipe benchmark:"
+                      << " points=" << N
+                      << ", particles/cell=" << particlesPerCell
+                      << ", random_walk=" << withRandomWalk
+                      << ", manager=" << managerName
+                      << ", iterations=" << iterations
+                      << std::endl;
         }
         MPI_Barrier(MPI_COMM_WORLD);
 

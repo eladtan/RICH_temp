@@ -7,7 +7,7 @@
 #include "computational_cell.hpp"
 #ifdef RICH_MPI
 	#include <mpi.h>
-	#include "mpi/serialize/Serializer.hpp"
+	#include <mpi_utils/serialize/Serializer.hpp>
 #endif // RICH_MPI
 
 //! \brief Conserved variables for a 3D computational cell

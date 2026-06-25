@@ -1,6 +1,7 @@
 #ifndef BUFFERS_MANAGER_HPP
 #define BUFFERS_MANAGER_HPP
 
+#include <cassert>
 #include "misc/universal_error.hpp"
 #include <limits>
 #ifdef RICH_MPI
@@ -10,7 +11,7 @@
 #include <functional>
 #include <boost/container/flat_map.hpp>
 #include "mpi/mpi_commands.hpp"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 
 template<typename T>
 class BuffersManager

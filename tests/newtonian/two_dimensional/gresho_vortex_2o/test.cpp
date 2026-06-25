@@ -24,8 +24,8 @@
 #include "source/newtonian/two_dimensional/interpolations/LinearGaussImproved.hpp"
 #include "source/newtonian/two_dimensional/stationary_box.hpp"
 #ifdef RICH_MPI
-  #include "mpi/serialize/Serializer.hpp"
-  #include "mpi/serialize/mpi_commands.hpp"
+  #include "serialize/Serializer.hpp"
+  #include "mpi_commands.hpp"
 #endif // RICH_MPI
 
 using namespace std;

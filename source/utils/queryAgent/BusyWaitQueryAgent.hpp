@@ -18,7 +18,7 @@
 #endif // TIMING
 
 #include "QueryAgent.hpp"
-#include "mpi/serialize/Serializer.hpp"
+#include <mpi_utils/serialize/Serializer.hpp>
 #include "misc/universal_error.hpp"
 
 #define TAG_REQUEST 200

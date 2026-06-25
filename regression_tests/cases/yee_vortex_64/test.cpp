@@ -24,7 +24,7 @@
 #include <string.h>
 
 #ifdef RICH_MPI
-#include "source/mpi/serialize/mpi_commands.hpp"
+#include "mpi/mpi_commands.hpp"
 #endif
 
 namespace {
@@ -82,8 +82,6 @@ private:
 
 int main(void)
 {
-    feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
-
     int rank = 0;
     int nprocs = 1;
 #ifdef RICH_MPI
@@ -91,6 +89,7 @@ int main(void)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 #endif
+    feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 
     IdealGas eos(GAMMA);
 

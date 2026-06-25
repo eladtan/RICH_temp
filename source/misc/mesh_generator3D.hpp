@@ -10,7 +10,7 @@
 #endif // _MSC_VER
 #include <vector>
 #include <cmath>
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include <algorithm>
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>

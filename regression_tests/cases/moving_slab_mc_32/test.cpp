@@ -645,7 +645,7 @@ int main(int argc, char *argv[])
             double new_ll_x = v_slab * t_new;
             Vector3D newLL(new_ll_x, -cellHalfYZ, -cellHalfYZ);
 #ifdef RICH_MPI
-            std::shared_ptr<LoadBalancer> savedLB = nullptr;
+            std::shared_ptr<LoadBalancer<Vector3D>> savedLB = nullptr;
             if (worldSize > 1)
             {
                 savedLB = tess.GetLoadBalancer();

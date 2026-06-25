@@ -6,7 +6,7 @@
     #include <mpi.h>
 #endif // RICH_MPI
 
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 
 void checkNearestNeighbor(const Vector3D &center, double radius, const Vector3D &point, std::vector<Vector3D> &points, const Vector3D &ll, const Vector3D &ur)
 {

@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
@@ -36,7 +36,6 @@ namespace fs = std::filesystem;
 
 int main(void)
 {
-	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
@@ -44,6 +43,7 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	std::string eos_location("/home/itamarg/workspace/RICH/data/EOS/");
 	std::string STA_location("/home/itamarg/workspace/RICH/data/STA/");
 

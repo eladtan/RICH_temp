@@ -9,8 +9,8 @@
 #include "../timesteps.h"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
-#include "ds/OctTree/OctTree.hpp"
-#include "ds/utils/raw_type.h"
+#include <spatial_ds/OctTree/OctTree.hpp>
+#include <spatial_ds/utils/raw_type.h>
 
 #define MAX_ID_OF_CELL 1e15
 

@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
@@ -87,9 +87,6 @@ std::vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, 
 
 int main(void)
 {
-	// Enable floating-point exceptions for division by zero, invalid operations, and overflow
-feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
-
 // Initialize rank of the current process in a parallel computing environment
 int rank = 0;
 
@@ -107,6 +104,9 @@ int ws = 1;
     // Retrieve the size of the current process in the MPI environment
     MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+
+	// Enable floating-point exceptions for division by zero, invalid operations, and overflow
+feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 
 // Constants for the central object's radius, mass, and gravitational constant
 double const R = 7e10;

@@ -3,9 +3,9 @@
 
 #include <iostream>
 #include "3D/elementary/Vector3D.hpp"
-#include "3D/hilbert/hilbertTypes.h"
+#include <MeshDecomposer3D/hilbert/hilbertTypes.h>
 #ifdef RICH_MPI
-    #include "mpi/serialize/Serializer.hpp"
+    #include <mpi_utils/serialize/Serializer.hpp>
 #endif // RICH_MPI
 
 #define ILLEGAL_IDX std::numeric_limits<size_t>::max()

@@ -3,7 +3,7 @@
 \author Elad Steinberg
 */
 
-#include "3D/hilbert/HilbertOrder3D.hpp"
+#include <MeshDecomposer3D/hilbert/HilbertOrder3D.hpp>
 #include "3D/tessellation/Tessellation3D.hpp"
 
 #ifndef HILBERTPROC_HPP

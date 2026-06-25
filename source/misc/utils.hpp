@@ -6,10 +6,10 @@
 #ifndef UTILS_HPP
 #define UTILS_HPP 1
 
+#include <cassert>
 #include <vector>
 #include <algorithm>
 #include "universal_error.hpp"
-#include <cassert>
 #include <iostream>
 #include "boost/container/flat_map.hpp"
 #include <limits>

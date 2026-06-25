@@ -11,13 +11,13 @@
 
 #ifdef RICH_MPI
     #include <mpi.h>
-    #include "3D/tessellation/loadBalancing/io/HilbertLoadBalancerIOHandler.hpp"
-    #include "3D/tessellation/loadBalancing/io/LoadBalancerIOHandlerFactory.hpp"
-    #include "3D/tessellation/voronoi/Voronoi3D.hpp"
-    #include "3D/tessellation/voronoi/pointsManager/io/HilbertPointsManagerIOHandler.hpp"
-    #include "3D/tessellation/voronoi/pointsManager/io/PointsManagerIOHandlerFactory.hpp"
-    #include "3D/hilbert/io/RectangularConvertorIOHandler.hpp"
-    #include "3D/hilbert/io/ConvertorIOHandlerFactory.hpp"
+    #include "3D/tessellation/io/load_balancing/HilbertLoadBalancerIOHandler.hpp"
+    #include "3D/tessellation/io/load_balancing/LoadBalancerIOHandlerFactory.hpp"
+    #include "3D/tessellation/Voronoi3D.hpp"
+    #include "3D/tessellation/io/points_manager/HilbertPointsManagerIOHandler.hpp"
+    #include "3D/tessellation/io/points_manager/PointsManagerIOHandlerFactory.hpp"
+    #include "3D/tessellation/io/hilbert/RectangularConvertorIOHandler.hpp"
+    #include "3D/tessellation/io/hilbert/ConvertorIOHandlerFactory.hpp"
 #endif
 
 namespace fs = std::filesystem;

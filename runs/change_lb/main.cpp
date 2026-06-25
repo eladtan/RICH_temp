@@ -1,5 +1,5 @@
-#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "utils/printing/print.hpp"
 #include "3D/output/write3D.hpp"
@@ -57,8 +57,8 @@ int main(int argc, char *argv[])
 
     WriteVoronoiParallel(tess, "voronoi_old.h5");
 
-    std::shared_ptr<LoadBalancer> loadBalancer = tess.GetLoadBalancer();
-    HilbertLoadBalancer *plb = dynamic_cast<HilbertLoadBalancer*>(loadBalancer.get());
+    std::shared_ptr<LoadBalancer<Vector3D>> loadBalancer = tess.GetLoadBalancer();
+    HilbertLoadBalancer<Vector3D> *plb = dynamic_cast<HilbertLoadBalancer<Vector3D>*>(loadBalancer.get());
     if(plb == nullptr)
     {
         throw UniversalError("LoadBalancer is not a HilbertLoadBalancer");

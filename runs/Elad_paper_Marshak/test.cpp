@@ -5,7 +5,7 @@
 #include <vector>
 #include <string>
 #include "mpi/mpi_commands.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
@@ -20,6 +20,7 @@
 #include "monte/population/Comb.hpp"
 #include "monte/boundary/SideTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
+#include "utils/arguments/ArgumentParser.hpp"
 
 // Diffusion includes
 #include "Radiation/Diffusion.hpp"
@@ -58,28 +59,57 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ws);
 
-    if(rank == 0 && argc < 2)
-    {
-        std::cerr << "Usage: " << argv[0]
-                  << " <Nx> [output_prefix] [Ny=1] [Nz=1] [mode=mc|diffusion|diffusion-fl]"
-                  << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-
   try
   {
-    size_t Nx = std::stoul(argv[1]);
-    std::string prefix = (argc >= 3) ? argv[2] : "marshak";
-    size_t Ny = (argc >= 4) ? std::stoul(argv[3]) : 1;
-    size_t Nz = (argc >= 5) ? std::stoul(argv[4]) : 1;
-    std::string mode = (argc >= 6) ? argv[5] : "mc";
+    ArgumentParser arguments("Marshak wave benchmark");
+    arguments.addPositional<size_t>("Nx", "number of cells along x").required();
+    arguments.addPositional<std::string>("prefix", "marshak", "output prefix");
+    arguments.addPositional<size_t>("Ny", 1, "number of cells along y");
+    arguments.addPositional<size_t>("Nz", 1, "number of cells along z");
+    arguments.addPositional<std::string>("mode", "mc", "solver mode")
+        .choices({"mc", "diffusion", "diffusion-fl"});
+    arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
+        .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
+        .flagAlias("new-rdma", "new-rdma-auto")
+        .flagAlias("rdma", "new-rdma-auto")
+        .flagAlias("new-ibv", "new-rdma-ibv")
+        .flagAlias("new_ibv", "new-rdma-ibv")
+        .flagAlias("ibv", "new-rdma-ibv")
+        .flagAlias("p2p", "p2p");
 
-    if(mode != "mc" && mode != "diffusion" && mode != "diffusion-fl")
+    try
+    {
+        if(!arguments.parse(argc, argv))
+        {
+            if(rank == 0)
+                std::cout << arguments.help() << std::endl;
+            MPI_Finalize();
+            return 0;
+        }
+    }
+    catch(const std::exception &e)
     {
         if(rank == 0)
-            std::cerr << "Unknown mode '" << mode << "'. Use: mc, diffusion, diffusion-fl" << std::endl;
+        {
+            std::cerr << e.what() << std::endl;
+            std::cerr << arguments.help() << std::endl;
+        }
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
+
+    size_t Nx = arguments.get<size_t>("Nx");
+    std::string prefix = arguments.get<std::string>("prefix");
+    size_t Ny = arguments.get<size_t>("Ny");
+    size_t Nz = arguments.get<size_t>("Nz");
+    std::string mode = arguments.get<std::string>("mode");
+    std::string managerName = arguments.get<std::string>("manager");
+
+    #ifdef RICH_MPI
+        RadiationMCStep::ManagerType managerType =
+            managerName == "p2p" ? RadiationMCStep::ManagerType::P2P :
+            managerName == "new-rdma-ibv" ? RadiationMCStep::ManagerType::NEW_IBV_RDMA :
+            RadiationMCStep::ManagerType::NEW_RDMA;
+    #endif
 
     // --- Physical parameters (exactly as in the paper, Section 4.1) ---
     constexpr double domainLength = 4.0;
@@ -158,17 +188,21 @@ int main(int argc, char *argv[])
             std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
                 tess, cells, T_boundary, boundaryPhotonsPerCell, withHydro);
 
+        RadiationIMCParameters radiationIMCParameters = {
+            .newPhotonsPerCell = newPhotonsPerCell,
+            .withHydro = withHydro
+        };
         std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
-            tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, newPhotonsPerCell, withHydro);
+            tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
         std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
             std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, particlesPerCell);
 
         std::vector<Particle3D> initialParticles;
-        bool withRDMA = true;
+        constexpr size_t initialParticlesPerCell = 0;
         auto mcStep = std::make_shared<RadiationMCStep>(
-            tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, false
+            tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, initialParticlesPerCell, withHydro
             #ifdef RICH_MPI
-                , withRDMA
+                , managerType
             #endif
         );
         sim.addPhysics(mcStep);
@@ -177,7 +211,8 @@ int main(int argc, char *argv[])
         {
             std::cout << "Mode: Monte Carlo (IMC)"
                       << ", new photons/cell=" << newPhotonsPerCell
-                      << ", max photons/cell=" << particlesPerCell << std::endl;
+                      << ", max photons/cell=" << particlesPerCell
+                      << ", manager=" << managerName << std::endl;
         }
     }
     else

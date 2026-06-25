@@ -13,7 +13,7 @@
 #include "mpi/mpi_commands.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "3D/GeometryCommon/RoundGrid3D.hpp"
-#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
 #include "newtonian/common/equation_of_state.hpp"
 #include "newtonian/common/ideal_gas.hpp"
@@ -25,8 +25,8 @@
 #include "3D/output/write3D.hpp"
 #include "3D/output/read3D.hpp"
 #include "3D/output/MC/read_write_particles.hpp"
-#include "3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
-#include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
+#include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
+#include <MeshDecomposer3D/load_balancing/CurveLoadBalancer.hpp>
 #include  "utils/debug/cleanNode.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "monte/population/Comb.hpp"

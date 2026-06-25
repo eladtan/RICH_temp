@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <string>
 #include "3D/elementary/Vector3D.hpp"
-#include "3D/hilbert/hilbertTypes.h"
+#include <MeshDecomposer3D/hilbert/hilbertTypes.h>
 
 std::vector<Vector3D> readFromFile(const std::string &fileName);
 

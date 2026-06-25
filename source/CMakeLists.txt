@@ -51,6 +51,38 @@ endif()
 file(GLOB_RECURSE SRC FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/*.c")
 file(GLOB_RECURSE TEST_SRC FOLLOW_SYMLINKS "${TEST_SOURCE_DIR}/*.cpp" "${TEST_SOURCE_DIR}/*.c")
 
+# Exclude MadVoro submodule directories not used by RICH
+set(MADVORO_DIR "${PROJECT_SOURCE_DIR}/3D/tessellation/voronoi")
+file(GLOB_RECURSE MADVORO_EXCLUDE
+    "${MADVORO_DIR}/examples/*.cpp"
+    "${MADVORO_DIR}/exception/*.cpp"
+    "${MADVORO_DIR}/io/*.cpp"
+)
+list(LENGTH MADVORO_EXCLUDE _n)
+if(_n GREATER 0)
+    list(REMOVE_ITEM SRC ${MADVORO_EXCLUDE})
+endif()
+
+# Exclude MadCart submodule directories not used by RICH
+set(MADCART_DIR "${PROJECT_SOURCE_DIR}/3D/tessellation/cartesian")
+file(GLOB_RECURSE MADCART_EXCLUDE
+    "${MADCART_DIR}/examples/*.cpp"
+)
+list(LENGTH MADCART_EXCLUDE _mc_n)
+if(_mc_n GREATER 0)
+    list(REMOVE_ITEM SRC ${MADCART_EXCLUDE})
+endif()
+
+# Exclude STORM submodule directories not used by RICH
+set(STORM_DIR "${PROJECT_SOURCE_DIR}/monte")
+file(GLOB_RECURSE STORM_EXCLUDE
+    "${STORM_DIR}/examples/*.cpp"
+)
+list(LENGTH STORM_EXCLUDE _storm_n)
+if(_storm_n GREATER 0)
+    list(REMOVE_ITEM SRC ${STORM_EXCLUDE})
+endif()
+
 include(${CMAKE_SOURCE_DIR}/../config/find_HDF5.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_VTK.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_JSON.cmake)
@@ -145,6 +177,8 @@ endif()
 
 include_directories(${PROJECT_SOURCE_DIR})
 include_directories("${PROJECT_SOURCE_DIR}/..") # TODO: REMOVE!
+include_directories("${PROJECT_SOURCE_DIR}/utils")
+include_directories("${PROJECT_SOURCE_DIR}/3D/tessellation")
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 

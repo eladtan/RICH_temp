@@ -1,11 +1,12 @@
 #ifndef MPI_PARTICLE3D_DTYPE_HPP
 #define MPI_PARTICLE3D_DTYPE_HPP
 
+#include <cassert>
+
 #ifdef RICH_MPI
 
-#include <cassert>
 #include <mpi.h>
-#include "mpi/MPI_complex_dtype.hpp"
+#include <mpi_utils/MPI_complex_dtype.hpp>
 
 template<>
 struct MPI_has_complex_dtype<Particle3D> : std::true_type
@@ -22,14 +23,14 @@ private:
         Particle3D dummy{};
 
         constexpr int base_count = 13;
-        #ifdef MONTECARLO_DEBUG
+        #ifdef STORM_DEBUG
         constexpr int debug_count = 10;
         #else
         constexpr int debug_count = 0;
         #endif
-        #ifdef MC_TRACING_HISTORY
+        #ifdef STORM_WITH_TRACING_HISTORY
         constexpr int history_per_entry = 9;
-        constexpr int history_count = MC_TRACING_HISTORY * history_per_entry + 2;
+        constexpr int history_count = STORM_WITH_TRACING_HISTORY * history_per_entry + 2;
         #else
         constexpr int history_count = 0;
         #endif
@@ -66,7 +67,7 @@ private:
         add_field(dummy.on_track, MPI_CXX_BOOL);
         add_field(dummy.sent, MPI_CXX_BOOL);
 
-        #ifdef MONTECARLO_DEBUG
+        #ifdef STORM_DEBUG
         add_field(dummy.checkedHere, MPI_CXX_BOOL);
         add_field(dummy.ghostIndex, MPI_UNSIGNED_LONG_LONG);
         add_field(dummy.newCellValue.x, MPI_DOUBLE, 3);
@@ -79,8 +80,8 @@ private:
         add_field(dummy.lastSeenIndex, MPI_UNSIGNED_LONG_LONG);
         #endif
 
-        #ifdef MC_TRACING_HISTORY
-        for(int h = 0; h < MC_TRACING_HISTORY; h++)
+        #ifdef STORM_WITH_TRACING_HISTORY
+        for(int h = 0; h < STORM_WITH_TRACING_HISTORY; h++)
         {
             add_field(dummy.tracingHistory[h].cellIndex, MPI_UNSIGNED_LONG_LONG);
             add_field(dummy.tracingHistory[h].rank, MPI_INT);

@@ -9,7 +9,7 @@
 #include <string>
 #include "ProgressTracker.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
-#include "3D/tessellation/loadBalancing/LoadBalancer.hpp"
+#include <MeshDecomposer3D/load_balancing/LoadBalancer.hpp>
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "newtonian/three_dimensional/simulation/steps/PhysicsStep.hpp"
@@ -19,7 +19,7 @@
 #ifdef RICH_MPI
     #include <mpi.h>
     #include "mpi/mpi_commands.hpp"
-    #include "mpi/serialize/mpi_commands.hpp"
+    #include "mpi/mpi_commands.hpp"
     #include "mpi/ExchangeChain.hpp"
 #endif // RICH_MPI
 
@@ -85,13 +85,13 @@ public:
         template<typename T>
         void addMigrationBuffer(std::vector<T> &buffer);
 
-        void storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer> lb);
+        void storeLoadBalance(const std::string &name, std::shared_ptr<LoadBalancer<Vector3D>> lb);
 
         void setCurrentLoadBalance(const std::string &name);
 
         void PresetLoadBalance(const std::string &name);
 
-        std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer>>> GetLoads(void) const;
+        std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer<Vector3D>>>> GetLoads(void) const;
 
         inline const std::string &getCurrentLB() const{return this->currentLB;};
 
@@ -111,7 +111,7 @@ private:
     std::shared_ptr<TimeStepFunction3D> tsc; // todo: why?
 
 #ifdef RICH_MPI
-    std::shared_ptr<LoadBalancer> currentLoad;
+    std::shared_ptr<LoadBalancer<Vector3D>> currentLoad;
 
     struct MigrationBuffer
     {
@@ -123,7 +123,7 @@ private:
     std::vector<MigrationBuffer> migrationBuffers; // buffers that need to be moved after each call to 'BuildParallel'
 
     std::string currentLB;
-    std::map<std::string, std::shared_ptr<LoadBalancer>> loads;
+    std::map<std::string, std::shared_ptr<LoadBalancer<Vector3D>>> loads;
     size_t forceRebalanceSteps = 0;
     std::pair<Vector3D, Vector3D> currentBox;
     size_t lastRebalanceCycle = std::numeric_limits<size_t>::max();

@@ -1,5 +1,5 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
-#include "ds/utils/BoundingBox.hpp"
+#include <spatial_ds/utils/BoundingBox.hpp>
 #include "utils/hdf5/HDF5Helper.hpp"
 #include "vectorData.hpp"
 

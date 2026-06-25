@@ -11,8 +11,8 @@
 #include "../two_dimensional/computational_cell_2d.hpp"
 #include <boost/container/small_vector.hpp>
 #ifdef RICH_MPI
-	#include "mpi/serialize/Serializer.hpp"
-	#include "mpi/serialize/mpi_commands.hpp"
+	#include <mpi_utils/serialize/Serializer.hpp>
+	#include "mpi/mpi_commands.hpp"
 #endif // RICH_MPI
 
 #ifndef ENERGY_GROUPS_NUM

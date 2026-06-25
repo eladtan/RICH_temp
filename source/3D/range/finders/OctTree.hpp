@@ -1,7 +1,7 @@
 #ifndef _OCT_TREE_FINDER_HPP
 #define _OCT_TREE_FINDER_HPP
 
-#include "ds/OctTree/OctTree.hpp"
+#include <spatial_ds/OctTree/OctTree.hpp>
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 

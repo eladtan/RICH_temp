@@ -1,7 +1,7 @@
 #ifndef _KDTREE_FINDER_HPP
 #define _KDTREE_FINDER_HPP
 
-#include "ds/KDTree/KDTree.hpp"
+#include <spatial_ds/KDTree/KDTree.hpp>
 #include "utils/IndexedVector.hpp"
 #include "RangeFinder.hpp"
 

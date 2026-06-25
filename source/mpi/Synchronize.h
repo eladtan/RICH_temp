@@ -3,7 +3,7 @@
 
 #ifdef RICH_MPI
 #include <mpi.h>
-#include "types.h"
+#include <mpi_utils/types.h>
 
 #define SYNC_TAG 503
 

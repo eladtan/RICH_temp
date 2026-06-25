@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
@@ -37,7 +37,7 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include "source/3D/environment/kernels/Rectangle.hpp"
+#include <MeshDecomposer3D/kernels/Rectangle.hpp>
 #include "source/newtonian/three_dimensional/Dissipation.hpp"
 
 namespace
@@ -174,7 +174,6 @@ namespace
 
 int main(void)
 {
-	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
@@ -182,6 +181,7 @@ int main(void)
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	double const lscale = 7e10;
 	double const mscale = 2e33;
 	double const tscale = 1603;

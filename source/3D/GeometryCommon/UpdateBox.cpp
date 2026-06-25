@@ -1,7 +1,8 @@
+#include <cassert>
 #include "UpdateBox.hpp"
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
-#include "source/3D/environment/kernels/Rectangle.hpp"
+#include <MeshDecomposer3D/kernels/Rectangle.hpp>
 
 void UpdateBox(Voronoi3D &tess, Simulation &sim, double const min_velocity, double const volume_fraction, ComputationalCell3D const& reference_cell)
 {

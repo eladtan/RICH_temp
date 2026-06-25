@@ -5,9 +5,10 @@
 #include <vector>
 #include <string>
 #include <execinfo.h>
+#include "misc/universal_error.hpp"
 #ifdef RICH_MPI
 #include <mpi.h>
-#include "mpi/serialize/mpi_commands.hpp"
+#include "mpi_commands.hpp"
 
 int RMPI_Barrier(const MPI_Comm &comm);
 

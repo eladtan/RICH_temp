@@ -6,7 +6,7 @@
 #endif // USE_VCL_VECTORIZATION
 #include <vector>
 #include "GravityTypes.h"
-#include "ds/OctTree/OctTree.hpp"
+#include <spatial_ds/OctTree/OctTree.hpp>
 #include "misc/universal_error.hpp"
 #include "MassedValue.hpp"
 

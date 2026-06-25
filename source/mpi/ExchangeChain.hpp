@@ -4,7 +4,7 @@
 #ifdef RICH_MPI
 
 #include "mpi_commands.hpp"
-#include "serialize/mpi_commands.hpp"
+#include "mpi_commands.hpp"
 
 class ExchangeChain
 {
