@@ -23,6 +23,14 @@ public:
 
     inline void ResetCummulativeOpacityCellID(void) {this->cummulativeOpacityCellID = std::numeric_limits<size_t>::max();}
 
+    // Physical thermal emission probability per energy group for this cell.
+    // Zero-width or zero-source groups return zero probability.
+    std::array<double, ENERGY_GROUPS_NUM> GetThermalGroupPdf(const ComputationalCell3D &cell);
+
+    // Sample thermal energy within one physical group. random is clamped to [0, 1).
+    // Empty groups return the precomputed group energy center.
+    double SampleThermalEnergyInGroup(const ComputationalCell3D &cell, size_t group, double random);
+
 private:
     std::array<double, ENERGY_GROUPS_NUM> energyCenters;
     std::array<double, ENERGY_GROUPS_NUM + 1> cummulativeOpacity;

@@ -34,7 +34,7 @@ using std::string;
   \param V The tessellation
   \param floatprecision A flag to choose output in float/double precision
 */
-void BinOutput(string location,
+void BinOutput(string const& location,
 	       hdsim const& sim,
 	       Tessellation const& V,
 	       bool floatprecision=true);
@@ -64,12 +64,12 @@ void write_error(const string& fname,
 \param vec The vector to write
 \param filename The path to the output file
 */
-void WriteVector2DToFile(vector<Vector2D> const& vec,string filename);
+void WriteVector2DToFile(vector<Vector2D> const& vec,string const& filename);
 
 /*! \brief Reads a vector of Vector2D from a binary file
 \return The vector that was read
 \param filename The path to the output file
 */
-vector<Vector2D> ReadVector2DFromFile(string filename);
+vector<Vector2D> ReadVector2DFromFile(string const& filename);
 
 #endif // DIAGNOSTICS_HPP

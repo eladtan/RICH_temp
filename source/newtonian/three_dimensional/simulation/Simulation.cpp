@@ -1,12 +1,11 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
 #include "misc/memory_debug.hpp"
-
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
      tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
 #ifdef RICH_MPI
      , currentBox(tess_.GetBoxCoordinates())
-#endif
+#endif // RICH_MPI
 {
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
@@ -131,6 +130,8 @@ double Simulation::GetTimeStep(void) const
 
     void Simulation::buildDataTransfer(const ExchangeChain &chain)
     {
+        if (chain.GetNorg() == 0)
+            return;
         for(MigrationBuffer &buff : this->migrationBuffers)
         {
             buff.transferChain(chain);
@@ -151,6 +152,7 @@ void Simulation::SetWallclockTime(double t)
 void Simulation::step(void)
 {
     MEMORY_DEBUG_PRINT("Simulation::step START cycle=" + std::to_string(this->tracker.getCycle()));
+    this->lastPhysicsTimes.clear();
     auto stepWallStart = std::chrono::high_resolution_clock::now();
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
@@ -222,7 +224,8 @@ void Simulation::step(void)
                     if(this->rank == 0)
                     {
                         std::cout << "Did rebalanced - load balance:" << std::endl;
-                        this->currentLoad->printInfo();
+                        auto lb = this->tess.GetLoadBalancer();
+                        if (lb) lb->printInfo();
                     }                
                     this->buildDataTransfer();
                     physics->afterLB();
@@ -246,6 +249,7 @@ void Simulation::step(void)
         double dt = this->tsc->GetTimeStep();
         if(this->rank == 0) std::cout << "Running " << name << " with dt " << dt << std::endl;
         std::cout.flush();
+        double dt_before = dt;
 
         MEMORY_DEBUG_PRINT("Before " + name);
         #ifdef RICH_MPI
@@ -259,6 +263,14 @@ void Simulation::step(void)
         }
         physics->step(dt);
         vtune_stop();
+
+        double dt_actual = this->tsc->GetTimeStep();
+        if(this->rank == 0 && dt_actual != dt_before)
+            std::cout << "Hydro dt actually used: " << dt_actual << " (requested: " << dt_before << ")" << std::endl;
+
+        double localTime = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - start).count();
+
         #ifdef RICH_MPI
             MPI_Barrier(MPI_COMM_WORLD);
         #endif // RICH_MPI
@@ -268,9 +280,14 @@ void Simulation::step(void)
         double physicsTime = std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count();
 
         #ifdef RICH_MPI
-        if(this->rank == 0) std::cout << "Physics " << name << " time: " << (physicsTime + rebalanceTime) << " (step=" << physicsTime << "s, rebalance=" << rebalanceTime << "s)" << std::endl;
+        double totalPhysicsTime = physicsTime + rebalanceTime;
+        if(this->rank == 0) std::cout << "Physics " << name << " time: " << totalPhysicsTime << " (step=" << physicsTime << "s, rebalance=" << rebalanceTime << "s)" << std::endl;
+        this->lastPhysicsTimes[name] = totalPhysicsTime;
+        this->lastLocalPhysicsTimes[name] = localTime;
         #else
         if(this->rank == 0) std::cout << "Physics " << name << " time: " << physicsTime << std::endl;
+        this->lastPhysicsTimes[name] = physicsTime;
+        this->lastLocalPhysicsTimes[name] = localTime;
         #endif
 
         double dt_suggest = physics->suggestTimeStep();
@@ -288,7 +305,8 @@ void Simulation::step(void)
                 if(this->rank == 0)
                 {
                     std::cout << "Rebalanced first time - load balance:" << std::endl;
-                    this->currentLoad->printInfo();
+                    auto lb = this->tess.GetLoadBalancer();
+                    if (lb) lb->printInfo();
                 }            
                 this->buildDataTransfer();
                 physics->afterLB();
@@ -300,13 +318,9 @@ void Simulation::step(void)
             if(newBox != this->currentBox)
             {
                 this->currentBox = newBox;
-                for(auto [loadName, load] : this->loads)
+                for(auto &entry : this->loads)
                 {
-                    if(loadName == this->currentLB)
-                    {
-                        continue;
-                    }
-                    load->changeBox(this->currentBox);
+                    entry.second->changeBox(this->currentBox);
                 }
             }
         #endif // RICH_MPI
@@ -319,7 +333,10 @@ void Simulation::step(void)
     }
     
     this->tracker.updateCycle();
-    this->tracker.updateTime(this->tsc->GetTimeStep());
+    double dt_used = this->tsc->GetTimeStep();
+    if(this->rank == 0)
+        std::cout << "Advancing time by dt=" << dt_used << ", next suggested dt=" << next_time_step << std::endl;
+    this->tracker.updateTime(dt_used);
 
     this->tsc->SetTimeStep(next_time_step);
 

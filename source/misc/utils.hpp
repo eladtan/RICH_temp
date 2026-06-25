@@ -331,6 +331,33 @@ template <class T> vector<T> VectorValues
 	return result;
 }
 
+/*! \brief Reorder v in-place according to a permutation, so that v[i] = old_v[perm[i]].
+    Uses cycle-following with a bitvector for O(1) extra per element.
+    \param v The vector to reorder
+    \param perm Permutation array (not modified)
+ */
+template <class T>
+void ApplyPermutation(vector<T>& v, const vector<size_t>& perm)
+{
+	size_t N = v.size();
+	std::vector<bool> done(N, false);
+	for (size_t i = 0; i < N; ++i)
+	{
+		if (done[i] || perm[i] == i)
+			continue;
+		T temp = std::move(v[i]);
+		size_t j = i;
+		while (perm[j] != i)
+		{
+			v[j] = std::move(v[perm[j]]);
+			done[j] = true;
+			j = perm[j];
+		}
+		v[j] = std::move(temp);
+		done[j] = true;
+	}
+}
+
 /*! \brief Reverses the vector
   \param v Vector
  */
@@ -381,6 +408,21 @@ template <class T> vector<T> unique(vector<T> const& v)
 		else
 			res.push_back(*it);
 	return res;
+}
+
+template <class T> void unique_inplace(vector<T> &v)
+{
+	if (v.empty())
+		return;
+	auto last = std::unique(v.begin(), v.end());
+	v.erase(last, v.end());
+}
+
+template <class T> void RemoveList_inplace(vector<T> &v, vector<T> const&list)
+{
+	auto new_end = std::remove_if(v.begin(), v.end(),
+		[&list](const T &val){ return std::binary_search(list.begin(), list.end(), val); });
+	v.erase(new_end, v.end());
 }
 
 /*!
@@ -894,9 +936,6 @@ template<class S, class T> T& safe_retrieve
 \param x The value to calculate the sqrt of
 \return Sqrt(x)
 */
-#ifdef __INTEL_COMPILER
-#pragma omp declare simd
-#endif
 double fastsqrt(double x);
 
 
@@ -917,5 +956,60 @@ double fastsqrt(double x);
  */
 double Interpolate2DTable(double const x, double const y, std::vector<double> const& x_vec, std::vector<double> const& y_vec, std::vector<std::vector<double>> const& data,
         double const x_vec_high_slope = 0, size_t const slope_length = 7);
+
+/*! \brief Keep hot-loop capacity by default.
+
+    Historically this helper shrank vectors whenever capacity exceeded size by
+    25%. In moving-mesh hydro, diffusion, and Voronoi rebuilds that released
+    large buffers only to allocate similarly sized buffers on the next step.
+    Define RICH_AGGRESSIVE_SHRINK to restore the old behavior for diagnostics.
+    Works with std::vector, boost::container::small_vector, and any container
+    that provides capacity(), size(), and shrink_to_fit().
+    \param v The container to conditionally shrink
+*/
+template<typename Container>
+inline void conditional_shrink(Container &v)
+{
+#ifdef RICH_AGGRESSIVE_SHRINK
+    if (v.capacity() > v.size() * 1.25)
+        v.shrink_to_fit();
+#else
+    (void)v;
+#endif
+}
+
+template<typename Container>
+inline void release_container_memory(Container &v)
+{
+    Container empty;
+    v.swap(empty);
+}
+
+template<class Vec>
+inline void release_if_very_stale(Vec& v, size_t target_size)
+{
+    constexpr double STALE_FACTOR = 3.0;
+    constexpr size_t MIN_STALE_BYTES = 64ull * 1024ull * 1024ull;
+    const size_t elem = sizeof(typename Vec::value_type);
+    const size_t stale_bytes =
+        (v.capacity() > target_size) ? (v.capacity() - target_size) * elem : 0;
+    if(v.capacity() > static_cast<size_t>(STALE_FACTOR * std::max<size_t>(target_size, 1)) &&
+       stale_bytes > MIN_STALE_BYTES)
+    {
+        Vec tmp;
+        tmp.reserve(target_size);
+        v.swap(tmp);
+    }
+}
+
+#if defined(__linux__) && !defined(RICH_NO_TRIM_AFTER_RARE_SPIKES)
+#include <malloc.h>
+inline void rich_trim_after_rare_spike()
+{
+    malloc_trim(0);
+}
+#else
+inline void rich_trim_after_rare_spike() {}
+#endif
 
 #endif // UTILS_HPP

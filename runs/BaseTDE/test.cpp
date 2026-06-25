@@ -450,7 +450,7 @@ namespace
 				T = T_.back();
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 				double const scattering = CalcScatteringOpacity(cell, energy);
 				double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
@@ -458,7 +458,7 @@ namespace
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
@@ -508,12 +508,12 @@ namespace
 			double d_ratio = 1;
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			if(T < T_[0])

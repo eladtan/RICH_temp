@@ -12,6 +12,11 @@ include(${CMAKE_SOURCE_DIR}/../config/find_static_library.cmake)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(RICH_MONTECARLO_POLARIZATION "Enable Monte Carlo linear polarization packet state" OFF)
+if(RICH_MONTECARLO_POLARIZATION)
+    add_compile_definitions(MONTECARLO_POLARIZATION)
+endif()
+
 message(STATUS "CXX Standard: " ${CMAKE_CXX_STANDARD})
 message(STATUS "Build Type: " ${CMAKE_BUILD_TYPE})
 
@@ -20,6 +25,7 @@ message(STATUS "CXX flags:     ${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${build_type
 message(STATUS "Fortran flags: ${CMAKE_Fortran_FLAGS} ${CMAKE_Fortran_FLAGS_${build_type_upper}}")
 
 project(rich)
+enable_testing()
 
 set(EXE_NAME ${CMAKE_PROJECT_NAME}_${CONFIG})
 enable_language(Fortran CXX)
@@ -50,6 +56,7 @@ endif()
 # files to compile
 file(GLOB_RECURSE SRC FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/*.c")
 file(GLOB_RECURSE TEST_SRC FOLLOW_SYMLINKS "${TEST_SOURCE_DIR}/*.cpp" "${TEST_SOURCE_DIR}/*.c")
+list(REMOVE_ITEM SRC "${PROJECT_SOURCE_DIR}/3D/radiation/RadiationIMC_DDMC.cpp")
 
 # Exclude MadVoro submodule directories not used by RICH
 set(MADVORO_DIR "${PROJECT_SOURCE_DIR}/3D/tessellation/voronoi")
@@ -142,32 +149,35 @@ if(NOT DEFINED DYNAMIC_LIBS)
         list(APPEND HDF5_LIBS ${SZIP_LIB})
         message(STATUS "Szip for static HDF5: ${SZIP_LIB}")
     endif()
-
-    # MPI (parallel HDF5 references MPI symbols)
-    if(DEFINED MPI)
-        find_package(MPI REQUIRED)
-        list(APPEND HDF5_LIBS MPI::MPI_C)
-    endif()
 endif()
 
+# If HDF5 was built with parallel support its headers include <mpi.h> and
+# its library references MPI symbols.  Provide the MPI include path and
+# link target even for serial builds so that compilation and linking succeed.
+if(EXISTS "${HDF5_INCLUDE}/H5pubconf.h")
+    file(STRINGS "${HDF5_INCLUDE}/H5pubconf.h" _h5_parallel
+         REGEX "^#define H5_HAVE_PARALLEL ")
+else()
+    set(_h5_parallel "")
+endif()
 
-# Static HDF5 needs its transitive deps linked explicitly
-if(NOT DEFINED DYNAMIC_LIBS)
-    # Szip (compression filter used by this HDF5 build)
-    if(DEFINED ENV{EBROOTSZIP})
-        find_library(SZIP_LIB sz PATHS "$ENV{EBROOTSZIP}/lib" NO_DEFAULT_PATH)
+if(_h5_parallel)
+    if(NOT DEFINED MPI)
+        find_package(MPI QUIET)
+        if(MPI_C_FOUND)
+            include_directories(${MPI_C_INCLUDE_DIRS})
+            if(NOT DEFINED DYNAMIC_LIBS)
+                list(APPEND HDF5_LIBS MPI::MPI_C)
+            endif()
+            message(STATUS "HDF5 is parallel-enabled; adding MPI for serial build: ${MPI_C_INCLUDE_DIRS}")
+        else()
+            message(WARNING "HDF5 requires MPI headers (H5_HAVE_PARALLEL) but MPI was not found")
+        endif()
     else()
-        find_library(SZIP_LIB sz)
-    endif()
-    if(SZIP_LIB)
-        list(APPEND HDF5_LIBS ${SZIP_LIB})
-        message(STATUS "Szip for static HDF5: ${SZIP_LIB}")
-    endif()
-
-    # MPI (parallel HDF5 references MPI symbols)
-    if(DEFINED MPI)
         find_package(MPI REQUIRED)
-        list(APPEND HDF5_LIBS MPI::MPI_C)
+        if(NOT DEFINED DYNAMIC_LIBS)
+            list(APPEND HDF5_LIBS MPI::MPI_C)
+        endif()
     endif()
 endif()
 
@@ -313,3 +323,55 @@ vtk_module_autoinit(
   TARGETS ${EXE_NAME}
   MODULES ${VTK_LIBRARIES}
 )
+
+# Optional: build reverse estimator unit tests
+option(BUILD_REVERSE_TESTS "Build reverse estimator standalone tests" ON)
+if(BUILD_REVERSE_TESTS)
+    file(GLOB_RECURSE REVERSE_TEST_SRC
+        "${PROJECT_SOURCE_DIR}/../tests/reverse_estimator_tests.cpp")
+    if(REVERSE_TEST_SRC)
+        set(REVERSE_CORE_SRC
+            "${PROJECT_SOURCE_DIR}/3D/radiation/ReverseDDMC.cpp"
+            "${PROJECT_SOURCE_DIR}/3D/radiation/ReverseDoppler.cpp"
+            "${PROJECT_SOURCE_DIR}/3D/radiation/ReversePolarizationMueller.cpp"
+            "${PROJECT_SOURCE_DIR}/misc/universal_error.cpp"
+            "${PROJECT_SOURCE_DIR}/newtonian/three_dimensional/computational_cell.cpp"
+            "${PROJECT_SOURCE_DIR}/misc/utils.cpp")
+        add_library(rich_reverse_core OBJECT ${REVERSE_CORE_SRC})
+        target_link_libraries(rich_reverse_core PUBLIC
+            ZLIB::ZLIB ${CMAKE_DL_LIBS})
+        if(DEFINED MPI)
+            target_compile_options(rich_reverse_core PUBLIC ${mpi_compile_flags})
+            target_link_options(rich_reverse_core PUBLIC ${mpi_link_flags})
+            target_link_libraries(rich_reverse_core PUBLIC MPI::MPI_C)
+        endif()
+        if(DEFINED JSONCPP_LIB)
+            target_link_libraries(rich_reverse_core PUBLIC ${JSONCPP_LIB})
+        endif()
+        if(DEFINED VTUNE_LIB)
+            target_link_libraries(rich_reverse_core PUBLIC "${VTUNE_LIB}")
+        endif()
+
+        add_executable(reverse_estimator_tests ${REVERSE_TEST_SRC})
+        target_link_libraries(reverse_estimator_tests PRIVATE
+            rich_reverse_core ZLIB::ZLIB ${CMAKE_DL_LIBS})
+        if(DEFINED MPI)
+            target_compile_options(reverse_estimator_tests PRIVATE ${mpi_compile_flags})
+            target_link_options(reverse_estimator_tests PRIVATE ${mpi_link_flags})
+            target_link_libraries(reverse_estimator_tests PRIVATE MPI::MPI_C)
+        endif()
+        if(DEFINED JSONCPP_LIB)
+            target_link_libraries(reverse_estimator_tests PRIVATE ${JSONCPP_LIB})
+        endif()
+        if(DEFINED VTUNE_LIB)
+            target_link_libraries(reverse_estimator_tests PRIVATE "${VTUNE_LIB}")
+        endif()
+        target_link_options(reverse_estimator_tests PRIVATE -rdynamic)
+        if(DEFINED MPI)
+            add_test(NAME reverse_estimator_tests
+                     COMMAND ${MPIEXEC_PATH} -n 2 $<TARGET_FILE:reverse_estimator_tests>)
+        else()
+            add_test(NAME reverse_estimator_tests COMMAND reverse_estimator_tests)
+        endif()
+    endif()
+endif()

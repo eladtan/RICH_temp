@@ -32,6 +32,8 @@ public:
 
 	double SuggestTimeStep(void) const override;
 
+	void SetPointVelocities(const vector<Vector3D>* pv) { point_velocities_ = pv; }
+
 private:
 	const double cfl_, sourcecfl_;
 	SourceTerm3D const& source_;
@@ -42,6 +44,7 @@ private:
 	double dt_first_;
 	double dt_suggest_;
 	double last_time_;
+	const vector<Vector3D>* point_velocities_ = nullptr;
 };
 
 #endif // COURANT_FRIEDRICHS_LEWY_HPP

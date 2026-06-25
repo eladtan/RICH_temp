@@ -30,8 +30,8 @@ public:
 	\param f The centroid of the edge
 	\returns The edge's velocity
 */
-  virtual Vector2D CalcFaceVelocity(Vector2D wl, Vector2D wr,Vector2D rL,
-				    Vector2D rR,Vector2D f) const=0;
+  virtual Vector2D CalcFaceVelocity(Vector2D const& wl, Vector2D const& wr,Vector2D const& rL,
+				    Vector2D const& rR,Vector2D const& f) const=0;
 
   /*! \brief Initialises the tessellation
     \param points Initial position of mesh generating points

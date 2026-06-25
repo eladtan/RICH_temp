@@ -30,8 +30,8 @@ class StaticVoronoiMesh : public Tessellation
 {
 public:
 
-	Vector2D CalcFaceVelocity(Vector2D wl, Vector2D wr,Vector2D rL,
-		Vector2D rR,Vector2D f)const override;
+	Vector2D CalcFaceVelocity(Vector2D const& wl, Vector2D const& wr,Vector2D const& rL,
+		Vector2D const& rR,Vector2D const& f)const override;
 
   /*! \brief Clone tessellation
     \return Pointer to new tessellation
@@ -126,7 +126,7 @@ public:
   /*! \brief Outputs the grid data
   \param filename The path to the output file
   */
-  void output(string filename);
+  void output(string const& filename);
 
   bool NearBoundary(int index) const override;
 
@@ -200,8 +200,8 @@ private:
 	void GetCorners(vector<vector<int> > &copied,vector<vector<int> > &result);
 	vector<int> AddPointsAlongEdge(size_t point,vector<vector<int> > const&copied,int side);
 	void GetRealNeighbor(vector<int> &result,int point)const;
-	vector<int> GetBorderingCells(vector<int> const& copied,
-		vector<int> const& totest,int tocheck,vector<int> tempresult,int outer);
+	void GetBorderingCells(vector<int> const& copied,
+		vector<int> const& totest,int tocheck,vector<int>& tempresult,int outer);
 	bool CloseToBorder(int point,int &border);
 	void GetToTest(vector<vector<int> > &copied,vector<vector<int> > &totest);
 	void ConvexEdgeOrder(void);

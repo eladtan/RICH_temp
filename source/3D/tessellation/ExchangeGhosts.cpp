@@ -5,11 +5,12 @@
 boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ExchangeGhosts(const Tessellation3D &tess)
 {
     boost::container::flat_map<size_t, std::pair<rank_t, size_t>> ghosts_map;
-    std::vector<std::vector<size_t>> incoming = MPI_exchange_data(tess.GetDuplicatedProcs(), tess.GetDuplicatedPoints());
+    const std::vector<int> &dupProcs = tess.GetDuplicatedProcs();
+    std::vector<std::vector<size_t>> incoming = MPI_exchange_data(dupProcs, tess.GetDuplicatedPoints());
     const std::vector<std::vector<size_t>> &ghosts = tess.GetGhostIndeces();
     for(size_t i = 0; i < incoming.size(); i++)
     {
-        int _rank = tess.GetDuplicatedProcs()[i];
+        int _rank = dupProcs[i];
         for(size_t j = 0; j < incoming[i].size(); j++)
         {
             assert(incoming[i].size() == ghosts[i].size());

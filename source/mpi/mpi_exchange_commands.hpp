@@ -39,6 +39,7 @@ inline std::tuple<std::vector<double>, std::vector<int>, std::vector<int>> Calcu
     std::vector<int> sendDisplacements;
     sendCounts.reserve(size);
     sendDisplacements.reserve(size);
+    std::vector<double> serialized;
     for(size_t i = 0; i < size; i++)
     {
         sendDisplacements.push_back((i == 0)? 0 : sendDisplacements.back() + sendCounts.back());
@@ -47,7 +48,7 @@ inline std::tuple<std::vector<double>, std::vector<int>, std::vector<int>> Calcu
         size_t sendCounter = 0;
         for(const T &element : data)
         {
-            std::vector<double> serialized = element.serialize();
+            serialized = element.serialize();
             sendData.insert(sendData.end(), serialized.cbegin(), serialized.cend());
             sendCounter += serialized.size();
         }
@@ -85,10 +86,13 @@ inline void TranslateSerializableVector(std::vector<T> &result, const InputItera
 {
     size_t chunkSize = T().getChunkSize();
     result.reserve(result.size() + std::distance(first, last) / chunkSize);
+    std::vector<double> chunk;
+    chunk.reserve(chunkSize);
     for(auto it = first; it != last; it += chunkSize)
     {
+        chunk.assign(it, it + chunkSize);
         result.emplace_back();
-        result.back().unserialize(std::vector<double>(it, it + chunkSize));
+        result.back().unserialize(chunk);
     }
 }
 
@@ -122,6 +126,7 @@ inline std::vector<T> MPI_Exchange_data_with_data_function(const std::vector<int
         size_t index = std::distance(destinations.cbegin(), std::find(destinations.cbegin(), destinations.cend(), _rank));
         TranslateSerializableVector<T>(dataToReturn, recvData.cbegin() + recvDisplacements[index], recvData.cend() + recvDisplacements[index] + recvCounts[index]);
     }
+    MPI_Comm_free(&graphComm);
     return dataToReturn;
 }
 
@@ -216,9 +221,10 @@ inline std::pair<std::vector<int>, std::vector<std::vector<size_t>>> PrepareSend
 {
     std::vector<int> sentProc;
     std::vector<std::vector<size_t>> sentIndices;
+    std::vector<int> owners;
     for(size_t i = 0; i < data.size(); i++)
     {
-        std::vector<int> owners = ownership(data[i]);
+        owners = ownership(data[i]);
         for(int owner : owners)
         {
             size_t index = std::distance(sentProc.cbegin(), std::find(sentProc.cbegin(), sentProc.cend(), owner));

@@ -1,0 +1,141 @@
+\begin{tikzpicture}[>=Stealth, font=\sffamily\small]
+
+  \node[font=\sffamily\normalsize\bfseries, anchor=west] at (-1, 0)
+    {2.\; Single RankHandler -- Detailed Buffer Layout};
+
+  \begin{scope}[shift={(1.5, -1.5)}]
+    \def\cw{1.05}
+    \def\xstart{0}
+
+    % ---- particles[] ----
+    \node[font=\sffamily\scriptsize\bfseries, anchor=east] at (-0.4, -0.3) {particles[]};
+    \node[font=\sffamily\tiny, anchor=east, rdmacolor] at (-0.4, -0.7)
+      {\texttt{particles\_win}};
+
+    % occupied indices (referenced by th[]): darker fill + thick border
+    \foreach \i in {0,...,11} {
+      \pgfmathsetmacro{\xl}{\xstart + \i*\cw}
+      \pgfmathsetmacro{\xr}{\xl + \cw}
+      % check if this index is in the th set {0,1,3,5,8}
+      \pgfmathsetmacro{\isactive}{(\i==0)||(\i==1)||(\i==3)||(\i==5)||(\i==8)?1:0}
+      \ifnum \isactive>0
+        \fill[partcolor!80, draw=partcolor!30!black, semithick]
+          (\xl, -0.7) rectangle (\xr, 0.1);
+      \else
+        \fill[partcolor!25, draw=partcolor!50!black, thin]
+          (\xl, -0.7) rectangle (\xr, 0.1);
+      \fi
+    }
+    \foreach \i/\lab in {0/$p_0$, 1/$p_1$, 2/\phantom{-}, 3/$p_3$, 4/\phantom{-}, 5/$p_5$,
+                          6/\phantom{-}, 7/\phantom{-}, 8/$p_8$, 9/\phantom{-}, 10/\phantom{-}, 11/\phantom{-}} {
+      \pgfmathsetmacro{\xc}{\xstart + \i*\cw + 0.5*\cw}
+      \node[font=\sffamily\tiny] at (\xc, -0.3) {\lab};
+    }
+    % index labels below
+    \foreach \i in {0,...,11} {
+      \pgfmathsetmacro{\xc}{\xstart + \i*\cw + 0.5*\cw}
+      \node[font=\sffamily\tiny, gray] at (\xc, -0.9) {\i};
+    }
+
+    % buffsize brace below
+    \pgfmathsetmacro{\xleft}{\xstart}
+    \pgfmathsetmacro{\xright}{\xstart + 12*\cw}
+    \draw[decorate, decoration={brace, amplitude=4pt, mirror, raise=8pt}]
+      (\xleft, -0.7) -- (\xright, -0.7)
+      node[midway, below=13pt, font=\sffamily\tiny] {\texttt{buffsize} = 12};
+
+    % ---- th[] (to-handle) ----
+    \def\thy{-2.4}
+    \node[font=\sffamily\scriptsize\bfseries, anchor=east] at (-0.4, \thy+0.4) {th[]};
+    \node[font=\sffamily\tiny, anchor=east, thcolor!80!black] at (-0.4, \thy)
+      {(to-handle)};
+    \node[font=\sffamily\tiny, anchor=east, rdmacolor] at (-0.4, \thy-0.35)
+      {\texttt{th\_win}};
+
+    \foreach \i in {0,...,11} {
+      \pgfmathsetmacro{\xl}{\xstart + \i*\cw}
+      \pgfmathsetmacro{\xr}{\xl + \cw}
+      \ifnum \i<5
+        \fill[thcolor, draw=thcolor!50!black, thin]
+          (\xl, \thy-0.1) rectangle (\xr, \thy+0.7);
+      \else
+        \fill[thcolor!12, draw=thcolor!80!black, thin]
+          (\xl, \thy-0.1) rectangle (\xr, \thy+0.7);
+      \fi
+    }
+    \foreach \i/\val in {0/0, 1/1, 2/3, 3/5, 4/8} {
+      \pgfmathsetmacro{\xc}{\xstart + \i*\cw + 0.5*\cw}
+      \node[font=\sffamily\tiny\bfseries] at (\xc, \thy+0.3) {\val};
+    }
+
+    % th_length: brace below the active portion
+    \pgfmathsetmacro{\thright}{\xstart + 5*\cw}
+    \draw[decorate, decoration={brace, amplitude=4pt, mirror, raise=3pt}, thcolor!80!black]
+      (\xleft, \thy-0.1) -- (\thright, \thy-0.1)
+      node[midway, below=8pt, font=\sffamily\tiny, thcolor!80!black]
+      {\texttt{th\_length} = 5};
+
+    % Annotation: th values are indices into particles (instead of arrows)
+    \pgfmathsetmacro{\annotx}{\xright + 0.4}
+    \node[font=\sffamily\tiny, anchor=north west, text width=3.5cm, align=left]
+      at (\annotx, \thy+0.7) {%
+        \texttt{th[]} values are indices\\
+        into \texttt{particles[]}.\\[2pt]
+        \textcolor{partcolor!30!black}{Dark cells} in \texttt{particles[]}\\
+        = slots referenced by \texttt{th[]}.};
+
+    % ---- av[] (available) ----
+    \def\avy{-4.4}
+    \node[font=\sffamily\scriptsize\bfseries, anchor=east] at (-0.4, \avy+0.4) {av[]};
+    \node[font=\sffamily\tiny, anchor=east, avcolor!80!black] at (-0.4, \avy)
+      {(available)};
+    \node[font=\sffamily\tiny, anchor=east, rdmacolor] at (-0.4, \avy-0.35)
+      {\texttt{av\_win}};
+
+    \foreach \i in {0,...,11} {
+      \pgfmathsetmacro{\xl}{\xstart + \i*\cw}
+      \pgfmathsetmacro{\xr}{\xl + \cw}
+      \ifnum \i<7
+        \fill[avcolor, draw=avcolor!50!black, thin]
+          (\xl, \avy-0.1) rectangle (\xr, \avy+0.7);
+      \else
+        \fill[avcolor!12, draw=avcolor!80!black, thin]
+          (\xl, \avy-0.1) rectangle (\xr, \avy+0.7);
+      \fi
+    }
+    \foreach \i/\val in {0/11, 1/10, 2/9, 3/7, 4/6, 5/4, 6/2} {
+      \pgfmathsetmacro{\xc}{\xstart + \i*\cw + 0.5*\cw}
+      \node[font=\sffamily\tiny\bfseries] at (\xc, \avy+0.3) {\val};
+    }
+
+    % av_length: brace below the active portion
+    \pgfmathsetmacro{\avright}{\xstart + 7*\cw}
+    \draw[decorate, decoration={brace, amplitude=4pt, mirror, raise=3pt}, avcolor!80!black]
+      (\xleft, \avy-0.1) -- (\avright, \avy-0.1)
+      node[midway, below=8pt, font=\sffamily\tiny, avcolor!80!black]
+      {\texttt{av\_length} = 7};
+
+    % MPI Win labels on the right
+    \node[font=\sffamily\tiny, anchor=west, rdmacolor] at (\annotx, \thy-0.35)
+      {\texttt{th\_length\_win}};
+    \node[font=\sffamily\tiny, anchor=west, rdmacolor] at (\annotx, \avy+0.3)
+      {\texttt{av\_length\_win}};
+
+    % ---- Notes at bottom ----
+    \node[draw, rounded corners=3pt, fill=white, font=\sffamily\tiny,
+          text width=7.5cm, align=left, anchor=north west] at (-3.5, -5.9) {
+      \textbf{Invariant:} \texttt{av\_length + th\_length $\leq$ buffsize}.
+      Every index in \texttt{[0,\,buffsize)} is in exactly one of
+      \texttt{av[]} or \texttt{th[]}. Free slots returned to \texttt{av[]}
+      when particles are removed.
+    };
+    \node[draw, rounded corners=3pt, fill=mutexcolor!12, font=\sffamily\tiny,
+          text width=6.5cm, align=left, anchor=north west] at (6.0, -5.9) {
+      \textbf{DistributedMutex} (per remote handler pair):\\[1pt]
+      \texttt{localTHMutex} -- protects own \texttt{th[]} during removal.\\
+      \texttt{remoteTHMutex} -- acquired before RDMA writes to peer.\\
+      Implemented via \texttt{MPI\_Win} + compare-and-swap.
+    };
+  \end{scope}
+
+\end{tikzpicture}

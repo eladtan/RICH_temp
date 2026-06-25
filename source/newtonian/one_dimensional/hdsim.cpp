@@ -86,7 +86,7 @@ Primitive hdsim1D::GetCell(size_t i) const
 // External functions
 
 namespace {
-  vector<Conserved> CalcConservedIntensive(vector<Primitive> p)
+  vector<Conserved> CalcConservedIntensive(vector<Primitive> const& p)
   {
     vector<Conserved> res(p.size());
     for(size_t i=0;i<p.size();i++){

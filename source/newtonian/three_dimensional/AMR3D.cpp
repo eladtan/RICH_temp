@@ -18,7 +18,32 @@
 
 namespace
 {
-	void RemoveRefineNeighborRemove(Tessellation3D const& tess, std::vector<size_t> const& remove,
+		const std::vector<Plane> &CachedPolyPlanes(Tessellation3D const& tess, size_t cell_index,
+			std::unordered_map<size_t, std::vector<Plane> > &cache)
+		{
+			auto it = cache.find(cell_index);
+			if(it != cache.end())
+			{
+				return it->second;
+			}
+			auto inserted = cache.emplace(cell_index, std::vector<Plane>());
+			CreatePolyPlanes(tess, cell_index, inserted.first->second);
+			return inserted.first->second;
+		}
+
+		const ClipBounds &CachedPolyBounds(Tessellation3D const& tess, size_t cell_index,
+			std::unordered_map<size_t, ClipBounds> &cache)
+		{
+			auto it = cache.find(cell_index);
+			if(it != cache.end())
+			{
+				return it->second;
+			}
+			auto inserted = cache.emplace(cell_index, CreatePolyBounds(tess, cell_index));
+			return inserted.first->second;
+		}
+
+		void RemoveRefineNeighborRemove(Tessellation3D const& tess, std::vector<size_t> const& remove,
 		std::vector<size_t> &refine, std::vector<Vector3D> &refine_direction)
 	{
 		vector<size_t> neigh;
@@ -75,6 +100,7 @@ namespace
 		size_t nproc = duplicated_indeces.size();
 		vector<vector<size_t> > indeces(nproc);
 		vector<vector<double> > merit_send(nproc);
+		vector<vector<size_t> > local_cells_sent(nproc);
 		vector<size_t> neigh_tmp;
 		for (size_t i = 0; i < N; ++i)
 		{
@@ -98,12 +124,43 @@ namespace
 					{
 						indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
 						merit_send[k].push_back(merits[i]);
+						local_cells_sent[k].push_back(candidates[i]);
 					}
 				}
 			}
 		}
-		indeces = MPI_exchange_data(tess.GetDuplicatedProcs(), indeces);
-		merit_send = MPI_exchange_data(tess.GetDuplicatedProcs(), merit_send);
+
+		// Build adjacency among candidates sent to the same remote rank.
+		// The receiving rank cannot compute this because GetNeighbors is
+		// unavailable for ghost cells (FacesInCell_ only covers local cells).
+		vector<vector<size_t> > adj_send(nproc);
+		for (size_t k = 0; k < nproc; ++k)
+		{
+			size_t M = local_cells_sent[k].size();
+			if (M < 2)
+				continue;
+			std::unordered_map<size_t, size_t> cell_to_batch;
+			for (size_t m = 0; m < M; ++m)
+				cell_to_batch[local_cells_sent[k][m]] = m;
+			for (size_t m = 0; m < M; ++m)
+			{
+				tess.GetNeighbors(local_cells_sent[k][m], neigh_tmp);
+				for (size_t j = 0; j < neigh_tmp.size(); ++j)
+				{
+					std::unordered_map<size_t, size_t>::const_iterator it2 = cell_to_batch.find(neigh_tmp[j]);
+					if (it2 != cell_to_batch.end() && it2->second > m)
+					{
+						adj_send[k].push_back(m);
+						adj_send[k].push_back(it2->second);
+					}
+				}
+			}
+		}
+
+		const std::vector<int> &amr_dupProcs = tess.GetDuplicatedProcs();
+		indeces = MPI_exchange_data(amr_dupProcs, indeces);
+		merit_send = MPI_exchange_data(amr_dupProcs, merit_send);
+		adj_send = MPI_exchange_data(amr_dupProcs, adj_send);
 		for (size_t i = 0; i < nproc; ++i)
 		{
 			if (!indeces[i].empty())
@@ -119,9 +176,8 @@ namespace
 		size_t Nall = all_candidates.size();
 		std::unordered_set<size_t> candidate_set(all_candidates.begin(), all_candidates.end());
 
-		// Pre-build adjacency between candidates using GetNeighbors on local cells only
-		// (ghost cells don't support GetNeighbors; the symmetric relationship is captured
-		// from the local side since if L neighbors G, then G neighbors L)
+		// Build adjacency from local cells' GetNeighbors (captures local-local
+		// and local-ghost edges; ghost-ghost edges are added below from exchange)
 		std::unordered_map<size_t, vector<size_t> > candidate_adj;
 		vector<size_t> neigh;
 		for (size_t k = 0; k < Nall; ++k)
@@ -142,6 +198,20 @@ namespace
 				}
 			}
 		}
+
+#ifdef RICH_MPI
+		// Add ghost-ghost edges from the exchanged adjacency data
+		for (size_t i = 0; i < nproc; ++i)
+		{
+			for (size_t p = 0; p + 1 < adj_send[i].size(); p += 2)
+			{
+				size_t ghost_a = indeces[i][adj_send[i][p]];
+				size_t ghost_b = indeces[i][adj_send[i][p + 1]];
+				candidate_adj[ghost_a].push_back(ghost_b);
+				candidate_adj[ghost_b].push_back(ghost_a);
+			}
+		}
+#endif
 
 		// Sort by merit descending; break ties by cell index ascending
 		vector<size_t> order(Nall);
@@ -267,6 +337,304 @@ namespace
 	}
 
 #ifdef RICH_MPI
+	void PackPolyhedron(const std::vector<Face> &poly, std::vector<double> &out)
+	{
+		out.clear();
+		out.push_back(static_cast<double>(poly.size()));
+		for (const Face &f : poly)
+		{
+			out.push_back(static_cast<double>(f.vertices.size()));
+			for (const Vector3D &v : f.vertices)
+			{
+				out.push_back(v.x);
+				out.push_back(v.y);
+				out.push_back(v.z);
+			}
+		}
+	}
+
+	void UnpackPolyhedron(const double *data, size_t &offset, std::vector<Face> &poly)
+	{
+		size_t nfaces = static_cast<size_t>(data[offset++]);
+		poly.resize(nfaces);
+		for (size_t i = 0; i < nfaces; ++i)
+		{
+			size_t nverts = static_cast<size_t>(data[offset++]);
+			poly[i].vertices.resize(nverts);
+			for (size_t j = 0; j < nverts; ++j)
+			{
+				poly[i].vertices[j].x = data[offset++];
+				poly[i].vertices[j].y = data[offset++];
+				poly[i].vertices[j].z = data[offset++];
+			}
+		}
+	}
+
+	void PackPlanes(const std::vector<Plane> &planes, std::vector<double> &out)
+	{
+		out.clear();
+		out.push_back(static_cast<double>(planes.size()));
+		for (const Plane &p : planes)
+		{
+			out.push_back(ScalarProd(p.normal, p.point));
+			out.push_back(p.normal.x);
+			out.push_back(p.normal.y);
+			out.push_back(p.normal.z);
+		}
+	}
+
+	void UnpackPlanes(const double *data, size_t &offset, std::vector<Plane> &planes)
+	{
+		size_t nplanes = static_cast<size_t>(data[offset++]);
+		planes.resize(nplanes);
+		for (size_t i = 0; i < nplanes; ++i)
+		{
+			double d = data[offset++];
+			planes[i].normal.x = data[offset++];
+			planes[i].normal.y = data[offset++];
+			planes[i].normal.z = data[offset++];
+			if (std::abs(planes[i].normal.x) > 0.1)
+				planes[i].point = Vector3D(d / planes[i].normal.x, 0.0, 0.0);
+			else if (std::abs(planes[i].normal.y) > 0.1)
+				planes[i].point = Vector3D(0.0, d / planes[i].normal.y, 0.0);
+			else
+				planes[i].point = Vector3D(0.0, 0.0, d / planes[i].normal.z);
+		}
+	}
+
+	void PackBounds(const ClipBounds &b, std::vector<double> &out)
+	{
+		out.push_back(b.lower.x); out.push_back(b.lower.y); out.push_back(b.lower.z);
+		out.push_back(b.upper.x); out.push_back(b.upper.y); out.push_back(b.upper.z);
+		out.push_back(b.valid ? 1.0 : 0.0);
+	}
+
+	void UnpackBounds(const double *data, size_t &offset, ClipBounds &b)
+	{
+		b.lower.x = data[offset++]; b.lower.y = data[offset++]; b.lower.z = data[offset++];
+		b.upper.x = data[offset++]; b.upper.y = data[offset++]; b.upper.z = data[offset++];
+		b.valid = data[offset++] > 0.5;
+	}
+
+	struct ClipResultEntry
+	{
+		size_t task_id;
+		double dv;
+		Vector3D clip_CM;
+	};
+
+	void DistributeAndComputeClips(
+		const std::vector<double> &packed_tasks,
+		size_t local_task_count,
+		const std::vector<double> &org_volumes,
+		std::vector<ClipResultEntry> &results,
+		MPI_Comm comm)
+	{
+		int myrank = 0, world_size = 1;
+		MPI_Comm_rank(comm, &myrank);
+		MPI_Comm_size(comm, &world_size);
+		size_t ws = static_cast<size_t>(world_size);
+
+		std::vector<int> task_counts(ws);
+		int my_count = static_cast<int>(local_task_count);
+		MPI_Allgather(&my_count, 1, MPI_INT, task_counts.data(), 1, MPI_INT, comm);
+
+		int total_tasks = 0;
+		for (size_t i = 0; i < ws; ++i)
+			total_tasks += task_counts[i];
+
+		int fair_share = (total_tasks + world_size - 1) / world_size;
+
+		std::vector<std::vector<double>> send_data(ws);
+		std::vector<std::vector<double>> send_volumes(ws);
+
+		struct RankExcess { int rank; int excess; };
+		struct RankDeficit { int rank; int deficit; };
+		std::vector<RankExcess> overloaded;
+		std::vector<RankDeficit> underloaded;
+		for (int i = 0; i < world_size; ++i)
+		{
+			if (task_counts[i] > fair_share)
+				overloaded.push_back({i, task_counts[i] - fair_share});
+			else if (task_counts[i] < fair_share)
+				underloaded.push_back({i, fair_share - task_counts[i]});
+		}
+
+		int my_send_count = 0;
+		if (!underloaded.empty())
+		{
+			size_t u_idx = 0;
+			int u_remaining = underloaded[0].deficit;
+
+			struct Assignment { int target_rank; int count; };
+			std::vector<Assignment> my_assignments;
+
+			for (size_t o = 0; o < overloaded.size(); ++o)
+			{
+				int to_distribute = overloaded[o].excess;
+				int distributed_so_far = 0;
+				while (to_distribute > 0 && u_idx < underloaded.size())
+				{
+					int chunk = std::min(to_distribute, u_remaining);
+					if (overloaded[o].rank == myrank)
+						my_assignments.push_back({underloaded[u_idx].rank, chunk});
+					to_distribute -= chunk;
+					distributed_so_far += chunk;
+					u_remaining -= chunk;
+					if (u_remaining == 0)
+					{
+						u_idx++;
+						if (u_idx < underloaded.size())
+							u_remaining = underloaded[u_idx].deficit;
+					}
+				}
+				if (overloaded[o].rank == myrank)
+					my_send_count = distributed_so_far;
+			}
+
+			if (!my_assignments.empty())
+			{
+				size_t task_offset = 0;
+				std::vector<size_t> task_offsets(local_task_count);
+				for (size_t t = 0; t < local_task_count; ++t)
+				{
+					task_offsets[t] = task_offset;
+					size_t nfaces = static_cast<size_t>(packed_tasks[task_offset]);
+					task_offset++;
+					for (size_t f = 0; f < nfaces; ++f)
+					{
+						size_t nverts = static_cast<size_t>(packed_tasks[task_offset]);
+						task_offset++;
+						task_offset += nverts * 3;
+					}
+					size_t nplanes = static_cast<size_t>(packed_tasks[task_offset]);
+					task_offset++;
+					task_offset += nplanes * 4;
+					task_offset += 7; // source bounds
+					task_offset += 7; // target bounds
+				}
+
+				size_t excess_start = static_cast<size_t>(fair_share);
+				size_t sent = 0;
+				for (const Assignment &a : my_assignments)
+				{
+					size_t tr = static_cast<size_t>(a.target_rank);
+					for (int t = 0; t < a.count; ++t)
+					{
+						size_t task_idx = excess_start + sent;
+						size_t start = task_offsets[task_idx];
+						size_t end = (task_idx + 1 < local_task_count) ? task_offsets[task_idx + 1] : packed_tasks.size();
+						send_data[tr].push_back(static_cast<double>(task_idx));
+						send_data[tr].insert(send_data[tr].end(), packed_tasks.begin() + start, packed_tasks.begin() + end);
+						send_volumes[tr].push_back(org_volumes[task_idx]);
+						sent++;
+					}
+				}
+			}
+		}
+
+		std::vector<std::vector<double>> recv_data = MPI_Exchange_all_to_all(send_data, comm);
+		std::vector<std::vector<double>> recv_volumes = MPI_Exchange_all_to_all(send_volumes, comm);
+
+		struct RemoteResult
+		{
+			int source_rank;
+			size_t remote_task_id;
+			double dv;
+			Vector3D clip_CM;
+		};
+		std::vector<RemoteResult> remote_results;
+
+		ClipWorkspace clip_workspace;
+		std::vector<Face> poly;
+		std::vector<Plane> planes;
+
+		for (size_t r = 0; r < ws; ++r)
+		{
+			if (recv_data[r].empty())
+				continue;
+			size_t offset = 0;
+			size_t vol_idx = 0;
+			while (offset < recv_data[r].size())
+			{
+				size_t remote_task_id = static_cast<size_t>(recv_data[r][offset++]);
+				UnpackPolyhedron(recv_data[r].data(), offset, poly);
+				UnpackPlanes(recv_data[r].data(), offset, planes);
+				ClipBounds source_bounds, target_bounds;
+				UnpackBounds(recv_data[r].data(), offset, source_bounds);
+				UnpackBounds(recv_data[r].data(), offset, target_bounds);
+				double ov = recv_volumes[r][vol_idx++];
+
+				auto [dv, clip_vol, clip_CM] = clipCells(poly, planes, clip_workspace, &source_bounds, &target_bounds);
+				if (dv > ov * 1e-10)
+				{
+					RemoteResult rr;
+					rr.source_rank = static_cast<int>(r);
+					rr.remote_task_id = remote_task_id;
+					rr.dv = dv;
+					rr.clip_CM = clip_CM;
+					remote_results.push_back(rr);
+				}
+			}
+		}
+
+		std::vector<std::vector<double>> result_send(ws);
+		for (const RemoteResult &rr : remote_results)
+		{
+			result_send[rr.source_rank].push_back(static_cast<double>(rr.remote_task_id));
+			result_send[rr.source_rank].push_back(rr.dv);
+			result_send[rr.source_rank].push_back(rr.clip_CM.x);
+			result_send[rr.source_rank].push_back(rr.clip_CM.y);
+			result_send[rr.source_rank].push_back(rr.clip_CM.z);
+		}
+		std::vector<std::vector<double>> result_recv = MPI_Exchange_all_to_all(result_send, comm);
+
+		results.clear();
+
+		size_t sent_start = my_send_count > 0 ? static_cast<size_t>(fair_share) : local_task_count;
+		size_t sent_end = sent_start + static_cast<size_t>(my_send_count);
+
+		{
+			size_t offset = 0;
+			for (size_t t = 0; t < local_task_count; ++t)
+			{
+				UnpackPolyhedron(packed_tasks.data(), offset, poly);
+				UnpackPlanes(packed_tasks.data(), offset, planes);
+				ClipBounds source_bounds, target_bounds;
+				UnpackBounds(packed_tasks.data(), offset, source_bounds);
+				UnpackBounds(packed_tasks.data(), offset, target_bounds);
+				if (t >= sent_start && t < sent_end)
+					continue;
+				auto [dv, clip_vol, clip_CM] = clipCells(poly, planes, clip_workspace, &source_bounds, &target_bounds);
+				if (dv > org_volumes[t] * 1e-10)
+				{
+					ClipResultEntry e;
+					e.task_id = t;
+					e.dv = dv;
+					e.clip_CM = clip_CM;
+					results.push_back(e);
+				}
+			}
+		}
+
+		for (size_t r = 0; r < ws; ++r)
+		{
+			size_t offset = 0;
+			while (offset + 5 <= result_recv[r].size())
+			{
+				ClipResultEntry e;
+				e.task_id = static_cast<size_t>(result_recv[r][offset++]);
+				e.dv = result_recv[r][offset++];
+				e.clip_CM.x = result_recv[r][offset++];
+				e.clip_CM.y = result_recv[r][offset++];
+				e.clip_CM.z = result_recv[r][offset++];
+				results.push_back(e);
+			}
+		}
+	}
+#endif // RICH_MPI
+
+#ifdef RICH_MPI
 	void SendRecvMPIFullRemove(Tessellation3D const& tess, vector<size_t> const& toremove, vector<vector<size_t> >
 		&nghost_index, vector<vector<vector<size_t> > > &duplicated_index, vector<vector<vector<Vector3D> > > &planes,
 		vector<vector<vector<double>>> &planes_d, SpatialReconstruction3D &interp)
@@ -295,9 +663,12 @@ namespace
 		size_t nremove = toremove.size();
 		size_t Norg = tess.GetPointNo();
 		vector<Plane> r_planes;
+		vector<vector<size_t> > ghosts(Nprocs);
+		vector<Vector3D> v_plane;
+		vector<double> d_plane;
 		for (size_t i = 0; i < nremove; ++i)
 		{
-			vector<vector<size_t> > ghosts(Nprocs);
+			for (auto &g : ghosts) g.clear();
 			tess.GetNeighbors(toremove[i], temp);
 			size_t Nneigh = temp.size();
 			bool added = false;
@@ -321,8 +692,8 @@ namespace
 			{
 				CreatePolyPlanes(tess, toremove[i], r_planes);
 				size_t nplanes = r_planes.size();
-				vector<Vector3D> v_plane(nplanes);
-				vector<double> d_plane(nplanes);
+				v_plane.resize(nplanes);
+				d_plane.resize(nplanes);
 				for (size_t j = 0; j < nplanes; ++j)
 				{
 					d_plane[j] = ScalarProd(r_planes[j].normal, r_planes[j].point);
@@ -342,9 +713,10 @@ namespace
 			}
 		}
 		// send/recv the data
-		nghost_index = MPI_exchange_data(tess.GetDuplicatedProcs(), nghost_index);
+		const std::vector<int> &amr_dupProcs2 = tess.GetDuplicatedProcs();
+		nghost_index = MPI_exchange_data(amr_dupProcs2, nghost_index);
 		duplicated_index = MPI_exchange_data(tess, duplicated_index);
-		planes = MPI_exchange_data(tess.GetDuplicatedProcs(), planes);
+		planes = MPI_exchange_data(amr_dupProcs2, planes);
 		planes_d = MPI_exchange_data(tess, planes_d);
 		// convert the data
 		for (size_t i = 0; i < Nprocs; ++i)
@@ -365,13 +737,10 @@ namespace
 		std::vector<size_t> const& refined_points,
 		std::vector<size_t> const& ToRefine_for_send,
 		Tessellation3D const& oldtess,
-		PointsToNeighborsMap const& k2_neighbors,
+		PointsToNeighborsMap const& k_neighbors,
 		std::vector<std::vector<std::vector<size_t> > > &neigh_index, std::vector<std::vector<double> > &planes,
 		std::vector<std::vector<size_t> > &n_planes, std::vector<std::vector<size_t> > &changed_byouter)
 	{
-		// refined_points is the index of the refined points in new tess
-		// ToRefine_for_send is the corresponding old tess index for each refined point
-		// k2_neighbors maps old cell index -> set of RemotePoint (k<=2 neighbors)
 		int myrank = 0, world_size = 1;
 		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
@@ -390,12 +759,13 @@ namespace
 		changed_byouter.resize(ws);
 
 		vector<Plane> r_planes;
+		boost::container::flat_map<int, std::vector<size_t> > rank_to_indices;
 
 		for (size_t i = 0; i < refined_points.size(); ++i)
 		{
 			size_t old_cell = ToRefine_for_send[i];
-			auto it = k2_neighbors.find(old_cell);
-			if (it == k2_neighbors.end())
+			auto it = k_neighbors.find(old_cell);
+			if (it == k_neighbors.end())
 				continue;
 
 			// Get the polyhedra planes of the new refined cell
@@ -403,8 +773,8 @@ namespace
 			CreatePolyPlanes(tess, refined_points[i], r_planes);
 			
 
-			// Group remote k=2 neighbors by rank
-			boost::container::flat_map<int, std::vector<size_t> > rank_to_indices;
+			// Group remote neighbors by rank
+			rank_to_indices.clear();
 			for (const RemotePoint& rp : it->second)
 			{
 				if (rp.rank != myrank)
@@ -447,26 +817,33 @@ namespace
 		std::vector<size_t> neigh,temp2;
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
-		size_t NRemove = ToRemove.size();
-		size_t Norg = oldtess.GetPointNo();
-		std::vector<Face> poly;
-		for (size_t i = 0; i < NRemove; ++i)
-		{
+			size_t NRemove = ToRemove.size();
+			size_t Norg = oldtess.GetPointNo();
+			std::vector<Face> poly;
+			ClipWorkspace clip_workspace;
+			std::unordered_map<size_t, std::vector<Plane> > plane_cache;
+			std::unordered_map<size_t, ClipBounds> bounds_cache;
+			for (size_t i = 0; i < NRemove; ++i)
+			{
 			oldtess.GetNeighbors(ToRemove[i], neigh);
 			double org_volume = oldtess.GetVolume(ToRemove[i]);
 			size_t Nneigh = neigh.size();
 			// Get old poly
-			try
-			{
-				CreatePolyFaces(oldtess, ToRemove[i], poly);
-				for (size_t j = 0; j < Nneigh; ++j)
+				try
 				{
+					CreatePolyFaces(oldtess, ToRemove[i], poly);
+					ClipBounds source_bounds = computeBounds(poly);
+					for (size_t j = 0; j < Nneigh; ++j)
+					{
 					if (neigh[j] >= Norg)
 						continue;
 					
 					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(), neigh[j])
 						- ToRemove.begin());
-					auto [dv, clip_vol, clip_CM] = clipCells(tess, neigh[j] - index_remove, poly);
+					size_t target_index = neigh[j] - index_remove;
+					const ClipBounds target_bounds = CachedPolyBounds(tess, target_index, bounds_cache);
+					const std::vector<Plane> &target_planes = CachedPolyPlanes(tess, target_index, plane_cache);
+				auto [dv, clip_vol, clip_CM] = clipCells(poly, target_planes, clip_workspace, &source_bounds, &target_bounds);
 #ifdef RICH_DEBUG
 					try
 					{
@@ -480,11 +857,11 @@ namespace
                                 std::cout << "To add local remove" << toadd << std::endl;
                                 std::cout << "volume " << dv << " org volume " << oldtess.GetVolume(ToRemove[i]) << std::endl;
 							}
-							extensives[neigh[j] - index_remove] += toadd;
-							if(extensives[neigh[j] - index_remove].mass < 0)
-							{
-								// todo: print message
-							}
+								extensives[target_index] += toadd;
+								if(extensives[target_index].mass < 0)
+								{
+									// todo: print message
+								}
 						}
 #ifdef RICH_DEBUG
 					}
@@ -510,8 +887,165 @@ namespace
 				eo.addEntry("ID", cells[ToRemove[i]].ID);
 				throw eo;
 			}
+			}
+		}
+
+#ifdef RICH_MPI
+	void DistributedLocalRemove(Tessellation3D const& oldtess, std::vector<size_t> const& ToRemove,
+		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
+		EquationOfState const& eos, Tessellation3D const& tess,
+		std::vector<Conserved3D> &extensives, SpatialReconstruction3D &interp)
+	{
+		size_t NRemove = ToRemove.size();
+		size_t Norg = oldtess.GetPointNo();
+
+		struct RemoveTaskInfo
+		{
+			size_t remove_idx;
+			size_t target_index;
+		};
+		std::vector<RemoveTaskInfo> task_info;
+		std::vector<double> packed_tasks;
+		std::vector<double> org_volumes;
+
+		std::vector<Face> poly;
+		std::vector<size_t> neigh;
+		std::vector<Plane> target_planes;
+		std::vector<double> poly_packed, planes_packed;
+
+		for (size_t i = 0; i < NRemove; ++i)
+		{
+			oldtess.GetNeighbors(ToRemove[i], neigh);
+			double org_volume = oldtess.GetVolume(ToRemove[i]);
+			CreatePolyFaces(oldtess, ToRemove[i], poly);
+			ClipBounds source_bounds = computeBounds(poly);
+			PackPolyhedron(poly, poly_packed);
+
+			for (size_t j = 0; j < neigh.size(); ++j)
+			{
+				if (neigh[j] >= Norg)
+					continue;
+				size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(), neigh[j])
+					- ToRemove.begin());
+				size_t target_index = neigh[j] - index_remove;
+
+				CreatePolyPlanes(tess, target_index, target_planes);
+				ClipBounds target_bounds = CreatePolyBounds(tess, target_index);
+				PackPlanes(target_planes, planes_packed);
+
+				packed_tasks.insert(packed_tasks.end(), poly_packed.begin(), poly_packed.end());
+				packed_tasks.insert(packed_tasks.end(), planes_packed.begin(), planes_packed.end());
+				PackBounds(source_bounds, packed_tasks);
+				PackBounds(target_bounds, packed_tasks);
+
+				org_volumes.push_back(org_volume);
+				RemoveTaskInfo ti;
+				ti.remove_idx = i;
+				ti.target_index = target_index;
+				task_info.push_back(ti);
+			}
+		}
+
+		std::vector<ClipResultEntry> results;
+		DistributeAndComputeClips(packed_tasks, task_info.size(), org_volumes, results, MPI_COMM_WORLD);
+
+		for (const ClipResultEntry &e : results)
+		{
+			size_t ri = task_info[e.task_id].remove_idx;
+			size_t target_index = task_info[e.task_id].target_index;
+			Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[ToRemove[ri]], eos, e.dv,
+				interp.GetSlopes()[ToRemove[ri]], oldtess.GetCellCM(ToRemove[ri]), e.clip_CM);
+			extensives[target_index] += toadd;
 		}
 	}
+
+	void DistributedMPIRemove(Tessellation3D const& oldtess, Tessellation3D const& tess,
+		std::vector<size_t> const& ToRemove, AMRExtensiveUpdater3D const& eu,
+		EquationOfState const& eos, std::vector<ComputationalCell3D> const& cells,
+		std::vector<Conserved3D> &extensives, SpatialReconstruction3D &interp)
+	{
+		vector<vector<size_t> > nghost_index;
+		vector<vector<vector<size_t> > > duplicate_index;
+		vector<vector<vector<Vector3D> > > planes_v;
+		vector<vector<vector<double> > > planes_d;
+		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d, interp);
+
+		size_t Nproc = nghost_index.size();
+
+		struct MpiRemoveTaskInfo
+		{
+			size_t proc_idx;
+			size_t entry_idx;
+			size_t local_cell_idx;
+			size_t target_index;
+		};
+		std::vector<MpiRemoveTaskInfo> task_info;
+		std::vector<double> packed_tasks;
+		std::vector<double> org_volumes;
+		std::vector<Plane> planes;
+		std::vector<Face> poly;
+		std::vector<double> poly_packed, planes_packed;
+
+		for (size_t i = 0; i < Nproc; ++i)
+		{
+			for (size_t j = 0; j < duplicate_index[i].size(); ++j)
+			{
+				size_t Nplane = planes_v[i].at(j).size();
+				planes.resize(Nplane);
+				for (size_t k = 0; k < Nplane; ++k)
+				{
+					planes[k].normal = planes_v[i][j].at(k);
+					if (std::abs(planes[k].normal.x) > 0.1)
+						planes[k].point = Vector3D(planes_d[i][j][k] / planes[k].normal.x, 0.0, 0.0);
+					else if (std::abs(planes[k].normal.y) > 0.1)
+						planes[k].point = Vector3D(0.0, planes_d[i][j][k] / planes[k].normal.y, 0.0);
+					else
+						planes[k].point = Vector3D(0.0, 0.0, planes_d[i][j][k] / planes[k].normal.z);
+				}
+				PackPlanes(planes, planes_packed);
+
+				for (size_t k = 0; k < duplicate_index[i][j].size(); ++k)
+				{
+					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(),
+						duplicate_index[i][j].at(k)) - ToRemove.begin());
+					size_t target_cell = duplicate_index[i][j][k] - index_remove;
+
+					CreatePolyFaces(tess, target_cell, poly);
+					ClipBounds source_bounds = computeBounds(poly);
+					double org_volume = tess.GetVolume(target_cell);
+					PackPolyhedron(poly, poly_packed);
+
+					packed_tasks.insert(packed_tasks.end(), poly_packed.begin(), poly_packed.end());
+					packed_tasks.insert(packed_tasks.end(), planes_packed.begin(), planes_packed.end());
+					PackBounds(source_bounds, packed_tasks);
+					ClipBounds dummy_target;
+					PackBounds(dummy_target, packed_tasks);
+
+					org_volumes.push_back(org_volume);
+					MpiRemoveTaskInfo ti;
+					ti.proc_idx = i;
+					ti.entry_idx = j;
+					ti.local_cell_idx = k;
+					ti.target_index = target_cell;
+					task_info.push_back(ti);
+				}
+			}
+		}
+
+		std::vector<ClipResultEntry> results;
+		DistributeAndComputeClips(packed_tasks, task_info.size(), org_volumes, results, MPI_COMM_WORLD);
+
+		for (const ClipResultEntry &e : results)
+		{
+			size_t pi = task_info[e.task_id].proc_idx;
+			size_t ej = task_info[e.task_id].entry_idx;
+			size_t target_cell = task_info[e.task_id].target_index;
+			Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[nghost_index[pi][ej]], eos, e.dv,
+				interp.GetSlopes()[nghost_index[pi][ej]], oldtess.GetCellCM(nghost_index[pi][ej]), e.clip_CM);
+			extensives[target_cell] += toadd;
+		}
+	}
+#endif
 
 #ifdef RICH_MPI
 	void MPIRemove(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRemove,
@@ -526,10 +1060,11 @@ namespace
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
 		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d, interp);
-		size_t Nproc = nghost_index.size();
-		std::vector<Plane> planes;
-		std::vector<Face> poly;
-		for (size_t i = 0; i < Nproc; ++i)
+			size_t Nproc = nghost_index.size();
+			std::vector<Plane> planes;
+			std::vector<Face> poly;
+			ClipWorkspace clip_workspace;
+			for (size_t i = 0; i < Nproc; ++i)
 		{
 			size_t NremoveMPI = duplicate_index[i].size();
 			for (size_t j = 0; j < NremoveMPI; ++j)
@@ -562,12 +1097,13 @@ namespace
 					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(),
 						duplicate_index[i][j].at(k)) - ToRemove.begin());
 					try
-					{
+						{
 						CreatePolyFaces(tess, duplicate_index[i][j][k] - index_remove, poly);
+						ClipBounds source_bounds = computeBounds(poly);
 						double org_volume = tess.GetVolume(duplicate_index[i][j][k] - index_remove);
 						{
-							auto [dv, clip_vol, clip_CM] = clipCells(poly, planes);
-							try
+						auto [dv, clip_vol, clip_CM] = clipCells(poly, planes, clip_workspace, &source_bounds);
+						try
 							{
 								if(dv > org_volume * 1e-10)
 								{
@@ -599,10 +1135,10 @@ namespace
 						eo.addEntry("Current remove", nghost_index[i][j]);
 						eo.addEntry("Current remove ID", cells[nghost_index[i][j]].ID);
 					}
+					}
 				}
 			}
 		}
-	}
 #endif
 
 	void LocalRefine(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRefine,
@@ -619,15 +1155,19 @@ namespace
 		// r3d_poly poly, poly2;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
-		size_t Norg = tess.GetPointNo() - ToRefine.size();
-		size_t Norg2 = oldtess.GetPointNo();
-		std::vector<Face> polyhedron;
-		for (size_t i = 0; i < Nrefine; ++i)
-		{
+			size_t Norg = tess.GetPointNo() - ToRefine.size();
+			size_t Norg2 = oldtess.GetPointNo();
+			std::vector<Face> polyhedron;
+			ClipWorkspace clip_workspace;
+			std::unordered_map<size_t, std::vector<Plane> > plane_cache;
+			std::unordered_map<size_t, ClipBounds> bounds_cache;
+			for (size_t i = 0; i < Nrefine; ++i)
+			{
 			checked.clear();
-			// Get new cell poly
-			CreatePolyFaces(tess, Norg + i, polyhedron);
-			double org_volume = tess.GetVolume(Norg + i);
+				// Get new cell poly
+				CreatePolyFaces(tess, Norg + i, polyhedron);
+				ClipBounds source_bounds = computeBounds(polyhedron);
+				double org_volume = tess.GetVolume(Norg + i);
 			bool print = false;
 			if(print)
 			{
@@ -652,9 +1192,10 @@ namespace
 					checked.insert(cur_check);
 				if (cur_check >= Norg2)
 					continue;
-				// Check intersectrion
-				auto [dv, clip_vol, clip_CM] = clipCells(oldtess, cur_check, polyhedron, nullptr, cells[cur_check].ID == -1);
-				if(cells[cur_check].ID == -1)
+				const ClipBounds target_bounds = CachedPolyBounds(oldtess, cur_check, bounds_cache);
+				const std::vector<Plane> &target_planes = CachedPolyPlanes(oldtess, cur_check, plane_cache);
+			auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, target_planes, clip_workspace, &source_bounds, &target_bounds, nullptr, cells[cur_check].ID == -1);
+			if(cells[cur_check].ID == -1)
 				{
 					std::cout << "Clipping cell " << cur_check << " ID " << cells[cur_check].ID << " dv " << dv << " init volume " << oldtess.GetVolume(cur_check) << " refine index " << ToRefine[i] << std::endl;
 				}
@@ -701,27 +1242,167 @@ namespace
 				extensives[ToRefine[i]] -= extensives[Norg2 + i];
 				std::cout << "Warning no good poly localrefine loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<<" old ID "<<cells[ToRefine[i]].ID<<std::endl;
 			}
+			}
+		}
+
+#ifdef RICH_MPI
+	void DistributedLocalRefine(Tessellation3D const& oldtess, Tessellation3D const& tess,
+		std::vector<size_t> const& ToRefine, std::vector<ComputationalCell3D> const& cells,
+		EquationOfState const& eos, AMRExtensiveUpdater3D const& eu,
+		std::vector<Conserved3D> &extensives, SpatialReconstruction3D &interp)
+	{
+		size_t Nrefine = ToRefine.size();
+		size_t Norg = tess.GetPointNo() - Nrefine;
+		size_t Norg2 = oldtess.GetPointNo();
+
+		struct TaskInfo
+		{
+			size_t refine_idx;
+			size_t old_cell;
+		};
+		std::vector<TaskInfo> task_info;
+		std::vector<double> packed_tasks;
+		std::vector<double> org_volumes;
+
+		std::vector<Face> polyhedron;
+		std::vector<size_t> neigh;
+		std::vector<Plane> target_planes;
+		std::vector<double> poly_packed, planes_packed;
+
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			CreatePolyFaces(tess, Norg + i, polyhedron);
+			ClipBounds source_bounds = computeBounds(polyhedron);
+			double org_volume = tess.GetVolume(Norg + i);
+			PackPolyhedron(polyhedron, poly_packed);
+
+			boost::container::flat_set<size_t> ring;
+			ring.insert(ToRefine[i]);
+			oldtess.GetNeighbors(ToRefine[i], neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
+				if (neigh[j] < Norg2)
+					ring.insert(neigh[j]);
+
+			for (size_t old_cell : ring)
+			{
+				CreatePolyPlanes(oldtess, old_cell, target_planes);
+				ClipBounds target_bounds = CreatePolyBounds(oldtess, old_cell);
+				PackPlanes(target_planes, planes_packed);
+
+				packed_tasks.insert(packed_tasks.end(), poly_packed.begin(), poly_packed.end());
+				packed_tasks.insert(packed_tasks.end(), planes_packed.begin(), planes_packed.end());
+				PackBounds(source_bounds, packed_tasks);
+				PackBounds(target_bounds, packed_tasks);
+
+				org_volumes.push_back(org_volume);
+				TaskInfo ti;
+				ti.refine_idx = i;
+				ti.old_cell = old_cell;
+				task_info.push_back(ti);
+			}
+		}
+
+		std::vector<ClipResultEntry> results;
+		DistributeAndComputeClips(packed_tasks, task_info.size(), org_volumes, results, MPI_COMM_WORLD);
+
+		std::vector<double> total_dv(Nrefine, 0.0);
+		// Per refined cell: track which old cells were already checked (the 1-ring)
+		std::vector<boost::container::flat_set<size_t> > checked(Nrefine);
+		std::vector<std::stack<size_t> > tocheck(Nrefine);
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			checked[i].insert(ToRefine[i]);
+			oldtess.GetNeighbors(ToRefine[i], neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
+				if (neigh[j] < Norg2)
+					checked[i].insert(neigh[j]);
+		}
+
+		for (const ClipResultEntry &e : results)
+		{
+			size_t ri = task_info[e.task_id].refine_idx;
+			size_t old_cell = task_info[e.task_id].old_cell;
+			total_dv[ri] += e.dv;
+			Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[old_cell], eos, e.dv,
+				interp.GetSlopes()[old_cell], oldtess.GetCellCM(old_cell), e.clip_CM);
+			extensives[old_cell] -= toadd;
+			extensives[Norg2 + ri] += toadd;
+			// Seed expansion from this cell's neighbors
+			oldtess.GetNeighbors(old_cell, neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
+				if (!checked[ri].count(neigh[j]))
+					tocheck[ri].push(neigh[j]);
+		}
+
+		// Local flood-fill beyond the 1-ring for each refined cell
+		ClipWorkspace clip_workspace;
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			if (tocheck[i].empty())
+				continue;
+			double org_volume = tess.GetVolume(Norg + i);
+			CreatePolyFaces(tess, Norg + i, polyhedron);
+			ClipBounds source_bounds = computeBounds(polyhedron);
+
+			std::unordered_map<size_t, std::vector<Plane> > plane_cache;
+			std::unordered_map<size_t, ClipBounds> bounds_cache;
+			while (!tocheck[i].empty())
+			{
+				size_t cur_check = tocheck[i].top();
+				tocheck[i].pop();
+				if (checked[i].count(cur_check))
+					continue;
+				checked[i].insert(cur_check);
+				if (cur_check >= Norg2)
+					continue;
+
+				const ClipBounds target_bounds = CachedPolyBounds(oldtess, cur_check, bounds_cache);
+				const std::vector<Plane> &cur_planes = CachedPolyPlanes(oldtess, cur_check, plane_cache);
+				auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, cur_planes, clip_workspace,
+					&source_bounds, &target_bounds, nullptr, false);
+
+				if (dv > org_volume * 1e-10)
+				{
+					total_dv[i] += dv;
+					Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv,
+						interp.GetSlopes()[cur_check], oldtess.GetCellCM(cur_check), clip_CM);
+					extensives[cur_check] -= toadd;
+					extensives[Norg2 + i] += toadd;
+					oldtess.GetNeighbors(cur_check, neigh);
+					for (size_t j = 0; j < neigh.size(); ++j)
+						tocheck[i].push(neigh[j]);
+				}
+			}
+		}
+
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			if (total_dv[i] < std::numeric_limits<double>::min() * 100)
+			{
+				extensives[Norg2 + i] = eu.ConvertPrimitveToExtensive3D(cells[ToRefine[i]], eos,
+					tess.GetVolume(Norg + i), Slope3D(), Vector3D(), Vector3D());
+				extensives[ToRefine[i]] -= extensives[Norg2 + i];
+				std::cout << "Warning no good poly localrefine loc " << oldtess.GetMeshPoint(ToRefine[i])
+					<< " volume " << oldtess.GetVolume(ToRefine[i]) << " old ID " << cells[ToRefine[i]].ID << std::endl;
+			}
 		}
 	}
 
-#ifdef RICH_MPI
-	void MPIRefine(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRefine,
-		AMRExtensiveUpdater3D const& eu, EquationOfState const& eos, 
-		std::vector<ComputationalCell3D> const& cells, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
+	void DistributedMPIRefine(Tessellation3D const& oldtess, Tessellation3D const& tess,
+		std::vector<size_t> const& ToRefine, AMRExtensiveUpdater3D const& eu,
+		EquationOfState const& eos, std::vector<ComputationalCell3D> const& cells,
+		std::vector<Conserved3D> &extensives, SpatialReconstruction3D &interp)
 	{
 		int myrank = 0, world_size = 1;
 		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
 		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 		size_t ws = static_cast<size_t>(world_size);
 
-		std::vector<size_t> temp, temp2;
-		point_vec ptemp;
+		std::vector<size_t> temp;
 		size_t Norg = oldtess.GetPointNo();
 		size_t Nrefine = ToRefine.size();
 
-		// Step 1: Identify boundary-sensitive refine cells
-		// These are cells to refine whose neighbors or neighbor-of-neighbors is a ghost cell
-		std::vector<size_t> boundary_refine_indices; // indices into ToRefine
+		std::vector<size_t> boundary_refine_indices;
 		std::vector<size_t> neigh_neigh;
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
@@ -745,14 +1426,14 @@ namespace
 							break;
 						}
 					}
-					if (has_ghost_k2) break;
+					if (has_ghost_k2)
+						break;
 				}
 			}
 			if (has_ghost_k2)
 				boundary_refine_indices.push_back(i);
 		}
 
-		// Step 2: Get k=2 neighbors for boundary-sensitive cells using GetKOrderNeighbors
 		std::vector<size_t> boundary_cells;
 		boundary_cells.reserve(boundary_refine_indices.size());
 		for (size_t idx : boundary_refine_indices)
@@ -760,7 +1441,168 @@ namespace
 
 		PointsToNeighborsMap k2_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 2, true, MPI_COMM_WORLD);
 
-		// Build refined_points and ToRefine_for_send for cells with remote k=2 neighbors
+		std::vector<size_t> refined_points, ToRefine_for_send;
+		for (size_t idx : boundary_refine_indices)
+		{
+			auto it = k2_neighbors.find(ToRefine[idx]);
+			if (it != k2_neighbors.end())
+			{
+				bool has_remote = false;
+				for (const RemotePoint& rp : it->second)
+					if (rp.rank != myrank) { has_remote = true; break; }
+				if (has_remote)
+				{
+					refined_points.push_back(tess.GetPointNo() - Nrefine + idx);
+					ToRefine_for_send.push_back(ToRefine[idx]);
+				}
+			}
+		}
+
+		std::vector<std::vector<size_t> > n_planes;
+		std::vector<std::vector<std::vector<size_t> > > neigh_index;
+		std::vector<std::vector<double> > planes_flat;
+		std::vector<std::vector<size_t> > changed_byouter;
+		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k2_neighbors,
+			neigh_index, planes_flat, n_planes, changed_byouter);
+
+		struct MpiRefineTaskInfo
+		{
+			size_t rank_idx;
+			size_t entry_idx;
+			size_t local_cell;
+		};
+		std::vector<MpiRefineTaskInfo> task_info;
+		std::vector<double> packed_tasks;
+		std::vector<double> org_volumes;
+		std::vector<std::vector<Conserved3D> > extensive_tosend(ws);
+
+		std::vector<Plane> r_planes;
+		std::vector<Face> polyhedron;
+		std::vector<double> poly_packed, planes_packed;
+
+		for (size_t i = 0; i < ws; ++i)
+		{
+			extensive_tosend[i].resize(neigh_index[i].size());
+			size_t counter = 0;
+			for (size_t j = 0; j < neigh_index[i].size(); ++j)
+			{
+				r_planes.resize(n_planes[i][j]);
+				for (size_t k = 0; k < n_planes[i][j]; ++k)
+				{
+					r_planes[k].normal.x = planes_flat[i][counter + 1];
+					r_planes[k].normal.y = planes_flat[i][counter + 2];
+					r_planes[k].normal.z = planes_flat[i].at(counter + 3);
+					if (std::abs(r_planes[k].normal.x) > 0.1)
+						r_planes[k].point = Vector3D(planes_flat[i][counter] / r_planes[k].normal.x, 0.0, 0.0);
+					else if (std::abs(r_planes[k].normal.y) > 0.1)
+						r_planes[k].point = Vector3D(0.0, planes_flat[i][counter] / r_planes[k].normal.y, 0.0);
+					else
+						r_planes[k].point = Vector3D(0.0, 0.0, planes_flat[i][counter] / r_planes[k].normal.z);
+					counter += 4;
+				}
+				PackPlanes(r_planes, planes_packed);
+
+				for (size_t ki = 0; ki < neigh_index[i][j].size(); ++ki)
+				{
+					size_t local_cell = neigh_index[i][j][ki];
+					if (local_cell >= Norg) continue;
+					CreatePolyFaces(oldtess, local_cell, polyhedron);
+					ClipBounds source_bounds = computeBounds(polyhedron);
+					double org_volume = oldtess.GetVolume(local_cell);
+					PackPolyhedron(polyhedron, poly_packed);
+
+					packed_tasks.insert(packed_tasks.end(), poly_packed.begin(), poly_packed.end());
+					packed_tasks.insert(packed_tasks.end(), planes_packed.begin(), planes_packed.end());
+					PackBounds(source_bounds, packed_tasks);
+					ClipBounds dummy;
+					PackBounds(dummy, packed_tasks);
+
+					org_volumes.push_back(org_volume);
+					MpiRefineTaskInfo ti;
+					ti.rank_idx = i;
+					ti.entry_idx = j;
+					ti.local_cell = local_cell;
+					task_info.push_back(ti);
+				}
+			}
+		}
+
+		std::vector<ClipResultEntry> results;
+		DistributeAndComputeClips(packed_tasks, task_info.size(), org_volumes, results, MPI_COMM_WORLD);
+
+		for (const ClipResultEntry &e : results)
+		{
+			size_t ri = task_info[e.task_id].rank_idx;
+			size_t ej = task_info[e.task_id].entry_idx;
+			size_t local_cell = task_info[e.task_id].local_cell;
+			Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[local_cell], eos, e.dv,
+				interp.GetSlopes()[local_cell], oldtess.GetCellCM(local_cell), e.clip_CM);
+			extensives[local_cell] -= toadd;
+			extensive_tosend[ri][ej] += toadd;
+		}
+
+		extensive_tosend = MPI_Exchange_all_to_all(extensive_tosend, MPI_COMM_WORLD);
+		size_t Nremove = oldtess.GetPointNo() + Nrefine - tess.GetPointNo();
+		for (size_t i = 0; i < ws; ++i)
+			for (size_t j = 0; j < extensive_tosend[i].size(); ++j)
+				extensives[changed_byouter[i][j] + Nremove] += extensive_tosend[i][j];
+	}
+#endif
+
+	#ifdef RICH_MPI
+	void MPIRefine(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRefine,
+		AMRExtensiveUpdater3D const& eu, EquationOfState const& eos, 
+		std::vector<ComputationalCell3D> const& cells, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
+	{
+		int myrank = 0, world_size = 1;
+		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		size_t ws = static_cast<size_t>(world_size);
+
+		std::vector<size_t> temp, temp2;
+		point_vec ptemp;
+		size_t Norg = oldtess.GetPointNo();
+		size_t Nrefine = ToRefine.size();
+
+		std::vector<size_t> boundary_refine_indices;
+		std::vector<size_t> neigh_neigh;
+		for (size_t i = 0; i < Nrefine; ++i)
+		{
+			oldtess.GetNeighbors(ToRefine[i], temp);
+			bool has_ghost_k2 = false;
+			for (size_t j = 0; j < temp.size(); ++j)
+			{
+				if (temp[j] >= Norg && !oldtess.IsPointOutsideBox(temp[j]))
+				{
+					has_ghost_k2 = true;
+					break;
+				}
+				if (temp[j] < Norg)
+				{
+					oldtess.GetNeighbors(temp[j], neigh_neigh);
+					for (size_t k = 0; k < neigh_neigh.size(); ++k)
+					{
+						if (neigh_neigh[k] >= Norg && !oldtess.IsPointOutsideBox(neigh_neigh[k]))
+						{
+							has_ghost_k2 = true;
+							break;
+						}
+					}
+					if (has_ghost_k2)
+						break;
+				}
+			}
+			if (has_ghost_k2)
+				boundary_refine_indices.push_back(i);
+		}
+
+		std::vector<size_t> boundary_cells;
+		boundary_cells.reserve(boundary_refine_indices.size());
+		for (size_t idx : boundary_refine_indices)
+			boundary_cells.push_back(ToRefine[idx]);
+
+		PointsToNeighborsMap k2_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 2, true, MPI_COMM_WORLD);
+
 		std::vector<size_t> refined_points;
 		std::vector<size_t> ToRefine_for_send;
 		for (size_t idx : boundary_refine_indices)
@@ -785,7 +1627,6 @@ namespace
 			}
 		}
 
-		// Step 3-4: Send/recv planes and neighbor info with all relevant ranks
 		std::vector<std::vector<size_t> > n_planes;
 		std::vector<std::vector<std::vector<size_t> > > neigh_index;
 		std::vector < std::vector<double> > planes;
@@ -800,9 +1641,11 @@ namespace
 		std::stack<size_t> tocheck;
 		std::vector<std::vector<Conserved3D> > extensive_tosend(ws);
 		int rank = 0;
-		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-		std::vector<Face> polyhedron;
-		for (size_t i = 0; i < ws; ++i)
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+			std::vector<Face> polyhedron;
+			ClipWorkspace clip_workspace;
+			std::unordered_map<size_t, ClipBounds> bounds_cache;
+			for (size_t i = 0; i < ws; ++i)
 		{
 			extensive_tosend[i].resize(neigh_index[i].size());
 			size_t counter = 0;
@@ -848,10 +1691,11 @@ namespace
 					if (cur_check >= Norg)
 						continue;
 					CreatePolyFaces(oldtess, cur_check, polyhedron);
+					const ClipBounds source_bounds = CachedPolyBounds(oldtess, cur_check, bounds_cache);
 					double org_volume = oldtess.GetVolume(cur_check);
-					auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, r_planes);
+				auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, r_planes, clip_workspace, &source_bounds);
 
-					if(dv > org_volume * 1e-10)
+				if(dv > org_volume * 1e-10)
 					{
 							// add and remove the extensive
 #ifdef RICH_DEBUG
@@ -887,12 +1731,12 @@ namespace
 		}
 		extensive_tosend = MPI_Exchange_all_to_all(extensive_tosend, MPI_COMM_WORLD);
 		size_t Nremove = oldtess.GetPointNo() + Nrefine - tess.GetPointNo();
-		for (size_t i = 0; i < ws; ++i)
-		{
-			for (size_t j = 0; j < extensive_tosend[i].size(); ++j)
-				extensives[changed_byouter[i][j] + Nremove] += extensive_tosend[i][j];
+			for (size_t i = 0; i < ws; ++i)
+			{
+				for (size_t j = 0; j < extensive_tosend[i].size(); ++j)
+					extensives[changed_byouter[i][j] + Nremove] += extensive_tosend[i][j];
+			}
 		}
-	}
 #endif
 }
 
@@ -1073,7 +1917,8 @@ AMR3D::AMR3D(EquationOfState const& eos,
 	     CellsToRemove3D const& remove,
 	     SpatialReconstruction3D &interp,
 	     AMRCellUpdater3D* cu,
-	     AMRExtensiveUpdater3D* eu):
+	     AMRExtensiveUpdater3D* eu,
+	     bool distribute_clips):
   eos_(eos), 
   refine_(refine), 
   remove_(remove),
@@ -1081,7 +1926,8 @@ AMR3D::AMR3D(EquationOfState const& eos,
   seu_(SimpleAMRExtensiveUpdater3D()), 
   interp_(interp), 
   cu_(cu), 
-  eu_(eu)
+  eu_(eu),
+  distribute_clips_(distribute_clips)
 {
 	if (!cu)
 		cu_ = &scu_;
@@ -1131,6 +1977,7 @@ void AMR3D::operator() (Simulation &sim)
 		return;
 	if(rank == 0)
 		std::cout<<"Removing "<<nAMR[0]<<" cells and refining "<<nAMR[1]<<" cells."<<std::endl;
+
 	interp_.BuildSlopes(tess, cells, time);
 	// Get new points from refine
 	std::vector<Vector3D> new_points = GetNewPoints(tess, ToRefine);
@@ -1154,17 +2001,36 @@ void AMR3D::operator() (Simulation &sim)
 #endif
 	// Fix extensives for refine
 	extensives.resize(oldtess->GetPointNo() + ToRefine.first.size());
-	LocalRefine(*oldtess, tess, ToRefine.first, cells, eos, *eu_, extensives,interp_);
 #ifdef RICH_MPI
-	MPIRefine(*oldtess, tess, ToRefine.first, *eu_, eos, cells, extensives,interp_);
+	if (distribute_clips_)
+	{
+		DistributedLocalRefine(*oldtess, tess, ToRefine.first, cells, eos, *eu_, extensives, interp_);
+		DistributedMPIRefine(*oldtess, tess, ToRefine.first, *eu_, eos, cells, extensives, interp_);
+	}
+	else
+	{
+		LocalRefine(*oldtess, tess, ToRefine.first, cells, eos, *eu_, extensives, interp_);
+		MPIRefine(*oldtess, tess, ToRefine.first, *eu_, eos, cells, extensives, interp_);
+	}
+#else
+	LocalRefine(*oldtess, tess, ToRefine.first, cells, eos, *eu_, extensives, interp_);
 #endif
 	// Remove from extensive the remove cells
 	RemoveVector(extensives, ToRemove.first);
 	// Add the removed extensive to the neighboring cells
-	LocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives,interp_);
-
 #ifdef RICH_MPI
-	MPIRemove(*oldtess, tess, ToRemove.first, *eu_, eos, cells, extensives,interp_);
+	if (distribute_clips_)
+	{
+		DistributedLocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives, interp_);
+		DistributedMPIRemove(*oldtess, tess, ToRemove.first, *eu_, eos, cells, extensives, interp_);
+	}
+	else
+	{
+		LocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives, interp_);
+		MPIRemove(*oldtess, tess, ToRemove.first, *eu_, eos, cells, extensives, interp_);
+	}
+#else
+	LocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives, interp_);
 #endif
 	// Recalc cells
 	RemoveVector(cells, ToRemove.first);

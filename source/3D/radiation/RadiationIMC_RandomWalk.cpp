@@ -16,7 +16,7 @@ namespace {
     constexpr double DIAG_RHO_MAX_RW = 0.01;
     inline bool isDiagFreqRW(double freq, double weight, double rho, const OpacityCalculator &opacity)
     {
-        if(weight < DIAG_WEIGHT_CUTOFF_RW) return false;
+        if(std::abs(weight) < DIAG_WEIGHT_CUTOFF_RW) return false;
         if(rho > DIAG_RHO_MAX_RW) return false;
         size_t g = opacity.findGroup(freq);
         return g == 15 || g == 16 || g == 18;
@@ -230,7 +230,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
 
     particle.timeLeft -= dt;
 
-    if(particle.weight < particle.initialWeight * 1e-4)
+    if(std::abs(particle.weight) < particle.initialWeight * 1e-4)
     {
         functionality.change = MonteCarloParticleStatus::REMOVE;
         if(!this->noHydroFeedback)

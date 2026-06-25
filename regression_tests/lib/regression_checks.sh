@@ -166,6 +166,8 @@ check_till_case() {
     local final_tgas
     local final_trad
     local rel_diff
+    local max_temp_rel_diff="${TILL_MAX_TEMP_REL_DIFF:-1e-2}"
+    local max_energy_rel_err="${TILL_MAX_ENERGY_REL_ERR:-1e-8}"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
@@ -224,12 +226,12 @@ check_till_case() {
             }'
     )
 
-    if ! awk -v r="$rel_diff" 'BEGIN { exit !(r < 1e-2) }'; then
-        set_check_msg "Till final Tgas/Trad mismatch >= 1%"
+    if ! awk -v r="$rel_diff" -v t="$max_temp_rel_diff" 'BEGIN { exit !(r < t) }'; then
+        set_check_msg "Till final Tgas/Trad mismatch: ${rel_diff} >= ${max_temp_rel_diff}"
         return 1
     fi
 
-    # Energy conservation check: |E_final - E_initial| / E_initial < 1e-8
+    # Energy conservation check: |E_final - E_initial| / E_initial below the selected Till threshold.
     local etotal_file="${run_dir}/Etotal.txt"
     if is_nonempty_and_newer "$etotal_file" "$run_start_epoch"; then
         local e_initial
@@ -255,15 +257,21 @@ check_till_case() {
                     printf "%.12e", val;
                 }'
         )
-        if ! awk -v r="$energy_rel_err" 'BEGIN { exit !(r < 1e-8) }'; then
-            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= 1e-8"
+        if ! awk -v r="$energy_rel_err" -v t="$max_energy_rel_err" 'BEGIN { exit !(r < t) }'; then
+            set_check_msg "Till energy conservation failed: relative error ${energy_rel_err} >= ${max_energy_rel_err}"
             return 1
         fi
-        set_check_msg "Till passed: Tgas/Trad agree within 1%, energy conserved (rel err ${energy_rel_err})"
+        set_check_msg "Till passed: Tgas/Trad rel diff ${rel_diff}, energy rel err ${energy_rel_err}"
     else
-        set_check_msg "Till final Tgas and Trad agree within 1% (Etotal.txt not found, energy check skipped)"
+        set_check_msg "Till final Tgas/Trad rel diff ${rel_diff} (Etotal.txt not found, energy check skipped)"
     fi
     return 0
+}
+
+check_till_mc_case() {
+    TILL_MAX_TEMP_REL_DIFF="${TILL_MC_MAX_TEMP_REL_DIFF:-2e-1}" \
+    TILL_MAX_ENERGY_REL_ERR="${TILL_MC_MAX_ENERGY_REL_ERR:-5e-2}" \
+    check_till_case "$@"
 }
 
 check_amr_random_case() {
@@ -745,6 +753,47 @@ check_spherical_collapse_case() {
     return 0
 }
 
+check_spherical_symmetry_tools_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_symmetry_tools_metrics.txt"
+    local pass_flag
+    local flux_flag
+    local update_flag
+    local angular_flux_flag
+    local angular_update_flag
+    local angular_recenter_flag
+    local angular_avg_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_symmetry_tools_metrics.txt"
+        return 1
+    fi
+
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    flux_flag=$(awk '$1 == "spherical_momentum_flux_ok" { print $2 }' "$metrics_file")
+    update_flag=$(awk '$1 == "spherical_momentum_update_ok" { print $2 }' "$metrics_file")
+    angular_flux_flag=$(awk '$1 == "angular_momentum_flux_ok" { print $2 }' "$metrics_file")
+    angular_update_flag=$(awk '$1 == "angular_momentum_update_ok" { print $2 }' "$metrics_file")
+    angular_recenter_flag=$(awk '$1 == "angular_momentum_recenter_ok" { print $2 }' "$metrics_file")
+    angular_avg_flag=$(awk '$1 == "angular_momentum_avg_ok" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" || "$flux_flag" != "1" || "$update_flag" != "1" ||
+        "$angular_flux_flag" != "1" || "$angular_update_flag" != "1" ||
+        "$angular_recenter_flag" != "1" || "$angular_avg_flag" != "1" ]]; then
+        set_check_msg "spherical_symmetry_tools reported failure"
+        return 1
+    fi
+
+    set_check_msg "spherical_symmetry_tools metrics passed"
+    return 0
+}
+
 check_gresho_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -979,6 +1028,59 @@ check_spherical_gauss_linear_case() {
     return 0
 }
 
+check_spherical_gauss_tangential_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_gauss_tangential_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_gauss_tangential_metrics.txt"
+        return 1
+    fi
+
+    local max_abs max_rel faces pass_flag
+    max_abs=$(awk '$1 == "sph_tangential_velocity_max_abs" { print $2 }' "$metrics_file")
+    max_rel=$(awk '$1 == "sph_tangential_velocity_max_rel" { print $2 }' "$metrics_file")
+    faces=$(awk '$1 == "faces_checked" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_abs" || -z "$max_rel" || -z "$faces" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse spherical tangential metrics"
+        return 1
+    fi
+    if ! is_finite_number "$max_abs" || ! is_finite_number "$max_rel"; then
+        set_check_msg "spherical tangential metrics are not finite"
+        return 1
+    fi
+    if ! awk -v n="$faces" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "spherical tangential checked zero faces"
+        return 1
+    fi
+
+    local max_abs_allowed="${SPH_TANGENTIAL_MAX_ABS:-1e-8}"
+    local max_rel_allowed="${SPH_TANGENTIAL_MAX_REL:-1e-8}"
+    if ! awk -v e="$max_abs" -v t="$max_abs_allowed" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "spherical tangential abs error too large: ${max_abs} >= ${max_abs_allowed}"
+        return 1
+    fi
+    if ! awk -v e="$max_rel" -v t="$max_rel_allowed" 'BEGIN { exit !(e < t) }'; then
+        set_check_msg "spherical tangential rel error too large: ${max_rel} >= ${max_rel_allowed}"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical tangential test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Spherical tangential face-basis check passed (abs=${max_abs}, rel=${max_rel})"
+    return 0
+}
+
 check_cartesian_gauss_linear_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -1108,69 +1210,6 @@ check_rayleigh_taylor_case() {
     return 0
 }
 
-check_doppler_mc_case() {
-    local run_dir="$1"
-    local run_start_epoch="$2"
-    local stdout_log="$3"
-    local stderr_log="$4"
-    local spectrum_file="${run_dir}/doppler_mc_spectrum.txt"
-    local checker_stdout="${run_dir}/doppler_mc_check.stdout.log"
-    local checker_stderr="${run_dir}/doppler_mc_check.stderr.log"
-
-    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
-        return 1
-    fi
-
-    if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale doppler_mc_spectrum.txt"
-        return 1
-    fi
-
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_doppler_mc.py" \
-        --spectrum "$spectrum_file" \
-        --max-l1 "${DOPPLER_MC_MAX_L1:-0.7}" \
-        --plot-dir "$run_dir" \
-        >"$checker_stdout" 2>"$checker_stderr"
-    if [[ $? -ne 0 ]]; then
-        set_check_msg "Doppler MC spectrum comparison failed"
-        return 1
-    fi
-
-    set_check_msg "Doppler MC spectrum comparison passed"
-    return 0
-}
-
-check_doppler_scatter_mc_case() {
-    local run_dir="$1"
-    local run_start_epoch="$2"
-    local stdout_log="$3"
-    local stderr_log="$4"
-    local spectrum_file="${run_dir}/doppler_scatter_spectrum.txt"
-    local checker_stdout="${run_dir}/doppler_scatter_check.stdout.log"
-    local checker_stderr="${run_dir}/doppler_scatter_check.stderr.log"
-
-    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
-        return 1
-    fi
-
-    if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale doppler_scatter_spectrum.txt"
-        return 1
-    fi
-
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_doppler_scatter.py" \
-        --spectrum "$spectrum_file" \
-        --max-l1 "${DOPPLER_SCATTER_MC_MAX_L1:-0.3}" \
-        --plot-dir "$run_dir" \
-        >"$checker_stdout" 2>"$checker_stderr"
-    if [[ $? -ne 0 ]]; then
-        set_check_msg "Doppler scatter MC-vs-diffusion comparison failed"
-        return 1
-    fi
-
-    set_check_msg "Doppler scatter MC-vs-diffusion comparison passed"
-    return 0
-}
 
 check_moving_slab_mc_case() {
     local run_dir="$1"
@@ -1233,5 +1272,62 @@ check_moving_slab_mc_32_case() {
     fi
 
     set_check_msg "Moving slab MC 32-group spectrum comparison passed"
+    return 0
+}
+
+check_amr_distributed_clip_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/amr_distributed_clip_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale amr_distributed_clip_metrics.txt"
+        return 1
+    fi
+
+    local mass_reldiff energy_reldiff threshold pass_flag
+    mass_reldiff=$(awk '$1 == "mass_reldiff" { print $2 }' "$metrics_file")
+    energy_reldiff=$(awk '$1 == "energy_reldiff" { print $2 }' "$metrics_file")
+    threshold=$(awk '$1 == "threshold" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$mass_reldiff" || -z "$energy_reldiff" || -z "$threshold" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse AMR distributed clip metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$mass_reldiff"; then
+        set_check_msg "mass_reldiff is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$energy_reldiff"; then
+        set_check_msg "energy_reldiff is not finite"
+        return 1
+    fi
+
+    local expected_threshold="${AMR_DISTRIBUTED_CLIP_THRESHOLD:-1e-6}"
+
+    if ! awk -v d="$mass_reldiff" -v t="$expected_threshold" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "mass_reldiff exceeds threshold (${mass_reldiff} > ${expected_threshold})"
+        return 1
+    fi
+
+    if ! awk -v d="$energy_reldiff" -v t="$expected_threshold" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "energy_reldiff exceeds threshold (${energy_reldiff} > ${expected_threshold})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "amr_distributed_clip test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "AMR distributed clip conservation check passed (mass_reldiff=${mass_reldiff}, energy_reldiff=${energy_reldiff})"
     return 0
 }

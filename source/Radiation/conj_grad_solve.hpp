@@ -31,7 +31,34 @@ namespace CG
     double constexpr boltzmann_constant = 1.380649e-16;
     double constexpr electron_mass = 9.1093837015e-28;
     double constexpr max_coupling_strength = 1e2;
-    double constexpr compton_optical_depth_turn_off = 10;
+    double constexpr compton_optical_depth_turn_off = 100;
+
+    struct BiCGSTABWorkspace
+    {
+        mat A;
+        size_t_mat A_indeces;
+        std::vector<double> A_diag;
+        std::vector<double> b;
+        std::vector<double> sub_x;
+        std::vector<size_t> A_row_ptr;
+        std::vector<size_t> A_col_idx;
+        std::vector<double> A_values;
+        std::vector<double> M;
+        std::vector<double> r_old;
+        std::vector<double> sub_a_times_p;
+        std::vector<double> sub_r;
+        std::vector<double> sub_p;
+        std::vector<double> sub_r0;
+        std::vector<double> y;
+        std::vector<double> z;
+        std::vector<double> v;
+        std::vector<double> h;
+        std::vector<double> s;
+        std::vector<double> t;
+        std::vector<double> scratch_rescale1;
+        std::vector<double> scratch_rescale2;
+        std::vector<double> old_x;
+    };
 
     //! \brief Class that build the data for the solution of the linear system A*x=b
     class MatrixBuilder
@@ -103,6 +130,11 @@ namespace CG
         Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
         double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution,
         bool &good_end);
+
+    std::vector<double> &BiCGSTAB(const double tolerance, int &total_iters,
+        Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
+        double const dt, MatrixBuilder const& matrix_builder, double const time, std::vector<double> &sub_x_solution,
+        bool &good_end, BiCGSTABWorkspace &workspace);
 
     double mpi_dot_product(const std::vector<double> &sub_u, const std::vector<double> &sub_v);
 

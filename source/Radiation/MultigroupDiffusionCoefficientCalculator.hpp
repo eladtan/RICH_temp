@@ -75,6 +75,8 @@ using boost::math::pow;
 class FreeFreeAbsorptionOpacityMultigroup : public OpacityCalculator {
 private:
     double const Z;
+    bool const include_plasma_cutoff_;
+    bool const use_free_free_cgs_formula_;
 
     static double constexpr m_e = CG::electron_mass;
     static double constexpr c = CG::speed_of_light;
@@ -91,7 +93,9 @@ private:
 public:
     FreeFreeAbsorptionOpacityMultigroup(double const Z_,
                                         std::vector<double> const& energy_groups_center_,
-                                        std::vector<double> const& energy_groups_boundary_);
+                                        std::vector<double> const& energy_groups_boundary_,
+                                        bool include_plasma_cutoff = false,
+                                        bool use_free_free_cgs_formula = false);
 
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override;
 

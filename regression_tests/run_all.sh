@@ -24,6 +24,7 @@ slurm_job_name() {
     n="${n/desmore2012_mc/dsm_mpi}"
     n="${n/spherical_collapse_hires/sphc_hi}"
     n="${n/spherical_collapse/sphc}"
+    n="${n/spherical_gauss_tangential/sph_gtan}"
     n="${n/spherical_gauss_linear/sph_glin}"
     n="${n/cartesian_gauss_linear/crt_glin}"
     n="${n/rayleigh_taylor_mpi/rt_mpi}"
@@ -43,7 +44,9 @@ fi
 source "${CHECKS_SCRIPT}"
 
 # ==================== Recheck helpers ====================
-# Find the newest regression_results/<timestamp>/<test_id>/ that has run logs.
+# Find the newest regression_results/<timestamp>/[<mode>/]<test_id>/ that has run logs.
+# Searches both the flat layout (<timestamp>/<test_id>) and the serial_then_mpi
+# layout (<timestamp>/{serial,mpi}/<test_id>), returning the most recent match.
 find_latest_regression_artifact_for_test() {
     local test_id="$1"
     local artifact_root="$2"
@@ -54,6 +57,15 @@ find_latest_regression_artifact_for_test() {
     fi
     while IFS= read -r ts_dir; do
         [[ -n "$ts_dir" ]] || continue
+        # Check serial_then_mpi layout: <timestamp>/{serial,mpi}/<test_id>
+        for mode_sub in serial mpi; do
+            local case_dir="${ts_dir}/${mode_sub}/${test_id}"
+            if [[ -d "$case_dir" && -f "$case_dir/run.stdout.log" && -f "$case_dir/run.stderr.log" ]]; then
+                printf '%s\n' "$case_dir"
+                return 0
+            fi
+        done
+        # Check flat layout: <timestamp>/<test_id>
         local case_dir="${ts_dir}/${test_id}"
         if [[ -d "$case_dir" && -f "$case_dir/run.stdout.log" && -f "$case_dir/run.stderr.log" ]]; then
             printf '%s\n' "$case_dir"
@@ -148,10 +160,13 @@ MODE="all"
 NPROC_OVERRIDE=""
 SLURM_PARTITION_OVERRIDE=""
 RUN_LOCAL=0
+SEQUENTIAL=0
+NO_EXCLUSIVE=0
 
 ARTIFACT_ROOT="${ROOT_DIR}/regression_results"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_ARTIFACT_DIR="${ARTIFACT_ROOT}/${TIMESTAMP}"
+ARTIFACT_DIR_OVERRIDE=""
 
 # ==================== Result arrays ====================
 declare -a RESULT_NAMES=()
@@ -182,6 +197,8 @@ Options:
   --test <id>              Run only one test id (${VALID_TEST_IDS//|/, })
   --partition <name>       Override SLURM partition for all MPI tests (default per-test, usually bigrun)
   --local                  Run MPI tests locally via mpirun instead of submitting through SLURM
+  --sequential              Run tests one at a time instead of in parallel
+  --no-exclusive            Do not pass --exclusive to SLURM (allow node sharing)
   --clean-results          Delete regression_results, generated figures, and run artifacts from cases, then exit
   --nproc <N>              Override detected core count (default: $(nproc))
   --keep-artifacts         Keep all logs even if all tests pass
@@ -194,7 +211,7 @@ Modes:
   serial           Run tests tagged "serial" (default config: gnuRelease)
   mpi              Run tests tagged "mpi"    (default config: gnuReleaseMPI)
   all              Run all tests             (default config: gnuReleaseMPI)
-  serial_then_mpi  Run serial tests first (gnuRelease), then MPI tests (gnuReleaseMPI)
+  serial_then_mpi  Run serial (gnuRelease) and MPI (gnuReleaseMPI) tests in parallel
 
 Examples:
   ./regression_tests/run_all.sh --mode serial
@@ -240,6 +257,14 @@ while [[ $# -gt 0 ]]; do
             RUN_LOCAL=1
             shift
             ;;
+        --sequential)
+            SEQUENTIAL=1
+            shift
+            ;;
+        --no-exclusive)
+            NO_EXCLUSIVE=1
+            shift
+            ;;
         --nproc)
             NPROC_OVERRIDE="${2:-}"
             shift 2
@@ -256,6 +281,10 @@ while [[ $# -gt 0 ]]; do
             RECHECK_MODE=1
             shift
             ;;
+        --_artifact-dir)
+            ARTIFACT_DIR_OVERRIDE="${2:-}"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -267,6 +296,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Apply artifact directory override (used by serial_then_mpi to isolate passes)
+if [[ -n "${ARTIFACT_DIR_OVERRIDE}" ]]; then
+    RUN_ARTIFACT_DIR="${ARTIFACT_DIR_OVERRIDE}"
+fi
 
 # ==================== Recheck-only (no build/run) ====================
 if [[ "${RECHECK_MODE}" -eq 1 ]]; then
@@ -298,9 +332,11 @@ case "${MODE}" in
         ;;
 esac
 
-# serial_then_mpi: re-invoke ourselves twice and merge results
+# serial_then_mpi: launch both passes in parallel so a long-running serial
+# test does not delay the MPI pass.  Each pass writes to its own artifact
+# subdirectory (serial/ and mpi/) to prevent clobbering.
 if [[ "${MODE}" == "serial_then_mpi" ]]; then
-    echo "${BOLD}=== serial_then_mpi: running serial pass ===${NC}"
+    echo "${BOLD}=== serial_then_mpi: launching serial and MPI passes in parallel ===${NC}"
     passthrough_args=()
     [[ "${KEEP_ARTIFACTS}" -eq 1 ]]            && passthrough_args+=(--keep-artifacts)
     [[ "${VERBOSE}" -eq 1 ]]                   && passthrough_args+=(--verbose)
@@ -308,33 +344,53 @@ if [[ "${MODE}" == "serial_then_mpi" ]]; then
     [[ -n "${NPROC_OVERRIDE}" ]]               && passthrough_args+=(--nproc "${NPROC_OVERRIDE}")
     [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]     && passthrough_args+=(--partition "${SLURM_PARTITION_OVERRIDE}")
     [[ "${RUN_LOCAL}" -eq 1 ]]                 && passthrough_args+=(--local)
+    [[ "${SEQUENTIAL}" -eq 1 ]]                && passthrough_args+=(--sequential)
+    [[ "${NO_EXCLUSIVE}" -eq 1 ]]              && passthrough_args+=(--no-exclusive)
 
     mpi_config="${CONFIG}"
     if [[ "${CONFIG_EXPLICIT}" -eq 0 ]]; then
         serial_config="gnuRelease"
         mpi_config="gnuReleaseMPI"
     elif [[ "${CONFIG}" == *MPI* ]]; then
-        # Derive the serial config by stripping "MPI" from the config name
         serial_config="${CONFIG//MPI/}"
         echo "  Derived serial config: ${serial_config} (from ${CONFIG})"
     else
         serial_config="${CONFIG}"
     fi
 
-    serial_rc=0
+    serial_artifact_dir="${RUN_ARTIFACT_DIR}/serial"
+    mpi_artifact_dir="${RUN_ARTIFACT_DIR}/mpi"
+    mkdir -p "${serial_artifact_dir}" "${mpi_artifact_dir}"
+
+    echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
+    echo "    serial → ${serial_artifact_dir}"
+    echo "    mpi    → ${mpi_artifact_dir}"
+
+    # Children must always keep artifacts; the parent handles final cleanup.
+    echo "${BOLD}--- serial pass (background) ---${NC}"
     "${BASH_SOURCE[0]}" --mode serial --config "${serial_config}" \
-        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" || serial_rc=$?
+        --mpi-np "${MPI_NP}" --_artifact-dir "${serial_artifact_dir}" \
+        --keep-artifacts "${passthrough_args[@]}" &
+    serial_pid=$!
 
-    echo
-    echo "${BOLD}=== serial_then_mpi: running MPI pass ===${NC}"
-
-    mpi_rc=0
+    echo "${BOLD}--- MPI pass (background) ---${NC}"
     "${BASH_SOURCE[0]}" --mode mpi --config "${mpi_config}" \
-        --mpi-np "${MPI_NP}" "${passthrough_args[@]}" || mpi_rc=$?
+        --mpi-np "${MPI_NP}" --_artifact-dir "${mpi_artifact_dir}" \
+        --keep-artifacts "${passthrough_args[@]}" &
+    mpi_pid=$!
+
+    serial_rc=0
+    wait "${serial_pid}" || serial_rc=$?
+    mpi_rc=0
+    wait "${mpi_pid}" || mpi_rc=$?
 
     echo
     if [[ ${serial_rc} -eq 0 && ${mpi_rc} -eq 0 ]]; then
         echo "${GREEN}serial_then_mpi: all passes succeeded.${NC}"
+        if [[ "${KEEP_ARTIFACTS}" -eq 0 ]]; then
+            rm -rf "${RUN_ARTIFACT_DIR}"
+            echo "Removed success artifacts (use --keep-artifacts to retain logs)."
+        fi
         exit 0
     else
         echo "${RED}serial_then_mpi: failures detected (serial=${serial_rc}, mpi=${mpi_rc}).${NC}"
@@ -521,6 +577,11 @@ load_test_definition() {
         return 2  # skipped, not an error
     fi
 
+    # Skip manual-only tests unless explicitly selected with --test
+    if [[ " ${TAGS} " == *" manual "* && "${TEST_ID}" != "${TEST_FILTER}" ]]; then
+        return 2
+    fi
+
     # Filter by --mode using TAGS
     if [[ -z "${TAGS}" ]]; then
         TAGS="serial"  # default to serial if no tags
@@ -583,6 +644,15 @@ if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
         ALL_SLURM_PARTITIONS[$i]="${SLURM_PARTITION_OVERRIDE}"
     done
 fi
+if [[ "${NO_EXCLUSIVE}" -eq 1 ]]; then
+    for i in "${!ALL_SLURM_EXCLUSIVES[@]}"; do
+        ALL_SLURM_EXCLUSIVES[$i]="0"
+    done
+fi
+
+# Do not alter modules inside SLURM jobs. The submit environment and the
+# explicit variables below define the run environment.
+SLURM_MODULE_SETUP="true"
 
 # ==================== Print header ====================
 mkdir -p "${RUN_ARTIFACT_DIR}"
@@ -603,6 +673,7 @@ if [[ "${MODE}" != "serial" ]]; then
     fi
 fi
 echo "  Cores:     ${NPROC_OVERRIDE:-$(nproc)} (override with --nproc)"
+echo "  SLURM env: ${SLURM_MODULE_SETUP}"
 echo "  Artifacts: ${RUN_ARTIFACT_DIR}"
 echo
 
@@ -614,9 +685,13 @@ SUITE_START_EPOCH="$(date +%s)"
 
 # ==================== Parallel build configuration ====================
 MAX_PARALLEL_BUILDS=4
+MAX_TOTAL_MAKE_JOBS=20
 TOTAL_CORES="${NPROC_OVERRIDE:-$(nproc)}"
 JOBS_PER_BUILD=10 # $(( TOTAL_CORES / MAX_PARALLEL_BUILDS ))
 (( JOBS_PER_BUILD < 1 )) && JOBS_PER_BUILD=1
+MAX_JOBS_PER_BUILD=$(( MAX_TOTAL_MAKE_JOBS / MAX_PARALLEL_BUILDS ))
+(( MAX_JOBS_PER_BUILD < 1 )) && MAX_JOBS_PER_BUILD=1
+(( JOBS_PER_BUILD > MAX_JOBS_PER_BUILD )) && JOBS_PER_BUILD=$MAX_JOBS_PER_BUILD
 
 # FIFO-based semaphore to cap concurrent builds
 BUILD_FIFO="$(mktemp -u)"
@@ -630,7 +705,7 @@ done
 # ==========================================================================
 #  PHASE 1: BUILD & RUN (pipelined, max ${MAX_PARALLEL_BUILDS} concurrent builds)
 # ==========================================================================
-echo "${BOLD}=== BUILD & RUN PHASE (max ${MAX_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each) ===${NC}"
+echo "${BOLD}=== BUILD & RUN PHASE (max ${MAX_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each, ${MAX_TOTAL_MAKE_JOBS} total cap) ===${NC}"
 
 declare -A JOB_PIDS=()    # test_id -> PID
 declare -A JOB_INDICES=()  # test_id -> index into ALL_* arrays
@@ -721,7 +796,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
         run_rc=0
         if [[ "${run_mode}" == "slurm" ]]; then
             local_escaped_run_cmd="${run_cmd//\'/\'\\\'\'}"
-            sbatch_wrap_cmd="ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
+            sbatch_wrap_cmd="${SLURM_MODULE_SETUP} && ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
             sbatch_args=(
                 sbatch
                 --wait
@@ -757,6 +832,10 @@ for i in "${!ALL_TEST_IDS[@]}"; do
         exit "${run_rc}"
     ) &
     JOB_PIDS["${test_id}"]=$!
+
+    if [[ "${SEQUENTIAL}" -eq 1 ]]; then
+        wait "${JOB_PIDS[${test_id}]}"
+    fi
 done
 
 echo

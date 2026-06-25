@@ -8,7 +8,10 @@ MonteCarloRadiationPhysics3D::MonteCarloRadiationPhysics3D(Tessellation3D &grid,
     #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif // RICH_MPI
-    this->re = std::mt19937_64(rank);
+    uint64_t baseSeed = static_cast<uint64_t>(rank) * 3;
+    this->re = std::mt19937_64(baseSeed);
+    this->opacity->rng_.seed(baseSeed + 1);
+    ReseedRandomInCell(baseSeed + 2);
     size_t N = this->grid.GetPointNo();
     this->Erad_time_avg.resize(N, 0);
     for(size_t i = 0; i < N; i++)

@@ -110,7 +110,7 @@ public:
 	\param A Matrix to be added
 	\return Reference to sum
 	*/
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 	Mat33& operator+=(Mat33 const& A);
@@ -119,7 +119,7 @@ public:
 	\param A Matrix to be subtracted
 	\return Difference
 	*/
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 	Mat33& operator-=(Mat33 const& A);
@@ -128,7 +128,7 @@ public:
 	\param A Matrix to be copied
 	\return The assigned value
 	*/
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 	Mat33& operator=(Mat33 const& A);
@@ -137,7 +137,7 @@ public:
 	\param s Scalar
 	\return Reference to the Matrix multiplied by scalar
 	*/
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 	Mat33& operator*=(double s);
@@ -155,7 +155,7 @@ public:
 	T J2() const;
 
 
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 	~Mat33(void) {}
@@ -384,7 +384,7 @@ T operator%(Mat33<T> const &A1, Mat33<T> const &A2)
     return A1(0,0)*A2(0,0)+A1(0,1)*A2(0,1)+A1(0,2)*A2(0,2)+A1(1,0)*A2(1,0)+A1(1,1)*A2(1,1)+A1(1,2)*A2(1,2)+A1(2,0)*A2(2,0)+A1(2,1)*A2(2,1)+A1(2,2)*A2(2,2);
 }
 
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 template <typename T>
@@ -400,7 +400,7 @@ Mat33<T>& Mat33<T>::operator+=(Mat33<T> const& A)
     return *this;
 }
 
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 template <typename T>
@@ -416,7 +416,7 @@ Mat33<T>& Mat33<T>::operator-=(Mat33<T> const& A)
     return *this;
 }
 
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 template <typename T>
@@ -432,7 +432,7 @@ Mat33<T>& Mat33<T>::operator*=(double d)
     return *this;
 }
 
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 template <typename T>

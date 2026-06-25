@@ -94,6 +94,41 @@ class DiffusionSideBoundary : public DiffusionBoundaryCalculator
         double T_;
 };
 
+//! \brief Left x-side true Dirichlet boundary for radiation energy.
+//!
+//! Enforces Er(face) = a*T_left^4 on the left x boundary.
+//! Non-left boundaries are treated as zero normal diffusive flux.
+class DiffusionDirichletBoundary : public DiffusionBoundaryCalculator
+{
+    public:
+    /*!
+    \brief Class constructor
+    \param T Boundary temperature, in kelvin
+    \param D_calc Opacity calculator for diffusion coefficient
+    */
+    DiffusionDirichletBoundary(double const T, OpacityCalculator const& D_calc): T_(T), D_calc_(D_calc){}
+
+    void SetTemperature(double T) { T_ = T; }
+
+    void SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
+        std::vector<ComputationalCell3D> const& cells, double const Area, double& A, double &b, size_t const face_index)const override;
+
+    void GetOutSideValues(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, size_t const index, size_t const outside_point,
+        std::vector<double> const& new_E, double& E_outside, Vector3D& v_outside)const override;
+
+    void SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
+        ComputationalCell3D const& cell, double const Area, double& A, double &b, size_t const face_index, 
+        double const fleck_factor, double const flux_limiter, double const D, double const sigma_planck)const override;
+
+    private:
+        double T_;
+        OpacityCalculator const& D_calc_;
+
+        bool IsLeftXBoundary(Tessellation3D const& tess, size_t index, size_t outside_point) const;
+        double BoundaryEnergyDensity() const;
+        double CalcFaceDiffusionCoefficient(std::vector<ComputationalCell3D> const& cells, size_t index) const;
+};
+
 //! \brief Class with constant blackbody temperature on the left x side and zero flux on other sides
 class DiffusionClosedBox : public DiffusionBoundaryCalculator
 {
@@ -107,6 +142,55 @@ class DiffusionClosedBox : public DiffusionBoundaryCalculator
     void SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
         ComputationalCell3D const& cell, double const Area, double& A, double &b, size_t const face_index, 
         double const fleck_factor, double const flux_limiter, double const D, double const sigma_planck)const override;
+};
+
+//! \brief Marshak boundary for a moving mesh / moving radiation boundary face.
+//!
+//! Left x side is a blackbody bath with mixed-frame moving-face correction.
+//! Non-left boundaries are closed / reflecting by default.
+class DiffusionMovingMarshakBoundary : public DiffusionBoundaryCalculator
+{
+public:
+    explicit DiffusionMovingMarshakBoundary(double const T_bath)
+        : T_bath_(T_bath),
+          left_face_velocity_(0.0, 0.0, 0.0),
+          right_face_velocity_(0.0, 0.0, 0.0),
+          enable_right_boundary_(false),
+          debug_(false)
+    {}
+
+    void SetTemperature(double const T_bath) { T_bath_ = T_bath; }
+
+    void SetLeftFaceVelocity(Vector3D const& v_face) { left_face_velocity_ = v_face; }
+
+    void SetRightFaceVelocity(Vector3D const& v_face) { right_face_velocity_ = v_face; }
+
+    void EnableRightBoundary(bool const value) { enable_right_boundary_ = value; }
+
+    void SetDebug(bool const value) { debug_ = value; }
+
+    void SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
+        std::vector<ComputationalCell3D> const& cells, double const Area, double& A, double &b, size_t const face_index)const override;
+
+    void GetOutSideValues(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, size_t const index, size_t const outside_point,
+        std::vector<double> const& new_E, double& E_outside, Vector3D& v_outside)const override;
+
+    void SetMomentumTermBoundary(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt,
+        ComputationalCell3D const& cell, double const Area, double& A, double &b, size_t const face_index,
+        double const fleck_factor, double const flux_limiter, double const D, double const sigma_planck)const override;
+
+private:
+    double T_bath_;
+    Vector3D left_face_velocity_;
+    Vector3D right_face_velocity_;
+    bool enable_right_boundary_;
+    bool debug_;
+
+    double BoundaryEnergyDensity() const;
+    bool IsLeftXBoundary(Tessellation3D const& tess, size_t index, size_t outside_point) const;
+    bool IsRightXBoundary(Tessellation3D const& tess, size_t index, size_t outside_point) const;
+    bool IsActiveBathBoundary(Tessellation3D const& tess, size_t index, size_t outside_point) const;
+    Vector3D FaceVelocity(Tessellation3D const& tess, size_t index, size_t outside_point) const;
 };
 
 //! \brief Class for calculating diffusion matrix data for the CG solver
@@ -126,7 +210,8 @@ public:
               bool const flux_limiter = true, 
               bool const hydro_on = true, 
               bool const compton_on = false,
-              bool const cooling_time_limiter_on = false);
+              bool const cooling_time_limiter_on = false,
+              double const max_planck_opacity_factor = 100.0);
     
     ~Diffusion() = default;
 
@@ -180,7 +265,9 @@ public:
     mutable std::vector<double> old_T;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
+    mutable CG::BiCGSTABWorkspace cg_workspace_;
     bool const cooling_time_limiter_on_;
+    double const max_planck_opacity_factor_;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

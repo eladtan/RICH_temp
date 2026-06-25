@@ -66,18 +66,18 @@ namespace
 	}
 
 	bool HighRelativeKineticEnergy(Tessellation3D const& tess, size_t index, vector<Conserved3D> const& cells,
-		Conserved3D const& cell)
+		Conserved3D const& cell, double &maxDV)
 	{
 		std::vector<size_t> neigh;
 		tess.GetNeighbors(index, neigh);
 		size_t N = neigh.size();
-		double maxDV = 0;
+		maxDV = 0;
 		size_t Norg = tess.GetPointNo();
 		Vector3D Vcell = cell.momentum / cell.mass;
 		double Et = cell.energy / cell.mass - 0.5*ScalarProd(Vcell, Vcell);
 		double div_V = 0;
 		Vector3D const r_i = tess.GetMeshPoint(index);
-		auto faces = tess.GetCellFaces(index);
+		const auto &faces = tess.GetCellFaces(index);
 		for (size_t i = 0; i < N; ++i)
 		{
 			size_t neighbor_j = neigh[i];
@@ -91,7 +91,7 @@ namespace
 			}
 		}
 		div_V /= tess.GetVolume(index);
-		if(div_V < 0 && (div_V * tess.GetWidth(index) < fastabs(Vcell) * 0.05))
+		if(div_V < 0 && (div_V * tess.GetWidth(index) < -fastabs(Vcell) * 0.05))
 			return false;
 		return 0.005*maxDV*maxDV > Et;
 	}
@@ -107,6 +107,8 @@ namespace
 		{
 			try
 			{
+				if(res[i].ID == print_id)
+					std::cout<<"Entered cell update "<<res[i]<<std::endl;
 				Conserved3D& extensive = extensives[i];
 				const double vol = tess.GetVolume(i);
 				res[i].density = extensive.mass / vol;
@@ -158,9 +160,10 @@ namespace
 						}
 						else
 						{
+							double maxDV;
 							// Is the kinetic energy small?
 							if ((energy*extensive.mass < 0.005*extensive.energy) &&
-								HighRelativeKineticEnergy(tess, i, extensives, extensive))
+								HighRelativeKineticEnergy(tess, i, extensives, extensive, maxDV))
 							{
 								if(print_id == res[i].ID)
 									std::cout<<"Entered entropy fix2"<<std::endl;
@@ -168,6 +171,8 @@ namespace
 							}
 							else
 							{
+								if(print_id == res[i].ID)
+									std::cout<<"Regular update "<<maxDV<<std::endl;
 								double new_pressure = eos.de2p(res[i].density, energy, res[i].tracers, ComputationalCell3D::tracerNames);
 							  	double new_entropy = eos.dp2s(res[i].density, new_pressure, res[i].tracers, ComputationalCell3D::tracerNames);
 								// We don't need the entropy fix, update entropy
@@ -269,6 +274,8 @@ namespace
 					eo.addEntry("Cell id", static_cast<double>(res[i].ID));
 					throw eo;
 				}
+				if(print_id == res[i].ID)
+					std::cout<<"Exited cell update "<<res[i]<<std::endl;
 			}
 			catch (UniversalError &eo)
 			{

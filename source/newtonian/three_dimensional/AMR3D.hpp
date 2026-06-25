@@ -195,6 +195,7 @@ private:
 	SpatialReconstruction3D &interp_;
 	AMRCellUpdater3D* cu_;
 	AMRExtensiveUpdater3D* eu_;
+	bool distribute_clips_;
 	AMR3D(AMR3D const& amr);
 	AMR3D& operator=(AMR3D const&);
 	
@@ -212,9 +213,14 @@ public:
 	\param eu Extensive updater
 	\param eos Equation of state
 	\param interp Interpolation scheme
+	\param distribute_clips Whether to distribute clip work across idle MPI ranks
 	*/
 	AMR3D(EquationOfState const& eos, CellsToRefine3D const& refine, CellsToRemove3D const& remove,SpatialReconstruction3D &interp, AMRCellUpdater3D* cu = nullptr,
-		AMRExtensiveUpdater3D* eu = nullptr);
+		AMRExtensiveUpdater3D* eu = nullptr, bool distribute_clips = true);
+
+	//! \brief Enable or disable distributed clip offloading
+	void SetDistributeClips(bool v) { distribute_clips_ = v; }
+
 	//! Class destructor
 	~AMR3D();
 };

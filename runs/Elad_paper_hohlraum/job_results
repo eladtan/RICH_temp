@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# python3 scalability.py
+# python3 scalability.py --optimal
+# python3 scalability.py --optimal --p2p
+python3 scalability.py --p2p --sum=200 --optimal

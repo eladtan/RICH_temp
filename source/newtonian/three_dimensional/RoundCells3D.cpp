@@ -5,18 +5,19 @@
 #endif
 
 RoundCells3D::RoundCells3D(const PointMotion3D& pm, const EquationOfState& eos,
-	double chi, double eta, bool cold, double min_dw, double dt_speed, const vector<std::string>& no_move) : pm_(pm), eos_(eos), chi_(chi),
-	eta_(eta), cold_(cold), min_dw_(min_dw),dt_speed_(dt_speed),no_move_(no_move) {}
+	double chi, double eta, bool cold, double min_dw, double dt_speed, const vector<std::string>& no_move, double max_velocity) : pm_(pm), eos_(eos), chi_(chi),
+	eta_(eta), cold_(cold), min_dw_(min_dw),dt_speed_(dt_speed),no_move_(no_move),max_velocity_(max_velocity) {}
 
 namespace
 {
 	void SlowDown(Vector3D &velocity, Tessellation3D const& tess, double R, size_t index, const vector<Vector3D> & velocities,
-		vector<char> const& nomove)
+		vector<char> const& nomove, vector<size_t> &neigh_buf)
 	{
 		if (nomove[index] == 1)
 			return;
 		Vector3D const& point = tess.GetMeshPoint(index);
-		vector<size_t> neigh = tess.GetNeighbors(index);
+		tess.GetNeighbors(index, neigh_buf);
+		vector<size_t> &neigh = neigh_buf;
 		size_t N = neigh.size();
 		size_t min_loc = 0;
 		double min_d = fastabs(point - tess.GetMeshPoint(neigh[0]));
@@ -29,13 +30,14 @@ namespace
 				min_loc = i;
 			}
 		}
-		if (min_d < 0.3*R)
+		double other_width = tess.IsPointOutsideBox(neigh[min_loc]) ? 0.0 : tess.GetWidth(neigh[min_loc]);
+		if (min_d < 0.4 * std::min(R, other_width))
 		{
 			size_t face = tess.GetCellFaces(index)[min_loc];
 			size_t other = tess.GetFaceNeighbors(face).first == index ? tess.GetFaceNeighbors(face).second :
 				tess.GetFaceNeighbors(face).first;
 			Vector3D parallel = tess.FaceCM(face) - 0.5*(tess.GetMeshPoint(index) + tess.GetMeshPoint(other));
-			parallel *= (1.0 / fastabs(parallel));
+			parallel *= (1.0 / (fastabs(parallel) + 1e-20));
 			Vector3D v_par = parallel * ScalarProd(velocity, parallel);
 			Vector3D v_norm = velocity - parallel * ScalarProd(velocity, parallel);
 			if (!tess.IsPointOutsideBox(other))
@@ -46,14 +48,15 @@ namespace
 				}
 				else
 				{
-					if (index < other)
+					double d_over_R_self = fastabs(tess.GetCellCM(index) - tess.GetMeshPoint(index)) / R;
+					double R_other = tess.GetWidth(other);
+					double d_over_R_other = fastabs(tess.GetCellCM(other) - tess.GetMeshPoint(other)) / R_other;
+					double d_over_R_max = std::max(d_over_R_self, d_over_R_other);
+					if (d_over_R_max < 0.5)
 					{
-						v_par *= 0.5;
-						Vector3D temp = parallel * ScalarProd(velocities[other], parallel);
-						v_par += 0.5*temp;
+						if (d_over_R_self < d_over_R_other)
+							v_par = parallel * ScalarProd(velocities[other], parallel);
 					}
-					else
-						v_par = parallel * ScalarProd(velocities[other], parallel);
 				}
 			}
 			velocity = v_norm + v_par;
@@ -104,7 +107,8 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	vector<size_t> neigh = tess.GetNeighbors(i);
+	tess.GetNeighbors(i, calc_dw_neigh_buf_);
+	vector<size_t> &neigh = calc_dw_neigh_buf_;
 	size_t N = neigh.size();
 	for (size_t j = 0; j < N; ++j)
 	{
@@ -115,7 +119,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		{
 #endif
 			cs = std::max(cs, eos_.dp2c(cells[neigh[j]].density, cells[neigh[j]].pressure,
-						    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
+					    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
 			cs = std::max(cs, fastabs(cells[neigh[j]].velocity));
 #ifdef RICH_DEBUG
 			if (!std::isfinite(cs))
@@ -141,8 +145,12 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		throw eo;
 	}
 #endif
-	velocity += chi_ * cs * (s - r) / std::max(R, d);
-	SlowDown(velocity, tess, R, i, velocities, nomove);
+	Vector3D dw = chi_ * cs * (s - r) / std::max(R, d);
+	const double dw_mag = fastabs(dw);
+	if (dw_mag > max_velocity_)
+		dw *= max_velocity_ / dw_mag;
+	velocity += dw;
+	// SlowDown(velocity, tess, R, i, velocities, nomove, slowdown_neigh_buf_);
 }
 
 void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, double dt, vector<ComputationalCell3D> const& cells,
@@ -154,7 +162,8 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	const double R = tess.GetWidth(i);
 	if (d < 0.9*eta_*R)
 		return;
-	vector<size_t> neigh = tess.GetNeighbors(i);
+	tess.GetNeighbors(i, calc_dw2_neigh_buf_);
+	vector<size_t> &neigh = calc_dw2_neigh_buf_;
 	size_t N = neigh.size();
 	double cs = 0;
 	double min_R = R;
@@ -198,8 +207,12 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 		
 }
 	const double c_dt = std::max(std::max(dt_speed_*std::min(d, min_R) / dt, cs), min_dw_);
-	velocity += chi_ * c_dt*(s - r) / std::max(R, d);
-	SlowDown(velocity, tess, R, i, velocities, nomove);
+	Vector3D dw = chi_ * c_dt*(s - r) / std::max(R, d);
+	const double dw_mag = fastabs(dw);
+	if (dw_mag > max_velocity_)
+		dw *= max_velocity_ / dw_mag;
+	velocity += dw;
+	// SlowDown(velocity, tess, R, i, velocities, nomove, slowdown_neigh_buf_);
 }
 
 void RoundCells3D::operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
@@ -234,7 +247,7 @@ void RoundCells3D::operator()(const Tessellation3D& tess, const vector<Computati
 	}
 #ifndef RICH_MPI
 	for (size_t i = 0; i < n; ++i)
-		SlowDown(res[i], tess, tess.GetWidth(i), i, res, nomove);
+		SlowDown(res[i], tess, tess.GetWidth(i), i, res, nomove, slowdown_neigh_buf_);
 #endif
 }
 
@@ -296,8 +309,9 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 		}
 	}
 #ifdef RICH_MPI
+	MPI_exchange_data(tess, velocities, true);
 	for (size_t i = 0; i < n; ++i)
-		SlowDown(velocities[i], tess, tess.GetWidth(i), i, velocities, nomove);
+		SlowDown(velocities[i], tess, tess.GetWidth(i), i, velocities, nomove, slowdown_neigh_buf_);
 #endif
 	velocities.resize(n);
 	CorrectPointsOverShoot(velocities, dt, tess);

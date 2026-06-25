@@ -99,7 +99,7 @@
     "editor.cursorSmoothCaretAnimation": "on",
     "explorer.confirmDelete": false,
     "workbench.editor.closeOnFileDelete": true,
-    "workbench.colorTheme": "Atom One Dark",
+    "workbench.colorTheme": "One Dark Pro Night Flat",
     "remote.SSH.reconnectOnTimeout": false,
 
     "editor.tokenColorCustomizations": {
@@ -205,5 +205,6 @@
     },
     "cmake.sourceDirectory": "RICH/source",
     "tabnine.cloudHost": "https://console.tabnine.com",
-    "makefile.configureOnOpen": true
+    "makefile.configureOnOpen": true,
+    "specstory.cloudSync.enabled": "always"
 }

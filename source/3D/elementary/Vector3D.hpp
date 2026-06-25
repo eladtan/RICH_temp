@@ -54,7 +54,7 @@ public:
 	\param iy y Component
 	\param iz z Component
 	*/
-	#ifdef __INTEL_COMPILER
+	#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp declare simd
 	#endif
 	inline Vector3D(double ix, double iy, double iz): x(ix), y(iy), z(iz) {};
@@ -108,7 +108,7 @@ public:
 	\param v Vector to be added
 	\return Reference to sum
 	*/
-	#ifdef __INTEL_COMPILER
+	#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp declare simd
 	#endif
 	inline Vector3D& operator+=(Vector3D const& v)
@@ -123,7 +123,7 @@ public:
 	\param v Vector to be subtracted
 	\return Difference
 	*/
-	#ifdef __INTEL_COMPILER
+	#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp declare simd
 	#endif
 	inline Vector3D& operator-=(Vector3D const& v)
@@ -138,10 +138,10 @@ public:
 	\param v Vector to be copied
 	\return The assigned value
 	*/
-	template<typename VectorType>
-	#ifdef __INTEL_COMPILER
+	#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp declare simd
 	#endif
+	template<typename VectorType>
 	inline Vector3D& operator=(const VectorType& v)
 	{
 		x = v[0];
@@ -154,7 +154,7 @@ public:
 	\param s Scalar
 	\return Reference to the vector multiplied by scalar
 	*/
-	#ifdef __INTEL_COMPILER
+	#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp declare simd
 	#endif
 	inline Vector3D& operator*=(double s)
@@ -270,7 +270,7 @@ public:
 		return stream;
 	}
 
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 
@@ -291,7 +291,7 @@ public:
 \param v Three dimensional vector
 \return Norm of v
 */
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 inline double abs(Vector3D const& v)
@@ -303,7 +303,7 @@ inline double abs(Vector3D const& v)
 \param v Three dimensional vector
 \return Norm of v
 */
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 inline double fastabs(Vector3D const& v)
@@ -383,7 +383,7 @@ inline Vector3D operator/(Vector3D const& v, double d)
 \param v2 3D vector
 \return Scalar product of v1 and v2
 */
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
 inline double ScalarProd(Vector3D const& v1, Vector3D const& v2)
@@ -526,10 +526,10 @@ inline void Split(vector<Vector3D> const & vIn, vector<double> & vX, vector<doub
 	return;
 }
 
-template<>
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
+template<>
 inline Vector3D::Vector3D(const Vector3D &v): Vector3D(v.x, v.y, v.z)
 {}
 
@@ -537,10 +537,10 @@ inline Vector3D::Vector3D(const Vector3D &v): Vector3D(v.x, v.y, v.z)
 \param v Vector to be copied
 \return The assigned value
 */
-template<>
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp declare simd
 #endif
+template<>
 inline Vector3D& Vector3D::operator=<Vector3D>(const Vector3D& v)
 {
 	x = v.x;

@@ -51,3 +51,4 @@ runs/**/*.txt
 *.png
 *.pdf
 runs/*/venv/
+.specstory/*

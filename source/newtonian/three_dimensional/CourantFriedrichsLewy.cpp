@@ -83,43 +83,48 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 			dt_first_ = -1;
 	}
 	int rank = 0;
-// #ifdef RICH_MPI
-// 	double new_res = 0;
-// 	MPI_Allreduce(&res, &new_res, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-// 	res = new_res;
-// 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-// #endif
+	int limiting_rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	struct { double val; int rank; } local_min{old_res, rank}, global_min;
+	MPI_Allreduce(&local_min, &global_min, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+	limiting_rank = global_min.rank;
+#endif
 	last_time_ = time;
-	if (debug_)
+	if (debug_ && rank == limiting_rank && hydro_res < 0.9999 * dt_suggest_)
 	{
-		if (1.0000001 * res > old_res && (dt_first_ < 0 || old_res < 0.99999 * dt_first_))
+		Vector3D const& v = cells[loc].velocity;
+		double c = eos.dp2c(cells[loc].density, cells[loc].pressure, cells[loc].tracers, ComputationalCell3D::tracerNames);
+		double source_inv = source_.SuggestInverseTimeStep();
+		double dt_force = source_inv > 0 ? 1.0 / source_inv : -1;
+		std::cout << "Min dt="<<res<<", cell ID " << cells[loc].ID << " width " << tess.GetWidth(loc) << " c "
+			<< c << " cell v " << cells[loc].velocity.x << "," << cells[loc].velocity.y << "," << cells[loc].velocity.z <<" dt_org "<<old_res<<" dt_force "<<dt_force<<" dt_rad "<<dt_first_<<" density "<<cells[loc].density<<std::endl;
+		std::cout<<"Location "<<tess.GetMeshPoint(loc)<<" CM "<<tess.GetCellCM(loc)<<std::endl;
+		face_vec const& faces = tess.GetCellFaces(loc);
+		size_t Nloop = faces.size();
+		double max_face_area = 0;
+		for (size_t j = 0; j < Nloop; ++j)
 		{
-			if(((1.0 / source_.SuggestInverseTimeStep()) != res) || (rank == 0 && ((1.0 / source_.SuggestInverseTimeStep()) == res)))
+			max_face_area = std::max(max_face_area, tess.GetArea(faces[j]));
+			std::cout << " face_vel " << face_velocities[faces[j]] <<" dv= " <<fastabs(v - face_velocities[faces[j]]) << " ";
+			Vector3D p1 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).first);
+			Vector3D p2 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).second);
+			std::cout<<"p1="<<p1.x<<","<<p1.y<<","<<p1.z<<" p2="<<p2.x<<","<<p2.y<<","<<p2.z<<std::endl;
+			p1 = cells[tess.GetFaceNeighbors(faces[j]).first].velocity;
+			p2 = cells[tess.GetFaceNeighbors(faces[j]).second].velocity;
+			std::cout<<"v1="<<p1.x<<","<<p1.y<<","<<p1.z<<" |v1|="<<fastabs(p1)
+			<<" v2="<<p2.x<<","<<p2.y<<","<<p2.z<<" |v2|="<<fastabs(p2)
+			<<" A "<<tess.GetArea(faces[j])<<std::endl;
+			if (point_velocities_)
 			{
-				Vector3D const& v = cells[loc].velocity;
-				double c = eos.dp2c(cells[loc].density, cells[loc].pressure, cells[loc].tracers, ComputationalCell3D::tracerNames);
-				std::cout << "Min dt="<<res<<", cell ID " << cells[loc].ID << " width " << tess.GetWidth(loc) << " c "
-					<< c << " cell v " << cells[loc].velocity.x << "," << cells[loc].velocity.y << "," << cells[loc].velocity.z <<" dt_org "<<old_res<<" dt_force "<<1.0 / source_.SuggestInverseTimeStep()<<" dt_rad "<<dt_first_<<" density "<<cells[loc].density<<std::endl;
-				std::cout<<"Location "<<tess.GetMeshPoint(loc)<<" CM "<<tess.GetCellCM(loc)<<std::endl;
-				face_vec const& faces = tess.GetCellFaces(loc);
-				size_t Nloop = faces.size();
-				double max_face_area = 0;
-				for (size_t j = 0; j < Nloop; ++j)
-				{
-					max_face_area = std::max(max_face_area, tess.GetArea(faces[j]));
-					std::cout << " face_vel " << face_velocities[faces[j]] <<" dv= " <<fastabs(v - face_velocities[faces[j]]) << " ";
-					Vector3D p1 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).first);
-					Vector3D p2 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).second);
-					std::cout<<"p1="<<p1.x<<","<<p1.y<<","<<p1.z<<" p2="<<p2.x<<","<<p2.y<<","<<p2.z<<std::endl;
-					p1 = cells[tess.GetFaceNeighbors(faces[j]).first].velocity;
-					p2 = cells[tess.GetFaceNeighbors(faces[j]).second].velocity;
-					std::cout<<"v1="<<p1.x<<","<<p1.y<<","<<p1.z<<" v2="<<p2.x<<","<<p2.y<<","<<p2.z<<
-					" A "<<tess.GetArea(faces[j])<<std::endl;
-				}
-				double cell_effective_radius = std::min(tess.GetWidth(loc), tess.GetVolume(loc) / max_face_area);
-				std::cout<<"cell_effective_radius "<<cell_effective_radius<<std::endl;
+				size_t n1 = tess.GetFaceNeighbors(faces[j]).first;
+				size_t n2 = tess.GetFaceNeighbors(faces[j]).second;
+				if (n1 < point_velocities_->size() && n2 < point_velocities_->size())
+					std::cout<<"pv1="<<(*point_velocities_)[n1]<<" pv2="<<(*point_velocities_)[n2]<<std::endl;
 			}
 		}
+		double cell_effective_radius = std::min(tess.GetWidth(loc), tess.GetVolume(loc) / max_face_area);
+		std::cout<<"cell_effective_radius "<<cell_effective_radius<<std::endl;
 	}
 
 	this->last_time_ = time;

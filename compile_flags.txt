@@ -1,0 +1,12 @@
+-Isource
+-Isource/opt/vcl
+-DRICH_MPI
+-DUSE_VCL_VECTORIZATION
+-I/software/x86_64/5.14.0/openmpi/4.1.4/gcc/12.2.0/include 
+-I/software/x86_64/5.14.0/boost/1.78.0/include 
+-I/software/x86_64/5.14.0/vtk/9.3.0/gcc/12.3.0/with_mesa/include/vtk-9.3/ 
+-I/software/x86_64/5.14.0/hdf5/1.14.2/gcc/12.3.0_cxx/include 
+-I/home/maorm/opt/ParMETIS/include
+-I/home/maorm/opt/METIS/include
+-I/software/x86_64/5.14.0/jsoncpp/1.9.5/include 
+-I/software/x86_64/5.14.0/intel/oneapi/2024.0.1/vtune/latest/include 

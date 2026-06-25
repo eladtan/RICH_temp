@@ -54,6 +54,9 @@ public:
     
     inline std::vector<std::shared_ptr<PhysicsStep>> &getPhysicsSteps(void){return this->physics;};
 
+    inline const std::map<std::string, double> &getLastPhysicsTimes(void) const{return this->lastPhysicsTimes;};
+    inline const std::map<std::string, double> &getLastLocalPhysicsTimes(void) const{return this->lastLocalPhysicsTimes;};
+
     void SetTimeStep(double dt);
 
     double GetTimeStep(void) const;
@@ -109,6 +112,8 @@ private:
     size_t Max_ID;
     double wallclockTime;
     std::shared_ptr<TimeStepFunction3D> tsc; // todo: why?
+    std::map<std::string, double> lastPhysicsTimes;
+    std::map<std::string, double> lastLocalPhysicsTimes;
 
 #ifdef RICH_MPI
     std::shared_ptr<LoadBalancer<Vector3D>> currentLoad;

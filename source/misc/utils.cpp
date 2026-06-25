@@ -49,16 +49,26 @@ vector<double> arange(double x_min, double x_max, double dx)
 double min(vector<double> const& v)
 {
   double res = v[0];
-  for(size_t i=1;i<v.size();++i)
-    res = std::min(res,v[size_t(i)]);
+  const size_t N = v.size();
+  const double* __restrict__ ptr = v.data();
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
+#pragma omp simd reduction(min:res)
+#endif
+  for(size_t i=1;i<N;++i)
+    res = std::min(res,ptr[i]);
   return res;
 }
 
 double max(vector<double> const& v)
 {
   double res = v[0];
-  for(size_t i=1;i<v.size();++i)
-    res = std::max(res,v[size_t(i)]);
+  const size_t N = v.size();
+  const double* __restrict__ ptr = v.data();
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
+#pragma omp simd reduction(max:res)
+#endif
+  for(size_t i=1;i<N;++i)
+    res = std::max(res,ptr[i]);
   return res;
 }
 

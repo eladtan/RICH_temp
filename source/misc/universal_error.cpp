@@ -5,10 +5,13 @@
 #include <cstring>
 #include <memory>
 #include <array>
+#include <cstdint>
+#include <iomanip>
 
 #include <execinfo.h>
 #include <cxxabi.h>
 #include <dlfcn.h>
+#include <unistd.h>
 
 #ifdef RICH_MPI
   #include <mpi.h>
@@ -75,25 +78,39 @@ struct SourceLocation
     std::string line;
 };
 
-SourceLocation resolveAddress(const std::string &exe, void *addr)
+std::string shellQuote(const std::string &value)
 {
-    SourceLocation loc;
-
-    Dl_info info;
-    if(dladdr(addr, &info) && info.dli_sname)
+    std::string quoted = "'";
+    for(char c : value)
     {
-        loc.function = demangle(info.dli_sname);
+        if(c == '\'')
+            quoted += "'\\''";
+        else
+            quoted += c;
     }
+    quoted += "'";
+    return quoted;
+}
 
-    if(exe.empty())
-        return loc;
+std::string formatAddress(std::uintptr_t addr)
+{
+    std::ostringstream os;
+    os << "0x" << std::hex << addr;
+    return os.str();
+}
+
+bool applyAddr2Line(const std::string &objectPath, std::uintptr_t address, SourceLocation &loc)
+{
+    if(objectPath.empty())
+        return false;
 
     std::ostringstream cmd;
-    cmd << "addr2line -C -f -p -e " << exe << " " << addr << " 2>/dev/null";
+    cmd << "addr2line -C -f -p -e " << shellQuote(objectPath)
+        << " " << formatAddress(address) << " 2>/dev/null";
 
     FILE *pipe = popen(cmd.str().c_str(), "r");
     if(!pipe)
-        return loc;
+        return false;
 
     std::array<char, 512> line_buf{};
     std::string output;
@@ -102,7 +119,7 @@ SourceLocation resolveAddress(const std::string &exe, void *addr)
     pclose(pipe);
 
     if(output.empty() || output.find("??") == 0)
-        return loc;
+        return false;
 
     // addr2line -C -f -p output: "function at file:line"
     // or "function at file:line (discriminator N)"
@@ -127,6 +144,42 @@ SourceLocation resolveAddress(const std::string &exe, void *addr)
             loc.file = rest.substr(0, colon);
             loc.line = rest.substr(colon + 1);
         }
+    }
+
+    return !loc.file.empty();
+}
+
+SourceLocation resolveAddress(const std::string &exe, void *addr)
+{
+    SourceLocation loc;
+    std::string objectPath = exe;
+    std::uintptr_t lookupAddress = reinterpret_cast<std::uintptr_t>(addr);
+    std::uintptr_t rawAddress = lookupAddress;
+
+    Dl_info info;
+    if(dladdr(addr, &info))
+    {
+        if(info.dli_sname)
+            loc.function = demangle(info.dli_sname);
+        if(info.dli_fname)
+            objectPath = info.dli_fname;
+        if(info.dli_fbase)
+        {
+            std::uintptr_t baseAddress = reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+            if(lookupAddress >= baseAddress)
+                lookupAddress -= baseAddress;
+        }
+    }
+
+    bool const isMainExecutable = (objectPath == exe);
+    if(isMainExecutable)
+    {
+        if(!applyAddr2Line(objectPath, rawAddress, loc) && rawAddress != lookupAddress)
+            applyAddr2Line(objectPath, lookupAddress, loc);
+    }
+    else if(!applyAddr2Line(objectPath, lookupAddress, loc) && rawAddress != lookupAddress)
+    {
+        applyAddr2Line(objectPath, rawAddress, loc);
     }
 
     return loc;

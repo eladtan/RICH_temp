@@ -9,13 +9,14 @@ LagrangianExtensiveUpdater3D::LagrangianExtensiveUpdater3D(LagrangianFlux3D cons
 
 void LagrangianExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, const Tessellation3D & tess,
 	const double dt, const vector<ComputationalCell3D>& cells, vector<Conserved3D>& extensives, double time,
-					      std::vector<Vector3D> const& /*face_vel*/, 
-					      std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& /*interp_values*/) const
+				      std::vector<Vector3D> const& /*face_vel*/,
+				      const vector<Vector3D>& /*point_velocities*/,
+				      std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& /*interp_values*/) const
 {
-	std::vector<Conserved3D> old_extensive(extensives);
+	old_extensive_ = extensives;
 #ifdef RICH_MPI
 	Conserved3D edummy;
-	MPI_exchange_data(tess, old_extensive, true);
+	MPI_exchange_data(tess, old_extensive_, true);
 #endif
 	size_t indexX = static_cast<size_t>(binary_find(ComputationalCell3D::tracerNames.begin(), ComputationalCell3D::tracerNames.end(),
 							string("AreaX")) - ComputationalCell3D::tracerNames.begin());
@@ -66,17 +67,17 @@ void LagrangianExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes,
 				{
 					if (v_new > 0 && !tess.IsPointOutsideBox(n1) && p_star > 1.2*cells[n1].pressure)
 					{
-						double Ek = 0.5*ScalarProd(old_extensive[n1].momentum, old_extensive[n1].momentum) / old_extensive[n1].mass;
-						double Eknew = 0.5*ScalarProd(old_extensive[n1].momentum + delta.momentum,
-							old_extensive[n1].momentum + delta.momentum) / old_extensive[n1].mass;
+						double Ek = 0.5*ScalarProd(old_extensive_[n1].momentum, old_extensive_[n1].momentum) / old_extensive_[n1].mass;
+						double Eknew = 0.5*ScalarProd(old_extensive_[n1].momentum + delta.momentum,
+							old_extensive_[n1].momentum + delta.momentum) / old_extensive_[n1].mass;
 						v_new = std::max(v_new, (Eknew - Ek) / std::max(1e-50, p_star*FArea));
 					}
 					if (v_new < 0 && !tess.IsPointOutsideBox(n0) && p_star > 1.2*cells[n0].pressure)
 					{
-						double Ek = 0.5*ScalarProd(old_extensive[n0].momentum, old_extensive[n0].momentum) /
-							old_extensive[n0].mass;
-						double Eknew = 0.5*ScalarProd(old_extensive[n0].momentum - delta.momentum,
-							old_extensive[n0].momentum - delta.momentum) / old_extensive[n0].mass;
+						double Ek = 0.5*ScalarProd(old_extensive_[n0].momentum, old_extensive_[n0].momentum) /
+							old_extensive_[n0].mass;
+						double Eknew = 0.5*ScalarProd(old_extensive_[n0].momentum - delta.momentum,
+							old_extensive_[n0].momentum - delta.momentum) / old_extensive_[n0].mass;
 						v_new = std::min(v_new, (Ek - Eknew) / std::max(1e-50, p_star*FArea));
 					}
 					delta.energy = p_star*v_new*tess.GetArea(i) * dt;
@@ -149,8 +150,8 @@ void LagrangianExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes,
 			std::cout << "mass " << extensives[i].mass << " energy " << extensives[i].energy << " internalE " <<
 				extensives[i].internal_energy << " momentum" << abs(extensives[i].momentum) << " volume " << tess.GetVolume(i)
 				<< std::endl;
-			std::cout << "old mass " << old_extensive[i].mass << " energy " << old_extensive[i].energy << " internalE " <<
-				old_extensive[i].internal_energy << " momentum" << abs(old_extensive[i].momentum) << " volume " << tess.GetVolume(i)
+			std::cout << "old mass " << old_extensive_[i].mass << " energy " << old_extensive_[i].energy << " internalE " <<
+				old_extensive_[i].internal_energy << " momentum" << abs(old_extensive_[i].momentum) << " volume " << tess.GetVolume(i)
 				<< std::endl;
 			std::cout << "Old cell, density " << cells[i].density << " pressure " << cells[i].pressure << " v " <<
 				abs(cells[i].velocity) << std::endl;
@@ -180,18 +181,18 @@ void LagrangianExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes,
 					{
 						if (v_new > 0 && !tess.IsPointOutsideBox(N1) && p_star > 1.2*cells[N1].pressure)
 						{
-							double Ek = 0.5*ScalarProd(old_extensive[N1].momentum, old_extensive[N1].momentum) / 
-								old_extensive[N1].mass;
-							double Eknew = 0.5*ScalarProd(old_extensive[N1].momentum + delta.momentum,
-								old_extensive[N1].momentum + delta.momentum) / old_extensive[N1].mass;
+							double Ek = 0.5*ScalarProd(old_extensive_[N1].momentum, old_extensive_[N1].momentum) / 
+								old_extensive_[N1].mass;
+							double Eknew = 0.5*ScalarProd(old_extensive_[N1].momentum + delta.momentum,
+								old_extensive_[N1].momentum + delta.momentum) / old_extensive_[N1].mass;
 							v_new = std::max(v_new, (Eknew - Ek) / std::max(1e-50, p_star*Area));
 						}
 						if (v_new < 0 && !tess.IsPointOutsideBox(N0) && p_star > 1.2*cells[N0].pressure)
 						{
-							double Ek = 0.5*ScalarProd(old_extensive[N0].momentum, old_extensive[N0].momentum) / 
-								old_extensive[N0].mass;
-							double Eknew = 0.5*ScalarProd(old_extensive[N0].momentum - delta.momentum,
-								old_extensive[N0].momentum - delta.momentum) / old_extensive[N0].mass;
+							double Ek = 0.5*ScalarProd(old_extensive_[N0].momentum, old_extensive_[N0].momentum) / 
+								old_extensive_[N0].mass;
+							double Eknew = 0.5*ScalarProd(old_extensive_[N0].momentum - delta.momentum,
+								old_extensive_[N0].momentum - delta.momentum) / old_extensive_[N0].mass;
 							v_new = std::min(v_new, (Ek - Eknew) / std::max(1e-50, p_star*Area));
 						}
 					}

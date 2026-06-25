@@ -29,9 +29,11 @@ public:
 
     virtual size_t GetStartParticleCount(void) const = 0;
 
-    virtual size_t GetEndParticleCount(void) const = 0;
-
     virtual size_t GetInitialParticleCount(void) const = 0;
+
+    virtual size_t GetPreStepParticleCount(void) const = 0;
+
+    virtual size_t GetEndParticleCount(void) const = 0;
 
     virtual double GetPureComputeTime(void) const = 0;
 
@@ -58,6 +60,10 @@ public:
     inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
     inline size_t GetStartParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetStartParticleCount();};
+
+    inline size_t GetInitialParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetInitialParticleCount();};
+
+    inline size_t GetPreStepParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetPreStepParticleCount();};
 
     inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetEndParticleCount();};
 
@@ -131,9 +137,11 @@ public:
 
     inline size_t GetStartParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
 
-    inline size_t GetEndParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
-
     inline size_t GetInitialParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetInitialParticleCount();};
+
+    inline size_t GetPreStepParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetPreStepParticleCount();};
+
+    inline size_t GetEndParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
 
     inline double GetPureComputeTime(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetPureComputeTime();};
 
@@ -162,6 +170,10 @@ public:
     inline std::vector<size_t> &GetCellsStepsCounters(void) override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
 
     inline size_t GetStartParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
+
+    inline size_t GetInitialParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetInitialParticleCount();};
+
+    inline size_t GetPreStepParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetPreStepParticleCount();};
 
     inline size_t GetEndParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
 

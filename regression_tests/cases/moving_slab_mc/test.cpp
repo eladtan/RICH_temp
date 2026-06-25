@@ -37,6 +37,7 @@
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/SourceTerm3D.hpp"
 #include "source/3D/output/write3D.hpp"
+#include "source/3D/radiation/IMCCostCalculator.hpp"
 
 namespace fs = std::filesystem;
 
@@ -257,6 +258,23 @@ public:
     {
         return {};
     }
+
+    DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t /*faceIdx*/,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override
+    {
+        Vector3D outward =
+            this->grid.GetMeshPoint(outsidePointIndex) -
+            this->grid.GetMeshPoint(insideCellIndex);
+        double const ax = std::abs(outward.x);
+        double const ay = std::abs(outward.y);
+        double const az = std::abs(outward.z);
+
+        if (ax > ay && ax > az)
+            return DDMCBoundaryFaceBehavior::Unsupported;
+        return DDMCBoundaryFaceBehavior::ReflectingRigid;
+    }
 };
 
 } // anonymous namespace
@@ -306,7 +324,7 @@ int main(int argc, char *argv[])
 
         // --- Geometry: 1D-like domain [0, z_O + margin] in x, 3x3 grid in YZ ---
         double const x_max = z_O + 0.2;
-        double const cellHalfYZ = 0.1;
+        double const cellHalfYZ = 1.0;
         constexpr size_t NYZ = 3;
         Vector3D ll(0, -cellHalfYZ, -cellHalfYZ);
         Vector3D ur(x_max, cellHalfYZ, cellHalfYZ);
@@ -450,6 +468,7 @@ int main(int argc, char *argv[])
             .MMC = false,
             .withMultigroupOpacity = true,
             .withRandomWalk = false,
+            .withDDMC = true,
             .noHydroFeedback = true,
             .withEgTimeAvg = true
         };
@@ -523,7 +542,9 @@ int main(int argc, char *argv[])
         sim.addPhysics(remeshStep);
         sim.addPhysics(mcStep);
 #ifdef RICH_MPI
-        // sim.addMigrationBuffer(mcStep->getLoadBalanceWeights());
+        mcStep->setCost(std::make_shared<IMCCostCalculator>(mcStep->getManager()));
+        sim.setForceRebalanceSteps(4);
+        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
         sim.PresetLoadBalance("remesh");
 #endif
 

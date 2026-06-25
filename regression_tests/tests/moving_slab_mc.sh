@@ -11,5 +11,5 @@ SLURM_NODES=16
 SLURM_PARTITION="bigrun"
 SLURM_EXCLUSIVE=1
 SLURM_TIME_LIMIT="04:00:00"
-RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+RUN_COMMAND='mpirun -np ${SLURM_NTASKS} --map-by node "${RICH_BIN}"'
 CHECK_FUNCTION="check_moving_slab_mc_case"

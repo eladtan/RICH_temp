@@ -7,18 +7,21 @@ DefaultExtensiveUpdater::DefaultExtensiveUpdater(void){}
 
 void DefaultExtensiveUpdater::operator()(const vector<Conserved3D>& fluxes, const Tessellation3D& tess,
 	const double dt, const vector<ComputationalCell3D>& cells, vector<Conserved3D>& extensives, double /*time*/,
-					 std::vector<Vector3D> const& /*face_vel*/,
-					 std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& /*interp_values*/) const
+				 std::vector<Vector3D> const& /*face_vel*/,
+				 const vector<Vector3D>& /*point_velocities*/,
+				 std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& /*interp_values*/) const
 {
 	size_t N = tess.GetPointNo();
 	size_t Nfluxes = fluxes.size();
 	Conserved3D delta;
-	std::vector<double> oldEk(N, 0), oldEtherm(N, 0), oldE(N, 0);
+	oldEk_.assign(N, 0);
+	oldEtherm_.assign(N, 0);
+	oldE_.assign(N, 0);
 	for (size_t i = 0; i < N; ++i)
 	{
-		oldEk[i] = 0.5*ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-		oldEtherm[i] = extensives[i].internal_energy;
-		oldE[i] = extensives[i].energy;
+		oldEk_[i] = 0.5*ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
+		oldEtherm_[i] = extensives[i].internal_energy;
+		oldE_[i] = extensives[i].energy;
 	}
 	for (size_t i = 0; i < Nfluxes; ++i)
 	{
@@ -93,10 +96,10 @@ void DefaultExtensiveUpdater::operator()(const vector<Conserved3D>& fluxes, cons
 	}
 	for (size_t i = 0; i < N; ++i)
 	{
-		double dEtherm = extensives[i].internal_energy - oldEtherm[i];
+		double dEtherm = extensives[i].internal_energy - oldEtherm_[i];
 		double Eknew = 0.5*ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-		double dEk = Eknew - oldEk[i];
-		double dE = extensives[i].energy - oldE[i];
+		double dEk = Eknew - oldEk_[i];
+		double dE = extensives[i].energy - oldE_[i];
 		if (dEtherm*(dE - dEk) > 0)
 		{
 			if (std::abs(dEtherm) > 0.95 *std::abs(dE - dEk) && std::abs(dEtherm) < 1.05*std::abs(dE - dEk))

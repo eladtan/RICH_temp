@@ -126,22 +126,23 @@ namespace
 		return -1;
 	}
 
-	bool FirstVertice(Edge edgenew, Tessellation const& tessnew, int cell, Vector2D const& edge_added)
+	bool FirstVertice(Edge const& edgenew, Tessellation const& tessnew, int cell, Vector2D const& edge_added)
 	{
-		edgenew.vertices.first += edge_added;
-		edgenew.vertices.second += edge_added;
+		Edge shifted = edgenew;
+		shifted.vertices.first += edge_added;
+		shifted.vertices.second += edge_added;
 		const double R = 1e-8*tessnew.GetWidth(cell);
 		vector<int> const& edges = tessnew.GetCellEdges(cell);
 		for (size_t i = 0; i < edges.size(); ++i)
 		{
 			Edge edge = tessnew.GetEdge(edges[i]);
-			if (edge.vertices.first.distance(edgenew.vertices.first) < R)
+			if (edge.vertices.first.distance(shifted.vertices.first) < R)
 				return true;
-			if (edge.vertices.first.distance(edgenew.vertices.second) < R)
+			if (edge.vertices.first.distance(shifted.vertices.second) < R)
 				return false;
-			if (edge.vertices.second.distance(edgenew.vertices.first) < R)
+			if (edge.vertices.second.distance(shifted.vertices.first) < R)
 				return true;
-			if (edge.vertices.second.distance(edgenew.vertices.second) < R)
+			if (edge.vertices.second.distance(shifted.vertices.second) < R)
 				return false;
 		}
 		throw UniversalError("Couldn't find first vertice");

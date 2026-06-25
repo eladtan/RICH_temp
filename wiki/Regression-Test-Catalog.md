@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 23 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes all 29 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -191,7 +191,45 @@ The bash checker `check_amr_random_case` verifies that the maximum drift (change
 
 ---
 
-## 5. voronoi_volume -- Voronoi Volume Sum Accuracy
+## 5. amr_distributed_clip -- Distributed AMR clipCells Conservation
+
+**Tags:** `mpi`
+
+### Physics
+
+Tests the distributed `clipCells` load-balancing feature, which offloads AMR clip work from busy ranks to idle ranks. A highly imbalanced scenario is constructed: only 4 ranks refine cells and 5 ranks remove cells, while the remaining 55 ranks are idle. The test verifies that total mass and total energy are conserved after the AMR step.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Initial state | Uniform gas: rho = 1, internal energy = 2.5 |
+| Total points | 2 x 10^5 |
+| Refine ranks | 4 ranks, ~500 cells each |
+| Remove ranks | 5 ranks, ~500 cells each |
+| SLURM (MPI) | 64 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/amr_distributed_clip/test.cpp`
+
+### Output
+
+`amr_distributed_clip_metrics.txt` -- fields: `mass_before`, `mass_after`, `energy_before`, `energy_after`, `mass_reldiff`, `energy_reldiff`, `threshold`, `pass`
+
+### Validation
+
+The bash checker `check_amr_distributed_clip_case` verifies that the relative change in total mass and total energy stays below the threshold.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| `mass_reldiff` | <= 1e-6 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` |
+| `energy_reldiff` | <= 1e-6 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` |
+| `pass` field | Must be `1` | -- |
+
+---
+
+## 6. voronoi_volume -- Voronoi Volume Sum Accuracy
 
 **Tags:** `serial`, `mpi`
 
@@ -226,7 +264,7 @@ The bash checker `check_voronoi_volume_case` verifies the relative error between
 
 ---
 
-## 6. lane_self_gravity -- Lane-Emden with Self-Gravity
+## 7. lane_self_gravity -- Lane-Emden with Self-Gravity
 
 **Tags:** `mpi`
 
@@ -274,7 +312,7 @@ The bash checker `check_lane_self_gravity_case` verifies that the mean density d
 
 ---
 
-## 7. mach2_diffusion -- Mach 2 Radiative Shock (Grey Diffusion)
+## 8. mach2_diffusion -- Mach 2 Radiative Shock (Grey Diffusion)
 
 **Tags:** `mpi`
 
@@ -321,7 +359,7 @@ Compared against the NLTE analytical radiative shock solution from `analysis_fil
 
 ---
 
-## 8. mach2_multigroup -- Mach 2 Radiative Shock (32-Group Diffusion)
+## 9. mach2_multigroup -- Mach 2 Radiative Shock (32-Group Diffusion)
 
 **Tags:** `mpi`
 
@@ -358,7 +396,7 @@ Same as `mach2_diffusion`.
 
 ---
 
-## 9-12. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
+## 10-13. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
 
 **Tags:** `serial`
 
@@ -416,7 +454,7 @@ Relative L1 errors are computed for both Tgas and Trad.
 
 ---
 
-## 13. gresho_euler -- Gresho Vortex (Eulerian Mesh)
+## 14. gresho_euler -- Gresho Vortex (Eulerian Mesh)
 
 **Tags:** `serial`
 
@@ -459,7 +497,7 @@ The Python checker `regression_tests/lib/check_gresho_profile.py` computes the v
 
 ---
 
-## 14. gresho_lagrangian -- Gresho Vortex (Lagrangian Mesh)
+## 15. gresho_lagrangian -- Gresho Vortex (Lagrangian Mesh)
 
 **Tags:** `mpi`
 
@@ -495,7 +533,7 @@ Same as `gresho_euler`.
 
 ---
 
-## 15. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
+## 16. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
 
 **Tags:** `mpi`
 
@@ -520,7 +558,7 @@ Densmore et al. (2012) heterogeneous step-opacity slab problem: optically thin (
 
 ---
 
-## 16. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
+## 17. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
 
 **Tags:** `serial`
 
@@ -543,63 +581,7 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 
 ---
 
-## 17. doppler_mc -- Doppler MC Frequency Shift (Single Cell, Velocity-Gradient Opacity)
-
-**Tags:** (none -- serial)
-
-### Physics
-Doppler frequency shift of a truncated Planck photon spectrum in a single-cell slab. A custom `VelocityGradientOpacity` class mimics a linear velocity gradient v(x) = v0 * x / width by computing a position-dependent virtual velocity at each scatter event and performing Lorentz transforms internally. The cell itself has zero velocity. Photons undergo pure scattering (no absorption/emission) and the resulting spectral shift is compared to the analytical adiabatic prediction from Eq. V.31 of arXiv:2601.05120.
-
-### Configuration
-- **Mesh:** 1 Eulerian cell, x in [0, 50] cm (optically thick, tau = 2000)
-- **EOS:** Ideal gas (irrelevant, no hydro feedback)
-- **Radiation:** 100-group IMC, energy groups from 100 eV to 100 keV, scattering opacity 40 cm^-1, no absorption
-- **Velocity:** Cell velocity = 0; opacity mimics linear gradient v0 = 2.5e8 cm/s at x = 50 cm (div(v) = 5e6 s^-1)
-- **Runtime:** 50 steps, dt = 4e-10 s (t_final = 2e-8 s)
-- **Photons:** 1e5 seeded at left boundary (x ~ 0) with Lambert cosine law and truncated Planck [1.12, 8.12] keV
-- **Execution:** Serial (local)
-- **Build flags:** `--energy_groups_num=100`
-
-### Output
-- `doppler_mc_spectrum.txt` -- initial cell spectrum, initial photon histogram, and final group energy densities
-- `doppler_mc_mid.png` -- comparison plot with analytical, initial-cell, and initial-photon spectra
-
-### Pass Criteria
-| Metric | Threshold | Override variable |
-|--------|-----------|-------------------|
-| Spectrum relative L1 | <= 0.7 | `DOPPLER_MC_MAX_L1` |
-
----
-
-## 17b. doppler_scatter_mc -- Doppler Scatter Benchmark (Homologous Flow, MC vs Diffusion)
-
-**Tags:** `mpi`
-
-### Physics
-Scattering-only Doppler benchmark in a homologous flow. A truncated Planck spectrum (kBT = 1 keV, 0.5--3.0 keV) is injected from the left boundary of a 1D slab with linear velocity v(x) = Hx (H = 3e-2 s^-1), through a purely scattering medium (kappa_sca = 3e-8 cm^-1, tau = 300). The emergent comoving-frame spectrum at the right boundary is measured by Monte Carlo and by multigroup diffusion (with Doppler terms enabled), and the two are compared.
-
-### Configuration
-- **Mesh:** 64 Eulerian cells, x in [0, 1e10] cm
-- **EOS:** Ideal gas (irrelevant, no hydro feedback)
-- **Radiation (MC):** 100-group IMC, energy groups from 100 eV to 100 keV, scattering opacity 3e-8 cm^-1, no absorption
-- **Radiation (Diffusion):** MultigroupDiffusion with Doppler on, flux limiter, same opacity
-- **Velocity:** Homologous gradient, v(x) = Hx, H = 3e-2 s^-1, v(L) = 3e8 cm/s = 0.01c
-- **Source:** 10^6 packets from left boundary, truncated Planck 0.5--3.0 keV at kBT = 1 keV, angular distribution p(mu) = 2*mu
-- **Execution:** MPI, 64 ranks, SLURM (bigrun, exclusive)
-- **Build flags:** `--energy_groups_num=100`
-
-### Output
-- `doppler_scatter_spectrum.txt` -- normalised MC and diffusion comoving-frame emergent spectra at x=L
-- `doppler_scatter_comparison.png` -- comparison plot of MC vs diffusion spectra
-
-### Pass Criteria
-| Metric | Threshold | Override variable |
-|--------|-----------|-------------------|
-| MC-vs-diffusion relative L1 | <= 0.3 | `DOPPLER_SCATTER_MC_MAX_L1` |
-
----
-
-## 17c. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
+## 19. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -649,7 +631,7 @@ Compared against the semi-analytic solution computed by `regression_tests/moving
 
 ---
 
-## 17d. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
+## 20. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -700,7 +682,7 @@ Compared against the semi-analytic solution computed by `regression_tests/moving
 
 ---
 
-## 18. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
+## 21. yee_vortex_64 -- Yee Isentropic Vortex (64×64, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -749,7 +731,7 @@ The Python checker `regression_tests/lib/check_yee_vortex.py` computes the volum
 
 ---
 
-## 19. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
+## 22. yee_vortex_128 -- Yee Isentropic Vortex (128x128, Lagrangian)
 
 **Tags:** `mpi`
 
@@ -784,7 +766,7 @@ Same as `yee_vortex_64`.
 
 ---
 
-## 20. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
+## 23. cartesian_gauss_linear -- Cartesian Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -809,7 +791,7 @@ Tests the `LinearGauss3D` spatial reconstruction scheme in Cartesian mode. A 3D 
 
 ---
 
-## 21. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
+## 24. spherical_gauss_linear -- Spherical Gauss-Linear Interpolation
 
 **Tags:** `serial`
 
@@ -833,7 +815,7 @@ Complementary to `cartesian_gauss_linear`: tests `LinearGauss3D` in spherical mo
 
 ---
 
-## 22. spherical_collapse -- Spherical Collapse Symmetry
+## 25. spherical_collapse -- Spherical Collapse Symmetry
 
 **Tags:** `mpi`
 
@@ -865,7 +847,7 @@ A dense shell collapses inward under its own pressure in a cubed-sphere mesh. Te
 
 ---
 
-## 23. spherical_collapse_hires -- Spherical Collapse (High Resolution)
+## 26. spherical_collapse_hires -- Spherical Collapse (High Resolution)
 
 **Tags:** `mpi`
 
@@ -898,7 +880,7 @@ High-resolution companion to `spherical_collapse`. Uses the same physics and set
 
 ---
 
-## 24. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
+## 27. rayleigh_taylor_mpi -- Rayleigh-Taylor Instability
 
 **Tags:** `mpi`
 
@@ -935,7 +917,7 @@ The Python checker `regression_tests/lib/check_rayleigh_taylor.py` validates the
 
 ---
 
-## 25. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
+## 28. eulerian_diffusion_freefree_suite -- Grey Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -964,7 +946,7 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 26. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
+## 29. eulerian_diffusion_freefree_multigroup_suite -- Multigroup Free-Free Radiation Diffusion Suite
 
 **Tags:** `mpi`
 
@@ -993,56 +975,6 @@ Checks that all four temperature profiles and comparison plots are generated wit
 
 ---
 
-## 26. Doppler MC (`doppler_mc`)
-
-### Physics
-
-Monte Carlo Doppler frequency-shift validation. Two cells with different velocities create opposite velocity divergence; photons undergo Lorentz boosts during scattering, shifting the radiation spectrum. Validates MC Doppler against the analytical solution from Eq. V.31 of Giron et al. (2026, arXiv:2601.05120):
-
-E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
-
-### Configuration
-
-| Parameter | Value |
-|-----------|-------|
-| Cells | 2 (5x5x5 cm each) |
-| Cell 0 velocity | (0, 0, 0) cm/s (stationary) |
-| Cell 1 velocity | (10^9, 0, 0) cm/s |
-| Temperature | 1 keV |
-| Density | 1 g/cm^3 |
-| Energy groups | 100 (log-spaced, 0.1 eV -- 100 keV) |
-| Build args | `--energy_groups_num=100` |
-| Scattering opacity | 10 cm^-1 |
-| Absorption/Planck opacity | ~0 |
-| Initial spectrum | Truncated Planck (1.12--8.12 keV) |
-| Photons per cell | 10,000 |
-| Boundary | Rigid (specular reflection) |
-| Time | 40 ns, dt = 0.1 ns |
-| Hydro | Off (withHydro=true for Lorentz boosts, no evolution) |
-
-**Source:** `regression_tests/cases/doppler_mc/test.cpp`
-
-### Output
-
-`doppler_mc_spectrum.txt`: per-group initial and final radiation energy density for both cells, plus metadata (K values, time, velocity).
-
-### Validation
-
-`regression_tests/lib/check_doppler_mc.py` computes the analytical Doppler-shifted spectrum and compares via relative L1 norm over non-negligible groups. Generates two plots (`doppler_mc_left.png`, `doppler_mc_right.png`).
-
-### Pass Criteria
-
-| Metric | Threshold | Env Override |
-|--------|-----------|--------------|
-| Relative L1 (expansion cell) | <= 0.15 | `DOPPLER_MC_MAX_L1` |
-| Relative L1 (compression cell) | <= 0.15 | `DOPPLER_MC_MAX_L1` |
-
-### References
-
-- Giron, Krief, Stone, Steinberg (2026), arXiv:2601.05120, Section V.3.2, Eq. V.31
-
----
-
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -1051,6 +983,7 @@ E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
 | `sedov_3d_mpi` | mpi | 3D blast wave | Sedov-Taylor ODE | rel L1 <= 0.30 |
 | `till_compton` | serial | Compton equilibration | Temperature convergence | |Tgas-Trad| < 1% |
 | `amr_random` | serial, mpi | AMR conservation | Extensive drift | drift <= 1e-8 (serial) |
+| `amr_distributed_clip` | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
 | `voronoi_volume` | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
 | `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
 | `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
@@ -1063,8 +996,6 @@ E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
-| `doppler_mc` | mpi | MC Doppler shift (32 cells, 100 eV-100 keV groups, no RW) | Analytical adiabatic shift | rel L1 <= 0.15 |
-| `doppler_scatter_mc` | mpi | MC vs diffusion Doppler scatter (tau=300, homologous flow) | MC-diffusion comparison | rel L1 <= 0.3 |
 | `moving_slab_mc` | serial | Freq-dependent moving slab (original vacuum, 124-group) | Semi-analytic solution | f-error <= 0.30 |
 | `moving_slab_mc_32` | serial | Freq-dependent moving slab (original vacuum, 32-group collapsed) | Semi-analytic solution (collapsed) | f-error <= 0.30 |
 | `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
@@ -1076,4 +1007,3 @@ E(nu, t) = E(nu * exp(-K*t), 0),  where K = -div(v)/3
 | `rayleigh_taylor_mpi` | mpi | RT instability | Growth rate | rel error <= 0.25 |
 | `eulerian_diffusion_freefree_suite` | mpi | Grey free-free diffusion | Profile comparison | All outputs valid |
 | `eulerian_diffusion_freefree_multigroup_suite` | mpi | MG free-free diffusion | Profile comparison | All outputs valid |
-| `doppler_mc` | serial | MC Doppler shift (100 groups) | Analytical Eq. V.31 | rel L1 <= 0.15 |

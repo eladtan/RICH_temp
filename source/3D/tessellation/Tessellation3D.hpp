@@ -525,18 +525,11 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       // start = std::chrono::system_clock::now();
       // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
       // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
-      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(this->GetDuplicatedProcs(), allBuildData, this->GetDuplicatedPoints());
-      // end = std::chrono::system_clock::now();
-      // int rank;
-      // MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-      // if(rank == 0)
-      // {
-      //   std::cout << "Time to exchange data: " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << std::endl;
-      // }
-      // std::vector<std::vector<T>> incoming = MPI_Exchange_data_seperate(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
+      const std::vector<int> &dupProcs = this->GetDuplicatedProcs();
+      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(dupProcs, allBuildData, this->GetDuplicatedPoints());
       size_t incomingSize = incoming.size();
       const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();
-      assert(this->GetDuplicatedProcs().size() == Nghost.size());
+      assert(dupProcs.size() == Nghost.size());
       assert(incomingSize == Nghost.size());
       for (size_t i = 0; i < incomingSize; ++i)
       {

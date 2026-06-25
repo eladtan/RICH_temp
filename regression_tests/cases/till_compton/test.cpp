@@ -271,7 +271,7 @@ int main(int argc, char* argv[]) {
 #ifdef RICH_MPI
       nullptr,
 #endif
-      matrix_builder, true);
+      matrix_builder, false);
   simulation.addPhysics(radStep);
 
   while (simulation.GetTime() < tf) {

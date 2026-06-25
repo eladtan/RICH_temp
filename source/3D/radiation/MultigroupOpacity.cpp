@@ -1,5 +1,7 @@
 #include "MultigroupOpacity.hpp"
 #include "misc/universal_error.hpp"
+#include <algorithm>
+#include <cmath>
 
 MultigroupOpacity::MultigroupOpacity(std::shared_ptr<OpacityCalculator> opacity)
     : opacity(opacity)
@@ -43,5 +45,45 @@ double MultigroupOpacity::GetThermalEnergy(const ComputationalCell3D &cell, doub
     }
     double interp = LinearInterpolation(this->cummulativeOpacity, ComputationalCell3D::energyBoundaries, random * this->cummulativeOpacity.back());
 
+    return interp;
+}
+
+std::array<double, ENERGY_GROUPS_NUM> MultigroupOpacity::GetThermalGroupPdf(const ComputationalCell3D &cell)
+{
+    if (this->cummulativeOpacityCellID != cell.ID)
+    {
+        this->GetCummulativeOpacity(cell);
+    }
+    std::array<double, ENERGY_GROUPS_NUM> pdf{};
+    double const total = this->cummulativeOpacity[ENERGY_GROUPS_NUM];
+    if (total <= 0.0 || !std::isfinite(total))
+        return pdf;
+    for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+    {
+        double raw = this->cummulativeOpacity[g + 1] - this->cummulativeOpacity[g];
+        pdf[g] = (raw > 0.0) ? raw / total : 0.0;
+    }
+    return pdf;
+}
+
+double MultigroupOpacity::SampleThermalEnergyInGroup(const ComputationalCell3D &cell, size_t group, double random)
+{
+    if (this->cummulativeOpacityCellID != cell.ID)
+    {
+        this->GetCummulativeOpacity(cell);
+    }
+    if (group >= ENERGY_GROUPS_NUM)
+        group = ENERGY_GROUPS_NUM - 1;
+
+    double const c0 = this->cummulativeOpacity[group];
+    double const c1 = this->cummulativeOpacity[group + 1];
+    if (c1 <= c0)
+        return this->energyCenters[group];
+    double const upperRandom = std::nextafter(1.0, 0.0);
+    double const r = std::isfinite(random)
+        ? std::clamp(random, 0.0, upperRandom)
+        : 0.5;
+    double const target = c0 + r * (c1 - c0);
+    double interp = LinearInterpolation(this->cummulativeOpacity, ComputationalCell3D::energyBoundaries, target);
     return interp;
 }

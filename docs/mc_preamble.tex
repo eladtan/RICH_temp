@@ -1,0 +1,87 @@
+\usepackage{tikz}
+\usepackage{amsmath,amssymb}
+\usetikzlibrary{
+  arrows.meta,
+  positioning,
+  shapes.geometric,
+  fit,
+  calc,
+  decorations.pathreplacing,
+  backgrounds,
+  matrix
+}
+
+\definecolor{rank0}{RGB}{66,133,244}
+\definecolor{rank1}{RGB}{234,67,53}
+\definecolor{rank2}{RGB}{52,168,83}
+\definecolor{avcolor}{RGB}{144,202,249}
+\definecolor{thcolor}{RGB}{255,183,77}
+\definecolor{partcolor}{RGB}{200,230,201}
+\definecolor{mutexcolor}{RGB}{206,147,216}
+\definecolor{rdmacolor}{RGB}{255,112,67}
+\definecolor{arrowblue}{RGB}{30,90,180}
+\definecolor{darkbg}{RGB}{248,248,255}
+\definecolor{selfbg}{RGB}{230,240,255}
+\definecolor{remotebg}{RGB}{255,245,230}
+
+\newcommand{\circled}[1]{%
+  \tikz[baseline=(char.base)]{
+    \node[shape=circle, draw, inner sep=1pt, minimum size=10pt,
+          font=\sffamily\tiny\bfseries, thick] (char) {#1};
+  }%
+}
+
+% ---------------------------------------------------------------
+% Macro: draw one mini RankHandler cell (centered content)
+%   #1 = x,  #2 = y,  #3 = bg color,  #4 = label,
+%   #5 = show lock (1/0),  #6 = th active count,  #7 = av active count
+% ---------------------------------------------------------------
+\newcommand{\drawHandler}[7]{%
+  \begin{scope}[shift={(#1,#2)}]
+    \fill[#3, rounded corners=3pt] (-2.3,-1.1) rectangle (2.3,1.25);
+    \draw[gray!60, rounded corners=3pt] (-2.3,-1.1) rectangle (2.3,1.25);
+    % -- particles[] --
+    \node[font=\sffamily\tiny\bfseries, anchor=east] at (-1.55, 0.85) {P};
+    \foreach \i in {0,...,7} {
+      \pgfmathsetmacro{\xc}{-1.35 + \i*0.38}
+      \fill[partcolor, draw=partcolor!60!black, thin]
+        (\xc-0.16, 0.69) rectangle (\xc+0.16, 1.01);
+    }
+    % -- th[] --
+    \node[font=\sffamily\tiny\bfseries, anchor=east, thcolor!80!black] at (-1.55, 0.35) {th};
+    \foreach \i in {0,...,7} {
+      \pgfmathsetmacro{\xc}{-1.35 + \i*0.38}
+      \ifnum \i<#6
+        \fill[thcolor, draw=thcolor!60!black, thin]
+          (\xc-0.16, 0.19) rectangle (\xc+0.16, 0.51);
+      \else
+        \fill[thcolor!15, draw=thcolor!80!black, thin]
+          (\xc-0.16, 0.19) rectangle (\xc+0.16, 0.51);
+      \fi
+    }
+    % th length right after array
+    \node[font=\sffamily\tiny\bfseries, thcolor!60!black, anchor=west] at (1.55, 0.35) {#6};
+    % -- av[] --
+    \node[font=\sffamily\tiny\bfseries, anchor=east, avcolor!80!black] at (-1.55, -0.2) {av};
+    \foreach \i in {0,...,7} {
+      \pgfmathsetmacro{\xc}{-1.35 + \i*0.38}
+      \ifnum \i<#7
+        \fill[avcolor, draw=avcolor!60!black, thin]
+          (\xc-0.16, -0.36) rectangle (\xc+0.16, -0.04);
+      \else
+        \fill[avcolor!15, draw=avcolor!80!black, thin]
+          (\xc-0.16, -0.36) rectangle (\xc+0.16, -0.04);
+      \fi
+    }
+    % av length right after array
+    \node[font=\sffamily\tiny\bfseries, avcolor!60!black, anchor=west] at (1.55, -0.2) {#7};
+    % -- lock --
+    \ifnum#5=1
+      \node[draw=mutexcolor!80!black, fill=mutexcolor!20, rounded corners=1pt,
+            font=\sffamily\tiny, inner sep=2pt, minimum width=1.0cm]
+        at (0, -0.8) {\texttt{mutex}};
+    \else
+      \node[font=\sffamily\tiny, gray!50, inner sep=2pt] at (0, -0.8) {(no lock)};
+    \fi
+  \end{scope}
+}

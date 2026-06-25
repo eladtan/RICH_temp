@@ -1,0 +1,162 @@
+Generated 2366000 points (140 x 130 x 130), delta=0.01 cm
+Time for pointsManager initialization: 9.177e-06 seconds
+Running rebalancing
+Weighted borders determined in 17 iterations.
+Time for exchange: 0.235057 seconds
+Max weight in rank 254, its weight is 9677, ideal is 9242.19
+Time for preparing (hilbert tree + load balancing): 0.236562 seconds
+Time for initial build: 0.565067 seconds
+Time for tree: 0.00150622 seconds
+Time for radiuses: 0.0531139 seconds
+Time for range agent: 8.5229e-05 seconds
+iteration 1 (2366000 small points, 0 large points, average ghost points: 9246)
+added new points: 697053, total time: 0.664596
+iteration 2 (2366000 small points, 0 large points, average ghost points: 12385)
+added new points: 0, total time: 0.0458386
+iteration 3 (2366000 small points, 0 large points, average ghost points: 12385)
+added new points: 0, total time: 0.0437786
+iteration 4 (2366000 small points, 0 large points, average ghost points: 12385)
+added new points: 0, total time: 0.0461326
+iteration 5 (2366000 small points, 0 large points, average ghost points: 12385)
+added new points: 76719, total time: 0.0969565
+iteration 6 (2366000 small points, 0 large points, average ghost points: 12685)
+added new points: 0, total time: 0.387021
+iteration 7 (2366000 small points, 0 large points, average ghost points: 13101)
+added new points: 4232, total time: 0.0592774
+iteration 8 (0 small points, 0 large points, average ghost points: 13118)
+added new points: 0, total time: 0.00198082
+Time for bringing ghosts: 1.37577 seconds
+Total small queries: 16562000, total big queries: 0
+Time for build Voronoi from Delaunay: 0.104257 seconds
+Done initializing MonteCarloManager
+Hohlraum (3D): delta=0.01 cm, cells=140x130x130 (2366000), material=0, vacuum=9448, dt=1e-11 s, t_final=1e-08 s, iterations=1000, new/cell=50, max/cell=200
+Running physics: radiation-mc
+Changing load balance to radiation-mc (from )
+Load balance generated for first time
+Time for pointsManager initialization: 1e-07 seconds
+Time for exchange: 0.0467604 seconds
+Time for preparing (hilbert tree + load balancing): 0.0496171 seconds
+Time for initial build: 1.06649 seconds
+Time for tree: 0.00430892 seconds
+Time for radiuses: 0.00301779 seconds
+Time for range agent: 0.000114775 seconds
+iteration 1 (2366000 small points, 0 large points, average ghost points: 9246)
+added new points: 777866, total time: 0.941691
+iteration 2 (0 small points, 368 large points, average ghost points: 13117)
+added new points: 173, total time: 0.785612
+iteration 3 (0 small points, 368 large points, average ghost points: 13118)
+added new points: 0, total time: 0.00413649
+iteration 4 (0 small points, 0 large points, average ghost points: 13118)
+added new points: 0, total time: 0.00239548
+Time for bringing ghosts: 1.75095 seconds
+Total small queries: 2366000, total big queries: 736
+Time for build Voronoi from Delaunay: 0.106186 seconds
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Cycle 1/1000 (0%)  t=0.01 ns  step=15.6422s  ETA=260m26s
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Max weight in rank 254, its weight is 9677, ideal is 9242.19
+Should Rebalance: 0
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Cycle 11/1000 (1%)  t=0.11 ns  step=29.9244s  ETA=384m38s
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Wrote hohlraum_00000.txt (8400 cells)
+Running physics: radiation-mc
+Max weight in rank 254, its weight is 9677, ideal is 9242.19
+Should Rebalance: 0
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Cycle 21/1000 (2%)  t=0.21 ns  step=28.4611s  ETA=423m9s
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11
+radiation-mc suggested 1.79769e+308 for dt 
+
+Running physics: radiation-mc
+Running physics: radiation-mcwith dt 1e-11

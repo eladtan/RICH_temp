@@ -19,7 +19,7 @@ void write_vec3d(std::vector<Vector3D> const&vec, std::string const& fname);
 \param fname Name of the file
 \return The vector
 */
-std::vector<Vector3D> read_vec3d(std::string fname);
+std::vector<Vector3D> read_vec3d(std::string const& fname);
 
 /*! \brief Writes a binary vector of size_t to a file
 \param vec The vector to write
@@ -37,12 +37,12 @@ void write_vecint(std::vector<int> const&vec, std::string const& fname);
 \param fname Name of the file
 \return The vector
 */
-std::vector<size_t> read_vecst(std::string fname);
+std::vector<size_t> read_vecst(std::string const& fname);
 
 /*! \brief Reads a binary vector of int from a file
 \param fname Name of the file
 \return The vector
 */
-std::vector<int> read_vecint(std::string fname);
+std::vector<int> read_vecint(std::string const& fname);
 
 #endif // IO3D_HPP

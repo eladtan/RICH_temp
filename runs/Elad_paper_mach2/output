@@ -1,0 +1,455 @@
+Time for initial build: 0.00376901 seconds
+Time for data structures initialization: 0.001568 seconds
+iteration 1 (1024 small points, 0 large points, average ghost points: 1028)
+added new points: 2, total time: 0.000457014
+iteration 2 (1024 small points, 0 large points, average ghost points: 1030)
+added new points: 0, total time: 0.00020871
+iteration 3 (1024 small points, 0 large points, average ghost points: 1030)
+added new points: 0, total time: 0.000196334
+iteration 4 (1024 small points, 0 large points, average ghost points: 1030)
+added new points: 0, total time: 0.000199192
+iteration 5 (1024 small points, 0 large points, average ghost points: 1030)
+added new points: 0, total time: 0.000192054
+iteration 6 (1024 small points, 0 large points, average ghost points: 1030)
+added new points: 2, total time: 0.000519155
+iteration 7 (1024 small points, 0 large points, average ghost points: 1032)
+added new points: 0, total time: 0.00021798
+iteration 8 (1024 small points, 0 large points, average ghost points: 1032)
+added new points: 0, total time: 0.000217549
+iteration 9 (1024 small points, 0 large points, average ghost points: 1032)
+added new points: 0, total time: 0.000226271
+iteration 10 (1024 small points, 0 large points, average ghost points: 1032)
+added new points: 0, total time: 0.000220968
+iteration 11 (1024 small points, 0 large points, average ghost points: 1032)
+added new points: 2, total time: 0.000531883
+iteration 12 (1024 small points, 0 large points, average ghost points: 1034)
+added new points: 0, total time: 0.000233583
+iteration 13 (1024 small points, 0 large points, average ghost points: 1034)
+added new points: 0, total time: 0.00024123
+iteration 14 (1024 small points, 0 large points, average ghost points: 1034)
+added new points: 0, total time: 0.000236222
+iteration 15 (1024 small points, 0 large points, average ghost points: 1034)
+added new points: 2, total time: 0.000541406
+iteration 16 (1024 small points, 0 large points, average ghost points: 1036)
+added new points: 0, total time: 0.000257255
+iteration 17 (1024 small points, 0 large points, average ghost points: 1036)
+added new points: 2, total time: 0.000561529
+iteration 18 (1024 small points, 0 large points, average ghost points: 1038)
+added new points: 0, total time: 0.000279061
+iteration 19 (1024 small points, 0 large points, average ghost points: 1038)
+added new points: 2, total time: 0.000585374
+iteration 20 (1024 small points, 0 large points, average ghost points: 1040)
+added new points: 0, total time: 0.000296226
+iteration 21 (1024 small points, 0 large points, average ghost points: 1040)
+added new points: 2, total time: 0.000602117
+iteration 22 (1024 small points, 0 large points, average ghost points: 1042)
+added new points: 0, total time: 0.000312381
+iteration 23 (1024 small points, 0 large points, average ghost points: 1042)
+added new points: 2, total time: 0.000628201
+iteration 24 (1024 small points, 0 large points, average ghost points: 1044)
+added new points: 2, total time: 0.000640614
+iteration 25 (1024 small points, 0 large points, average ghost points: 1046)
+added new points: 2, total time: 0.000665187
+iteration 26 (1024 small points, 0 large points, average ghost points: 1048)
+added new points: 2, total time: 0.000684421
+iteration 27 (1024 small points, 0 large points, average ghost points: 1050)
+added new points: 2, total time: 0.000710064
+iteration 28 (1024 small points, 0 large points, average ghost points: 1052)
+added new points: 2, total time: 0.000744891
+iteration 29 (1024 small points, 0 large points, average ghost points: 1054)
+added new points: 2, total time: 0.000769678
+iteration 30 (1024 small points, 0 large points, average ghost points: 1056)
+added new points: 4, total time: 0.000808278
+iteration 31 (1024 small points, 0 large points, average ghost points: 1060)
+added new points: 2, total time: 0.000687858
+iteration 32 (1024 small points, 0 large points, average ghost points: 1062)
+added new points: 4, total time: 0.000871986
+iteration 33 (1024 small points, 0 large points, average ghost points: 1066)
+added new points: 4, total time: 0.00107178
+iteration 34 (1024 small points, 0 large points, average ghost points: 1070)
+added new points: 4, total time: 0.00111533
+iteration 35 (1024 small points, 0 large points, average ghost points: 1074)
+added new points: 6, total time: 0.00142453
+iteration 36 (1024 small points, 0 large points, average ghost points: 1080)
+added new points: 4, total time: 0.00121923
+iteration 37 (1024 small points, 0 large points, average ghost points: 1084)
+added new points: 6, total time: 0.00153375
+iteration 38 (1024 small points, 0 large points, average ghost points: 1090)
+added new points: 6, total time: 0.00160373
+iteration 39 (1024 small points, 0 large points, average ghost points: 1096)
+added new points: 6, total time: 0.00166735
+iteration 40 (1024 small points, 0 large points, average ghost points: 1102)
+added new points: 8, total time: 0.00175987
+iteration 41 (1024 small points, 0 large points, average ghost points: 1110)
+added new points: 8, total time: 0.00184614
+iteration 42 (1024 small points, 0 large points, average ghost points: 1118)
+added new points: 10, total time: 0.00169672
+iteration 43 (1024 small points, 0 large points, average ghost points: 1128)
+added new points: 10, total time: 0.00181116
+iteration 44 (1024 small points, 0 large points, average ghost points: 1138)
+added new points: 10, total time: 0.00191304
+iteration 45 (1024 small points, 0 large points, average ghost points: 1148)
+added new points: 12, total time: 0.00203942
+iteration 46 (1024 small points, 0 large points, average ghost points: 1160)
+added new points: 14, total time: 0.0021791
+iteration 47 (1024 small points, 0 large points, average ghost points: 1174)
+added new points: 14, total time: 0.00233335
+iteration 48 (1024 small points, 0 large points, average ghost points: 1188)
+added new points: 16, total time: 0.0024887
+iteration 49 (1024 small points, 0 large points, average ghost points: 1204)
+added new points: 18, total time: 0.00266155
+iteration 50 (1024 small points, 0 large points, average ghost points: 1222)
+added new points: 20, total time: 0.00285732
+iteration 51 (1024 small points, 0 large points, average ghost points: 1242)
+added new points: 20, total time: 0.00305702
+iteration 52 (1024 small points, 0 large points, average ghost points: 1262)
+added new points: 24, total time: 0.00329206
+iteration 53 (1024 small points, 0 large points, average ghost points: 1286)
+added new points: 26, total time: 0.00353721
+iteration 54 (1024 small points, 0 large points, average ghost points: 1312)
+added new points: 28, total time: 0.00379824
+iteration 55 (1024 small points, 0 large points, average ghost points: 1340)
+added new points: 32, total time: 0.00407201
+iteration 56 (1024 small points, 0 large points, average ghost points: 1372)
+added new points: 34, total time: 0.00438958
+iteration 57 (1024 small points, 0 large points, average ghost points: 1406)
+added new points: 38, total time: 0.00475761
+iteration 58 (1024 small points, 0 large points, average ghost points: 1444)
+added new points: 42, total time: 0.00512316
+iteration 59 (1024 small points, 0 large points, average ghost points: 1486)
+added new points: 46, total time: 0.00548928
+iteration 60 (1024 small points, 0 large points, average ghost points: 1532)
+added new points: 50, total time: 0.00593343
+iteration 61 (1024 small points, 0 large points, average ghost points: 1582)
+added new points: 54, total time: 0.00635569
+iteration 62 (1024 small points, 0 large points, average ghost points: 1636)
+added new points: 62, total time: 0.00688446
+iteration 63 (1024 small points, 0 large points, average ghost points: 1698)
+added new points: 66, total time: 0.00728692
+iteration 64 (1024 small points, 0 large points, average ghost points: 1764)
+added new points: 74, total time: 0.00783939
+iteration 65 (1024 small points, 0 large points, average ghost points: 1838)
+added new points: 82, total time: 0.00836603
+iteration 66 (1024 small points, 0 large points, average ghost points: 1920)
+added new points: 88, total time: 0.00896261
+iteration 67 (1024 small points, 0 large points, average ghost points: 2008)
+added new points: 4194, total time: 0.531986
+iteration 68 (1024 small points, 0 large points, average ghost points: 6202)
+added new points: 108, total time: 0.0108359
+iteration 69 (1024 small points, 0 large points, average ghost points: 6310)
+added new points: 120, total time: 0.0111364
+iteration 70 (1024 small points, 0 large points, average ghost points: 6430)
+added new points: 130, total time: 0.0117387
+iteration 71 (1024 small points, 0 large points, average ghost points: 6560)
+added new points: 144, total time: 0.0122153
+iteration 72 (1024 small points, 0 large points, average ghost points: 6704)
+added new points: 158, total time: 0.012692
+iteration 73 (1024 small points, 0 large points, average ghost points: 6862)
+added new points: 174, total time: 0.0128041
+iteration 74 (1024 small points, 0 large points, average ghost points: 7036)
+added new points: 136, total time: 0.0128473
+iteration 75 (1024 small points, 0 large points, average ghost points: 7172)
+added new points: 0, total time: 0.0114535
+iteration 76 (1024 small points, 0 large points, average ghost points: 7172)
+added new points: 0, total time: 0.0113988
+iteration 77 (1024 small points, 0 large points, average ghost points: 7172)
+added new points: 0, total time: 0.0114503
+iteration 78 (1024 small points, 0 large points, average ghost points: 7172)
+added new points: 0, total time: 0.0114508
+iteration 79 (0 small points, 0 large points, average ghost points: 7172)
+added new points: 0, total time: 3.093e-06
+Time for bringing ghosts: 0.818462 seconds
+Total small queries: 79872, total big queries: 0
+Using step-function IC
+Mach 2 Radiative Shock (Hydro + MC)
+  Np=1024, new/cell=25, max/cell=100
+  T_upstream=0.122 keV, T_downstream=0.253 keV
+  rho_upstream=1, rho_downstream=2.29, v_downstream=1.5116e+07 cm/s
+  domain=[-0.21, 0.7] cm, dt=6.65216e-12 s, t_final=5 ns, prefix=mach2_mc
+Wrote mach2_mc_init.txt (1024 cells)
+Cycle 0 at time 0
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 235 old temperature 1.60093e+06 new temperature 1.72954e+06 old Erad 3.18946e+10 new Erad 1.00705e+11 diff 0.0719162 Tgas 1.72954e+06 max_Erad 5.62136e+11 max_temperature 2.93901e+06 rank 0 density 1.04934 width 0.0560074 location (-0.000717773, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 1  t=0.00665216 ns (0%)  dt=6.65216e-12  step=0.346017s  ETA=4m19s
+Cycle 1 at time 6.65216e-12
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 234 old temperature 1.51168e+06 new temperature 1.63247e+06 old Erad 2.75458e+11 new Erad 1.56538e+11 diff 0.0713983 Tgas 1.63247e+06 max_Erad 1.92598e+12 max_temperature 2.96937e+06 rank 0 density 1.0001 width 0.0560074 location (-0.00160645, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 2  t=0.0133043 ns (0%)  dt=6.65216e-12  step=4.50124s  ETA=30m16s
+Cycle 2 at time 1.33043e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 234 old temperature 1.60808e+06 new temperature 1.73929e+06 old Erad 1.56587e+11 new Erad 1.12363e+11 diff 0.0729107 Tgas 1.73929e+06 max_Erad 2.12215e+12 max_temperature 3.014e+06 rank 0 density 1.00041 width 0.0560074 location (-0.00160645, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 3  t=0.0199565 ns (0%)  dt=6.65216e-12  step=4.56611s  ETA=39m9s
+Cycle 3 at time 1.99565e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 234 old temperature 1.7046e+06 new temperature 1.82033e+06 old Erad 1.12436e+11 new Erad 5.88939e+11 diff 0.0615016 Tgas 1.82033e+06 max_Erad 2.47096e+12 max_temperature 3.06589e+06 rank 0 density 1.00106 width 0.0560074 location (-0.00160645, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 4  t=0.0266087 ns (0%)  dt=6.65216e-12  step=4.65933s  ETA=43m50s
+Cycle 4 at time 2.66087e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 234 old temperature 1.78279e+06 new temperature 1.88864e+06 old Erad 5.89631e+11 new Erad 4.95709e+11 diff 0.0542527 Tgas 1.88864e+06 max_Erad 1.95577e+12 max_temperature 3.12338e+06 rank 0 density 1.00223 width 0.0560074 location (-0.00160645, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 5  t=0.0332608 ns (0%)  dt=6.65216e-12  step=4.66538s  ETA=46m38s
+Cycle 5 at time 3.32608e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 234 old temperature 1.8539e+06 new temperature 1.95461e+06 old Erad 4.96239e+11 new Erad 5.71408e+09 diff 0.0498963 Tgas 1.95461e+06 max_Erad 1.8101e+12 max_temperature 3.18485e+06 rank 0 density 1.00331 width 0.0560074 location (-0.00160645, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 6 at time 3.9913e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 233 old temperature 1.79598e+06 new temperature 1.88216e+06 old Erad 4.79925e+11 new Erad 2.40026e+11 diff 0.0442603 Tgas 1.88216e+06 max_Erad 2.11178e+12 max_temperature 3.24711e+06 rank 0 density 1.00261 width 0.0560074 location (-0.00249512, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 7 at time 4.65651e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 233 old temperature 1.85233e+06 new temperature 1.92718e+06 old Erad 2.40182e+11 new Erad 1.74811e+11 diff 0.0375481 Tgas 1.92718e+06 max_Erad 2.03475e+12 max_temperature 3.30872e+06 rank 0 density 1.00326 width 0.0560074 location (-0.00249512, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 8 at time 5.32173e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 233 old temperature 1.89891e+06 new temperature 1.98527e+06 old Erad 1.74955e+11 new Erad 5.70989e+11 diff 0.0420761 Tgas 1.98527e+06 max_Erad 2.27725e+12 max_temperature 3.3691e+06 rank 0 density 1.00409 width 0.0560074 location (-0.00249512, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 9 at time 5.98695e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 232 old temperature 1.85162e+06 new temperature 1.92685e+06 old Erad 2.56134e+11 new Erad 3.74545e+11 diff 0.0377001 Tgas 1.92685e+06 max_Erad 2.55411e+12 max_temperature 3.42695e+06 rank 0 density 1.00325 width 0.0560074 location (-0.00338379, 0, 0)
+Next MC time step is 8.31521e-12
+Wrote mach2_mc_00001.txt (1024 cells)
+Cycle 10 at time 6.65216e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 233 old temperature 2.00682e+06 new temperature 2.08539e+06 old Erad 1.15424e+10 new Erad 2.98648e+11 diff 0.0364548 Tgas 2.08539e+06 max_Erad 2.9005e+12 max_temperature 3.48795e+06 rank 0 density 1.00593 width 0.0560074 location (-0.00249512, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 11 at time 7.31738e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 231 old temperature 1.86218e+06 new temperature 1.9277e+06 old Erad 1.5357e+11 new Erad 5.36804e+11 diff 0.0327877 Tgas 1.9277e+06 max_Erad 2.58648e+12 max_temperature 3.54352e+06 rank 0 density 1.00458 width 0.0560074 location (-0.00427246, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 12 at time 7.9826e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 232 old temperature 1.99609e+06 new temperature 2.07293e+06 old Erad 8.84674e+10 new Erad 4.77443e+11 diff 0.0358217 Tgas 2.07293e+06 max_Erad 2.84818e+12 max_temperature 3.59951e+06 rank 0 density 1.0058 width 0.0560074 location (-0.00338379, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 13 at time 8.64781e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 231 old temperature 1.95504e+06 new temperature 2.02122e+06 old Erad 7.91152e+10 new Erad 3.81982e+11 diff 0.0316025 Tgas 2.02122e+06 max_Erad 2.9733e+12 max_temperature 3.65601e+06 rank 0 density 1.00673 width 0.0560074 location (-0.00427246, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 14 at time 9.31303e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 231 old temperature 2.00143e+06 new temperature 2.07111e+06 old Erad 3.82321e+11 new Erad 4.28924e+11 diff 0.0324816 Tgas 2.07111e+06 max_Erad 2.47798e+12 max_temperature 3.70889e+06 rank 0 density 1.00762 width 0.0560074 location (-0.00427246, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 15 at time 9.97825e-11
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 232 old temperature 2.13923e+06 new temperature 2.20894e+06 old Erad 3.93589e+11 new Erad 3.39782e+11 diff 0.0305177 Tgas 2.20894e+06 max_Erad 2.49767e+12 max_temperature 3.75917e+06 rank 0 density 1.00951 width 0.0560074 location (-0.00338379, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 16 at time 1.06435e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 229 old temperature 1.94889e+06 new temperature 2.0116e+06 old Erad 2.34539e+11 new Erad 0 diff 0.0300359 Tgas 2.0116e+06 max_Erad 2.58244e+12 max_temperature 3.80772e+06 rank 0 density 1.00137 width 0.0560074 location (-0.0060498, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 17 at time 1.13087e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 228 old temperature 1.93085e+06 new temperature 1.98801e+06 old Erad 3.14145e+11 new Erad 2.43965e+11 diff 0.0276784 Tgas 1.98801e+06 max_Erad 3.24332e+12 max_temperature 3.85952e+06 rank 0 density 1.00114 width 0.0560074 location (-0.00693848, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 18 at time 1.19739e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 229 old temperature 2.03566e+06 new temperature 2.09411e+06 old Erad 1.44022e+11 new Erad 2.37599e+11 diff 0.026911 Tgas 2.09411e+06 max_Erad 2.62135e+12 max_temperature 3.90461e+06 rank 0 density 1.00228 width 0.0560074 location (-0.0060498, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 19 at time 1.26391e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 229 old temperature 2.07711e+06 new temperature 2.1392e+06 old Erad 2.37692e+11 new Erad 5.35759e+11 diff 0.0279895 Tgas 2.1392e+06 max_Erad 2.98103e+12 max_temperature 3.94887e+06 rank 0 density 1.00267 width 0.0560074 location (-0.0060498, 0, 0)
+Next MC time step is 8.31521e-12
+Wrote mach2_mc_00002.txt (1024 cells)
+Cycle 20 at time 1.33043e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 228 old temperature 2.05856e+06 new temperature 2.12874e+06 old Erad 1.00027e+11 new Erad 4.64436e+10 diff 0.0317753 Tgas 2.12874e+06 max_Erad 3.04711e+12 max_temperature 3.99679e+06 rank 0 density 1.00224 width 0.0560074 location (-0.00693848, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 21 at time 1.39695e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 228 old temperature 2.11299e+06 new temperature 2.17507e+06 old Erad 4.64691e+10 new Erad 4.25833e+10 diff 0.0275209 Tgas 2.17507e+06 max_Erad 3.02012e+12 max_temperature 4.03575e+06 rank 0 density 1.00278 width 0.0560074 location (-0.00693848, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 22 at time 1.46348e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 227 old temperature 2.09718e+06 new temperature 2.1584e+06 old Erad 9.19493e+10 new Erad 4.35328e+11 diff 0.0273332 Tgas 2.1584e+06 max_Erad 3.01857e+12 max_temperature 4.0705e+06 rank 0 density 1.00319 width 0.0560074 location (-0.00782715, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 23 at time 1.53e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 226 old temperature 2.08667e+06 new temperature 2.14276e+06 old Erad 2.67652e+11 new Erad 3.42645e+11 diff 0.0252121 Tgas 2.14276e+06 max_Erad 3.17264e+12 max_temperature 4.10318e+06 rank 0 density 1.00589 width 0.0560074 location (-0.00871582, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 24 at time 1.59652e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 224 old temperature 2.03187e+06 new temperature 2.08924e+06 old Erad 1.19581e+11 new Erad 1.67868e+11 diff 0.0264119 Tgas 2.08924e+06 max_Erad 3.27615e+12 max_temperature 4.13658e+06 rank 0 density 1.00519 width 0.0560074 location (-0.0104932, 0, 0)
+Next MC time step is 8.31521e-12
+Checkpoint written: mach2_mc_checkpoint.h5
+Cycle 25 at time 1.66304e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 225 old temperature 2.11865e+06 new temperature 2.17397e+06 old Erad 1.33292e+10 new Erad 3.94668e+11 diff 0.0245063 Tgas 2.17397e+06 max_Erad 3.49541e+12 max_temperature 4.16612e+06 rank 0 density 1.00847 width 0.0560074 location (-0.00960449, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 26 at time 1.72956e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 229 old temperature 2.38812e+06 new temperature 2.45495e+06 old Erad 5.39105e+11 new Erad 4.95109e+11 diff 0.0263238 Tgas 2.45495e+06 max_Erad 3.39272e+12 max_temperature 4.19477e+06 rank 0 density 1.00607 width 0.0560074 location (-0.0060498, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 27 at time 1.79608e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 226 old temperature 2.25679e+06 new temperature 2.31988e+06 old Erad 2.94915e+11 new Erad 3.33329e+11 diff 0.0262424 Tgas 2.31988e+06 max_Erad 3.49913e+12 max_temperature 4.22586e+06 rank 0 density 1.01022 width 0.0560074 location (-0.00871582, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 28 at time 1.86261e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 227 old temperature 2.36412e+06 new temperature 2.42798e+06 old Erad 6.70121e+11 new Erad 1.79572e+11 diff 0.025412 Tgas 2.42798e+06 max_Erad 3.53919e+12 max_temperature 4.25627e+06 rank 0 density 1.01005 width 0.0560074 location (-0.00782715, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 29 at time 1.92913e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 223 old temperature 2.20007e+06 new temperature 2.25726e+06 old Erad 2.16791e+11 new Erad 3.33501e+11 diff 0.0244095 Tgas 2.25726e+06 max_Erad 3.23094e+12 max_temperature 4.2864e+06 rank 0 density 1.00047 width 0.0560074 location (-0.0113818, 0, 0)
+Next MC time step is 8.31521e-12
+Wrote mach2_mc_00003.txt (1024 cells)
+Cycle 30 at time 1.99565e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 222 old temperature 2.19975e+06 new temperature 2.25721e+06 old Erad 7.26296e+11 new Erad 3.27662e+11 diff 0.0245177 Tgas 2.25721e+06 max_Erad 3.75546e+12 max_temperature 4.31461e+06 rank 0 density 1.00096 width 0.0560074 location (-0.0122705, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 31 at time 2.06217e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 225 old temperature 2.39079e+06 new temperature 2.44737e+06 old Erad 6.84035e+10 new Erad 8.5228e+11 diff 0.0223279 Tgas 2.44737e+06 max_Erad 4.09323e+12 max_temperature 4.3421e+06 rank 0 density 1.00563 width 0.0560074 location (-0.00960449, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 32 at time 2.12869e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 226 old temperature 2.48356e+06 new temperature 2.54601e+06 old Erad 6.20018e+11 new Erad 3.54129e+11 diff 0.0237164 Tgas 2.54601e+06 max_Erad 3.4566e+12 max_temperature 4.36753e+06 rank 0 density 1.00991 width 0.0560074 location (-0.00871582, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 33 at time 2.19521e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 222 old temperature 2.33514e+06 new temperature 2.39676e+06 old Erad 2.4899e+11 new Erad 4.76018e+11 diff 0.0247988 Tgas 2.39676e+06 max_Erad 4.22297e+12 max_temperature 4.3934e+06 rank 0 density 1.0026 width 0.0560074 location (-0.0122705, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 34 at time 2.26174e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 221 old temperature 2.34581e+06 new temperature 2.40431e+06 old Erad 3.09463e+11 new Erad 3.31896e+11 diff 0.023467 Tgas 2.40431e+06 max_Erad 3.65118e+12 max_temperature 4.42115e+06 rank 0 density 1.00204 width 0.0560074 location (-0.0131592, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 35 at time 2.32826e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 226 old temperature 2.622e+06 new temperature 2.68578e+06 old Erad 3.96914e+11 new Erad 6.26852e+11 diff 0.0229839 Tgas 2.68578e+06 max_Erad 4.12674e+12 max_temperature 4.44643e+06 rank 0 density 1.00865 width 0.0560074 location (-0.00871582, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 36 at time 2.39478e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 217 old temperature 2.28985e+06 new temperature 2.34413e+06 old Erad 5.95724e+11 new Erad 4.2261e+11 diff 0.0223054 Tgas 2.34413e+06 max_Erad 3.98338e+12 max_temperature 4.47033e+06 rank 0 density 1.00277 width 0.0560074 location (-0.0167139, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 37 at time 2.4613e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 218 old temperature 2.36839e+06 new temperature 2.42591e+06 old Erad 2.3857e+11 new Erad 7.17587e+11 diff 0.0228635 Tgas 2.42591e+06 max_Erad 3.92361e+12 max_temperature 4.494e+06 rank 0 density 1.00225 width 0.0560074 location (-0.0158252, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 38 at time 2.52782e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 220 old temperature 2.4881e+06 new temperature 2.54576e+06 old Erad 5.37421e+11 new Erad 2.54838e+11 diff 0.0218737 Tgas 2.54576e+06 max_Erad 4.53392e+12 max_temperature 4.51595e+06 rank 0 density 1.00192 width 0.0560074 location (-0.0140479, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 39 at time 2.59434e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 221 old temperature 2.57356e+06 new temperature 2.63842e+06 old Erad 4.364e+11 new Erad 4.877e+11 diff 0.0237689 Tgas 2.63842e+06 max_Erad 4.57224e+12 max_temperature 4.53663e+06 rank 0 density 1.00255 width 0.0560074 location (-0.0131592, 0, 0)
+Next MC time step is 8.31521e-12
+Wrote mach2_mc_00004.txt (1024 cells)
+Cycle 40 at time 2.66087e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 216 old temperature 2.4299e+06 new temperature 2.48266e+06 old Erad 5.47965e+11 new Erad 4.24769e+11 diff 0.0204953 Tgas 2.48266e+06 max_Erad 4.82211e+12 max_temperature 4.55884e+06 rank 0 density 1.00365 width 0.0560074 location (-0.0176025, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 41 at time 2.72739e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 218 old temperature 2.55093e+06 new temperature 2.60997e+06 old Erad 4.46606e+11 new Erad 4.4605e+11 diff 0.0218516 Tgas 2.60997e+06 max_Erad 4.34519e+12 max_temperature 4.57805e+06 rank 0 density 1.00434 width 0.0560074 location (-0.0158252, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 42 at time 2.79391e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 215 old temperature 2.49881e+06 new temperature 2.558e+06 old Erad 2.82509e+11 new Erad 5.85486e+11 diff 0.0223359 Tgas 2.558e+06 max_Erad 5.10487e+12 max_temperature 4.59724e+06 rank 0 density 1.00214 width 0.0560074 location (-0.0184912, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 43 at time 2.86043e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 218 old temperature 2.64865e+06 new temperature 2.70439e+06 old Erad 2.04674e+11 new Erad 6.86397e+11 diff 0.019932 Tgas 2.70439e+06 max_Erad 4.7446e+12 max_temperature 4.61409e+06 rank 0 density 1.00567 width 0.0560074 location (-0.0158252, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 44 at time 2.92695e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 0 old temperature 1.47917e+06 new temperature 1.50935e+06 old Erad 2.1515e+10 new Erad 2.71587e+10 diff 0.0188383 Tgas 1.50935e+06 max_Erad 4.56005e+12 max_temperature 4.64084e+06 rank 0 density 1.00903 width 0.0560074 location (-0.209556, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 45 at time 2.99347e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 220 old temperature 2.81079e+06 new temperature 2.8703e+06 old Erad 6.23029e+11 new Erad 1.18547e+12 diff 0.0200787 Tgas 2.8703e+06 max_Erad 4.94362e+12 max_temperature 4.69102e+06 rank 0 density 1.00407 width 0.0560074 location (-0.0140479, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 46 at time 3.06e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 213 old temperature 2.63098e+06 new temperature 2.68419e+06 old Erad 3.16629e+11 new Erad 2.55343e+11 diff 0.0191461 Tgas 2.68419e+06 max_Erad 5.79492e+12 max_temperature 4.73863e+06 rank 0 density 1.00174 width 0.0560074 location (-0.0202686, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 47 at time 3.12652e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 214 old temperature 2.70137e+06 new temperature 2.75666e+06 old Erad 2.84173e+11 new Erad 1.79393e+11 diff 0.0193836 Tgas 2.75666e+06 max_Erad 5.23314e+12 max_temperature 4.78423e+06 rank 0 density 1.00165 width 0.0560074 location (-0.0193799, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 48 at time 3.19304e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 217 old temperature 2.83302e+06 new temperature 2.89136e+06 old Erad 8.1992e+11 new Erad 1.08588e+12 diff 0.0195269 Tgas 2.89136e+06 max_Erad 5.00276e+12 max_temperature 4.82718e+06 rank 0 density 1.00646 width 0.0560074 location (-0.0167139, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 49 at time 3.25956e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 210 old temperature 2.66417e+06 new temperature 2.7218e+06 old Erad 6.97404e+11 new Erad 6.56311e+11 diff 0.0204429 Tgas 2.7218e+06 max_Erad 5.70187e+12 max_temperature 4.86392e+06 rank 0 density 1.0005 width 0.0560074 location (-0.0229346, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 50  t=0.332608 ns (6%)  dt=6.65216e-12  step=15.5463s  ETA=104m21s
+Wrote mach2_mc_00005.txt (1024 cells)
+Checkpoint written: mach2_mc_checkpoint.h5
+Cycle 50 at time 3.32608e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 206 old temperature 2.63013e+06 new temperature 2.68238e+06 old Erad 4.88258e+11 new Erad 7.79012e+11 diff 0.0187911 Tgas 2.68238e+06 max_Erad 5.2865e+12 max_temperature 4.89202e+06 rank 0 density 0.997252 width 0.0560074 location (-0.0264893, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 51 at time 3.3926e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 211 old temperature 2.78659e+06 new temperature 2.84363e+06 old Erad 1.01287e+12 new Erad 8.66205e+11 diff 0.0193891 Tgas 2.84363e+06 max_Erad 5.75301e+12 max_temperature 4.91287e+06 rank 0 density 1.00205 width 0.0560074 location (-0.0220459, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 52 at time 3.45913e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 0 old temperature 1.48504e+06 new temperature 1.51554e+06 old Erad 8.15388e+10 new Erad 9.56744e+10 diff 0.0188953 Tgas 1.51554e+06 max_Erad 5.82091e+12 max_temperature 4.93418e+06 rank 0 density 1.00992 width 0.0560074 location (-0.209556, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 53 at time 3.52565e-10
+Source time 0 mseconds
+Second source time 0 mseconds
+MC Radiation time step ID 202 old temperature 2.67445e+06 new temperature 2.72521e+06 old Erad 5.64064e+11 new Erad 3.78304e+11 diff 0.0179724 Tgas 2.72521e+06 max_Erad 5.48867e+12 max_temperature 4.95257e+06 rank 0 density 1.00417 width 0.0560074 location (-0.0300439, 0, 0)
+Next MC time step is 8.31521e-12
+Cycle 54 at time 3.59217e-10
+Source time 0 mseconds
+Second source time 0 mseconds

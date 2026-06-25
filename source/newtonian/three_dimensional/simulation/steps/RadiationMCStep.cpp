@@ -2,8 +2,10 @@
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
 #include "utils/rma/RMAFactory.hpp"
+#include "misc/universal_error.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 
 RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
@@ -91,6 +93,13 @@ void RadiationMCStep::step(double dt)
     auto radiationStepStart = std::chrono::high_resolution_clock::now();
 
     size_t N = tess.GetPointNo();
+    if(cells.size() < N)
+    {
+        UniversalError eo("RadiationMCStep: cells.size() < tess.GetPointNo()");
+        eo.addEntry("cells.size()", cells.size());
+        eo.addEntry("tess.GetPointNo()", N);
+        throw eo;
+    }
 
     std::vector<double> old_Erad(N), old_temperature(N);
     for(size_t i = 0; i < N; ++i)
@@ -121,6 +130,26 @@ void RadiationMCStep::step(double dt)
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     #endif
 
+    unsigned long long initialParticles = static_cast<unsigned long long>(this->manager->GetInitialParticleCount());
+    unsigned long long preStepParticles = static_cast<unsigned long long>(this->manager->GetPreStepParticleCount());
+    unsigned long long activeAfterPreStepParticles = static_cast<unsigned long long>(this->manager->GetStartParticleCount());
+    unsigned long long censusParticles = static_cast<unsigned long long>(this->manager->GetEndParticleCount());
+    #ifdef RICH_MPI
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &initialParticles, &initialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &preStepParticles, &preStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &activeAfterPreStepParticles, &activeAfterPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &censusParticles, &censusParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    #endif
+    if(rank == 0)
+    {
+        std::cout << "MC particle counts:"
+                  << " initial=" << initialParticles
+                  << " prestep_generated=" << preStepParticles
+                  << " active_after_prestep=" << activeAfterPreStepParticles
+                  << " census=" << censusParticles
+                  << std::endl;
+    }
+
     auto postManagerStart = std::chrono::high_resolution_clock::now();
 
     double reductionArray[2] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest()};
@@ -134,13 +163,16 @@ void RadiationMCStep::step(double dt)
         MPI_Allreduce(MPI_IN_PLACE, reductionArray, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     #endif
 
-    double max_Erad_diff = std::numeric_limits<double>::min() * 100;
-    double max_temperature_diff = std::numeric_limits<double>::min() * 100;
+    double max_Erad_diff = 0.0;
+    double max_temperature_diff = 0.0;
     int max_Erad_loc = 0, max_temperature_loc = 0;
     for(size_t i = 0; i < N; ++i)
     {
-        double Erad_diff = std::abs(cells[i].Erad * cells[i].density - old_Erad[i]) / (cells[i].Erad * cells[i].density + 0.02 * max_Erad);
-        double temperature_diff = std::abs(cells[i].temperature - old_temperature[i]) / (cells[i].temperature + 0.02 * max_temperature);
+        double const er_new = cells[i].Erad * cells[i].density;
+        double Erad_diff = std::abs(er_new - old_Erad[i])
+            / (er_new + 0.02 * max_Erad + 1e-30);
+        double temperature_diff = std::abs(cells[i].temperature - old_temperature[i])
+            / (cells[i].temperature + 0.02 * max_temperature + 1e-30);
         if(Erad_diff > max_Erad_diff)
         {
             max_Erad_diff = Erad_diff;
@@ -154,11 +186,14 @@ void RadiationMCStep::step(double dt)
     }
     max_Erad_diff *= 0.5;
 
-    double max_diff = max_temperature_diff ; // TODO: change later
+    double max_diff = max_temperature_diff; // TODO: change later
     // double max_diff = std::max(max_Erad_diff, max_temperature_diff);
+    constexpr double min_rel_diff = 1e-12;
+    max_diff = std::max(max_diff, min_rel_diff);
     #ifdef RICH_MPI
         rank_t max_diff_rank = rank;
         std::tie(max_diff_rank, max_diff) = MPI_Max_loc(max_diff, MPI_COMM_WORLD);
+        max_diff = std::max(max_diff, min_rel_diff);
     #endif // RICH_MPI
 
     std::cout.flush();
@@ -177,7 +212,8 @@ void RadiationMCStep::step(double dt)
         }
         std::cout << "MC Radiation time step ID " << cells[max_loc].ID
             << " old temperature " << old_temperature[max_loc] << " new temperature " << cells[max_loc].temperature
-            << " old Erad " << old_Erad[max_loc] << " new Erad " << cells[max_loc].Erad * cells[max_loc].density
+			<< " old Erad " << old_Erad[max_loc] << " new Erad "
+			<< cells[max_loc].Erad * cells[max_loc].density
             << " diff " << max_diff << " Tgas " << cells[max_loc].temperature
             << " max_Erad " << max_Erad << " max_temperature " << max_temperature << " rank " << rank
             << " density " << cells[max_loc].density

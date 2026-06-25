@@ -133,7 +133,7 @@ namespace
 		ComputationalCellAddMult(res.yderivative, vec_compare.xderivative, m_inv[2]);
 	}
 
-	double PressureRatio(ComputationalCell cell, vector<ComputationalCell const*> const& neigh)
+	double PressureRatio(ComputationalCell const& cell, vector<ComputationalCell const*> const& neigh)
 	{
 		double res = 1;
 		double p = cell.pressure;

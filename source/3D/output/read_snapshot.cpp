@@ -1,5 +1,9 @@
 #include "misc/universal_error.hpp"
 #include "read3D.hpp"
+#include <iostream>
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
 
 Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader,
                                 const HDF5Reader &globalfile,
@@ -152,8 +156,20 @@ Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader,
                 }
                 else
                 {
-                    if(ENERGY_GROUPS_NUM > 1)
-                        throw std::runtime_error("Missing energy group Eg_" + std::to_string(g) + " in snapshot");
+                    for(size_t i = 0; i < res.cells.size(); ++i)
+                        res.cells.at(i).Eg[g] = 0;
+                    static bool warned = false;
+                    if(!warned)
+                    {
+                        int my_rank = 0;
+#ifdef RICH_MPI
+                        MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+#endif
+                        if(my_rank == 0)
+                            std::cerr << "[Warning] Snapshot missing Eg_" << g
+                                      << "; setting Eg to 0 for all cells" << std::endl;
+                        warned = true;
+                    }
                 }
             }
         }

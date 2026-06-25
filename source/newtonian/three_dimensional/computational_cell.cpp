@@ -87,20 +87,20 @@ ComputationalCell3D& ComputationalCell3D::operator+=(ComputationalCell3D const& 
 	
 	double* __restrict__ t = this->tracers.data();
 	const double* __restrict__ ot = other.tracers.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		t[j] += ot[j];
 	
 	double* __restrict__ eg = this->Eg.data();
 	const double* __restrict__ oeg = other.Eg.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 	    eg[j] += oeg[j];
@@ -122,20 +122,20 @@ ComputationalCell3D& ComputationalCell3D::operator-=(ComputationalCell3D const& 
 	
 	double* __restrict__ t = this->tracers.data();
 	const double* __restrict__ ot = other.tracers.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		t[j] -= ot[j];
 	
 	double* __restrict__ eg = this->Eg.data();
 	const double* __restrict__ oeg = other.Eg.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 	    eg[j] -= oeg[j];
@@ -155,19 +155,19 @@ ComputationalCell3D& ComputationalCell3D::operator*=(double s)
 	this->cs *= s;
 	
 	double* __restrict__ t = this->tracers.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		t[j] *= s;
 	
 	double* __restrict__ eg = this->Eg.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 	    eg[j] *= s;
@@ -263,10 +263,10 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	double* __restrict__ res_tracers = res.tracers.data();
 	const double* __restrict__ other_tracers = other.tracers.data();
 	
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res_tracers[j] += other_tracers[j] * scalar;
@@ -276,10 +276,10 @@ void ComputationalCellAddMult(ComputationalCell3D &res, ComputationalCell3D cons
 	const double* __restrict__ other_eg = other.Eg.data();
 	const size_t eg_size = res.Eg.size();
 	
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < eg_size; ++j)
 		res_eg[j] += other_eg[j] * scalar;
@@ -313,10 +313,10 @@ void ComputationalCellAddMult3(ComputationalCell3D &res,
 	const double* __restrict__ dy_t = dy.tracers.data();
 	const double* __restrict__ dz_t = dz.tracers.data();
 	
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		res_t[j] += dx_t[j] * sx + dy_t[j] * sy + dz_t[j] * sz;
@@ -328,10 +328,10 @@ void ComputationalCellAddMult3(ComputationalCell3D &res,
 	const double* __restrict__ dz_eg = dz.Eg.data();
 	const size_t eg_size = res.Eg.size();
 	
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < eg_size; ++j)
 		res_eg[j] += dx_eg[j] * sx + dy_eg[j] * sy + dz_eg[j] * sz;
@@ -366,19 +366,19 @@ ComputationalCell3D operator/(ComputationalCell3D const& p, double s)
 	res.velocity = res.velocity * s_1;
 	
 	double* __restrict__ t = res.tracers.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for (size_t j = 0; j < MAX_TRACERS; ++j)
 		t[j] *= s_1;
 	
 	double* __restrict__ eg = res.Eg.data();
-#if defined(__GNUC__) && !defined(__INTEL_COMPILER)
-	#pragma GCC ivdep
-#elif defined(__INTEL_COMPILER)
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 	#pragma omp simd
+#elif defined(__GNUC__)
+	#pragma GCC ivdep
 #endif
 	for(size_t j = 0; j < ENERGY_GROUPS_NUM; ++j)
 		eg[j] *= s_1;

@@ -1,5 +1,101 @@
 #include "PolyClip.hpp"
 
+std::pair<double, Vector3D> computeCM(const std::vector<Face> &faces);
+
+namespace
+{
+    void ExtendBounds(ClipBounds &bounds, const Vector3D &point)
+    {
+        bounds.lower.x = std::min(bounds.lower.x, point.x);
+        bounds.lower.y = std::min(bounds.lower.y, point.y);
+        bounds.lower.z = std::min(bounds.lower.z, point.z);
+        bounds.upper.x = std::max(bounds.upper.x, point.x);
+        bounds.upper.y = std::max(bounds.upper.y, point.y);
+        bounds.upper.z = std::max(bounds.upper.z, point.z);
+        bounds.valid = true;
+    }
+
+    double BoundsScale(const ClipBounds *bounds)
+    {
+        if(bounds == 0 || !bounds->valid)
+        {
+            return 1.0;
+        }
+        return std::max(1.0, fastabs(bounds->upper - bounds->lower));
+    }
+
+    bool BoundsDisjoint(const ClipBounds &a, const ClipBounds &b)
+    {
+        if(!a.valid || !b.valid)
+        {
+            return false;
+        }
+        const double tol = 1e-12 * std::max(BoundsScale(&a), BoundsScale(&b));
+        return a.upper.x < b.lower.x - tol || b.upper.x < a.lower.x - tol ||
+               a.upper.y < b.lower.y - tol || b.upper.y < a.lower.y - tol ||
+               a.upper.z < b.lower.z - tol || b.upper.z < a.lower.z - tol;
+    }
+
+    std::tuple<double, double, Vector3D> clipCellsFull(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly,
+        ClipWorkspace &workspace, const Plane *vof, bool print);
+
+    bool TryClipFastPath(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly, const ClipBounds *source_bounds,
+        const ClipBounds *target_bounds, const Plane *vof, std::tuple<double, double, Vector3D> &result)
+    {
+        if(source_bounds != 0 && target_bounds != 0 && BoundsDisjoint(*source_bounds, *target_bounds))
+        {
+            result = std::make_tuple(0.0, 0.0, Vector3D(0, 0, 0));
+            return true;
+        }
+
+        if(polyhedron.empty())
+        {
+            return false;
+        }
+
+        const double tol = 1e-12 * BoundsScale(source_bounds);
+        bool all_vertices_inside_all_planes = true;
+        for(const Plane &plane : other_poly)
+        {
+            bool all_vertices_outside_this_plane = true;
+            bool all_vertices_inside_this_plane = true;
+            for(const Face &face : polyhedron)
+            {
+                for(const Vector3D &vertex : face.vertices)
+                {
+                    const double d = plane.signedDistance(vertex);
+                    if(std::abs(d) <= tol)
+                    {
+                        return false;
+                    }
+                    if(d > tol)
+                    {
+                        all_vertices_outside_this_plane = false;
+                    }
+                    else
+                    {
+                        all_vertices_inside_this_plane = false;
+                    }
+                }
+            }
+            if(all_vertices_outside_this_plane)
+            {
+                result = std::make_tuple(0.0, 0.0, Vector3D(0, 0, 0));
+                return true;
+            }
+            all_vertices_inside_all_planes = all_vertices_inside_all_planes && all_vertices_inside_this_plane;
+        }
+
+        if(all_vertices_inside_all_planes && vof == 0)
+        {
+            auto [volume, CM] = computeCM(polyhedron);
+            result = std::make_tuple(volume, 0.0, CM);
+            return true;
+        }
+        return false;
+    }
+}
+
 double polygonArea(const Face &face)
 {
     Vector3D ref = face.vertices[0];
@@ -75,13 +171,30 @@ std::pair<double, Vector3D> computeCM(const std::vector<Face> &faces)
     return std::make_pair(volume, CM);
 }
 
+ClipBounds computeBounds(const std::vector<Face> &faces)
+{
+    ClipBounds bounds;
+    for(const Face &face : faces)
+    {
+        for(const Vector3D &vertex : face.vertices)
+        {
+            ExtendBounds(bounds, vertex);
+        }
+    }
+    return bounds;
+}
+
 std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
 {
     Face out, clip_points;
-    int n = face.vertices.size();
+    const size_t n = face.vertices.size();
+    if(n < 3)
+    {
+        return {out, clip_points};
+    }
     double old_d = plane.signedDistance(face.vertices[0]);
     double maxR = 0;
-    for(int i = 0; i < n; i++)
+    for(size_t i = 0; i < n; i++)
     {
         const Vector3D &curr = face.vertices[i];
         const Vector3D &next = face.vertices[(i + 1) % n];
@@ -89,7 +202,7 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
         maxR = std::max(maxR, R);
     }
     double maxD = std::abs(old_d);
-    for(int i = 0; i < n; i++)
+    for(size_t i = 0; i < n; i++)
     {
         const Vector3D &curr = face.vertices[i];
         const Vector3D &next = face.vertices[(i + 1) % n];
@@ -266,6 +379,10 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
     }
     for(const Face &face : faces)
     {
+        if(face.vertices.size() < 3)
+        {
+            continue;
+        }
         if(print)
         {
             std::cout << "Clipping face " << face << std::endl;
@@ -297,7 +414,7 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
         bottom2 = CleanFace(bottom2);
         if(bottom2.vertices.size() > 2)
         {
-            result.push_back(CleanFace(bottom2));
+            result.push_back(bottom2);
         }
     }
     // std::cout << "Final result: " << std::endl;
@@ -307,6 +424,64 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
     //     std::cout << face << std::endl;
     // }
     return result;
+}
+
+void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, bool print)
+{
+    ClipWorkspace workspace;
+    clipPolyhedron(faces, plane, result, workspace, print);
+}
+
+void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, ClipWorkspace &workspace, bool print)
+{
+    result.clear();
+    result.reserve(faces.size() + 1);
+    Face &bottom = workspace.bottom;
+    bottom.vertices.clear();
+    if(print)
+    {
+        std::cout << "Clipping plane " << plane << std::endl;
+    }
+    for(const Face &face : faces)
+    {
+        if(face.vertices.size() < 3)
+        {
+            continue;
+        }
+        if(print)
+        {
+            std::cout << "Clipping face " << face << std::endl;
+        }
+        auto clipped = clipFace(face, plane, print);
+        if(print)
+        {
+            std::cout << "Clip result: " << clipped.first << ", " << clipped.second << std::endl;
+        }
+        if(clipped.first.vertices.size() >= 3)
+        {
+            Face clean = CleanFace(clipped.first);
+            clean = ConvexHullFace(clean);
+            clean = CleanFace(clean);
+            if(clean.vertices.size() > 2)
+            {
+                result.push_back(clean);
+            }
+        }
+        if(not clipped.second.vertices.empty())
+        {
+            bottom.vertices.insert(bottom.vertices.end(), clipped.second.vertices.begin(), clipped.second.vertices.end());
+        }
+    }
+    if(bottom.vertices.size() > 2)
+    {
+        Face bottom2 = CleanFace(bottom);
+        bottom2 = ConvexHullFace(bottom2);
+        bottom2 = CleanFace(bottom2);
+        if(bottom2.vertices.size() > 2)
+        {
+            result.push_back(bottom2);
+        }
+    }
 }
 
 double computeVolume(const std::vector<Face> &faces)
@@ -352,6 +527,22 @@ void CreatePolyFaces(const Tessellation3D &tess, size_t cell_index, std::vector<
     }
 }
 
+ClipBounds CreatePolyBounds(const Tessellation3D &tess, size_t cell_index)
+{
+    ClipBounds bounds;
+    const auto &face_indeces = tess.GetCellFaces(cell_index);
+    const auto &face_points = tess.GetFacePoints();
+    for(size_t face_index : face_indeces)
+    {
+        const point_vec &points = tess.GetPointsInFace(face_index);
+        for(size_t point_index : points)
+        {
+            ExtendBounds(bounds, face_points[point_index]);
+        }
+    }
+    return bounds;
+}
+
 std::vector<Face> CreatePolyFaces(const Tessellation3D &tess, size_t cell_index)
 {
     std::vector<Face> poly;
@@ -392,35 +583,65 @@ std::vector<Plane> CreatePolyPlanes(const Tessellation3D &tess, size_t cell_inde
 
 std::tuple<double, double, Vector3D> clipCells(const Tessellation3D &tess, size_t check_index, const std::vector<Face> &polyhedron, const Plane *vof, bool print)
 {
-    std::vector<Plane> other_poly = CreatePolyPlanes(tess, check_index);
-    return clipCells(polyhedron, other_poly, vof, print);
+    ClipWorkspace workspace;
+    return clipCells(tess, check_index, polyhedron, workspace, 0, 0, vof, print);
 }
 
 std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly, const Plane *vof, bool print)
 {
-    std::vector<Face> clipped_poly(polyhedron);
+    ClipWorkspace workspace;
+    return clipCells(polyhedron, other_poly, workspace, 0, 0, vof, print);
+}
+
+std::tuple<double, double, Vector3D> clipCells(const Tessellation3D &tess, size_t check_index, const std::vector<Face> &polyhedron,
+    ClipWorkspace &workspace, const ClipBounds *source_bounds, const ClipBounds *target_bounds, const Plane *vof, bool print)
+{
+    CreatePolyPlanes(tess, check_index, workspace.planes);
+    return clipCells(polyhedron, workspace.planes, workspace, source_bounds, target_bounds, vof, print);
+}
+
+std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly,
+    ClipWorkspace &workspace, const ClipBounds *source_bounds, const ClipBounds *target_bounds, const Plane *vof, bool print)
+{
+    std::tuple<double, double, Vector3D> result;
+    if(TryClipFastPath(polyhedron, other_poly, source_bounds, target_bounds, vof, result))
+    {
+        return result;
+    }
+    return clipCellsFull(polyhedron, other_poly, workspace, vof, print);
+}
+
+namespace
+{
+std::tuple<double, double, Vector3D> clipCellsFull(const std::vector<Face> &polyhedron, const std::vector<Plane> &other_poly,
+    ClipWorkspace &workspace, const Plane *vof, bool print)
+{
+    workspace.buf_a = polyhedron;
+    workspace.buf_b.clear();
+    std::vector<Face> *src = &workspace.buf_a, *dst = &workspace.buf_b;
     if(print)
     {
         auto [volume, CM] = computeCM(polyhedron);
-        double volume1 = computeVolume(clipped_poly);
+        double volume1 = computeVolume(*src);
         std::cout << "Starting cell clip volume0 " << volume << " volume1 " << volume1 << std::endl;
     }
     const size_t Nplanes = other_poly.size();
     for(size_t i = 0; i < Nplanes; i++)
     {
-        clipped_poly = clipPolyhedron(clipped_poly, other_poly[i], print);
+        clipPolyhedron(*src, other_poly[i], *dst, workspace, print);
+        std::swap(src, dst);
         if(print)
         {
-            auto [volume, CM] = computeCM(clipped_poly);
+            auto [volume, CM] = computeCM(*src);
             std::cout << "Volume " << volume << " CM " << CM << std::endl;
             std::cout << "Clipped poly: " << std::endl;
-            for(const Face &face : clipped_poly)
+            for(const Face &face : *src)
             {
                 std::cout << face << std::endl;
             }
         }
     }
-    auto [volume, CM] = computeCM(clipped_poly);
+    auto [volume, CM] = computeCM(*src);
     double vof_volume = 0;
     if(vof != 0)
     {
@@ -428,17 +649,19 @@ std::tuple<double, double, Vector3D> clipCells(const std::vector<Face> &polyhedr
         {
             std::cout << "Starting vof clip" << std::endl;
         }
-        clipped_poly = clipPolyhedron(clipped_poly, *vof, print);
+        clipPolyhedron(*src, *vof, *dst, workspace, print);
+        std::swap(src, dst);
         if(print)
         {
             std::cout << "Clipped poly: " << std::endl;
-            for(const Face &face : clipped_poly)
+            for(const Face &face : *src)
             {
                 std::cout << face << std::endl;
             }
         }
-        auto [volume2, CM2] = computeCM(clipped_poly);
+        auto [volume2, CM2] = computeCM(*src);
         vof_volume = std::min(volume, volume2);
     }
     return {volume, vof_volume, CM};
+}
 }

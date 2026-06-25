@@ -12,10 +12,13 @@ public:
 
     enum StepType
     {
-        TIMEADVANCE_2
+        TIMEADVANCE_2,
+        TIMEADVANCE_LAGRANGIAN_1D
     };
 
-    HydroStep(HDSim3D &sim, StepType stepType);
+    HydroStep(HDSim3D &sim, StepType stepType,
+              const ComputationalCell3D* left_ext = nullptr,
+              const ComputationalCell3D* right_ext = nullptr);
 
     void step(double dt) override;
 
@@ -50,6 +53,8 @@ public:
 private:
     HDSim3D &sim;
     StepType stepType;
+    const ComputationalCell3D* left_external_;
+    const ComputationalCell3D* right_external_;
 };
 
 #endif // HYDRO_STEP_HPP

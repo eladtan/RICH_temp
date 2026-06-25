@@ -1,0 +1,133 @@
+\begin{tikzpicture}[>=Stealth, font=\sffamily\small]
+
+  \begin{scope}[shift={(0, -8.5)}]
+    \tikzset{
+      fbox/.style={
+        draw, rounded corners=3pt, thick, minimum width=3.0cm,
+        minimum height=0.7cm, font=\sffamily\scriptsize, align=center
+      },
+      dec/.style={
+        draw, diamond, thick, aspect=2.5, inner sep=1pt,
+        font=\sffamily\scriptsize, align=center
+      }
+    }
+
+    % ---- Left column: linear init ----
+    \node[fbox, fill=rank0!15] (init) at (1.5, 7.3)
+      {Set \texttt{timeLeft = dt}\\for all particles};
+    \node[fbox, fill=rank0!15] (prestep) at (1.5, 5.8)
+      {\texttt{physics->preStep()}\\emit new particles};
+    \node[fbox, fill=rank0!15] (initcnt) at (1.5, 4.3)
+      {\texttt{amountManager}\\.\texttt{Initialize}$(N)$};
+
+    \draw[-{Stealth[length=5pt]}, thick] (init) -- (prestep);
+    \draw[-{Stealth[length=5pt]}, thick] (prestep) -- (initcnt);
+
+    % ---- Center column: main loop ----
+    \node[dec, fill=thcolor!20] (done) at (7, 7.3) {\texttt{done?}};
+
+    \draw[-{Stealth[length=5pt]}, thick] (initcnt.east) -- (done.west);
+
+    % HandleAll
+    \node[fbox, fill=thcolor!20, minimum width=3.4cm] (handle) at (7, 5.5)
+      {\texttt{HandleAll()}:\\physics.step() per particle};
+
+    \draw[-{Stealth[length=5pt]}, thick] (done.south) --
+      node[right, font=\sffamily\tiny, pos=0.4] {no} (handle);
+
+    % Outcome
+    \node[dec, fill=thcolor!15, inner sep=0pt, aspect=3.0]
+      (fate) at (7, 3.5) {particle\\outcome?};
+
+    \draw[-{Stealth[length=5pt]}, thick] (handle) -- (fate);
+
+    % ---- Three branches ----
+
+    % Left branch: local cell move
+    \node[fbox, fill=partcolor!70, minimum width=2.4cm] (local) at (2.0, 2.0)
+      {local cell\\move};
+    \draw[-{Stealth[length=5pt]}, thick] (fate.west) -|
+      node[above left, font=\sffamily\tiny, pos=0.2] {local cell} (local.north);
+
+    % Center branch: ghost transfer
+    \node[fbox, fill=rdmacolor!25, minimum width=2.8cm] (xfer) at (7, 2.0)
+      {RDMA transfer\\to neighbor rank};
+    \draw[-{Stealth[length=5pt]}, thick] (fate.south) --
+      node[right, font=\sffamily\tiny, pos=0.3] {ghost cell} (xfer.north);
+
+    % Right branch: remove / done
+    \node[fbox, fill=rank1!15, minimum width=2.6cm] (rem) at (12.0, 2.0)
+      {remove / mark done};
+    \draw[-{Stealth[length=5pt]}, thick] (fate.east) -|
+      node[above right, font=\sffamily\tiny, pos=0.2] {remove/done} (rem.north);
+
+    % Decrement below remove
+    \node[fbox, fill=avcolor!30, minimum width=2.6cm] (decr) at (12.0, 0.5)
+      {\texttt{amountManager}\\.\texttt{Decrease}$(n)$};
+    \draw[-{Stealth[length=5pt]}, thick] (rem) -- (decr);
+
+    % ---- Loop-back: all three rejoin at the top via a clean rectangular path ----
+    \def\busY{-0.5}
+    % local -> bus
+    \draw[thick, gray!70] (local.south) -- (2.0, \busY);
+    % xfer -> bus
+    \draw[thick, gray!70] (xfer.south) -- (7, \busY);
+    % decr -> bus
+    \draw[thick, gray!70] (decr.south) -- (12.0, \busY);
+    % horizontal bus
+    \draw[thick, gray!70] (2.0, \busY) -- (12.0, \busY);
+    % left side up and across the top to done.north
+    \draw[-{Stealth[length=5pt]}, thick, gray!70]
+      (2.0, \busY) -- (-1.0, \busY) -- (-1.0, 8.0) -- (7, 8.0) -- (done.north);
+    \node[font=\sffamily\tiny, gray!60!black, anchor=south] at (3, 8.0)
+      {next iteration};
+
+    % ---- Exit: done = yes ----
+    \node[fbox, fill=rank2!15] (popctl) at (12.0, 7.3)
+      {\texttt{populationControl}\\.\texttt{activate}()};
+    \node[fbox, fill=rank2!15] (post) at (12.0, 5.8)
+      {\texttt{physics}\\.\texttt{postStep}()};
+
+    \draw[-{Stealth[length=5pt]}, thick] (done.east) --
+      node[above, font=\sffamily\tiny] {yes} (popctl.west);
+    \draw[-{Stealth[length=5pt]}, thick] (popctl) -- (post);
+
+    % ---- Side boxes: termination & reallocation ----
+    \node[draw, rounded corners=3pt, fill=mutexcolor!10, thick,
+          font=\sffamily\tiny, text width=4.5cm, align=left,
+          anchor=north west] at (-2.8, -1.5) {
+      \textbf{ParticleAmountManager} (termination):\\[2pt]
+      1. Each rank accumulates local decrements\\
+      2. Periodically pushes to global RDMA counter\\
+      3. Rank 0 checks if counter $= 0$\\
+      4. Broadcasts \texttt{shouldVerify} via RDMA\\
+      5. All ranks verify every \texttt{th\_length}~$=$~0\\
+      6. If confirmed $\to$ sets \texttt{done} globally
+    };
+
+    \node[draw, rounded corners=3pt, fill=rdmacolor!10, thick,
+          font=\sffamily\tiny, text width=4.5cm, align=left,
+          anchor=north west] at (4.0, -1.5) {
+      \textbf{ReallocationAgent} (dynamic buffers):\\[2pt]
+      When receiver's \texttt{av\_length} is too small:\\
+      1. Unlock mutex, request reallocation from peer\\
+      2. Both call \texttt{RankHandler::Reallocate}:\\
+      \quad allocate new MPI windows, memcpy,\\
+      \quad free old windows, exchange sizes\\
+      3. Re-lock mutex, retry transfer
+    };
+
+    \node[draw, rounded corners=3pt, fill=white, thick,
+          font=\sffamily\tiny, text width=4.3cm, align=left,
+          anchor=north west] at (10.8, -1.5) {
+      \textbf{HandleAll() inner loop}:\\[2pt]
+      For each active rank handler:\\
+      \quad for each particle in \texttt{th[]}:\\
+      \quad\quad call \texttt{physics->step()}\\
+      \quad\quad result $\to$ local move, ghost\\
+      \quad\quad transfer, remove, or done\\
+      Batch transfers per destination rank.
+    };
+  \end{scope}
+
+\end{tikzpicture}

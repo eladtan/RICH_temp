@@ -57,7 +57,7 @@ namespace voronoi_loggers
       \param location Name of output file
 	  \return The mesh points
      */
-	vector<Vector2D> read(string location);
+	vector<Vector2D> read(string const& location);
 
   private:
     const std::string file_name_;

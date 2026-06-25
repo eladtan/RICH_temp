@@ -1,0 +1,67 @@
+\begin{tikzpicture}[>=Stealth, font=\sffamily\small]
+
+  \node[font=\sffamily\Large\bfseries, anchor=west] at (-1, 0)
+    {MonteCarloManager -- RDMA Communication Architecture};
+
+  \node[font=\sffamily\normalsize\bfseries, anchor=west] at (-1, -1.0)
+    {1.\; The \texttt{rankHandlers[]} Matrix (3 ranks example)};
+  \node[font=\sffamily\scriptsize, anchor=west, text=gray!70!black, text width=19cm]
+    at (-1, -1.55)
+    {Each cell $(i,j)$ is the RankHandler that rank $i$ holds for rank $j$.
+     Diagonal = self-handler (local memory).
+     Off-diagonal = remote handler (MPI\_Win / RDMA).};
+
+  \begin{scope}[shift={(0, -5.5)}]
+    % Column headers
+    \node[font=\sffamily\small\bfseries, rank0] at (1.0, 3.6) {Handler for Rank 0};
+    \node[font=\sffamily\small\bfseries, rank1] at (6.2, 3.6) {Handler for Rank 1};
+    \node[font=\sffamily\small\bfseries, rank2] at (11.4, 3.6) {Handler for Rank 2};
+
+    % Row headers
+    \node[font=\sffamily\small\bfseries, rank0, rotate=90, anchor=south]
+      at (-2.0, 2.0) {Rank 0};
+    \node[font=\sffamily\small\bfseries, rank1, rotate=90, anchor=south]
+      at (-2.0, -0.8) {Rank 1};
+    \node[font=\sffamily\small\bfseries, rank2, rotate=90, anchor=south]
+      at (-2.0, -3.6) {Rank 2};
+
+    % Row 0: Rank 0's handlers           bg            label                   lock th av
+    \drawHandler{1.0}{2.0}  {selfbg}  {self (\texttt{new[]})}{0}{5}{3}
+    \drawHandler{6.2}{2.0}  {remotebg}{MPI\_Win (RDMA)}      {1}{2}{6}
+    \drawHandler{11.4}{2.0} {remotebg}{MPI\_Win (RDMA)}      {1}{0}{8}
+    % Row 1: Rank 1's handlers
+    \drawHandler{1.0}{-0.8} {remotebg}{MPI\_Win (RDMA)}      {1}{1}{7}
+    \drawHandler{6.2}{-0.8} {selfbg}  {self (\texttt{new[]})}{0}{4}{4}
+    \drawHandler{11.4}{-0.8}{remotebg}{MPI\_Win (RDMA)}      {1}{3}{5}
+    % Row 2: Rank 2's handlers
+    \drawHandler{1.0}{-3.6} {remotebg}{MPI\_Win (RDMA)}      {1}{0}{8}
+    \drawHandler{6.2}{-3.6} {remotebg}{MPI\_Win (RDMA)}      {1}{2}{6}
+    \drawHandler{11.4}{-3.6}{selfbg}  {self (\texttt{new[]})}{0}{6}{2}
+  \end{scope}
+
+  % Legend
+  \begin{scope}[shift={(0, -12.2)}]
+    \fill[selfbg, draw=gray!60, rounded corners=2pt] (-2.8, 0.05) rectangle (-2.0, 0.45);
+    \node[font=\sffamily\tiny, anchor=west] at (-1.8, 0.25)
+      {Self-handler: \texttt{size\_internal}${}=1$, plain \texttt{new[]} memory, no MPI windows};
+
+    \fill[remotebg, draw=gray!60, rounded corners=2pt] (-2.8, -0.5) rectangle (-2.0, -0.1);
+    \node[font=\sffamily\tiny, anchor=west] at (-1.8, -0.3)
+      {Remote handler: \texttt{size\_internal}${}=2$, \texttt{MPI\_Win\_allocate}, RDMA-accessible, mutex-protected};
+
+    \node[font=\sffamily\tiny, anchor=west] at (9.0, 0.25) {%
+      \textbf{P} = \texttt{particles[]} \quad
+      \textcolor{thcolor!80!black}{\textbf{th}} = to-handle indices \quad
+      \textcolor{avcolor!80!black}{\textbf{av}} = available indices};
+    \node[font=\sffamily\tiny, anchor=west] at (9.0, -0.3) {%
+      Number after array = \texttt{*th\_length} / \texttt{*av\_length}};
+
+    \node[font=\sffamily\tiny, anchor=north west, text=gray!60!black, text width=19cm]
+      at (-2.8, -0.75) {%
+      Cell $(i,j)$ and cell $(j,i)$ share the same 5 MPI windows
+      (\texttt{particles\_win}, \texttt{th\_win}, \texttt{av\_win},
+      \texttt{th\_length\_win}, \texttt{av\_length\_win}).
+      Rank $i$ writes into cell $(j,i)$ on rank $j$ via one-sided \texttt{MPI\_Put}.};
+  \end{scope}
+
+\end{tikzpicture}

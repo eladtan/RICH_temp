@@ -2,6 +2,7 @@
 #define MASSED_VALUE_HPP
 
 #include <array>
+#include <cstring>
 #include "GravityTypes.h"
 #include <mpi_utils/serialize/Serializer.hpp>
 
@@ -72,6 +73,30 @@ struct MassedValue
         bytes += serializer->extract(this->mass, byteOffset + bytes);
         bytes += serializer->extract_array(this->Q, byteOffset + bytes);
         return bytes;
+    }
+
+    static constexpr size_t FLAT_BYTE_SIZE = 13 * sizeof(double);
+
+    inline void dumpFlat(char *dst) const
+    {
+        double buf[13];
+        buf[0] = this->value.x; buf[1] = this->value.y; buf[2] = this->value.z;
+        buf[3] = this->CM.x;    buf[4] = this->CM.y;    buf[5] = this->CM.z;
+        buf[6] = this->mass;
+        buf[7] = this->Q[0]; buf[8] = this->Q[1]; buf[9]  = this->Q[2];
+        buf[10] = this->Q[3]; buf[11] = this->Q[4]; buf[12] = this->Q[5];
+        std::memcpy(dst, buf, FLAT_BYTE_SIZE);
+    }
+
+    inline void loadFlat(const char *src)
+    {
+        double buf[13];
+        std::memcpy(buf, src, FLAT_BYTE_SIZE);
+        this->value.x = buf[0]; this->value.y = buf[1]; this->value.z = buf[2];
+        this->CM.x    = buf[3]; this->CM.y    = buf[4]; this->CM.z    = buf[5];
+        this->mass     = buf[6];
+        this->Q[0] = buf[7]; this->Q[1] = buf[8]; this->Q[2]  = buf[9];
+        this->Q[3] = buf[10]; this->Q[4] = buf[11]; this->Q[5] = buf[12];
     }
 
     #endif // RICH_MPI

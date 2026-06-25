@@ -7,7 +7,7 @@ Tetrahedron::Tetrahedron(Tetrahedron const & other)
 {
 	this->checkBig = other.checkBig;
 	this->newTetra = other.newTetra;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd
 #endif
 	for (int i = 0; i < 4; i++)
@@ -26,7 +26,7 @@ Tetrahedron &Tetrahedron::operator=(Tetrahedron const & other)
 	this->newTetra = other.newTetra;
 	if (&other == this)
 		return *this;
-#ifdef __INTEL_COMPILER
+#if defined(__INTEL_COMPILER) || defined(__INTEL_LLVM_COMPILER)
 #pragma omp simd
 #endif
 	for (int i = 0; i < 4; ++i)

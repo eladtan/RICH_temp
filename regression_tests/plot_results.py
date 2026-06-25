@@ -285,6 +285,48 @@ def plot_till(root: Path, out_dir: Path) -> bool:
     return True
 
 
+def plot_till_mc(root: Path, out_dir: Path) -> bool:
+    """Till Compton MC: Tgas and Trad vs time (IMC transport)."""
+    case_dir = root / "regression_tests" / "cases" / "till_compton_mc"
+    time_file = case_dir / "time.txt"
+    tgas_file = case_dir / "Tgas.txt"
+    trad_file = case_dir / "Trad.txt"
+    for f in (time_file, tgas_file, trad_file):
+        if not f.exists():
+            print(f"  [till_compton_mc] file not found: {f}")
+            return False
+
+    time = np.loadtxt(str(time_file))
+    tgas = np.loadtxt(str(tgas_file))
+    trad = np.loadtxt(str(trad_file))
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(time, tgas, "r-", linewidth=1.5, label="$T_{\\mathrm{gas}}$ (RICH IMC)")
+    ax.plot(time, trad, "b-", linewidth=1.5, label="$T_{\\mathrm{rad}}$ (RICH IMC)")
+
+    ref_file = root / "regression_tests" / "cases" / "till_compton" / "data" / "in_fbc_reference.txt"
+    if ref_file.exists():
+        ref = np.loadtxt(str(ref_file))
+        ax.plot(ref[:, 0], ref[:, 1], "k^", markersize=5,
+                label="$T_{\\mathrm{gas}}$ (IN-FBC)")
+        ax.plot(ref[:, 0], ref[:, 2], "ks", markersize=4,
+                label="$T_{\\mathrm{rad}}$ (IN-FBC)")
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.set_xscale("log")
+    ax.set_xlim(1e-11, 3e-8)
+    ax.set_title("Till Compton MC -- Gas & Radiation Temperature (IMC)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "till_compton_mc")
+    plt.close(fig)
+    print(f"  [till_compton_mc] saved till_compton_mc.png/pdf")
+    return True
+
+
 def _load_nlte_solver(root: Path):
     """Import the NLTE radiative shock solver."""
     solver_dir = root / "analysis_files" / "radiative_shock"
@@ -960,6 +1002,113 @@ def plot_eulerian_diffusion_freefree_1d(root: Path, out_dir: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Spherical collapse -- xy-plane scatter of density and internal energy
+# --------------------------------------------------------------------------- #
+
+
+def plot_spherical_collapse(root: Path, out_dir: Path) -> bool:
+    """xy-plane interpolated plots of density and internal energy from collapse_xy_slice.txt."""
+    from scipy.interpolate import griddata
+
+    case_dir = root / "regression_tests" / "cases" / "spherical_collapse"
+    slice_file = case_dir / "collapse_xy_slice.txt"
+    if not slice_file.exists():
+        print(f"  [spherical_collapse] slice file not found: {slice_file}")
+        return False
+
+    raw = np.loadtxt(str(slice_file))
+    if raw.ndim != 2 or raw.shape[1] < 4:
+        print("  [spherical_collapse] expected columns: x y density internal_energy")
+        return False
+
+    x, y, rho, ie = raw[:, 0], raw[:, 1], raw[:, 2], raw[:, 3]
+    if len(x) == 0:
+        print("  [spherical_collapse] empty slice file")
+        return False
+
+    box = 1.1
+    mask = (np.abs(x) <= box) & (np.abs(y) <= box)
+    x, y, rho, ie = x[mask], y[mask], rho[mask], ie[mask]
+
+    ngrid = 512
+    xi = np.linspace(-box, box, ngrid)
+    yi = np.linspace(-box, box, ngrid)
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+
+    rho_grid = griddata((x, y), rho, (xi_grid, yi_grid), method="linear")
+    ie_grid = griddata((x, y), ie, (xi_grid, yi_grid), method="linear")
+
+    plt = _get_plt()
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(rho_grid, extent=[-box, box, -box, box], origin="lower", cmap="inferno")
+    cbar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02)
+    cbar.set_label(r"$\rho$", fontsize=12)
+    ax.set_xlabel("x", fontsize=11)
+    ax.set_ylabel("y", fontsize=11)
+    ax.set_title("Density — $z \\approx 0$ slice (final)", fontsize=12)
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "collapse_xy_density")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(ie_grid, extent=[-box, box, -box, box], origin="lower", cmap="magma")
+    cbar = fig.colorbar(im, ax=ax, shrink=0.9, pad=0.02)
+    cbar.set_label(r"$e_{\mathrm{int}}$", fontsize=12)
+    ax.set_xlabel("x", fontsize=11)
+    ax.set_ylabel("y", fontsize=11)
+    ax.set_title("Internal energy — $z \\approx 0$ slice (final)", fontsize=12)
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    _save_fig(fig, out_dir, "collapse_xy_internal_energy")
+    plt.close(fig)
+
+    print("  [spherical_collapse] saved collapse_xy_density and collapse_xy_internal_energy (.png/.pdf)")
+    return True
+
+
+def _plot_till_variant(root: Path, out_dir: Path, case_name: str, label: str) -> bool:
+    """Generic Till Compton plot for variant cases (small-dt etc)."""
+    case_dir = root / "regression_tests" / "cases" / case_name
+    time_file = case_dir / "time.txt"
+    tgas_file = case_dir / "Tgas.txt"
+    trad_file = case_dir / "Trad.txt"
+    for f in (time_file, tgas_file, trad_file):
+        if not f.exists():
+            print(f"  [{case_name}] file not found: {f}")
+            return False
+
+    time = np.loadtxt(str(time_file))
+    tgas = np.loadtxt(str(tgas_file))
+    trad = np.loadtxt(str(trad_file))
+
+    plt = _get_plt()
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(time, tgas, "r-", linewidth=1.5, label="$T_{\\mathrm{gas}}$")
+    ax.plot(time, trad, "b-", linewidth=1.5, label="$T_{\\mathrm{rad}}$")
+
+    ref_file = root / "regression_tests" / "cases" / "till_compton" / "data" / "in_fbc_reference.txt"
+    if ref_file.exists():
+        ref = np.loadtxt(str(ref_file))
+        ax.plot(ref[:, 0], ref[:, 1], "k^", markersize=5, label="$T_{\\mathrm{gas}}$ (IN-FBC)")
+        ax.plot(ref[:, 0], ref[:, 2], "ks", markersize=4, label="$T_{\\mathrm{rad}}$ (IN-FBC)")
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Temperature [K]")
+    ax.set_xscale("log")
+    ax.set_xlim(1e-11, 3e-8)
+    ax.set_title(f"Till Compton -- {label}")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    _save_fig(fig, out_dir, case_name)
+    plt.close(fig)
+    print(f"  [{case_name}] saved {case_name}.png/pdf")
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -968,6 +1117,7 @@ ALL_PLOTTERS = {
     "sedov_3d_mpi": plot_sedov,
     "lane_self_gravity": plot_lane,
     "till_compton": plot_till,
+    "till_compton_mc": plot_till_mc,
     "mach2_diffusion": plot_mach2_diffusion,
     "mach2_multigroup": plot_mach2_multigroup,
     "marshak_wave_1": plot_marshak_wave_1,
@@ -982,6 +1132,7 @@ ALL_PLOTTERS = {
     "yee_vortex_128": plot_yee_isentropic_vortex,
     "rayleigh_taylor_mpi": plot_rayleigh_taylor,
     "eulerian_diffusion_freefree_1d": plot_eulerian_diffusion_freefree_1d,
+    "spherical_collapse": plot_spherical_collapse,
 }
 
 
@@ -1003,6 +1154,12 @@ def main():
         action="store_true",
         help="Plot all tests regardless of what is in regression_results.",
     )
+    parser.add_argument(
+        "--test",
+        action="append",
+        choices=sorted(ALL_PLOTTERS.keys()),
+        help="Plot only this test id. May be passed more than once.",
+    )
     args = parser.parse_args()
 
     root = repo_root()
@@ -1013,7 +1170,9 @@ def main():
     else:
         results_path = find_latest_results(root)
 
-    if args.all:
+    if args.test:
+        tests_to_plot = set(args.test)
+    elif args.all:
         tests_to_plot = set(ALL_PLOTTERS.keys())
     elif results_path and results_path.is_dir():
         tests_to_plot = tests_in_results(results_path)

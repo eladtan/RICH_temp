@@ -17,6 +17,7 @@
 #include "SourceTerm3D.hpp"
 #include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
 #include "CostCalculator3D.hpp"
+#include "Hllc3D.hpp"
 
 #ifdef RICH_MPI
   #include <mpi.h>
@@ -63,6 +64,14 @@ public:
   void timeAdvance();
   //! \brief Advances the simulation in time (second order)
   void timeAdvance2();
+
+  /*! \brief Second order time advance with Lagrangian x-boundaries
+    \param left_external Exterior state at left x-boundary (nullptr = vacuum)
+    \param right_external Exterior state at right x-boundary (nullptr = vacuum)
+   */
+  void timeAdvanceLagrangian1D(
+    const ComputationalCell3D* left_external = nullptr,
+    const ComputationalCell3D* right_external = nullptr);
 
   /*! \brief Third order time advance
    */
@@ -124,7 +133,7 @@ public:
   #ifdef RICH_MPI
     std::shared_ptr<CostCalculator3D> cost_calc_;
   #endif // RICH_MPI
-  
+
 private:
   Tessellation3D& tess_;
   const EquationOfState& eos_;
@@ -137,6 +146,17 @@ private:
   const ExtensiveUpdater3D& eu_;
   const	SourceTerm3D &source_;
   const ProgressTracker &pt_;
+  vector<Vector3D> point_vel_scratch_;
+  vector<Vector3D> face_vel_scratch_;
+  vector<Vector3D> oldpoints_scratch_;
+  vector<Vector3D> tessellation_points_scratch_;
+  vector<Conserved3D> fluxes_scratch_;
+  vector<Conserved3D> mid_extensives_scratch_;
+  vector<Conserved3D> u1_scratch_;
+  vector<Conserved3D> u2_scratch_;
+  vector<Conserved3D> u3_scratch_;
+  vector<size_t> hilbert_order_scratch_;
+  std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values_scratch_;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI

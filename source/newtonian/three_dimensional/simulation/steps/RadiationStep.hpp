@@ -44,7 +44,6 @@ private:
     std::vector<Conserved3D> &extensives;
     ProgressTracker &pt;
     const RadiationDriver &matrix_builder;
-    bool no_hydro;
     double suggested_dt;
     #ifdef RICH_MPI
         std::shared_ptr<CostCalculator3D> cost;

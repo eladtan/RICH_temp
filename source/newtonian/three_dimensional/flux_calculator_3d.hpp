@@ -32,6 +32,13 @@ public:
 	  const vector<ComputationalCell3D>& cells,const vector<Conserved3D>& extensives,const EquationOfState& eos,
 	  const double time, const double dt) const = 0;
 
+	virtual void Calculate(vector<Conserved3D>& fluxes, const Tessellation3D& tess, const vector<Vector3D>& edge_velocities,
+	  const vector<ComputationalCell3D>& cells,const vector<Conserved3D>& extensives,const EquationOfState& eos,
+	  const double time, const double dt, std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values) const
+	{
+	  face_values = (*this)(fluxes, tess, edge_velocities, cells, extensives, eos, time, dt);
+	}
+
   //! \brief Class destructor
   virtual ~FluxCalculator3D(void);
 };

@@ -123,9 +123,11 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
         const std::vector<int> &dupProcs = tess.GetDuplicatedProcs();
     #endif // RICH_MPI
 
+    std::vector<size_t> neighbor_buf;
     for(const size_t &pointIdx : points)
     {
-        for(const size_t &neighbor : tess.GetNeighbors(pointIdx))
+        tess.GetNeighbors(pointIdx, neighbor_buf);
+        for(const size_t &neighbor : neighbor_buf)
         {
             if(tess.IsPointOutsideBox(neighbor))
             {
@@ -308,9 +310,11 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
         const std::vector<int> &dupProcs = tess.GetDuplicatedProcs();
     #endif // RICH_MPI
 
+    std::vector<size_t> neighbor_buf;
     for(const size_t &pointIdx : points)
     {
-        for(const size_t &neighbor : tess.GetNeighbors(pointIdx))
+        tess.GetNeighbors(pointIdx, neighbor_buf);
+        for(const size_t &neighbor : neighbor_buf)
         {
             if(tess.IsPointOutsideBox(neighbor))
             {
