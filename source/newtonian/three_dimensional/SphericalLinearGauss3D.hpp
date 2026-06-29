@@ -53,7 +53,7 @@ public:
 		bool velocity_radial_extrapolation = false,
 		FaceRadiusPolicy face_radius_policy = FaceRadiusPolicy::PhysicalFaceCM,
 		double shell_radius_abs_tol = 1e-12,
-		double shell_radius_rel_tol = 1e-10);
+		double shell_radius_rel_tol = 1e-7);
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
