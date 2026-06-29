@@ -39,24 +39,22 @@ size_t const N_CUBE_EDGE = 82;
 size_t const N_CUBE_EDGE = 41;
 #endif
 
+SphericalShellMeshOptions build_shell_mesh_options()
+{
+    SphericalShellMeshOptions options;
+    options.center = Vector3D();
+    options.inner_radius = R_INNER;
+    options.outer_radius = R_OUTER;
+    options.angular_edge_count = N_CUBE_EDGE;
+    options.guard_shell_count = 0;
+    options.fill_inner_core = false;
+    options.fill_outer_box = false;
+    return options;
+}
+
 std::vector<double> build_bin_edges()
 {
-    auto sphere_raw = CubedSphereSurface(1.0, N_CUBE_EDGE, Vector3D(), 0);
-    size_t N_angular = 0;
-    for (auto const& p : sphere_raw)
-        if (abs(p) > 1e-12)
-            ++N_angular;
-    double dR_over_R = std::sqrt(4.0 * M_PI / static_cast<double>(N_angular));
-
-    std::vector<double> edges;
-    double R = R_OUTER;
-    while (R > R_INNER) {
-        edges.push_back(R);
-        R *= (1.0 - dR_over_R);
-    }
-    edges.push_back(R);
-    std::reverse(edges.begin(), edges.end());
-    return edges;
+    return SphericalShellMeshActiveBinEdges(build_shell_mesh_options());
 }
 
 struct DiagResult {
@@ -212,27 +210,14 @@ int main(void)
 
     {
         std::vector<Vector3D> points;
-        auto sphere_raw = CubedSphereSurface(1.0, N_CUBE_EDGE, Vector3D(), 200);
+        SphericalShellMeshOptions const shell_options = build_shell_mesh_options();
+        double const n_angular = 6.0 * static_cast<double>(N_CUBE_EDGE) *
+            static_cast<double>(N_CUBE_EDGE);
+        double const dR_over_R = std::sqrt(4.0 * M_PI / n_angular);
 
         if (rank == 0) {
-            std::vector<Vector3D> unit_dirs;
-            unit_dirs.reserve(sphere_raw.size());
-            for (auto const& p : sphere_raw) {
-                double r = abs(p);
-                if (r > 1e-12)
-                    unit_dirs.push_back(p / r);
-            }
-            double const dR_over_R = std::sqrt(4.0 * M_PI / static_cast<double>(unit_dirs.size()));
-            std::vector<double> radii;
-            double R = R_OUTER;
-            while (R > R_INNER) {
-                radii.push_back(R);
-                R *= (1.0 - dR_over_R);
-            }
-            points.reserve(radii.size() * unit_dirs.size() + 200000);
-            for (double shell_r : radii)
-                for (auto const& d : unit_dirs)
-                    points.push_back(d * shell_r);
+            points = GenerateSphericalShellMesh3D(ll, ur, shell_options);
+            points.reserve(points.size() + 200000);
             double innermost_dR = R_INNER * dR_over_R;
             double inner_cell_vol = innermost_dR * innermost_dR * innermost_dR;
             double inner_sphere_vol = (4.0 / 3.0) * M_PI * R_INNER * R_INNER * R_INNER;
@@ -289,7 +274,8 @@ int main(void)
 
     Hllc3D rs;
     RigidWallGenerator3D ghost;
-    SphericalLinearGauss3D interp(eos, ghost, Vector3D(0, 0, 0), true, 0.2, 0.5, 0.7, false, {}, "", true, false, false);
+    SphericalLinearGauss3D interp(eos, ghost, Vector3D(0, 0, 0), true, 0.2, 0.5, 0.7, false, {}, "", true, false, false,
+        SphericalLinearGauss3D::FaceRadiusPolicy::SphericalShellGeneratorAverage);
     Eulerian3D pm;
     ZeroForce3D force;
     DefaultCellUpdater cu;

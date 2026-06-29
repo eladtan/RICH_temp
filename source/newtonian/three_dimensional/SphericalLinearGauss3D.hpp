@@ -19,6 +19,11 @@
 class SphericalLinearGauss3D : public SpatialReconstruction3D
 {
 public:
+	enum class FaceRadiusPolicy
+	{
+		PhysicalFaceCM,
+		SphericalShellGeneratorAverage
+	};
 
 	/*! \brief Class constructor
 	\param eos Equation of state
@@ -34,6 +39,9 @@ public:
 	\param pressure_calc Determine whether the pressure should be recalculated
 	\param apply_principal_limit Enable principal-frame velocity limiting
 	\param velocity_radial_extrapolation When true, velocity is extrapolated to the average radius between generators rather than face CM radius, improving spherical symmetry preservation
+	\param face_radius_policy Effective face-radius policy for spherical reconstruction
+	\param shell_radius_abs_tol Absolute same-shell radius tolerance
+	\param shell_radius_rel_tol Relative same-shell radius tolerance
 	*/
 	SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
 		Vector3D const& origin = Vector3D(),
@@ -42,7 +50,10 @@ public:
 		const vector<string>& calc_tracers = vector<string>(),
 		const string& skip_key = string(), bool pressure_calc = true,
 		bool apply_principal_limit = false,
-		bool velocity_radial_extrapolation = false);
+		bool velocity_radial_extrapolation = false,
+		FaceRadiusPolicy face_radius_policy = FaceRadiusPolicy::PhysicalFaceCM,
+		double shell_radius_abs_tol = 1e-12,
+		double shell_radius_rel_tol = 1e-10);
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
@@ -95,6 +106,9 @@ private:
 	const bool pressure_calc_;
 	const bool apply_principal_limit_;
 	const bool velocity_radial_extrapolation_;
+	const FaceRadiusPolicy face_radius_policy_;
+	const double shell_radius_abs_tol_;
+	const double shell_radius_rel_tol_;
 	mutable std::vector<bool> is_pole_cell_;
 
 	SphericalLinearGauss3D(const SphericalLinearGauss3D& origin);

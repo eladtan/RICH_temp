@@ -57,6 +57,22 @@ namespace
 		return e_r * v_sph.x + e_theta * v_sph.y + e_phi * v_sph.z;
 	}
 
+	inline Vector3D sph_velocity_theta_derivative(Vector3D const& v_sph,
+		Vector3D const& dv_dtheta)
+	{
+		return Vector3D(dv_dtheta.x - v_sph.y, dv_dtheta.y + v_sph.x,
+			dv_dtheta.z);
+	}
+
+	inline Vector3D sph_velocity_phi_derivative(Vector3D const& v_sph,
+		Vector3D const& dv_dphi, double theta)
+	{
+		double st = std::sin(theta), ct = std::cos(theta);
+		return Vector3D(dv_dphi.x - st * v_sph.z,
+			dv_dphi.y - ct * v_sph.z,
+			dv_dphi.z + st * v_sph.x + ct * v_sph.y);
+	}
+
 	void GetNeighborCM(Tessellation3D const& tess, size_t cell_index,
 		vector<Vector3D> &res, face_vec const& faces)
 	{
@@ -87,6 +103,62 @@ namespace
 	inline bool is_near_pole(double /*r*/, double /*theta*/, double /*cell_width*/)
 	{
 		return false;
+	}
+
+	inline bool is_ghost_index(size_t index, size_t local_count)
+	{
+		return index >= local_count;
+	}
+
+	inline bool is_valid_radius(double r)
+	{
+		return std::isfinite(r) && r > 0;
+	}
+
+	inline bool same_shell_radius(double r1, double r2,
+		double abs_tol, double rel_tol)
+	{
+		double scale = std::max(std::max(r1, r2), 1.0);
+		return std::abs(r1 - r2) <= abs_tol + rel_tol * scale;
+	}
+
+	Vector3D face_reconstruction_sph(Tessellation3D const& tess,
+		size_t cell_index, size_t face, Vector3D const& origin,
+		SphericalLinearGauss3D::FaceRadiusPolicy policy,
+		double shell_radius_abs_tol, double shell_radius_rel_tol)
+	{
+		Vector3D res = cart_to_sph_coords(tess.FaceCM(face), origin);
+		if (policy == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
+			return res;
+
+		auto neigh = tess.GetFaceNeighbors(face);
+		if (neigh.first != cell_index && neigh.second != cell_index)
+			return res;
+
+		// Non-boundary ghost points are intentionally handled like local points:
+		// if the tessellation has a mesh point for both sides, it can define the shell radius.
+		double const r1 = abs(tess.GetMeshPoint(neigh.first) - origin);
+		double const r2 = abs(tess.GetMeshPoint(neigh.second) - origin);
+		if (!is_valid_radius(r1) || !is_valid_radius(r2))
+			return res;
+
+		if (same_shell_radius(r1, r2, shell_radius_abs_tol, shell_radius_rel_tol))
+			res.x = 0.5 * (r1 + r2);
+		return res;
+	}
+
+	void apply_face_radius_policy(Tessellation3D const& tess,
+		size_t cell_index, face_vec const& faces, Vector3D const& origin,
+		SphericalLinearGauss3D::FaceRadiusPolicy policy,
+		double shell_radius_abs_tol, double shell_radius_rel_tol,
+		vector<Vector3D>& face_sph_cache)
+	{
+		if (policy == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
+			return;
+
+		for (size_t i = 0; i < faces.size(); ++i)
+			face_sph_cache[i] = face_reconstruction_sph(tess, cell_index, faces[i],
+				origin, policy, shell_radius_abs_tol, shell_radius_rel_tol);
 	}
 
 	// ========== Cartesian (LinearGauss3D) utilities for pole cells ==========
@@ -691,8 +763,10 @@ namespace
 			double dist_sq = ScalarProd(diff, diff);
 			if (dist_sq < 1e-28)
 				dist_sq = 1e-28;
-			double w = face_areas_cache[i] / dist_sq;
-			w = 1;
+			(void)dist_sq;
+			// Keep equal LSQ weights in spherical coordinates. Area/distance weights
+			// bias non-uniform shell meshes and noticeably break spherical symmetry.
+			double w = 1.0;
 
 			double w_dr = w * dr, w_dt = w * dtheta, w_dp = w * dphi;
 
@@ -804,17 +878,18 @@ namespace
 		ComputationalCell3D const& cell, vector<ComputationalCell3D> const& neighbor_list,
 		double pressure_ratio, double cs, double r, double theta)
 	{
-		double safe_r = std::max(r, 1e-14);
-		double sin_theta = std::sin(theta);
-		double safe_rsint = std::max(safe_r * sin_theta, 1e-14);
-		double div_v = naive_slope.xderivative.velocity.x
-			+ naive_slope.yderivative.velocity.y / safe_r
-			+ naive_slope.zderivative.velocity.z / safe_rsint;
-		div_v *= cell_width;
-		double t_div = std::max(0.0, std::min(1.0, -div_v / (shock_ratio * cs)));
-		double p_ratio = PressureRatio(cell, neighbor_list);
-		double t_pres = std::max(0.0, std::min(1.0, (pressure_ratio - p_ratio) / (0.2 * pressure_ratio)));
-		return 1;//std::max(t_div, t_pres);
+		(void)naive_slope;
+		(void)cell_width;
+		(void)shock_ratio;
+		(void)cell;
+		(void)neighbor_list;
+		(void)pressure_ratio;
+		(void)cs;
+		(void)r;
+		(void)theta;
+		// Keep the blended limiter fully in its shock branch for spherical shells.
+		// The shock sensor varies with non-uniform mesh spacing and harms symmetry.
+		return 1.0;
 	}
 
 	void interp_coord_simple(ComputationalCell3D &res, Slope3D const& slope,
@@ -864,12 +939,17 @@ namespace
 		double vr_max = cell_vr, vr_min = cell_vr;
 		double vt_max = cell_vt, vt_min = cell_vt;
 		double vp_max = cell_vp, vp_min = cell_vp;
+		auto skip_neighbor = [&skip_key](ComputationalCell3D const& ct)
+		{
+			return !skip_key.empty() && *safe_retrieve(ct.stickers.begin(),
+				ComputationalCell3D::stickerNames.begin(),
+				ComputationalCell3D::stickerNames.end(), skip_key);
+		};
 
 		for (size_t i = 0; i < nloop; ++i)
 		{
 			ComputationalCell3D const& ct = neighbors[i];
-			if (!skip_key.empty() && *safe_retrieve(ct.stickers.begin(), ComputationalCell3D::stickerNames.begin(),
-								ComputationalCell3D::stickerNames.end(), skip_key))
+			if (skip_neighbor(ct))
 				continue;
 			cmax.density = std::max(cmax.density, ct.density);
 			cmax.pressure = std::max(cmax.pressure, ct.pressure);
@@ -911,12 +991,21 @@ namespace
 
 		for (size_t i = 0; i < nedges; ++i)
 		{
+			if (skip_neighbor(neighbors[i]))
+				continue;
 			double dri = face_sph_cache[i].x - cell_coords.x;
 			double dti = face_sph_cache[i].y - cell_coords.y;
 			double dpi = wrap_dphi(face_sph_cache[i].z - cell_coords.z);
 
 			ReplaceComputationalCell(centroid_val, cell);
 			interp_coord_simple(centroid_val, slope, dri, dti, dpi);
+			if (i < face_vel_dr_correction.size())
+			{
+				double vel_dr_extra = face_vel_dr_correction[i];
+				centroid_val.velocity.x += slope.xderivative.velocity.x * vel_dr_extra;
+				centroid_val.velocity.y += slope.xderivative.velocity.y * vel_dr_extra;
+				centroid_val.velocity.z += slope.xderivative.velocity.z * vel_dr_extra;
+			}
 			ReplaceComputationalCell(dphi_cell, centroid_val);
 			dphi_cell -= cell;
 
@@ -1103,9 +1192,18 @@ namespace
 
 		if (shock_w > 0)
 		{
-			double maxDv = ScalarProd(slope.xderivative.velocity, slope.xderivative.velocity)
-				+ ScalarProd(slope.yderivative.velocity, slope.yderivative.velocity)
-				+ ScalarProd(slope.zderivative.velocity, slope.zderivative.velocity);
+			double safe_r = std::max(cell_coords.x, 1e-14);
+			double safe_rsint = std::max(safe_r * std::abs(std::sin(cell_coords.y)), 1e-14);
+			double inv_r = 1.0 / safe_r;
+			double inv_rsint = 1.0 / safe_rsint;
+			Vector3D dv_dr = slope.xderivative.velocity;
+			Vector3D dv_dtheta = sph_velocity_theta_derivative(cell.velocity,
+				slope.yderivative.velocity);
+			Vector3D dv_dphi = sph_velocity_phi_derivative(cell.velocity,
+				slope.zderivative.velocity, cell_coords.y);
+			double maxDv = ScalarProd(dv_dr, dv_dr)
+				+ ScalarProd(dv_dtheta, dv_dtheta) * inv_r * inv_r
+				+ ScalarProd(dv_dphi, dv_dphi) * inv_rsint * inv_rsint;
 			maxDv *= tess.GetWidth(cell_index) * tess.GetWidth(cell_index);
 			if (maxDv > 100 * ScalarProd(cell.velocity, cell.velocity))
 			{
@@ -1215,7 +1313,10 @@ namespace
 		string const& skip_key,
 		vector<ComputationalCell3D> &neighbor_list,
 		vector<Vector3D>& face_sph_cache, vector<double>& face_areas_cache,
-		bool velocity_radial_extrapolation, vector<double>& face_vel_dr_correction)
+		bool velocity_radial_extrapolation,
+		SphericalLinearGauss3D::FaceRadiusPolicy face_radius_policy,
+		double shell_radius_abs_tol, double shell_radius_rel_tol,
+		vector<double>& face_vel_dr_correction)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
 		GetNeighborCM(tess, cell_index, neighbor_cm_list, faces);
@@ -1240,6 +1341,10 @@ namespace
 				face_sph_cache[i] = cart_to_sph_coords(tess.FaceCM(faces[i]), origin);
 				face_areas_cache[i] = tess.GetArea(faces[i]);
 			}
+			apply_face_radius_policy(tess, cell_index, faces, origin,
+				face_radius_policy, shell_radius_abs_tol, shell_radius_rel_tol,
+				face_sph_cache);
+			face_vel_dr_correction.assign(faces.size(), 0.0);
 			return;
 		}
 
@@ -1252,13 +1357,17 @@ namespace
 		calc_lsq_slope(cell_sph, cell_cm, cell_coords, origin,
 			neighbor_list, neighbor_cm_list, tess, cell_index, faces,
 			res, temp1, neigh_sph_buf, face_sph_cache, face_areas_cache);
+		apply_face_radius_policy(tess, cell_index, faces, origin,
+			face_radius_policy, shell_radius_abs_tol, shell_radius_rel_tol,
+			face_sph_cache);
 
 		naive_slope_ = res;
 		zero_radiation_fields(res, calc_tracers);
 
 		// Compute velocity radial correction for each face
-		face_vel_dr_correction.resize(faces.size(), 0.0);
-		if (velocity_radial_extrapolation)
+		face_vel_dr_correction.assign(faces.size(), 0.0);
+		if (velocity_radial_extrapolation &&
+			face_radius_policy == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
 		{
 			double r_gen_cell = abs(tess.GetMeshPoint(cell_index) - origin);
 			for (size_t fi = 0; fi < faces.size(); ++fi)
@@ -1303,6 +1412,7 @@ namespace
 	// Modifies slope in-place using temp as scratch space.
 	void coord_sph_slope_to_cart(Slope3D &slope,
 		double r, double theta,
+		Vector3D const& v_sph,
 		Vector3D const& e_r, Vector3D const& e_theta, Vector3D const& e_phi,
 		Slope3D &temp)
 	{
@@ -1312,12 +1422,7 @@ namespace
 		double inv_r = 1.0 / safe_r;
 		double inv_rsint = 1.0 / safe_rsint;
 
-		// Step 1: rotate velocity from spherical to Cartesian in each derivative
-		slope.xderivative.velocity = sph_to_cart_vec(slope.xderivative.velocity, e_r, e_theta, e_phi);
-		slope.yderivative.velocity = sph_to_cart_vec(slope.yderivative.velocity, e_r, e_theta, e_phi);
-		slope.zderivative.velocity = sph_to_cart_vec(slope.zderivative.velocity, e_r, e_theta, e_phi);
-
-		// Step 2: save derivatives before applying inverse Jacobian
+		// Save derivatives before applying inverse Jacobian.
 		ReplaceComputationalCell(temp.xderivative, slope.xderivative);
 		ReplaceComputationalCell(temp.yderivative, slope.yderivative);
 		ReplaceComputationalCell(temp.zderivative, slope.zderivative);
@@ -1337,6 +1442,25 @@ namespace
 		slope.zderivative *= e_r.z;
 		ComputationalCellAddMult(slope.zderivative, temp.yderivative, e_theta.z * inv_r);
 		ComputationalCellAddMult(slope.zderivative, temp.zderivative, e_phi.z * inv_rsint);
+
+		Vector3D dv_dr_cart = sph_to_cart_vec(temp.xderivative.velocity,
+			e_r, e_theta, e_phi);
+		Vector3D dv_dtheta_cart = sph_to_cart_vec(
+			sph_velocity_theta_derivative(v_sph, temp.yderivative.velocity),
+			e_r, e_theta, e_phi);
+		Vector3D dv_dphi_cart = sph_to_cart_vec(
+			sph_velocity_phi_derivative(v_sph, temp.zderivative.velocity, theta),
+			e_r, e_theta, e_phi);
+
+		slope.xderivative.velocity = dv_dr_cart * e_r.x
+			+ dv_dtheta_cart * (e_theta.x * inv_r)
+			+ dv_dphi_cart * (e_phi.x * inv_rsint);
+		slope.yderivative.velocity = dv_dr_cart * e_r.y
+			+ dv_dtheta_cart * (e_theta.y * inv_r)
+			+ dv_dphi_cart * (e_phi.y * inv_rsint);
+		slope.zderivative.velocity = dv_dr_cart * e_r.z
+			+ dv_dtheta_cart * (e_theta.z * inv_r)
+			+ dv_dphi_cart * (e_phi.z * inv_rsint);
 	}
 
 	// Converts a Cartesian-coordinate slope (d/dx, d/dy, d/dz with Cartesian
@@ -1391,17 +1515,22 @@ namespace
 
 // ========== Public methods ==========
 
-SphericalLinearGauss3D::SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
-	Vector3D const& origin, bool slf, double delta_v, double theta,
-	double delta_P, bool SR, const vector<string>& calc_tracers,
-	const string& skip_key, bool pressure_calc, bool apply_principal_limit,
-	bool velocity_radial_extrapolation)
-	: eos_(eos), ghost_(ghost), origin_(origin), rslopes_(), naive_rslopes_(),
-	er_(), etheta_(), ephi_(),
-	slf_(slf), shockratio_(delta_v), diffusecoeff_(theta), pressure_ratio_(delta_P), SR_(SR),
-	calc_tracers_(calc_tracers), skip_key_(skip_key), pressure_calc_(pressure_calc),
-	apply_principal_limit_(apply_principal_limit),
-	velocity_radial_extrapolation_(velocity_radial_extrapolation) {}
+	SphericalLinearGauss3D::SphericalLinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,
+		Vector3D const& origin, bool slf, double delta_v, double theta,
+		double delta_P, bool SR, const vector<string>& calc_tracers,
+		const string& skip_key, bool pressure_calc, bool apply_principal_limit,
+		bool velocity_radial_extrapolation,
+		SphericalLinearGauss3D::FaceRadiusPolicy face_radius_policy,
+		double shell_radius_abs_tol, double shell_radius_rel_tol)
+		: eos_(eos), ghost_(ghost), origin_(origin), rslopes_(), naive_rslopes_(),
+		er_(), etheta_(), ephi_(),
+		slf_(slf), shockratio_(delta_v), diffusecoeff_(theta), pressure_ratio_(delta_P), SR_(SR),
+		calc_tracers_(calc_tracers), skip_key_(skip_key), pressure_calc_(pressure_calc),
+		apply_principal_limit_(apply_principal_limit),
+		velocity_radial_extrapolation_(velocity_radial_extrapolation),
+		face_radius_policy_(face_radius_policy),
+		shell_radius_abs_tol_(shell_radius_abs_tol),
+		shell_radius_rel_tol_(shell_radius_rel_tol) {}
 
 void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 	std::vector<ComputationalCell3D> const& cells, double time)
@@ -1463,12 +1592,13 @@ void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 		}
 		else
 		{
-			calc_slope_spherical(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_,
-				eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
-				naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
-				neigh_sph_buf, neighbor_cm_list, skip_key_, neighbor_list,
-				face_sph_cache, face_areas_cache,
-				velocity_radial_extrapolation_, face_vel_dr_correction);
+				calc_slope_spherical(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_,
+					eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
+					naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
+					neigh_sph_buf, neighbor_cm_list, skip_key_, neighbor_list,
+					face_sph_cache, face_areas_cache,
+					velocity_radial_extrapolation_, face_radius_policy_,
+					shell_radius_abs_tol_, shell_radius_rel_tol_, face_vel_dr_correction);
 		}
 	}
 
@@ -1477,13 +1607,18 @@ void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 	exchange_ghost_slopes(tess, rslopes_);
 #endif
 
-	// Convert all slopes to Cartesian — local cells
+	// Convert all slopes to Cartesian - local cells
 	for (size_t i = 0; i < CellNumber; ++i)
 	{
 		if (!is_pole_cell_[i])
 		{
 			Vector3D sc = cart_to_sph_coords(tess.GetCellCM(i), origin_);
-			coord_sph_slope_to_cart(rslopes_[i], sc.x, sc.y, er_[i], etheta_[i], ephi_[i], temp1);
+			Vector3D v_sph = cart_to_sph_vec(new_cells[i].velocity,
+				er_[i], etheta_[i], ephi_[i]);
+			coord_sph_slope_to_cart(rslopes_[i], sc.x, sc.y, v_sph,
+				er_[i], etheta_[i], ephi_[i], temp1);
+			coord_sph_slope_to_cart(naive_rslopes_[i], sc.x, sc.y, v_sph,
+				er_[i], etheta_[i], ephi_[i], temp1);
 		}
 	}
 	// Convert ghost slopes to Cartesian
@@ -1499,7 +1634,10 @@ void SphericalLinearGauss3D::BuildSlopes(Tessellation3D const& tess,
 			{
 				Vector3D ge_r, ge_t, ge_p;
 				sph_basis_at(gsc.y, gsc.z, ge_r, ge_t, ge_p);
-				coord_sph_slope_to_cart(rslopes_[i], gsc.x, gsc.y, ge_r, ge_t, ge_p, g_temp);
+				Vector3D gv_sph = cart_to_sph_vec(new_cells[i].velocity,
+					ge_r, ge_t, ge_p);
+				coord_sph_slope_to_cart(rslopes_[i], gsc.x, gsc.y, gv_sph,
+					ge_r, ge_t, ge_p, g_temp);
 			}
 		}
 	}
@@ -1629,18 +1767,19 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 				}
 
 				size_t other = is_first ? tess.GetFaceNeighbors(faces[j]).second : tess.GetFaceNeighbors(faces[j]).first;
-				if (other > CellNumber)
+				if (is_ghost_index(other, CellNumber))
 					boundaryedges.push_back(faces[j]);
 			}
 		}
 		else
 		{
-			calc_slope_spherical(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_,
-				eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
-				naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
-				neigh_sph_buf, neighbor_cm_list, skip_key_, neighbor_list,
-				face_sph_cache, face_areas_cache,
-				velocity_radial_extrapolation_, face_vel_dr_correction);
+				calc_slope_spherical(tess, new_cells, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_,
+					eos_, calc_tracers_, origin_, er_[i], etheta_[i], ephi_[i], cell_coords,
+					naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
+					neigh_sph_buf, neighbor_cm_list, skip_key_, neighbor_list,
+					face_sph_cache, face_areas_cache,
+					velocity_radial_extrapolation_, face_radius_policy_,
+					shell_radius_abs_tol_, shell_radius_rel_tol_, face_vel_dr_correction);
 
 			face_vec const& faces = tess.GetCellFaces(i);
 			const size_t nloop = faces.size();
@@ -1670,7 +1809,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 							cell_ref->tracers[energy_index] = cell_ref->internal_energy;
 					}
 
-					if (!face_vel_dr_correction.empty())
+					if (j < face_vel_dr_correction.size())
 					{
 						double vel_dr_extra = face_vel_dr_correction[j];
 						cell_ref->velocity.x += rslopes_[i].xderivative.velocity.x * vel_dr_extra;
@@ -1692,7 +1831,7 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 				}
 
 				size_t other = is_first ? tess.GetFaceNeighbors(faces[j]).second : tess.GetFaceNeighbors(faces[j]).first;
-				if (other > CellNumber)
+				if (is_ghost_index(other, CellNumber))
 					boundaryedges.push_back(faces[j]);
 			}
 		}
@@ -1703,12 +1842,12 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 	exchange_ghost_slopes(tess, rslopes_);
 #endif
 
-	// Boundary edge interpolation — slopes are still in native form
+	// Boundary edge interpolation - slopes are still in native form
 	Slope3D ghost_slope;
 	for (size_t i = 0; i < boundaryedges.size(); ++i)
 	{
 		size_t N0 = tess.GetFaceNeighbors(boundaryedges[i]).first;
-		bool ghost_is_first = (N0 > CellNumber);
+		bool ghost_is_first = is_ghost_index(N0, CellNumber);
 		if (!ghost_is_first)
 			N0 = tess.GetFaceNeighbors(boundaryedges[i]).second;
 
@@ -1732,8 +1871,11 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 				if (interior < CellNumber && !is_pole_cell_[interior])
 				{
 					Vector3D sc_int = cart_to_sph_coords(tess.GetCellCM(interior), origin_);
+					Vector3D v_sph_int = cart_to_sph_vec(new_cells[interior].velocity,
+						er_[interior], etheta_[interior], ephi_[interior]);
 					coord_sph_slope_to_cart(rslopes_[interior], sc_int.x, sc_int.y,
-						er_[interior], etheta_[interior], ephi_[interior], temp1);
+						v_sph_int, er_[interior], etheta_[interior],
+						ephi_[interior], temp1);
 				}
 				ghost_slope = ghost_.GetGhostGradient(tess, cells, rslopes_, N0, time, boundaryedges[i]);
 				rslopes_[interior] = saved;
@@ -1768,8 +1910,9 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 						cell_ref->tracers[energy_index] = cell_ref->internal_energy;
 				}
 
-				if (velocity_radial_extrapolation_)
-				{
+					if (velocity_radial_extrapolation_ &&
+						face_radius_policy_ == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
+					{
 					auto bneigh = tess.GetFaceNeighbors(boundaryedges[i]);
 					double r_avg = 0.5 * (abs(tess.GetMeshPoint(bneigh.first) - origin_)
 						+ abs(tess.GetMeshPoint(bneigh.second) - origin_));
@@ -1807,13 +1950,18 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 		}
 	}
 
-	// Convert all slopes to Cartesian — local cells
+	// Convert all slopes to Cartesian - local cells
 	for (size_t i = 0; i < CellNumber; ++i)
 	{
 		if (!is_pole_cell_[i])
 		{
 			Vector3D sc = cart_to_sph_coords(tess.GetCellCM(i), origin_);
-			coord_sph_slope_to_cart(rslopes_[i], sc.x, sc.y, er_[i], etheta_[i], ephi_[i], temp1);
+			Vector3D v_sph = cart_to_sph_vec(new_cells[i].velocity,
+				er_[i], etheta_[i], ephi_[i]);
+			coord_sph_slope_to_cart(rslopes_[i], sc.x, sc.y, v_sph,
+				er_[i], etheta_[i], ephi_[i], temp1);
+			coord_sph_slope_to_cart(naive_rslopes_[i], sc.x, sc.y, v_sph,
+				er_[i], etheta_[i], ephi_[i], temp1);
 		}
 	}
 #ifdef RICH_MPI
@@ -1828,7 +1976,10 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 			{
 				Vector3D ge_r, ge_t, ge_p;
 				sph_basis_at(gsc.y, gsc.z, ge_r, ge_t, ge_p);
-				coord_sph_slope_to_cart(rslopes_[i], gsc.x, gsc.y, ge_r, ge_t, ge_p, g_temp);
+				Vector3D gv_sph = cart_to_sph_vec(new_cells[i].velocity,
+					ge_r, ge_t, ge_p);
+				coord_sph_slope_to_cart(rslopes_[i], gsc.x, gsc.y, gv_sph,
+					ge_r, ge_t, ge_p, g_temp);
 			}
 		}
 	}
