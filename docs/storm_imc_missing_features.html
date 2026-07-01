@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STORM IMC — Missing Features Report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1a1a2e; background: #fafbfc; }
+  h1 { color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: 12px; }
+  h2 { color: #0f3460; margin-top: 40px; border-left: 4px solid #e94560; padding-left: 12px; }
+  h3 { color: #533483; }
+  .status-box { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 16px; margin: 20px 0; }
+  .status-box.done { background: #d4edda; border-color: #28a745; }
+  .status-box.missing { background: #f8d7da; border-color: #dc3545; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #dee2e6; padding: 10px 14px; text-align: left; }
+  th { background: #0f3460; color: white; }
+  tr:nth-child(even) { background: #f2f2f2; }
+  code { background: #e9ecef; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #2d2d2d; color: #f8f8f2; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.85em; }
+  .complexity { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; color: white; }
+  .complexity.high { background: #dc3545; }
+  .complexity.medium { background: #fd7e14; }
+  .complexity.low { background: #28a745; }
+  .file-list { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 12px 16px; margin: 8px 0; }
+  .summary-table td:first-child { font-weight: 600; width: 200px; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  .timestamp { color: #6c757d; font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<h1>STORM IMC — Missing Features Report</h1>
+<p class="timestamp">Generated: July 1, 2026 &nbsp;|&nbsp; Branch: <code>submodules_integration</code> &nbsp;|&nbsp; Reference: <code>origin/ablation</code></p>
+
+<div class="status-box">
+  <strong>Summary:</strong> STORM's templated <code>RadiationIMC</code> module is functionally complete for gray and multigroup IMC with random walk and DDMC.
+  Three major features from the old RICH <code>ablation</code> branch have not yet been ported:
+  <strong>Compton scattering</strong>, <strong>Spherical Observer (peel-off)</strong>, and <strong>Adaptive source allocation</strong>.
+</div>
+
+<h2>1. Implicit Compton Scattering <span class="complexity high">HIGH COMPLEXITY</span></h2>
+
+<h3>What it does</h3>
+<p>
+  The old IMC implements a fully implicit Compton scattering scheme that couples energy groups through scattering matrices.
+  When a photon packet undergoes a Compton event, it can change frequency group according to a precomputed redistribution kernel,
+  conserving energy between the radiation field and the material.
+</p>
+
+<h3>Key algorithms</h3>
+<table>
+  <tr><th>Method</th><th>Description</th><th>Lines (approx)</th></tr>
+  <tr><td><code>precomputeComptonData</code></td><td>Per-cell precomputation each timestep: builds matrices, sources, effective opacities</td><td>~70</td></tr>
+  <tr><td><code>initializeComptonGroups</code></td><td>Compute group centers and widths from energy boundaries</td><td>~25</td></tr>
+  <tr><td><code>initializeComptonMatrixGenerator</code></td><td>Create <code>ComptonMatrixMC</code> object for sampling Compton kernels</td><td>~45</td></tr>
+  <tr><td><code>buildComptonMatricesForCell</code></td><td>Compute scattering matrix τ, derivative dτ/dUm, source S, kernel K for a cell</td><td>~75</td></tr>
+  <tr><td><code>recomputeComptonContractions</code></td><td>Derive diagonal/off-diagonal rates from full matrix (Λ, D, M, rowS)</td><td>~25</td></tr>
+  <tr><td><code>buildComptonSources</code></td><td>Compute source term B (base + correction) for particle generation</td><td>~25</td></tr>
+  <tr><td><code>buildComptonInPlaceKernels</code></td><td>Construct implicit event kernels and CDFs for runtime sampling</td><td>~60</td></tr>
+  <tr><td><code>applyImplicitComptonEvent</code></td><td>Execute an implicit Compton event: resample frequency, update tallies</td><td>~55</td></tr>
+  <tr><td><code>generateComptonParticles</code></td><td>Generate source particles from Compton emission term</td><td>~140</td></tr>
+  <tr><td><code>validateComptonParity</code></td><td>Debug check: verify signed parity of source/absorption tallies</td><td>~40</td></tr>
+  <tr><td><code>resetComptonDiagnostics</code></td><td>Zero out Compton exchange tallies between steps</td><td>~20</td></tr>
+  <tr><td><code>printComptonDiagnostics</code></td><td>Print Compton energy balance report</td><td>~80</td></tr>
+</table>
+
+<h3>Data structures</h3>
+<pre>
+struct ComptonCellData {
+    GroupArray absorptionOpacity{};         // per-group absorption (modified by Compton)
+    GroupArray planckFraction{};            // Planck distribution fractions
+    GroupArray baseSourceFraction{};        // base source distribution
+    GroupCdf   planckCdf{};                 // CDF for Planck sampling
+    GroupCdf   baseSourceCdf{};            // CDF for source sampling
+    bool       active = false;
+    double     temperature, Um, beta, cv, fleck, Upsilon, Gamma, betaCdtF;
+    bool       useNZero = false;
+    GroupArray oldRadiationEnergy{};        // previous step Eg
+    GroupArray occupation{};                // photon occupation numbers
+    GroupArray D{}, M{}, rowS{}, Lambda{}; // contracted matrix quantities
+    GroupArray Bbase{}, Bcorr{}, Btotal{}; // source terms
+    GroupArray baseEffectiveOpacity{};      // effective opacity (absorption + Compton)
+    GroupArray implicitEventRate{};         // implicit Compton event rate per group
+    GroupArray implicitDiagonalCorrection{};// diagonal correction to weight evolution
+    GroupCdfMatrix implicitEventCdf{};     // CDFs for target group sampling
+    GroupMatrix tau{}, dtau_dUm{};         // scattering matrix + derivative
+    GroupMatrix S{}, dSdUm{};             // source matrix + derivative
+    GroupMatrix Kmat{}, Hbase{};          // kernels
+    GroupMatrix implicitKernel{};          // runtime implicit kernel
+    GroupMatrix implicitEventRateMatrix{}; // rate matrix
+};
+</pre>
+
+<h3>Integration points in transport loop</h3>
+<ul>
+  <li><code>step()</code>: Modified absorption opacity lookup when Compton active</li>
+  <li><code>step()</code>: Additional event type (implicit Compton) alongside absorption/scattering</li>
+  <li><code>step()</code>: Weight evolution includes <code>implicitDiagonalCorrection</code></li>
+  <li><code>step()</code>: Re-emission uses Compton source CDF instead of Planck when active</li>
+  <li><code>preStep()</code>: Calls <code>precomputeComptonData</code> and <code>generateComptonParticles</code></li>
+  <li><code>postStep()</code>: Compton diagnostics printed if enabled</li>
+</ul>
+
+<h3>External dependency</h3>
+<div class="file-list">
+  <code>ComptonMatrixMC</code> — a separate class (not shown) that computes Compton scattering kernels
+  from the Klein-Nishina cross section. Likely in <code>source/Radiation/</code>.
+</div>
+
+<h3>Estimated porting effort</h3>
+<p>~600 lines of physics code + ~40 lines of data structure definitions + integration hooks in <code>step()</code>.
+  Requires careful handling of the <code>GroupMatrix</code> and <code>GroupCdfMatrix</code> types (2D arrays of size <code>NumGroups × NumGroups</code>).
+  The <code>ComptonMatrixMC</code> dependency needs to be made STORM-compatible or wrapped in an adapter.</p>
+
+<hr>
+
+<h2>2. Spherical Observer (Peel-Off) <span class="complexity medium">MEDIUM COMPLEXITY</span></h2>
+
+<h3>What it does</h3>
+<p>
+  A <code>SphericalObserver</code> is placed at a given radius from the origin. Every time a photon packet undergoes
+  an event (emission, scattering, or absorption/re-emission), a deterministic "peel-off" contribution is computed
+  toward the observer sphere. This builds up a synthetic spectrum/light curve without requiring photons to
+  actually reach the observer.
+</p>
+
+<h3>Key capabilities</h3>
+<table>
+  <tr><th>Feature</th><th>Description</th></tr>
+  <tr><td>Geometric crossing</td><td><code>nextOutwardCrossing(position, velocity)</code> — ray-sphere intersection</td></tr>
+  <tr><td>Recording</td><td><code>recordCrossing(point, direction, weight, frequency, sourceCellID)</code></td></tr>
+  <tr><td>Time binning</td><td>Tallies are binned in time-of-arrival and optionally frequency</td></tr>
+  <tr><td>Polarization</td><td>Optional Stokes Q/U tracking with configurable reference axis</td></tr>
+  <tr><td>Source cell tracking</td><td>Per-cell escape statistics for adaptive importance sampling</td></tr>
+  <tr><td>Group statistics</td><td>Per-group crossing counts for spectral diagnostics</td></tr>
+  <tr><td>MPI reduction</td><td><code>mpiReduceToRank0()</code> — collective reduction of tallies</td></tr>
+  <tr><td>I/O</td><td>HDF5, VTK, and TXT output of time-resolved spectra</td></tr>
+  <tr><td>Statistical accumulation</td><td>Multi-generation averaging for noise reduction</td></tr>
+</table>
+
+<h3>Data structures</h3>
+<pre>
+struct ObserverCrossingRecord {
+    Vector3D crossingPoint, direction;
+    double weight, frequency;
+    size_t sourceCellID;
+    // Optional polarization: stokesQ, stokesU, polBasis
+};
+
+class SphericalObserver {
+    double radius_;
+    Vector3D center_;
+    std::vector&lt;double&gt; timeBins_;           // time-of-arrival bin edges
+    std::vector&lt;double&gt; frequencyBins_;      // frequency bin edges (optional)
+    std::vector&lt;double&gt; energyTally_;        // binned crossing energy
+    std::vector&lt;size_t&gt; observerCrossingCount_;
+    // Per-source-cell escape tracking, group statistics, polarization data...
+};
+</pre>
+
+<h3>Integration points</h3>
+<ul>
+  <li><code>RadiationIMC</code> holds <code>shared_ptr&lt;SphericalObserver&gt;</code>, set via <code>setObserver()</code></li>
+  <li>During <code>step()</code>: after each event, compute peel-off toward observer</li>
+  <li><code>postStep()</code>: MPI reduce observer tallies, output if requested</li>
+  <li>Provides cell-level escape scores used by adaptive source allocation</li>
+</ul>
+
+<h3>Estimated porting effort</h3>
+<p>The <code>SphericalObserver</code> class itself is ~500 lines and mostly self-contained.
+  Integration into STORM requires templating the observer interface on <code>PointT</code> and adding
+  peel-off hooks to the transport loop. The geometry (ray-sphere intersection) is straightforward.
+  The main complexity is the MPI reduction and the connection to adaptive source scoring.</p>
+
+<hr>
+
+<h2>3. Adaptive Source Allocation <span class="complexity medium">MEDIUM COMPLEXITY</span></h2>
+
+<h3>What it does</h3>
+<p>
+  Biases photon emission towards cells that contribute more to the observable signal (determined by
+  previous-generation escape statistics from the observer). This is a variance reduction technique:
+  cells with higher "importance scores" receive more photon packets, improving signal-to-noise
+  without increasing total photon budget.
+</p>
+
+<h3>Two levels of adaptation</h3>
+
+<h4>A. Cell-level adaptive budget</h4>
+<table>
+  <tr><th>Parameter</th><th>Description</th></tr>
+  <tr><td><code>adaptiveSourceStrength_</code></td><td>Blending factor [0,1]: 0 = uniform, 1 = fully importance-driven</td></tr>
+  <tr><td><code>adaptiveSourceMaxFactor_</code></td><td>Maximum multiplier on per-cell photon count (e.g. 10×)</td></tr>
+  <tr><td><code>adaptiveSourceLearnedReserveFrac_</code></td><td>Fraction of budget reserved for learned-importance cells</td></tr>
+  <tr><td><code>adaptiveSourceLearnedMinFactor_</code></td><td>Minimum multiplier for cells with any learned score</td></tr>
+  <tr><td><code>adaptiveSourceObserverBudgetMultiplier_</code></td><td>Overall budget multiplier when observer is active</td></tr>
+  <tr><td><code>adaptiveSourceScores_</code></td><td><code>unordered_map&lt;cellID, score&gt;</code> from previous generation</td></tr>
+</table>
+
+<h4>B. Group-level adaptive frequency sampling</h4>
+<table>
+  <tr><th>Parameter</th><th>Description</th></tr>
+  <tr><td><code>adaptiveGroupStrength_</code></td><td>Blending factor for group PDF biasing</td></tr>
+  <tr><td><code>adaptiveGroupPdfFloor_</code></td><td>Minimum probability per group (prevents zero sampling)</td></tr>
+  <tr><td><code>adaptiveGroupMaxBias_</code></td><td>Maximum ratio of biased/physical PDF</td></tr>
+  <tr><td><code>adaptiveGroupMaxWeightCorrection_</code></td><td>Maximum weight correction factor</td></tr>
+  <tr><td><code>adaptiveSourceCellGroupScores_</code></td><td><code>unordered_map&lt;cellID, GroupArray&gt;</code> per-group scores</td></tr>
+</table>
+
+<h3>Algorithm sketch (cell-level)</h3>
+<pre>
+// In generateParticles():
+for each cell i:
+    baseBudget = proportionalShare(energy_i, totalEnergy, totalParticles)
+    if adaptiveEnabled and cell has score:
+        factor = lerp(1.0, score * normalization, adaptiveStrength)
+        factor = clamp(factor, learnedMinFactor, maxFactor)
+        nPhotons = baseBudget * factor
+    weight_per_photon = energy_i / nPhotons   // maintains energy conservation
+</pre>
+
+<h3>Algorithm sketch (group-level)</h3>
+<pre>
+// In generateParticles(), per-photon frequency sampling:
+physicalPdf[g] = planckFraction[g]   // or Compton source fraction
+if adaptiveGroupEnabled and cell has group scores:
+    learnedPdf = normalize(groupScores[cellID])
+    samplingPdf = (1-strength)*physicalPdf + strength*learnedPdf
+    samplingPdf = clamp(samplingPdf, floor, maxBias*physicalPdf)
+    sample group from samplingPdf
+    weightCorrection = physicalPdf[sampledGroup] / samplingPdf[sampledGroup]
+    particle.weight *= weightCorrection
+</pre>
+
+<h3>Integration points</h3>
+<ul>
+  <li><code>setAdaptiveSourceCellScores()</code> / <code>clearAdaptiveSourceCellScores()</code></li>
+  <li><code>setAdaptiveSourceCellGroupScores()</code> / <code>clearAdaptiveSourceCellGroupScores()</code></li>
+  <li>Called externally between generations (typically from the run's main loop)</li>
+  <li>Scores come from <code>SphericalObserver</code>'s per-cell escape statistics</li>
+  <li>Modifies <code>generateParticles()</code>: per-cell photon budget and frequency PDF</li>
+</ul>
+
+<h3>Estimated porting effort</h3>
+<p>~200 lines in <code>generateParticles</code> for the biasing logic, plus ~50 lines for the
+  set/clear interface. Algorithmically straightforward (weighted sampling with clamping).
+  Depends on the observer providing cell-escape statistics, so should be ported after the observer.</p>
+
+<hr>
+
+<h2>Porting Priority & Dependencies</h2>
+
+<table>
+  <tr><th>Feature</th><th>Priority</th><th>Depends On</th><th>Estimated Effort</th></tr>
+  <tr><td>Spherical Observer</td><td>1st</td><td>None (self-contained)</td><td>~500 lines + transport hooks</td></tr>
+  <tr><td>Adaptive Source (cell-level)</td><td>2nd</td><td>Observer (for scores)</td><td>~250 lines</td></tr>
+  <tr><td>Adaptive Source (group-level)</td><td>3rd</td><td>Observer + Multigroup</td><td>~150 lines</td></tr>
+  <tr><td>Implicit Compton</td><td>4th (independent)</td><td>ComptonMatrixMC library</td><td>~700 lines + data structures</td></tr>
+</table>
+
+<div class="status-box done">
+  <strong>Already ported and working:</strong>
+  <ul style="margin:8px 0 0 0;">
+    <li>Gray and multigroup IMC (absorption, emission, Fleck factor)</li>
+    <li>Random Walk acceleration (with PGRW)</li>
+    <li>DDMC (Diffusion-based Domain Monte Carlo)</li>
+    <li>Photon generation with proportional + capped allocation</li>
+    <li>Lorentz boost for moving media</li>
+    <li>Diffusion pressure gradient (1D x-direction)</li>
+    <li>MPI ghost exchange via <code>STORM::MPI_exchange_data</code></li>
+    <li>Population control (comb algorithm)</li>
+    <li>RandomInCell position sampling (templated)</li>
+    <li>HDF5 checkpoint/restart (via RICH adapter)</li>
+  </ul>
+</div>
+
+<h2>Files Reference</h2>
+
+<table>
+  <tr><th>Component</th><th>Old Location (ablation)</th><th>STORM Location</th></tr>
+  <tr><td>IMC core</td><td><code>source/3D/radiation/RadiationIMC.{hpp,cpp}</code></td><td><code>source/monte/radiation/RadiationIMC.hpp</code></td></tr>
+  <tr><td>Random Walk</td><td><code>source/3D/radiation/RandomWalk.{hpp,cpp}</code></td><td><code>source/monte/radiation/RandomWalk.hpp</code></td></tr>
+  <tr><td>Opacity model</td><td><code>source/Radiation/OpacityCalculator.hpp</code></td><td><code>source/monte/radiation/RadiationOpacityModel.hpp</code></td></tr>
+  <tr><td>Observer</td><td><code>source/3D/radiation/SphericalObserver.{hpp,cpp}</code></td><td><em>Not yet ported</em></td></tr>
+  <tr><td>Compton</td><td><code>source/3D/radiation/RadiationIMC.cpp</code> (lines 1040–1700)</td><td><em>Not yet ported</em></td></tr>
+  <tr><td>Adaptive sources</td><td><code>source/3D/radiation/RadiationIMC.cpp</code> (lines 101–149, 654–972)</td><td><em>Not yet ported</em></td></tr>
+  <tr><td>MPI exchange</td><td><code>source/mpi/mpi_commands_3d.hpp</code></td><td><code>source/monte/utils/MpiExchangeGrid.hpp</code></td></tr>
+  <tr><td>RandomInCell</td><td><code>source/3D/tessellation/utils/RandomInCell.{hpp,cpp}</code></td><td><code>source/monte/utils/RandomInCell.hpp</code></td></tr>
+</table>
+
+</body>
+</html>
