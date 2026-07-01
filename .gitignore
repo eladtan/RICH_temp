@@ -52,3 +52,8 @@ runs/**/*.txt
 *.pdf
 runs/*/venv/
 .specstory/*
+compile_commands.json
+DoctoralProposal/
+IMC_paper/
+RDMA_paper/
+compilation/
