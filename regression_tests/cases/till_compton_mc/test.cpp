@@ -16,9 +16,9 @@
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/simple_io.hpp"
-#include "source/monte/boundary/Rigid.hpp"
-#include "source/monte/population/NoControl.hpp"
-#include "source/monte/population/Comb.hpp"
+#include "source/monte/boundary/RigidBoundary.hpp"
+#include "source/monte/population/NoPopulationControl.hpp"
+#include "source/monte/population/CombPopulationControl.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
 #include "source/newtonian/three_dimensional/ManualTimeStep.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
@@ -239,9 +239,9 @@ int main(int argc, char* argv[])
                                                               energy_groups_boundary,
                                                               runtime_options.include_plasma_cutoff,
                                                               true);
-    auto boundary_cond = std::make_shared<RigidBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+    auto boundary_cond = std::make_shared<RigidBoundary<Vector3D, Tessellation3D>>(tess);
 
-    RadiationIMCParameters imc_params = {
+    STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> imc_params = {
         .newPhotonsPerCell = new_photons_per_cell,
         .withHydro = false,
         .diffusionPressureGradient = false,
@@ -256,7 +256,7 @@ int main(int argc, char* argv[])
         .comptonMatrixSamples = 2000000,
     };
 
-    auto physics = std::make_shared<RadiationIMC>(
+    auto physics = std::make_shared<::RadiationIMC>(
         tess, boundary_cond, cells, extensives, eos_ptr, opacity_ptr, imc_params);
 
     auto pop_control =

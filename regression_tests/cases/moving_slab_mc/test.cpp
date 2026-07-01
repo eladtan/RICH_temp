@@ -26,8 +26,8 @@
 #include "source/newtonian/three_dimensional/ManualTimeStep.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/3D/radiation/RadiationIMC.hpp"
-#include "source/monte/population/NoControl.hpp"
-#include "source/monte/boundary/Rigid.hpp"
+#include "source/monte/population/NoPopulationControl.hpp"
+#include "source/monte/boundary/RigidBoundary.hpp"
 #include "source/monte/boundary/BoundaryCondition.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RemeshStep.hpp"
@@ -461,7 +461,7 @@ int main(int argc, char *argv[])
         auto boundaryCond = std::make_shared<MovingSlabBC>(tess);
 
         size_t const newPhotonsPerCell = 30000 / (NYZ * NYZ);
-        RadiationIMCParameters imcParams = {
+        STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> imcParams = {
             .newPhotonsPerCell = newPhotonsPerCell,
             .withHydro = true,
             .diffusionPressureGradient = false,
@@ -473,7 +473,7 @@ int main(int argc, char *argv[])
             .withEgTimeAvg = true
         };
 
-        auto physics = std::make_shared<RadiationIMC>(
+        auto physics = std::make_shared<::RadiationIMC>(
             tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, imcParams);
 
         auto popControl =

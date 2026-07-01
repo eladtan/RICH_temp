@@ -21,7 +21,7 @@
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/RadiationOpacity.hpp"
 #include "source/3D/radiation/PowerLawOpacity.hpp"
-#include "source/monte/population/Comb.hpp"
+#include "source/monte/population/CombPopulationControl.hpp"
 #include "source/monte/boundary/SideTemperature.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "source/3D/radiation/IMCCostCalculator.hpp"
@@ -73,7 +73,7 @@ namespace
             {
                 double a = groupBoundaries_[g] / kT;
                 double b = groupBoundaries_[g + 1] / kT;
-                double Bg = planck_integral::planck_integral(a, b);
+                double Bg = ::planck_integral::planck_integral(a, b);
                 double sigma_g = sigma0 / (sqrtKT * groupCenters_[g] * groupCenters_[g] * groupCenters_[g]);
                 weightedSum += sigma_g * Bg;
                 totalWeight += Bg;
@@ -247,9 +247,9 @@ int main(int argc, char *argv[])
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
         std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
-            tess, cells, T_boundary, boundaryPhotonsPerCell, /*multigroup=*/true);
+            tess, T_boundary, boundaryPhotonsPerCell, energy_groups_boundary);
 
-    RadiationIMCParameters radiationIMCParameters = {
+    STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
         .diffusionPressureGradient = false,
@@ -257,7 +257,7 @@ int main(int argc, char *argv[])
         .withMultigroupOpacity = true,
         .withRandomWalk = useRandomWalk
     };
-    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
+    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
