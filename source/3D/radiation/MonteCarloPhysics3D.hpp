@@ -10,17 +10,17 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/common/equation_of_state.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"
-#include "3D/tessellation/utils/RandomInCell.hpp"
+#include "monte/utils/RandomInCell.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "RadiationOpacity.hpp"
 #include "LorentzTransformation.hpp"
 
-class MonteCarloRadiationPhysics3D : public MonteCarloPhysics<Vector3D, Tessellation3D>
+class MonteCarloRadiationPhysics3D : public STORM::MonteCarloPhysics<Vector3D, Tessellation3D>
 {
 public:
-    using Particle = MonteCarloParticle<Vector3D, Tessellation3D>;
-    using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
-    using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
+    using Particle = STORM::Particle<Vector3D, Tessellation3D>;
+    using Functionality = STORM::StepResult<Vector3D, Tessellation3D>;
+    using BoundaryCond = STORM::BoundaryCondition<Vector3D, Tessellation3D>;
 
     MonteCarloRadiationPhysics3D(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity);
     
