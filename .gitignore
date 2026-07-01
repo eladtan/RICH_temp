@@ -56,4 +56,5 @@ compile_commands.json
 DoctoralProposal/
 IMC_paper/
 RDMA_paper/
-compilation/
+compilation/runs/*/rich*
+runs/*/rich_*
