@@ -1,5 +1,6 @@
 /*! \file Voronoi3D.hpp
   \brief RICH adapter: Voronoi3D wraps MadVoro::Voronoi3D<Vector3D> as a Tessellation3D
+  \brief Compatibility include for the MadVoro Voronoi3D implementation.
 */
 
 #ifndef RICH_VORONOI3D_HPP
@@ -137,9 +138,9 @@ public:
 
     vector<vector<size_t> >& GetGhostIndeces(void) override { return engine_.GetGhostIndeces(); }
 
-    void SetPointsManager(std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload>> pm) { engine_.SetPointsManager(pm); }
+    void SetPointsManager(std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>> pm) { engine_.SetPointsManager(pm); }
 
-    std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload>> GetPointsManager() const
+    std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>> GetPointsManager() const
     {
         return engine_.GetPointsManager();
     }
@@ -158,8 +159,6 @@ public:
         engine_.SetBox(ll, ur, newIndexing);
         box_faces_dirty_ = true;
     }
-
-    void output_buildextra(std::string const& filename) const { engine_.output_buildextra(filename); }
 
     void MockMesh(void) { engine_.MockMesh(); }
 
@@ -292,7 +291,7 @@ public:
 
     bool IsPointOutsideBox(const Vector3D& point) const override { return engine_.IsPointOutsideBox(point); }
 
-    void output(std::string const& filename) const override { engine_.output(filename); }
+    void output(std::string const& filename) const override { (void)filename; }
 
     void SetBox(Vector3D const& ll, Vector3D const& ur) override
     {
@@ -321,8 +320,6 @@ public:
     }
 
     size_t GetBuildGeneration(void) const override { return engine_.GetBuildGeneration(); }
-
-    void BuildDebug(int rank) { engine_.BuildDebug(rank); }
 
     double GetMaxRadius(const size_t& index) const { return engine_.GetMaxRadius(index); }
 

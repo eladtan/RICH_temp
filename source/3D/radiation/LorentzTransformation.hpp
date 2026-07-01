@@ -1,7 +1,7 @@
 #ifndef LORENTZ_TRANSFORMATION_HPP
 #define LORENTZ_TRANSFORMATION_HPP
 
-#include "monte/MonteCarloParticle.hpp"
+#include "monte/particle/Particle.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "Radiation/CMMC/src/units/units.hpp"

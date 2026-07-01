@@ -1,14 +1,16 @@
 #ifndef MONTECARLO_MANAGER_3D_HPP
 #define MONTECARLO_MANAGER_3D_HPP
 
-#ifdef RICH_MPI
-#include "monte/manager/rdma_legacy/MonteCarloManager.hpp"
+#ifdef STORM_WITH_MPI
+#include "monte/manager/parallel/MonteCarloManagerLegacy.hpp"
 #include "monte/manager/parallel/RDMAMonteCarloManager.hpp"
-#include "monte/manager/two_sided/TwoSidedMonteCarloManager.hpp"
-#endif // RICH_MPI
-#include "monte/manager/serial/MonteCarloManagerSerial.hpp"
+#include "monte/manager/parallel/TwoSidedMonteCarloManager.hpp"
+#endif // STORM_WITH_MPI
+#include "monte/manager/MonteCarloManagerSerial.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
+
+using namespace STORM;
 
 class MonteCarloManager3D
 {
@@ -67,8 +69,6 @@ public:
 
     inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetEndParticleCount();};
 
-    inline size_t GetInitialParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetInitialParticleCount();};
-
     inline double GetPureComputeTime(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetPureComputeTime();};
 
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
@@ -80,7 +80,7 @@ public:
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 class RDMAMonteCarloManagerLegacy3D : public MonteCarloManagerLegacy<Vector3D, Tessellation3D>, public MonteCarloManager3D
 {
@@ -103,6 +103,8 @@ public:
     inline size_t GetStartParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetStartParticleCount();};
 
     inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetEndParticleCount();};
+
+    inline size_t GetPreStepParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetStartParticleCount();};
 
     inline size_t GetInitialParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetInitialParticleCount();};
 
@@ -177,8 +179,6 @@ public:
 
     inline size_t GetEndParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
 
-    inline size_t GetInitialParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetInitialParticleCount();};
-
     inline double GetPureComputeTime(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetPureComputeTime();};
 
     inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
@@ -190,6 +190,6 @@ public:
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
 };
 
-#endif // RICH_MPI
+#endif // STORM_WITH_MPI
 
 #endif // MONTECARLO_MANAGER_3D_HPP

@@ -20,7 +20,7 @@ std::vector<typename MonteCarloManagerSerial3D::MCParticle> MonteCarloManagerSer
     return newParticles;
 }
 
-#ifdef RICH_MPI
+#ifdef STORM_WITH_MPI
 
 RDMAMonteCarloManagerLegacy3D::RDMAMonteCarloManagerLegacy3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
                                          const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
@@ -76,4 +76,4 @@ std::vector<typename TwoSidedMonteCarloManager3D::MCParticle> TwoSidedMonteCarlo
     return newParticles;
 }
 
-#endif // RICH_MPI
+#endif // STORM_WITH_MPI

@@ -7,7 +7,7 @@
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "3D/elementary/Vector3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
-#include "monte/MonteCarloParticle.hpp"
+#include "monte/particle/Particle.hpp"
 #include "misc/universal_error.hpp"
 #include "CMMC/src/units/units.hpp"
 #ifdef RICH_MPI

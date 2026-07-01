@@ -10,8 +10,8 @@
 
 namespace fleck_helper {
 
-// Formula: f = 1/(1 + 4*arad*T^3*sigP*c*dt/cv)
-// Matches RadiationIMC.cpp line 3613 (gamma=1 for non-Compton).
+// Formula: f = 1/(1 + 4*arad*T^3*sigP*c*dt/cv).
+// Keep this helper in sync with STORM's radiation/RadiationIMC.hpp.
 inline double computeSingleFleckFactor(
     double temperature, double density,
     tvector const &tracers,

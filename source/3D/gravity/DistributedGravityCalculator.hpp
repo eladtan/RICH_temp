@@ -355,7 +355,7 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
     }
 
     boost::container::flat_set<int> ranksToOpen;
-    EnvironmentAgent::RanksSet tempRanks;
+    typename EnvironmentAgent<Vector3D>::RanksSet tempRanks;
     bool tempRanksReady = false;
 
     for(int _rank : relevantRanks)

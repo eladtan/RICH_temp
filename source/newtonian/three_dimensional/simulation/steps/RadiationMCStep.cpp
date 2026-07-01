@@ -204,7 +204,7 @@ void RadiationMCStep::step(double dt)
     {
         size_t max_loc = max_temperature_loc; // TODO: (max_Erad_diff > max_temperature_diff) ? max_Erad_loc : max_temperature_loc;
         double fleckFactor = std::numeric_limits<double>::quiet_NaN();
-        if(const auto *imc = dynamic_cast<const RadiationIMC *>(this->physics.get()); imc != nullptr)
+        if(const auto *imc = dynamic_cast<const ::RadiationIMC *>(this->physics.get()); imc != nullptr)
         {
             const auto &fleck = imc->getFactorFleck();
             if(max_loc < fleck.size())

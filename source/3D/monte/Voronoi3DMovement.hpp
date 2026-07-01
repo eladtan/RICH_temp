@@ -3,18 +3,23 @@
 
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/tessellation/Voronoi3D.hpp"
-#include "monte/MonteCarloParticle.hpp"
+#include "monte/particle/Particle.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include <spatial_ds/OctTree/OctTree.hpp>
 #include "utils/debug/SmartTimer.hpp"
 #include "MonteCarlo3D.hpp"
 #ifdef RICH_MPI
     #include "mpi/mpi_commands.hpp"
-    #include "3D/range/finders/utils/RankedIndexedVector.hpp"
+    #include "3D/tessellation/voronoi/range/finders/utils/RankedIndexedVector.hpp"
     #include "mpi/ExchangeChain.hpp"
 #else // RICH_MPI
-    #include "3D/range/finders/utils/IndexedVector.hpp"
+    #include "3D/tessellation/voronoi/range/finders/utils/IndexedVector.hpp"
 #endif // RICH_MPI
+
+using IndexedVector3D = IndexedVector<Vector3D>;
+#ifdef RICH_MPI
+using RankedIndexedVector3D = RankedIndexedVector<Vector3D>;
+#endif
 
 using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
 

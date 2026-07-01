@@ -15,11 +15,13 @@ class HDF5Reader;
 class PointsManagerIOHandler
 {
 public:
+    using PointsManager = PointsManager<Vector3D,MadVoro::VoronoiPayload<Vector3D>>;
+
     virtual ~PointsManagerIOHandler() = default;
 
-    virtual void dump(HDF5Writer &writer, const std::string &group, const PointsManager<Vector3D, MadVoro::VoronoiPayload> &pm) const = 0;
+    virtual void dump(HDF5Writer &writer, const std::string &group, const PointsManager &pm) const = 0;
 
-    virtual std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload>> load(const HDF5Reader &reader, const std::string &group, const Vector3D &ll, const Vector3D &ur) const = 0;
+    virtual std::shared_ptr<PointsManager> load(const HDF5Reader &reader, const std::string &group, const Vector3D &ll, const Vector3D &ur) const = 0;
 };
 
 #endif // RICH_MPI

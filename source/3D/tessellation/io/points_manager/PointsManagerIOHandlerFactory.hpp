@@ -13,6 +13,8 @@
 
 namespace PointsManagerIO
 {
+    using PointsManager = PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>;
+
     inline std::map<std::string, std::unique_ptr<PointsManagerIOHandler>> registry;
 
     inline void registerHandler(const std::string &name, std::unique_ptr<PointsManagerIOHandler> handler)
@@ -20,7 +22,7 @@ namespace PointsManagerIO
         registry[name] = std::move(handler);
     }
 
-    inline void writePointsManager(HDF5Writer &writer, const std::string &group, const PointsManager<Vector3D, MadVoro::VoronoiPayload> &pm)
+    inline void writePointsManager(HDF5Writer &writer, const std::string &group, const PointsManager &pm)
     {
         const std::string name = pm.getTypeName();
         auto it = registry.find(name);
@@ -33,7 +35,7 @@ namespace PointsManagerIO
         it->second->dump(writer, group, pm);
     }
 
-    inline std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload>> readPointsManager(const HDF5Reader &reader, const std::string &group, const Vector3D &ll, const Vector3D &ur)
+    inline std::shared_ptr<PointsManager> readPointsManager(const HDF5Reader &reader, const std::string &group, const Vector3D &ll, const Vector3D &ur)
     {
         std::string name;
         reader.ReadElement(group + "/type", name);

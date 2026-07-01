@@ -8,9 +8,9 @@
 class HilbertPointsManagerIOHandler : public PointsManagerIOHandler
 {
 public:
-    void dump(HDF5Writer &writer, const std::string &group, const PointsManager<Vector3D, MadVoro::VoronoiPayload> &pm) const override;
+    void dump(HDF5Writer &writer, const std::string &group, const PointsManager &pm) const override;
 
-    std::shared_ptr<PointsManager<Vector3D, MadVoro::VoronoiPayload>> load(const HDF5Reader &reader, const std::string &group, const Vector3D &ll, const Vector3D &ur) const override;
+    std::shared_ptr<PointsManager> load(const HDF5Reader &reader, const std::string &group, const Vector3D &ll, const Vector3D &ur) const override;
 };
 
 #endif // RICH_MPI

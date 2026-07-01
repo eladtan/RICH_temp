@@ -7,6 +7,7 @@
 
 #include <mpi.h>
 #include <mpi_utils/MPI_complex_dtype.hpp>
+#include "3D/monte/MonteCarlo3D.hpp"
 
 template<>
 struct MPI_has_complex_dtype<Particle3D> : std::true_type

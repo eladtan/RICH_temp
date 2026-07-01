@@ -51,7 +51,7 @@ struct ReverseDDMCCellData
     double resetRateCo = 0.0;
     double depolRateEstimate = 0.0;
 
-    // PGRW multigroup aggregate (mirrors forward RadiationIMC_DDMC.cpp)
+    // PGRW multigroup aggregate used by reverse DDMC.
     size_t groupCutoff = 0;
     double sigmaA_PGRW = 0.0;
     double sigmaT_PGRW = 0.0;

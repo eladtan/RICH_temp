@@ -223,9 +223,9 @@ void Simulation::step(void)
                     this->tess.Rebalance(weights);
                     if(this->rank == 0)
                     {
-                        std::cout << "Did rebalanced - load balance:" << std::endl;
-                        auto lb = this->tess.GetLoadBalancer();
-                        if (lb) lb->printInfo();
+                        std::cout << "Did rebalanced" << std::endl;
+                        // auto lb = this->tess.GetLoadBalancer();
+                        // if (lb) lb->printInfo();
                     }                
                     this->buildDataTransfer();
                     physics->afterLB();
@@ -393,8 +393,8 @@ void Simulation::setCurrentLoadBalance(const std::string &name)
 
     if(this->rank == 0)
     {
-        std::cout << "Changed load balance:" << std::endl;
-        this->currentLoad->printInfo();
+        std::cout << "Changed load balance" << std::endl;
+        //this->currentLoad->printInfo();
     }
 }
 
