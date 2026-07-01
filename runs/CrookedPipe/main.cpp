@@ -22,7 +22,7 @@
 #include "3D/output/write3D.hpp"
 #include "3D/output/MC/read_write_particles.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
-#include "monte/population/Comb.hpp"
+#include "monte/population/CombPopulationControl.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
@@ -329,13 +329,13 @@ int main(int argc, char *argv[])
         std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
             std::make_shared<CrookedPipeBoundaryCondition<Vector3D, Tessellation3D>>(tess, cells);
 
-        RadiationIMCParameters params = {
+        STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> params = {
             .newPhotonsPerCell = particlesPerCell / 4,
             .withHydro = withHydro,
             .withRandomWalk = withRandomWalk,
             .rwMinCellOpticalDepth = 25
         };
-        std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
+        std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
             tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, params);
 
         std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =

@@ -95,8 +95,10 @@ namespace
 				}
 			}
 		}
+#ifdef RICH_MPI
 		MPI_exchange_data(sim.getTessellation(), cells, true);
 		MPI_exchange_data(sim.getTessellation(), extensives, true);
+#endif // RICH_MPI
 	}
 	class DissipationDiag: public DiagnosticAppendix3D
 	{
@@ -541,7 +543,9 @@ namespace
 		std::pair<vector<size_t>, vector<Vector3D>> ToRefine(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
 			int rank = 0;
+#ifdef RICH_MPI
 			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif // RICH_MPI
 			std::vector<std::vector<double>> maxr;
 			std::vector<std::vector<double>> phi;
 			std::vector<double> theta;
@@ -553,16 +557,16 @@ namespace
 #ifdef hi_res
 			MaxMass *= 0.25;
 			min_cell_size *= std::pow(0.25, 0.33333);
-#endif
+#endif // hi_res
 #ifdef low_res
 			MaxMass *= 4;
 			min_cell_size *= std::pow(4.0, 0.33333);
-#endif
+#endif // low_res
 			std::vector<size_t> neigh;
 			std::vector<double> volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
 			MPI_exchange_data(tess, volumes, true);
-#endif
+#endif // RICH_MPI
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			// double const apocenter_time = std::pow(Mbh_ / 1e4, 0.166666) * 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
 			double rho_s = Mstar_ / (apocenter * apocenter * 10);
@@ -573,7 +577,9 @@ namespace
 				if(tess.GetMeshPoint(i).x > 0.85 * Rt && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
 					rho_x = std::max(rho_x, cells[i].density);
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif // RICH_MPI
 			if(rank == 0)
 				std::cout << "rho_x = " << rho_x << std::endl;
 			for (size_t i = 0; i < Norg; ++i)
@@ -697,7 +703,9 @@ namespace
 				if(tess.GetMeshPoint(i).x > Rt * 0.85 && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
 					rho_x = std::max(rho_x, cells[i].density);
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif // RICH_MPI
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				bool good = true;

@@ -19,7 +19,7 @@
 
 #include "3D/radiation/RadiationIMC.hpp"
 #include "3D/radiation/PowerLawOpacity.hpp"
-#include "monte/population/Comb.hpp"
+#include "monte/population/CombPopulationControl.hpp"
 #include "monte/boundary/SideTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
@@ -145,7 +145,7 @@ int main(int argc, char *argv[])
     auto boundaryCond = std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
         tess, cells, T_boundary, boundaryPhotonsPerCell, /*multigroup=*/false);
 
-    RadiationIMCParameters radiationIMCParameters = {
+    STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
         .diffusionPressureGradient = false,
@@ -153,7 +153,7 @@ int main(int argc, char *argv[])
         .withMultigroupOpacity = false,
         .withRandomWalk = useRandomWalk
     };
-    auto physics = std::make_shared<RadiationIMC>(
+    auto physics = std::make_shared<::RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     auto popControl = std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(

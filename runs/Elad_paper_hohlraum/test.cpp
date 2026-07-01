@@ -29,7 +29,7 @@
 #include <MeshDecomposer3D/load_balancing/CurveLoadBalancer.hpp>
 #include  "utils/debug/cleanNode.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
-#include "monte/population/Comb.hpp"
+#include "monte/population/CombPopulationControl.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 
 #include "3D/monte/Voronoi3DMovement.hpp"
@@ -283,9 +283,16 @@ std::vector<ComputationalCell3D> Initialize(Voronoi3D &tess, const EquationOfSta
     points = MPI_Spread(points, 0, MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
 
-    points = RoundGrid3D(points, ll, ur, 5);
-
-    tess.BuildParallel(points);
+    try
+    {
+        points = RoundGrid3D(points, ll, ur, 5);
+        tess.BuildParallel(points);
+    }
+    catch(const MadVoro::Exception::MadVoroException &eo)
+    {
+        MadVoro::Exception::reportError(eo);
+        throw;
+    }
     points = tess.getMeshPoints();
     points.resize(tess.GetPointNo());
 
@@ -583,11 +590,11 @@ int main(int argc, char *argv[]) {
             std::make_shared<HohlraumBoundary<Vector3D, Tessellation3D>>(
                 tess, cells, T_boundary, boundaryPhotonsPerCell);
 
-        RadiationIMCParameters params = {.newPhotonsPerCell = newPhotonsPerCell,
+        STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> params = {.newPhotonsPerCell = newPhotonsPerCell,
                 .withHydro = withHydro,
                 .withRandomWalk = true};
         std::shared_ptr<MonteCarloRadiationPhysics3D> physics =
-            std::make_shared<RadiationIMC>(tess, boundaryCond, cells, extensives,
+            std::make_shared<::RadiationIMC>(tess, boundaryCond, cells, extensives,
                 eosPtr, opacityPtr, params);
 
         size_t comb_factor = 6;
@@ -677,11 +684,11 @@ int main(int argc, char *argv[]) {
                 << std::endl;
         }
 
-        // WriteSimulation(sim, prefix + "latest_sim.h5");
+        WriteSimulation(sim, prefix + "latest_sim.h5");
 
         if(resumeDump < 0)
         {
-            // WriteVTK(tess, cells, physics, prefix + "init.vtu");
+            WriteVTK(tess, cells, physics, prefix + "init.vtu");
         }
 
         // --- Main time-stepping loop ---
@@ -732,9 +739,9 @@ int main(int argc, char *argv[]) {
 
                 std::snprintf(buf, sizeof(buf), "%s%05zu.pvtu", prefix.c_str(),
                     dumpCount);
-                // WriteVTK(tess, cells, physics, buf);
+                WriteVTK(tess, cells, physics, buf);
 
-                // WriteSimulation(sim, prefix + "latest_sim.h5");
+                WriteSimulation(sim, prefix + "latest_sim.h5");
                 if(rank == 0)
                 {
                     std::cout << "Wrote simulation: " << prefix << "latest_sim.h5"
@@ -759,8 +766,8 @@ int main(int argc, char *argv[]) {
 
         // --- Final output ---
         WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base,mode2d);
-        // WriteVTK(tess, cells, physics, prefix + "final.vtu");
-        // WriteSimulation(sim, prefix + "latest_sim.h5");
+        WriteVTK(tess, cells, physics, prefix + "final.vtu");
+        WriteSimulation(sim, prefix + "latest_sim.h5");
     } catch (const UniversalError &e) {
         std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
         reportError(e, std::cerr);

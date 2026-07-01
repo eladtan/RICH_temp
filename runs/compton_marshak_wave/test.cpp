@@ -60,7 +60,7 @@ public:
         for (std::size_t g = 0; g < energy_groups_center.size(); ++g) {
             double a = energy_groups_boundary[g] / kT;
             double b = energy_groups_boundary[g + 1] / kT;
-            double Bg = planck_integral::planck_integral(a, b);
+            double Bg = ::planck_integral::planck_integral(a, b);
             double sigma_g = CalcAbsorptionOpacity(cell, energy_groups_center[g]);
             weightedSum += sigma_g * Bg;
             totalWeight += Bg;
@@ -182,7 +182,7 @@ int main(int argc, char* argv[])
 
         auto eos_ptr = std::make_shared<IdealGas>(eos);
 
-        std::shared_ptr<RadiationIMC> mc_physics;
+        std::shared_ptr<::RadiationIMC> mc_physics;
         std::vector<double> min_fleck_history;
 
         // Diffusion objects must outlive the simulation loop
@@ -202,7 +202,7 @@ int main(int argc, char* argv[])
             auto boundary_cond = std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
                 tess, cells, T_bath, bdy_photons, true);
 
-            RadiationIMCParameters imc_params = {
+            STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> imc_params = {
                 .newPhotonsPerCell = new_photons,
                 .withHydro = false,
                 .diffusionPressureGradient = false,
@@ -218,7 +218,7 @@ int main(int argc, char* argv[])
                 .comptonMatrixSamples = 500000,
             };
 
-            mc_physics = std::make_shared<RadiationIMC>(
+            mc_physics = std::make_shared<::RadiationIMC>(
                 tess, boundary_cond, cells, extensives, eos_ptr, opacity_ptr, imc_params);
 
             auto group_classifier = [opacity_ptr](const Particle3D& particle) -> std::size_t {

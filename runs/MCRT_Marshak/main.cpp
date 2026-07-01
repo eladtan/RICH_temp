@@ -5,7 +5,7 @@
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "3D/radiation/PowerLawOpacity.hpp"
-#include "monte/population/Comb.hpp"
+#include "monte/population/CombPopulationControl.hpp"
 #include "monte/boundary/SideTemperature.hpp"
 
 int main(int argc, char *argv[])
@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
     MCPowerLawOpacity opacity(10, 0, 0, -3, 0, 0);
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond = std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(tess, 1, 100);
-    std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> physics = std::make_shared<RadiationIMC>(tess, boundaryCond, cells, conserved, eos, opacity, 100);
+    std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> physics = std::make_shared<::RadiationIMC>(tess, boundaryCond, cells, conserved, eos, opacity, 100);
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl = std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, 100);
 
     MonteCarloManagerSerial<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);

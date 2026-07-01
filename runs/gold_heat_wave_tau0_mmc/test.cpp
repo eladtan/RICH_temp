@@ -238,7 +238,7 @@ int main(int argc, char* argv[])
 
 	auto eosPtr = std::make_shared<IdealGas>(eos);
 
-	RadiationIMCParameters imc_params = {
+	STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> imc_params = {
 		.newPhotonsPerCell = newPhotonsPerCell,
 		.withHydro = withHydro,
 		.diffusionPressureGradient = true,
@@ -261,7 +261,7 @@ int main(int argc, char* argv[])
 	for (size_t i = 0; i < Nlocal; ++i)
 		PrimitiveToConserved(sim_cells[i], tess.GetVolume(i), extensives[i]);
 
-	auto mc_physics = std::make_shared<RadiationIMC>(
+	auto mc_physics = std::make_shared<::RadiationIMC>(
 		tess, boundaryCond, sim_cells, extensives, eosPtr, opacityPtr, imc_params);
 
 	auto pop_control = std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell);

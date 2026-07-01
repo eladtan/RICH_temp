@@ -54,14 +54,15 @@ namespace
 	void RemoveCenter(HDSim3D& sim, double MBH, double Mstar, double Rstar,
 		EquationOfState const& eos, double beta)
 	{
+		Tessellation3D &tess = sim.getTessellation();
 		double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333) / beta;
 		double Rsmooth = std::max(Rt * 0.4, std::min(Rt - Rstar * 15, Rt * smooth_factor));
 		std::vector<Conserved3D> &extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
-		size_t const N = sim.getTesselation().GetPointNo();
+		size_t const N = tess.GetPointNo();
 		for(size_t i = 0; i < N; ++i)
 		{
-			if(fastabs(sim.getTesselation().GetCellCM(i)) < Rsmooth)
+			if(fastabs(tess.GetCellCM(i)) < Rsmooth)
 			{
 				double new_density = std::max(1e-20, cells[i].density * 0.5);
 				double density_ratio = cells[i].density / new_density;
@@ -81,11 +82,11 @@ namespace
 				cells[i].Erad *= density_ratio * Erad_ratio;
 				cells[i].Erad_dt *= density_ratio * Erad_ratio;
 				cells[i].Erad_dt_dt *= density_ratio * Erad_ratio;
-				PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+				PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
 			}
 		}
-		MPI_exchange_data(sim.getTesselation(), cells, true);
-		MPI_exchange_data(sim.getTesselation(), extensives, true);
+		MPI_exchange_data(tess, cells, true);
+		MPI_exchange_data(tess, extensives, true);
 	}
 
 	class DissipationDiag: public DiagnosticAppendix3D
@@ -117,7 +118,7 @@ namespace
 		std::vector<double> operator()(const HDSim3D& sim) const
 		{
 		    std::vector<Slope3D> slopes = interp_.GetSlopesUnlimited();
-			size_t const N = sim.getTesselation().GetPointNo();
+			size_t const N = sim.getTessellation().GetPointNo();
 			std::vector<double> res(N, 0);
 			switch(value_)
 			{
@@ -273,6 +274,7 @@ namespace
 	void UpdateReferenceFrame(HDSim3D &sim, double const Rstar, double const Mstar, double const MBH, 
 		double const beta)
 	{
+		Tessellation3D &tess = sim.getTessellation();
 		double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
 		double const Rp = Rt / beta;
 		state_type x0 = GetTrueAnomaly(sim.getTime(), MBH, Rp);
@@ -287,11 +289,11 @@ namespace
 				std::cout<<x0[i]<<" ";
 			std::cout<<std::endl;
 		}
-		std::vector<Vector3D> points = sim.getTesselation().accessMeshPoints();
+		std::vector<Vector3D> points = tess.accessMeshPoints();
 		std::vector<Conserved3D> &extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
-		size_t const N = sim.getTesselation().GetPointNo();
-		std::pair<Vector3D, Vector3D> box_points = sim.getTesselation().GetBoxCoordinates();
+		size_t const N = tess.GetPointNo();
+		std::pair<Vector3D, Vector3D> box_points = tess.GetBoxCoordinates();
 		double const reference_density = 1e-8 * Mstar / ((box_points.second.x - box_points.first.x) * (box_points.second.y - box_points.first.y) * (box_points.second.z - box_points.first.z));
 		for(size_t i = 0; i < N; ++i)
 		{
@@ -312,13 +314,13 @@ namespace
 		box_points.first.y += x0[1];
 		box_points.second.x += x0[0];
 		box_points.second.y += x0[1];
-		sim.getTesselation().SetBox(box_points.first, box_points.second);
+		tess.SetBox(box_points.first, box_points.second);
 #ifdef RICH_MPI
-		sim.getTesselation().BuildParallel(points);
+		tess.BuildParallel(points);
 		ComputationalCell3D cdummy;
-		MPI_exchange_data(sim.getTesselation(), cells, false);
+		MPI_exchange_data(tess, cells, false);
 #else
-		sim.getTesselation().Build(points);
+		tess.Build(points);
 #endif
 	}
 
@@ -334,7 +336,7 @@ namespace
 			double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333);
 			double const Rp = Rt / beta;
 			state_type x0 = GetTrueAnomaly(sim.getTime(), MBH, Rp, 0/*-3 * Mstar * std::pow(MBH / Mstar, 0.3333333) / Rstar*/);
-			Tessellation3D const& tess = sim.getTesselation();
+			Tessellation3D const& tess = sim.getTessellation();
 			std::vector<ComputationalCell3D> const& cells = sim.getCells();
 			int need_update = 0;
 			double max_x = -1e20, max_y = -1e20;
@@ -397,7 +399,9 @@ namespace
 		std::pair<vector<size_t>, vector<Vector3D>> ToRefine(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
 			int rank = 0;
+#ifdef RICH_MPI
 			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif // RICH_MPI
 			std::vector<std::vector<double>> maxr;
 			std::vector<std::vector<double>> phi;
 			std::vector<double> theta;
@@ -429,7 +433,9 @@ namespace
 				if(tess.GetMeshPoint(i).y > 0.5 * Rt && tess.GetMeshPoint(i).x > 0.85 * Rt && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
 					rho_x = std::max(rho_x, cells[i].density);
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif // RICH_MPI
 			if(rank == 0)
 				std::cout << "rho_x = " << rho_x << std::endl;
 			for (size_t i = 0; i < Norg; ++i)
@@ -563,7 +569,9 @@ namespace
 				if(tess.GetMeshPoint(i).y > Rt * 0.5 && tess.GetMeshPoint(i).x > Rt * 0.85 && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
 					rho_x = std::max(rho_x, cells[i].density);
 			}
+#ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif // RICH_MPI
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				bool good = true;
@@ -1034,7 +1042,6 @@ int main(void)
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
 	
-
 	// std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
 	DefaultCellUpdater cu(false, 0, true, 2000, &matrix_builder);
 
@@ -1090,7 +1097,7 @@ int main(void)
 	MassRefine refine(8 * width * width * width, Mbh, M, R, beta);
 	PCM3D ainterp(ghost);
 	AMR3D amr(eos, refine, remove, interp);
-	std::pair<Vector3D, Vector3D> box2 = sim->getTesselation().GetBoxCoordinates();
+	std::pair<Vector3D, Vector3D> box2 = sim->getTessellation().GetBoxCoordinates();
 	double newvol2 = (box2.second.x - box2.first.x) * (box2.second.y - box2.first.y) * (box2.second.z - box2.first.z);
 	refine.SetSize(newvol2);
 	remove.SetSize(newvol2);
@@ -1212,7 +1219,7 @@ int main(void)
 			if (sim->getCycle() % 7 == 0)
 			{
 				UpdateBox(tess, simulation, 0.5, 1e-5, reference_cell);
-				std::pair<Vector3D, Vector3D> box = sim->getTesselation().GetBoxCoordinates();
+				std::pair<Vector3D, Vector3D> box = sim->getTessellation().GetBoxCoordinates();
 				double newvol = (box.second.x - box.first.x) * (box.second.y - box.first.y) * (box.second.z - box.first.z);
 				refine.SetSize(newvol);
 				remove.SetSize(newvol);

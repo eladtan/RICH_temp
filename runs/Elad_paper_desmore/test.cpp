@@ -77,7 +77,7 @@ namespace
             {
                 double a = groupBoundaries_[g] / kT;
                 double b = groupBoundaries_[g + 1] / kT;
-                double Bg = planck_integral::planck_integral(a, b);
+                double Bg = ::planck_integral::planck_integral(a, b);
                 double sigma_g = sigma0 / (sqrtKT * groupCenters_[g] * groupCenters_[g] * groupCenters_[g]);
                 weightedSum += sigma_g * Bg;
                 totalWeight += Bg;
@@ -253,7 +253,7 @@ int main(int argc, char *argv[])
         std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
             tess, cells, T_boundary, boundaryPhotonsPerCell, /*multigroup=*/true);
 
-    RadiationIMCParameters radiationIMCParameters = {
+    STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
         .diffusionPressureGradient = false,
@@ -261,7 +261,7 @@ int main(int argc, char *argv[])
         .withMultigroupOpacity = true,
         .withRandomWalk = useRandomWalk
     };
-    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
+    std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =

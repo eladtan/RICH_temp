@@ -17,7 +17,7 @@
 // Monte Carlo includes
 #include "3D/radiation/RadiationIMC.hpp"
 #include "3D/radiation/PowerLawOpacity.hpp"
-#include "monte/population/Comb.hpp"
+#include "monte/population/CombPopulationControl.hpp"
 #include "monte/boundary/SideTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
@@ -188,11 +188,11 @@ int main(int argc, char *argv[])
             std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
                 tess, cells, T_boundary, boundaryPhotonsPerCell, withHydro);
 
-        RadiationIMCParameters radiationIMCParameters = {
+        STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
             .newPhotonsPerCell = newPhotonsPerCell,
             .withHydro = withHydro
         };
-        std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<RadiationIMC>(
+        std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
             tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
         std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
             std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, particlesPerCell);

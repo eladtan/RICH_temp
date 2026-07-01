@@ -1535,8 +1535,8 @@ state.observerBudgetMultiplier = diag.budgetMultiplier;
 return diag;
 }
 
-RadiationIMC::SourceAllocationSummary
-ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
+::RadiationIMC::SourceAllocationSummary
+ReduceSourceAllocationSummary(::RadiationIMC::SourceAllocationSummary local)
 {
 #ifdef RICH_MPI
     unsigned long long const localSourceCells = local.sourceCells;
@@ -1585,8 +1585,8 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
     return local;
 }
 
-RadiationIMC::GroupSamplingDiagnostics
-ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
+::RadiationIMC::GroupSamplingDiagnostics
+ReduceGroupSamplingDiagnostics(::RadiationIMC::GroupSamplingDiagnostics local)
 {
 #ifdef RICH_MPI
     size_t const localWeightCorrectionCount = local.weightCorrectionCount;
@@ -1650,8 +1650,8 @@ ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
 }
 
 void AccumulateGroupSamplingDiagnostics(
-    RadiationIMC::GroupSamplingDiagnostics& total,
-    RadiationIMC::GroupSamplingDiagnostics const& gen)
+    ::RadiationIMC::GroupSamplingDiagnostics& total,
+    ::RadiationIMC::GroupSamplingDiagnostics const& gen)
 {
     if (gen.weightCorrectionCount > 0) {
         if (total.weightCorrectionCount == 0) {
@@ -1929,7 +1929,7 @@ void PrintAdaptiveGenerationStats(
     Config const& cfg,
     AdaptiveSourceState const& state,
     AdaptiveSourceUpdateSummary const& update,
-    RadiationIMC::SourceAllocationSummary allocation,
+    ::RadiationIMC::SourceAllocationSummary allocation,
     ObserverQualityDiagnostics const& observerQuality,
     size_t gen,
     int rank)
@@ -2679,7 +2679,7 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
 
 void PrintAdaptiveGroupGenerationStats(
     ObserverGroupQualityDiagnostics const& gq,
-    RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    ::RadiationIMC::GroupSamplingDiagnostics const& gsd,
     size_t gen,
     int rank)
 {
@@ -2755,7 +2755,7 @@ double RosselandWeightFraction(double a, double b)
         boundaryTerm += std::pow(a, 4) / std::expm1(a);
     if (b > 0.0 && b < 500.0)
         boundaryTerm -= std::pow(b, 4) / std::expm1(b);
-    double planckTerm = 4.0 * (std::pow(M_PI, 4) / 15.0) * planck_integral::planck_integral(a, b);
+    double planckTerm = 4.0 * (std::pow(M_PI, 4) / 15.0) * ::planck_integral::planck_integral(a, b);
     return (boundaryTerm + planckTerm) / fullIntegral;
 }
 
@@ -2809,7 +2809,7 @@ double SolveRosselandAlpha(
 // normalised by the full-spectrum integral pi^4/15.
 double PlanckWeightFraction(double a, double b)
 {
-    return planck_integral::planck_integral(a, b);
+    return ::planck_integral::planck_integral(a, b);
 }
 
 // Solve for alpha such that the Planck-weighted MG absorption matches the grey Planck:
@@ -3388,7 +3388,7 @@ int main(int argc, char* argv[])
         // ============================================================
         // Construct RadiationIMC
         // ============================================================
-        RadiationIMCParameters params;
+        STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> params;
         size_t genPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / cfg.nGenerations);
         params.newPhotonsPerCell = genPhotonsPerCell;
         params.withHydro = false;
@@ -3419,7 +3419,7 @@ int main(int argc, char* argv[])
         params.postProcess.polarization.depolarizationScatterings = cfg.polarizationDepolarizationScatterings;
         params.postProcess.polarization.acceleratedClosure = cfg.polarizationClosure;
 
-        auto physics = std::make_shared<RadiationIMC>(
+        auto physics = std::make_shared<::RadiationIMC>(
             tess, boundary, cells, extensives, eos, opacity, params);
         physics->setObserver(observer);
 
@@ -3497,8 +3497,8 @@ int main(int argc, char* argv[])
         AdaptiveSourceState mgAdaptive;
         AdaptiveGroupHistory mgGroupHistory;
         AdaptiveGroupSourceState mgGroupSourceState;
-        RadiationIMC::GroupSamplingDiagnostics mgLastGroupSamplingDiag;
-        RadiationIMC::GroupSamplingDiagnostics mgFinalGroupSamplingDiag;
+        ::RadiationIMC::GroupSamplingDiagnostics mgLastGroupSamplingDiag;
+        ::RadiationIMC::GroupSamplingDiagnostics mgFinalGroupSamplingDiag;
         AdaptiveGroupSourceUpdateSummary mgFinalGroupSourceSummary;
         bool mgGroupFallbackToIntegrated = false;
         std::string mgGroupFallbackReason = "none";
@@ -3862,7 +3862,7 @@ int main(int argc, char* argv[])
 
                     boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
-                    physics = std::make_shared<RadiationIMC>(
+                    physics = std::make_shared<::RadiationIMC>(
                         tess, boundary, cells, extensives, eos, opacity, params);
                     physics->setObserver(observer);
 
@@ -4242,7 +4242,7 @@ int main(int argc, char* argv[])
 
                     boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
-                    physics = std::make_shared<RadiationIMC>(
+                    physics = std::make_shared<::RadiationIMC>(
                         tess, boundary, cells, extensives, eos, opacity, params);
                     physics->setObserver(observer);
 
@@ -4363,7 +4363,7 @@ int main(int argc, char* argv[])
 
         auto greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
-        RadiationIMCParameters greyParams;
+        STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> greyParams;
         greyParams.newPhotonsPerCell = greyPhotonsPerCell;
         greyParams.withHydro = false;
         greyParams.noHydroFeedback = true;
@@ -4386,7 +4386,7 @@ int main(int argc, char* argv[])
         greyParams.postProcess.polarization.depolarizationScatterings = cfg.polarizationDepolarizationScatterings;
         greyParams.postProcess.polarization.acceleratedClosure = cfg.polarizationClosure;
 
-        auto greyPhysics = std::make_shared<RadiationIMC>(
+        auto greyPhysics = std::make_shared<::RadiationIMC>(
             tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
         greyPhysics->setObserver(greyObserver);
 
@@ -4685,7 +4685,7 @@ int main(int argc, char* argv[])
                     greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
                     greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
-                    greyPhysics = std::make_shared<RadiationIMC>(
+                    greyPhysics = std::make_shared<::RadiationIMC>(
                         tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
                     greyPhysics->setObserver(greyObserver);
 
