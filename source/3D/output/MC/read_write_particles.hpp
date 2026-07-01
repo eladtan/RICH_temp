@@ -3,7 +3,7 @@
 
 #include <H5Cpp.h>
 #include <filesystem>
-#include "monte/MonteCarloParticle.hpp"
+#include "monte/particle/Particle.hpp"
 #include "utils/hdf5/HDF5Helper.hpp"
 #include "utils/hdf5/HDF5Reader.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
