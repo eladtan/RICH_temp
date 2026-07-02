@@ -181,6 +181,7 @@ include_directories(${PROJECT_SOURCE_DIR})
 include_directories("${PROJECT_SOURCE_DIR}/..") # TODO: REMOVE!
 include_directories("${PROJECT_SOURCE_DIR}/utils")
 include_directories("${PROJECT_SOURCE_DIR}/3D/tessellation")
+include_directories("${PROJECT_SOURCE_DIR}/Radiation/CMMC/src")
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 

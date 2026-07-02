@@ -1,7 +1,0 @@
-sph_tangential_vx_max_abs 3.239085613603e-01
-sph_tangential_vy_max_abs 3.174779497963e-01
-sph_tangential_vz_max_abs 3.848932306745e-17
-sph_tangential_velocity_max_abs 3.239085613603e-01
-sph_tangential_velocity_max_rel 1.119140347827e+00
-faces_checked 43800
-pass 0

@@ -12,10 +12,4 @@ MonteCarloRadiationPhysics3D::MonteCarloRadiationPhysics3D(Tessellation3D &grid,
     this->re = std::mt19937_64(baseSeed);
     this->opacity->rng_.seed(baseSeed + 1);
     ReseedRandomInCell(baseSeed + 2);
-    size_t N = this->grid.GetPointNo();
-    this->Erad_time_avg.resize(N, 0);
-    for(size_t i = 0; i < N; i++)
-    {
-        this->Erad_time_avg[i] = cells[i].Erad;
-    }
 }

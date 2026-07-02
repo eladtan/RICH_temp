@@ -30,13 +30,13 @@ public:
 
     virtual void adjustExistingParticles(std::vector<Particle> &/*particles*/, double /*fullDt*/) {}
 
-    inline const std::vector<double> &getEradTimeAvg(void) const{return this->Erad_time_avg;}
+    virtual const std::vector<double> &getEradTimeAvg(void) const = 0;
     
-    inline std::vector<double> &getEradTimeAvg(void){return this->Erad_time_avg;}
+    virtual std::vector<double> &getEradTimeAvg(void) = 0;
 
-    inline const std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void) const{return this->Eg_time_avg;}
+    virtual const std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void) const = 0;
 
-    inline std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void){return this->Eg_time_avg;}
+    virtual std::vector<std::array<double, ENERGY_GROUPS_NUM>> &getEgTimeAvg(void) = 0;
 
     void reseedRNG(uint64_t seed)
     {
@@ -51,8 +51,6 @@ protected:
     std::vector<Particle> generateParticles(double fullDt);
 
     std::vector<ComputationalCell3D> &cells;
-    std::vector<double> Erad_time_avg;
-    std::vector<std::array<double, ENERGY_GROUPS_NUM>> Eg_time_avg;
     std::vector<Conserved3D> &conserved;
     std::shared_ptr<EquationOfState> eos;
     std::shared_ptr<OpacityCalculator> opacity;

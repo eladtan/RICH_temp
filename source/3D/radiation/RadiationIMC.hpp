@@ -1,8 +1,10 @@
 #ifndef RADIATION_IMC_HPP
 #define RADIATION_IMC_HPP
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <random>
@@ -12,7 +14,9 @@
 
 #include "MonteCarloPhysics3D.hpp"
 #include "monte/utils/RandomInCell.hpp"
+#include "monte/utils/LinearInterpolation.hpp"
 #include "monte/radiation/RadiationIMC.hpp"
+#include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 class SphericalObserver;
 
@@ -20,6 +24,11 @@ class RICHRadiationOpacityAdapter final
     : public STORM::RadiationOpacityModel<Vector3D, Tessellation3D, ComputationalCell3D, ENERGY_GROUPS_NUM>
 {
 public:
+    using Base = STORM::RadiationOpacityModel<Vector3D, Tessellation3D, ComputationalCell3D, ENERGY_GROUPS_NUM>;
+    using GroupArray = typename Base::GroupArray;
+    using GroupBoundaries = typename Base::GroupBoundaries;
+    using GroupCdf = std::array<double, ENERGY_GROUPS_NUM + 1>;
+
     explicit RICHRadiationOpacityAdapter(std::shared_ptr<OpacityCalculator> opacity):
         opacity_(std::move(opacity))
     {}
@@ -77,10 +86,154 @@ public:
         this->opacity_->rng_.seed(seed);
     }
 
+    std::size_t findGroup(double frequency, const GroupBoundaries &boundaries) const override
+    {
+        for(std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            if(frequency < boundaries[g + 1])
+            {
+                return g;
+            }
+        }
+        return ENERGY_GROUPS_NUM - 1;
+    }
+
+    double GetThermalEnergy(const ComputationalCell3D &cell,
+                            double random,
+                            const GroupBoundaries &boundaries) const override
+    {
+        GroupCdf cumulative = this->computeCumulativeOpacity(cell, boundaries);
+        double const total = cumulative[ENERGY_GROUPS_NUM];
+        if(!(total > 0.0) || !std::isfinite(total))
+        {
+            return Base::GetThermalEnergy(cell, random, boundaries);
+        }
+
+        double const r = this->clampUnitOpen(random);
+        return STORM::LinearInterpolation(cumulative, boundaries, r * total);
+    }
+
+    double SampleThermalEnergyInGroup(const ComputationalCell3D &cell,
+                                      std::size_t group,
+                                      double random,
+                                      const GroupBoundaries &boundaries) const override
+    {
+        group = std::min<std::size_t>(group, ENERGY_GROUPS_NUM - 1);
+        GroupCdf cumulative = this->computeCumulativeOpacity(cell, boundaries);
+        double const c0 = cumulative[group];
+        double const c1 = cumulative[group + 1];
+        if(c1 <= c0 || !std::isfinite(c1 - c0))
+        {
+            return 0.5 * (boundaries[group] + boundaries[group + 1]);
+        }
+
+        double const r = this->clampUnitOpen(random);
+        return STORM::LinearInterpolation(cumulative, boundaries, c0 + r * (c1 - c0));
+    }
+
+    GroupArray GetThermalGroupPdf(const ComputationalCell3D &cell,
+                                  const GroupBoundaries &boundaries) const override
+    {
+        GroupArray pdf{};
+        GroupCdf cumulative = this->computeCumulativeOpacity(cell, boundaries);
+        double const total = cumulative[ENERGY_GROUPS_NUM];
+        if(!(total > 0.0) || !std::isfinite(total))
+        {
+            return pdf;
+        }
+
+        for(std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            double const weight = cumulative[g + 1] - cumulative[g];
+            pdf[g] = (weight > 0.0 && std::isfinite(weight)) ? weight / total : 0.0;
+        }
+        return pdf;
+    }
+
+    GroupArray GetCumulativeOpacity(const ComputationalCell3D &cell,
+                                    const GroupBoundaries &boundaries) const override
+    {
+        GroupArray cumulativeUpper{};
+        GroupCdf cumulative = this->computeCumulativeOpacity(cell, boundaries);
+        for(std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            cumulativeUpper[g] = cumulative[g + 1];
+        }
+        return cumulativeUpper;
+    }
+
+    GroupArray getEnergyCenters(const GroupBoundaries &boundaries) const override
+    {
+        return this->energyCenters(boundaries);
+    }
+
     const OpacityCalculator &richOpacity() const { return *this->opacity_; }
 
 private:
+    static double clampUnitOpen(double random)
+    {
+        double const upper = std::nextafter(1.0, 0.0);
+        return std::isfinite(random) ? std::clamp(random, 0.0, upper) : 0.5;
+    }
+
+    static GroupArray energyCenters(const GroupBoundaries &boundaries)
+    {
+        GroupArray centers{};
+        for(std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            centers[g] = 0.5 * (boundaries[g] + boundaries[g + 1]);
+        }
+        return centers;
+    }
+
+    GroupCdf computeCumulativeOpacity(const ComputationalCell3D &cell,
+                                      const GroupBoundaries &boundaries) const
+    {
+        if(cumulativeCacheValid_
+           && cumulativeCacheCellID_ == cell.ID
+           && cumulativeCacheTemperature_ == cell.temperature
+           && cumulativeCacheBoundaries_ == boundaries)
+        {
+            return cumulativeCache_;
+        }
+
+        GroupCdf cumulative{};
+        GroupArray centers = this->energyCenters(boundaries);
+        double const kT = STORM::constants::k_boltz * cell.temperature;
+        if(!(kT > 0.0) || !std::isfinite(kT))
+        {
+            return cumulative;
+        }
+
+        cumulative[0] = 0.0;
+        for(std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        {
+            double const a = boundaries[g] / kT;
+            double const b = boundaries[g + 1] / kT;
+            double const bg = (a > 0.0 && b > a)
+                ? planck_integral::planck_integral(a, b)
+                : 0.0;
+            double const sigma = this->opacity_->CalcAbsorptionOpacity(cell, centers[g]);
+            double const weight = (sigma > 0.0 && std::isfinite(sigma) && std::isfinite(bg))
+                ? sigma * bg
+                : 0.0;
+            cumulative[g + 1] = cumulative[g] + weight;
+        }
+
+        cumulativeCacheValid_ = true;
+        cumulativeCacheCellID_ = cell.ID;
+        cumulativeCacheTemperature_ = cell.temperature;
+        cumulativeCacheBoundaries_ = boundaries;
+        cumulativeCache_ = cumulative;
+        return cumulative;
+    }
+
     std::shared_ptr<OpacityCalculator> opacity_;
+    mutable bool cumulativeCacheValid_ = false;
+    mutable std::size_t cumulativeCacheCellID_ = std::numeric_limits<std::size_t>::max();
+    mutable double cumulativeCacheTemperature_ = std::numeric_limits<double>::quiet_NaN();
+    mutable GroupBoundaries cumulativeCacheBoundaries_{};
+    mutable GroupCdf cumulativeCache_{};
 };
 
 struct RICHRadiationIMCTraits
@@ -169,9 +322,7 @@ public:
               parameters,
               RICHRadiationIMCTraits{},
               RICHRadiationPositionSampler{})
-    {
-        this->syncTimeAverages();
-    }
+    {}
 
     RadiationIMC(Tessellation3D &grid,
                  const std::shared_ptr<BoundaryCond> &boundary,
@@ -191,9 +342,12 @@ public:
 
     std::vector<Particle> preStep(double fullDt) override
     {
-        std::vector<Particle> result = this->impl_.preStep(fullDt);
-        this->syncTimeAverages();
-        return result;
+        return this->impl_.preStep(fullDt);
+    }
+
+    void updateGridData(void) override
+    {
+        this->impl_.updateGridData();
     }
 
     Functionality step(Particle &particle, std::vector<Particle> &particlesToAdd) override
@@ -204,7 +358,6 @@ public:
     void postStep(const std::vector<Particle> &particles, double fullDt) override
     {
         this->impl_.postStep(particles, fullDt);
-        this->syncTimeAverages();
     }
 
     Particle generateSingleParticle(std::size_t cellIndex, const ComputationalCell3D &cell) const override
@@ -221,6 +374,11 @@ public:
     {
         this->impl_.adjustExistingParticles(particles, fullDt);
     }
+
+    const std::vector<double> &getEradTimeAvg(void) const override { return this->impl_.getEradTimeAvg(); }
+    std::vector<double> &getEradTimeAvg(void) override { return this->impl_.getEradTimeAvg(); }
+    const std::vector<GroupArray> &getEgTimeAvg(void) const override { return this->impl_.getEgTimeAvg(); }
+    std::vector<GroupArray> &getEgTimeAvg(void) override { return this->impl_.getEgTimeAvg(); }
 
     const std::vector<double> &getFactorFleck() const { return this->impl_.getFactorFleck(); }
     const std::vector<double> &getPlanckOpacities() const { return this->impl_.getPlanckOpacities(); }
@@ -312,11 +470,6 @@ private:
         Parameters parameters;
         parameters.newPhotonsPerCell = newPhotonsPerCell;
         return parameters;
-    }
-
-    void syncTimeAverages()
-    {
-        this->Erad_time_avg = this->impl_.getEradTimeAvg();
     }
 
     std::shared_ptr<RICHRadiationOpacityAdapter> opacityAdapter_;

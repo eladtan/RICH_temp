@@ -1,13 +1,14 @@
 #include <cassert>
 #include "Voronoi3DMovement.hpp"
 #include "3D/elementary/Vector3D.hpp"
-#include <MeshDecomposer3D/environment/EnvironmentAgent.hpp>
-#include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
-#include <MeshDecomposer3D/load_balancing/LoadBalancer.hpp>
+#ifdef RICH_MPI
+    #include <MeshDecomposer3D/environment/EnvironmentAgent.hpp>
+    #include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
+    #include <MeshDecomposer3D/load_balancing/LoadBalancer.hpp>
+    #include "mpi/mpi_commands.hpp"
+#endif
 #include "misc/universal_error.hpp"
 #include "misc/utils.hpp"
-#include "mpi/mpi_commands.hpp"
-#include <bits/chrono.h>
 
 #define RADIUSES_FACTOR 2
 

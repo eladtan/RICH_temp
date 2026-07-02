@@ -1,6 +1,0 @@
-mode mpi
-num_points 1000000
-total_volume 9.9999999999999978e-01
-box_volume 1.0000000000000000e+00
-rel_error 2.2204460492503131e-16
-pass 1

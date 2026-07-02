@@ -48,6 +48,7 @@ output_*
 runs/clemon*
 runs/**/*.txt 
 /regression_results
+regression_tests/cases/*/*.txt
 *.png
 *.pdf
 runs/*/venv/
