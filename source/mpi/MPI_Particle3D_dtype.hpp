@@ -21,7 +21,7 @@ private:
     {
         Particle3D dummy{};
 
-        constexpr int base_count = 13;
+        constexpr int base_count = 19;
         #ifdef MONTECARLO_DEBUG
         constexpr int debug_count = 10;
         #else
@@ -55,6 +55,7 @@ private:
         add_field(dummy.rank, MPI_INT);
         add_field(dummy.id, MPI_UNSIGNED_LONG_LONG);
         add_field(dummy.cellID, MPI_UNSIGNED_LONG_LONG);
+        add_field(dummy.sourceCellID, MPI_UNSIGNED_LONG_LONG);
         add_field(dummy.location.x, MPI_DOUBLE, 3);
         add_field(dummy.velocity.x, MPI_DOUBLE, 3);
         add_field(dummy.cellIndex, MPI_UNSIGNED_LONG_LONG);
@@ -62,6 +63,11 @@ private:
         add_field(dummy.frequency, MPI_DOUBLE);
         add_field(dummy.weight, MPI_DOUBLE);
         add_field(dummy.initialWeight, MPI_DOUBLE);
+        add_field(dummy.ddmcMode, MPI_CXX_BOOL);
+        add_field(dummy.ddmcCellResident, MPI_CXX_BOOL);
+        add_field(dummy.ddmcComovingFrame, MPI_CXX_BOOL);
+        add_field(dummy.ddmcHasPendingFluxContribution, MPI_CXX_BOOL);
+        add_field(dummy.ddmcPendingFluxContribution.x, MPI_DOUBLE, 3);
         add_field(dummy.steps, MPI_UNSIGNED_LONG_LONG);
         add_field(dummy.on_track, MPI_CXX_BOOL);
         add_field(dummy.sent, MPI_CXX_BOOL);

@@ -70,6 +70,11 @@ struct MonteCarloParticle
     double frequency = std::numeric_limits<double>::max();
     double weight = std::numeric_limits<double>::max();
     double initialWeight = std::numeric_limits<double>::max();
+    bool ddmcMode = false;
+    bool ddmcCellResident = false;
+    bool ddmcComovingFrame = false;
+    bool ddmcHasPendingFluxContribution = false;
+    T ddmcPendingFluxContribution = T();
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -162,6 +167,13 @@ struct MonteCarloParticle
         #else // RICH_MPI
                 stream << "Particle(ID " << particle.id << ", location " << particle.location << " in cell " << particle.cellIndex << ", velocity " << particle.velocity << ", time " << particle.timeLeft << ", steps " << particle.steps;
         #endif // RICH_MPI
+                if(particle.ddmcMode)
+                {
+                    stream << ", ddmc cellResident=" << particle.ddmcCellResident
+                           << " comoving=" << particle.ddmcComovingFrame;
+                    if(particle.ddmcHasPendingFluxContribution)
+                        stream << " pendingFlux=" << particle.ddmcPendingFluxContribution;
+                }
 #ifdef MONTECARLO_POLARIZATION
                 stream << ", q " << particle.stokesQ
                        << ", u " << particle.stokesU
@@ -435,6 +447,11 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->frequency);
     bytes += serializer->insert(this->weight);
     bytes += serializer->insert(this->initialWeight);
+    bytes += serializer->insert(this->ddmcMode);
+    bytes += serializer->insert(this->ddmcCellResident);
+    bytes += serializer->insert(this->ddmcComovingFrame);
+    bytes += serializer->insert(this->ddmcHasPendingFluxContribution);
+    bytes += serializer->insert(this->ddmcPendingFluxContribution);
 #ifdef MONTECARLO_POLARIZATION
     bytes += serializer->insert(this->stokesQ);
     bytes += serializer->insert(this->stokesU);
@@ -490,6 +507,11 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->frequency, byteOffset + bytes);
     bytes += serializer->extract(this->weight, byteOffset + bytes);
     bytes += serializer->extract(this->initialWeight, byteOffset + bytes);
+    bytes += serializer->extract(this->ddmcMode, byteOffset + bytes);
+    bytes += serializer->extract(this->ddmcCellResident, byteOffset + bytes);
+    bytes += serializer->extract(this->ddmcComovingFrame, byteOffset + bytes);
+    bytes += serializer->extract(this->ddmcHasPendingFluxContribution, byteOffset + bytes);
+    bytes += serializer->extract(this->ddmcPendingFluxContribution, byteOffset + bytes);
 #ifdef MONTECARLO_POLARIZATION
     bytes += serializer->extract(this->stokesQ, byteOffset + bytes);
     bytes += serializer->extract(this->stokesU, byteOffset + bytes);

@@ -9,6 +9,10 @@
 
 void LorentzTransformation(Particle3D &particle, const Vector3D &velocity);
 
+void LabToComovingPacket(Particle3D &particle, const Vector3D &cellVelocity);
+
+void ComovingToLabPacket(Particle3D &particle, const Vector3D &cellVelocity);
+
 double DopplerShift(const Particle3D &particle, const Vector3D &velocity);
 
 #endif // LORENTZ_TRANSFORMATION_HPP

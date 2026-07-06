@@ -39,7 +39,7 @@ public:
 	\param pressure_calc Determine whether the pressure should be recalculated
 	\param apply_principal_limit Enable principal-frame velocity limiting
 	\param velocity_radial_extrapolation When true, velocity is extrapolated to the average radius between generators rather than face CM radius, improving spherical symmetry preservation
-	\param face_radius_policy Effective face-radius policy for spherical reconstruction
+	\param face_radius_policy Same-shell face-radius policy for slope limiting and interpolation; same-shell faces use zero radial displacement from each cell
 	\param shell_radius_abs_tol Absolute same-shell radius tolerance
 	\param shell_radius_rel_tol Relative same-shell radius tolerance
 	*/

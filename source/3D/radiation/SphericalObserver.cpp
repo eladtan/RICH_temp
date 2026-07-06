@@ -96,6 +96,56 @@ double relativeError(double mean, double stderr)
     return (mean != 0.0) ? stderr / std::abs(mean) : 0.0;
 }
 
+void writeVtkScalar(std::ofstream& file,
+                    std::string const& name,
+                    std::vector<double> const& values,
+                    size_t expectedSize)
+{
+    if (values.empty())
+        return;
+    if (values.size() != expectedSize)
+        throw UniversalError("SphericalObserver::writeVTK: scalar size mismatch for " + name);
+    file << "SCALARS " << name << " double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (double value : values)
+        file << value << "\n";
+}
+
+void writeVtkScalar(std::ofstream& file,
+                    std::string const& name,
+                    std::vector<int> const& values,
+                    size_t expectedSize)
+{
+    if (values.empty())
+        return;
+    if (values.size() != expectedSize)
+        throw UniversalError("SphericalObserver::writeVTK: scalar size mismatch for " + name);
+    file << "SCALARS " << name << " double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int value : values)
+        file << static_cast<double>(value) << "\n";
+}
+
+std::vector<double> groupColumn(std::vector<std::vector<double>> const& values,
+                                size_t group)
+{
+    std::vector<double> column(values.size(), 0.0);
+    for (size_t i = 0; i < values.size(); ++i)
+        if (group < values[i].size())
+            column[i] = values[i][group];
+    return column;
+}
+
+std::vector<int> groupColumn(std::vector<std::vector<int>> const& values,
+                             size_t group)
+{
+    std::vector<int> column(values.size(), 0);
+    for (size_t i = 0; i < values.size(); ++i)
+        if (group < values[i].size())
+            column[i] = values[i][group];
+    return column;
+}
+
 void initMatrixStat(SphericalObserver::RunningMatrixStats& stat, size_t n, size_t m)
 {
     if (stat.sum.size() != n || (!stat.sum.empty() && stat.sum[0].size() != m)) {
@@ -846,6 +896,21 @@ void SphericalObserver::addAbsorbedEnergy(double energy) { absorbedEnergy_ += en
 void SphericalObserver::addBoxEscapeEnergy(double energy) { boxEscapeEnergy_ += energy; }
 void SphericalObserver::addTimedOutEnergy(double energy) { timedOutEnergy_ += energy; }
 void SphericalObserver::addCutoffEnergy(double energy) { cutoffEnergy_ += energy; }
+
+void SphericalObserver::setPhotosphereData(PhotosphereData data)
+{
+    photosphereData_ = std::move(data);
+}
+
+SphericalObserver::PhotosphereData const& SphericalObserver::getPhotosphereData() const
+{
+    return photosphereData_;
+}
+
+bool SphericalObserver::hasPhotosphereData() const
+{
+    return photosphereData_.hasAny();
+}
 
 void SphericalObserver::resetGenerationSourceCellEscapeStats()
 {
@@ -1627,6 +1692,43 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/tally/flux", flux);
     writer.WriteElement("/tally/log10_luminosity", log10Luminosity(lum));
 
+    if (photosphereData_.hasAny()) {
+        writer.WriteElement("/photosphere/tau_threshold", photosphereData_.tauThreshold);
+        writer.WriteElement("/photosphere/tau_total_threshold", photosphereData_.tauThreshold);
+        writer.WriteElement("/photosphere/thermalization_tau_threshold",
+                            photosphereData_.thermalizationTauThreshold);
+        if (photosphereData_.hasMG()) {
+            if (!photosphereData_.mgGroupRadiusTauTotal.empty()) {
+                writer.WriteElement("/photosphere/mg/group_radius_tau_total",
+                                    photosphereData_.mgGroupRadiusTauTotal);
+                writer.WriteElement("/photosphere/mg/group_radius_thermalization",
+                                    photosphereData_.mgGroupRadiusThermalization);
+                writer.WriteElement("/photosphere/mg/group_valid_tau_total",
+                                    photosphereData_.mgGroupValidTauTotal);
+                writer.WriteElement("/photosphere/mg/group_valid_thermalization",
+                                    photosphereData_.mgGroupValidThermalization);
+            }
+            writer.WriteElement("/photosphere/mg/integrated_radius_tau_total",
+                                photosphereData_.mgIntegratedRadiusTauTotal);
+            writer.WriteElement("/photosphere/mg/integrated_radius_thermalization",
+                                photosphereData_.mgIntegratedRadiusThermalization);
+            writer.WriteElement("/photosphere/mg/integrated_valid_tau_total",
+                                photosphereData_.mgIntegratedValidTauTotal);
+            writer.WriteElement("/photosphere/mg/integrated_valid_thermalization",
+                                photosphereData_.mgIntegratedValidThermalization);
+        }
+        if (photosphereData_.hasGrey()) {
+            writer.WriteElement("/photosphere/grey/radius_tau_total",
+                                photosphereData_.greyRadiusTauTotal);
+            writer.WriteElement("/photosphere/grey/radius_thermalization",
+                                photosphereData_.greyRadiusThermalization);
+            writer.WriteElement("/photosphere/grey/valid_tau_total",
+                                photosphereData_.greyValidTauTotal);
+            writer.WriteElement("/photosphere/grey/valid_thermalization",
+                                photosphereData_.greyValidThermalization);
+        }
+    }
+
     if (numGroups_ > 1) {
         writer.WriteElement("/tally/multigroup/group_boundaries", groupBoundaries_);
 
@@ -2021,6 +2123,42 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
     file << "LOOKUP_TABLE default\n";
     for (size_t i = 0; i < N; ++i)
         file << observerSolidAngle_[i] << "\n";
+
+    if (photosphereData_.hasMG()) {
+        writeVtkScalar(file, "photosphere_integrated_radius_tau_total",
+                       photosphereData_.mgIntegratedRadiusTauTotal, N);
+        writeVtkScalar(file, "photosphere_integrated_radius_thermalization",
+                       photosphereData_.mgIntegratedRadiusThermalization, N);
+        writeVtkScalar(file, "photosphere_integrated_valid_tau_total",
+                       photosphereData_.mgIntegratedValidTauTotal, N);
+        writeVtkScalar(file, "photosphere_integrated_valid_thermalization",
+                       photosphereData_.mgIntegratedValidThermalization, N);
+
+        size_t groupCount = 0;
+        if (!photosphereData_.mgGroupRadiusTauTotal.empty())
+            groupCount = photosphereData_.mgGroupRadiusTauTotal.front().size();
+        for (size_t g = 0; g < groupCount; ++g) {
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_radius_tau_total",
+                           groupColumn(photosphereData_.mgGroupRadiusTauTotal, g), N);
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_radius_thermalization",
+                           groupColumn(photosphereData_.mgGroupRadiusThermalization, g), N);
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_valid_tau_total",
+                           groupColumn(photosphereData_.mgGroupValidTauTotal, g), N);
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_valid_thermalization",
+                           groupColumn(photosphereData_.mgGroupValidThermalization, g), N);
+        }
+    }
+
+    if (photosphereData_.hasGrey()) {
+        writeVtkScalar(file, "photosphere_grey_radius_tau_total",
+                       photosphereData_.greyRadiusTauTotal, N);
+        writeVtkScalar(file, "photosphere_grey_radius_thermalization",
+                       photosphereData_.greyRadiusThermalization, N);
+        writeVtkScalar(file, "photosphere_grey_valid_tau_total",
+                       photosphereData_.greyValidTauTotal, N);
+        writeVtkScalar(file, "photosphere_grey_valid_thermalization",
+                       photosphereData_.greyValidThermalization, N);
+    }
 
 #ifdef MONTECARLO_POLARIZATION
     if(polarizationOutputEnabled_)

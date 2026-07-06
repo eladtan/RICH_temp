@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
 #include "3D/monte/Voronoi3DMovement.hpp"
@@ -13,6 +14,12 @@
 #include "Radiation/CMMC/src/compton_matrix_mc.hpp"
 
 class SphericalObserver;
+
+enum class ComptonInducedMode
+{
+    RadiationField,
+    AdaptivePlanckFallback
+};
 
 struct RadiationIMCParameters
 {
@@ -30,8 +37,10 @@ struct RadiationIMCParameters
     bool ddmcUseMultigroupPGRW = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
+    bool capAbsorptionOpacity = false;
     bool withCompton = false;
     bool comptonUseInduced = true;
+    ComptonInducedMode comptonInducedMode = ComptonInducedMode::AdaptivePlanckFallback;
     bool comptonAllowNZeroFallback = true;
     bool comptonDebugParityCheck = false;
     bool comptonCheckSignedTallies = false;
@@ -45,17 +54,54 @@ struct RadiationIMCParameters
         bool enabled = false;
         double sourceDt = 0.0;
         double transportTime = 0.0;
+        bool forceGreyFleckOne = true;
         bool useCellVelocities = true;
         struct PolarizationParameters
         {
             bool enabled = false;
-            int manualScatteringsAfterAcceleration = 0;
-            double depolarizationScatterings = 0.0;
-            std::string acceleratedClosure;
+            int manualScatteringsAfterAcceleration = 4;
+            double depolarizationScatterings = 2.0;
+            std::string acceleratedClosure = "damped_last_scatterings";
         } polarization;
     } postProcess;
 
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
+};
+
+struct DDMCFaceLeak
+{
+    size_t faceIndex = std::numeric_limits<size_t>::max();
+    size_t nextCellIndex = std::numeric_limits<size_t>::max();
+    double rate = 0.0;
+    double area = 0.0;
+    double distance = 0.0;
+    Vector3D outwardNormal = Vector3D(0.0, 0.0, 0.0);
+};
+
+struct DDMCCellData
+{
+    bool eligible = false;
+    bool boundaryExcluded = false;
+    bool observerExcluded = false;
+    size_t rigidBoundaryFaceCount = 0;
+    size_t unsupportedBoundaryFaceCount = 0;
+    size_t firstUnsupportedBoundaryFace = std::numeric_limits<size_t>::max();
+    size_t groupCutoff = ENERGY_GROUPS_NUM;
+    double sigmaA = 0.0;
+    double sigmaT = 0.0;
+    double sigmaEnergyAbs = 0.0;
+    double sigmaMomentum = 0.0;
+    double sigmaDiffusion = 0.0;
+    double sigmaParticleGate = 0.0;
+    double sigmaGroupExit = 0.0;
+    double diffusionCoefficient = 0.0;
+    double gamma = 1.0;
+    double totalLeakRate = 0.0;
+    double faceAreaSum = 0.0;
+    double velocityDivergence = 0.0;
+    double maxFaceVelocityJumpOverC = 0.0;
+    std::array<double, 6> fluxMatrix{};
+    std::vector<DDMCFaceLeak> faceLeaks;
 };
 
 class RadiationIMC : public MonteCarloRadiationPhysics3D
@@ -105,6 +151,7 @@ public:
         double Gamma = 0.0;
         double betaCdtF = 0.0;
         bool useNZero = false;
+        bool usePlanckInduced = false;
         GroupArray oldRadiationEnergy{};
         GroupArray occupation{};
         GroupArray D{};
@@ -114,18 +161,29 @@ public:
         GroupArray Bbase{};
         GroupArray Bcorr{};
         GroupArray Btotal{};
+        GroupArray Bpos{};
+        GroupArray Bres{};
         GroupArray baseEffectiveOpacity{};
-        GroupArray implicitEventRate{};
-        GroupArray implicitDiagonalCorrection{};
-        GroupCdfMatrix implicitEventCdf{};
+        GroupArray comptonOutRate{};
+        GroupCdfMatrix comptonTargetCdf{};
         GroupMatrix tau{};
         GroupMatrix dtau_dUm{};
         GroupMatrix S{};
         GroupMatrix dSdUm{};
-        GroupMatrix Kmat{};
-        GroupMatrix Hbase{};
-        GroupMatrix implicitKernel{};
-        GroupMatrix implicitEventRateMatrix{};
+        GroupMatrix segmentKernel{};
+        GroupMatrix residualKernel{};
+        GroupMatrix Ktotal{};
+        GroupArray comptonMu{};
+        GroupArray comptonMh{};
+        GroupArray riskScore{};
+        std::array<size_t, ENERGY_GROUPS_NUM> riskTargetPackets{};
+    };
+
+    enum class ComptonOccupationMode
+    {
+        Zero,
+        RadiationField,
+        PlanckFunction
     };
 
     RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters);
@@ -135,6 +193,18 @@ public:
     Functionality step(Particle &particle, std::vector<Particle> &particlesToAdd) override;
 
     void postStep(const std::vector<Particle> &particles, double fullDt) override;
+
+    size_t getRandomWalkStepCount() const override { return this->rwStepCount; }
+    size_t getDDMCStepCount() const override { return this->ddmcStepCount; }
+    size_t getDDMCLeakCount() const override { return this->ddmcLeakCount; }
+    size_t getDDMCCensusCount() const override { return this->ddmcCensusCount; }
+    size_t getDDMCUpscatterCount() const override { return this->ddmcUpscatterCount; }
+    size_t getDDMCFallbackCount() const override { return this->ddmcFallbackCount; }
+#ifdef RICH_IMC_DDMC_ENABLED
+    std::string getAccelerationDebugInfo(size_t cellIndex, double frequency) const override;
+#else
+    std::string getAccelerationDebugInfo(size_t, double) const override { return std::string(); }
+#endif
 
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
 
@@ -194,25 +264,27 @@ public:
     void clearSourceEmissionControl();
     SourceAllocationSummary getLastSourceAllocationSummary() const { return lastSourceAllocationSummary_; }
     std::vector<size_t> const &getLastSourcePhotonsPerCell() const { return lastSourcePhotonsPerCell_; }
-
 private:    
     std::vector<Particle> generateParticles(double fullDt);
     std::vector<Particle> generateComptonParticles(double fullDt);
     void precomputeComptonData(double fullDt);
     void initializeComptonGroups();
     void initializeComptonMatrixGenerator();
-    void buildComptonMatricesForCell(const ComputationalCell3D &cell, size_t cellIndex, bool calculateN, ComptonCellData &cd);
+    void buildComptonMatricesForCell(const ComputationalCell3D &cell, size_t cellIndex, ComptonOccupationMode occupationMode, ComptonCellData &cd);
     void recomputeComptonContractions(ComptonCellData &cd);
-    void buildComptonInPlaceKernels(size_t cellIndex, ComptonCellData &cd);
+    void buildComptonEventData(size_t cellIndex, ComptonCellData &cd);
     void buildComptonSources(double fullDt, ComptonCellData &cd);
-    void applyImplicitComptonEvent(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, const Vector3D &oldVelocity, double oldWeight, double dopplerShift, Particle &particle);
+    void applyComptonScatterEvent(size_t cellIndex, const ComputationalCell3D &cell, size_t sourceGroup, const Vector3D &oldVelocity, double oldWeight, double dopplerShift, Particle &particle);
+    void computeComptonRiskForCell(size_t cellIndex, double fullDt, ComptonCellData &cd);
+    void splitComptonRiskyParticles(std::vector<Particle> &particles, double fullDt);
+    void applyComptonEndOfStepCorrection(double fullDt);
+    void reconcileComptonParticles(std::vector<Particle> &particles);
     void resetComptonDiagnostics();
     void printComptonDiagnostics();
     void validateComptonParity(size_t cellIndex, const ComptonCellData &cd) const;
     double frequencyForComptonGroup(size_t group) const;
     size_t sampleComptonCdf(const GroupCdf &cdf, double random) const;
     static GroupCdf buildSafeComptonCdf(const GroupArray &weights);
-
     std::vector<double> factorFleck;
     std::vector<double> planckOpacities;
     std::shared_ptr<MultigroupOpacity> multigroupOpacity;
@@ -221,6 +293,10 @@ private:
     GroupArray comptonGroupWidths{};
     bool comptonGroupsInitialized = false;
     std::unique_ptr<ComptonMatrixMC> comptonMatrixGen;
+    std::vector<std::array<size_t, ENERGY_GROUPS_NUM>> lastComptonPacketCounts_;
+    std::vector<GroupArray> lastComptonMaxPacketWeight_;
+    double comptonRiskPrecomputeDt_ = -1.0;
+    bool comptonDataReusableInPreStep_ = false;
 
     bool withHydro;
     bool diffusionPressureGradient;
@@ -229,11 +305,20 @@ private:
     bool withRandomWalk;
     double rwMinCellOpticalDepth;
     double rwMinParticleOpticalDepth;
+    bool withDDMC;
+    double ddmcMinCellOpticalDepth;
+    double ddmcMinParticleOpticalDepth;
+    bool ddmcUseMultigroupPGRW;
     bool noHydroFeedback;
     bool withEgTimeAvg;
+    bool capAbsorptionOpacity;
     bool withCompton;
+    RadiationIMCParameters::PostProcessParameters postProcess_;
+    bool useTransportVelocities_ = true;
     bool comptonUseInduced;
+    ComptonInducedMode comptonInducedMode;
     bool comptonAllowNZeroFallback;
+    bool comptonAngleDependent;
     bool comptonDebugParityCheck;
     bool comptonCheckSignedTallies;
     bool comptonDiagnostics;
@@ -263,6 +348,45 @@ private:
     std::vector<PGRWCellData> rwCellData;
     size_t rwStepCount = 0;
 
+    std::vector<DDMCCellData> ddmcCellData;
+    std::vector<Vector3D> ddmcFluxRhsIntegrated;
+    size_t ddmcStepCount = 0;
+    size_t ddmcLeakCount = 0;
+    size_t ddmcResidentLeakCount = 0;
+    size_t ddmcTransportLeakCount = 0;
+    size_t ddmcRemoteResidentLeakCount = 0;
+    size_t ddmcMomentumFeedbackCount = 0;
+    size_t ddmcMomentumMatrixFallbackCount = 0;
+    size_t ddmcMovingMediumUpdateCount = 0;
+    size_t ddmcFaceFrameShiftCount = 0;
+    double ddmcMaxMovingMediumLogShift = 0.0;
+    double ddmcMaxFaceFrameLogShift = 0.0;
+    double ddmcFaceFluxEnergy = 0.0;
+    double ddmcFaceFluxMpiEnergy = 0.0;
+    double ddmcMaterialEnergyExchangeCo = 0.0;
+    double ddmcMaterialEnergyExchangeLab = 0.0;
+    Vector3D ddmcMaterialMomentumExchangeLab = Vector3D(0.0, 0.0, 0.0);
+    Vector3D ddmcFluxMomentumExchangeLab = Vector3D(0.0, 0.0, 0.0);
+    Vector3D ddmcAppliedMomentumExchangeLab = Vector3D(0.0, 0.0, 0.0);
+    double ddmcLocalFaceFluxPairResidualMax = 0.0;
+    double ddmcWeightRatioMax = 0.0;
+    double ddmcWeightRatioSum = 0.0;
+    std::vector<double> ddmcWeightRatioSamples;
+    size_t ddmcCensusCount = 0;
+    size_t ddmcUpscatterCount = 0;
+    size_t ddmcFallbackCount = 0;
+    size_t ddmcFallbackOutsideCellCount = 0;
+    size_t ddmcFallbackLeakFaceDistanceCount = 0;
+    size_t ddmcFallbackInvalidLeakFaceDistanceCount = 0;
+    size_t ddmcMpiFaceFluxReductionCount = 0;
+    size_t ddmcInterfaceFluxTallyCount = 0;
+    size_t ddmcBoundaryFluxTallyCount = 0;
+    size_t ddmcObserverEnergyOnlyTallyCount = 0;
+    size_t ddmcLocalFaceFluxPairCheckCount = 0;
+    size_t ddmcWeightRatioCount = 0;
+    size_t ddmcWeightRatioSamplesDropped = 0;
+    size_t ddmcWeightRatioOutlierCount = 0;
+
     std::shared_ptr<SphericalObserver> observer_;
     std::unordered_map<size_t, double> adaptiveSourceScores_;
     bool adaptiveSourceScoresEnabled_ = false;
@@ -290,6 +414,21 @@ private:
 
     bool tryRandomWalkStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void precomputeRandomWalkData();
+#ifdef RICH_IMC_DDMC_ENABLED
+    void precomputeDDMCData();
+    double computeMinSignedDistanceToAllCellFaces(size_t cellIndex, Vector3D const &location) const;
+    double computeDDMCGeometryTolerance(size_t cellIndex) const;
+    double computeMinDistanceToDDMCLeakFaces(size_t cellIndex, Vector3D const &location, DDMCCellData const &data) const;
+    bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
+    void reduceDDMCFaceFluxTallies();
+    void applyDDMCMomentumFeedback(double fullDt);
+    void tallyDDMCFaceFlux(size_t sourceCellIndex, const DDMCFaceLeak &faceLeak,
+                           double comovingEnergy, const Vector3D &fluxDirection,
+                           bool includeTarget);
+    void recordDDMCWeightRatio(double weight, double initialWeight);
+    void tallyDDMCMaterialEnergy(size_t cellIndex, double comovingEnergy,
+                                 const Vector3D &cellVelocity);
+#endif
 };
 
 #endif // RADIATION_IMC_HPP

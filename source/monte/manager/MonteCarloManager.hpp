@@ -1185,44 +1185,52 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
         
                         if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                         {
-                            if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
-                                throwCellMoveOutsideBox("local cell move");
-
-                            // local neighbor
-                            #ifdef MONTECARLO_DEBUG
-                            size_t previousCell = particle.cellIndex;
-                            #endif // MONTECARLO_DEBUG
-                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
-                            particle.cellIndex = nextCellIndex;
-                            #ifdef MONTECARLO_DEBUG
-                            if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
+                            if(particle.ddmcMode && particle.ddmcCellResident)
                             {
-                                const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
-                                size_t containingIdx = this->grid.GetContainingCell(particle.location);
-                                const T &containingCell = this->grid.GetMeshPoint(containingIdx);
-                                UniversalError eo("Particle is in Wrong Location");
-                                eo.addEntry("rank", this->rank_world);
-                                eo.addEntry("Particle", particle);
-                                eo.addEntry("Previous Cell Index", previousCell);
-                                eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
-                                eo.addEntry("Previous Location", prevLoc);
-                                eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
-                                eo.addEntry("Declared Cell Index", particle.cellIndex);
-                                eo.addEntry("Declared Cell", declaredCell);
-                                eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
-                                eo.addEntry("Real Containing Cell Index", containingIdx);
-                                eo.addEntry("Real Containing Cell", containingCell);
-                                eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
-                                for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
-                                {
-                                    eo.addEntry("Face Index", faceIdx);
-                                    eo.addEntry("Face normal", this->grid.Normal(faceIdx));
-                                    eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
-                                    eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
-                                }
-                                throw eo;
+                                particle.location = this->grid.GetMeshPoint(nextCellIndex);
+                                particle.cellIndex = nextCellIndex;
                             }
+                            else
+                            {
+                                if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
+                                    throwCellMoveOutsideBox("local cell move");
+
+                                // local neighbor
+                            #ifdef MONTECARLO_DEBUG
+                                size_t previousCell = particle.cellIndex;
                             #endif // MONTECARLO_DEBUG
+                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                                particle.cellIndex = nextCellIndex;
+                            #ifdef MONTECARLO_DEBUG
+                                if(not this->grid.IsPointInCell(particle.location, particle.cellIndex))
+                                {
+                                    const T &declaredCell = this->grid.GetMeshPoint(particle.cellIndex);
+                                    size_t containingIdx = this->grid.GetContainingCell(particle.location);
+                                    const T &containingCell = this->grid.GetMeshPoint(containingIdx);
+                                    UniversalError eo("Particle is in Wrong Location");
+                                    eo.addEntry("rank", this->rank_world);
+                                    eo.addEntry("Particle", particle);
+                                    eo.addEntry("Previous Cell Index", previousCell);
+                                    eo.addEntry("Previous Cell", this->grid.GetMeshPoint(previousCell));
+                                    eo.addEntry("Previous Location", prevLoc);
+                                    eo.addEntry("Last location is in previous cell?", this->grid.IsPointInCell(prevLoc, previousCell));
+                                    eo.addEntry("Declared Cell Index", particle.cellIndex);
+                                    eo.addEntry("Declared Cell", declaredCell);
+                                    eo.addEntry("Declared Cell - Distance", abs(declaredCell - particle.location));
+                                    eo.addEntry("Real Containing Cell Index", containingIdx);
+                                    eo.addEntry("Real Containing Cell", containingCell);
+                                    eo.addEntry("Real Cell - Distance", abs(containingCell - particle.location));
+                                    for(const size_t &faceIdx : this->grid.GetCellFaces(particle.cellIndex))
+                                    {
+                                        eo.addEntry("Face Index", faceIdx);
+                                        eo.addEntry("Face normal", this->grid.Normal(faceIdx));
+                                        eo.addEntry("Face CM", this->grid.FaceCM(faceIdx));
+                                        eo.addEntry("Eucledian distance to face", std::abs(ScalarProd(particle.location - this->grid.FaceCM(faceIdx), this->grid.Normal(faceIdx))) / abs(this->grid.Normal(faceIdx)));
+                                    }
+                                    throw eo;
+                                }
+                            #endif // MONTECARLO_DEBUG
+                            }
                         }
                         else
                         {
@@ -1263,10 +1271,17 @@ bool MonteCarloManager<T, Grid>::MonteCarloManager::HandleAll(MonteCarloStepFina
                                 break;    
                             }
 
-                            if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
-                                throwCellMoveOutsideBox("remote rank transfer");
-    
-                            particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                            if(particle.ddmcMode && particle.ddmcCellResident)
+                            {
+                                particle.location = this->grid.GetMeshPoint(nextCellIndex);
+                            }
+                            else
+                            {
+                                if(BOOST_UNLIKELY(this->grid.IsPointOutsideBox(particle.location)))
+                                    throwCellMoveOutsideBox("remote rank transfer");
+
+                                particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                            }
                             auto [otherRank, neighborIndexInRank] = it->second;
                             #ifdef MONTECARLO_DEBUG
                             particle.checkedHere = false; // reset checked here flag

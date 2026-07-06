@@ -122,43 +122,59 @@ namespace
 		return std::abs(r1 - r2) <= abs_tol + rel_tol * scale;
 	}
 
-	Vector3D face_reconstruction_sph(Tessellation3D const& tess,
+	bool same_shell_face(Tessellation3D const& tess,
 		size_t cell_index, size_t face, Vector3D const& origin,
 		SphericalLinearGauss3D::FaceRadiusPolicy policy,
 		double shell_radius_abs_tol, double shell_radius_rel_tol)
 	{
-		Vector3D res = cart_to_sph_coords(tess.FaceCM(face), origin);
 		if (policy == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
-			return res;
+			return false;
+		if (tess.BoundaryFace(face))
+			return false;
 
 		auto neigh = tess.GetFaceNeighbors(face);
 		if (neigh.first != cell_index && neigh.second != cell_index)
-			return res;
+			return false;
+		size_t const other = (neigh.first == cell_index) ? neigh.second : neigh.first;
 
 		// Non-boundary ghost points are intentionally handled like local points:
 		// if the tessellation has a mesh point for both sides, it can define the shell radius.
-		double const r1 = abs(tess.GetMeshPoint(neigh.first) - origin);
-		double const r2 = abs(tess.GetMeshPoint(neigh.second) - origin);
+		double const r1 = abs(tess.GetMeshPoint(cell_index) - origin);
+		double const r2 = abs(tess.GetMeshPoint(other) - origin);
 		if (!is_valid_radius(r1) || !is_valid_radius(r2))
-			return res;
+			return false;
 
-		if (same_shell_radius(r1, r2, shell_radius_abs_tol, shell_radius_rel_tol))
-			res.x = 0.5 * (r1 + r2);
+		return same_shell_radius(r1, r2, shell_radius_abs_tol, shell_radius_rel_tol);
+	}
+
+	Vector3D effective_face_sph(Tessellation3D const& tess,
+		size_t cell_index, size_t face, Vector3D const& origin,
+		Vector3D const& cell_coords, Vector3D const& physical_face_sph,
+		SphericalLinearGauss3D::FaceRadiusPolicy policy,
+		double shell_radius_abs_tol, double shell_radius_rel_tol)
+	{
+		Vector3D res = physical_face_sph;
+		if (same_shell_face(tess, cell_index, face, origin, policy,
+			shell_radius_abs_tol, shell_radius_rel_tol))
+			res.x = cell_coords.x;
 		return res;
 	}
 
-	void apply_face_radius_policy(Tessellation3D const& tess,
+	void build_effective_face_sph_cache(Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces, Vector3D const& origin,
+		Vector3D const& cell_coords, vector<Vector3D> const& physical_face_sph_cache,
 		SphericalLinearGauss3D::FaceRadiusPolicy policy,
 		double shell_radius_abs_tol, double shell_radius_rel_tol,
-		vector<Vector3D>& face_sph_cache)
+		vector<Vector3D>& effective_face_sph_cache)
 	{
+		effective_face_sph_cache = physical_face_sph_cache;
 		if (policy == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
 			return;
 
 		for (size_t i = 0; i < faces.size(); ++i)
-			face_sph_cache[i] = face_reconstruction_sph(tess, cell_index, faces[i],
-				origin, policy, shell_radius_abs_tol, shell_radius_rel_tol);
+			effective_face_sph_cache[i] = effective_face_sph(tess, cell_index, faces[i],
+				origin, cell_coords, physical_face_sph_cache[i], policy,
+				shell_radius_abs_tol, shell_radius_rel_tol);
 	}
 
 	// ========== Cartesian (LinearGauss3D) utilities for pole cells ==========
@@ -730,10 +746,12 @@ namespace
 	void calc_lsq_slope(ComputationalCell3D const& cell_sph,
 		Vector3D const& cell_cm, Vector3D const& cell_coords, Vector3D const& origin,
 		vector<ComputationalCell3D> const& neighbors, vector<Vector3D> const& neigh_cm,
-		Tessellation3D const& tess, size_t /*cell_index*/, face_vec const& faces,
+		Tessellation3D const& tess, size_t cell_index, face_vec const& faces,
 		Slope3D &res, Slope3D &temp,
 		ComputationalCell3D &neigh_sph_buf,
-		vector<Vector3D>& face_sph_cache, vector<double>& face_areas_cache)
+		vector<Vector3D>& face_sph_cache, vector<double>& face_areas_cache,
+		SphericalLinearGauss3D::FaceRadiusPolicy face_radius_policy,
+		double shell_radius_abs_tol, double shell_radius_rel_tol)
 	{
 		size_t n = neigh_cm.size();
 		double r_i = cell_coords.x, theta_i = cell_coords.y, phi_i = cell_coords.z;
@@ -755,7 +773,9 @@ namespace
 		for (size_t i = 0; i < n; ++i)
 		{
 			Vector3D nc = cart_to_sph_coords(neigh_cm[i], origin);
-			double dr = nc.x - r_i;
+			bool const same_shell = same_shell_face(tess, cell_index, faces[i],
+				origin, face_radius_policy, shell_radius_abs_tol, shell_radius_rel_tol);
+			double dr = same_shell ? 0.0 : nc.x - r_i;
 			double dtheta = nc.y - theta_i;
 			double dphi = wrap_dphi(nc.z - phi_i);
 
@@ -927,7 +947,7 @@ namespace
 		double diffusecoeff, double shock_w,
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces,
-		vector<Vector3D> const& face_sph_cache,
+		vector<Vector3D> const& effective_face_sph_cache,
 		vector<double> const& face_vel_dr_correction)
 	{
 		ReplaceComputationalCell(cmax, cell);
@@ -993,9 +1013,9 @@ namespace
 		{
 			if (skip_neighbor(neighbors[i]))
 				continue;
-			double dri = face_sph_cache[i].x - cell_coords.x;
-			double dti = face_sph_cache[i].y - cell_coords.y;
-			double dpi = wrap_dphi(face_sph_cache[i].z - cell_coords.z);
+			double dri = effective_face_sph_cache[i].x - cell_coords.x;
+			double dti = effective_face_sph_cache[i].y - cell_coords.y;
+			double dpi = wrap_dphi(effective_face_sph_cache[i].z - cell_coords.z);
 
 			ReplaceComputationalCell(centroid_val, cell);
 			interp_coord_simple(centroid_val, slope, dri, dti, dpi);
@@ -1341,9 +1361,6 @@ namespace
 				face_sph_cache[i] = cart_to_sph_coords(tess.FaceCM(faces[i]), origin);
 				face_areas_cache[i] = tess.GetArea(faces[i]);
 			}
-			apply_face_radius_policy(tess, cell_index, faces, origin,
-				face_radius_policy, shell_radius_abs_tol, shell_radius_rel_tol,
-				face_sph_cache);
 			face_vel_dr_correction.assign(faces.size(), 0.0);
 			return;
 		}
@@ -1356,10 +1373,12 @@ namespace
 
 		calc_lsq_slope(cell_sph, cell_cm, cell_coords, origin,
 			neighbor_list, neighbor_cm_list, tess, cell_index, faces,
-			res, temp1, neigh_sph_buf, face_sph_cache, face_areas_cache);
-		apply_face_radius_policy(tess, cell_index, faces, origin,
-			face_radius_policy, shell_radius_abs_tol, shell_radius_rel_tol,
-			face_sph_cache);
+			res, temp1, neigh_sph_buf, face_sph_cache, face_areas_cache,
+			face_radius_policy, shell_radius_abs_tol, shell_radius_rel_tol);
+		vector<Vector3D> physical_face_sph_cache = face_sph_cache;
+		build_effective_face_sph_cache(tess, cell_index, faces, origin, cell_coords,
+			face_sph_cache, face_radius_policy, shell_radius_abs_tol,
+			shell_radius_rel_tol, face_sph_cache);
 
 		naive_slope_ = res;
 		zero_radiation_fields(res, calc_tracers);
@@ -1376,7 +1395,7 @@ namespace
 				size_t other = (neigh.first == cell_index) ? neigh.second : neigh.first;
 				double r_gen_other = abs(tess.GetMeshPoint(other) - origin);
 				double r_avg = 0.5 * (r_gen_cell + r_gen_other);
-				face_vel_dr_correction[fi] = r_avg - face_sph_cache[fi].x;
+				face_vel_dr_correction[fi] = r_avg - physical_face_sph_cache[fi].x;
 			}
 		}
 
@@ -1881,25 +1900,27 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 				rslopes_[interior] = saved;
 			}
 			else
-			{
-				ghost_slope = rslopes_[N0];
-				ghost_sc = cart_to_sph_coords(ghost_cm, origin_);
-				use_sph_interp = !is_near_pole(ghost_sc.x, ghost_sc.y, tess.GetWidth(N0));
-				if (use_sph_interp)
-					sph_basis_at(ghost_sc.y, ghost_sc.z, g_er, g_et, g_ep);
+				{
+					ghost_slope = rslopes_[N0];
+					ghost_sc = cart_to_sph_coords(ghost_cm, origin_);
+					use_sph_interp = !is_near_pole(ghost_sc.x, ghost_sc.y, tess.GetWidth(N0));
+					if (use_sph_interp)
+						sph_basis_at(ghost_sc.y, ghost_sc.z, g_er, g_et, g_ep);
 			}
 #else
 			ghost_slope = ghost_.GetGhostGradient(tess, cells, rslopes_, N0, time, boundaryedges[i]);
 #endif
 
-			if (use_sph_interp)
-			{
-				cell_ref->velocity = cart_to_sph_vec(cell_ref->velocity, g_er, g_et, g_ep);
-				Vector3D face_cm_cart = tess.FaceCM(boundaryedges[i]);
-				Vector3D face_sc = cart_to_sph_coords(face_cm_cart, origin_);
-				double dr = face_sc.x - ghost_sc.x;
-				double dtheta = face_sc.y - ghost_sc.y;
-				double dphi_val = wrap_dphi(face_sc.z - ghost_sc.z);
+				if (use_sph_interp)
+				{
+					cell_ref->velocity = cart_to_sph_vec(cell_ref->velocity, g_er, g_et, g_ep);
+					Vector3D physical_face_sc = cart_to_sph_coords(tess.FaceCM(boundaryedges[i]), origin_);
+					Vector3D face_sc = effective_face_sph(tess, N0, boundaryedges[i],
+						origin_, ghost_sc, physical_face_sc, face_radius_policy_,
+						shell_radius_abs_tol_, shell_radius_rel_tol_);
+					double dr = face_sc.x - ghost_sc.x;
+					double dtheta = face_sc.y - ghost_sc.y;
+					double dphi_val = wrap_dphi(face_sc.z - ghost_sc.z);
 
 				if (pressure_calc_)
 					interp_coord_eos(*cell_ref, ghost_slope, dr, dtheta, dphi_val, eos_, true);
@@ -1910,13 +1931,13 @@ void SphericalLinearGauss3D::operator()(const Tessellation3D& tess,
 						cell_ref->tracers[energy_index] = cell_ref->internal_energy;
 				}
 
-					if (velocity_radial_extrapolation_ &&
-						face_radius_policy_ == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
-					{
+				if (velocity_radial_extrapolation_ &&
+					face_radius_policy_ == SphericalLinearGauss3D::FaceRadiusPolicy::PhysicalFaceCM)
+				{
 					auto bneigh = tess.GetFaceNeighbors(boundaryedges[i]);
 					double r_avg = 0.5 * (abs(tess.GetMeshPoint(bneigh.first) - origin_)
 						+ abs(tess.GetMeshPoint(bneigh.second) - origin_));
-					double dr_correction = r_avg - face_sc.x;
+					double dr_correction = r_avg - physical_face_sc.x;
 					cell_ref->velocity.x += ghost_slope.xderivative.velocity.x * dr_correction;
 					cell_ref->velocity.y += ghost_slope.xderivative.velocity.y * dr_correction;
 					cell_ref->velocity.z += ghost_slope.xderivative.velocity.z * dr_correction;

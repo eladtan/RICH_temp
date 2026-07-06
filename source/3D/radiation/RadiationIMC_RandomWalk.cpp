@@ -149,7 +149,7 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
     {
         double cutoffEnergy = ComputationalCell3D::energyBoundaries[groupCutoff];
         double coFreq = particle.frequency;
-        if(this->withHydro && !this->MMC)
+        if(this->useTransportVelocities_ && !this->MMC)
             coFreq *= dopplerShift;
         ClampFrequencyToBounds(coFreq);
         if(coFreq >= cutoffEnergy)
@@ -331,11 +331,11 @@ bool RadiationIMC::tryRandomWalkStep(Particle &particle, Functionality &function
         */
     }
 
-    if(this->withHydro && !this->MMC)
+    if(this->useTransportVelocities_ && !this->MMC)
     {
         double freqBeforeLT = particle.frequency;
         (void)freqBeforeLT;
-        LorentzTransformation(particle, -1 * cell.velocity);
+        ComovingToLabPacket(particle, cell.velocity);
         if(this->multigroupOpacity)
         {
             ClampFrequencyToBounds(particle.frequency);

@@ -364,8 +364,10 @@ void MonteCarloManagerSerial<T, Grid>::MonteCarloManagerSerial::HandleAll(MonteC
     
                 if(BOOST_LIKELY(nextCellIndex < this->Ncells))
                 {
-                    // local neighbor
-                    particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
+                    if(particle.ddmcMode && particle.ddmcCellResident)
+                        particle.location = this->grid.GetMeshPoint(nextCellIndex);
+                    else
+                        particle.location = (1 - MONTECARLO_EPSILON) * particle.location + MONTECARLO_EPSILON * this->grid.GetMeshPoint(nextCellIndex);
                     particle.cellIndex = nextCellIndex;
                 }
                 else

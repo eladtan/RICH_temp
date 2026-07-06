@@ -188,6 +188,7 @@ std::vector<MonteCarloParticle<T, Grid>> CombPopulationControl<T, Grid>::activat
                     size_t Nsplit = static_cast<size_t>(std::ceil(particle->weight / weight_ideal));
                     double weight_split = particle->weight / Nsplit;
                     particleCpy.weight = weight_split;
+                    particleCpy.initialWeight = std::abs(weight_split);
                     particleCpy.id = std::numeric_limits<size_t>::max(); // reset id, it will be set later
                     #ifdef RICH_MPI
                         particleCpy.rank = std::numeric_limits<rank_t>::max(); // reset rank, it will be set later

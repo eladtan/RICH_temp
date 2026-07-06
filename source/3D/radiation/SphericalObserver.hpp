@@ -100,6 +100,53 @@ public:
         unsigned long long adaptiveGroupSourceMpiPackedBytes = 0;
     };
 
+    struct PhotosphereData
+    {
+        double tauThreshold = 2.0 / 3.0;
+        double thermalizationTauThreshold = 1.0;
+
+        std::vector<std::vector<double>> mgGroupRadiusTauTotal;
+        std::vector<std::vector<double>> mgGroupRadiusThermalization;
+        std::vector<std::vector<int>> mgGroupValidTauTotal;
+        std::vector<std::vector<int>> mgGroupValidThermalization;
+
+        std::vector<double> mgIntegratedRadiusTauTotal;
+        std::vector<double> mgIntegratedRadiusThermalization;
+        std::vector<int> mgIntegratedValidTauTotal;
+        std::vector<int> mgIntegratedValidThermalization;
+
+        std::vector<double> greyRadiusTauTotal;
+        std::vector<double> greyRadiusThermalization;
+        std::vector<int> greyValidTauTotal;
+        std::vector<int> greyValidThermalization;
+
+        bool hasMG() const
+        {
+            return !mgGroupRadiusTauTotal.empty() ||
+                   !mgIntegratedRadiusTauTotal.empty();
+        }
+
+        bool hasGrey() const
+        {
+            return !greyRadiusTauTotal.empty() ||
+                   !greyRadiusThermalization.empty();
+        }
+
+        bool hasAny() const { return hasMG() || hasGrey(); }
+
+        void clearMG()
+        {
+            mgGroupRadiusTauTotal.clear();
+            mgGroupRadiusThermalization.clear();
+            mgGroupValidTauTotal.clear();
+            mgGroupValidThermalization.clear();
+            mgIntegratedRadiusTauTotal.clear();
+            mgIntegratedRadiusThermalization.clear();
+            mgIntegratedValidTauTotal.clear();
+            mgIntegratedValidThermalization.clear();
+        }
+    };
+
     struct SourceCellEscapeStat
     {
         size_t cellID = std::numeric_limits<size_t>::max();
@@ -233,6 +280,10 @@ public:
 
     void writeTXT(std::string const& filename, double sourceDt) const;
 
+    void setPhotosphereData(PhotosphereData data);
+    PhotosphereData const& getPhotosphereData() const;
+    bool hasPhotosphereData() const;
+
     std::vector<double> getLuminosity(double sourceDt) const;
     std::vector<std::vector<double>> getGroupLuminosity(double sourceDt) const;
 
@@ -283,6 +334,7 @@ private:
     std::vector<std::vector<double>> groupEnergy_;
     std::vector<std::vector<double>> groupEnergyWeightSq_;
     std::vector<std::vector<size_t>> groupCrossingCount_;
+    PhotosphereData photosphereData_;
 #ifdef MONTECARLO_POLARIZATION
     bool polarizationOutputEnabled_ = false;
     int polarizationManualScatteringsAfterAcceleration_ = 4;

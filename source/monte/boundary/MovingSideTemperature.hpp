@@ -217,7 +217,7 @@ MovingSideTemperature<T, Grid>::generateNewBoundaryParticles(double fullDt)
                         dirFace = normalize(dirFace);
                         
                         p.velocity = units::clight * dirFace;
-                        LorentzTransformation(p, -1.0 * leftFaceVelocity_);
+                        ComovingToLabPacket(p, leftFaceVelocity_);
                         p.initialWeight = p.weight;
                         } while (p.velocity.x < 0);
                         totalWeight += p.weight;
