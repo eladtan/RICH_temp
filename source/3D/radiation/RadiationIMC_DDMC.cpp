@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <vector>
 #ifdef RICH_MPI
@@ -86,6 +87,58 @@ namespace {
     }
 
     constexpr size_t DDMC_WEIGHT_RATIO_SAMPLE_LIMIT = 200000;
+
+#ifdef RICH_MPI
+    std::vector<rank_t> BuildSymmetricDDMCCorrespondents(
+        const std::vector<rank_t> &localProcs)
+    {
+        int rank = 0;
+        int size = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+        int const localCount = static_cast<int>(localProcs.size());
+        std::vector<int> counts(static_cast<size_t>(size), 0);
+        MPI_Allgather(&localCount, 1, MPI_INT,
+                      counts.data(), 1, MPI_INT,
+                      MPI_COMM_WORLD);
+
+        std::vector<int> displs(static_cast<size_t>(size), 0);
+        int totalCount = 0;
+        for(int r = 0; r < size; ++r)
+        {
+            displs[static_cast<size_t>(r)] = totalCount;
+            totalCount += counts[static_cast<size_t>(r)];
+        }
+
+        std::vector<int> allProcs(static_cast<size_t>(std::max(totalCount, 1)), 0);
+        MPI_Allgatherv(localCount > 0 ? localProcs.data() : nullptr,
+                       localCount,
+                       MPI_INT,
+                       allProcs.data(),
+                       counts.data(),
+                       displs.data(),
+                       MPI_INT,
+                       MPI_COMM_WORLD);
+
+        std::set<rank_t> symmetric(localProcs.begin(), localProcs.end());
+
+        for(int sourceRank = 0; sourceRank < size; ++sourceRank)
+        {
+            int const offset = displs[static_cast<size_t>(sourceRank)];
+            int const count = counts[static_cast<size_t>(sourceRank)];
+            for(int j = 0; j < count; ++j)
+            {
+                int const listedTarget = allProcs[static_cast<size_t>(offset + j)];
+                if(listedTarget == rank && sourceRank != rank)
+                    symmetric.insert(sourceRank);
+            }
+        }
+
+        symmetric.erase(rank);
+        return std::vector<rank_t>(symmetric.begin(), symmetric.end());
+    }
+#endif
 }
 
 void RadiationIMC::precomputeDDMCData()
@@ -430,28 +483,104 @@ void RadiationIMC::tallyDDMCFaceFlux(size_t sourceCellIndex,
 void RadiationIMC::reduceDDMCFaceFluxTallies()
 {
 #ifdef RICH_MPI
-    if(this->ddmcFluxRhsIntegrated.empty())
-        return;
-
     size_t const totalPoints = this->grid.GetTotalPointNumber();
-    if(this->ddmcFluxRhsIntegrated.size() < totalPoints)
-        return;
 
-    const std::vector<rank_t> procs = this->grid.GetDuplicatedProcs();
-    const std::vector<std::vector<size_t>> &ghostIndices = this->grid.GetGhostIndeces();
-    const std::vector<std::vector<size_t>> &ownerIndices = this->grid.GetDuplicatedPoints();
+    const std::vector<rank_t> rawProcs = this->grid.GetDuplicatedProcs();
+    const std::vector<std::vector<size_t>> &rawGhostIndices =
+        this->grid.GetGhostIndeces();
+    const std::vector<std::vector<size_t>> &rawOwnerIndices =
+        this->grid.GetDuplicatedPoints();
 
-    if(procs.size() != ghostIndices.size() || procs.size() != ownerIndices.size())
+    if(rawProcs.size() != rawGhostIndices.size() ||
+       rawProcs.size() != rawOwnerIndices.size())
     {
         UniversalError eo("DDMC MPI face-flux reduction has inconsistent tessellation exchange maps");
-        eo.addEntry("procs", procs.size());
-        eo.addEntry("ghost maps", ghostIndices.size());
-        eo.addEntry("owner maps", ownerIndices.size());
+        eo.addEntry("procs", rawProcs.size());
+        eo.addEntry("ghost maps", rawGhostIndices.size());
+        eo.addEntry("owner maps", rawOwnerIndices.size());
+        eo.addEntry("local cells", this->grid.GetPointNo());
+        eo.addEntry("total points", totalPoints);
         throw eo;
+    }
+
+    {
+        int mpiSize = 1;
+        MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+
+        std::set<rank_t> seenRawProcs;
+        for(rank_t peer : rawProcs)
+        {
+            if(peer < 0 || peer >= mpiSize)
+            {
+                UniversalError eo("DDMC MPI face-flux reduction has invalid peer rank");
+                eo.addEntry("peer rank", peer);
+                eo.addEntry("mpi size", mpiSize);
+                eo.addEntry("local cells", this->grid.GetPointNo());
+                eo.addEntry("total points", totalPoints);
+                throw eo;
+            }
+
+            if(!seenRawProcs.insert(peer).second)
+            {
+                UniversalError eo("DDMC MPI face-flux reduction has duplicate peer rank");
+                eo.addEntry("peer rank", peer);
+                eo.addEntry("local cells", this->grid.GetPointNo());
+                eo.addEntry("total points", totalPoints);
+                throw eo;
+            }
+        }
+    }
+
+    // MPI_exchange_data_indexed posts one receive per correspondent and finishes
+    // with an MPI_COMM_WORLD barrier. If rank A lists rank B but rank B does not
+    // list rank A, the exchange hangs. A zero-owned-cell rank is the common way
+    // to create that asymmetry.
+    std::vector<rank_t> procs = BuildSymmetricDDMCCorrespondents(rawProcs);
+
+    std::vector<std::vector<size_t>> ghostIndices(procs.size());
+    std::vector<std::vector<size_t>> ownerIndices(procs.size());
+
+    for(size_t i = 0; i < procs.size(); ++i)
+    {
+        auto it = std::find(rawProcs.begin(), rawProcs.end(), procs[i]);
+        if(it == rawProcs.end())
+            continue;
+
+        size_t const rawSlot =
+            static_cast<size_t>(std::distance(rawProcs.begin(), it));
+        ghostIndices[i] = rawGhostIndices[rawSlot];
+        ownerIndices[i] = rawOwnerIndices[rawSlot];
+    }
+
+    size_t requiredFluxSize = totalPoints;
+    auto includeRequiredIndices = [&requiredFluxSize](
+        const std::vector<std::vector<size_t>> &maps)
+    {
+        for(const auto &indices : maps)
+            for(size_t idx : indices)
+                requiredFluxSize = std::max(requiredFluxSize, idx + 1);
+    };
+    includeRequiredIndices(ghostIndices);
+    includeRequiredIndices(ownerIndices);
+
+    if(this->ddmcFluxRhsIntegrated.size() < requiredFluxSize)
+    {
+        this->ddmcFluxRhsIntegrated.resize(
+            requiredFluxSize, Vector3D(0.0, 0.0, 0.0));
     }
 
     std::vector<std::vector<Vector3D>> incoming =
         MPI_exchange_data_indexed(procs, this->ddmcFluxRhsIntegrated, ghostIndices);
+
+    if(incoming.size() != ownerIndices.size())
+    {
+        UniversalError eo("DDMC MPI face-flux reduction returned wrong rank-slot count");
+        eo.addEntry("incoming slots", incoming.size());
+        eo.addEntry("owner slots", ownerIndices.size());
+        eo.addEntry("local cells", this->grid.GetPointNo());
+        eo.addEntry("total points", totalPoints);
+        throw eo;
+    }
 
     double receivedEnergy = 0.0;
     size_t reducedValues = 0;
@@ -461,8 +590,11 @@ void RadiationIMC::reduceDDMCFaceFluxTallies()
         {
             UniversalError eo("DDMC MPI face-flux reduction received wrong buffer length");
             eo.addEntry("rank slot", i);
+            eo.addEntry("peer rank", procs[i]);
             eo.addEntry("received", incoming[i].size());
             eo.addEntry("expected", ownerIndices[i].size());
+            eo.addEntry("local cells", this->grid.GetPointNo());
+            eo.addEntry("total points", totalPoints);
             throw eo;
         }
 
@@ -471,6 +603,7 @@ void RadiationIMC::reduceDDMCFaceFluxTallies()
             size_t const ownerIndex = ownerIndices[i][j];
             if(ownerIndex >= this->ddmcFluxRhsIntegrated.size())
                 continue;
+
             this->ddmcFluxRhsIntegrated[ownerIndex] += incoming[i][j];
             receivedEnergy += abs(incoming[i][j]);
             ++reducedValues;

@@ -3890,19 +3890,6 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         this->precomputeComptonData(emissionDt);
     this->comptonDataReusableInPreStep_ = false;
 
-    if(this->withDDMC)
-    {
-        this->precomputeDDMCData();
-        this->ddmcStepCount = 0;
-        this->ddmcLeakCount = 0;
-        this->ddmcCensusCount = 0;
-        this->ddmcUpscatterCount = 0;
-        this->ddmcFallbackCount = 0;
-        this->ddmcFallbackOutsideCellCount = 0;
-        this->ddmcFallbackLeakFaceDistanceCount = 0;
-        this->ddmcFallbackInvalidLeakFaceDistanceCount = 0;
-    }
-
     if(this->withRandomWalk)
     {
         this->precomputeRandomWalkData();

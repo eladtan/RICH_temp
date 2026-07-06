@@ -1600,7 +1600,27 @@ template<typename T, typename Grid>
 void MonteCarloManager<T, Grid>::PrepareHandlers(void)
 {
     boost::container::flat_set<rank_t> oldNeighbors(this->neighbors.cbegin(), this->neighbors.cend());
-    this->neighbors = GetNeighborList(this->grid, this->ranks_ghost_map);
+
+    {
+        boost::container::flat_set<rank_t> neighborSet;
+
+        for(rank_t r : GetNeighborList(this->grid, this->ranks_ghost_map))
+            if(r != this->rank_world)
+                neighborSet.insert(r);
+
+        for(const auto &kv : this->ranks_ghost_map)
+        {
+            rank_t const ownerRank = kv.second.first;
+            if(ownerRank != this->rank_world)
+                neighborSet.insert(ownerRank);
+        }
+
+        for(rank_t r : this->grid.GetDuplicatedProcs())
+            if(r != this->rank_world)
+                neighborSet.insert(r);
+
+        this->neighbors.assign(neighborSet.begin(), neighborSet.end());
+    }
 
     // Self handler: 1-process communicator, no coordination needed
     if(this->rankHandlers[this->rank_world] == nullptr)
