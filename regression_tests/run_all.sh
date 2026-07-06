@@ -566,8 +566,13 @@ load_test_definition() {
 
     source "${def_file}"
 
-    # Validate required fields
-    if [[ -z "${TEST_ID}" || -z "${BUILD_TEST_NAME}" || -z "${RUN_DIR_REL}" || -z "${RUN_COMMAND}" || -z "${CHECK_FUNCTION}" ]]; then
+    # Validate required fields. Static checks do not need a build target or run command.
+    if [[ "${RUN_MODE}" == "static" ]]; then
+        if [[ -z "${TEST_ID}" || -z "${RUN_DIR_REL}" || -z "${CHECK_FUNCTION}" ]]; then
+            echo "Invalid static test definition: ${def_file}" >&2
+            return 1
+        fi
+    elif [[ -z "${TEST_ID}" || -z "${BUILD_TEST_NAME}" || -z "${RUN_DIR_REL}" || -z "${RUN_COMMAND}" || -z "${CHECK_FUNCTION}" ]]; then
         echo "Invalid test definition: ${def_file}" >&2
         return 1
     fi
@@ -729,6 +734,20 @@ for i in "${!ALL_TEST_IDS[@]}"; do
 
     # Launch a background subshell that builds then immediately runs the test
     (
+        if [[ "${run_mode}" == "static" ]]; then
+            echo "0" > "${case_dir}/build_status.txt"
+            echo "static check; build skipped" > "${case_dir}/build_detail.txt"
+            : > "${case_dir}/build.stdout.log"
+            : > "${case_dir}/build.stderr.log"
+            date +%s > "${case_dir}/run_start_epoch.txt"
+            print_status "RUN" "${test_id}" "static check" "${CYAN}"
+            echo "0" > "${case_dir}/run_exit_code.txt"
+            date +%s > "${case_dir}/run_end_epoch.txt"
+            : > "${case_dir}/run.stdout.log"
+            : > "${case_dir}/run.stderr.log"
+            exit 0
+        fi
+
         # ---- BUILD ----
         read -u 7  # acquire build slot (blocks until a slot is free)
 
