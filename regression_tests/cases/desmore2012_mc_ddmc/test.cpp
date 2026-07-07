@@ -252,6 +252,7 @@ int main(int argc, char *argv[])
         .withMultigroupOpacity = true,
         .withRandomWalk = useRandomWalk,
         .withDDMC = true,
+        .ddmcUseMultigroupPGRW = true,
         .noHydroFeedback = false,
         .withEgTimeAvg = true
     };
