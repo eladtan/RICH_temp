@@ -42,7 +42,10 @@ namespace
                          const std::vector<double> &groupBoundaries)
             : sigma0_left_(sigma0_left), sigma0_right_(sigma0_right),
               groupCenters_(groupCenters), groupBoundaries_(groupBoundaries)
-        {}
+        {
+            this->energy_groups_center = groupCenters_;
+            this->energy_groups_boundary = groupBoundaries_;
+        }
 
         double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {

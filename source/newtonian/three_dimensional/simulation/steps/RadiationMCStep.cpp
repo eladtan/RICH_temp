@@ -269,6 +269,32 @@ void RadiationMCStep::step(double dt)
     void RadiationMCStep::afterLB(void)
     {
         UpdateNewCellsAfterExchange(this->tess, this->particles);
+
+        const size_t N = this->tess.GetPointNo();
+        for(Particle3D &p : this->particles)
+        {
+            if(p.cellIndex >= N)
+            {
+                UniversalError eo("RadiationMCStep::afterLB: particle cellIndex out of range after exchange");
+                eo.addEntry("cellIndex", p.cellIndex);
+                eo.addEntry("N", N);
+                eo.addEntry("particle location", p.location);
+                throw eo;
+            }
+
+            if(!this->tess.IsPointInCell(p.location, p.cellIndex))
+            {
+                UniversalError eo("RadiationMCStep::afterLB: particle not in declared cell after exchange");
+                eo.addEntry("cellIndex", p.cellIndex);
+                eo.addEntry("cell center", this->tess.GetMeshPoint(p.cellIndex));
+                eo.addEntry("particle location", p.location);
+                eo.addEntry("containing cell", this->tess.GetContainingCell(p.location));
+                throw eo;
+            }
+
+            if(p.cellIndex < this->cells.size())
+                p.cellID = this->cells[p.cellIndex].ID;
+        }
     }
 
 #endif // RICH_MPI

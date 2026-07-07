@@ -1045,10 +1045,17 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     ++this->ddmcStepCount;
 
+    auto setParticleCellIdentity = [&](Particle &p, size_t idx)
+    {
+        p.cellIndex = idx;
+        if(idx < this->cells.size())
+            p.cellID = this->cells[idx].ID;
+    };
+
     auto storeDDMCResidentParticle = [&](size_t residentCellIndex) {
         particle.location  = this->grid.GetMeshPoint(residentCellIndex);
         particle.velocity  = materialParticle.velocity;
-        particle.cellIndex = residentCellIndex;
+        setParticleCellIdentity(particle, residentCellIndex);
         particle.frequency = materialParticle.frequency;
         particle.weight    = materialParticle.weight;
         particle.initialWeight = materialParticle.initialWeight;
@@ -1071,6 +1078,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.velocity  = transportParticle.velocity;
         particle.frequency = transportParticle.frequency;
         particle.weight    = transportParticle.weight;
+        setParticleCellIdentity(particle, transportParticle.cellIndex);
         particle.initialWeight = std::abs(transportParticle.weight);
         particle.timeLeft  = transportParticle.timeLeft;
         particle.ddmcMode = false;
@@ -1095,6 +1103,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.velocity  = materialParticle.velocity;
         particle.frequency = materialParticle.frequency;
         particle.weight    = materialParticle.weight;
+        setParticleCellIdentity(particle, materialParticle.cellIndex);
         particle.initialWeight = materialParticle.initialWeight;
         particle.timeLeft  = materialParticle.timeLeft;
         particle.ddmcMode = true;
@@ -1277,7 +1286,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             this->tallyDDMCFaceFlux(cellIndex, *chosen, materialParticle.weight,
                                     nOut, true);
             materialParticle = targetMaterialParticle;
-            materialParticle.cellIndex = chosen->nextCellIndex;
+            setParticleCellIdentity(materialParticle, chosen->nextCellIndex);
             materialParticle.location = this->grid.GetMeshPoint(chosen->nextCellIndex);
             materialParticle.ddmcMode = true;
             materialParticle.ddmcCellResident = true;
@@ -1292,6 +1301,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             this->tallyDDMCFaceFlux(cellIndex, *chosen, materialParticle.weight,
                                     nOut, true);
+            setParticleCellIdentity(materialParticle, chosen->nextCellIndex);
+            materialParticle.location = this->grid.GetMeshPoint(chosen->nextCellIndex);
             materialParticle.ddmcMode = true;
             materialParticle.ddmcCellResident = true;
             materialParticle.ddmcComovingFrame = true;

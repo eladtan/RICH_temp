@@ -49,7 +49,11 @@ namespace
                          int rank = 0)
             : sigma0_left_(sigma0_left), sigma0_right_(sigma0_right),
               groupCenters_(groupCenters), groupBoundaries_(groupBoundaries)
-        {}
+        {
+            (void)rank;
+            this->energy_groups_center = groupCenters_;
+            this->energy_groups_boundary = groupBoundaries_;
+        }
 
         double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {
