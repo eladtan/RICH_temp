@@ -698,14 +698,15 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 
 
 def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
-    """Densmore 2012 heterogeneous MC: both MPI (no RW) and serial (RW) vs reference."""
+    """Densmore 2012 heterogeneous MC: MPI (no RW), serial (RW), DDMC vs reference."""
     cases = root / "regression_tests" / "cases"
     profile_mpi = cases / "desmore2012_mc" / "desmore2012_mc_profile.txt"
     profile_serial = cases / "desmore2012_mc_serial" / "desmore2012_mc_serial_profile.txt"
+    profile_ddmc = cases / "desmore2012_mc_ddmc" / "desmore2012_mc_ddmc_profile.txt"
     ref_file = cases / "desmore2012_mc" / "data" / "densmore2012_fig4_mc.csv"
 
-    if not profile_mpi.exists() and not profile_serial.exists():
-        print(f"  [desmore2012_mc] no profile found for either MPI or serial variant")
+    if not profile_mpi.exists() and not profile_serial.exists() and not profile_ddmc.exists():
+        print(f"  [desmore2012_mc] no profile found for any variant")
         return False
 
     keV_K = 1.602176634e-9 / 1.380649e-16
@@ -731,6 +732,13 @@ def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
             raw = np.expand_dims(raw, axis=0)
         ax.plot(raw[:, 0], raw[:, 1] / keV_K, "rx", markersize=3,
                 label="RICH MC (serial, RW)")
+
+    if profile_ddmc.exists():
+        raw = np.loadtxt(str(profile_ddmc))
+        if raw.ndim == 1:
+            raw = np.expand_dims(raw, axis=0)
+        ax.plot(raw[:, 0], raw[:, 1] / keV_K, "gs", markersize=3,
+                markerfacecolor="none", label="RICH MC (MPI, DDMC)")
 
     ax.set_xlabel("x [cm]")
     ax.set_ylabel("Material Temperature [keV]")
@@ -1128,6 +1136,7 @@ ALL_PLOTTERS = {
     "gresho_lagrangian": plot_gresho_lagrangian,
     "desmore2012_mc": plot_desmore2012_mc,
     "desmore2012_mc_serial": plot_desmore2012_mc,
+    "desmore2012_mc_ddmc": plot_desmore2012_mc,
     "yee_vortex_64": plot_yee_isentropic_vortex,
     "yee_vortex_128": plot_yee_isentropic_vortex,
     "rayleigh_taylor_mpi": plot_rayleigh_taylor,

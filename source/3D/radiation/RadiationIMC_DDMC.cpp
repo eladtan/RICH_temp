@@ -1,6 +1,7 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
 #include "IMCPolarization.hpp"
+#include "3D/tessellation/utils/RandomInCell.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include <algorithm>
 #include <cassert>
@@ -8,6 +9,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <string>
 #include <vector>
 #ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
@@ -411,6 +413,62 @@ double RadiationIMC::computeDDMCGeometryTolerance(size_t cellIndex) const
     return std::max(1e-12 * scale, 1e-14);
 }
 
+Vector3D RadiationIMC::sampleDDMCResidentLocation(size_t cellIndex)
+{
+    if(cellIndex >= this->grid.GetPointNo())
+    {
+        UniversalError eo("sampleDDMCResidentLocation: invalid local cell index");
+        eo.addEntry("Cell index", cellIndex);
+        eo.addEntry("Local cell count", this->grid.GetPointNo());
+        throw eo;
+    }
+
+    Vector3D location = RandomPointInCell(this->grid, cellIndex);
+
+    static constexpr double nudge = 1e-10;
+    location = location * (1.0 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
+
+    this->validateDDMCResidentLocation(cellIndex,
+                                       location,
+                                       "sampleDDMCResidentLocation");
+    return location;
+}
+
+void RadiationIMC::validateDDMCResidentLocation(size_t cellIndex,
+                                                Vector3D const &location,
+                                                char const *context) const
+{
+    std::string const contextName = context != nullptr ? context : "unknown";
+
+    if(cellIndex >= this->grid.GetPointNo() ||
+       this->grid.IsPointOutsideBox(location) ||
+       !this->grid.IsPointInCell(location, cellIndex))
+    {
+        UniversalError eo("Invalid DDMC resident location");
+        eo.addEntry("Context", contextName);
+        eo.addEntry("Cell index", cellIndex);
+        eo.addEntry("Local cell count", this->grid.GetPointNo());
+        eo.addEntry("Location", location);
+        if(cellIndex < this->grid.GetPointNo())
+            eo.addEntry("Cell mesh point", this->grid.GetMeshPoint(cellIndex));
+        throw eo;
+    }
+
+    double const signedDistance =
+        this->computeMinSignedDistanceToAllCellFaces(cellIndex, location);
+    double const tol = this->computeDDMCGeometryTolerance(cellIndex);
+    if(std::isfinite(signedDistance) && signedDistance < -tol)
+    {
+        UniversalError eo("DDMC resident location failed face-distance check");
+        eo.addEntry("Context", contextName);
+        eo.addEntry("Cell index", cellIndex);
+        eo.addEntry("Location", location);
+        eo.addEntry("Min signed face distance", signedDistance);
+        eo.addEntry("Tolerance", tol);
+        throw eo;
+    }
+}
+
 double RadiationIMC::computeMinDistanceToDDMCLeakFaces(
     size_t cellIndex,
     Vector3D const &location,
@@ -761,33 +819,6 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     }
 
     auto convertResidentDDMCToTransport = [&]() {
-        auto sampleCellLocation = [&]() {
-            Vector3D const center = this->grid.GetMeshPoint(cellIndex);
-            double radius = 0.0;
-            for(size_t faceIdx : this->grid.GetCellFaces(cellIndex))
-                radius = std::max(radius, abs(this->grid.FaceCM(faceIdx) - center));
-            if(!(radius > 0.0) || !std::isfinite(radius))
-                radius = std::cbrt(std::max(this->grid.GetVolume(cellIndex), 0.0));
-            if(!(radius > 0.0) || !std::isfinite(radius))
-                return center;
-
-            double const sampleHalfWidth = 2.0 * radius;
-            for(size_t attempt = 0; attempt < 256; ++attempt)
-            {
-                Vector3D const offset(
-                    (2.0 * this->dist(this->re) - 1.0) * sampleHalfWidth,
-                    (2.0 * this->dist(this->re) - 1.0) * sampleHalfWidth,
-                    (2.0 * this->dist(this->re) - 1.0) * sampleHalfWidth);
-                Vector3D const candidate = center + offset;
-                if(this->grid.IsPointOutsideBox(candidate))
-                    continue;
-                size_t const containingCell = this->grid.GetContainingCell(candidate);
-                if(containingCell == cellIndex)
-                    return candidate;
-            }
-            return center;
-        };
-
         auto sampleIsotropicComovingVelocity = [&]() {
             constexpr double DDMC_PI = 3.14159265358979323846;
             double const mu = 2.0 * this->dist(this->re) - 1.0;
@@ -799,7 +830,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
                 mu);
         };
 
-        particle.location = sampleCellLocation();
+        particle.location = this->sampleDDMCResidentLocation(cellIndex);
         particle.velocity = sampleIsotropicComovingVelocity();
         particle.ddmcMode = false;
         particle.ddmcCellResident = false;
@@ -1052,8 +1083,32 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             p.cellID = this->cells[idx].ID;
     };
 
-    auto storeDDMCResidentParticle = [&](size_t residentCellIndex) {
-        particle.location  = this->grid.GetMeshPoint(residentCellIndex);
+    enum class DDMCResidentLocationPolicy
+    {
+        MeshPoint,
+        RandomInCell,
+        PreserveCurrent
+    };
+
+    auto storeDDMCResidentParticle = [&](size_t residentCellIndex,
+                                         DDMCResidentLocationPolicy locationPolicy) {
+        if(locationPolicy == DDMCResidentLocationPolicy::RandomInCell)
+        {
+            particle.location = this->sampleDDMCResidentLocation(residentCellIndex);
+        }
+        else if(locationPolicy == DDMCResidentLocationPolicy::PreserveCurrent)
+        {
+            particle.location = materialParticle.location;
+            this->validateDDMCResidentLocation(
+                residentCellIndex,
+                particle.location,
+                "storeDDMCResidentParticle/preserve");
+        }
+        else
+        {
+            particle.location = this->grid.GetMeshPoint(residentCellIndex);
+        }
+
         particle.velocity  = materialParticle.velocity;
         setParticleCellIdentity(particle, residentCellIndex);
         particle.frequency = materialParticle.frequency;
@@ -1123,7 +1178,9 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     auto finalizeAccelerationStep = [&](bool remove,
                                         bool remainInDDMC,
-                                        bool preservePhysicalState) -> bool {
+                                        bool preservePhysicalState,
+                                        DDMCResidentLocationPolicy locationPolicy =
+                                            DDMCResidentLocationPolicy::MeshPoint) -> bool {
         if(remove)
         {
             functionality.change = MonteCarloParticleStatus::REMOVE;
@@ -1135,7 +1192,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             if(preservePhysicalState)
                 storeDDMCTransferParticle();
             else
-                storeDDMCResidentParticle(materialParticle.cellIndex);
+                storeDDMCResidentParticle(materialParticle.cellIndex, locationPolicy);
             return true;
         }
 
@@ -1209,7 +1266,11 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 #endif
         functionality.change = MonteCarloParticleStatus::DONE;
         ++this->ddmcCensusCount;
-        return finalizeAccelerationStep(false, true, false);
+        return finalizeAccelerationStep(
+            false,
+            true,
+            false,
+            DDMCResidentLocationPolicy::RandomInCell);
     }
 
     double eventPick = this->dist(this->re) * eventRateCo;
@@ -1232,7 +1293,11 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             ++this->ddmcFallbackCount;
             functionality.change = MonteCarloParticleStatus::DONE;
-            return finalizeAccelerationStep(false, true, false);
+            return finalizeAccelerationStep(
+                false,
+                true,
+                false,
+                DDMCResidentLocationPolicy::RandomInCell);
         }
 
         Vector3D const leakFaceCenter = this->grid.FaceCM(chosen->faceIndex);
@@ -1244,7 +1309,11 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             ++this->ddmcFallbackCount;
             functionality.change = MonteCarloParticleStatus::DONE;
-            return finalizeAccelerationStep(false, true, false);
+            return finalizeAccelerationStep(
+                false,
+                true,
+                false,
+                DDMCResidentLocationPolicy::RandomInCell);
         }
         nOut = normalize(nOut);
 
@@ -1379,7 +1448,11 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         {
             functionality.change = MonteCarloParticleStatus::DONE;
             ++this->ddmcCensusCount;
-            return finalizeAccelerationStep(false, true, false);
+            return finalizeAccelerationStep(
+                false,
+                true,
+                false,
+                DDMCResidentLocationPolicy::RandomInCell);
         }
 
         this->multigroupOpacity->GetCummulativeOpacity(cell);

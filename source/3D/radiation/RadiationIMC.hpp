@@ -418,6 +418,10 @@ private:
     void precomputeDDMCData();
     double computeMinSignedDistanceToAllCellFaces(size_t cellIndex, Vector3D const &location) const;
     double computeDDMCGeometryTolerance(size_t cellIndex) const;
+    Vector3D sampleDDMCResidentLocation(size_t cellIndex);
+    void validateDDMCResidentLocation(size_t cellIndex,
+                                      Vector3D const &location,
+                                      char const *context) const;
     double computeMinDistanceToDDMCLeakFaces(size_t cellIndex, Vector3D const &location, DDMCCellData const &data) const;
     bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void reduceDDMCFaceFluxTallies();
