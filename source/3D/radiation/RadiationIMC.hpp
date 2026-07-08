@@ -33,7 +33,6 @@ struct RadiationIMCParameters
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
-    double ddmcMinParticleOpticalDepth = 5.0;
     bool ddmcUseMultigroupPGRW = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
@@ -74,7 +73,6 @@ struct DDMCFaceLeak
     size_t nextCellIndex = std::numeric_limits<size_t>::max();
     double rate = 0.0;
     double area = 0.0;
-    double distance = 0.0;
     Vector3D outwardNormal = Vector3D(0.0, 0.0, 0.0);
 };
 
@@ -307,7 +305,6 @@ private:
     double rwMinParticleOpticalDepth;
     bool withDDMC;
     double ddmcMinCellOpticalDepth;
-    double ddmcMinParticleOpticalDepth;
     bool ddmcUseMultigroupPGRW;
     bool noHydroFeedback;
     bool withEgTimeAvg;
@@ -375,9 +372,6 @@ private:
     size_t ddmcCensusCount = 0;
     size_t ddmcUpscatterCount = 0;
     size_t ddmcFallbackCount = 0;
-    size_t ddmcFallbackOutsideCellCount = 0;
-    size_t ddmcFallbackLeakFaceDistanceCount = 0;
-    size_t ddmcFallbackInvalidLeakFaceDistanceCount = 0;
     size_t ddmcMpiFaceFluxReductionCount = 0;
     size_t ddmcInterfaceFluxTallyCount = 0;
     size_t ddmcBoundaryFluxTallyCount = 0;
@@ -416,13 +410,10 @@ private:
     void precomputeRandomWalkData();
 #ifdef RICH_IMC_DDMC_ENABLED
     void precomputeDDMCData();
-    double computeMinSignedDistanceToAllCellFaces(size_t cellIndex, Vector3D const &location) const;
-    double computeDDMCGeometryTolerance(size_t cellIndex) const;
-    Vector3D sampleDDMCResidentLocation(size_t cellIndex);
-    void validateDDMCResidentLocation(size_t cellIndex,
-                                      Vector3D const &location,
-                                      char const *context) const;
-    double computeMinDistanceToDDMCLeakFaces(size_t cellIndex, Vector3D const &location, DDMCCellData const &data) const;
+    Vector3D sampleDDMCTransportLocation(size_t cellIndex);
+    void validateDDMCTransportLocation(size_t cellIndex,
+                                       Vector3D const &location,
+                                       char const *context) const;
     bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void reduceDDMCFaceFluxTallies();
     void applyDDMCMomentumFeedback(double fullDt);

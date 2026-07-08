@@ -1073,7 +1073,7 @@ namespace {
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcMinParticleOpticalDepth(parameters.ddmcMinParticleOpticalDepth), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
 {
     if(postProcess_.enabled || postProcess_.polarization.enabled)
     {
@@ -1814,19 +1814,50 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
         }
     }
 
-    if(this->withRandomWalk)
+    if(this->withRandomWalk || this->withDDMC)
     {
-        size_t globalRwSteps = this->rwStepCount;
         int rank = 0;
         #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        if(rank == 0)
-            MPI_Reduce(MPI_IN_PLACE, &globalRwSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-        else
-            MPI_Reduce(&globalRwSteps, nullptr, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         #endif
-        if(rank == 0)
-            std::cout << "RW steps: " << globalRwSteps << std::endl;
+        if(this->withRandomWalk)
+        {
+            size_t globalRwSteps = this->rwStepCount;
+            #ifdef RICH_MPI
+            if(rank == 0)
+                MPI_Reduce(MPI_IN_PLACE, &globalRwSteps, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            else
+                MPI_Reduce(&globalRwSteps, nullptr, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            #endif
+            if(rank == 0)
+                std::cout << "RW steps: " << globalRwSteps << std::endl;
+        }
+        if(this->withDDMC)
+        {
+            unsigned long long counts[6] = {
+                static_cast<unsigned long long>(this->rwStepCount),
+                static_cast<unsigned long long>(this->ddmcStepCount),
+                static_cast<unsigned long long>(this->ddmcLeakCount),
+                static_cast<unsigned long long>(this->ddmcCensusCount),
+                static_cast<unsigned long long>(this->ddmcUpscatterCount),
+                static_cast<unsigned long long>(this->ddmcFallbackCount)
+            };
+            #ifdef RICH_MPI
+            if(rank == 0)
+                MPI_Reduce(MPI_IN_PLACE, counts, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            else
+                MPI_Reduce(counts, nullptr, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+            #endif
+            if(rank == 0)
+            {
+                std::cout << "DDMC steps: " << counts[1]
+                          << " leaks=" << counts[2]
+                          << " census=" << counts[3]
+                          << " upscatter=" << counts[4]
+                          << " fallback=" << counts[5]
+                          << std::endl;
+            }
+        }
     }
     this->printComptonDiagnostics();
 }
@@ -3929,9 +3960,6 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
         this->ddmcCensusCount = 0;
         this->ddmcUpscatterCount = 0;
         this->ddmcFallbackCount = 0;
-        this->ddmcFallbackOutsideCellCount = 0;
-        this->ddmcFallbackLeakFaceDistanceCount = 0;
-        this->ddmcFallbackInvalidLeakFaceDistanceCount = 0;
         this->ddmcMpiFaceFluxReductionCount = 0;
         this->ddmcInterfaceFluxTallyCount = 0;
         this->ddmcBoundaryFluxTallyCount = 0;
@@ -4403,13 +4431,11 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     if(parameters.withDDMC)
     {
         os << "\t" << "DDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << std::endl;
-        os << "\t" << "DDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << std::endl;
         os << "\t" << "DDMC multigroup PGRW: " << parameters.ddmcUseMultigroupPGRW << std::endl;
     }
     if(parameters.withDDMC)
     {
         os << "\t" << "DDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << std::endl;
-        os << "\t" << "DDMC min particle optical depth: " << parameters.ddmcMinParticleOpticalDepth << std::endl;
         os << "\t" << "DDMC multigroup PGRW cutoff: " << parameters.ddmcUseMultigroupPGRW << std::endl;
     }
     os << "\t" << "no hydro feedback: " << parameters.noHydroFeedback << std::endl;
