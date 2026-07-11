@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 29 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes the regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -533,6 +533,68 @@ Same as `gresho_euler`.
 
 ---
 
+## fmm_gravity_serial -- Serial Fast Multipole Gravity
+
+**Tags:** `serial`
+
+Validates analytic empty/one/two-body cases, complete solid-harmonic storage through the supported order, clustered-tree subdivision, explicit invalid-input failures, nonzero M2L use, reduced P2P work, potential/acceleration error against a long-double direct sum, and improvement with higher expansion order and tighter acceptance.
+
+**Source:** `regression_tests/cases/fmm_gravity_serial/test.cpp`
+
+### Pass Criteria
+
+| Metric | Threshold |
+|--------|-----------|
+| Scaled acceleration error | `< 2e-5` |
+| Relative positive-kernel potential error | `< 5e-5` |
+| M2L interactions | `> 0` |
+| Ordered P2P pairs | `< N(N-1)` |
+| Order convergence | order 6 error `<` order 2 error |
+
+---
+
+## fmm_gravity_mpi_guard -- Distributed-Source Safety Gate
+
+**Tags:** `mpi`
+
+Builds `FastMultipoleAcceleration3D` with `RICH_MPI` and requires its constructor to throw the documented `UniversalError`. This prevents a distributed run from silently computing gravity from rank-local masses before remote source exchange exists.
+
+**Source:** `regression_tests/cases/fmm_gravity_mpi_guard/test.cpp`
+
+### Pass Criteria
+
+| Metric | Required value |
+|--------|----------------|
+| `RICH_MPI` defined | `1` |
+| Constructor rejected | `1` |
+| Diagnostic matched | `1` |
+
+---
+
+## fmm_quadrupole_benchmark -- FMM/Quadrupole Accuracy and Runtime Sweep
+
+**Tags:** `serial`, `benchmark`
+
+Compares the serial FMM with RICH's production `GravityTree<Vector3D>` using quadrupole moments. Nested deterministic distributions at 256, 512, 1024, 2048, and 16384 particles are evaluated against the same long-double direct sum. The output records complete build+walk runtime, scaled acceleration error, FMM M2L count, and exact near-field pair count for every resolution.
+
+**Source:** `regression_tests/cases/fmm_quadrupole_benchmark/test.cpp`
+
+### Pass Criteria
+
+| Metric | Threshold |
+|--------|-----------|
+| Resolution rows | `5` |
+| Maximum FMM scaled error | `< 5e-3` |
+| Maximum quadrupole scaled error | `< 5e-2` |
+| Largest-case FMM M2L interactions | `> 0` |
+| Largest-case FMM P2P pairs | `< N(N-1)` |
+| Runtime at `N=16384` | FMM `<` quadrupole tree |
+| Scaled error at `N=16384` | FMM `<= 1.25 *` quadrupole tree |
+
+Runtime and relative accuracy wins are reported for every row. The largest row is long enough to assert the FMM crossover while keeping the smaller rows diagnostic only.
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -552,3 +614,14 @@ Same as `gresho_euler`.
 | `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `ddmc_static_invariants` | static | DDMC/hydro implementation invariants | Source-code guard script | script exits 0 |
+| `fmm_gravity_serial` | serial | Fast multipole self-gravity | Long-double direct sum and convergence | scaled error < 2e-5 |
+| `fmm_gravity_mpi_guard` | mpi | Distributed FMM safety | Constructor refusal under `RICH_MPI` | guard exits 0 |
+| `fmm_quadrupole_benchmark` | serial, benchmark | FMM versus quadrupole tree | Direct-sum accuracy and runtime sweep | finite timings; bounded errors |
+
+## Static Guards
+
+`ddmc_static_invariants` runs `regression_tests/lib/check_ddmc_static_invariants.sh`.
+It checks DDMC opacity-role bookkeeping, MPI face-flux reduction ordering,
+DDMC resident weight-frame lifecycle, remote-leak target tallying, and the
+`w/w0 > 8` diagnostic threshold before expensive transport regressions run.

@@ -1369,3 +1369,265 @@ check_amr_distributed_clip_case() {
     set_check_msg "AMR distributed clip conservation check passed (mass_reldiff=${mass_reldiff}, energy_reldiff=${energy_reldiff})"
     return 0
 }
+
+check_spherical_density_hardening_ddmc_push_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local summary_file="${run_dir}/spherical_push_summary.txt"
+    local checker_stdout="${run_dir}/spherical_push_check.stdout.log"
+    local checker_stderr="${run_dir}/spherical_push_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    local required_outputs=(
+        "spherical_push_summary.txt"
+        "spherical_push_imc_radial_profile.txt"
+        "spherical_push_ddmc_radial_profile.txt"
+        "spherical_push_imc_spectrum.txt"
+        "spherical_push_ddmc_spectrum.txt"
+        "spherical_push_imc_angular.txt"
+        "spherical_push_ddmc_angular.txt"
+        "spherical_push_ddmc_diagnostics.txt"
+        "spherical_push_dt_history_imc.txt"
+        "spherical_push_dt_history_ddmc.txt"
+        "spherical_push_snapshot_init_imc.h5"
+        "spherical_push_snapshot_final_imc.h5"
+        "spherical_push_snapshot_init_ddmc.h5"
+        "spherical_push_snapshot_final_ddmc.h5"
+        "spherical_push_final_imc.h5"
+        "spherical_push_final_ddmc.h5"
+    )
+    for outfile in "${required_outputs[@]}"; do
+        if ! is_nonempty_and_newer "${run_dir}/${outfile}" "$run_start_epoch"; then
+            set_check_msg "missing or stale ${outfile}"
+            return 1
+        fi
+    done
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_spherical_density_hardening_ddmc_push.py" \
+        --run-dir "$run_dir" \
+        --max-shell-vr-l1 "${SPHERICAL_PUSH_MAX_SHELL_VR_L1:-0.35}" \
+        --max-shell-momentum-rel "${SPHERICAL_PUSH_MAX_SHELL_MOM_REL:-0.35}" \
+        --max-erad-l1 "${SPHERICAL_PUSH_MAX_ERAD_L1:-0.35}" \
+        --max-tgas-l1 "${SPHERICAL_PUSH_MAX_TGAS_L1:-0.25}" \
+        --max-spectrum-l1 "${SPHERICAL_PUSH_MAX_SPECTRUM_L1:-0.45}" \
+        --max-hardness-rel "${SPHERICAL_PUSH_MAX_HARDNESS_REL:-0.40}" \
+        --max-cone-fraction-rel "${SPHERICAL_PUSH_MAX_CONE_FRAC_REL:-0.45}" \
+        --min-thick-groups "${SPHERICAL_PUSH_MIN_THICK_GROUPS:-4}" \
+        --min-thin-groups "${SPHERICAL_PUSH_MIN_THIN_GROUPS:-4}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Spherical density-hardening DDMC push comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Spherical density-hardening DDMC push comparison passed"
+    return 0
+}
+
+check_fmm_gravity_serial_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_serial_metrics.txt"
+    local max_scaled_error
+    local max_relative_potential_error
+    local m2l_count
+    local p2p_pairs
+    local order2_scaled_error
+    local order6_scaled_error
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_serial_metrics.txt"
+        return 1
+    fi
+
+    max_scaled_error=$(awk '$1 == "max_scaled_error" { print $2 }' "$metrics_file")
+    max_relative_potential_error=$(awk '$1 == "max_relative_potential_error" { print $2 }' "$metrics_file")
+    m2l_count=$(awk '$1 == "m2l_count" { print $2 }' "$metrics_file")
+    p2p_pairs=$(awk '$1 == "p2p_pairs" { print $2 }' "$metrics_file")
+    order2_scaled_error=$(awk '$1 == "order2_scaled_error" { print $2 }' "$metrics_file")
+    order6_scaled_error=$(awk '$1 == "order6_scaled_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_scaled_error" || -z "$max_relative_potential_error" || -z "$m2l_count" || -z "$p2p_pairs" || -z "$order2_scaled_error" || -z "$order6_scaled_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse fmm gravity serial metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$max_scaled_error" || ! is_finite_number "$max_relative_potential_error" || ! is_finite_number "$order2_scaled_error" || ! is_finite_number "$order6_scaled_error"; then
+        set_check_msg "fmm gravity serial metrics are not finite"
+        return 1
+    fi
+
+    if ! awk -v e="$max_scaled_error" 'BEGIN { exit !(e < 2e-5) }'; then
+        set_check_msg "fmm gravity serial max_scaled_error too large (${max_scaled_error})"
+        return 1
+    fi
+    if ! awk -v e="$max_relative_potential_error" 'BEGIN { exit !(e < 5e-5) }'; then
+        set_check_msg "fmm gravity serial max_relative_potential_error too large (${max_relative_potential_error})"
+        return 1
+    fi
+    if ! awk -v n="$m2l_count" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "fmm gravity serial did not exercise M2L (${m2l_count})"
+        return 1
+    fi
+    if ! awk -v n="$p2p_pairs" 'BEGIN { exit !(n < 552) }'; then
+        set_check_msg "fmm gravity serial remained all-P2P (${p2p_pairs})"
+        return 1
+    fi
+    if ! awk -v low="$order2_scaled_error" -v high="$order6_scaled_error" 'BEGIN { exit !(high < low) }'; then
+        set_check_msg "fmm gravity serial order convergence failed (p2=${order2_scaled_error}, p6=${order6_scaled_error})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "fmm gravity serial test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM gravity serial check passed"
+    return 0
+}
+
+check_fmm_gravity_mpi_guard_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_mpi_guard_metrics.txt"
+    local rich_mpi
+    local constructor_rejected
+    local message_matched
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_mpi_guard_metrics.txt"
+        return 1
+    fi
+
+    rich_mpi=$(awk '$1 == "rich_mpi" { print $2 }' "$metrics_file")
+    constructor_rejected=$(awk '$1 == "constructor_rejected" { print $2 }' "$metrics_file")
+    message_matched=$(awk '$1 == "message_matched" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ "$rich_mpi" != "1" ]]; then
+        set_check_msg "FMM MPI guard test was not compiled with RICH_MPI"
+        return 1
+    fi
+    if [[ "$constructor_rejected" != "1" || "$message_matched" != "1" ]]; then
+        set_check_msg "FastMultipoleAcceleration3D did not reject MPI construction correctly"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM MPI guard test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM MPI guard check passed"
+    return 0
+}
+
+check_fmm_quadrupole_benchmark_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_quadrupole_benchmark_metrics.txt"
+    local row_count
+    local largest_resolution
+    local largest_fmm_seconds
+    local largest_quadrupole_seconds
+    local largest_fmm_error
+    local largest_quadrupole_error
+    local max_fmm_error
+    local max_quadrupole_error
+    local largest_m2l
+    local largest_p2p_pairs
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_quadrupole_benchmark_metrics.txt"
+        return 1
+    fi
+
+    row_count=$(awk '$1 == "row_count" { print $2 }' "$metrics_file")
+    largest_resolution=$(awk '$1 == "largest_resolution" { print $2 }' "$metrics_file")
+    largest_fmm_seconds=$(awk '$1 == "largest_fmm_seconds" { print $2 }' "$metrics_file")
+    largest_quadrupole_seconds=$(awk '$1 == "largest_quadrupole_seconds" { print $2 }' "$metrics_file")
+    largest_fmm_error=$(awk '$1 == "largest_fmm_scaled_error" { print $2 }' "$metrics_file")
+    largest_quadrupole_error=$(awk '$1 == "largest_quadrupole_scaled_error" { print $2 }' "$metrics_file")
+    max_fmm_error=$(awk '$1 == "max_fmm_scaled_error" { print $2 }' "$metrics_file")
+    max_quadrupole_error=$(awk '$1 == "max_quadrupole_scaled_error" { print $2 }' "$metrics_file")
+    largest_m2l=$(awk '$1 == "largest_fmm_m2l" { print $2 }' "$metrics_file")
+    largest_p2p_pairs=$(awk '$1 == "largest_fmm_p2p_pairs" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ "$row_count" != "5" || "$largest_resolution" != "16384" ]]; then
+        set_check_msg "FMM/quadrupole benchmark resolution sweep is incomplete"
+        return 1
+    fi
+    if ! is_finite_number "$largest_fmm_seconds" ||
+       ! is_finite_number "$largest_quadrupole_seconds" ||
+       ! is_finite_number "$largest_fmm_error" ||
+       ! is_finite_number "$largest_quadrupole_error" ||
+       ! is_finite_number "$max_fmm_error" ||
+       ! is_finite_number "$max_quadrupole_error"; then
+        set_check_msg "FMM/quadrupole benchmark emitted non-finite metrics"
+        return 1
+    fi
+    if ! awk -v t="$largest_fmm_seconds" 'BEGIN { exit !(t > 0) }' ||
+       ! awk -v t="$largest_quadrupole_seconds" 'BEGIN { exit !(t > 0) }'; then
+        set_check_msg "FMM/quadrupole benchmark emitted invalid runtimes"
+        return 1
+    fi
+    if ! awk -v e="$max_fmm_error" 'BEGIN { exit !(e < 5e-3) }'; then
+        set_check_msg "FMM benchmark scaled error too large (${max_fmm_error})"
+        return 1
+    fi
+    if ! awk -v e="$max_quadrupole_error" 'BEGIN { exit !(e < 5e-2) }'; then
+        set_check_msg "quadrupole benchmark scaled error too large (${max_quadrupole_error})"
+        return 1
+    fi
+    if ! awk -v fmm="$largest_fmm_seconds" -v tree="$largest_quadrupole_seconds" \
+        'BEGIN { exit !(fmm < tree) }'; then
+        set_check_msg "FMM is not faster at N=16384 (${largest_fmm_seconds}s vs ${largest_quadrupole_seconds}s)"
+        return 1
+    fi
+    if ! awk -v fmm="$largest_fmm_error" -v tree="$largest_quadrupole_error" \
+        'BEGIN { exit !(fmm <= 1.25 * tree) }'; then
+        set_check_msg "FMM accuracy is not comparable at N=16384 (${largest_fmm_error} vs ${largest_quadrupole_error})"
+        return 1
+    fi
+    if ! awk -v n="$largest_m2l" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "FMM benchmark did not exercise M2L"
+        return 1
+    fi
+    if ! awk -v n="$largest_p2p_pairs" 'BEGIN { exit !(n < 268419072) }'; then
+        set_check_msg "FMM benchmark remained all-P2P (${largest_p2p_pairs})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM/quadrupole benchmark reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM/quadrupole benchmark check passed"
+    return 0
+}

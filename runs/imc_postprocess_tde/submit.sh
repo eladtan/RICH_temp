@@ -43,7 +43,8 @@ export TEMP="$MPI_TMPDIR"
 export OMPI_MCA_orte_tmpdir_base="$MPI_TMPDIR"
 
 echo before
-mpirun -mca btl ^openib ./rich --postprocess-estimator reverse --reverse-measured-lb --reverse-lb-pilot-packets-per-observer-group 100 --reverse-progress-interval-sec 10 --reverse-ddmc-min-cell-optical-depth 15 --reverse-ddmc-min-particle-optical-depth 10 --vtk-output luminosity.vtk --adaptive-source-cells --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 5 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
-# mpirun ./rich
-echo after
+mpirun -mca btl ^openib ./rich --vtk-output luminosity.vtk --adaptive-source-cells --adaptive-group-quality --adaptive-group-source-cells --adaptive-group-frequency-sampling --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 50 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
 
+# mpirun -mca btl ^openib ./rich --n-observers 32 --photons-per-cell 1 --n-generations 1 --source-dt 1 --transport-time 0 --radius 7.5e14 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
+
+echo after

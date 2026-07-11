@@ -502,7 +502,6 @@ int main(int argc, char* argv[])
         params.rwMinCellOpticalDepth = 15;
         params.withDDMC = cfg.ddmc;
         params.ddmcMinCellOpticalDepth = 15;
-        params.ddmcMinParticleOpticalDepth = 8;
         params.ddmcUseMultigroupPGRW = true;
         params.MMC = false;
         params.diffusionPressureGradient = false;

@@ -39,6 +39,18 @@ namespace {
     {
         particle.initialWeight = std::abs(particle.weight);
     }
+
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((noinline))
+#endif
+    double SafeGroupWeightCorrection(double physicalPdf, double samplingPdf)
+    {
+        if(!(samplingPdf > 0.0) || !std::isfinite(samplingPdf))
+            return std::numeric_limits<double>::quiet_NaN();
+        volatile double denominator = samplingPdf;
+        return physicalPdf / denominator;
+    }
+
     std::vector<double> BuildComptonTemperatures()
     {
         std::vector<double> temperatures;
@@ -1188,6 +1200,11 @@ void RadiationIMC::setAdaptiveSourceCellGroupScores(
     double maxBias,
     double maxWeightCorrection)
 {
+    if(!this->multigroupOpacity)
+    {
+        this->clearAdaptiveSourceCellGroupScores();
+        return;
+    }
     adaptiveSourceCellGroupScores_ = std::move(scores);
     adaptiveGroupStrength_ = std::clamp(strength, 0.0, 1.0);
     adaptiveGroupPdfFloor_ = std::clamp(pdfFloor, 0.0, 1.0);
@@ -2757,22 +2774,6 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
         if(!this->noHydroFeedback)
         {
             this->conserved[i].internal_energy -= energyToCreate;
-            if(this->conserved[i].internal_energy < 0)
-            {
-                UniversalError eo("Negative internal energy in RadiationIMC::generateParticles");
-                eo.addEntry("Energy to create", energyToCreate);
-                eo.addEntry("Cell index", i);
-                eo.addEntry("Internal energy", this->conserved[i].internal_energy);
-                eo.addEntry("Density", cell.density);
-                eo.addEntry("Temperature", cell.temperature);
-                eo.addEntry("Planck opacity", this->planckOpacities[i]);
-                eo.addEntry("Volume", this->grid.GetVolume(i));
-                eo.addEntry("Full dt", fullDt);
-                eo.addEntry("Factor fleck", this->factorFleck[i]);
-                eo.addEntry("Gamma", gamma);
-                eo.addEntry("cv", this->eos->dT2cv(cell.density, cell.temperature, cell.tracers, cell.tracerNames));
-                throw eo;
-            }
             this->conserved[i].energy -= energyToCreate * gamma;
             if(this->withHydro)
             {
@@ -2907,8 +2908,12 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                             groupPdfValid = true;
                             for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
                                 if (physicalPdf[g] > 0.0) {
-                                    double const correction = physicalPdf[g] / samplingPdf[g];
-                                    if (!(samplingPdf[g] > 0.0) ||
+                                    if (!(samplingPdf[g] > 0.0)) {
+                                        groupPdfValid = false;
+                                        break;
+                                    }
+                                    double const correction = SafeGroupWeightCorrection(physicalPdf[g], samplingPdf[g]);
+                                    if (!std::isfinite(correction) ||
                                         correction > adaptiveGroupMaxWeightCorrection_ * (1.0 + 1e-10) ||
                                         samplingPdf[g] > adaptiveGroupMaxBias_ * physicalPdf[g] * (1.0 + 1e-10)) {
                                         groupPdfValid = false;
@@ -2930,6 +2935,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
         {
             MCParticle particle = this->generateSingleParticle(i, cell);
             particle.cellID = cell.ID;
+            particle.sourceCellID = cell.ID;
             particle.timeLeft = fullDt * this->dist(this->re);
 
             double weightCorrection = 1.0;
@@ -2949,7 +2955,8 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 double freqCo = 0.0;
 
                 if (samplingPdf[selectedGroup] > 0.0) {
-                    weightCorrection = physicalPdf[selectedGroup] / samplingPdf[selectedGroup];
+                    weightCorrection = SafeGroupWeightCorrection(
+                        physicalPdf[selectedGroup], samplingPdf[selectedGroup]);
                     if (weightCorrection > adaptiveGroupMaxWeightCorrection_) {
                         ++lastGroupSamplingDiagnostics_.weightCorrectionFallback;
                     } else if (weightCorrection > 0.0 && std::isfinite(weightCorrection)) {
@@ -3917,7 +3924,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
             factorFleck[i] = 1.0;
     }
 
-    if(!reuseComptonPrecompute)
+    if(this->withCompton && !reuseComptonPrecompute)
         this->precomputeComptonData(emissionDt);
     this->comptonDataReusableInPreStep_ = false;
 

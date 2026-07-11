@@ -256,7 +256,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 
         if (Erad_equib) temp_diff *= 0.25;
 
-        if (fleck_factor[i] < 0.8) temp_diff *= fleck_factor[i];
+        if (fleck_factor[i] < 0.8) temp_diff *= std::pow(0.2 + fleck_factor[i], 3.0);
 
         if (temp_diff > diff) {
             which_one = 1;
