@@ -8,6 +8,7 @@
 
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/gravity/fmm/FmmConfig.hpp"
+#include "3D/gravity/fmm/FmmRootGeometry.hpp"
 
 struct FmmNode
 {
@@ -36,10 +37,15 @@ public:
                const Vector3D& domainUpper,
                const FmmGravityOptions& options);
 
+    void build(const std::vector<Vector3D>& positions,
+               const FmmRootGeometry& rootGeometry,
+               const FmmGravityOptions& options);
+
     const std::vector<FmmNode>& nodes() const { return nodes_; }
     const std::vector<std::size_t>& particleOrder() const { return particleOrder_; }
     const std::vector<std::size_t>& preOrder() const { return preOrder_; }
     const std::vector<std::size_t>& postOrder() const { return postOrder_; }
+    const FmmRootGeometry& rootGeometry() const { return rootGeometry_; }
 
     std::size_t childIndex(const FmmNode& node, int octant) const;
     void assignExpansionOffsets(std::size_t coefficientCount);
@@ -47,8 +53,12 @@ public:
     std::size_t leafCount() const;
     std::size_t maxDepth() const;
     std::size_t bytesOwned() const;
+    std::uint64_t topologyHash() const;
 
 private:
+    void buildWithRoot(const std::vector<Vector3D>& positions,
+                       const FmmRootGeometry& rootGeometry,
+                       const FmmGravityOptions& options);
     void buildNode(std::size_t nodeIndex,
                    const std::vector<Vector3D>& positions,
                    const FmmGravityOptions& options);
@@ -56,6 +66,7 @@ private:
     void collectOrders(std::size_t nodeIndex);
     void validateInvariants(std::size_t particleCount) const;
 
+    FmmRootGeometry rootGeometry_;
     std::vector<FmmNode> nodes_;
     std::vector<std::size_t> particleOrder_;
     std::vector<std::size_t> scratchOrder_;

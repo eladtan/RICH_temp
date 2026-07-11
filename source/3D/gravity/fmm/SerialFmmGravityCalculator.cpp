@@ -6,7 +6,7 @@
 #include <limits>
 
 #include "3D/gravity/fmm/FmmDualTreeTraversal.hpp"
-#include "3D/gravity/fmm/FmmKernels.hpp"
+#include "3D/gravity/fmm/FmmPasses.hpp"
 #include "3D/gravity/fmm/FmmTaylorExpansion.hpp"
 #include "misc/universal_error.hpp"
 
@@ -47,8 +47,12 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     stats_ = FmmSolveStats();
     stats_.particleCount = positions.size();
     long double totalMass = 0.0L;
+    long double totalAbsoluteMass = 0.0L;
     for(double mass : masses)
+    {
         totalMass += static_cast<long double>(mass);
+        totalAbsoluteMass += std::abs(static_cast<long double>(mass));
+    }
     stats_.totalMass = static_cast<double>(totalMass);
     if(!std::isfinite(stats_.totalMass))
         throw UniversalError("SerialFmmGravityCalculator::solve: total mass is not finite");
@@ -56,9 +60,7 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     const Clock::time_point buildStart = Clock::now();
     tree_.build(positions, domainLower, domainUpper, options_);
     stats_.buildSeconds = elapsedSeconds(buildStart);
-    stats_.nodeCount = tree_.nodes().size();
-    stats_.leafCount = tree_.leafCount();
-    stats_.maxDepth = tree_.maxDepth();
+    FmmPasses::updateTreeStats(tree_, stats_);
 
     acceleration.assign(positions.size(), Vector3D());
     if(positiveKernelPotential != nullptr)
@@ -76,58 +78,20 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     }
 
     const FmmTaylorExpansion layout(options_.expansionOrder);
-    tree_.assignExpansionOffsets(layout.coefficientCount());
-    if(tree_.nodes().size() > std::numeric_limits<std::size_t>::max() /
-                               layout.coefficientCount())
-        throw UniversalError("SerialFmmGravityCalculator::solve: expansion storage overflow");
-    const std::size_t expansionSize = tree_.nodes().size() * layout.coefficientCount();
-    multipoles_.assign(expansionSize, 0.0);
-    locals_.assign(expansionSize, 0.0);
-
-    std::size_t leafParticles = 0;
-    const double cubeCornerFactor = std::sqrt(3.0);
-    for(const FmmNode& node : tree_.nodes())
-    {
-        if(node.isLeaf())
-        {
-            leafParticles += node.particleCount();
-            stats_.maxLeafOccupancy = std::max(stats_.maxLeafOccupancy,
-                                               node.particleCount());
-        }
-        if(node.halfSize > 0.0)
-            stats_.maxRadiusRatio = std::max(stats_.maxRadiusRatio,
-                node.radius / (cubeCornerFactor * node.halfSize));
-    }
-    stats_.averageLeafOccupancy = stats_.leafCount == 0 ? 0.0 :
-        static_cast<double>(leafParticles) / static_cast<double>(stats_.leafCount);
+    FmmPasses::allocate(tree_, layout, multipoles_, locals_);
 
     const Clock::time_point upwardStart = Clock::now();
-    for(std::size_t nodeIndex : tree_.postOrder())
-    {
-        const FmmNode& node = tree_.nodes()[nodeIndex];
-        if(node.isLeaf())
-        {
-            FmmKernels::accumulateP2M(node, positions, masses, tree_.particleOrder(),
-                                      layout, multipoles_);
-        }
-        else
-        {
-            for(int octant = 0; octant < 8; ++octant)
-            {
-                const std::size_t child = tree_.childIndex(node, octant);
-                if(child != std::numeric_limits<std::size_t>::max())
-                    FmmKernels::translateM2M(tree_.nodes()[child], node,
-                                             layout, multipoles_);
-            }
-        }
-    }
+    FmmPasses::upward(tree_, positions, masses, layout, multipoles_);
     stats_.upwardSeconds = elapsedSeconds(upwardStart);
     stats_.rootMass = multipoles_[tree_.nodes()[0].multipoleOffset +
                                   layout.index(0, 0, 0)];
     if(!std::isfinite(stats_.rootMass))
         throw UniversalError("SerialFmmGravityCalculator::solve: non-finite root mass");
-    const double massTolerance = 64.0 * std::numeric_limits<double>::epsilon() *
-        std::max(1.0, std::abs(stats_.totalMass));
+    const long double accumulationFactor = static_cast<long double>(
+        std::max<std::size_t>(1, positions.size()));
+    const double massTolerance = static_cast<double>(
+        64.0L * std::numeric_limits<double>::epsilon() * accumulationFactor *
+        std::max(1.0L, totalAbsoluteMass));
     if(std::abs(stats_.rootMass - stats_.totalMass) > massTolerance)
         throw UniversalError("SerialFmmGravityCalculator::solve: root multipole mass mismatch");
 
@@ -138,16 +102,8 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     stats_.interactionSeconds = elapsedSeconds(interactionStart);
 
     const Clock::time_point downwardStart = Clock::now();
-    for(std::size_t nodeIndex : tree_.preOrder())
-    {
-        const FmmNode& node = tree_.nodes()[nodeIndex];
-        if(node.parent != std::numeric_limits<std::size_t>::max())
-            FmmKernels::translateL2L(tree_.nodes()[node.parent], node,
-                                     layout, locals_);
-        if(node.isLeaf())
-            FmmKernels::evaluateL2P(node, positions, tree_.particleOrder(), layout,
-                                    locals_, acceleration, positiveKernelPotential);
-    }
+    FmmPasses::downward(tree_, positions, layout, locals_, acceleration,
+                        positiveKernelPotential);
     stats_.downwardSeconds = elapsedSeconds(downwardStart);
 
     stats_.bytesOwned = tree_.bytesOwned() +

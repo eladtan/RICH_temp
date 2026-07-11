@@ -1,41 +1,67 @@
 #include <fstream>
 #include <iostream>
-#include <string>
-
-#include "source/misc/universal_error.hpp"
-#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
-
-int main()
-{
-    bool richMpi = false;
-    bool constructorRejected = false;
-    bool messageMatched = false;
 
 #ifdef RICH_MPI
-    richMpi = true;
-    try
-    {
-        FastMultipoleAcceleration3D acceleration;
-        (void) acceleration;
-    }
-    catch(UniversalError const& error)
-    {
-        constructorRejected = true;
-        messageMatched = error.getErrorMessage().find("disabled in MPI builds") !=
-            std::string::npos;
-    }
+#include <mpi.h>
 #endif
 
-    const bool passed = richMpi && constructorRejected && messageMatched;
-    std::ofstream output("fmm_gravity_mpi_guard_metrics.txt");
-    output << "rich_mpi " << (richMpi ? 1 : 0) << "\n";
-    output << "constructor_rejected " << (constructorRejected ? 1 : 0) << "\n";
-    output << "message_matched " << (messageMatched ? 1 : 0) << "\n";
-    output << "pass " << (passed ? 1 : 0) << "\n";
+#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 
-    std::cout << "fmm_gravity_mpi_guard rich_mpi=" << richMpi
-              << " constructor_rejected=" << constructorRejected
-              << " message_matched=" << messageMatched
-              << " pass=" << passed << std::endl;
+int main(int argc, char** argv)
+{
+#ifndef RICH_MPI
+    (void) argc;
+    (void) argv;
+    return 1;
+#else
+    MPI_Init(&argc, &argv);
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    int accepted = 0;
+    int potentialRejected = 0;
+    {
+        try
+        {
+            FastMultipoleAcceleration3D acceleration;
+            accepted = 1;
+        }
+        catch(...)
+        {
+            accepted = 0;
+        }
+    }
+    try
+    {
+        FmmGravityOptions unsupported;
+        unsupported.computePotential = true;
+        FastMultipoleAcceleration3D acceleration(unsupported);
+        (void) acceleration;
+    }
+    catch(...)
+    {
+        potentialRejected = 1;
+    }
+
+    int globallyAccepted = 0;
+    MPI_Allreduce(&accepted, &globallyAccepted, 1, MPI_INT, MPI_LAND,
+                  MPI_COMM_WORLD);
+    int globallyRejected = 0;
+    MPI_Allreduce(&potentialRejected, &globallyRejected, 1, MPI_INT, MPI_LAND,
+                  MPI_COMM_WORLD);
+    const int passed = globallyAccepted && globallyRejected;
+    if(rank == 0)
+    {
+        std::ofstream output("fmm_gravity_mpi_guard_metrics.txt");
+        output << "rich_mpi 1\n";
+        output << "constructor_accepted " << globallyAccepted << "\n";
+        output << "potential_option_rejected " << globallyRejected << "\n";
+        output << "pass " << passed << "\n";
+        std::cout << "fmm_gravity_mpi_guard constructor_accepted="
+                  << globallyAccepted << " potential_option_rejected="
+                  << globallyRejected << std::endl;
+    }
+    MPI_Finalize();
     return passed ? 0 : 1;
+#endif
 }

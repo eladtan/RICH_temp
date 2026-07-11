@@ -57,20 +57,41 @@ void FmmTree::build(const std::vector<Vector3D>& positions,
                     const Vector3D& domainUpper,
                     const FmmGravityOptions& options)
 {
+    const FmmRootGeometry root =
+        FmmRootGeometry::fromDomain(domainLower, domainUpper, true);
+    buildWithRoot(positions, root, options);
+}
+
+void FmmTree::build(const std::vector<Vector3D>& positions,
+                    const FmmRootGeometry& rootGeometry,
+                    const FmmGravityOptions& options)
+{
+    buildWithRoot(positions, rootGeometry, options);
+}
+
+void FmmTree::buildWithRoot(const std::vector<Vector3D>& positions,
+                            const FmmRootGeometry& rootGeometry,
+                            const FmmGravityOptions& options)
+{
     nodes_.clear();
     particleOrder_.resize(positions.size());
     scratchOrder_.resize(positions.size());
     preOrder_.clear();
     postOrder_.clear();
 
-    if(!finiteVector(domainLower) || !finiteVector(domainUpper) ||
-       !(domainLower.x < domainUpper.x) ||
-       !(domainLower.y < domainUpper.y) ||
-       !(domainLower.z < domainUpper.z))
-        throw UniversalError("FmmTree::build: domain bounds must be finite and strictly ordered");
+    rootGeometry.validate();
+    rootGeometry_ = rootGeometry;
     if(options.leafCapacity == 0 || options.maxDepth <= 0 ||
        options.maxDepth > FMM_MAX_TREE_DEPTH)
         throw UniversalError("FmmTree::build: invalid tree options");
+    if(positions.empty())
+    {
+        if(rootGeometry.active)
+            rootGeometry_ = FmmRootGeometry();
+        return;
+    }
+    if(!rootGeometry.active)
+        throw UniversalError("FmmTree::build: non-empty tree requires an active root");
 
     for(std::size_t i = 0; i < positions.size(); ++i)
     {
@@ -81,9 +102,7 @@ void FmmTree::build(const std::vector<Vector3D>& positions,
             eo.addEntry("particle", i);
             throw eo;
         }
-        if(point.x < domainLower.x || point.x > domainUpper.x ||
-           point.y < domainLower.y || point.y > domainUpper.y ||
-           point.z < domainLower.z || point.z > domainUpper.z)
+        if(!rootGeometry.contains(point))
         {
             UniversalError eo("FmmTree::build: particle lies outside supplied domain");
             eo.addEntry("particle", i);
@@ -92,18 +111,9 @@ void FmmTree::build(const std::vector<Vector3D>& positions,
         particleOrder_[i] = i;
     }
 
-    if(positions.empty())
-        return;
-
-    const Vector3D extent = domainUpper - domainLower;
-    double halfSize = 0.5 * std::max(extent.x, std::max(extent.y, extent.z));
-    halfSize += 16.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, halfSize);
-    if(!(halfSize > 0.0) || !std::isfinite(halfSize))
-        throw UniversalError("FmmTree::build: invalid root half-size");
-
     FmmNode root;
-    root.center = 0.5 * (domainLower + domainUpper);
-    root.halfSize = halfSize;
+    root.center = rootGeometry.center;
+    root.halfSize = rootGeometry.halfSize;
     root.particleEnd = positions.size();
     nodes_.push_back(root);
 
@@ -293,6 +303,30 @@ std::size_t FmmTree::maxDepth() const
     for(const FmmNode& node : nodes_)
         result = std::max(result, node.depth);
     return result;
+}
+
+std::uint64_t FmmTree::topologyHash() const
+{
+    const std::uint64_t offset = 1469598103934665603ull;
+    const std::uint64_t prime = 1099511628211ull;
+    std::uint64_t hash = offset;
+    for(const FmmNode& node : nodes_)
+    {
+        const std::uint64_t values[4] = {
+            node.spatialKey,
+            static_cast<std::uint64_t>(node.childMask),
+            static_cast<std::uint64_t>(node.depth),
+            static_cast<std::uint64_t>(node.particleCount())};
+        for(std::uint64_t value : values)
+        {
+            for(int byte = 0; byte < 8; ++byte)
+            {
+                hash ^= (value >> (8 * byte)) & 0xffu;
+                hash *= prime;
+            }
+        }
+    }
+    return hash;
 }
 
 std::size_t FmmTree::bytesOwned() const
