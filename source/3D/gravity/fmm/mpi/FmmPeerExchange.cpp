@@ -3,6 +3,7 @@
 #ifdef RICH_MPI
 
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <string>
 #include <utility>
@@ -26,6 +27,14 @@ void checkMpi(int status, const char* operation)
 {
     MPI_Abort(comm, 91);
     throw UniversalError(message);
+}
+
+void peerExchangeStage(int rank, const char* stage, long long detail = -1)
+{
+    std::fprintf(stderr,
+                 "fmm_peer_exchange_stage rank=%d stage=%s detail=%lld\n",
+                 rank, stage, detail);
+    std::fflush(stderr);
 }
 }
 
@@ -87,8 +96,16 @@ void FmmPeerExchange::clear()
     MPI_Initialized(&initialized);
     if(initialized != 0)
         MPI_Finalized(&finalized);
+
     if(graph_ != MPI_COMM_NULL && initialized != 0 && finalized == 0)
+    {
+        int rank = -1;
+        MPI_Comm_rank(graph_, &rank);
+        peerExchangeStage(rank, "clear_comm_free_begin",
+                          static_cast<long long>(destinations_.size()));
         MPI_Comm_free(&graph_);
+        peerExchangeStage(rank, "clear_comm_free_end");
+    }
     graph_ = MPI_COMM_NULL;
     sources_.clear();
     destinations_.clear();
@@ -98,7 +115,15 @@ void FmmPeerExchange::clear()
 void FmmPeerExchange::reset(const MPI_Comm& parent,
                             const std::vector<int>& outgoingPeers)
 {
+    int debugRank = -1;
+    if(parent != MPI_COMM_NULL)
+        MPI_Comm_rank(parent, &debugRank);
+    peerExchangeStage(debugRank, "reset_enter",
+                      graph_ == MPI_COMM_NULL ? 0 : 1);
+
+    peerExchangeStage(debugRank, "reset_clear_begin");
     clear();
+    peerExchangeStage(debugRank, "reset_clear_end");
     if(parent == MPI_COMM_NULL)
         throw UniversalError("FmmPeerExchange::reset: parent communicator is null");
     int rank = 0;
@@ -114,8 +139,11 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
     for(int peer : peers)
         localInvalid = localInvalid || peer < 0 || peer >= size;
     int globalInvalid = 0;
+    peerExchangeStage(rank, "reset_peer_validation_begin",
+                      static_cast<long long>(peers.size()));
     checkMpi(MPI_Allreduce(&localInvalid, &globalInvalid, 1, MPI_INT, MPI_LOR, parent),
              "FmmPeerExchange::reset peer validation");
+    peerExchangeStage(rank, "reset_peer_validation_end", globalInvalid);
     if(globalInvalid != 0)
         throw UniversalError("FmmPeerExchange::reset: invalid graph peer on at least one rank");
 
@@ -128,18 +156,25 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
     // never dereferenced by a conforming MPI implementation.
     const int dummyDestination = rank;
     const int* destinations = degree == 0 ? &dummyDestination : peers.data();
+    peerExchangeStage(rank, "reset_dist_graph_create_begin", degree);
     checkMpi(MPI_Dist_graph_create(parent, 1, &rank, &degree,
                                    destinations, MPI_UNWEIGHTED,
                                    MPI_INFO_NULL, 0, &graph_),
              "FmmPeerExchange::reset MPI_Dist_graph_create");
+    peerExchangeStage(rank, "reset_dist_graph_create_end", degree);
 
     int indegree = 0;
     int outdegree = 0;
     int weighted = 0;
+    peerExchangeStage(rank, "reset_neighbors_count_begin");
     checkMpi(MPI_Dist_graph_neighbors_count(graph_, &indegree, &outdegree, &weighted),
              "FmmPeerExchange::reset MPI_Dist_graph_neighbors_count");
+    peerExchangeStage(rank, "reset_neighbors_count_end",
+                      static_cast<long long>(outdegree));
     sources_.resize(static_cast<std::size_t>(indegree));
     destinations_.resize(static_cast<std::size_t>(outdegree));
+    peerExchangeStage(rank, "reset_neighbors_begin",
+                      static_cast<long long>(indegree));
     checkMpi(MPI_Dist_graph_neighbors(graph_, indegree,
                                       indegree == 0 ? nullptr : sources_.data(),
                                       MPI_UNWEIGHTED,
@@ -147,8 +182,11 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
                                       outdegree == 0 ? nullptr : destinations_.data(),
                                       MPI_UNWEIGHTED),
              "FmmPeerExchange::reset MPI_Dist_graph_neighbors");
+    peerExchangeStage(rank, "reset_neighbors_end",
+                      static_cast<long long>(outdegree));
     for(int i = 0; i < outdegree; ++i)
         destinationSlot_[destinations_[static_cast<std::size_t>(i)]] = i;
+    peerExchangeStage(rank, "reset_exit", static_cast<long long>(outdegree));
 }
 
 std::size_t FmmPeerExchange::bytesOwned() const
