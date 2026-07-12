@@ -1818,6 +1818,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double frequency) const
 {
     std::ostringstream os;
+    os.precision(17);
     if(!this->withDDMC)
         return std::string();
 
@@ -1841,6 +1842,19 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
 
     DDMCCellData const &data = this->ddmcCellData[cellIndex];
     Vector3D const &cellVel = this->cells[cellIndex].velocity;
+    double internalLeakRateSum = 0.0;
+    double internalConductanceSum = 0.0;
+    size_t internalFaceCount = 0;
+    for(DDMCFaceLeak const &face : data.faceLeaks)
+    {
+        if(!face.targetDDMCEligible || !(face.internalRate > 0.0) ||
+           !(face.conductance > 0.0))
+            continue;
+        internalLeakRateSum += face.internalRate;
+        internalConductanceSum += face.conductance;
+        ++internalFaceCount;
+    }
+
     os << " useTransportVelocities=" << this->useTransportVelocities_
        << " ddmc_interface_bypass=" << this->ddmcInterfaceBypassCount
        << " ddmc_doppler_cutoff_exit=" << this->ddmcDopplerCutoffExitCount
@@ -1862,6 +1876,9 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
        << " sigmaGroupExit=" << data.sigmaGroupExit
        << " D=" << data.diffusionCoefficient
        << " leak_rate=" << data.totalLeakRate
+       << " ddmc_internal_faces=" << internalFaceCount
+       << " ddmc_internal_leak_rate_sum=" << internalLeakRateSum
+       << " ddmc_internal_conductance_sum=" << internalConductanceSum
        << " div_v=" << data.velocityDivergence
        << " max_face_dv_over_c=" << data.maxFaceVelocityJumpOverC
        << " faces=" << data.faceLeaks.size();

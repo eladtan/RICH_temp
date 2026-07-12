@@ -660,6 +660,54 @@ Performance superiority is reported but is not itself a pass requirement. This t
 
 ---
 
+## DDMC Moving-Interface G_U A/B Validation
+
+**Tags:** `mpi`
+
+This deterministic two-cell interface microbenchmark runs the same incident
+packet ensemble twice, first with the moving-interface correction disabled and
+then with it enabled.  The source cell is IMC-only, the target cell is
+optically thick and DDMC-eligible, and both cells move normally to the shared
+face with `U_n/c = 0.04`.
+
+The static admission draws must be identical in both runs.  For admitted
+packets, the corrected-to-static total weight ratio must equal
+
+```text
+G_U(mu) = 1 + 2 (U_n/c) K(mu)
+```
+
+as evaluated by the production `DDMCWollaegerInterface.hpp` kernel.  The test
+also requires exact agreement between event classifications and the runtime
+interface counters, with no fallback, bypass, or packet splitting.
+
+**Source:** `regression_tests/cases/ddmc_moving_interface_ab/test.cpp`
+
+---
+
+## DDMC Zero-Cell and Cross-Rank MPI Validation
+
+**Tags:** `mpi`
+
+This test distributes two optically thick cells over eight MPI ranks, forcing
+most ranks to own zero cells while the only DDMC-DDMC face crosses a rank
+boundary.  It exercises resident-packet serialization, symmetric DDMC
+correspondents, ghost-cell opacity exchange, and face-flux reduction.
+
+The checker requires sampled remote DDMC leakage, at least one zero-cell rank,
+and conserved total packet weight.  It also verifies the cross-rank finite-
+volume identity
+
+```text
+V_i lambda_i_to_j = V_j lambda_j_to_i
+```
+
+from per-cell internal-rate and conductance diagnostics.
+
+**Source:** `regression_tests/cases/ddmc_mpi_zero_cell/test.cpp`
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -680,6 +728,8 @@ Performance superiority is reported but is not itself a pass requirement. This t
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `ddmc_static_invariants` | static | DDMC/hydro implementation invariants | Source-code guard script | script exits 0 |
+| `ddmc_moving_interface_ab` | mpi | Moving IMC-DDMC interface | Corrected/static admitted-weight ratio | relative error <= 1e-9 |
+| `ddmc_mpi_zero_cell` | mpi | Zero-cell ranks and cross-rank DDMC | Remote leaks, reciprocity, weight conservation | errors <= 1e-10 |
 | `fmm_gravity_serial` | serial | Fast multipole self-gravity | Long-double direct sum and convergence | scaled error < 2e-5 |
 | `fmm_gravity_mpi_guard` | mpi | Distributed FMM adapter | MPI construction and option guard | guard exits 0 |
 | `fmm_gravity_mpi` | mpi | Distributed fast multipole self-gravity | Direct reference, empty rank, topology reuse/rebuild | scaled error < 2e-4 |

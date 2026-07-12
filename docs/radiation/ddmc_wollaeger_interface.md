@@ -65,7 +65,7 @@ G_U(mu) = 1 + 2 (U_n/c) K(mu).
 ```
 
 `K(mu)` is evaluated from the nonsingular integral in Wollaeger et al.
-Eq. (60).  RICH builds a high-resolution table using 128-point Gauss-Legendre
+Eq. (60).  RICH builds a high-resolution table using 192-point Gauss-Legendre
 quadrature.  The fitted `a/mu-b*mu` expressions in the paper are not used in
 the production path.
 
@@ -88,6 +88,16 @@ bias and is therefore not permitted.
 ## DDMC-to-DDMC motion
 
 Ordinary DDMC leakage changes the resident cell but does not apply a Lorentz
+transformation from the source-cell frame to the target-cell frame.  Spatial
+diffusion and Doppler evolution are operator-split in the Wollaeger
+formulation.  RICH retains its cell-divergence update
+
+```text
+d ln(nu) / dt = -(div U)/3
+```
+
+for a DDMC residence interval.  Frame transformations occur when the packet
+changes representation between IMC and DDMC.
 
 For DDMC-to-IMC leakage, the outgoing asymptotic direction is sampled in the
 DDMC cell's comoving frame.  A resident DDMC packet has no meaningful
@@ -99,16 +109,6 @@ low-frequency DDMC cutoff before leakage or census, the analytically computed
 cutoff-crossing time is included in the event competition.  The packet then
 returns to IMC in the same cell with the remaining transport time; it is not
 kept in DDMC until the next unrelated event.
-transformation from the source-cell frame to the target-cell frame.  Spatial
-diffusion and Doppler evolution are operator-split in the Wollaeger
-formulation.  RICH retains its cell-divergence update
-
-```text
-d ln(nu) / dt = -(div U)/3
-```
-
-for a DDMC residence interval.  Frame transformations occur when the packet
-changes representation between IMC and DDMC.
 
 ## Optical-depth threshold
 
@@ -142,6 +142,15 @@ run all of the following in serial and MPI:
 7. Homologous-expansion redshift tests confirming that ordinary
    DDMC-to-DDMC leakage adds no extra frame shift.
 8. MPI runs with a rank that owns zero cells.
+
+Automated regression coverage includes:
+
+* `ddmc_moving_interface_ab`, which runs identical incident packets with
+  `G_U` disabled and enabled and checks the admitted-weight ratio against the
+  production Eq. (60) kernel.
+* `ddmc_mpi_zero_cell`, which forces zero-owned-cell ranks and a cross-rank
+  DDMC face, then checks remote resident leakage, face-flux reduction, packet
+  serialization, weight conservation, and cross-rank leakage reciprocity.
 
 The runtime diagnostics report interface incidence/admission/reflection,
 moving-factor use and fallback, splitting, minimum incident cosine, maximum

@@ -2106,3 +2106,189 @@ check_fmm_quadrupole_benchmark_case() {
     set_check_msg "FMM/quadrupole benchmark check passed"
     return 0
 }
+
+check_ddmc_moving_interface_ab_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/ddmc_moving_interface_ab_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale ddmc_moving_interface_ab_metrics.txt"
+        return 1
+    fi
+
+    local static_admitted corrected_admitted expected_factor measured_factor
+    local factor_rel_error static_weight_error static_gu corrected_gu
+    local static_fallback corrected_fallback static_bypass corrected_bypass pass_flag
+    static_admitted=$(awk '$1 == "static_admitted" { print $2 }' "$metrics_file")
+    corrected_admitted=$(awk '$1 == "corrected_admitted" { print $2 }' "$metrics_file")
+    expected_factor=$(awk '$1 == "expected_moving_factor" { print $2 }' "$metrics_file")
+    measured_factor=$(awk '$1 == "measured_moving_factor" { print $2 }' "$metrics_file")
+    factor_rel_error=$(awk '$1 == "moving_factor_rel_error" { print $2 }' "$metrics_file")
+    static_weight_error=$(awk '$1 == "static_weight_error" { print $2 }' "$metrics_file")
+    static_gu=$(awk '$1 == "static_gu_applied" { print $2 }' "$metrics_file")
+    corrected_gu=$(awk '$1 == "corrected_gu_applied" { print $2 }' "$metrics_file")
+    static_fallback=$(awk '$1 == "static_gu_fallback" { print $2 }' "$metrics_file")
+    corrected_fallback=$(awk '$1 == "corrected_gu_fallback" { print $2 }' "$metrics_file")
+    static_bypass=$(awk '$1 == "static_bypass" { print $2 }' "$metrics_file")
+    corrected_bypass=$(awk '$1 == "corrected_bypass" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$static_admitted" || -z "$corrected_admitted" ||
+          -z "$expected_factor" || -z "$measured_factor" ||
+          -z "$factor_rel_error" || -z "$static_weight_error" ||
+          -z "$static_gu" || -z "$corrected_gu" ||
+          -z "$static_fallback" || -z "$corrected_fallback" ||
+          -z "$static_bypass" || -z "$corrected_bypass" ||
+          -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse DDMC moving-interface A/B metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$expected_factor" ||
+       ! is_finite_number "$measured_factor" ||
+       ! is_finite_number "$factor_rel_error" ||
+       ! is_finite_number "$static_weight_error"; then
+        set_check_msg "DDMC moving-interface A/B metrics are not finite"
+        return 1
+    fi
+
+    if [[ "$static_admitted" != "$corrected_admitted" ]]; then
+        set_check_msg "moving correction changed the static admission decisions (${static_admitted} != ${corrected_admitted})"
+        return 1
+    fi
+    if ! awk -v n="$static_admitted" 'BEGIN { exit !(n > 500) }'; then
+        set_check_msg "too few admitted interface packets (${static_admitted})"
+        return 1
+    fi
+    if ! awk -v g="$expected_factor" 'BEGIN { d = g - 1; if (d < 0) d = -d; exit !(d > 0.02) }'; then
+        set_check_msg "A/B setup does not produce a meaningful moving factor (${expected_factor})"
+        return 1
+    fi
+
+    local max_factor_error="${DDMC_MOVING_AB_MAX_FACTOR_REL_ERROR:-1e-9}"
+    local max_static_error="${DDMC_MOVING_AB_MAX_STATIC_WEIGHT_ERROR:-1e-10}"
+    if ! awk -v e="$factor_rel_error" -v t="$max_factor_error" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "measured G_U factor error too large (${factor_rel_error} > ${max_factor_error})"
+        return 1
+    fi
+    if ! awk -v e="$static_weight_error" -v t="$max_static_error" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "static admitted weight changed (${static_weight_error} > ${max_static_error})"
+        return 1
+    fi
+
+    if [[ "$static_gu" != "0" || "$corrected_gu" == "0" ||
+          "$static_fallback" != "0" || "$corrected_fallback" != "0" ||
+          "$static_bypass" != "0" || "$corrected_bypass" != "0" ]]; then
+        set_check_msg "unexpected G_U diagnostics (off=${static_gu}, on=${corrected_gu}, fallback=${static_fallback}/${corrected_fallback}, bypass=${static_bypass}/${corrected_bypass})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "DDMC moving-interface A/B executable reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "DDMC moving-interface A/B passed (G_expected=${expected_factor}, G_measured=${measured_factor}, rel_error=${factor_rel_error}, admitted=${static_admitted})"
+    return 0
+}
+
+check_ddmc_mpi_zero_cell_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/ddmc_mpi_zero_cell_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale ddmc_mpi_zero_cell_metrics.txt"
+        return 1
+    fi
+
+    local zero_ranks cross_rank_faces remote_leaks flux_reductions
+    local invalid_geometry reciprocity_max cross_rank_reciprocity
+    local rate_conductance_consistency weight_rel_error pass_flag
+    zero_ranks=$(awk '$1 == "zero_rank_count" { print $2 }' "$metrics_file")
+    cross_rank_faces=$(awk '$1 == "cross_rank_faces" { print $2 }' "$metrics_file")
+    remote_leaks=$(awk '$1 == "remote_resident_leaks" { print $2 }' "$metrics_file")
+    flux_reductions=$(awk '$1 == "mpi_face_flux_reductions" { print $2 }' "$metrics_file")
+    invalid_geometry=$(awk '$1 == "invalid_geometry" { print $2 }' "$metrics_file")
+    reciprocity_max=$(awk '$1 == "reciprocity_max" { print $2 }' "$metrics_file")
+    cross_rank_reciprocity=$(awk '$1 == "cross_rank_reciprocity_rel_error" { print $2 }' "$metrics_file")
+    rate_conductance_consistency=$(awk '$1 == "rate_conductance_consistency_max" { print $2 }' "$metrics_file")
+    weight_rel_error=$(awk '$1 == "weight_rel_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$zero_ranks" || -z "$cross_rank_faces" ||
+          -z "$remote_leaks" || -z "$flux_reductions" ||
+          -z "$invalid_geometry" || -z "$reciprocity_max" ||
+          -z "$cross_rank_reciprocity" ||
+          -z "$rate_conductance_consistency" ||
+          -z "$weight_rel_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse DDMC zero-cell MPI metrics"
+        return 1
+    fi
+    if ! is_finite_number "$reciprocity_max" ||
+       ! is_finite_number "$cross_rank_reciprocity" ||
+       ! is_finite_number "$rate_conductance_consistency" ||
+       ! is_finite_number "$weight_rel_error"; then
+        set_check_msg "DDMC zero-cell MPI metrics are not finite"
+        return 1
+    fi
+
+    if ! awk -v n="$zero_ranks" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test did not create an empty rank"
+        return 1
+    fi
+    if ! awk -v n="$cross_rank_faces" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test found no cross-rank faces"
+        return 1
+    fi
+    if ! awk -v n="$remote_leaks" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test sampled no remote resident leaks"
+        return 1
+    fi
+    if ! awk -v n="$flux_reductions" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test performed no face-flux reductions"
+        return 1
+    fi
+    if [[ "$invalid_geometry" != "0" ]]; then
+        set_check_msg "DDMC zero-cell MPI test reported invalid leakage geometry (${invalid_geometry})"
+        return 1
+    fi
+
+    local max_reciprocity="${DDMC_MPI_MAX_RECIPROCITY_ERROR:-1e-10}"
+    local max_cross_rank_reciprocity="${DDMC_MPI_MAX_CROSS_RANK_RECIPROCITY_ERROR:-1e-12}"
+    local max_rate_consistency="${DDMC_MPI_MAX_RATE_CONDUCTANCE_ERROR:-1e-12}"
+    local max_weight_error="${DDMC_MPI_MAX_WEIGHT_REL_ERROR:-1e-10}"
+    if ! awk -v e="$reciprocity_max" -v t="$max_reciprocity" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC MPI reciprocity error too large (${reciprocity_max} > ${max_reciprocity})"
+        return 1
+    fi
+    if ! awk -v e="$cross_rank_reciprocity" -v t="$max_cross_rank_reciprocity" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC cross-rank reciprocity error too large (${cross_rank_reciprocity} > ${max_cross_rank_reciprocity})"
+        return 1
+    fi
+    if ! awk -v e="$rate_conductance_consistency" -v t="$max_rate_consistency" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC rate/conductance mismatch too large (${rate_conductance_consistency} > ${max_rate_consistency})"
+        return 1
+    fi
+    if ! awk -v e="$weight_rel_error" -v t="$max_weight_error" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC MPI particle weight is not conserved (${weight_rel_error} > ${max_weight_error})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "DDMC zero-cell MPI executable reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "DDMC zero-cell/cross-rank MPI passed (zero_ranks=${zero_ranks}, cross_faces=${cross_rank_faces}, remote_leaks=${remote_leaks}, reciprocity=${cross_rank_reciprocity}, weight_error=${weight_rel_error})"
+    return 0
+}
