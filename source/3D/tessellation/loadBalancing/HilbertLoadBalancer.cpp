@@ -107,6 +107,53 @@ void HilbertLoadBalancer::rebalance(const std::vector<Vector3D> &points, const s
     }
         // responsibilityRange = getWeightedBorders(indices, weights);
     this->boundaries = getWeightedBorders2(indices, weights);
+
+    // getWeightedBorders2() returns interior cuts plus one terminal boundary.
+    // A one-rank communicator has no interior cuts, so the current generic
+    // routine returns an empty vector.  HilbertTree3D nevertheless requires
+    // one terminal boundary per rank.  Repair that invariant here, where the
+    // Hilbert convertor and its valid index range are known.
+    if(this->boundaries.empty())
+    {
+        if(this->size != 1)
+        {
+            UniversalError eo(
+                "HilbertLoadBalancer::rebalance: empty boundary vector for "
+                "a multi-rank communicator");
+            eo.addEntry("MPI communicator size", this->size);
+            eo.addEntry("Local point count", points.size());
+            throw eo;
+        }
+
+        auto const rectangularConvertor =
+            std::dynamic_pointer_cast<HilbertRectangularConvertor3D>(
+                this->convertor);
+        if(rectangularConvertor == nullptr ||
+           rectangularConvertor->getHilbertSize() == 0)
+        {
+            throw UniversalError(
+                "HilbertLoadBalancer::rebalance: cannot construct the "
+                "single-rank terminal boundary");
+        }
+
+        // Keep the sentinel inside the convertor's valid index range.
+        // rescale() and changeBox() map every stored boundary through d2xyz(),
+        // so numeric_limits<curve_index_t>::max() is not a valid sentinel.
+        this->boundaries.push_back(
+            rectangularConvertor->getHilbertSize() - 1);
+    }
+
+    if(this->boundaries.size() != static_cast<size_t>(this->size))
+    {
+        UniversalError eo(
+            "HilbertLoadBalancer::rebalance: expected one terminal boundary "
+            "per MPI rank");
+        eo.addEntry("MPI communicator size", this->size);
+        eo.addEntry("Boundary count", this->boundaries.size());
+        eo.addEntry("Boundaries", this->boundaries);
+        throw eo;
+    }
+
     SortHilbertBoundaries(this->boundaries);
 }
 
