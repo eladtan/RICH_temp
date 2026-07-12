@@ -144,6 +144,10 @@ ModeResult RunMode(bool useMovingCorrection,
     auto physics = std::make_shared<RadiationIMC>(
         tess, boundary, cells, extensives, eosPtr, opacity, parameters);
 
+    // Production Monte Carlo managers refresh the cached face normals and
+    // face points before preStep(). This microbenchmark calls step() directly.
+    physics->updateGridData();
+
     const double transportTime = 4.0 / units::clight;
     const std::vector<Particle3D> generated = physics->preStep(transportTime);
     if(!generated.empty())
