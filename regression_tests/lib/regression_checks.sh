@@ -85,6 +85,52 @@ is_finite_number() {
     awk -v v="$value" 'BEGIN { if (v == v) exit 0; exit 1 }'
 }
 
+check_radiation_direction_sampling_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/radiation_direction_sampling_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale radiation_direction_sampling_metrics.txt"
+        return 1
+    fi
+
+    local pure_fourth mixed_fourth chi_square voronoi_error omega_error pass_flag
+    pure_fourth=$(awk '$1 == "pure_fourth_moment_error" { print $2 }' "$metrics_file")
+    mixed_fourth=$(awk '$1 == "max_mixed_fourth_moment_error" { print $2 }' "$metrics_file")
+    chi_square=$(awk '$1 == "reduced_chi_square" { print $2 }' "$metrics_file")
+    voronoi_error=$(awk '$1 == "max_voronoi_area_rel_error" { print $2 }' "$metrics_file")
+    omega_error=$(awk '$1 == "solid_angle_rel_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$pure_fourth" || -z "$mixed_fourth" ||
+          -z "$chi_square" || -z "$voronoi_error" ||
+          -z "$omega_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse radiation direction sampling metrics"
+        return 1
+    fi
+    if ! is_finite_number "$pure_fourth" ||
+       ! is_finite_number "$mixed_fourth" ||
+       ! is_finite_number "$chi_square" ||
+       ! is_finite_number "$voronoi_error" ||
+       ! is_finite_number "$omega_error"; then
+        set_check_msg "radiation direction sampling metrics are not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "radiation angular geometry test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Radiation directions isotropic and observer Voronoi areas valid (pure4=${pure_fourth}, mixed4=${mixed_fourth}, chi2=${chi_square}, voronoi=${voronoi_error})"
+    return 0
+}
+
 check_sod_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

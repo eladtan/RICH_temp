@@ -482,36 +482,113 @@ std::vector<Triangle> convexHullTriangulation(const std::vector<Vector3D>& pts)
     return result;
 }
 
+double sphericalTriangleArea(Vector3D const& a,
+                             Vector3D const& b,
+                             Vector3D const& c)
+{
+    double const numerator = std::abs(ScalarProd(a, CrossProduct(b, c)));
+    double const denominator = 1.0 + ScalarProd(a, b)
+                                   + ScalarProd(b, c)
+                                   + ScalarProd(c, a);
+    return 2.0 * std::atan2(numerator, denominator);
+}
+
+bool sphericalCircumcenter(Vector3D const& a,
+                           Vector3D const& b,
+                           Vector3D const& c,
+                           Vector3D& center)
+{
+    center = CrossProduct(b - a, c - a);
+    double const norm = abs(center);
+    if (!(norm > 0.0) || !std::isfinite(norm))
+        return false;
+    center *= 1.0 / norm;
+
+    // The two antipodal normals are both equidistant from a, b, and c.
+    // The outward hull normal is the spherical Delaunay circumcenter.
+    if (ScalarProd(center, a + b + c) < 0.0)
+        center *= -1.0;
+    return std::isfinite(center.x) && std::isfinite(center.y)
+        && std::isfinite(center.z);
+}
+
 std::vector<double> computePerObserverSolidAngles(
     const std::vector<Vector3D>& dirs, size_t N)
 {
     std::vector<double> solidAngles(N, 0.0);
-    double uniform = 4.0 * M_PI / static_cast<double>(N);
-
-    if (N < 4) {
-        for (auto& s : solidAngles) s = uniform;
+    double const fourPi = 4.0 * M_PI;
+    double const uniform = fourPi / static_cast<double>(N);
+    auto useUniform = [&]() {
+        std::fill(solidAngles.begin(), solidAngles.end(), uniform);
         return solidAngles;
-    }
+    };
 
-    std::vector<Triangle> tris = convexHullTriangulation(dirs);
-    size_t expectedMinFaces = 2 * (N - 2);
-    if (tris.size() < expectedMinFaces) {
-        for (auto& s : solidAngles) s = uniform;
-        return solidAngles;
-    }
+    if (N < 4)
+        return useUniform();
 
+    std::vector<Triangle> const tris = convexHullTriangulation(dirs);
+    size_t const expectedFaces = 2 * (N - 2);
+    if (tris.size() != expectedFaces)
+        return useUniform();
+
+    // Observer assignment uses the nearest direction on the unit sphere, so
+    // each bin is a spherical Voronoi cell. The convex-hull faces are the
+    // spherical Delaunay triangles; their circumcenters are Voronoi vertices.
+    std::vector<std::vector<Vector3D>> voronoiVertices(N);
     for (auto const& tri : tris) {
-        Vector3D cross = CrossProduct(dirs[tri.b] - dirs[tri.a],
-                                      dirs[tri.c] - dirs[tri.a]);
-        double area = 0.5 * abs(cross);
-        solidAngles[tri.a] += area / 3.0;
-        solidAngles[tri.b] += area / 3.0;
-        solidAngles[tri.c] += area / 3.0;
+        Vector3D center;
+        if (!sphericalCircumcenter(
+                dirs[tri.a], dirs[tri.b], dirs[tri.c], center))
+            return useUniform();
+        voronoiVertices[tri.a].push_back(center);
+        voronoiVertices[tri.b].push_back(center);
+        voronoiVertices[tri.c].push_back(center);
     }
 
-    for (size_t i = 0; i < N; ++i)
-        if (solidAngles[i] <= 0.0) solidAngles[i] = uniform;
+    for (size_t i = 0; i < N; ++i) {
+        auto& vertices = voronoiVertices[i];
+        if (vertices.size() < 3)
+            return useUniform();
 
+        Vector3D const& site = dirs[i];
+        Vector3D const reference = std::abs(site.z) < 0.9
+            ? Vector3D(0.0, 0.0, 1.0)
+            : Vector3D(1.0, 0.0, 0.0);
+        Vector3D tangentX = CrossProduct(reference, site);
+        double const tangentNorm = abs(tangentX);
+        if (!(tangentNorm > 0.0) || !std::isfinite(tangentNorm))
+            return useUniform();
+        tangentX *= 1.0 / tangentNorm;
+        Vector3D const tangentY = CrossProduct(site, tangentX);
+
+        std::sort(vertices.begin(), vertices.end(),
+                  [&](Vector3D const& lhs, Vector3D const& rhs) {
+            double const lhsAngle = std::atan2(
+                ScalarProd(lhs, tangentY), ScalarProd(lhs, tangentX));
+            double const rhsAngle = std::atan2(
+                ScalarProd(rhs, tangentY), ScalarProd(rhs, tangentX));
+            return lhsAngle < rhsAngle;
+        });
+
+        double area = 0.0;
+        for (size_t j = 0; j < vertices.size(); ++j) {
+            area += sphericalTriangleArea(
+                site, vertices[j], vertices[(j + 1) % vertices.size()]);
+        }
+        if (!(area > 0.0) || !std::isfinite(area))
+            return useUniform();
+        solidAngles[i] = area;
+    }
+
+    double const total = std::accumulate(
+        solidAngles.begin(), solidAngles.end(), 0.0);
+    if (!(total > 0.0) || !std::isfinite(total))
+        return useUniform();
+
+    // Remove only accumulated roundoff; the relative Voronoi areas are kept.
+    double const scale = fourPi / total;
+    for (double& omega : solidAngles)
+        omega *= scale;
     return solidAngles;
 }
 

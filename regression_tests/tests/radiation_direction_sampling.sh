@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+TEST_ID="radiation_direction_sampling"
+TAGS="serial"
+BUILD_TEST_NAME="regression_tests/cases/radiation_direction_sampling"
+RUN_DIR_REL="regression_tests/cases/radiation_direction_sampling"
+RUN_MODE="direct"
+RUN_COMMAND='"${RICH_BIN}"'
+CHECK_FUNCTION="check_radiation_direction_sampling_case"

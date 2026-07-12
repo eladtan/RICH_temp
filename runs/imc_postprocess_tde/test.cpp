@@ -34,6 +34,7 @@
 #include "source/misc/universal_error.hpp"
 #include "source/misc/simple_io.hpp"
 #include "source/misc/utils.hpp"
+#include "source/misc/mesh_generator3D.hpp"
 
 #include <fstream>
 #include <iomanip>
@@ -53,6 +54,98 @@
 #include "grey_calculation.hpp"
 
 using namespace imc_postprocess_tde;
+
+namespace {
+
+std::vector<double> IntegrateFldFluxOverObserverPatches(
+    Voronoi3D const& tess,
+    std::vector<Vector3D> const& fldFlux,
+    SphericalObserver const& observer,
+    int rank)
+{
+    size_t const nCells = tess.GetPointNo();
+    size_t const nObservers = observer.getNumObservers();
+    constexpr size_t samplesPerObserver = 32;
+
+    if (fldFlux.size() < nCells)
+        throw UniversalError("FLD surface integration received too few cell fluxes");
+    if (nCells == 0 || nObservers == 0)
+        throw UniversalError("FLD surface integration requires cells and observers");
+    if (nObservers > static_cast<size_t>(INT_MAX))
+        throw UniversalError("Too many FLD observer bins for MPI reduction");
+    if (nObservers > std::numeric_limits<size_t>::max() / samplesPerObserver)
+        throw UniversalError("FLD surface quadrature sample count overflow");
+
+#ifndef RICH_MPI
+    (void)rank;
+#endif
+
+    size_t const sampleCount = samplesPerObserver * nObservers;
+    std::vector<Vector3D> const sampleDirections =
+        fibonacci_sphere_directions(sampleCount);
+    std::vector<Vector3D> const& observerDirections = observer.getDirections();
+    std::vector<double> luminosity(nObservers, 0.0);
+    unsigned long long localEvaluated = 0;
+
+    double const radius = observer.getRadius();
+    double const sampleArea = 4.0 * std::acos(-1.0) * radius * radius
+                            / static_cast<double>(sampleCount);
+
+    // Integrate the finite-volume FLD field as it is represented: a
+    // piecewise-constant value in each Voronoi cell. Sub-sampling each angular
+    // bin removes nearest-generator aliasing without smoothing across shocks,
+    // opacity jumps, or resolution transitions.
+    for (Vector3D const& direction : sampleDirections) {
+        size_t observerIndex = 0;
+        double bestAlignment = -std::numeric_limits<double>::infinity();
+        for (size_t p = 0; p < nObservers; ++p) {
+            double const alignment = ScalarProd(direction, observerDirections[p]);
+            if (alignment > bestAlignment) {
+                bestAlignment = alignment;
+                observerIndex = p;
+            }
+        }
+
+        Vector3D const point = observer.getCenter() + direction * radius;
+#ifdef RICH_MPI
+        if (tess.GetOwner(point) != rank)
+            continue;
+#endif
+        size_t const cell = tess.GetContainingCell(point);
+        if (cell >= fldFlux.size()) {
+            UniversalError eo("FLD quadrature point did not map to an available cell");
+            eo.addEntry("Cell index", cell);
+            eo.addEntry("Available flux entries", fldFlux.size());
+            throw eo;
+        }
+
+        double const radialFlux = ScalarProd(fldFlux[cell], direction);
+        luminosity[observerIndex] += std::max(0.0, radialFlux) * sampleArea;
+        ++localEvaluated;
+    }
+
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, luminosity.data(),
+                  static_cast<int>(nObservers), MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+    unsigned long long globalEvaluated = 0;
+    MPI_Allreduce(&localEvaluated, &globalEvaluated, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#else
+    unsigned long long const globalEvaluated = localEvaluated;
+#endif
+
+    if (globalEvaluated != static_cast<unsigned long long>(sampleCount)) {
+        UniversalError eo("FLD surface quadrature did not evaluate every sample exactly once");
+        eo.addEntry("Expected samples", sampleCount);
+        eo.addEntry("Evaluated samples", globalEvaluated);
+        throw eo;
+    }
+
+    return luminosity;
+}
+
+} // namespace
 
 int main(int argc, char* argv[])
 {
@@ -402,6 +495,10 @@ int main(int argc, char* argv[])
             fldFlux[i] = gradEr[i] * (-lambda * D_cell[i]);
         }
 
+#ifdef RICH_MPI
+        MPI_exchange_data(tess, fldFlux, true);
+#endif
+
         if (rank == 0)
             std::cout << "FLD flux computed for " << Ncells << " cells." << std::endl;
 
@@ -431,51 +528,15 @@ int main(int argc, char* argv[])
         // ============================================================
         // Map FLD flux to observer patches
         // ============================================================
-        size_t nObs = observer->getNumObservers();
-        std::vector<Vector3D> const& obsDirections = observer->getDirections();
-        std::vector<double> const& obsSolidAngles = observer->getObserverSolidAngles();
-
-        std::vector<double> fldLuminosity(nObs, 0.0);
-        std::vector<double> patchMinDist(nObs, std::numeric_limits<double>::max());
-
-        for (size_t p = 0; p < nObs; ++p) {
-            Vector3D spherePoint = cfg.center + obsDirections[p] * cfg.radius;
-            double patchArea_p = obsSolidAngles[p] * cfg.radius * cfg.radius;
-            for (size_t i = 0; i < Ncells; ++i) {
-                double dist = fastabs(tess.GetMeshPoint(i) - spherePoint);
-                if (dist < patchMinDist[p]) {
-                    patchMinDist[p] = dist;
-                    double radialFlux = ScalarProd(fldFlux[i], obsDirections[p]);
-                    fldLuminosity[p] = std::max(0.0, radialFlux) * patchArea_p;
-                }
-            }
-        }
-
-#ifdef RICH_MPI
-        {
-            struct DistVal { double dist; int rank; };
-            std::vector<DistVal> localDV(nObs), globalDV(nObs);
-            for (size_t p = 0; p < nObs; ++p) {
-                localDV[p].dist = patchMinDist[p];
-                localDV[p].rank = rank;
-            }
-            MPI_Allreduce(localDV.data(), globalDV.data(),
-                          static_cast<int>(nObs), MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
-            for (size_t p = 0; p < nObs; ++p) {
-                if (globalDV[p].rank != rank)
-                    fldLuminosity[p] = 0.0;
-            }
-            MPI_Allreduce(MPI_IN_PLACE, fldLuminosity.data(),
-                          static_cast<int>(nObs), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        }
-#endif
+        size_t const nObs = observer->getNumObservers();
+        std::vector<double> fldLuminosity =
+            IntegrateFldFluxOverObserverPatches(tess, fldFlux, *observer, rank);
 
         // Free FLD intermediates no longer needed
         Er_vol.clear(); Er_vol.shrink_to_fit();
         D_cell.clear(); D_cell.shrink_to_fit();
         gradEr.clear(); gradEr.shrink_to_fit();
         fldFlux.clear(); fldFlux.shrink_to_fit();
-        patchMinDist.clear(); patchMinDist.shrink_to_fit();
 
         double totalFldLum = 0.0;
         for (size_t p = 0; p < nObs; ++p)
