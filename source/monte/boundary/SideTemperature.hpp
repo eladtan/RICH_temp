@@ -133,6 +133,14 @@ std::vector<MonteCarloParticle<T, Grid>> SideTemperature<T, Grid>::generateNewBo
                         newParticles.emplace_back();
                         MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
                         newParticle.location = RandomPointOnFace(this->grid, faceIdx);
+                        // Boundary-face vertices are obtained from floating-point
+                        // clipping and can lie a few ulps outside the nominal box.
+                        // Move the emitted packet into the owning convex Voronoi
+                        // cell before the manager performs its strict box check.
+                        constexpr double inwardNudge = 1e-10;
+                        newParticle.location =
+                            (1.0 - inwardNudge) * newParticle.location +
+                            inwardNudge * point;
                         double mu = std::sqrt(unif(re));
                         // Lambert Emission Law
                         newParticle.velocity.x = mu;

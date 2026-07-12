@@ -69,26 +69,58 @@ namespace densmore2012_mesh
         std::vector<Vector3D> points;
         points.reserve(cellCount);
 
-        // A Voronoi face is the perpendicular bisector of two generators.
-        // Simply placing generators at the nominal cell midpoints would move
-        // the x=2 opacity interface by roughly 0.005 cm because the first
-        // refined cell is much smaller than the last thin cell.  Instead,
-        // reflect each new generator through the prescribed face.  This puts
-        // every x-face exactly on the paper's cell edge, including x=2.
-        double const firstRefinedWidth = edges[thinCellCount + 1] -
-                                         edges[thinCellCount];
-        double siteX = 0.5 * firstRefinedWidth;
+        // Start from the paper-zone midpoints.  The former implementation
+        // recursively reflected every generator through every requested edge.
+        // The abrupt 0.02 cm -> 5e-5 cm transition then forced generators in
+        // the entire domain to alternate between opposite cell faces; the
+        // first generator ended up only 2.5e-5 cm from x=0.  Besides making
+        // boundary sampling fragile, that corrupts DDMC centre-to-face lengths.
         for(std::size_t i = 0; i < cellCount; ++i)
         {
-            if(i > 0)
-                siteX = 2.0 * edges[i] - points.back().x;
+            double const siteX = 0.5 * (edges[i] + edges[i + 1]);
+            points.emplace_back(siteX, 0.0, 0.0);
+        }
 
-            if(!(siteX > edges[i] && siteX < edges[i + 1]))
+        // An unweighted Voronoi mesh cannot represent an arbitrary structured
+        // edge list while keeping every generator at its zone midpoint.  Use
+        // the exact-face recurrence only locally, where it matters physically:
+        // keep x=2 and every edge of the ten-cell refined layer through x=2.005
+        // exact, then return to midpoint generators in the regular thick mesh.
+        points[thinCellCount - 1].x =
+            2.0 * interfacePosition - points[thinCellCount].x;
+
+        std::size_t const firstRefined = thinCellCount;
+        std::size_t const lastRefined =
+            thinCellCount + refinedCellCount - 1;
+        for(std::size_t i = firstRefined + 1; i <= lastRefined; ++i)
+            points[i].x = 2.0 * edges[i] - points[i - 1].x;
+
+        // Enforce the end face of the subdivided 0.005-cm cell.  Stopping the
+        // recurrence here confines the unavoidable Voronoi transition error to
+        // one face in the regular thick mesh instead of alternating forever.
+        std::size_t const firstRegularThick = lastRefined + 1;
+        points[firstRegularThick].x =
+            2.0 * edges[firstRegularThick] - points[lastRefined].x;
+
+        for(std::size_t i = 0; i < points.size(); ++i)
+        {
+            if(!(points[i].x > 0.0 && points[i].x < domainLength) ||
+               (i > 0 && !(points[i].x > points[i - 1].x)))
             {
                 throw std::runtime_error(
-                    "Densmore Voronoi generator lies outside its cell");
+                    "Densmore Voronoi generators are not strictly ordered");
             }
-            points.emplace_back(siteX, 0.0, 0.0);
+        }
+
+        auto facePosition = [&points](std::size_t rightCell) {
+            return 0.5 * (points[rightCell - 1].x + points[rightCell].x);
+        };
+        if(std::abs(facePosition(thinCellCount) - interfacePosition) > 1e-13 ||
+           std::abs(facePosition(firstRegularThick) -
+                    (interfacePosition + thickCellWidth)) > 1e-13)
+        {
+            throw std::runtime_error(
+                "Densmore refined-layer boundary is misplaced");
         }
 
         return points;
