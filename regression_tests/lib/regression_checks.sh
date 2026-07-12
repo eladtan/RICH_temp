@@ -1554,6 +1554,11 @@ check_fmm_gravity_mpi_case() {
     local first_epoch
     local second_epoch
     local third_epoch
+    local error_within_tolerance
+    local topology_reused
+    local rebuild_count_reused
+    local topology_rebuilt
+    local finite_stats
     local mismatched_domain_rejected
     local pass_flag
 
@@ -1570,12 +1575,20 @@ check_fmm_gravity_mpi_case() {
     first_epoch=$(awk '$1 == "first_epoch" { print $2 }' "$metrics_file")
     second_epoch=$(awk '$1 == "second_epoch" { print $2 }' "$metrics_file")
     third_epoch=$(awk '$1 == "third_epoch" { print $2 }' "$metrics_file")
+    error_within_tolerance=$(awk '$1 == "error_within_tolerance" { print $2 }' "$metrics_file")
+    topology_reused=$(awk '$1 == "topology_reused" { print $2 }' "$metrics_file")
+    rebuild_count_reused=$(awk '$1 == "rebuild_count_reused" { print $2 }' "$metrics_file")
+    topology_rebuilt=$(awk '$1 == "topology_rebuilt" { print $2 }' "$metrics_file")
+    finite_stats=$(awk '$1 == "finite_stats" { print $2 }' "$metrics_file")
     mismatched_domain_rejected=$(awk '$1 == "mismatched_domain_rejected" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
           -z "$second_epoch" || -z "$third_epoch" ||
-          -z "$mismatched_domain_rejected" || -z "$pass_flag" ]]; then
+          -z "$error_within_tolerance" || -z "$topology_reused" ||
+          -z "$rebuild_count_reused" || -z "$topology_rebuilt" ||
+          -z "$finite_stats" || -z "$mismatched_domain_rejected" ||
+          -z "$pass_flag" ]]; then
         set_check_msg "failed to parse distributed FMM gravity metrics"
         return 1
     fi
@@ -1587,16 +1600,26 @@ check_fmm_gravity_mpi_case() {
         set_check_msg "distributed FMM test did not use enough ranks (${ranks})"
         return 1
     fi
-    if ! awk -v e="$max_scaled_error" 'BEGIN { exit !(e < 2e-4) }'; then
+    if ! awk -v e="$max_scaled_error" 'BEGIN { exit !(e < 2e-4) }' ||
+       [[ "$error_within_tolerance" != "1" ]]; then
         set_check_msg "distributed FMM max_scaled_error too large (${max_scaled_error})"
         return 1
     fi
-    if [[ "$first_epoch" != "$second_epoch" ]]; then
+    if [[ "$first_epoch" != "$second_epoch" || "$topology_reused" != "1" ]]; then
         set_check_msg "distributed FMM failed to reuse topology after a mass-only change (${first_epoch} -> ${second_epoch})"
         return 1
     fi
-    if ! awk -v second="$second_epoch" -v third="$third_epoch" 'BEGIN { exit !(third > second) }'; then
-        set_check_msg "distributed FMM failed to rebuild topology after particle motion (${second_epoch} -> ${third_epoch})"
+    if [[ "$rebuild_count_reused" != "1" ]]; then
+        set_check_msg "distributed FMM rebuild count changed after a mass-only update"
+        return 1
+    fi
+    if ! awk -v second="$second_epoch" -v third="$third_epoch" 'BEGIN { exit !(third > second) }' ||
+       [[ "$topology_rebuilt" != "1" ]]; then
+        set_check_msg "distributed FMM failed to rebuild topology after a root breach (${second_epoch} -> ${third_epoch})"
+        return 1
+    fi
+    if [[ "$finite_stats" != "1" ]]; then
+        set_check_msg "distributed FMM emitted invalid timing, mass, or memory statistics"
         return 1
     fi
     if [[ "$mismatched_domain_rejected" != "1" ]]; then
@@ -1652,6 +1675,130 @@ check_fmm_process_pair_coverage_case() {
     fi
 
     set_check_msg "FMM process-pair coverage check passed (ranks=${ranks}, cases=${cases})"
+    return 0
+}
+
+check_fmm_mpi_scaling_benchmark_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_mpi_scaling_benchmark_metrics.txt"
+    local row_count
+    local small_particles
+    local large_particles
+    local ranks_per_node
+    local pass_flag
+    local metric
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_mpi_scaling_benchmark_metrics.txt"
+        return 1
+    fi
+
+    row_count=$(awk '$1 == "row_count" { print $2 }' "$metrics_file")
+    small_particles=$(awk '$1 == "small_particles" { print $2 }' "$metrics_file")
+    large_particles=$(awk '$1 == "large_particles" { print $2 }' "$metrics_file")
+    ranks_per_node=$(awk '$1 == "ranks_per_node" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { value = $2 } END { print value }' "$metrics_file")
+
+    if [[ "$row_count" != "4" || "$small_particles" != "1000000" ||
+          "$large_particles" != "10000000" || -z "$ranks_per_node" ]] ||
+       ! awk -v n="$ranks_per_node" 'BEGIN { exit !(n >= 1 && int(n) == n) }'; then
+        set_check_msg "distributed FMM scaling benchmark matrix is incomplete"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "distributed FMM scaling benchmark reported pass=0"
+        return 1
+    fi
+
+    if ! awk '
+        function finite_number(v) {
+            return v ~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/ &&
+                   (v + 0) == (v + 0)
+        }
+        $1 == "row" {
+            rows++
+            particles = $2 + 0
+            nodes = $3 + 0
+            ranks = $4 + 0
+            unique_nodes = $5 + 0
+            ranks_per_node = $6 + 0
+            repeats = $7 + 0
+            local_min = $8 + 0
+            local_max = $9 + 0
+            fmm_best = $10
+            fmm_mean = $11
+            quad_best = $12
+            quad_mean = $13
+            fmm_error = $14
+            quad_error = $15
+            speedup = $16
+            fmm_rate = $17
+            quad_rate = $18
+            quad_walk = $23
+            fmm_checksum = $24
+            quad_checksum = $25
+            finite_flag = $26
+            run_pass = $27
+
+            if (NF != 27 ||
+                !((particles == 1000000 || particles == 10000000) &&
+                  (nodes == 8 || nodes == 16))) bad = 1
+            key = particles ":" nodes
+            seen[key]++
+            if (!(ranks_per_node in rpn_seen)) rpn_count++
+            rpn_seen[ranks_per_node] = 1
+            if (ranks_per_node < 1 || repeats < 1 ||
+                ranks != nodes * ranks_per_node || unique_nodes != nodes ||
+                local_min <= 0 || local_max < local_min ||
+                local_max > 1.02 * local_min + 1) bad = 1
+            if (!finite_number(fmm_best) || !finite_number(fmm_mean) ||
+                !finite_number(quad_best) || !finite_number(quad_mean) ||
+                !finite_number(fmm_error) || !finite_number(quad_error) ||
+                !finite_number(speedup) || !finite_number(fmm_rate) ||
+                !finite_number(quad_rate) || !finite_number(quad_walk) ||
+                !finite_number(fmm_checksum) || !finite_number(quad_checksum)) bad = 1
+            if (!(fmm_best > 0 && fmm_mean > 0 && quad_best > 0 &&
+                  quad_mean > 0 && speedup > 0 && fmm_rate > 0 &&
+                  quad_rate > 0 && quad_walk >= 0)) bad = 1
+            if (!(fmm_error < 5e-3 && quad_error < 5e-2)) bad = 1
+            if (finite_flag != 1 || run_pass != 1) bad = 1
+        }
+        END {
+            complete = rows == 4 && rpn_count == 1 &&
+                seen["1000000:8"] == 1 && seen["1000000:16"] == 1 &&
+                seen["10000000:8"] == 1 && seen["10000000:16"] == 1
+            exit !(complete && !bad)
+        }
+    ' "$metrics_file"; then
+        set_check_msg "distributed FMM scaling benchmark row validation failed"
+        return 1
+    fi
+
+    for metric in \
+        fmm_small_8_to_16_speedup \
+        fmm_small_8_to_16_efficiency \
+        fmm_large_8_to_16_speedup \
+        fmm_large_8_to_16_efficiency \
+        quadrupole_small_8_to_16_speedup \
+        quadrupole_small_8_to_16_efficiency \
+        quadrupole_large_8_to_16_speedup \
+        quadrupole_large_8_to_16_efficiency; do
+        local value
+        value=$(awk -v key="$metric" '$1 == key { print $2 }' "$metrics_file")
+        if [[ -z "$value" ]] || ! is_finite_number "$value" ||
+           ! awk -v v="$value" 'BEGIN { exit !(v > 0) }'; then
+            set_check_msg "invalid scaling metric: ${metric}=${value:-missing}"
+            return 1
+        fi
+    done
+
+    set_check_msg "Distributed FMM/quadrupole scaling benchmark completed (1e6 and 1e7 particles on 8 and 16 nodes)"
     return 0
 }
 

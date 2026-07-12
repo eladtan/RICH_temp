@@ -37,7 +37,11 @@ std::vector<Body> bodiesForRank(int rank, int size,
             0.21 * std::sin(1.7 * (rank + 1) * (i + 1)),
             0.17 * std::cos(0.9 * (rank + 2) * (i + 1)));
         if(moveFirstBody && rank == 0 && i == 0)
-            body.position.x = -0.999;
+        {
+            // Leave the retained slack root while remaining inside the
+            // global [-1,1]^3 domain, guaranteeing a topology rebuild.
+            body.position.x = 0.999;
+        }
         body.mass = massScale * (0.5 + 0.07 * (rank + 1) + 0.03 * i);
         // Deliberately duplicate application IDs across ranks and bodies.  The
         // distributed solver must use its owner token, not this field, for
@@ -232,14 +236,20 @@ int main(int argc, char** argv)
     double globalMaximumError = 0.0;
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
-    const int localPass = globalMaximumError < 2e-4 &&
-                          firstEpoch == secondEpoch &&
-                          firstRebuildCount == secondRebuildCount &&
-                          thirdEpoch > secondEpoch && finiteStats &&
-                          mismatchedDomainRejected;
-    int globalPass = 0;
-    MPI_Allreduce(&localPass, &globalPass, 1, MPI_INT, MPI_LAND,
+    const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
+    const int localChecks[5] = {
+        firstEpoch == secondEpoch ? 1 : 0,
+        firstRebuildCount == secondRebuildCount ? 1 : 0,
+        thirdEpoch > secondEpoch ? 1 : 0,
+        finiteStats ? 1 : 0,
+        mismatchedDomainRejected ? 1 : 0};
+    int globalChecks[5] = {};
+    MPI_Allreduce(localChecks, globalChecks, 5, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
+    const int globalPass = errorWithinTolerance &&
+                           globalChecks[0] && globalChecks[1] &&
+                           globalChecks[2] && globalChecks[3] &&
+                           globalChecks[4];
 
     if(rank == 0)
     {
@@ -248,14 +258,24 @@ int main(int argc, char** argv)
         output.precision(16);
         output << "ranks " << size << "\n";
         output << "max_scaled_error " << globalMaximumError << "\n";
+        output << "error_within_tolerance " << errorWithinTolerance << "\n";
         output << "first_epoch " << firstEpoch << "\n";
         output << "second_epoch " << secondEpoch << "\n";
         output << "third_epoch " << thirdEpoch << "\n";
-        output << "mismatched_domain_rejected "
-               << mismatchedDomainRejected << "\n";
+        output << "first_rebuild_count " << firstRebuildCount << "\n";
+        output << "second_rebuild_count " << secondRebuildCount << "\n";
+        output << "topology_reused " << globalChecks[0] << "\n";
+        output << "rebuild_count_reused " << globalChecks[1] << "\n";
+        output << "topology_rebuilt " << globalChecks[2] << "\n";
+        output << "finite_stats " << globalChecks[3] << "\n";
+        output << "mismatched_domain_rejected " << globalChecks[4] << "\n";
         output << "pass " << globalPass << "\n";
         std::cout << "fmm_gravity_mpi ranks=" << size
                   << " max_scaled_error=" << globalMaximumError
+                  << " topology_reused=" << globalChecks[0]
+                  << " topology_rebuilt=" << globalChecks[2]
+                  << " finite_stats=" << globalChecks[3]
+                  << " domain_rejected=" << globalChecks[4]
                   << " pass=" << globalPass << std::endl;
     }
 

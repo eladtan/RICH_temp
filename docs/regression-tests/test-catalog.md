@@ -553,11 +553,11 @@ Validates analytic empty/one/two-body cases, complete solid-harmonic storage thr
 
 ---
 
-## fmm_gravity_mpi_guard -- Distributed-Source Safety Gate
+## fmm_gravity_mpi_guard -- Distributed FMM Adapter Guard
 
 **Tags:** `mpi`
 
-Builds `FastMultipoleAcceleration3D` with `RICH_MPI` and requires its constructor to throw the documented `UniversalError`. This prevents a distributed run from silently computing gravity from rank-local masses before remote source exchange exists.
+Builds `FastMultipoleAcceleration3D` after `MPI_Init` and verifies that the distributed backend is accepted. Because the acceleration adapter does not expose potential values, the same test also requires `computePotential=true` to be rejected collectively.
 
 **Source:** `regression_tests/cases/fmm_gravity_mpi_guard/test.cpp`
 
@@ -565,9 +565,48 @@ Builds `FastMultipoleAcceleration3D` with `RICH_MPI` and requires its constructo
 
 | Metric | Required value |
 |--------|----------------|
-| `RICH_MPI` defined | `1` |
-| Constructor rejected | `1` |
-| Diagnostic matched | `1` |
+| Constructor accepted | `1` |
+| Unsupported potential option rejected | `1` |
+| `pass` | `1` |
+
+---
+
+## fmm_gravity_mpi -- Distributed FMM Numerical and Reuse Regression
+
+**Tags:** `mpi`
+
+Compares distributed FMM acceleration and positive-kernel potential with a direct reference, exercises duplicate application cell IDs and an empty rank, verifies that a mass-only update reuses the topology plan, forces a rank-local root breach and rebuild, and checks collective rejection of inconsistent domain bounds.
+
+**Source:** `regression_tests/cases/fmm_gravity_mpi/test.cpp`
+
+### Pass Criteria
+
+| Metric | Threshold / required value |
+|--------|----------------------------|
+| Maximum scaled acceleration or potential error | `< 2e-4` |
+| Mass-only topology epoch and rebuild count | unchanged |
+| Root-breach topology epoch | increases |
+| Finite timing, mass, and memory statistics | `1` |
+| Inconsistent domains rejected collectively | `1` |
+
+---
+
+## fmm_process_pair_coverage -- Distributed FMM Interaction Coverage
+
+**Tags:** `mpi`
+
+Runs several process-tree geometries on a non-power-of-two rank count and verifies that every ordered pair of active ranks is classified exactly once as process-level M2L, same-rank local work, or cross-rank LET work.
+
+**Source:** `regression_tests/cases/fmm_process_pair_coverage/test.cpp`
+
+### Pass Criteria
+
+| Metric | Required value |
+|--------|----------------|
+| MPI ranks | `> 1` |
+| Coverage cases | `3` |
+| Duplicate or missing ordered rank pairs | none |
+| `pass` | `1` |
 
 ---
 
@@ -595,6 +634,32 @@ Runtime and relative accuracy wins are reported for every row. The largest row i
 
 ---
 
+## fmm_mpi_scaling_benchmark -- Distributed FMM/Quadrupole Scaling
+
+**Tags:** `mpi`, `manual`, `benchmark`
+
+Uses the same deterministic global particle set for both distributed solvers and for both process counts. A fixed MPI rank density is used on every node (16 ranks per node by default). A single exclusive 16-node allocation runs global particle counts of one million and ten million on both 8 and 16 nodes, corresponding by default to 128 and 256 ranks. Every reported runtime covers construction, communication, and force evaluation from scratch.
+
+**Source:** `regression_tests/cases/fmm_mpi_scaling_benchmark/test.cpp`
+
+### Output and Validation
+
+The benchmark records maximum-rank wall time, throughput, FMM communication volume and peak temporary storage, quadrupole walk time, quadrupole/FMM runtime ratio, and 8-to-16-node speedup and efficiency. Eight deterministic target particles are compared with a distributed direct sum for each run.
+
+### Pass Criteria
+
+| Metric | Threshold / required value |
+|--------|----------------------------|
+| Benchmark matrix | `1e6` and `1e7` particles on 8 and 16 nodes |
+| Placement | fixed positive ranks per node; all requested nodes used |
+| FMM probe scaled error | `< 5e-3` |
+| Quadrupole probe scaled error | `< 5e-2` |
+| Timings, throughput, checksums, and scaling metrics | finite; timings and rates positive |
+
+Performance superiority is reported but is not itself a pass requirement. This test is manual-only and runs only when selected explicitly.
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -616,8 +681,11 @@ Runtime and relative accuracy wins are reported for every row. The largest row i
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `ddmc_static_invariants` | static | DDMC/hydro implementation invariants | Source-code guard script | script exits 0 |
 | `fmm_gravity_serial` | serial | Fast multipole self-gravity | Long-double direct sum and convergence | scaled error < 2e-5 |
-| `fmm_gravity_mpi_guard` | mpi | Distributed FMM safety | Constructor refusal under `RICH_MPI` | guard exits 0 |
+| `fmm_gravity_mpi_guard` | mpi | Distributed FMM adapter | MPI construction and option guard | guard exits 0 |
+| `fmm_gravity_mpi` | mpi | Distributed fast multipole self-gravity | Direct reference, empty rank, topology reuse/rebuild | scaled error < 2e-4 |
+| `fmm_process_pair_coverage` | mpi | Distributed FMM traversal partition | Ordered active-rank pair coverage | all pairs classified once |
 | `fmm_quadrupole_benchmark` | serial, benchmark | FMM versus quadrupole tree | Direct-sum accuracy and runtime sweep | finite timings; bounded errors |
+| `fmm_mpi_scaling_benchmark` | mpi, manual, benchmark | Distributed FMM versus quadrupole tree | 1e6/1e7 particles on 8/16 nodes | finite metrics; bounded probe errors |
 
 ## Static Guards
 

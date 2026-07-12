@@ -4,6 +4,8 @@
 #ifdef RICH_MPI
 #include <limits>
 #include <algorithm>
+#include <cmath>
+#include <memory>
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
@@ -20,6 +22,14 @@ class DistributedGravityCalculator
 public:
     DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
+    DistributedGravityCalculator(const std::vector<Vector3D> &sourcePoints,
+                                 const std::vector<gravity_result_t> &masses,
+                                 const Vector3D &domainLower,
+                                 const Vector3D &domainUpper,
+                                 double theta,
+                                 bool quadrupole = false,
+                                 const MPI_Comm &comm = MPI_COMM_WORLD);
+
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
 
     double getWalkTime() const { return walkTime_; }
@@ -35,7 +45,9 @@ private:
 
     MPI_Comm comm;
     int rank, size;
-    const Tessellation3D &tess;
+    Vector3D domainLower;
+    Vector3D domainUpper;
+    std::shared_ptr<EnvironmentAgent> environmentAgent;
     double theta;
     double thetaSquared;
     bool quadrupole;
@@ -47,6 +59,9 @@ private:
     boost::container::flat_set<int> prunedSet;
     std::vector<MassedValue<Vector3D>> prunedSummaries;
     std::vector<int> exchangeNeighbors;
+
+    void initialize(const std::vector<MassedPoint<Vector3D>> &massedPoints);
+    void validateCollective(bool localInputValid) const;
 
     void getSendListHelper(const LocalNode *localNode,
                            std::vector<std::vector<MassedValue<Vector3D>>> &result,
@@ -63,22 +78,149 @@ private:
 };
 
 DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_, const MPI_Comm &comm_):
-    tess(tess_), theta(theta_), thetaSquared(theta_ * theta_), quadrupole(quadrupole_), comm(comm_)
+    comm(comm_), rank(0), size(1), domainLower(), domainUpper(),
+    environmentAgent(tess_.GetEnvironmentAgent()), theta(theta_),
+    thetaSquared(theta_ * theta_), quadrupole(quadrupole_),
+    gravityTree(nullptr), realRootOfGravityTree(nullptr)
 {
     MPI_Comm_size(this->comm, &this->size);
     MPI_Comm_rank(this->comm, &this->rank);
-
-    auto [ll, ur] = this->tess.GetBoxCoordinates();
-    GravityTree<Vector3D> *gravTree = new GravityTree<Vector3D>(ll, ur, this->theta, this->quadrupole);
-    std::vector<MassedPoint<Vector3D>> massedPoints;
-    size_t N = this->tess.GetPointNo();
-    massedPoints.reserve(N);
-    for(size_t pointIdx = 0; pointIdx < N; pointIdx++)
+    const std::pair<Vector3D, Vector3D> box = tess_.GetBoxCoordinates();
+    this->domainLower = box.first;
+    this->domainUpper = box.second;
+    bool localInputValid = tess_.GetPointNo() == masses_.size() &&
+                           tess_.GetPointNo() > 0 &&
+                           std::isfinite(theta_) && theta_ > 0.0;
+    if(tess_.GetPointNo() == masses_.size())
     {
-        massedPoints.emplace_back(MassedPoint<Vector3D>(this->tess.GetCellCM(pointIdx), masses_[pointIdx]));
+        for(size_t pointIdx = 0; pointIdx < tess_.GetPointNo(); ++pointIdx)
+        {
+            const Vector3D &point = tess_.GetCellCM(pointIdx);
+            localInputValid = localInputValid &&
+                std::isfinite(point.x) && std::isfinite(point.y) &&
+                std::isfinite(point.z) && std::isfinite(masses_[pointIdx]) &&
+                point.x >= this->domainLower.x &&
+                point.x <= this->domainUpper.x &&
+                point.y >= this->domainLower.y &&
+                point.y <= this->domainUpper.y &&
+                point.z >= this->domainLower.z &&
+                point.z <= this->domainUpper.z;
+        }
     }
-    gravTree->build(massedPoints);
-    this->gravityTree = gravTree;
+    this->validateCollective(localInputValid);
+
+    std::vector<MassedPoint<Vector3D>> massedPoints;
+    massedPoints.reserve(tess_.GetPointNo());
+    for(size_t pointIdx = 0; pointIdx < tess_.GetPointNo(); ++pointIdx)
+        massedPoints.emplace_back(tess_.GetCellCM(pointIdx), masses_[pointIdx]);
+    this->initialize(massedPoints);
+}
+
+DistributedGravityCalculator::DistributedGravityCalculator(
+    const std::vector<Vector3D> &sourcePoints,
+    const std::vector<gravity_result_t> &masses,
+    const Vector3D &domainLower_,
+    const Vector3D &domainUpper_,
+    double theta_,
+    bool quadrupole_,
+    const MPI_Comm &comm_):
+    comm(comm_), rank(0), size(1), domainLower(domainLower_),
+    domainUpper(domainUpper_), environmentAgent(), theta(theta_),
+    thetaSquared(theta_ * theta_), quadrupole(quadrupole_),
+    gravityTree(nullptr), realRootOfGravityTree(nullptr)
+{
+    MPI_Comm_size(this->comm, &this->size);
+    MPI_Comm_rank(this->comm, &this->rank);
+    bool localInputValid = sourcePoints.size() == masses.size() &&
+                           !sourcePoints.empty() &&
+                           std::isfinite(theta_) && theta_ > 0.0;
+    if(sourcePoints.size() == masses.size())
+    {
+        for(size_t pointIdx = 0; pointIdx < sourcePoints.size(); ++pointIdx)
+        {
+            const Vector3D &point = sourcePoints[pointIdx];
+            localInputValid = localInputValid &&
+                std::isfinite(point.x) && std::isfinite(point.y) &&
+                std::isfinite(point.z) && std::isfinite(masses[pointIdx]) &&
+                point.x >= this->domainLower.x &&
+                point.x <= this->domainUpper.x &&
+                point.y >= this->domainLower.y &&
+                point.y <= this->domainUpper.y &&
+                point.z >= this->domainLower.z &&
+                point.z <= this->domainUpper.z;
+        }
+    }
+    this->validateCollective(localInputValid);
+
+    std::vector<MassedPoint<Vector3D>> massedPoints;
+    massedPoints.reserve(sourcePoints.size());
+    for(size_t pointIdx = 0; pointIdx < sourcePoints.size(); ++pointIdx)
+        massedPoints.emplace_back(sourcePoints[pointIdx], masses[pointIdx]);
+    this->initialize(massedPoints);
+}
+
+void DistributedGravityCalculator::validateCollective(
+    bool localInputValid) const
+{
+    const bool localDomainValid =
+        std::isfinite(this->domainLower.x) &&
+        std::isfinite(this->domainLower.y) &&
+        std::isfinite(this->domainLower.z) &&
+        std::isfinite(this->domainUpper.x) &&
+        std::isfinite(this->domainUpper.y) &&
+        std::isfinite(this->domainUpper.z) &&
+        this->domainLower.x < this->domainUpper.x &&
+        this->domainLower.y < this->domainUpper.y &&
+        this->domainLower.z < this->domainUpper.z;
+    int localValidInt = localInputValid && localDomainValid ? 1 : 0;
+    int globalValidInt = 0;
+    MPI_Allreduce(&localValidInt, &globalValidInt, 1, MPI_INT, MPI_LAND,
+                  this->comm);
+    if(globalValidInt == 0)
+        throw UniversalError(
+            "DistributedGravityCalculator: invalid input on at least one rank");
+
+    const double localDomain[6] = {
+        this->domainLower.x, this->domainLower.y, this->domainLower.z,
+        this->domainUpper.x, this->domainUpper.y, this->domainUpper.z};
+    double minimumDomain[6] = {};
+    double maximumDomain[6] = {};
+    MPI_Allreduce(localDomain, minimumDomain, 6, MPI_DOUBLE, MPI_MIN,
+                  this->comm);
+    MPI_Allreduce(localDomain, maximumDomain, 6, MPI_DOUBLE, MPI_MAX,
+                  this->comm);
+    for(int i = 0; i < 6; ++i)
+    {
+        if(minimumDomain[i] != maximumDomain[i])
+            throw UniversalError(
+                "DistributedGravityCalculator: domain differs across MPI ranks");
+    }
+}
+
+void DistributedGravityCalculator::initialize(
+    const std::vector<MassedPoint<Vector3D>> &massedPoints)
+{
+    std::unique_ptr<GravityTree<Vector3D>> gravTree;
+    int localBuildSucceeded = 1;
+    try
+    {
+        gravTree.reset(new GravityTree<Vector3D>(
+            this->domainLower, this->domainUpper,
+            this->theta, this->quadrupole));
+        gravTree->build(massedPoints);
+    }
+    catch(...)
+    {
+        localBuildSucceeded = 0;
+    }
+    int globalBuildSucceeded = 0;
+    MPI_Allreduce(&localBuildSucceeded, &globalBuildSucceeded, 1, MPI_INT,
+                  MPI_LAND, this->comm);
+    if(globalBuildSucceeded == 0)
+        throw UniversalError(
+            "DistributedGravityCalculator: local tree construction failed on at least one rank");
+
+    this->gravityTree = gravTree.get();
 
     // Find the "real root": the first node with more than 1 child
     this->realRootOfGravityTree = this->gravityTree->getOctTree()->getRoot();   
@@ -247,6 +389,7 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
 
     this->exchangeNeighbors.assign(this->relevantRanksByDepths[0].begin(),
                                     this->relevantRanksByDepths[0].end());
+    gravTree.release();
 }
 
 
@@ -283,8 +426,8 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
         MPI_flat_sparse_wait<MassedValue<Vector3D>>(flatHandle);
 
     // Build temporary tree from received data (non-pruned ranks only)
-    auto [ll, ur] = this->tess.GetBoxCoordinates();
-    GravityTree<Vector3D> remoteTree(ll, ur, this->theta, this->quadrupole);
+    GravityTree<Vector3D> remoteTree(this->domainLower, this->domainUpper,
+                                     this->theta, this->quadrupole);
 
     for(int _rank = 0; _rank < this->size; _rank++)
     {
@@ -364,13 +507,25 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
         bool shouldOpen = false;
         if(contained)
         {
-            if(!tempRanksReady)
+            if(!this->environmentAgent)
             {
-                double radius = localNode->boundingBox.getWidth() / this->theta;
-                tempRanks = std::move(this->tess.GetEnvironmentAgent()->getIntersectingRanks(localNode->value.CM, radius));
-                tempRanksReady = true;
+                // Vector-only users do not have a domain-intersection agent.
+                // Open conservatively; the geometric test below may still
+                // collapse the node to a single multipole summary.
+                shouldOpen = true;
             }
-            shouldOpen = (tempRanks.find(_rank) != tempRanks.end());
+            else
+            {
+                if(!tempRanksReady)
+                {
+                    double radius = localNode->boundingBox.getWidth() /
+                                    this->theta;
+                    tempRanks = std::move(this->environmentAgent->
+                        getIntersectingRanks(localNode->value.CM, radius));
+                    tempRanksReady = true;
+                }
+                shouldOpen = (tempRanks.find(_rank) != tempRanks.end());
+            }
         }
         else
         {
