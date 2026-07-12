@@ -1272,9 +1272,6 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         ClampFrequencyToBoundsDDMC(coFreq);
         return coFreq < ComputationalCell3D::energyBoundaries[cellData.groupCutoff];
     };
-    auto frequencyFitsDDMCCell = [&](DDMCCellData const &cellData) -> bool {
-        return frequencyFitsDDMCCellAt(cellData, materialParticle.frequency);
-    };
     if(usePGRW)
     {
         if(data.groupCutoff == 0 || data.groupCutoff > ENERGY_GROUPS_NUM)
@@ -1824,7 +1821,7 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
     if(!this->withDDMC)
         return std::string();
 
-    os << " ddmc=on";
+    os << " ddmc=on"
        << " ddmc_interface_incident=" << this->ddmcInterfaceIncidentCount
        << " ddmc_interface_admitted=" << this->ddmcInterfaceAdmissionCount
        << " ddmc_interface_reflected=" << this->ddmcInterfaceReflectionCount
@@ -1835,7 +1832,7 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
        << " ddmc_interface_max_gu=" << this->ddmcInterfaceMaximumFactor
        << " ddmc_leak_reciprocity_checks=" << this->ddmcLeakReciprocityCheckCount
        << " ddmc_leak_reciprocity_max=" << this->ddmcLeakReciprocityResidualMax
-       << " ddmc_leak_invalid_geometry=" << this->ddmcLeakInvalidGeometryCount
+       << " ddmc_leak_invalid_geometry=" << this->ddmcLeakInvalidGeometryCount;
     if(cellIndex >= this->ddmcCellData.size())
     {
         os << " reason=cell_out_of_range";
