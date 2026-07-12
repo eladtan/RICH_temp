@@ -13,6 +13,8 @@
 
 #include "source/mpi/mpi_commands.hpp"
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/loadBalancing/HilbertLoadBalancer.hpp"
+#include "source/3D/hilbert/rectangular/HilbertRectangularConvertor3D.hpp"
 #include "source/Radiation/CMMC/src/units/units.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
@@ -118,13 +120,54 @@ int main(int argc, char **argv)
         const Vector3D ll(0.0, -0.5, -0.5);
         const Vector3D ur(2.0, 0.5, 0.5);
 
+        if(worldSize <= static_cast<int>(physicalCellCount))
+            throw UniversalError("DDMC zero-cell MPI test requires more ranks than physical cells");
+
+        // MPI_Spread assigns all points to the final rank when points.size() is
+        // smaller than the communicator. That would test empty ranks, but not a
+        // cross-rank DDMC face. Build a deterministic Hilbert partition instead:
+        // one cell belongs to rank 0, one to the final rank, and every rank in
+        // between owns zero cells.
+        const std::vector<Vector3D> globalPoints =
+            CartesianMesh(physicalCellCount, 1, 1, ll, ur);
+        if(globalPoints.size() != physicalCellCount)
+            throw UniversalError("DDMC zero-cell MPI test generated the wrong number of points");
+
+        auto indexing = std::make_shared<const Kernelization3D::Identity>();
+        auto convertor = std::make_shared<HilbertRectangularConvertor3D>(
+            ll, ur, 8);
+        const curve_index_t d0 = convertor->xyz2d(globalPoints[0]);
+        const curve_index_t d1 = convertor->xyz2d(globalPoints[1]);
+        const curve_index_t lowIndex = std::min(d0, d1);
+        const curve_index_t highIndex = std::max(d0, d1);
+        if(highIndex - lowIndex < 2)
+            throw UniversalError("DDMC zero-cell MPI test Hilbert points are not separable");
+
+        const size_t lowPointIndex = d0 < d1 ? 0 : 1;
+        const size_t highPointIndex = 1 - lowPointIndex;
+        const curve_index_t partitionCut =
+            lowIndex + (highIndex - lowIndex) / 2;
+        std::vector<curve_index_t> forcedBoundaries(
+            static_cast<size_t>(worldSize), partitionCut);
+        auto forcedLoadBalancer = std::make_shared<HilbertLoadBalancer>(
+            convertor, indexing, forcedBoundaries);
+
+        if(forcedLoadBalancer->getOwner(globalPoints[lowPointIndex]) != 0 ||
+           forcedLoadBalancer->getOwner(globalPoints[highPointIndex]) != worldSize - 1)
+        {
+            throw UniversalError("DDMC zero-cell MPI test failed to construct the forced partition");
+        }
+
         std::vector<Vector3D> points;
         if(rank == 0)
-            points = CartesianMesh(physicalCellCount, 1, 1, ll, ur);
-        points = MPI_Spread(points, 0, MPI_COMM_WORLD);
+            points.push_back(globalPoints[lowPointIndex]);
+        else if(rank == worldSize - 1)
+            points.push_back(globalPoints[highPointIndex]);
 
         Voronoi3D tess(ll, ur);
-        tess.BuildParallel(points);
+        tess.PresetLoadBalancer(forcedLoadBalancer);
+        tess.BuildParallel(points, std::vector<double>(points.size(), 1.0),
+                           true, true);
 
         const size_t localCellCount = tess.GetPointNo();
         int localZeroRank = localCellCount == 0 ? 1 : 0;
