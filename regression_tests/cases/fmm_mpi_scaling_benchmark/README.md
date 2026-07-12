@@ -14,11 +14,18 @@ with a fixed MPI rank density on every node:
 | 10,000,000 | 8 | 32 |
 | 10,000,000 | 16 | 64 |
 
-Each solver is rebuilt from scratch for every repetition. Reported solve time
-is the minimum, over repetitions, of the maximum rank wall time. The output
-also records mean maximum-rank time, throughput, FMM communication volume,
-FMM peak remote/process storage, quadrupole walk time, 8-to-16-node speedup and
-efficiency, and quadrupole/FMM runtime ratio.
+The benchmark reports two FMM timings.  The cold timing reconstructs the solver,
+local tree, process tree, LET plan, and force solution for every repetition.
+The warm timing keeps one solver alive after a setup solve and measures repeated
+solutions with unchanged positions, verifying that the topology epoch and
+rebuild count remain fixed.  The quadrupole timing remains a complete rebuild
+and solve.  All timings are the minimum, over repetitions, of the maximum rank
+wall time.
+
+The output also records mean timings, throughput, communication volume, peak
+remote/process storage, persistent-memory attribution, bounded M2L operator-cache
+entries/bytes/hits/misses/bypasses, quadrupole walk time, 8-to-16-node scaling,
+and cold-to-warm FMM speedup.
 
 Eight deterministic target particles are checked against a distributed direct
 sum. This accuracy sample is intentionally small so that the direct reference
@@ -49,6 +56,13 @@ The memory-safe default is 4 MPI ranks per node and two complete
 rebuild-and-solve repetitions per solver and configuration. Set
 `FMM_MPI_BENCH_RANKS_PER_NODE` to increase the fixed rank density only after
 checking the stage `max_rss_kib` output. `FMM_MPI_BENCH_REPEATS` controls the
-repetition count and `FMM_MPI_BENCH_MAX_REMOTE_MIB` controls the per-rank FMM
-LET memory budget (512 MiB by default). The formal particle counts remain one
-million and ten million. OpenMP and MKL thread counts default to one.
+repetition count, `FMM_MPI_BENCH_MAX_REMOTE_MIB` controls the per-rank FMM
+LET wire/decoded-payload budget (512 MiB by default), and
+`FMM_MPI_BENCH_OPERATOR_CACHE_MIB` controls the total persistent
+exact-displacement M2L cache budget (64 MiB per rank by default; zero disables
+caching).  The distributed solver assigns two thirds to the local dual-tree
+cache and one third to the LET cache.  Process-tree M2L operators are computed
+in reusable scratch because their count is small.  Both persistent caches are
+strictly bounded: after a cache reaches its share, additional operators are
+computed in reusable scratch rather than retained.  The formal particle counts remain
+one million and ten million. OpenMP and MKL thread counts default to one.

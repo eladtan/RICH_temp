@@ -70,9 +70,11 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     {
         multipoles_.clear();
         locals_.clear();
+        stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
+        stats_.operatorCacheBytes = operatorCache_.bytesOwned();
         stats_.bytesOwned = tree_.bytesOwned() +
             multipoles_.capacity() * sizeof(double) +
-            locals_.capacity() * sizeof(double);
+            locals_.capacity() * sizeof(double) + stats_.operatorCacheBytes;
         stats_.totalSeconds = elapsedSeconds(totalStart);
         return;
     }
@@ -98,7 +100,9 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     const Clock::time_point interactionStart = Clock::now();
     FmmDualTreeTraversal::run(tree_, tree_, positions, positions, masses, layout,
                               multipoles_, locals_, true, options_.thetaCritical,
-                              acceleration, positiveKernelPotential, stats_);
+                              acceleration, positiveKernelPotential,
+                              operatorCache_, options_.maxOperatorCacheBytes,
+                              stats_);
     stats_.interactionSeconds = elapsedSeconds(interactionStart);
 
     const Clock::time_point downwardStart = Clock::now();
@@ -106,10 +110,13 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
                         positiveKernelPotential);
     stats_.downwardSeconds = elapsedSeconds(downwardStart);
 
+    stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
+    stats_.operatorCacheBytes = operatorCache_.bytesOwned();
     stats_.bytesOwned = tree_.bytesOwned() +
         multipoles_.capacity() * sizeof(double) +
         locals_.capacity() * sizeof(double) +
-        stats_.maxTraversalStack * 2 * sizeof(std::size_t);
+        stats_.maxTraversalStack * 2 * sizeof(std::size_t) +
+        stats_.operatorCacheBytes;
 
     if(options_.validateFinite)
     {

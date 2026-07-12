@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+TEST_ID="fmm_operator_cache"
+TAGS="serial"
+BUILD_TEST_NAME="regression_tests/cases/fmm_operator_cache"
+RUN_DIR_REL="regression_tests/cases/fmm_operator_cache"
+CHECK_FUNCTION="check_fmm_operator_cache_case"
+RUN_MODE="direct"
+RUN_COMMAND='"${RICH_BIN}"'

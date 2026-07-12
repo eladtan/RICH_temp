@@ -2,9 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <limits>
-#include <unordered_map>
 #include <utility>
 
 #include "3D/gravity/fmm/FmmKernels.hpp"
@@ -17,31 +15,6 @@ enum class RejectionReason
     SameNode,
     Overlap,
     Ratio
-};
-
-struct DisplacementKey
-{
-    double x;
-    double y;
-    double z;
-
-    bool operator==(const DisplacementKey& other) const
-    {
-        return x == other.x && y == other.y && z == other.z;
-    }
-};
-
-struct DisplacementKeyHash
-{
-    std::size_t operator()(const DisplacementKey& key) const
-    {
-        std::size_t result = std::hash<double>()(key.x);
-        result ^= std::hash<double>()(key.y) + 0x9e3779b9u +
-            (result << 6u) + (result >> 2u);
-        result ^= std::hash<double>()(key.z) + 0x9e3779b9u +
-            (result << 6u) + (result >> 2u);
-        return result;
-    }
 };
 
 double centerDistance(const FmmNode& first, const FmmNode& second)
@@ -96,6 +69,8 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
                                double thetaCritical,
                                std::vector<Vector3D>& acceleration,
                                std::vector<double>* positiveKernelPotential,
+                               FmmM2LOperatorCache& operatorCache,
+                               std::size_t maxOperatorCacheBytes,
                                FmmSolveStats& stats)
 {
     const std::vector<FmmNode>& targetNodes = targetTree.nodes();
@@ -106,12 +81,16 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
     typedef std::pair<std::size_t, std::size_t> NodePair;
     std::vector<NodePair> stack;
     stack.push_back(NodePair(0, 0));
-    std::unordered_map<DisplacementKey, std::vector<double>, DisplacementKeyHash>
-        translationCache;
-    if(targetNodes.size() <= std::numeric_limits<std::size_t>::max() / 8)
-        translationCache.reserve(targetNodes.size() * 8);
+    const std::size_t entryHint =
+        targetNodes.size() <= std::numeric_limits<std::size_t>::max() / 8 ?
+        targetNodes.size() * 8 : std::numeric_limits<std::size_t>::max();
+    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
+                            entryHint);
+    operatorCache.beginPhase();
     std::vector<double> derivativeScratch;
     derivativeScratch.reserve(layout.coefficientCount());
+    std::vector<double> uncachedOperator;
+    uncachedOperator.reserve(layout.m2lTerms().size());
 
     while(!stack.empty())
     {
@@ -128,17 +107,11 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
         if(reason == RejectionReason::None)
         {
             const Vector3D displacement = target.center - source.center;
-            const DisplacementKey key =
-                {displacement.x, displacement.y, displacement.z};
-            const auto inserted =
-                translationCache.emplace(key, std::vector<double>());
-            if(inserted.second)
-            {
-                FmmKernels::computeM2LOperator(
-                    displacement, layout, derivativeScratch, inserted.first->second);
-            }
+            const std::vector<double>& translationOperator =
+                operatorCache.get(displacement, layout, derivativeScratch,
+                                  uncachedOperator);
             FmmKernels::translateM2L(source, target, layout, sourceMultipoles,
-                                     targetLocals, inserted.first->second);
+                                     targetLocals, translationOperator);
             ++stats.m2lCount;
             continue;
         }
@@ -177,4 +150,11 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
             }
         }
     }
+
+    stats.localOperatorCacheBytes = operatorCache.bytesOwned();
+    stats.localOperatorCacheEntries = operatorCache.entries();
+    stats.localOperatorCacheMaxEntries = operatorCache.maxEntries();
+    stats.localOperatorCacheHits = operatorCache.hits();
+    stats.localOperatorCacheMisses = operatorCache.misses();
+    stats.localOperatorCacheBypasses = operatorCache.bypasses();
 }

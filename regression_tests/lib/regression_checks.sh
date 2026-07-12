@@ -1772,6 +1772,74 @@ check_fmm_peer_exchange_rebuild_case() {
     return 0
 }
 
+check_fmm_operator_cache_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_operator_cache_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_operator_cache_metrics.txt"
+        return 1
+    fi
+
+    if ! awk '
+        function finite_number(v) {
+            return v ~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/ &&
+                   (v + 0) == (v + 0)
+        }
+        { value[$1] = $2 }
+        END {
+            required[1] = "particles"
+            required[2] = "cache_budget_bytes"
+            required[3] = "first_cache_bytes"
+            required[4] = "first_cache_entries"
+            required[5] = "first_cache_max_entries"
+            required[6] = "first_cache_misses"
+            required[7] = "first_cache_bypasses"
+            required[8] = "second_cache_hits"
+            required[9] = "zero_cache_bytes"
+            required[10] = "zero_cache_entries"
+            required[11] = "zero_cache_misses"
+            required[12] = "zero_cache_bypasses"
+            required[13] = "repeated_max_difference"
+            required[14] = "fallback_max_difference"
+            required[15] = "pass"
+            for (i = 1; i <= 15; ++i)
+                if (!(required[i] in value)) exit 1
+            if (!(value["particles"] > 0 && value["cache_budget_bytes"] > 0 &&
+                  value["first_cache_bytes"] <= value["cache_budget_bytes"] &&
+                  value["first_cache_entries"] <= value["first_cache_max_entries"] &&
+                  value["first_cache_misses"] > 0 &&
+                  value["first_cache_bypasses"] > 0 &&
+                  value["second_cache_hits"] > 0 &&
+                  value["zero_cache_bytes"] == 0 &&
+                  value["zero_cache_entries"] == 0 &&
+                  value["zero_cache_misses"] > 0 &&
+                  value["zero_cache_bypasses"] == value["zero_cache_misses"] &&
+                  finite_number(value["repeated_max_difference"]) &&
+                  finite_number(value["fallback_max_difference"]) &&
+                  value["repeated_max_difference"] <= 1e-13 &&
+                  value["fallback_max_difference"] <= 1e-13 &&
+                  value["pass"] == 1)) exit 1
+        }
+    ' "$metrics_file"; then
+        set_check_msg "bounded FMM operator-cache validation failed"
+        return 1
+    fi
+
+    local cache_bytes warm_hits bypasses
+    cache_bytes=$(awk '$1 == "first_cache_bytes" { print $2 }' "$metrics_file")
+    warm_hits=$(awk '$1 == "second_cache_hits" { print $2 }' "$metrics_file")
+    bypasses=$(awk '$1 == "first_cache_bypasses" { print $2 }' "$metrics_file")
+    set_check_msg "Bounded FMM operator cache passed (bytes=${cache_bytes}, warm_hits=${warm_hits}, bypasses=${bypasses})"
+    return 0
+}
+
 check_fmm_mpi_scaling_benchmark_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -1839,8 +1907,33 @@ check_fmm_mpi_scaling_benchmark_case() {
             quad_checksum = $25
             finite_flag = $26
             run_pass = $27
+            warm_best = $28
+            warm_mean = $29
+            cold_over_warm = $30
+            persistent_bytes = $31 + 0
+            local_tree_bytes = $32 + 0
+            local_multipole_bytes = $33 + 0
+            local_local_bytes = $34 + 0
+            let_plan_bytes = $35 + 0
+            operator_cache_bytes = $36 + 0
+            operator_cache_budget = $37 + 0
+            local_cache_bytes = $38 + 0
+            local_cache_entries = $39 + 0
+            local_cache_max_entries = $40 + 0
+            local_cache_hits = $41 + 0
+            local_cache_misses = $42 + 0
+            local_cache_bypasses = $43 + 0
+            let_cache_bytes = $44 + 0
+            let_cache_entries = $45 + 0
+            let_cache_max_entries = $46 + 0
+            let_cache_hits = $47 + 0
+            let_cache_misses = $48 + 0
+            let_cache_bypasses = $49 + 0
+            process_cache_misses = $50 + 0
+            process_cache_bypasses = $51 + 0
+            topology_reused = $52 + 0
 
-            if (NF != 27 ||
+            if (NF != 52 ||
                 !((particles == 1000000 || particles == 10000000) &&
                   (nodes == 8 || nodes == 16))) bad = 1
             key = particles ":" nodes
@@ -1856,12 +1949,31 @@ check_fmm_mpi_scaling_benchmark_case() {
                 !finite_number(fmm_error) || !finite_number(quad_error) ||
                 !finite_number(speedup) || !finite_number(fmm_rate) ||
                 !finite_number(quad_rate) || !finite_number(quad_walk) ||
-                !finite_number(fmm_checksum) || !finite_number(quad_checksum)) bad = 1
-            if (!(fmm_best > 0 && fmm_mean > 0 && quad_best > 0 &&
+                !finite_number(fmm_checksum) || !finite_number(quad_checksum) ||
+                !finite_number(warm_best) || !finite_number(warm_mean) ||
+                !finite_number(cold_over_warm)) bad = 1
+            if (!(fmm_best > 0 && fmm_mean > 0 && warm_best > 0 &&
+                  warm_mean > 0 && cold_over_warm > 0 && quad_best > 0 &&
                   quad_mean > 0 && speedup > 0 && fmm_rate > 0 &&
                   quad_rate > 0 && quad_walk >= 0)) bad = 1
+            if (!(persistent_bytes > 0 && local_tree_bytes > 0 &&
+                  local_multipole_bytes > 0 && local_local_bytes > 0 &&
+                  let_plan_bytes > 0 && operator_cache_budget >= 0 &&
+                  operator_cache_bytes <= operator_cache_budget &&
+                  local_cache_bytes <= operator_cache_bytes &&
+                  let_cache_bytes <= operator_cache_bytes &&
+                  local_cache_entries <= local_cache_max_entries &&
+                  let_cache_entries <= let_cache_max_entries &&
+                  local_cache_hits >= 0 && local_cache_misses >= 0 &&
+                  local_cache_bypasses >= 0 &&
+                  local_cache_bypasses <= local_cache_misses &&
+                  let_cache_hits >= 0 && let_cache_misses >= 0 &&
+                  let_cache_bypasses >= 0 &&
+                  let_cache_bypasses <= let_cache_misses &&
+                  process_cache_misses >= 0 &&
+                  process_cache_bypasses == process_cache_misses)) bad = 1
             if (!(fmm_error < 5e-3 && quad_error < 5e-2)) bad = 1
-            if (finite_flag != 1 || run_pass != 1) bad = 1
+            if (finite_flag != 1 || run_pass != 1 || topology_reused != 1) bad = 1
         }
         END {
             complete = rows == 4 && rpn_count == 1 &&
@@ -1882,7 +1994,15 @@ check_fmm_mpi_scaling_benchmark_case() {
         quadrupole_small_8_to_16_speedup \
         quadrupole_small_8_to_16_efficiency \
         quadrupole_large_8_to_16_speedup \
-        quadrupole_large_8_to_16_efficiency; do
+        quadrupole_large_8_to_16_efficiency \
+        fmm_warm_small_8_to_16_speedup \
+        fmm_warm_small_8_to_16_efficiency \
+        fmm_warm_large_8_to_16_speedup \
+        fmm_warm_large_8_to_16_efficiency \
+        fmm_small_8_cold_to_warm_speedup \
+        fmm_small_16_cold_to_warm_speedup \
+        fmm_large_8_cold_to_warm_speedup \
+        fmm_large_16_cold_to_warm_speedup; do
         local value
         value=$(awk -v key="$metric" '$1 == key { print $2 }' "$metrics_file")
         if [[ -z "$value" ]] || ! is_finite_number "$value" ||

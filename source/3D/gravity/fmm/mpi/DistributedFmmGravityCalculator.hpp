@@ -11,6 +11,7 @@
 
 #include "3D/gravity/fmm/FmmConfig.hpp"
 #include "3D/gravity/fmm/FmmDiagnostics.hpp"
+#include "3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "3D/gravity/fmm/FmmRootGeometry.hpp"
 #include "3D/gravity/fmm/FmmTree.hpp"
 #include "3D/gravity/fmm/mpi/FmmLetPlan.hpp"
@@ -73,6 +74,7 @@ private:
     std::uint64_t topologyRebuildCount_;
 
     FmmTree localTree_;
+    FmmM2LOperatorCache localOperatorCache_;
     std::vector<double> localMultipoles_;
     std::vector<double> localLocals_;
     std::vector<FmmRankRootDescriptor> rootDescriptors_;

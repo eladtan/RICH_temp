@@ -10,6 +10,7 @@ fi
 RICH_BIN="$1"
 REPEATS="${FMM_MPI_BENCH_REPEATS:-2}"
 FMM_MAX_REMOTE_MIB="${FMM_MPI_BENCH_MAX_REMOTE_MIB:-512}"
+FMM_OPERATOR_CACHE_MIB="${FMM_MPI_BENCH_OPERATOR_CACHE_MIB:-64}"
 SMALL_PARTICLES=1000000
 LARGE_PARTICLES=10000000
 ALLOCATED_NODES="${SLURM_JOB_NUM_NODES:-0}"
@@ -25,6 +26,10 @@ if ! [[ "${REPEATS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "${FMM_MAX_REMOTE_MIB}" =~ ^[1-9][0-9]*$ ]]; then
     echo "FMM_MPI_BENCH_MAX_REMOTE_MIB must be a positive integer" >&2
+    exit 2
+fi
+if ! [[ "${FMM_OPERATOR_CACHE_MIB}" =~ ^[0-9]+$ ]]; then
+    echo "FMM_MPI_BENCH_OPERATOR_CACHE_MIB must be a non-negative integer" >&2
     exit 2
 fi
 if (( ALLOCATED_NODES < 16 )); then
@@ -58,7 +63,7 @@ run_case() {
     local ranks=$((nodes * RANKS_PER_NODE))
     local output="fmm_mpi_scaling_benchmark_${particles}_nodes${nodes}.txt"
 
-    echo "=== particles=${particles}, nodes=${nodes}, ranks=${ranks}, ranks_per_node=${RANKS_PER_NODE}, repeats=${REPEATS}, fmm_max_remote_mib=${FMM_MAX_REMOTE_MIB} ==="
+    echo "=== particles=${particles}, nodes=${nodes}, ranks=${ranks}, ranks_per_node=${RANKS_PER_NODE}, repeats=${REPEATS}, fmm_max_remote_mib=${FMM_MAX_REMOTE_MIB}, fmm_operator_cache_mib=${FMM_OPERATOR_CACHE_MIB} ==="
     if ! mpirun -np "${ranks}" \
         --map-by "ppr:${RANKS_PER_NODE}:node" \
         --bind-to core \
@@ -68,6 +73,7 @@ run_case() {
         --expected-ranks-per-node "${RANKS_PER_NODE}" \
         --repeats "${REPEATS}" \
         --fmm-max-remote-mib "${FMM_MAX_REMOTE_MIB}" \
+        --fmm-operator-cache-mib "${FMM_OPERATOR_CACHE_MIB}" \
         --output "${output}"; then
         echo "Benchmark MPI subcase failed before producing ${output}." >&2
         echo "Last benchmark_stage line identifies the failing phase." >&2
@@ -90,7 +96,7 @@ run_case "${LARGE_PARTICLES}" 8
 run_case "${LARGE_PARTICLES}" 16
 
 {
-    echo "columns particles expected_nodes ranks unique_nodes ranks_per_node repeats local_particles_min local_particles_max fmm_best_max_seconds fmm_mean_max_seconds quadrupole_best_max_seconds quadrupole_mean_max_seconds fmm_probe_scaled_error quadrupole_probe_scaled_error quadrupole_over_fmm_speedup fmm_particles_per_second quadrupole_particles_per_second fmm_bytes_sent fmm_bytes_received fmm_peak_remote_bytes fmm_peak_process_bytes quadrupole_walk_max_seconds fmm_checksum quadrupole_checksum finite run_pass"
+    echo "columns particles expected_nodes ranks unique_nodes ranks_per_node repeats local_particles_min local_particles_max fmm_best_max_seconds fmm_mean_max_seconds quadrupole_best_max_seconds quadrupole_mean_max_seconds fmm_probe_scaled_error quadrupole_probe_scaled_error quadrupole_over_fmm_speedup fmm_particles_per_second quadrupole_particles_per_second fmm_bytes_sent fmm_bytes_received fmm_peak_remote_bytes fmm_peak_process_bytes quadrupole_walk_max_seconds fmm_checksum quadrupole_checksum finite run_pass fmm_warm_best_max_seconds fmm_warm_mean_max_seconds fmm_cold_over_warm_speedup fmm_persistent_bytes fmm_local_tree_bytes fmm_local_multipole_bytes fmm_local_local_bytes fmm_let_plan_bytes fmm_operator_cache_bytes fmm_operator_cache_budget_bytes fmm_local_operator_cache_bytes fmm_local_operator_cache_entries fmm_local_operator_cache_max_entries fmm_local_operator_cache_hits fmm_local_operator_cache_misses fmm_local_operator_cache_bypasses fmm_let_operator_cache_bytes fmm_let_operator_cache_entries fmm_let_operator_cache_max_entries fmm_let_operator_cache_hits fmm_let_operator_cache_misses fmm_let_operator_cache_bypasses fmm_process_operator_cache_misses fmm_process_operator_cache_bypasses fmm_topology_reused"
     for particles in "${SMALL_PARTICLES}" "${LARGE_PARTICLES}"; do
         for nodes in 8 16; do
             grep '^row ' "fmm_mpi_scaling_benchmark_${particles}_nodes${nodes}.txt"
@@ -106,6 +112,10 @@ $1 == "row" {
     nodes = $3
     fmm[particles, nodes] = $10
     quad[particles, nodes] = $12
+    warm[particles, nodes] = $28
+    cold_to_warm[particles, nodes] = $30
+    cache_bytes[particles, nodes] = $36
+    cache_bypasses[particles, nodes] = $43 + $49 + $51
     if (count == 1) ranks_per_node = $6
     if ($6 != ranks_per_node) placement_ok = 0
     run_pass = run_pass && ($27 == 1)
@@ -128,6 +138,8 @@ END {
     fmm_large_speedup = fmm[large, 8] / fmm[large, 16]
     quad_small_speedup = quad[small, 8] / quad[small, 16]
     quad_large_speedup = quad[large, 8] / quad[large, 16]
+    warm_small_speedup = warm[small, 8] / warm[small, 16]
+    warm_large_speedup = warm[large, 8] / warm[large, 16]
 
     print "row_count", count
     print "small_particles", small
@@ -141,6 +153,24 @@ END {
     print "quadrupole_small_8_to_16_efficiency", quad_small_speedup / 2.0
     print "quadrupole_large_8_to_16_speedup", quad_large_speedup
     print "quadrupole_large_8_to_16_efficiency", quad_large_speedup / 2.0
+    print "fmm_warm_small_8_to_16_speedup", warm_small_speedup
+    print "fmm_warm_small_8_to_16_efficiency", warm_small_speedup / 2.0
+    print "fmm_warm_large_8_to_16_speedup", warm_large_speedup
+    print "fmm_warm_large_8_to_16_efficiency", warm_large_speedup / 2.0
+    print "fmm_small_8_cold_to_warm_speedup", cold_to_warm[small, 8]
+    print "fmm_small_16_cold_to_warm_speedup", cold_to_warm[small, 16]
+    print "fmm_large_8_cold_to_warm_speedup", cold_to_warm[large, 8]
+    print "fmm_large_16_cold_to_warm_speedup", cold_to_warm[large, 16]
+    print "fmm_operator_cache_bytes_max", \
+        (cache_bytes[small,8] > cache_bytes[small,16] ? \
+         (cache_bytes[small,8] > cache_bytes[large,8] ? \
+          (cache_bytes[small,8] > cache_bytes[large,16] ? cache_bytes[small,8] : cache_bytes[large,16]) : \
+          (cache_bytes[large,8] > cache_bytes[large,16] ? cache_bytes[large,8] : cache_bytes[large,16])) : \
+         (cache_bytes[small,16] > cache_bytes[large,8] ? \
+          (cache_bytes[small,16] > cache_bytes[large,16] ? cache_bytes[small,16] : cache_bytes[large,16]) : \
+          (cache_bytes[large,8] > cache_bytes[large,16] ? cache_bytes[large,8] : cache_bytes[large,16])))
+    print "fmm_operator_cache_bypasses_large_8", cache_bypasses[large,8]
+    print "fmm_operator_cache_bypasses_large_16", cache_bypasses[large,16]
     print "pass", (run_pass ? 1 : 0)
     if (!run_pass) exit 1
 }

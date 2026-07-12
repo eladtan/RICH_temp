@@ -6,6 +6,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "3D/gravity/fmm/FmmConfig.hpp"
 #include "3D/gravity/fmm/FmmDiagnostics.hpp"
+#include "3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "3D/gravity/fmm/FmmTree.hpp"
 
 class SerialFmmGravityCalculator
@@ -30,6 +31,7 @@ private:
     FmmGravityOptions options_;
     FmmSolveStats stats_;
     FmmTree tree_;
+    FmmM2LOperatorCache operatorCache_;
     std::vector<double> multipoles_;
     std::vector<double> locals_;
 };

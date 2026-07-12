@@ -15,6 +15,12 @@ struct FmmGravityOptions
     int maxDepth = FMM_MAX_TREE_DEPTH;
     bool computePotential = false;
     bool validateFinite = true;
+
+    // Total persistent M2L operator-cache budget.  Exact displacement keys are
+    // retained up to this cap; misses beyond it are computed in reusable
+    // scratch storage.  Keep this field last for aggregate compatibility.
+    std::size_t maxOperatorCacheBytes =
+        static_cast<std::size_t>(64) * 1024 * 1024;
 };
 
 inline std::size_t fmmCoefficientCount(int expansionOrder)

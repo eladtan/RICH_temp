@@ -11,6 +11,7 @@
 #include <mpi.h>
 
 #include "3D/gravity/fmm/FmmDiagnostics.hpp"
+#include "3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "3D/gravity/fmm/FmmTaylorExpansion.hpp"
 #include "3D/gravity/fmm/FmmTree.hpp"
 #include "3D/gravity/fmm/mpi/FmmPackets.hpp"
@@ -54,6 +55,7 @@ public:
                  std::vector<Vector3D>& acceleration,
                  std::vector<double>* positiveKernelPotential,
                  std::size_t maxRemoteBytes,
+                 std::size_t maxOperatorCacheBytes,
                  FmmSolveStats& stats) const;
 
     const std::vector<FmmLetM2LInteraction>& m2lInteractions() const
@@ -76,30 +78,12 @@ private:
         std::uint64_t sourceKey = 0;
     };
 
-    struct OperatorKey
-    {
-        std::uint64_t x = 0;
-        std::uint64_t y = 0;
-        std::uint64_t z = 0;
-
-        bool operator==(const OperatorKey& other) const
-        {
-            return x == other.x && y == other.y && z == other.z;
-        }
-    };
-
-    struct OperatorKeyHash
-    {
-        std::size_t operator()(const OperatorKey& key) const;
-    };
-
     static FmmRemoteNodeDescriptor descriptorForNode(const FmmNode& node,
                                                        int sourceRank,
                                                        std::uint64_t topologyEpoch);
     static bool admissible(const FmmNode& target,
                            const FmmRemoteNodeDescriptor& source,
                            double thetaCritical);
-    static OperatorKey operatorKey(const Vector3D& displacement);
 
     std::unordered_map<std::uint64_t, std::size_t> localNodeByKey_;
     std::unordered_map<int,
@@ -108,8 +92,7 @@ private:
     std::vector<FmmLetP2PInteraction> p2pInteractions_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
-    mutable std::unordered_map<OperatorKey, std::vector<double>, OperatorKeyHash>
-        operatorCache_;
+    mutable FmmM2LOperatorCache operatorCache_;
     FmmPeerExchange exchange_;
     MPI_Comm comm_;
     int rank_;

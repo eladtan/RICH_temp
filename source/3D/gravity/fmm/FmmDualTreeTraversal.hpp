@@ -1,9 +1,11 @@
 #ifndef FMM_DUAL_TREE_TRAVERSAL_HPP
 #define FMM_DUAL_TREE_TRAVERSAL_HPP
 
+#include <cstddef>
 #include <vector>
 
 #include "3D/gravity/fmm/FmmDiagnostics.hpp"
+#include "3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "3D/gravity/fmm/FmmTaylorExpansion.hpp"
 #include "3D/gravity/fmm/FmmTree.hpp"
 
@@ -22,6 +24,8 @@ public:
                     double thetaCritical,
                     std::vector<Vector3D>& acceleration,
                     std::vector<double>* positiveKernelPotential,
+                    FmmM2LOperatorCache& operatorCache,
+                    std::size_t maxOperatorCacheBytes,
                     FmmSolveStats& stats);
 };
 

@@ -40,6 +40,7 @@ struct Options
     int expectedRanksPerNode = 0;
     int repeats = 2;
     std::size_t fmmMaxRemoteBytes = 512u * kMebibyte;
+    std::size_t fmmMaxOperatorCacheBytes = 64u * kMebibyte;
     std::string outputPath;
 };
 
@@ -61,6 +62,8 @@ struct SolverResult
 {
     double bestMaxSeconds = std::numeric_limits<double>::infinity();
     double meanMaxSeconds = 0.0;
+    double warmBestMaxSeconds = std::numeric_limits<double>::infinity();
+    double warmMeanMaxSeconds = 0.0;
     double walkMaxSeconds = std::numeric_limits<double>::infinity();
     double probeScaledError = std::numeric_limits<double>::infinity();
     double checksum = 0.0;
@@ -68,6 +71,28 @@ struct SolverResult
     std::uint64_t bytesReceived = 0;
     std::uint64_t peakRemoteBytes = 0;
     std::uint64_t peakProcessBytes = 0;
+    std::uint64_t persistentBytes = 0;
+    std::uint64_t localTreeBytes = 0;
+    std::uint64_t localMultipoleBytes = 0;
+    std::uint64_t localLocalBytes = 0;
+    std::uint64_t letPlanBytes = 0;
+    std::uint64_t operatorCacheBytes = 0;
+    std::uint64_t operatorCacheBudgetBytes = 0;
+    std::uint64_t localOperatorCacheBytes = 0;
+    std::uint64_t localOperatorCacheEntries = 0;
+    std::uint64_t localOperatorCacheMaxEntries = 0;
+    std::uint64_t localOperatorCacheHits = 0;
+    std::uint64_t localOperatorCacheMisses = 0;
+    std::uint64_t localOperatorCacheBypasses = 0;
+    std::uint64_t letOperatorCacheBytes = 0;
+    std::uint64_t letOperatorCacheEntries = 0;
+    std::uint64_t letOperatorCacheMaxEntries = 0;
+    std::uint64_t letOperatorCacheHits = 0;
+    std::uint64_t letOperatorCacheMisses = 0;
+    std::uint64_t letOperatorCacheBypasses = 0;
+    std::uint64_t processOperatorCacheMisses = 0;
+    std::uint64_t processOperatorCacheBypasses = 0;
+    bool topologyReused = true;
     bool finite = true;
 };
 
@@ -187,6 +212,16 @@ Options parseOptions(int argc, char** argv)
                     "fmm_mpi_scaling_benchmark: invalid FMM memory budget");
             result.fmmMaxRemoteBytes = static_cast<std::size_t>(value) *
                                        kMebibyte;
+        }
+        else if(arg == "--fmm-operator-cache-mib" && i + 1 < argc)
+        {
+            const unsigned long long value = std::strtoull(argv[++i], nullptr, 10);
+            if(value > static_cast<unsigned long long>(
+                   std::numeric_limits<std::size_t>::max() / kMebibyte))
+                throw UniversalError(
+                    "fmm_mpi_scaling_benchmark: invalid operator cache budget");
+            result.fmmMaxOperatorCacheBytes =
+                static_cast<std::size_t>(value) * kMebibyte;
         }
         else if(arg == "--output" && i + 1 < argc)
             result.outputPath = argv[++i];
@@ -425,30 +460,125 @@ void updateTiming(double localSeconds,
     sumMaximum += maximum;
 }
 
+void accumulateFmmStats(const FmmSolveStats& stats,
+                        SolverResult& result,
+                        const MPI_Comm& comm)
+{
+    const unsigned long long localSums[10] = {
+        static_cast<unsigned long long>(stats.bytesSent),
+        static_cast<unsigned long long>(stats.bytesReceived),
+        static_cast<unsigned long long>(stats.localOperatorCacheHits),
+        static_cast<unsigned long long>(stats.localOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.localOperatorCacheBypasses),
+        static_cast<unsigned long long>(stats.letOperatorCacheHits),
+        static_cast<unsigned long long>(stats.letOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.letOperatorCacheBypasses),
+        static_cast<unsigned long long>(stats.processOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.processOperatorCacheBypasses)};
+    unsigned long long globalSums[10] = {};
+    MPI_Allreduce(localSums, globalSums, 10, MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, comm);
+
+    const unsigned long long localMaxima[15] = {
+        static_cast<unsigned long long>(stats.peakRemoteBytes),
+        static_cast<unsigned long long>(stats.peakProcessBytes),
+        static_cast<unsigned long long>(stats.bytesOwned),
+        static_cast<unsigned long long>(stats.localTreeBytes),
+        static_cast<unsigned long long>(stats.localMultipoleBytes),
+        static_cast<unsigned long long>(stats.localLocalBytes),
+        static_cast<unsigned long long>(stats.letPlanBytes),
+        static_cast<unsigned long long>(stats.operatorCacheBytes),
+        static_cast<unsigned long long>(stats.operatorCacheBudgetBytes),
+        static_cast<unsigned long long>(stats.localOperatorCacheBytes),
+        static_cast<unsigned long long>(stats.localOperatorCacheEntries),
+        static_cast<unsigned long long>(stats.localOperatorCacheMaxEntries),
+        static_cast<unsigned long long>(stats.letOperatorCacheBytes),
+        static_cast<unsigned long long>(stats.letOperatorCacheEntries),
+        static_cast<unsigned long long>(stats.letOperatorCacheMaxEntries)};
+    unsigned long long globalMaxima[15] = {};
+    MPI_Allreduce(localMaxima, globalMaxima, 15, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, comm);
+
+    result.bytesSent = std::max(result.bytesSent,
+        static_cast<std::uint64_t>(globalSums[0]));
+    result.bytesReceived = std::max(result.bytesReceived,
+        static_cast<std::uint64_t>(globalSums[1]));
+    result.localOperatorCacheHits = std::max(result.localOperatorCacheHits,
+        static_cast<std::uint64_t>(globalSums[2]));
+    result.localOperatorCacheMisses = std::max(result.localOperatorCacheMisses,
+        static_cast<std::uint64_t>(globalSums[3]));
+    result.localOperatorCacheBypasses = std::max(result.localOperatorCacheBypasses,
+        static_cast<std::uint64_t>(globalSums[4]));
+    result.letOperatorCacheHits = std::max(result.letOperatorCacheHits,
+        static_cast<std::uint64_t>(globalSums[5]));
+    result.letOperatorCacheMisses = std::max(result.letOperatorCacheMisses,
+        static_cast<std::uint64_t>(globalSums[6]));
+    result.letOperatorCacheBypasses = std::max(result.letOperatorCacheBypasses,
+        static_cast<std::uint64_t>(globalSums[7]));
+    result.processOperatorCacheMisses = std::max(result.processOperatorCacheMisses,
+        static_cast<std::uint64_t>(globalSums[8]));
+    result.processOperatorCacheBypasses = std::max(result.processOperatorCacheBypasses,
+        static_cast<std::uint64_t>(globalSums[9]));
+    result.peakRemoteBytes = std::max(result.peakRemoteBytes,
+        static_cast<std::uint64_t>(globalMaxima[0]));
+    result.peakProcessBytes = std::max(result.peakProcessBytes,
+        static_cast<std::uint64_t>(globalMaxima[1]));
+    result.persistentBytes = std::max(result.persistentBytes,
+        static_cast<std::uint64_t>(globalMaxima[2]));
+    result.localTreeBytes = std::max(result.localTreeBytes,
+        static_cast<std::uint64_t>(globalMaxima[3]));
+    result.localMultipoleBytes = std::max(result.localMultipoleBytes,
+        static_cast<std::uint64_t>(globalMaxima[4]));
+    result.localLocalBytes = std::max(result.localLocalBytes,
+        static_cast<std::uint64_t>(globalMaxima[5]));
+    result.letPlanBytes = std::max(result.letPlanBytes,
+        static_cast<std::uint64_t>(globalMaxima[6]));
+    result.operatorCacheBytes = std::max(result.operatorCacheBytes,
+        static_cast<std::uint64_t>(globalMaxima[7]));
+    result.operatorCacheBudgetBytes = std::max(result.operatorCacheBudgetBytes,
+        static_cast<std::uint64_t>(globalMaxima[8]));
+    result.localOperatorCacheBytes = std::max(result.localOperatorCacheBytes,
+        static_cast<std::uint64_t>(globalMaxima[9]));
+    result.localOperatorCacheEntries = std::max(result.localOperatorCacheEntries,
+        static_cast<std::uint64_t>(globalMaxima[10]));
+    result.localOperatorCacheMaxEntries = std::max(result.localOperatorCacheMaxEntries,
+        static_cast<std::uint64_t>(globalMaxima[11]));
+    result.letOperatorCacheBytes = std::max(result.letOperatorCacheBytes,
+        static_cast<std::uint64_t>(globalMaxima[12]));
+    result.letOperatorCacheEntries = std::max(result.letOperatorCacheEntries,
+        static_cast<std::uint64_t>(globalMaxima[13]));
+    result.letOperatorCacheMaxEntries = std::max(result.letOperatorCacheMaxEntries,
+        static_cast<std::uint64_t>(globalMaxima[14]));
+}
+
 SolverResult runFmm(const LocalParticles& local,
                     const ProbeReference& reference,
                     int repeats,
                     std::size_t maxRemoteBytes,
+                    std::size_t maxOperatorCacheBytes,
                     const MPI_Comm& comm)
 {
+    FmmGravityOptions options;
+    options.expansionOrder = 4;
+    options.thetaCritical = 0.5;
+    options.leafCapacity = 32;
+    options.computePotential = false;
+    options.validateFinite = true;
+    FmmDistributedOptions distributed;
+    options.maxOperatorCacheBytes = maxOperatorCacheBytes;
+    distributed.maxRemoteBytes = maxRemoteBytes;
+
     SolverResult result;
-    double sumMaximum = 0.0;
+    double coldSumMaximum = 0.0;
     for(int repeat = 0; repeat < repeats; ++repeat)
     {
-        reportStage("fmm_repeat_" + std::to_string(repeat) + "_begin", comm);
+        reportStage("fmm_cold_repeat_" + std::to_string(repeat) +
+                    "_begin", comm);
         MPI_Barrier(comm);
         const double start = MPI_Wtime();
         std::vector<Vector3D> acceleration;
         FmmSolveStats stats;
         {
-            FmmGravityOptions options;
-            options.expansionOrder = 4;
-            options.thetaCritical = 0.5;
-            options.leafCapacity = 32;
-            options.computePotential = false;
-            options.validateFinite = true;
-            FmmDistributedOptions distributed;
-            distributed.maxRemoteBytes = maxRemoteBytes;
             DistributedFmmGravityCalculator solver(options, distributed, comm);
             solver.solve(local.positions, local.masses, local.ids,
                          Vector3D(-1, -1, -1), Vector3D(1, 1, 1),
@@ -456,7 +586,8 @@ SolverResult runFmm(const LocalParticles& local,
             stats = solver.stats();
         }
         const double localSeconds = MPI_Wtime() - start;
-        updateTiming(localSeconds, result.bestMaxSeconds, sumMaximum, comm);
+        updateTiming(localSeconds, result.bestMaxSeconds, coldSumMaximum, comm);
+        accumulateFmmStats(stats, result, comm);
 
         const int localFinite = finiteAcceleration(acceleration) ? 1 : 0;
         int globalFinite = 0;
@@ -470,40 +601,66 @@ SolverResult runFmm(const LocalParticles& local,
             result.checksum = accelerationChecksum(acceleration, local.ids, comm);
         }
 
-        unsigned long long localSent =
-            static_cast<unsigned long long>(stats.bytesSent);
-        unsigned long long localReceived =
-            static_cast<unsigned long long>(stats.bytesReceived);
-        unsigned long long localPeakRemote =
-            static_cast<unsigned long long>(stats.peakRemoteBytes);
-        unsigned long long localPeakProcess =
-            static_cast<unsigned long long>(stats.peakProcessBytes);
-        unsigned long long globalSent = 0;
-        unsigned long long globalReceived = 0;
-        unsigned long long globalPeakRemote = 0;
-        unsigned long long globalPeakProcess = 0;
-        MPI_Allreduce(&localSent, &globalSent, 1, MPI_UNSIGNED_LONG_LONG,
-                      MPI_SUM, comm);
-        MPI_Allreduce(&localReceived, &globalReceived, 1,
-                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
-        MPI_Allreduce(&localPeakRemote, &globalPeakRemote, 1,
-                      MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
-        MPI_Allreduce(&localPeakProcess, &globalPeakProcess, 1,
-                      MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
-        result.bytesSent = std::max(result.bytesSent,
-            static_cast<std::uint64_t>(globalSent));
-        result.bytesReceived = std::max(result.bytesReceived,
-            static_cast<std::uint64_t>(globalReceived));
-        result.peakRemoteBytes = std::max(result.peakRemoteBytes,
-            static_cast<std::uint64_t>(globalPeakRemote));
-        result.peakProcessBytes = std::max(result.peakProcessBytes,
-            static_cast<std::uint64_t>(globalPeakProcess));
-        reportStage("fmm_repeat_" + std::to_string(repeat) + "_solved", comm);
+        reportStage("fmm_cold_repeat_" + std::to_string(repeat) +
+                    "_solved", comm);
         std::vector<Vector3D>().swap(acceleration);
         trimAllocator();
-        reportStage("fmm_repeat_" + std::to_string(repeat) + "_end", comm);
+        reportStage("fmm_cold_repeat_" + std::to_string(repeat) +
+                    "_end", comm);
     }
-    result.meanMaxSeconds = sumMaximum / static_cast<double>(repeats);
+    result.meanMaxSeconds = coldSumMaximum / static_cast<double>(repeats);
+
+    // Measure the production-relevant topology-reuse path separately.  The
+    // setup solve populates the LET plan and the bounded operator cache; only
+    // subsequent solves are included in the warm timing.
+    reportStage("fmm_warm_setup_begin", comm);
+    DistributedFmmGravityCalculator warmSolver(options, distributed, comm);
+    std::vector<Vector3D> warmAcceleration;
+    warmSolver.solve(local.positions, local.masses, local.ids,
+                     Vector3D(-1, -1, -1), Vector3D(1, 1, 1),
+                     warmAcceleration);
+    const std::uint64_t warmEpoch = warmSolver.stats().topologyEpoch;
+    const std::uint64_t warmRebuildCount =
+        warmSolver.stats().topologyRebuildCount;
+    accumulateFmmStats(warmSolver.stats(), result, comm);
+    reportStage("fmm_warm_setup_solved", comm);
+
+    double warmSumMaximum = 0.0;
+    for(int repeat = 0; repeat < repeats; ++repeat)
+    {
+        reportStage("fmm_warm_repeat_" + std::to_string(repeat) +
+                    "_begin", comm);
+        MPI_Barrier(comm);
+        const double start = MPI_Wtime();
+        warmSolver.solve(local.positions, local.masses, local.ids,
+                         Vector3D(-1, -1, -1), Vector3D(1, 1, 1),
+                         warmAcceleration);
+        const double localSeconds = MPI_Wtime() - start;
+        updateTiming(localSeconds, result.warmBestMaxSeconds,
+                     warmSumMaximum, comm);
+        const FmmSolveStats& stats = warmSolver.stats();
+        result.topologyReused = result.topologyReused &&
+            stats.topologyEpoch == warmEpoch &&
+            stats.topologyRebuildCount == warmRebuildCount;
+        accumulateFmmStats(stats, result, comm);
+
+        const int localFinite = finiteAcceleration(warmAcceleration) ? 1 : 0;
+        int globalFinite = 0;
+        MPI_Allreduce(&localFinite, &globalFinite, 1, MPI_INT, MPI_LAND, comm);
+        result.finite = result.finite && globalFinite != 0;
+        reportStage("fmm_warm_repeat_" + std::to_string(repeat) +
+                    "_solved", comm);
+    }
+    result.warmMeanMaxSeconds =
+        warmSumMaximum / static_cast<double>(repeats);
+    const int localTopologyReused = result.topologyReused ? 1 : 0;
+    int globalTopologyReused = 0;
+    MPI_Allreduce(&localTopologyReused, &globalTopologyReused, 1, MPI_INT,
+                  MPI_LAND, comm);
+    result.topologyReused = globalTopologyReused != 0;
+    std::vector<Vector3D>().swap(warmAcceleration);
+    trimAllocator();
+    reportStage("fmm_warm_complete", comm);
     return result;
 }
 
@@ -592,7 +749,7 @@ int main(int argc, char** argv)
 
         const SolverResult fmm = runFmm(
             local, reference, options.repeats, options.fmmMaxRemoteBytes,
-            MPI_COMM_WORLD);
+            options.fmmMaxOperatorCacheBytes, MPI_COMM_WORLD);
         reportStage("fmm_complete", MPI_COMM_WORLD);
         trimAllocator();
         reportStage("after_fmm_trim", MPI_COMM_WORLD);
@@ -603,6 +760,10 @@ int main(int argc, char** argv)
         const bool timingFinite =
             fmm.bestMaxSeconds > 0.0 && std::isfinite(fmm.bestMaxSeconds) &&
             fmm.meanMaxSeconds > 0.0 && std::isfinite(fmm.meanMaxSeconds) &&
+            fmm.warmBestMaxSeconds > 0.0 &&
+            std::isfinite(fmm.warmBestMaxSeconds) &&
+            fmm.warmMeanMaxSeconds > 0.0 &&
+            std::isfinite(fmm.warmMeanMaxSeconds) &&
             quadrupole.bestMaxSeconds > 0.0 &&
             std::isfinite(quadrupole.bestMaxSeconds) &&
             quadrupole.meanMaxSeconds > 0.0 &&
@@ -620,7 +781,12 @@ int main(int argc, char** argv)
             std::isfinite(quadrupole.probeScaledError) &&
             std::isfinite(fmm.checksum) &&
             std::isfinite(quadrupole.checksum);
-        const bool passed = placementPass && accuracyPass && finite;
+        const bool passed = placementPass && accuracyPass && finite &&
+                            fmm.topologyReused &&
+                            fmm.operatorCacheBytes <=
+                                options.fmmMaxOperatorCacheBytes &&
+                            fmm.operatorCacheBudgetBytes ==
+                                options.fmmMaxOperatorCacheBytes;
 
         if(rank == 0)
         {
@@ -648,7 +814,28 @@ int main(int argc, char** argv)
                    << "quadrupole_particles_per_second fmm_bytes_sent "
                    << "fmm_bytes_received fmm_peak_remote_bytes "
                    << "fmm_peak_process_bytes quadrupole_walk_max_seconds "
-                   << "fmm_checksum quadrupole_checksum finite run_pass\n";
+                   << "fmm_checksum quadrupole_checksum finite run_pass "
+                   << "fmm_warm_best_max_seconds fmm_warm_mean_max_seconds "
+                   << "fmm_cold_over_warm_speedup fmm_persistent_bytes "
+                   << "fmm_local_tree_bytes fmm_local_multipole_bytes "
+                   << "fmm_local_local_bytes fmm_let_plan_bytes "
+                   << "fmm_operator_cache_bytes "
+                   << "fmm_operator_cache_budget_bytes "
+                   << "fmm_local_operator_cache_bytes "
+                   << "fmm_local_operator_cache_entries "
+                   << "fmm_local_operator_cache_max_entries "
+                   << "fmm_local_operator_cache_hits "
+                   << "fmm_local_operator_cache_misses "
+                   << "fmm_local_operator_cache_bypasses "
+                   << "fmm_let_operator_cache_bytes "
+                   << "fmm_let_operator_cache_entries "
+                   << "fmm_let_operator_cache_max_entries "
+                   << "fmm_let_operator_cache_hits "
+                   << "fmm_let_operator_cache_misses "
+                   << "fmm_let_operator_cache_bypasses "
+                   << "fmm_process_operator_cache_misses "
+                   << "fmm_process_operator_cache_bypasses "
+                   << "fmm_topology_reused\n";
             output << "row " << options.globalParticles << " "
                    << options.expectedNodes << " " << size << " " << nodes
                    << " " << options.expectedRanksPerNode << " "
@@ -664,7 +851,30 @@ int main(int argc, char** argv)
                    << fmm.peakRemoteBytes << " " << fmm.peakProcessBytes
                    << " " << quadrupole.walkMaxSeconds << " "
                    << fmm.checksum << " " << quadrupole.checksum << " "
-                   << (finite ? 1 : 0) << " " << (passed ? 1 : 0) << "\n";
+                   << (finite ? 1 : 0) << " " << (passed ? 1 : 0) << " "
+                   << fmm.warmBestMaxSeconds << " "
+                   << fmm.warmMeanMaxSeconds << " "
+                   << (fmm.bestMaxSeconds / fmm.warmBestMaxSeconds) << " "
+                   << fmm.persistentBytes << " " << fmm.localTreeBytes << " "
+                   << fmm.localMultipoleBytes << " " << fmm.localLocalBytes
+                   << " " << fmm.letPlanBytes << " "
+                   << fmm.operatorCacheBytes << " "
+                   << fmm.operatorCacheBudgetBytes << " "
+                   << fmm.localOperatorCacheBytes << " "
+                   << fmm.localOperatorCacheEntries << " "
+                   << fmm.localOperatorCacheMaxEntries << " "
+                   << fmm.localOperatorCacheHits << " "
+                   << fmm.localOperatorCacheMisses << " "
+                   << fmm.localOperatorCacheBypasses << " "
+                   << fmm.letOperatorCacheBytes << " "
+                   << fmm.letOperatorCacheEntries << " "
+                   << fmm.letOperatorCacheMaxEntries << " "
+                   << fmm.letOperatorCacheHits << " "
+                   << fmm.letOperatorCacheMisses << " "
+                   << fmm.letOperatorCacheBypasses << " "
+                   << fmm.processOperatorCacheMisses << " "
+                   << fmm.processOperatorCacheBypasses << " "
+                   << (fmm.topologyReused ? 1 : 0) << "\n";
             output << "pass " << (passed ? 1 : 0) << "\n";
 
             std::cout << "fmm_mpi_scaling_benchmark particles="
@@ -678,6 +888,14 @@ int main(int argc, char** argv)
                       << " quadrupole_probe_error="
                       << quadrupole.probeScaledError
                       << " speedup=" << speedup
+                      << " fmm_warm_seconds=" << fmm.warmBestMaxSeconds
+                      << " operator_cache_mib="
+                      << (static_cast<double>(fmm.operatorCacheBytes) /
+                          static_cast<double>(kMebibyte))
+                      << " local_cache_bypasses="
+                      << fmm.localOperatorCacheBypasses
+                      << " let_cache_bypasses="
+                      << fmm.letOperatorCacheBypasses
                       << " pass=" << passed << std::endl;
         }
         returnCode = passed ? 0 : 1;

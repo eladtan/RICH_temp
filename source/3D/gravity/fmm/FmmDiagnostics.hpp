@@ -43,6 +43,34 @@ struct FmmSolveStats
     std::uint64_t bytesReceived = 0;
     std::size_t peakRemoteBytes = 0;
     std::size_t peakProcessBytes = 0;
+
+    // Persistent distributed-memory attribution.  bytesOwned remains the
+    // aggregate value; these fields expose the dominant components.
+    std::size_t localTreeBytes = 0;
+    std::size_t localMultipoleBytes = 0;
+    std::size_t localLocalBytes = 0;
+    std::size_t letPlanBytes = 0;
+    std::size_t operatorCacheBytes = 0;
+    std::size_t operatorCacheBudgetBytes = 0;
+
+    // The distributed solver divides the total operator-cache budget between
+    // the persistent local and LET caches.  The process-tree M2L phase uses
+    // reusable scratch only and therefore reports bypasses but no cache bytes.
+    std::size_t localOperatorCacheBytes = 0;
+    std::size_t localOperatorCacheEntries = 0;
+    std::size_t localOperatorCacheMaxEntries = 0;
+    std::uint64_t localOperatorCacheHits = 0;
+    std::uint64_t localOperatorCacheMisses = 0;
+    std::uint64_t localOperatorCacheBypasses = 0;
+    std::size_t letOperatorCacheBytes = 0;
+    std::size_t letOperatorCacheEntries = 0;
+    std::size_t letOperatorCacheMaxEntries = 0;
+    std::uint64_t letOperatorCacheHits = 0;
+    std::uint64_t letOperatorCacheMisses = 0;
+    std::uint64_t letOperatorCacheBypasses = 0;
+    std::uint64_t processOperatorCacheMisses = 0;
+    std::uint64_t processOperatorCacheBypasses = 0;
+
     double processUpwardSeconds = 0;
     double processInteractionSeconds = 0;
     double processDownwardSeconds = 0;

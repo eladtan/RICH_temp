@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <set>
 #include <string>
@@ -221,39 +220,6 @@ void parseAndAddProcessCoefficients(
 }
 
 
-struct DisplacementKey
-{
-    std::uint64_t x;
-    std::uint64_t y;
-    std::uint64_t z;
-    bool operator==(const DisplacementKey& other) const
-    {
-        return x == other.x && y == other.y && z == other.z;
-    }
-};
-
-struct DisplacementKeyHash
-{
-    std::size_t operator()(const DisplacementKey& key) const
-    {
-        std::size_t result = std::hash<std::uint64_t>()(key.x);
-        result ^= std::hash<std::uint64_t>()(key.y) + 0x9e3779b9u +
-            (result << 6u) + (result >> 2u);
-        result ^= std::hash<std::uint64_t>()(key.z) + 0x9e3779b9u +
-            (result << 6u) + (result >> 2u);
-        return result;
-    }
-};
-
-DisplacementKey displacementKey(const Vector3D& displacement)
-{
-    DisplacementKey key;
-    std::memcpy(&key.x, &displacement.x, sizeof(double));
-    std::memcpy(&key.y, &displacement.y, sizeof(double));
-    std::memcpy(&key.z, &displacement.z, sizeof(double));
-    return key;
-}
-
 void collectiveRequire(bool localOk,
                        const std::string& localMessage,
                        const char* context,
@@ -352,26 +318,27 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 2,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[7] = {
+    const unsigned long long localIntegerOptions[8] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
         options_.computePotential ? 1ull : 0ull,
         options_.validateFinite ? 1ull : 0ull,
+        static_cast<unsigned long long>(options_.maxOperatorCacheBytes),
         static_cast<unsigned long long>(distributedOptions_.maxRemoteBytes),
         distributedOptions_.rebuildTopologyEverySolve ? 1ull : 0ull};
-    unsigned long long minimumIntegerOptions[7] = {};
-    unsigned long long maximumIntegerOptions[7] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 7,
+    unsigned long long minimumIntegerOptions[8] = {};
+    unsigned long long maximumIntegerOptions[8] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 8,
                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 7,
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 8,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
     for(int i = 0; i < 2; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 7; ++i)
+    for(int i = 0; i < 8; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -592,6 +559,13 @@ void DistributedFmmGravityCalculator::solve(
 
     const Clock::time_point buildStart = Clock::now();
     const bool localChanged = prepareLocalTree(positions, domainLower, domainUpper);
+    if(localChanged)
+        localOperatorCache_.clear();
+    const std::size_t localOperatorCacheBudget =
+        options_.maxOperatorCacheBytes - options_.maxOperatorCacheBytes / 3;
+    const std::size_t letOperatorCacheBudget =
+        options_.maxOperatorCacheBytes - localOperatorCacheBudget;
+    stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     FmmPasses::updateTreeStats(localTree_, stats_);
     stats_.buildSeconds = elapsed(buildStart);
 
@@ -749,11 +723,10 @@ void DistributedFmmGravityCalculator::solve(
     processM2LReceived.releaseStorage();
     std::unordered_map<int, std::vector<char>>().swap(processM2LSends);
 
-    std::unordered_map<DisplacementKey, std::vector<double>, DisplacementKeyHash>
-        processOperatorCache;
-    processOperatorCache.reserve(processPlan_.localM2LPairs.size());
     std::vector<double> derivativeScratch;
     derivativeScratch.reserve(layout.coefficientCount());
+    std::vector<double> processOperatorScratch;
+    processOperatorScratch.reserve(layout.m2lTerms().size());
     for(const FmmProcessM2LPair& pair : processPlan_.localM2LPairs)
     {
         const std::size_t sourceOffset = processMultipoles.offset(pair.sourceNode);
@@ -761,22 +734,22 @@ void DistributedFmmGravityCalculator::solve(
         FmmNode source = processView(processTree_.nodes()[pair.sourceNode], sourceOffset);
         FmmNode target = processView(processTree_.nodes()[pair.targetNode], targetOffset);
         const Vector3D displacement = target.center - source.center;
-        const DisplacementKey key = displacementKey(displacement);
-        auto inserted = processOperatorCache.emplace(key, std::vector<double>());
-        if(inserted.second)
-            FmmKernels::computeM2LOperator(displacement, layout,
-                                           derivativeScratch, inserted.first->second);
+        FmmKernels::computeM2LOperator(displacement, layout,
+                                       derivativeScratch, processOperatorScratch);
         FmmKernels::translateM2L(source, target, layout,
                                  processMultipoles.values, processLocals.values,
-                                 inserted.first->second);
+                                 processOperatorScratch);
+        ++stats_.processOperatorCacheMisses;
+        ++stats_.processOperatorCacheBypasses;
         ++stats_.m2lCount;
         ++stats_.processM2LCount;
     }
     stats_.peakProcessBytes = std::max(stats_.peakProcessBytes,
-        processMultipoles.bytesOwned() + processLocals.bytesOwned());
+        processMultipoles.bytesOwned() + processLocals.bytesOwned() +
+        derivativeScratch.capacity() * sizeof(double) +
+        processOperatorScratch.capacity() * sizeof(double));
     stats_.processInteractionSeconds = elapsed(processInteractionStart);
-    std::unordered_map<DisplacementKey, std::vector<double>,
-        DisplacementKeyHash>().swap(processOperatorCache);
+    std::vector<double>().swap(processOperatorScratch);
     std::vector<double>().swap(derivativeScratch);
 
     const Clock::time_point processDownStart = Clock::now();
@@ -859,7 +832,7 @@ void DistributedFmmGravityCalculator::solve(
     letPlan_.execute(localTree_, positions, masses, cellIds, layout,
                      localMultipoles_, localLocals_, acceleration,
                      positiveKernelPotential, distributedOptions_.maxRemoteBytes,
-                     stats_);
+                     letOperatorCacheBudget, stats_);
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
 
@@ -868,7 +841,8 @@ void DistributedFmmGravityCalculator::solve(
         FmmDualTreeTraversal::run(localTree_, localTree_, positions, positions,
                                   masses, layout, localMultipoles_, localLocals_,
                                   true, options_.thetaCritical, acceleration,
-                                  positiveKernelPotential, stats_);
+                                  positiveKernelPotential, localOperatorCache_,
+                                  localOperatorCacheBudget, stats_);
     }
     stats_.interactionSeconds = elapsed(interactionStart);
 
@@ -878,13 +852,19 @@ void DistributedFmmGravityCalculator::solve(
                             acceleration, positiveKernelPotential);
     stats_.downwardSeconds = elapsed(downwardStart);
 
-    stats_.bytesOwned = localTree_.bytesOwned() +
-        localMultipoles_.capacity() * sizeof(double) +
-        localLocals_.capacity() * sizeof(double) +
-        rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
+    stats_.localTreeBytes = localTree_.bytesOwned();
+    stats_.localMultipoleBytes =
+        localMultipoles_.capacity() * sizeof(double);
+    stats_.localLocalBytes = localLocals_.capacity() * sizeof(double);
+    stats_.letPlanBytes = letPlan_.bytesOwned();
+    stats_.operatorCacheBytes = stats_.localOperatorCacheBytes +
+        stats_.letOperatorCacheBytes;
+    stats_.bytesOwned = stats_.localTreeBytes +
+        stats_.localMultipoleBytes + stats_.localLocalBytes +
+        localOperatorCache_.bytesOwned() + rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
         lastLocalTopologySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +
-        letPlan_.bytesOwned() + processUpExchange_.bytesOwned() +
+        stats_.letPlanBytes + processUpExchange_.bytesOwned() +
         processM2LExchange_.bytesOwned() + processDownExchange_.bytesOwned();
 
     if(options_.validateFinite)

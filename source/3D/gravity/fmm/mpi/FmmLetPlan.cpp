@@ -145,25 +145,6 @@ std::size_t saturatingMultiply(std::size_t first, std::size_t second)
 FmmLetPlan::FmmLetPlan():
     comm_(MPI_COMM_NULL), rank_(0), topologyEpoch_(0) {}
 
-std::size_t FmmLetPlan::OperatorKeyHash::operator()(const OperatorKey& key) const
-{
-    std::size_t result = std::hash<std::uint64_t>()(key.x);
-    result ^= std::hash<std::uint64_t>()(key.y) + 0x9e3779b9u +
-        (result << 6u) + (result >> 2u);
-    result ^= std::hash<std::uint64_t>()(key.z) + 0x9e3779b9u +
-        (result << 6u) + (result >> 2u);
-    return result;
-}
-
-FmmLetPlan::OperatorKey FmmLetPlan::operatorKey(const Vector3D& displacement)
-{
-    OperatorKey key;
-    std::memcpy(&key.x, &displacement.x, sizeof(double));
-    std::memcpy(&key.y, &displacement.y, sizeof(double));
-    std::memcpy(&key.z, &displacement.z, sizeof(double));
-    return key;
-}
-
 FmmRemoteNodeDescriptor FmmLetPlan::descriptorForNode(
     const FmmNode& node,
     int sourceRank,
@@ -531,8 +512,6 @@ void FmmLetPlan::build(const FmmTree& localTree,
             throw UniversalError("FmmLetPlan::build: interaction classified as both M2L and P2P");
     }
 
-    operatorCache_.reserve(m2lInteractions_.size());
-
     std::unordered_map<int, std::set<std::pair<std::uint64_t, int>>> subscriptionSets;
     for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
         subscriptionSets[interaction.sourceRank].insert(
@@ -627,14 +606,7 @@ std::size_t FmmLetPlan::bytesOwned() const
                 entry.second.capacity(), sizeof(FmmSubscription)));
     }
 
-    const std::size_t operatorMapEntry =
-        sizeof(std::pair<const OperatorKey, std::vector<double>>) +
-        2 * sizeof(void*);
-    result = saturatingAdd(result, saturatingMultiply(
-        operatorCache_.size(), operatorMapEntry));
-    for(const auto& entry : operatorCache_)
-        result = saturatingAdd(result, saturatingMultiply(
-            entry.second.capacity(), sizeof(double)));
+    result = saturatingAdd(result, operatorCache_.bytesOwned());
     return result;
 }
 
@@ -648,6 +620,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
                          std::vector<Vector3D>& acceleration,
                          std::vector<double>* positiveKernelPotential,
                          std::size_t maxRemoteBytes,
+                         std::size_t maxOperatorCacheBytes,
                          FmmSolveStats& stats) const
 {
     const Clock::time_point start = Clock::now();
@@ -670,6 +643,9 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         throw UniversalError("FmmLetPlan::execute: inconsistent expansion storage");
     if(maxRemoteBytes < 2)
         throw UniversalError("FmmLetPlan::execute: remote memory budget is too small");
+    operatorCache_.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
+                             m2lInteractions_.size());
+    operatorCache_.beginPhase();
     std::unordered_map<int, std::size_t> plannedBytesByRank;
     std::size_t outgoingBytes = 0;
     for(const auto& entry : subscriptionsReceived_)
@@ -1025,6 +1001,8 @@ void FmmLetPlan::execute(const FmmTree& localTree,
 
     std::vector<double> derivativeScratch;
     derivativeScratch.reserve(layout.coefficientCount());
+    std::vector<double> uncachedOperator;
+    uncachedOperator.reserve(layout.m2lTerms().size());
     for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
     {
         const auto descriptorRank = remoteDescriptors_.find(interaction.sourceRank);
@@ -1044,17 +1022,22 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         source.multipoleOffset = coefficientPayload->coefficientOffset;
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
         const Vector3D displacement = target.center - source.center;
-        const OperatorKey key = operatorKey(displacement);
-        auto inserted = operatorCache_.emplace(key, std::vector<double>());
-        if(inserted.second)
-            FmmKernels::computeM2LOperator(displacement, layout,
-                                           derivativeScratch, inserted.first->second);
+        const std::vector<double>& translationOperator =
+            operatorCache_.get(displacement, layout, derivativeScratch,
+                               uncachedOperator);
+
         FmmKernels::translateM2L(source, target, layout,
                                  remoteCoefficients, localLocals,
-                                 inserted.first->second);
+                                 translationOperator);
         ++stats.m2lCount;
         ++stats.letM2LCount;
     }
+    stats.letOperatorCacheEntries = operatorCache_.entries();
+    stats.letOperatorCacheMaxEntries = operatorCache_.maxEntries();
+    stats.letOperatorCacheBytes = operatorCache_.bytesOwned();
+    stats.letOperatorCacheHits = operatorCache_.hits();
+    stats.letOperatorCacheMisses = operatorCache_.misses();
+    stats.letOperatorCacheBypasses = operatorCache_.bypasses();
 
     for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
     {
