@@ -58,6 +58,83 @@ struct ProbeReference
     std::array<double, kProbeCount> forceScale{};
 };
 
+constexpr std::size_t kFmmTimingMetricCount = 10;
+constexpr std::size_t kFmmWorkMetricCount = 12;
+
+const std::array<const char*, kFmmTimingMetricCount> kFmmTimingMetricNames = {{
+    "build_seconds",
+    "upward_seconds",
+    "process_upward_seconds",
+    "process_interaction_seconds",
+    "process_downward_seconds",
+    "let_plan_seconds",
+    "let_exchange_seconds",
+    "interaction_seconds",
+    "downward_seconds",
+    "total_seconds"
+}};
+
+const std::array<const char*, kFmmWorkMetricCount> kFmmWorkMetricNames = {{
+    "particles",
+    "nodes",
+    "leaves",
+    "local_m2l",
+    "local_p2p_pairs",
+    "process_m2l",
+    "let_m2l",
+    "let_p2p_pairs",
+    "bytes_sent",
+    "bytes_received",
+    "peak_remote_bytes",
+    "peak_process_bytes"
+}};
+
+struct RankMetricSummary
+{
+    double minimum = 0.0;
+    double mean = 0.0;
+    double maximum = 0.0;
+
+    double imbalance() const
+    {
+        return mean > 0.0 ? maximum / mean : 0.0;
+    }
+};
+
+struct RankMetricAccumulator
+{
+    double minimumSum = 0.0;
+    double meanSum = 0.0;
+    double maximumSum = 0.0;
+    int samples = 0;
+
+    void add(double minimum, double mean, double maximum)
+    {
+        minimumSum += minimum;
+        meanSum += mean;
+        maximumSum += maximum;
+        ++samples;
+    }
+
+    RankMetricSummary average() const
+    {
+        RankMetricSummary result;
+        if(samples == 0)
+            return result;
+        const double inverseSamples = 1.0 / static_cast<double>(samples);
+        result.minimum = minimumSum * inverseSamples;
+        result.mean = meanSum * inverseSamples;
+        result.maximum = maximumSum * inverseSamples;
+        return result;
+    }
+};
+
+struct FmmProfile
+{
+    std::array<RankMetricAccumulator, kFmmTimingMetricCount> timings;
+    std::array<RankMetricAccumulator, kFmmWorkMetricCount> work;
+};
+
 struct SolverResult
 {
     double bestMaxSeconds = std::numeric_limits<double>::infinity();
@@ -92,6 +169,8 @@ struct SolverResult
     std::uint64_t letOperatorCacheBypasses = 0;
     std::uint64_t processOperatorCacheMisses = 0;
     std::uint64_t processOperatorCacheBypasses = 0;
+    FmmProfile coldProfile;
+    FmmProfile warmProfile;
     bool topologyReused = true;
     bool finite = true;
 };
@@ -460,6 +539,108 @@ void updateTiming(double localSeconds,
     sumMaximum += maximum;
 }
 
+void accumulateFmmProfile(const FmmSolveStats& stats,
+                          FmmProfile& profile,
+                          const MPI_Comm& comm)
+{
+    int size = 1;
+    MPI_Comm_size(comm, &size);
+
+    const std::array<double, kFmmTimingMetricCount> localTimings = {{
+        stats.buildSeconds,
+        stats.upwardSeconds,
+        stats.processUpwardSeconds,
+        stats.processInteractionSeconds,
+        stats.processDownwardSeconds,
+        stats.letPlanSeconds,
+        stats.letExchangeSeconds,
+        stats.interactionSeconds,
+        stats.downwardSeconds,
+        stats.totalSeconds
+    }};
+    std::array<double, kFmmTimingMetricCount> minimumTimings{};
+    std::array<double, kFmmTimingMetricCount> summedTimings{};
+    std::array<double, kFmmTimingMetricCount> maximumTimings{};
+    MPI_Allreduce(localTimings.data(), minimumTimings.data(),
+                  static_cast<int>(localTimings.size()), MPI_DOUBLE, MPI_MIN,
+                  comm);
+    MPI_Allreduce(localTimings.data(), summedTimings.data(),
+                  static_cast<int>(localTimings.size()), MPI_DOUBLE, MPI_SUM,
+                  comm);
+    MPI_Allreduce(localTimings.data(), maximumTimings.data(),
+                  static_cast<int>(localTimings.size()), MPI_DOUBLE, MPI_MAX,
+                  comm);
+    for(std::size_t i = 0; i < localTimings.size(); ++i)
+    {
+        profile.timings[i].add(
+            minimumTimings[i], summedTimings[i] / static_cast<double>(size),
+            maximumTimings[i]);
+    }
+
+    const std::uint64_t distributedM2L =
+        stats.processM2LCount + stats.letM2LCount;
+    const std::uint64_t localM2L = stats.m2lCount >= distributedM2L ?
+        stats.m2lCount - distributedM2L : 0;
+    const std::uint64_t localP2PPairs =
+        stats.p2pPairCount >= stats.letP2PPairCount ?
+        stats.p2pPairCount - stats.letP2PPairCount : 0;
+    const std::array<unsigned long long, kFmmWorkMetricCount> localWork = {{
+        static_cast<unsigned long long>(stats.particleCount),
+        static_cast<unsigned long long>(stats.nodeCount),
+        static_cast<unsigned long long>(stats.leafCount),
+        static_cast<unsigned long long>(localM2L),
+        static_cast<unsigned long long>(localP2PPairs),
+        static_cast<unsigned long long>(stats.processM2LCount),
+        static_cast<unsigned long long>(stats.letM2LCount),
+        static_cast<unsigned long long>(stats.letP2PPairCount),
+        static_cast<unsigned long long>(stats.bytesSent),
+        static_cast<unsigned long long>(stats.bytesReceived),
+        static_cast<unsigned long long>(stats.peakRemoteBytes),
+        static_cast<unsigned long long>(stats.peakProcessBytes)
+    }};
+    std::array<unsigned long long, kFmmWorkMetricCount> minimumWork{};
+    std::array<unsigned long long, kFmmWorkMetricCount> summedWork{};
+    std::array<unsigned long long, kFmmWorkMetricCount> maximumWork{};
+    MPI_Allreduce(localWork.data(), minimumWork.data(),
+                  static_cast<int>(localWork.size()), MPI_UNSIGNED_LONG_LONG,
+                  MPI_MIN, comm);
+    MPI_Allreduce(localWork.data(), summedWork.data(),
+                  static_cast<int>(localWork.size()), MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, comm);
+    MPI_Allreduce(localWork.data(), maximumWork.data(),
+                  static_cast<int>(localWork.size()), MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, comm);
+    for(std::size_t i = 0; i < localWork.size(); ++i)
+    {
+        profile.work[i].add(
+            static_cast<double>(minimumWork[i]),
+            static_cast<double>(summedWork[i]) / static_cast<double>(size),
+            static_cast<double>(maximumWork[i]));
+    }
+}
+
+void writeFmmProfile(std::ostream& output,
+                     const char* mode,
+                     const FmmProfile& profile)
+{
+    for(std::size_t i = 0; i < profile.timings.size(); ++i)
+    {
+        const RankMetricSummary summary = profile.timings[i].average();
+        output << "profile " << mode << " timing "
+               << kFmmTimingMetricNames[i] << " "
+               << summary.minimum << " " << summary.mean << " "
+               << summary.maximum << " " << summary.imbalance() << "\n";
+    }
+    for(std::size_t i = 0; i < profile.work.size(); ++i)
+    {
+        const RankMetricSummary summary = profile.work[i].average();
+        output << "profile " << mode << " work "
+               << kFmmWorkMetricNames[i] << " "
+               << summary.minimum << " " << summary.mean << " "
+               << summary.maximum << " " << summary.imbalance() << "\n";
+    }
+}
+
 void accumulateFmmStats(const FmmSolveStats& stats,
                         SolverResult& result,
                         const MPI_Comm& comm)
@@ -588,6 +769,7 @@ SolverResult runFmm(const LocalParticles& local,
         const double localSeconds = MPI_Wtime() - start;
         updateTiming(localSeconds, result.bestMaxSeconds, coldSumMaximum, comm);
         accumulateFmmStats(stats, result, comm);
+        accumulateFmmProfile(stats, result.coldProfile, comm);
 
         const int localFinite = finiteAcceleration(acceleration) ? 1 : 0;
         int globalFinite = 0;
@@ -643,6 +825,7 @@ SolverResult runFmm(const LocalParticles& local,
             stats.topologyEpoch == warmEpoch &&
             stats.topologyRebuildCount == warmRebuildCount;
         accumulateFmmStats(stats, result, comm);
+        accumulateFmmProfile(stats, result.warmProfile, comm);
 
         const int localFinite = finiteAcceleration(warmAcceleration) ? 1 : 0;
         int globalFinite = 0;
@@ -875,6 +1058,10 @@ int main(int argc, char** argv)
                    << fmm.processOperatorCacheMisses << " "
                    << fmm.processOperatorCacheBypasses << " "
                    << (fmm.topologyReused ? 1 : 0) << "\n";
+            output << "profile_columns mode category metric rank_min rank_mean "
+                   << "rank_max max_over_mean\n";
+            writeFmmProfile(output, "cold", fmm.coldProfile);
+            writeFmmProfile(output, "warm", fmm.warmProfile);
             output << "pass " << (passed ? 1 : 0) << "\n";
 
             std::cout << "fmm_mpi_scaling_benchmark particles="

@@ -55,7 +55,8 @@ export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
 
 rm -f fmm_mpi_scaling_benchmark_*.txt \
-      fmm_mpi_scaling_benchmark_metrics.txt
+      fmm_mpi_scaling_benchmark_metrics.txt \
+      fmm_mpi_scaling_profile.txt
 
 run_case() {
     local particles="$1"
@@ -87,6 +88,9 @@ run_case() {
     if [[ ! -s "${output}" ]] || ! grep -q '^pass 1$' "${output}"; then
         echo "Benchmark subcase failed: ${output}" >&2
         exit 1
+    elif ! grep -q '^profile_columns ' "${output}" || ! grep -q '^profile ' "${output}"; then
+        echo "Benchmark subcase is missing rank-profile output: ${output}" >&2
+        exit 1
     fi
 }
 
@@ -103,6 +107,20 @@ run_case "${LARGE_PARTICLES}" 16
         done
     done
 } > fmm_mpi_scaling_benchmark_metrics.txt
+
+{
+    echo "profile_columns particles expected_nodes mode category metric rank_min rank_mean rank_max max_over_mean"
+    for particles in "${SMALL_PARTICLES}" "${LARGE_PARTICLES}"; do
+        for nodes in 8 16; do
+            output="fmm_mpi_scaling_benchmark_${particles}_nodes${nodes}.txt"
+            awk -v particles="${particles}" -v nodes="${nodes}" '
+            $1 == "profile" {
+                print "profile", particles, nodes, $2, $3, $4, $5, $6, $7, $8
+            }
+            ' "${output}"
+        done
+    done
+} > fmm_mpi_scaling_profile.txt
 
 summary_file="$(mktemp)"
 awk -v small="${SMALL_PARTICLES}" -v large="${LARGE_PARTICLES}" '
@@ -178,4 +196,7 @@ END {
 cat "${summary_file}" >> fmm_mpi_scaling_benchmark_metrics.txt
 rm -f "${summary_file}"
 
+echo "=== aggregate scaling metrics ==="
 cat fmm_mpi_scaling_benchmark_metrics.txt
+echo "=== rank phase/work profile ==="
+cat fmm_mpi_scaling_profile.txt
