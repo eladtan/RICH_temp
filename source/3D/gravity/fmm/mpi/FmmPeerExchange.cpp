@@ -120,8 +120,11 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
         throw UniversalError("FmmPeerExchange::reset: invalid graph peer on at least one rank");
 
     const int degree = static_cast<int>(peers.size());
-    checkMpi(MPI_Dist_graph_create(parent, 1, &rank, &degree,
-                                   degree == 0 ? nullptr : peers.data(),
+    const int sourceCount = degree == 0 ? 0 : 1;
+    checkMpi(MPI_Dist_graph_create(parent, sourceCount,
+                                   sourceCount == 0 ? nullptr : &rank,
+                                   sourceCount == 0 ? nullptr : &degree,
+                                   sourceCount == 0 ? nullptr : peers.data(),
                                    MPI_UNWEIGHTED, MPI_INFO_NULL, 0, &graph_),
              "FmmPeerExchange::reset MPI_Dist_graph_create");
 
