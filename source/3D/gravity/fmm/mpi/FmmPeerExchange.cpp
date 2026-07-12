@@ -149,18 +149,27 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
 
     const int degree = static_cast<int>(peers.size());
     // Keep the distributed-graph constructor signature uniform across ranks.
-    // Open MPI validates array arguments before considering a zero degree; a
-    // valid dummy pointer avoids the null-pointer failure while n=1 on every
-    // rank also avoids implementation-specific mixed-n handling on rebuild.
-    // A zero-degree source consumes no destination entries, so the dummy is
-    // never dereferenced by a conforming MPI implementation.
+    // Open MPI validates array arguments before considering a zero degree, so
+    // provide a valid dummy destination while retaining n=1 on every rank.
     const int dummyDestination = rank;
     const int* destinations = degree == 0 ? &dummyDestination : peers.data();
+
+    // Some Open MPI topology components can deadlock when
+    // MPI_Dist_graph_create is invoked repeatedly on the same parent
+    // communicator. Construct through a fresh context each time. The graph
+    // communicator is independent after creation, so the temporary duplicate
+    // can be released immediately.
+    MPI_Comm constructionParent = MPI_COMM_NULL;
+    checkMpi(MPI_Comm_dup(parent, &constructionParent),
+             "FmmPeerExchange::reset MPI_Comm_dup construction parent");
     peerExchangeStage(rank, "reset_dist_graph_create_begin", degree);
-    checkMpi(MPI_Dist_graph_create(parent, 1, &rank, &degree,
-                                   destinations, MPI_UNWEIGHTED,
-                                   MPI_INFO_NULL, 0, &graph_),
-             "FmmPeerExchange::reset MPI_Dist_graph_create");
+    const int graphStatus = MPI_Dist_graph_create(
+        constructionParent, 1, &rank, &degree, destinations, MPI_UNWEIGHTED,
+        MPI_INFO_NULL, 0, &graph_);
+    const int freeStatus = MPI_Comm_free(&constructionParent);
+    checkMpi(graphStatus, "FmmPeerExchange::reset MPI_Dist_graph_create");
+    checkMpi(freeStatus,
+             "FmmPeerExchange::reset MPI_Comm_free construction parent");
     peerExchangeStage(rank, "reset_dist_graph_create_end", degree);
 
     int indegree = 0;
