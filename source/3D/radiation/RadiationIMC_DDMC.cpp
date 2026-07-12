@@ -117,6 +117,37 @@ namespace {
              + sine * std::sin(phi) * e2;
     }
 
+    Vector3D SampleIsotropicDirection(double xiMu, double xiPhi)
+    {
+        constexpr double pi = 3.14159265358979323846;
+        double const mu = 2.0 * std::clamp(xiMu, 0.0, 1.0) - 1.0;
+        double const phi = 2.0 * pi * std::clamp(xiPhi, 0.0, 1.0);
+        double const sine = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+        return Vector3D(sine * std::cos(phi),
+                        sine * std::sin(phi),
+                        mu);
+    }
+
+    double PlanckBandMass(ComputationalCell3D const &cell,
+                          size_t beginGroup, size_t endGroup)
+    {
+        beginGroup = std::min(beginGroup,
+                              static_cast<size_t>(ENERGY_GROUPS_NUM));
+        endGroup = std::min(endGroup,
+                            static_cast<size_t>(ENERGY_GROUPS_NUM));
+        if(beginGroup >= endGroup)
+            return 0.0;
+        double const kT = units::k_boltz * cell.temperature;
+        if(!(kT > 0.0) || !std::isfinite(kT))
+            return 0.0;
+        double mass = 0.0;
+        for(size_t g = beginGroup; g < endGroup; ++g)
+            mass += planck_integral::planck_integral(
+                ComputationalCell3D::energyBoundaries[g] / kT,
+                ComputationalCell3D::energyBoundaries[g + 1] / kT);
+        return mass;
+    }
+
     double SampleCosineMu(double xi)
     {
         return std::sqrt(std::clamp(xi, 0.0, 1.0));
@@ -458,6 +489,10 @@ void RadiationIMC::precomputeDDMCData()
 
         double const volume = this->grid.GetVolume(i);
         Vector3D const cellCenter = this->grid.GetMeshPoint(i);
+        bool const usePGRW =
+            this->multigroupOpacity != nullptr && this->ddmcUseMultigroupPGRW;
+        double const sourceBandMass = usePGRW
+            ? PlanckBandMass(this->cells[i], 0, data.groupCutoff) : 1.0;
         for(size_t faceIdx : this->grid.GetCellFaces(i))
         {
             const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
@@ -526,28 +561,49 @@ void RadiationIMC::precomputeDDMCData()
             double const boundaryRate = DDMCWollaeger::BoundaryLeakRate(
                 area, volume, data.sigmaDiffusion, sourceDistanceToFace,
                 units::clight);
-            double const rate = std::max(internalRate, boundaryRate);
+            size_t const targetGroupCutoff =
+                (nextCellIndex < this->ddmcPointGroupCutoff.size())
+                ? this->ddmcPointGroupCutoff[nextCellIndex] : 0;
+
+            // Densmore et al. (2012), Eq. (49).  A grey DDMC particle has no
+            // microscopic frequency.  If the target cutoff is smaller than
+            // the source cutoff, split the face reaction into a DDMC channel
+            // for the common low-frequency band and a transport channel for
+            // the remainder, weighted by the source-cell Planck spectrum.
+            double ddmcFraction = 0.0;
+            if(targetEligible && internalRate > 0.0)
+            {
+                if(!usePGRW || targetGroupCutoff >= data.groupCutoff)
+                    ddmcFraction = 1.0;
+                else if(targetGroupCutoff > 0 && sourceBandMass > 0.0)
+                    ddmcFraction = std::clamp(
+                        PlanckBandMass(this->cells[i], 0, targetGroupCutoff) /
+                            sourceBandMass,
+                        0.0, 1.0);
+            }
+
+            double const ddmcRate = ddmcFraction * internalRate;
+            double const transportRate =
+                (1.0 - ddmcFraction) * boundaryRate;
+            double const rate = ddmcRate + transportRate;
             if(rate > 0.0 && std::isfinite(rate))
             {
                 DDMCFaceLeak faceLeak;
                 faceLeak.faceIndex = faceIdx;
                 faceLeak.nextCellIndex = nextCellIndex;
-                faceLeak.kind = targetEligible ? DDMCFaceKind::Internal
-                                               : DDMCFaceKind::InterfaceToIMC;
+                faceLeak.kind = ddmcRate > 0.0 ? DDMCFaceKind::Internal
+                                              : DDMCFaceKind::InterfaceToIMC;
                 faceLeak.rate = rate;
                 faceLeak.internalRate = internalRate;
                 faceLeak.boundaryRate = boundaryRate;
+                faceLeak.ddmcRate = ddmcRate;
+                faceLeak.transportRate = transportRate;
                 faceLeak.area = area;
                 faceLeak.sourceDistanceToFace = sourceDistanceToFace;
                 faceLeak.targetDistanceToFace = targetDistanceToFace;
                 faceLeak.conductance = conductance;
-                // If the two-sided resistance is unusable, do not expose a
-                // zero-rate DDMC edge.  Treat this face as an IMC interface.
-                faceLeak.targetDDMCEligible =
-                    targetEligible && internalRate > 0.0;
-                faceLeak.targetGroupCutoff =
-                    (nextCellIndex < this->ddmcPointGroupCutoff.size())
-                    ? this->ddmcPointGroupCutoff[nextCellIndex] : 0;
+                faceLeak.targetDDMCEligible = ddmcRate > 0.0;
+                faceLeak.targetGroupCutoff = targetGroupCutoff;
                 faceLeak.outwardNormal = normal;
                 data.faceLeaks.push_back(faceLeak);
                 data.totalLeakRate += rate;
@@ -850,6 +906,65 @@ Vector3D RadiationIMC::sampleDDMCTransportLocation(size_t cellIndex)
                                         location,
                                         "sampleDDMCTransportLocation");
     return location;
+}
+
+double RadiationIMC::sampleDDMCPlanckFrequency(size_t cellIndex,
+                                               size_t beginGroup,
+                                               size_t endGroup)
+{
+    if(cellIndex >= this->cells.size())
+    {
+        UniversalError eo("sampleDDMCPlanckFrequency: invalid local cell index");
+        eo.addEntry("Cell index", cellIndex);
+        eo.addEntry("Cell count", this->cells.size());
+        throw eo;
+    }
+
+    beginGroup = std::min(beginGroup,
+                          static_cast<size_t>(ENERGY_GROUPS_NUM));
+    endGroup = std::min(endGroup,
+                        static_cast<size_t>(ENERGY_GROUPS_NUM));
+    if(beginGroup >= endGroup)
+        return ComputationalCell3D::energyBoundaries[beginGroup];
+
+    ComputationalCell3D const &cell = this->cells[cellIndex];
+    double const kT = units::k_boltz * cell.temperature;
+    std::vector<double> cdf(endGroup - beginGroup + 1, 0.0);
+    if(kT > 0.0 && std::isfinite(kT))
+    {
+        for(size_t g = beginGroup; g < endGroup; ++g)
+        {
+            cdf[g - beginGroup + 1] = cdf[g - beginGroup] +
+                planck_integral::planck_integral(
+                    ComputationalCell3D::energyBoundaries[g] / kT,
+                    ComputationalCell3D::energyBoundaries[g + 1] / kT);
+        }
+    }
+
+    double const total = cdf.back();
+    if(!(total > 0.0) || !std::isfinite(total))
+        return 0.5 * (ComputationalCell3D::energyBoundaries[beginGroup] +
+                      ComputationalCell3D::energyBoundaries[endGroup]);
+
+    double const unitUpper = std::nextafter(1.0, 0.0);
+    double const target = std::clamp(this->dist(this->re), 0.0, unitUpper) * total;
+    auto upper = std::upper_bound(cdf.begin(), cdf.end(), target);
+    size_t localGroup = upper == cdf.begin()
+        ? 0 : static_cast<size_t>(upper - cdf.begin() - 1);
+    localGroup = std::min(localGroup, cdf.size() - 2);
+    size_t const g = beginGroup + localGroup;
+    double const c0 = cdf[localGroup];
+    double const c1 = cdf[localGroup + 1];
+    double const fraction = c1 > c0 ? (target - c0) / (c1 - c0) : 0.5;
+    double frequency = ComputationalCell3D::energyBoundaries[g] +
+        std::clamp(fraction, 0.0, 1.0) *
+        (ComputationalCell3D::energyBoundaries[g + 1] -
+         ComputationalCell3D::energyBoundaries[g]);
+    frequency = std::min(frequency, std::nextafter(
+        ComputationalCell3D::energyBoundaries[endGroup],
+        ComputationalCell3D::energyBoundaries[beginGroup]));
+    ClampFrequencyToBoundsDDMC(frequency);
+    return frequency;
 }
 
 void RadiationIMC::validateDDMCTransportLocation(size_t cellIndex,
@@ -1189,19 +1304,9 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     }
 
     auto convertResidentDDMCToTransport = [&]() {
-        auto sampleIsotropicComovingVelocity = [&]() {
-            constexpr double DDMC_PI = 3.14159265358979323846;
-            double const mu = 2.0 * this->dist(this->re) - 1.0;
-            double const phi = 2.0 * DDMC_PI * this->dist(this->re);
-            double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
-            return units::clight * Vector3D(
-                sinTheta * std::cos(phi),
-                sinTheta * std::sin(phi),
-                mu);
-        };
-
         particle.location = this->sampleDDMCTransportLocation(cellIndex);
-        particle.velocity = sampleIsotropicComovingVelocity();
+        particle.velocity = units::clight * SampleIsotropicDirection(
+            this->dist(this->re), this->dist(this->re));
         particle.ddmcMode = false;
         particle.ddmcCellResident = false;
         particle.ddmcComovingFrame = false;
@@ -1263,15 +1368,6 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         materialParticle.initialWeight = std::abs(materialParticle.weight);
 
     bool const usePGRW = (this->multigroupOpacity != nullptr && this->ddmcUseMultigroupPGRW);
-    auto frequencyFitsDDMCCellAt = [&](DDMCCellData const &cellData, double frequency) -> bool {
-        if(!usePGRW)
-            return true;
-        if(cellData.groupCutoff == 0 || cellData.groupCutoff > ENERGY_GROUPS_NUM)
-            return false;
-        double coFreq = frequency;
-        ClampFrequencyToBoundsDDMC(coFreq);
-        return coFreq < ComputationalCell3D::energyBoundaries[cellData.groupCutoff];
-    };
     if(usePGRW)
     {
         if(data.groupCutoff == 0 || data.groupCutoff > ENERGY_GROUPS_NUM)
@@ -1281,36 +1377,32 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
                 convertResidentDDMCToTransport();
             return false;
         }
-        double coFreq = materialParticle.frequency;
-        ClampFrequencyToBoundsDDMC(coFreq);
-        if(coFreq >= ComputationalCell3D::energyBoundaries[data.groupCutoff])
+        if(!continuingDDMC)
         {
-            ++this->ddmcFallbackCount;
-            if(continuingDDMC)
-                convertResidentDDMCToTransport();
-            return false;
+            double coFreq = materialParticle.frequency;
+            ClampFrequencyToBoundsDDMC(coFreq);
+            if(coFreq >= ComputationalCell3D::energyBoundaries[data.groupCutoff])
+            {
+                ++this->ddmcFallbackCount;
+                return false;
+            }
         }
+        // Once admitted, the packet represents the frequency-integrated grey
+        // band.  Refresh an auxiliary local-equilibrium frequency for Doppler
+        // bookkeeping only; leakage and absorption rates must not depend on it.
+        materialParticle.frequency = this->sampleDDMCPlanckFrequency(
+            cellIndex, 0, data.groupCutoff);
     }
 
     double const f = this->factorFleck[cellIndex];
     double const upscatterRateCo = (usePGRW && data.gamma < 1.0 && data.sigmaEnergyAbs > 0.0 && f > 0.0)
         ? units::clight * (1.0 - f) * data.sigmaEnergyAbs * (1.0 - data.gamma)
         : 0.0;
-    auto targetAcceptsDDMC = [&](DDMCFaceLeak const &face) -> bool {
-        return face.targetDDMCEligible &&
-            FrequencyFitsDDMCPoint(usePGRW, 1, face.targetGroupCutoff,
-                                   materialParticle.frequency);
-    };
-    auto applicableFaceRate = [&](DDMCFaceLeak const &face) -> double {
-        return targetAcceptsDDMC(face) ? face.internalRate
-                                       : face.boundaryRate;
-    };
     double applicableLeakRate = 0.0;
     for(DDMCFaceLeak const &face : data.faceLeaks)
     {
-        double const rate = applicableFaceRate(face);
-        if(rate > 0.0 && std::isfinite(rate))
-            applicableLeakRate += rate;
+        if(face.rate > 0.0 && std::isfinite(face.rate))
+            applicableLeakRate += face.rate;
     }
     double const eventRateCo = applicableLeakRate + upscatterRateCo;
     if(!(eventRateCo > 0.0) || !std::isfinite(eventRateCo))
@@ -1415,10 +1507,29 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     if(this->withEgTimeAvg && this->multigroupOpacity)
     {
-        double freqForGroup = materialParticle.frequency;
-        ClampFrequencyToBoundsDDMC(freqForGroup);
-        size_t const g = this->opacity->findGroup(freqForGroup);
-        this->Eg_time_avg[cellIndex][g] += integratedCo;
+        if(usePGRW && data.groupCutoff > 0)
+        {
+            double const bandMass = PlanckBandMass(cell, 0, data.groupCutoff);
+            double const kT = units::k_boltz * cell.temperature;
+            if(bandMass > 0.0 && kT > 0.0)
+            {
+                for(size_t g = 0; g < data.groupCutoff; ++g)
+                {
+                    double const Bg = planck_integral::planck_integral(
+                        ComputationalCell3D::energyBoundaries[g] / kT,
+                        ComputationalCell3D::energyBoundaries[g + 1] / kT);
+                    this->Eg_time_avg[cellIndex][g] +=
+                        integratedCo * Bg / bandMass;
+                }
+            }
+        }
+        else
+        {
+            double freqForGroup = materialParticle.frequency;
+            ClampFrequencyToBoundsDDMC(freqForGroup);
+            size_t const g = this->opacity->findGroup(freqForGroup);
+            this->Eg_time_avg[cellIndex][g] += integratedCo;
+        }
     }
 
     materialParticle.weight *= 1.0 + expFactorCo;
@@ -1618,9 +1729,18 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
                 this->dist);
         }
 #endif
+        // Eq. (31) supplies the lost microscopic state of the grey particle.
+        // Store it as a transport packet at census so the next time step can
+        // classify it against the newly recomputed cutoff.
+        materialParticle.location = this->sampleDDMCTransportLocation(cellIndex);
+        materialParticle.velocity = units::clight * SampleIsotropicDirection(
+            this->dist(this->re), this->dist(this->re));
+        if(usePGRW)
+            materialParticle.frequency = this->sampleDDMCPlanckFrequency(
+                cellIndex, 0, data.groupCutoff);
         functionality.change = MonteCarloParticleStatus::DONE;
         ++this->ddmcCensusCount;
-        return finalizeAccelerationStep(false, true, false);
+        return finalizeAccelerationStep(false, false, false);
     }
 
     double eventPick = this->dist(this->re) * eventRateCo;
@@ -1630,7 +1750,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         DDMCFaceLeak const *chosen = nullptr;
         for(DDMCFaceLeak const &faceLeak : data.faceLeaks)
         {
-            facePick -= applicableFaceRate(faceLeak);
+            facePick -= faceLeak.rate;
             if(facePick <= 0.0)
             {
                 chosen = &faceLeak;
@@ -1645,6 +1765,10 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             functionality.change = MonteCarloParticleStatus::DONE;
             return finalizeAccelerationStep(false, true, false);
         }
+
+        double const channelPick = this->dist(this->re) * chosen->rate;
+        bool const chosenDDMCChannel = chosen->ddmcRate > 0.0 &&
+            (chosen->transportRate <= 0.0 || channelPick < chosen->ddmcRate);
 
         Vector3D const leakFaceCenter = this->grid.FaceCM(chosen->faceIndex);
 
@@ -1670,7 +1794,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             nOut = -1.0 * nOut;
 
         bool const localDDMCNeighborCandidate =
-            targetAcceptsDDMC(*chosen) &&
+            chosenDDMCChannel &&
+            chosen->targetDDMCEligible &&
             chosen->nextCellIndex < this->ddmcCellData.size() &&
             this->ddmcCellData[chosen->nextCellIndex].totalLeakRate > 0.0;
 
@@ -1686,7 +1811,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             localDDMCNeighborCandidate;
 
         bool const remoteDDMCNeighbor =
-            targetAcceptsDDMC(*chosen) && !localDDMCNeighbor &&
+            chosenDDMCChannel && chosen->targetDDMCEligible &&
+            !localDDMCNeighbor &&
             chosen->nextCellIndex >= this->ddmcCellData.size() &&
             chosen->nextCellIndex < this->grid.getMeshPoints().size();
 
@@ -1724,6 +1850,17 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             ++this->ddmcResidentLeakCount;
             ++this->ddmcRemoteResidentLeakCount;
             return finalizeAccelerationStep(false, true, true);
+        }
+
+        if(usePGRW)
+        {
+            size_t lowerGroup = 0;
+            if(chosen->targetDDMCEligible &&
+               chosen->targetGroupCutoff > 0 &&
+               chosen->targetGroupCutoff < data.groupCutoff)
+                lowerGroup = chosen->targetGroupCutoff;
+            materialParticle.frequency = this->sampleDDMCPlanckFrequency(
+                cellIndex, lowerGroup, data.groupCutoff);
         }
 
         constexpr double DDMC_PI = 3.14159265358979323846;

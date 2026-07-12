@@ -85,6 +85,8 @@ struct DDMCFaceLeak
     double rate = 0.0;
     double internalRate = 0.0;
     double boundaryRate = 0.0;
+    double ddmcRate = 0.0;
+    double transportRate = 0.0;
     double area = 0.0;
     double sourceDistanceToFace = 0.0;
     double targetDistanceToFace = 0.0;
@@ -452,6 +454,9 @@ private:
 #ifdef RICH_IMC_DDMC_ENABLED
     void precomputeDDMCData();
     Vector3D sampleDDMCTransportLocation(size_t cellIndex);
+    double sampleDDMCPlanckFrequency(size_t cellIndex,
+                                     size_t beginGroup,
+                                     size_t endGroup);
     void validateDDMCTransportLocation(size_t cellIndex,
                                        Vector3D const &location,
                                        char const *context) const;
