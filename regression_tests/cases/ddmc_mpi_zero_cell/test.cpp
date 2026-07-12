@@ -134,7 +134,8 @@ int main(int argc, char **argv)
             throw UniversalError("DDMC zero-cell MPI test generated the wrong number of points");
 
         auto indexing = std::make_shared<const Kernelization3D::Identity>();
-        auto convertor = std::make_shared<HilbertRectangularConvertor3D>(
+        std::shared_ptr<HilbertConvertor3D> convertor =
+            std::make_shared<HilbertRectangularConvertor3D>(
             ll, ur, 8);
         const curve_index_t d0 = convertor->xyz2d(globalPoints[0]);
         const curve_index_t d1 = convertor->xyz2d(globalPoints[1]);
