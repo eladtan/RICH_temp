@@ -45,7 +45,7 @@ struct LocalParticles
 struct ProbeReference
 {
     std::array<std::uint64_t, kProbeCount> ids{};
-    std::array<Vector3D, kProbeCount> acceleration{};
+    std::array<Vector3D, kProbeCount> acceleration;
     std::array<double, kProbeCount> forceScale{};
 };
 
@@ -259,7 +259,7 @@ std::array<Vector3D, kProbeCount> collectProbeAccelerations(
     MPI_Allreduce(localValues.data(), globalValues.data(),
                   static_cast<int>(globalValues.size()), MPI_DOUBLE,
                   MPI_SUM, comm);
-    std::array<Vector3D, kProbeCount> result{};
+    std::array<Vector3D, kProbeCount> result;
     for(std::size_t i = 0; i < kProbeCount; ++i)
         result[i] = Vector3D(globalValues[3 * i], globalValues[3 * i + 1],
                              globalValues[3 * i + 2]);

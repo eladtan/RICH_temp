@@ -85,6 +85,7 @@ public:
     inline void print() const{this->printHelper(this->root, 0);};
 
 private:
+    static constexpr int kUndefinedOwner = -1;
     class Node
     {
     public:
@@ -283,7 +284,7 @@ void DistributedGravityTree::buildHelper(DistributedGravityTree::Node *node, int
             child->parent = node;
             node->children.push_back(child);
         }
-        node->owner = UNDEFINED_OWNER;
+        node->owner = kUndefinedOwner;
         node->isLeaf = false;
         this->updateData(node);
     }
