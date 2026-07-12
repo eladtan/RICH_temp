@@ -1,4 +1,5 @@
 #include "RadiationIMC.hpp"
+#include "DDMCWollaegerInterface.hpp"
 #include "SphericalObserver.hpp"
 #include "IMCPolarization.hpp"
 #include "3D/tessellation/utils/RandomInCell.hpp"
@@ -15,6 +16,23 @@
 #include "mpi/mpi_commands.hpp"
 #endif
 
+/*
+ * DDMC references
+ *
+ * Frequency-dependent grey-band DDMC:
+ *   J. D. Densmore, K. G. Thompson, and T. J. Urbatsch,
+ *   J. Comput. Phys. 231, 6924-6934 (2012),
+ *   DOI 10.1016/j.jcp.2012.06.020.
+ *
+ * Moving-medium IMC-DDMC interface and G_U correction:
+ *   R. T. Wollaeger et al., ApJS 209, 36 (2013),
+ *   DOI 10.1088/0067-0049/209/2/36, arXiv:1306.5700.
+ *
+ * RICH retains the Densmore contiguous low-frequency DDMC interval.
+ * Compton and other inelastic physical scattering are deliberately not
+ * supported while DDMC is active.
+ */
+
 namespace {
     inline void ClampFrequencyToBoundsDDMC(double &frequency)
     {
@@ -26,11 +44,6 @@ namespace {
     inline double PositiveRandom(double xi)
     {
         return std::max(xi, std::numeric_limits<double>::min());
-    }
-
-    inline double HarmonicMean(double a, double b)
-    {
-        return (a > 0.0 && b > 0.0) ? (2.0 * a * b / (a + b)) : std::max(a, b);
     }
 
     inline double CellGamma(Vector3D const &v)
@@ -90,6 +103,57 @@ namespace {
 
     constexpr size_t DDMC_WEIGHT_RATIO_SAMPLE_LIMIT = 200000;
 
+    Vector3D SampleHemisphereDirection(Vector3D normal, double mu,
+                                       double phi)
+    {
+        normal = normalize(normal);
+        Vector3D helper = (std::abs(normal.x) < 0.9)
+            ? Vector3D(1.0, 0.0, 0.0)
+            : Vector3D(0.0, 1.0, 0.0);
+        Vector3D e1 = normalize(helper - ScalarProd(helper, normal) * normal);
+        Vector3D e2 = normalize(CrossProduct(normal, e1));
+        double const sine = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+        return mu * normal + sine * std::cos(phi) * e1
+             + sine * std::sin(phi) * e2;
+    }
+
+    double SampleCosineMu(double xi)
+    {
+        return std::sqrt(std::clamp(xi, 0.0, 1.0));
+    }
+
+    double SampleAsymptoticDDMCToIMCMu(double xi)
+    {
+        // Detailed balance with the static Wollaeger admission law gives
+        // p(mu)=mu*(1+3*mu/2), whose CDF is mu^2*(1+mu)/2.
+        xi = std::clamp(xi, 0.0, 1.0);
+        double lo = 0.0;
+        double hi = 1.0;
+        for(int iteration = 0; iteration < 56; ++iteration)
+        {
+            double const mu = 0.5 * (lo + hi);
+            double const cdf = 0.5 * mu * mu * (1.0 + mu);
+            if(cdf < xi)
+                lo = mu;
+            else
+                hi = mu;
+        }
+        return 0.5 * (lo + hi);
+    }
+
+    bool FrequencyFitsDDMCPoint(bool usePGRW, int eligible,
+                                size_t cutoff, double frequency)
+    {
+        if(eligible == 0)
+            return false;
+        if(!usePGRW)
+            return true;
+        if(cutoff == 0 || cutoff > ENERGY_GROUPS_NUM)
+            return false;
+        ClampFrequencyToBoundsDDMC(frequency);
+        return frequency < ComputationalCell3D::energyBoundaries[cutoff];
+    }
+
 #ifdef RICH_MPI
     std::vector<rank_t> BuildSymmetricDDMCCorrespondents(
         const std::vector<rank_t> &localProcs)
@@ -147,6 +211,20 @@ void RadiationIMC::precomputeDDMCData()
 {
     size_t const Ncells = this->grid.GetPointNo();
     this->ddmcCellData.assign(Ncells, DDMCCellData{});
+
+    this->ddmcInterfaceIncidentCount = 0;
+    this->ddmcInterfaceAdmissionCount = 0;
+    this->ddmcInterfaceReflectionCount = 0;
+    this->ddmcInterfaceMovingFactorCount = 0;
+    this->ddmcInterfaceMovingFallbackCount = 0;
+    this->ddmcInterfaceSplitPacketCount = 0;
+    this->ddmcInterfaceMinimumMu = std::numeric_limits<double>::infinity();
+    this->ddmcInterfaceMaximumFactor = 1.0;
+    this->ddmcLeakReciprocityResidualMax = 0.0;
+    this->ddmcLeakReciprocityCheckCount = 0;
+    this->ddmcLeakInvalidGeometryCount = 0;
+    this->ddmcInterfaceBypassCount = 0;
+    this->ddmcDopplerCutoffExitCount = 0;
 
     for(size_t i = 0; i < Ncells; ++i)
     {
@@ -289,6 +367,89 @@ void RadiationIMC::precomputeDDMCData()
         }
     }
 
+    // Finalize exclusions before exchanging eligibility.  The original patch
+    // exchanged the first-pass flag and only afterwards removed unsupported
+    // boundary cells, so neighboring ranks could construct an internal
+    // leakage edge into a cell that had already been disabled locally.
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        DDMCCellData &data = this->ddmcCellData[i];
+        if(!data.eligible)
+            continue;
+
+        bool hasUsableTransportFace = false;
+        Vector3D const center = this->grid.GetMeshPoint(i);
+        for(size_t faceIdx : this->grid.GetCellFaces(i))
+        {
+            const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
+            size_t const nextCellIndex =
+                (neighbors.first == i) ? neighbors.second : neighbors.first;
+            if(this->grid.IsPointOutsideBox(nextCellIndex))
+            {
+                DDMCBoundaryFaceBehavior const behavior =
+                    this->boundary->getDDMCBoundaryFaceBehavior(
+                        faceIdx, i, nextCellIndex);
+                if(behavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
+                {
+                    ++data.rigidBoundaryFaceCount;
+                }
+                else
+                {
+                    ++data.unsupportedBoundaryFaceCount;
+                    if(data.firstUnsupportedBoundaryFace ==
+                       std::numeric_limits<size_t>::max())
+                        data.firstUnsupportedBoundaryFace = faceIdx;
+                    data.boundaryExcluded = true;
+                }
+                continue;
+            }
+
+            Vector3D normal = this->grid.Normal(faceIdx);
+            double const area = this->grid.GetArea(faceIdx);
+            if(abs(normal) <= 0.0 || !(area > 0.0))
+                continue;
+            normal = normalize(normal);
+            Vector3D const faceCenter = this->grid.FaceCM(faceIdx);
+            double const di = std::abs(ScalarProd(faceCenter - center, normal));
+            double const dj = std::abs(ScalarProd(
+                this->grid.GetMeshPoint(nextCellIndex) - faceCenter, normal));
+            if(di > 0.0 && dj > 0.0 && std::isfinite(di) &&
+               std::isfinite(dj) && std::isfinite(area))
+                hasUsableTransportFace = true;
+        }
+        if(data.boundaryExcluded || !hasUsableTransportFace)
+            data.eligible = false;
+    }
+
+    size_t const pointCount = std::max(this->grid.GetTotalPointNumber(),
+                                       this->grid.getMeshPoints().size());
+    this->ddmcPointEligible.assign(pointCount, 0);
+    this->ddmcPointDiffusionCoefficient.assign(pointCount, 0.0);
+    this->ddmcPointSigmaDiffusion.assign(pointCount, 0.0);
+    this->ddmcPointGroupCutoff.assign(pointCount, 0);
+    this->ddmcPointVelocity.assign(pointCount, Vector3D(0.0, 0.0, 0.0));
+    this->ddmcPointCellID.assign(pointCount, std::numeric_limits<size_t>::max());
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        this->ddmcPointEligible[i] = this->ddmcCellData[i].eligible ? 1 : 0;
+        this->ddmcPointDiffusionCoefficient[i] =
+            this->ddmcCellData[i].diffusionCoefficient;
+        this->ddmcPointSigmaDiffusion[i] = this->ddmcCellData[i].sigmaDiffusion;
+        this->ddmcPointGroupCutoff[i] = this->ddmcCellData[i].groupCutoff;
+        this->ddmcPointVelocity[i] = this->cells[i].velocity;
+        this->ddmcPointCellID[i] = this->cells[i].ID;
+    }
+#ifdef RICH_MPI
+    // Internal leakage needs the target-cell resistance even when the target
+    // is an MPI ghost.  Never fall back to the source diffusion coefficient.
+    MPI_exchange_data(this->grid, this->ddmcPointEligible, true);
+    MPI_exchange_data(this->grid, this->ddmcPointDiffusionCoefficient, true);
+    MPI_exchange_data(this->grid, this->ddmcPointSigmaDiffusion, true);
+    MPI_exchange_data(this->grid, this->ddmcPointGroupCutoff, true);
+    MPI_exchange_data(this->grid, this->ddmcPointVelocity, true);
+    MPI_exchange_data(this->grid, this->ddmcPointCellID, true);
+#endif
+
     for(size_t i = 0; i < Ncells; ++i)
     {
         DDMCCellData &data = this->ddmcCellData[i];
@@ -305,23 +466,6 @@ void RadiationIMC::precomputeDDMCData()
             size_t const nextCellIndex = (neighbors.first == i) ? neighbors.second : neighbors.first;
             if(this->grid.IsPointOutsideBox(nextCellIndex))
             {
-                DDMCBoundaryFaceBehavior const faceBehavior =
-                    this->boundary->getDDMCBoundaryFaceBehavior(
-                        faceIdx, i, nextCellIndex);
-
-                if(faceBehavior == DDMCBoundaryFaceBehavior::ReflectingRigid)
-                {
-                    ++data.rigidBoundaryFaceCount;
-                    continue;
-                }
-
-                ++data.unsupportedBoundaryFaceCount;
-                if(data.firstUnsupportedBoundaryFace ==
-                   std::numeric_limits<size_t>::max())
-                {
-                    data.firstUnsupportedBoundaryFace = faceIdx;
-                }
-                data.boundaryExcluded = true;
                 continue;
             }
 
@@ -331,31 +475,79 @@ void RadiationIMC::precomputeDDMCData()
             normal = normalize(normal);
 
             Vector3D const faceCenter = this->grid.FaceCM(faceIdx);
-            double cellCenterFaceSpacing =
+            double const sourceDistanceToFace =
                 std::abs(ScalarProd(faceCenter - cellCenter, normal));
-            if(cellCenterFaceSpacing <= 0.0 &&
-               nextCellIndex < this->grid.getMeshPoints().size())
+            double targetDistanceToFace = 0.0;
+            if(nextCellIndex < this->grid.getMeshPoints().size())
             {
-                cellCenterFaceSpacing =
-                    0.5 * std::abs(ScalarProd(
-                        this->grid.GetMeshPoint(nextCellIndex) - cellCenter,
-                        normal));
+                targetDistanceToFace = std::abs(ScalarProd(
+                    this->grid.GetMeshPoint(nextCellIndex) - faceCenter,
+                    normal));
             }
-            if(cellCenterFaceSpacing <= 0.0)
+
+            double const area = this->grid.GetArea(faceIdx);
+            if(!(sourceDistanceToFace > 0.0) || !(area > 0.0) ||
+               !std::isfinite(sourceDistanceToFace) || !std::isfinite(area))
+            {
+                ++this->ddmcLeakInvalidGeometryCount;
                 continue;
+            }
 
-            double diffusionFace = data.diffusionCoefficient;
-            if(nextCellIndex < Ncells && this->ddmcCellData[nextCellIndex].diffusionCoefficient > 0.0)
-                diffusionFace = HarmonicMean(data.diffusionCoefficient, this->ddmcCellData[nextCellIndex].diffusionCoefficient);
+            bool const targetEligible =
+                nextCellIndex < this->ddmcPointEligible.size() &&
+                this->ddmcPointEligible[nextCellIndex] != 0;
+            double internalRate = 0.0;
+            double conductance = 0.0;
+            if(targetEligible && targetDistanceToFace > 0.0 &&
+               nextCellIndex < this->ddmcPointDiffusionCoefficient.size())
+            {
+                double const targetDiffusion =
+                    this->ddmcPointDiffusionCoefficient[nextCellIndex];
+                if(data.diffusionCoefficient > 0.0 && targetDiffusion > 0.0)
+                {
+                    // Conservative two-sided finite-volume DDMC conductance.
+                    // Both diffusion resistances are required.  On a uniform
+                    // Voronoi mesh this gives D*A/(V*d_center), not twice that
+                    // value.  See Wollaeger et al. (2013), Eq. (63).
+                    double const resistance =
+                        sourceDistanceToFace / data.diffusionCoefficient +
+                        targetDistanceToFace / targetDiffusion;
+                    if(resistance > 0.0 && std::isfinite(resistance))
+                    {
+                        conductance = area / resistance;
+                        internalRate = conductance / volume;
+                    }
+                }
+            }
 
-            double const rate = diffusionFace * this->grid.GetArea(faceIdx) / (volume * cellCenterFaceSpacing);
+            // Static asymptotic DDMC-to-IMC boundary leakage.  This rate is
+            // also retained on a DDMC-DDMC face because a packet can lie above
+            // the target cell's frequency cutoff.
+            double const boundaryRate = DDMCWollaeger::BoundaryLeakRate(
+                area, volume, data.sigmaDiffusion, sourceDistanceToFace,
+                units::clight);
+            double const rate = std::max(internalRate, boundaryRate);
             if(rate > 0.0 && std::isfinite(rate))
             {
                 DDMCFaceLeak faceLeak;
                 faceLeak.faceIndex = faceIdx;
                 faceLeak.nextCellIndex = nextCellIndex;
+                faceLeak.kind = targetEligible ? DDMCFaceKind::Internal
+                                               : DDMCFaceKind::InterfaceToIMC;
                 faceLeak.rate = rate;
-                faceLeak.area = this->grid.GetArea(faceIdx);
+                faceLeak.internalRate = internalRate;
+                faceLeak.boundaryRate = boundaryRate;
+                faceLeak.area = area;
+                faceLeak.sourceDistanceToFace = sourceDistanceToFace;
+                faceLeak.targetDistanceToFace = targetDistanceToFace;
+                faceLeak.conductance = conductance;
+                // If the two-sided resistance is unusable, do not expose a
+                // zero-rate DDMC edge.  Treat this face as an IMC interface.
+                faceLeak.targetDDMCEligible =
+                    targetEligible && internalRate > 0.0;
+                faceLeak.targetGroupCutoff =
+                    (nextCellIndex < this->ddmcPointGroupCutoff.size())
+                    ? this->ddmcPointGroupCutoff[nextCellIndex] : 0;
                 faceLeak.outwardNormal = normal;
                 data.faceLeaks.push_back(faceLeak);
                 data.totalLeakRate += rate;
@@ -376,6 +568,267 @@ void RadiationIMC::precomputeDDMCData()
             data.totalLeakRate = 0.0;
         }
     }
+
+    // Check the finite-volume reciprocity identity V_i*lambda_ij =
+    // V_j*lambda_ji for local-local DDMC faces.
+    for(size_t i = 0; i < Ncells; ++i)
+    {
+        double const volumeI = this->grid.GetVolume(i);
+        for(DDMCFaceLeak const &forward : this->ddmcCellData[i].faceLeaks)
+        {
+            size_t const j = forward.nextCellIndex;
+            if(!(forward.internalRate > 0.0) || j >= Ncells || j <= i)
+                continue;
+            DDMCFaceLeak const *reverse = nullptr;
+            for(DDMCFaceLeak const &candidate : this->ddmcCellData[j].faceLeaks)
+            {
+                if(candidate.faceIndex == forward.faceIndex &&
+                   candidate.nextCellIndex == i)
+                {
+                    reverse = &candidate;
+                    break;
+                }
+            }
+            if(reverse == nullptr || !(reverse->internalRate > 0.0))
+                continue;
+            double const lhs = volumeI * forward.internalRate;
+            double const rhs = this->grid.GetVolume(j) * reverse->internalRate;
+            double const scale = std::max({std::abs(lhs), std::abs(rhs),
+                                           std::numeric_limits<double>::min()});
+            double const residual = std::abs(lhs - rhs) / scale;
+            this->ddmcLeakReciprocityResidualMax = std::max(
+                this->ddmcLeakReciprocityResidualMax, residual);
+            ++this->ddmcLeakReciprocityCheckCount;
+        }
+    }
+}
+
+bool RadiationIMC::tryIMCToDDMCInterface(
+    Particle &particle, Functionality &functionality,
+    std::vector<Particle> &particlesToAdd,
+    size_t sourceCellIndex, size_t targetCellIndex, size_t faceIndex)
+{
+    if(targetCellIndex >= this->ddmcPointEligible.size() ||
+       this->grid.IsPointOutsideBox(targetCellIndex) ||
+       this->ddmcPointEligible[targetCellIndex] == 0 ||
+       sourceCellIndex >= this->cells.size())
+    {
+        return false;
+    }
+
+    bool const usePGRW =
+        this->multigroupOpacity != nullptr && this->ddmcUseMultigroupPGRW;
+    ComputationalCell3D const &sourceCell = this->cells[sourceCellIndex];
+    size_t const targetCellID =
+        (targetCellIndex < this->ddmcPointCellID.size())
+        ? this->ddmcPointCellID[targetCellIndex]
+        : std::numeric_limits<size_t>::max();
+    Vector3D const targetVelocity =
+        (targetCellIndex < this->ddmcPointVelocity.size())
+        ? this->ddmcPointVelocity[targetCellIndex] : sourceCell.velocity;
+
+    bool const useVelocityTransport = this->useTransportVelocities_ && !this->MMC;
+
+    Vector3D const faceCenter = this->grid.FaceCM(faceIndex);
+    Vector3D const targetCenter = this->grid.GetMeshPoint(targetCellIndex);
+    Vector3D const sourceCenter = this->grid.GetMeshPoint(sourceCellIndex);
+    Vector3D normalOutOfDDMC = this->grid.Normal(faceIndex);
+    if(abs(normalOutOfDDMC) <= 0.0)
+        return false;
+    normalOutOfDDMC = normalize(normalOutOfDDMC);
+    if(ScalarProd(normalOutOfDDMC, sourceCenter - targetCenter) < 0.0)
+        normalOutOfDDMC = -1.0 * normalOutOfDDMC;
+
+    double const sourceDistance = std::abs(ScalarProd(
+        faceCenter - sourceCenter, normalOutOfDDMC));
+    double const targetDistance = std::abs(ScalarProd(
+        targetCenter - faceCenter, normalOutOfDDMC));
+    double const distanceSum = sourceDistance + targetDistance;
+    Vector3D faceMaterialVelocity =
+        0.5 * (sourceCell.velocity + targetVelocity);
+    if(distanceSum > 0.0 && std::isfinite(distanceSum))
+    {
+        // Linear interpolation to the face.  This reduces to the arithmetic
+        // mean for a Voronoi bisector.
+        faceMaterialVelocity =
+            (targetDistance * sourceCell.velocity +
+             sourceDistance * targetVelocity) / distanceSum;
+    }
+
+    Particle faceComoving = particle;
+    if(useVelocityTransport)
+        LabToComovingPacket(faceComoving, faceMaterialVelocity);
+    if(this->multigroupOpacity)
+        ClampFrequencyToBoundsDDMC(faceComoving.frequency);
+
+    Particle targetComoving = faceComoving;
+    if(useVelocityTransport)
+    {
+        ComovingToLabPacket(targetComoving, faceMaterialVelocity);
+        LabToComovingPacket(targetComoving, targetVelocity);
+    }
+    if(this->multigroupOpacity)
+        ClampFrequencyToBoundsDDMC(targetComoving.frequency);
+    if(!FrequencyFitsDDMCPoint(usePGRW,
+            this->ddmcPointEligible[targetCellIndex],
+            this->ddmcPointGroupCutoff[targetCellIndex],
+            targetComoving.frequency))
+        return false;
+
+    double const speed = abs(faceComoving.velocity);
+    if(!(speed > 0.0) || !std::isfinite(speed))
+        return false;
+    double const mu = -ScalarProd(faceComoving.velocity / speed,
+                                  normalOutOfDDMC);
+    if(!(mu > 0.0) || !std::isfinite(mu))
+        return false;
+
+    ++this->ddmcInterfaceIncidentCount;
+    this->ddmcInterfaceMinimumMu = std::min(this->ddmcInterfaceMinimumMu, mu);
+    double const ddmcDistance = targetDistance;
+    double const sigmaTransport = this->ddmcPointSigmaDiffusion[targetCellIndex];
+
+    auto bypassInterfaceAsIMC = [&]() -> bool {
+        particle.ddmcMode = false;
+        particle.ddmcCellResident = false;
+        particle.ddmcComovingFrame = false;
+        particle.ddmcHasPendingFluxContribution = false;
+        particle.ddmcPendingFluxContribution = Vector3D(0.0, 0.0, 0.0);
+        particle.ddmcBypassCellID = targetCellID;
+        if(targetCellID != std::numeric_limits<size_t>::max())
+            particle.cellID = targetCellID;
+        functionality.change = MonteCarloParticleStatus::CELL_MOVE;
+        functionality.nextCellIndex = targetCellIndex;
+        ++this->ddmcInterfaceBypassCount;
+        return true;
+    };
+
+    double movingFactor = 1.0;
+    if(useVelocityTransport && this->ddmcUseMovingInterfaceCorrection)
+    {
+        double const betaNormal =
+            ScalarProd(faceMaterialVelocity, normalOutOfDDMC) *
+            units::inv_clight;
+        if(!std::isfinite(betaNormal) ||
+           std::abs(betaNormal) > this->ddmcMaxInterfaceVelocityOverC)
+        {
+            ++this->ddmcInterfaceMovingFallbackCount;
+            return bypassInterfaceAsIMC();
+        }
+        movingFactor = DDMCWollaeger::MovingFactor(mu, betaNormal);
+        if(!(movingFactor > 0.0) || !std::isfinite(movingFactor))
+        {
+            ++this->ddmcInterfaceMovingFallbackCount;
+            return bypassInterfaceAsIMC();
+        }
+        ++this->ddmcInterfaceMovingFactorCount;
+        this->ddmcInterfaceMaximumFactor = std::max(
+            this->ddmcInterfaceMaximumFactor, movingFactor);
+    }
+
+    double const targetWeight = this->ddmcInterfaceTargetWeightRatio *
+        std::max(std::abs(particle.weight),
+                 std::numeric_limits<double>::min());
+    size_t requiredSplitCount = 1;
+    if(targetWeight > 0.0)
+    {
+        requiredSplitCount = static_cast<size_t>(std::ceil(
+            std::abs(faceComoving.weight * movingFactor) / targetWeight));
+        requiredSplitCount = std::max<size_t>(1, requiredSplitCount);
+    }
+    if(requiredSplitCount > std::max<size_t>(1, this->ddmcMaxInterfaceSplits))
+        return bypassInterfaceAsIMC();
+
+    double const admissionProbability =
+        DDMCWollaeger::StaticAdmissionProbability(
+            mu, sigmaTransport, ddmcDistance);
+
+    if(this->dist(this->re) > admissionProbability)
+    {
+        // Standard diffuse-albedo rejection.  The reflected packet remains
+        // IMC and is nudged back into the source cell.
+        constexpr double pi = 3.14159265358979323846;
+        double const reflectedMu = SampleCosineMu(this->dist(this->re));
+        double const phi = 2.0 * pi * this->dist(this->re);
+        faceComoving.velocity = units::clight * SampleHemisphereDirection(
+            normalOutOfDDMC, reflectedMu, phi);
+        if(useVelocityTransport)
+            ComovingToLabPacket(faceComoving, faceMaterialVelocity);
+        particle.velocity = faceComoving.velocity;
+        particle.frequency = faceComoving.frequency;
+        particle.weight = faceComoving.weight;
+        particle.location = 0.9999999999 * faceCenter
+                          + 0.0000000001 * sourceCenter;
+        particle.ddmcBypassCellID = std::numeric_limits<size_t>::max();
+        functionality.change = MonteCarloParticleStatus::NO_CELL_MOVE;
+        ++this->ddmcInterfaceReflectionCount;
+        return true;
+    }
+
+    faceComoving.weight *= movingFactor;
+    targetComoving = faceComoving;
+    if(useVelocityTransport)
+    {
+        ComovingToLabPacket(targetComoving, faceMaterialVelocity);
+        LabToComovingPacket(targetComoving, targetVelocity);
+    }
+    if(this->multigroupOpacity)
+        ClampFrequencyToBoundsDDMC(targetComoving.frequency);
+    double const admittedTargetWeight = targetComoving.weight;
+
+    size_t splitCount = requiredSplitCount;
+    // Additional packets can be inserted locally without entering a ghost
+    // cell.  A remote interface keeps one unbiased, corrected-weight packet.
+    if(targetCellIndex >= this->grid.GetPointNo())
+        splitCount = 1;
+    targetComoving.weight /= static_cast<double>(splitCount);
+    targetComoving.initialWeight = std::abs(targetComoving.weight);
+    targetComoving.location = targetCenter;
+    targetComoving.ddmcMode = true;
+    targetComoving.ddmcCellResident = true;
+    targetComoving.ddmcComovingFrame = true;
+    targetComoving.ddmcHasPendingFluxContribution = false;
+    targetComoving.ddmcPendingFluxContribution = Vector3D(0.0, 0.0, 0.0);
+    targetComoving.ddmcBypassCellID = std::numeric_limits<size_t>::max();
+    targetComoving.cellID = targetCellID;
+
+    Vector3D entryDirection = targetComoving.velocity;
+    double const entrySpeed = abs(entryDirection);
+    if(entrySpeed > 0.0 && std::isfinite(entrySpeed))
+    {
+        entryDirection = entryDirection / entrySpeed;
+        Vector3D const contribution = admittedTargetWeight * entryDirection;
+        if(targetCellIndex < this->ddmcFluxRhsIntegrated.size())
+        {
+            this->ddmcFluxRhsIntegrated[targetCellIndex] += contribution;
+            ++this->ddmcInterfaceFluxTallyCount;
+        }
+        else
+        {
+            targetComoving.ddmcHasPendingFluxContribution = true;
+            targetComoving.ddmcPendingFluxContribution = contribution;
+        }
+    }
+
+    for(size_t copy = 1; copy < splitCount; ++copy)
+    {
+        Particle extra = targetComoving;
+        extra.id = std::numeric_limits<size_t>::max();
+        extra.cellIndex = targetCellIndex;
+        particlesToAdd.push_back(extra);
+        ++this->ddmcInterfaceSplitPacketCount;
+    }
+
+    size_t const oldCellIndex = particle.cellIndex;
+    particle = targetComoving;
+    // The Monte Carlo manager performs the actual local/MPI cell move.  Keep
+    // the old index until it consumes the CELL_MOVE result.
+    particle.cellIndex = oldCellIndex;
+    particle.location = faceCenter;
+    functionality.change = MonteCarloParticleStatus::CELL_MOVE;
+    functionality.nextCellIndex = targetCellIndex;
+    ++this->ddmcInterfaceAdmissionCount;
+    return true;
 }
 
 Vector3D RadiationIMC::sampleDDMCTransportLocation(size_t cellIndex)
@@ -846,7 +1299,23 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     double const upscatterRateCo = (usePGRW && data.gamma < 1.0 && data.sigmaEnergyAbs > 0.0 && f > 0.0)
         ? units::clight * (1.0 - f) * data.sigmaEnergyAbs * (1.0 - data.gamma)
         : 0.0;
-    double const eventRateCo = data.totalLeakRate + upscatterRateCo;
+    auto targetAcceptsDDMC = [&](DDMCFaceLeak const &face) -> bool {
+        return face.targetDDMCEligible &&
+            FrequencyFitsDDMCPoint(usePGRW, 1, face.targetGroupCutoff,
+                                   materialParticle.frequency);
+    };
+    auto applicableFaceRate = [&](DDMCFaceLeak const &face) -> double {
+        return targetAcceptsDDMC(face) ? face.internalRate
+                                       : face.boundaryRate;
+    };
+    double applicableLeakRate = 0.0;
+    for(DDMCFaceLeak const &face : data.faceLeaks)
+    {
+        double const rate = applicableFaceRate(face);
+        if(rate > 0.0 && std::isfinite(rate))
+            applicableLeakRate += rate;
+    }
+    double const eventRateCo = applicableLeakRate + upscatterRateCo;
     if(!(eventRateCo > 0.0) || !std::isfinite(eventRateCo))
     {
         ++this->ddmcFallbackCount;
@@ -872,14 +1341,34 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     double const tCensusCo = useVelocityTransport ? particle.timeLeft / gammaCell
                                               : particle.timeLeft;
 
-    double const dtCo = std::min(tEventCo, tCensusCo);
+    double tCutoffCo = std::numeric_limits<double>::infinity();
+    if(usePGRW && useVelocityTransport && data.velocityDivergence < 0.0 &&
+       data.groupCutoff > 0 && data.groupCutoff <= ENERGY_GROUPS_NUM)
+    {
+        double const cutoffFrequency =
+            ComputationalCell3D::energyBoundaries[data.groupCutoff];
+        double const logarithmicGrowthRate = -data.velocityDivergence / 3.0;
+        if(materialParticle.frequency > 0.0 &&
+           materialParticle.frequency < cutoffFrequency &&
+           logarithmicGrowthRate > 0.0)
+        {
+            tCutoffCo = std::log(cutoffFrequency /
+                                 materialParticle.frequency) /
+                        logarithmicGrowthRate;
+        }
+    }
+
+    double const dtCo = std::min({tEventCo, tCensusCo, tCutoffCo});
 
     // Level-1 mixed-frame approximation: dtLab = gammaCell * dtCo.
     // This intentionally ignores the event displacement term
     // gammaCell * dot(cell.velocity, dxCo) / c^2.
     // Use Level 2 before relying on high-v/c DDMC results.
     double dtLab = useVelocityTransport ? gammaCell * dtCo : dtCo;
-    bool const censusEvent = (tCensusCo <= tEventCo);
+    bool const cutoffEvent =
+        tCutoffCo <= tEventCo && tCutoffCo < tCensusCo;
+    bool const censusEvent =
+        !cutoffEvent && tCensusCo <= tEventCo;
     if(censusEvent)
         dtLab = particle.timeLeft;
 
@@ -1029,6 +1518,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 #endif
     };
 
+    Vector3D finalTransportFrameVelocity = cell.velocity;
+
     auto finalizeAccelerationStep = [&](bool remove,
                                         bool remainInDDMC,
                                         bool preservePhysicalState) -> bool {
@@ -1051,7 +1542,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
         if(useVelocityTransport)
         {
-            ComovingToLabPacket(finalLabParticle, cell.velocity);
+            ComovingToLabPacket(finalLabParticle, finalTransportFrameVelocity);
             if(this->multigroupOpacity)
                 ClampFrequencyToBoundsDDMC(finalLabParticle.frequency);
         }
@@ -1091,6 +1582,21 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     if(removeParticle)
         return finalizeAccelerationStep(true, false, false);
 
+    if(cutoffEvent)
+    {
+        double const cutoffFrequency =
+            ComputationalCell3D::energyBoundaries[data.groupCutoff];
+        materialParticle.frequency = std::nextafter(
+            cutoffFrequency, std::numeric_limits<double>::max());
+        materialParticle.velocity = this->opacity->getRandomVelocity(cell);
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+            IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
+        ++this->ddmcDopplerCutoffExitCount;
+        return finalizeAccelerationStep(false, false, false);
+    }
+
     if(censusEvent)
     {
 #ifdef MONTECARLO_POLARIZATION
@@ -1121,13 +1627,13 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     }
 
     double eventPick = this->dist(this->re) * eventRateCo;
-    if(eventPick <= data.totalLeakRate)
+    if(eventPick <= applicableLeakRate)
     {
-        double facePick = this->dist(this->re) * data.totalLeakRate;
+        double facePick = this->dist(this->re) * applicableLeakRate;
         DDMCFaceLeak const *chosen = nullptr;
         for(DDMCFaceLeak const &faceLeak : data.faceLeaks)
         {
-            facePick -= faceLeak.rate;
+            facePick -= applicableFaceRate(faceLeak);
             if(facePick <= 0.0)
             {
                 chosen = &faceLeak;
@@ -1167,8 +1673,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             nOut = -1.0 * nOut;
 
         bool const localDDMCNeighborCandidate =
+            targetAcceptsDDMC(*chosen) &&
             chosen->nextCellIndex < this->ddmcCellData.size() &&
-            this->ddmcCellData[chosen->nextCellIndex].eligible &&
             this->ddmcCellData[chosen->nextCellIndex].totalLeakRate > 0.0;
 
         Particle targetMaterialParticle = materialParticle;
@@ -1180,12 +1686,10 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         }
 
         bool const localDDMCNeighbor =
-            localDDMCNeighborCandidate &&
-            frequencyFitsDDMCCellAt(this->ddmcCellData[chosen->nextCellIndex],
-                                    targetMaterialParticle.frequency);
+            localDDMCNeighborCandidate;
 
         bool const remoteDDMCNeighbor =
-            !localDDMCNeighbor &&
+            targetAcceptsDDMC(*chosen) && !localDDMCNeighbor &&
             chosen->nextCellIndex >= this->ddmcCellData.size() &&
             chosen->nextCellIndex < this->grid.getMeshPoints().size();
 
@@ -1225,23 +1729,10 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             return finalizeAccelerationStep(false, true, true);
         }
 
-        Vector3D helper = (std::abs(nOut.x) < 0.9)
-            ? Vector3D(1.0, 0.0, 0.0)
-            : Vector3D(0.0, 1.0, 0.0);
-        Vector3D e1 = normalize(helper - ScalarProd(helper, nOut) * nOut);
-        Vector3D e2 = CrossProduct(nOut, e1);
-        if(abs(e2) > 0.0)
-            e2 = normalize(e2);
-
         constexpr double DDMC_PI = 3.14159265358979323846;
-        double const xiMu = std::min(1.0, PositiveRandom(this->dist(this->re)));
-        double const mu = std::sqrt(xiMu);
+        double const mu = SampleAsymptoticDDMCToIMCMu(this->dist(this->re));
         double const phiLeak = 2.0 * DDMC_PI * this->dist(this->re);
-        double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
-
-        Vector3D dir = mu * nOut
-            + sinTheta * std::cos(phiLeak) * e1
-            + sinTheta * std::sin(phiLeak) * e2;
+        Vector3D const dir = SampleHemisphereDirection(nOut, mu, phiLeak);
 
         materialParticle.location = leakFaceCenter;
         Vector3D const oldVelocityCoForPol = materialParticle.velocity;
@@ -1274,6 +1765,14 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
         this->tallyDDMCFaceFlux(cellIndex, *chosen, materialParticle.weight,
                                 nOut, false);
+
+        // Representation changes use the reconstructed face material frame.
+        // Ordinary DDMC-to-DDMC leakage above deliberately has no frame
+        // transformation; Doppler evolution remains operator split.
+        // A resident DDMC packet has no microscopic direction before this
+        // leakage event.  Sample the outgoing direction in the source-cell
+        // comoving frame and transform with cell.velocity; transforming its
+        // stale stored direction to an averaged face frame would be unphysical.
 
         functionality.change = MonteCarloParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = chosen->nextCellIndex;
@@ -1326,6 +1825,17 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
         return std::string();
 
     os << " ddmc=on";
+       << " ddmc_interface_incident=" << this->ddmcInterfaceIncidentCount
+       << " ddmc_interface_admitted=" << this->ddmcInterfaceAdmissionCount
+       << " ddmc_interface_reflected=" << this->ddmcInterfaceReflectionCount
+       << " ddmc_interface_gu_applied=" << this->ddmcInterfaceMovingFactorCount
+       << " ddmc_interface_gu_fallback=" << this->ddmcInterfaceMovingFallbackCount
+       << " ddmc_interface_split_packets=" << this->ddmcInterfaceSplitPacketCount
+       << " ddmc_interface_min_mu=" << this->ddmcInterfaceMinimumMu
+       << " ddmc_interface_max_gu=" << this->ddmcInterfaceMaximumFactor
+       << " ddmc_leak_reciprocity_checks=" << this->ddmcLeakReciprocityCheckCount
+       << " ddmc_leak_reciprocity_max=" << this->ddmcLeakReciprocityResidualMax
+       << " ddmc_leak_invalid_geometry=" << this->ddmcLeakInvalidGeometryCount
     if(cellIndex >= this->ddmcCellData.size())
     {
         os << " reason=cell_out_of_range";
@@ -1335,6 +1845,8 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
     DDMCCellData const &data = this->ddmcCellData[cellIndex];
     Vector3D const &cellVel = this->cells[cellIndex].velocity;
     os << " useTransportVelocities=" << this->useTransportVelocities_
+       << " ddmc_interface_bypass=" << this->ddmcInterfaceBypassCount
+       << " ddmc_doppler_cutoff_exit=" << this->ddmcDopplerCutoffExitCount
        << " postProcess=" << this->postProcess_.enabled
        << " cell_vel=(" << cellVel.x << "," << cellVel.y << "," << cellVel.z << ")"
        << " freq_assumed_lab=" << frequency

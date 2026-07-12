@@ -33,6 +33,10 @@ struct RadiationIMCParameters
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
+    bool ddmcUseMovingInterfaceCorrection = true;
+    double ddmcMaxInterfaceVelocityOverC = 0.1;
+    double ddmcInterfaceTargetWeightRatio = 2.0;
+    size_t ddmcMaxInterfaceSplits = 64;
     bool ddmcUseMultigroupPGRW = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
@@ -67,12 +71,26 @@ struct RadiationIMCParameters
     friend std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters);
 };
 
+enum class DDMCFaceKind
+{
+    Internal,
+    InterfaceToIMC
+};
+
 struct DDMCFaceLeak
 {
     size_t faceIndex = std::numeric_limits<size_t>::max();
     size_t nextCellIndex = std::numeric_limits<size_t>::max();
+    DDMCFaceKind kind = DDMCFaceKind::InterfaceToIMC;
     double rate = 0.0;
+    double internalRate = 0.0;
+    double boundaryRate = 0.0;
     double area = 0.0;
+    double sourceDistanceToFace = 0.0;
+    double targetDistanceToFace = 0.0;
+    double conductance = 0.0;
+    bool targetDDMCEligible = false;
+    size_t targetGroupCutoff = 0;
     Vector3D outwardNormal = Vector3D(0.0, 0.0, 0.0);
 };
 
@@ -305,6 +323,10 @@ private:
     double rwMinParticleOpticalDepth;
     bool withDDMC;
     double ddmcMinCellOpticalDepth;
+    bool ddmcUseMovingInterfaceCorrection;
+    double ddmcMaxInterfaceVelocityOverC;
+    double ddmcInterfaceTargetWeightRatio;
+    size_t ddmcMaxInterfaceSplits;
     bool ddmcUseMultigroupPGRW;
     bool noHydroFeedback;
     bool withEgTimeAvg;
@@ -346,6 +368,12 @@ private:
     size_t rwStepCount = 0;
 
     std::vector<DDMCCellData> ddmcCellData;
+    std::vector<int> ddmcPointEligible;
+    std::vector<double> ddmcPointDiffusionCoefficient;
+    std::vector<double> ddmcPointSigmaDiffusion;
+    std::vector<size_t> ddmcPointGroupCutoff;
+    std::vector<Vector3D> ddmcPointVelocity;
+    std::vector<size_t> ddmcPointCellID;
     std::vector<Vector3D> ddmcFluxRhsIntegrated;
     size_t ddmcStepCount = 0;
     size_t ddmcLeakCount = 0;
@@ -380,6 +408,19 @@ private:
     size_t ddmcWeightRatioCount = 0;
     size_t ddmcWeightRatioSamplesDropped = 0;
     size_t ddmcWeightRatioOutlierCount = 0;
+    size_t ddmcInterfaceIncidentCount = 0;
+    size_t ddmcInterfaceAdmissionCount = 0;
+    size_t ddmcInterfaceReflectionCount = 0;
+    size_t ddmcInterfaceMovingFactorCount = 0;
+    size_t ddmcInterfaceMovingFallbackCount = 0;
+    size_t ddmcInterfaceSplitPacketCount = 0;
+    double ddmcInterfaceMinimumMu = std::numeric_limits<double>::infinity();
+    double ddmcInterfaceMaximumFactor = 1.0;
+    double ddmcLeakReciprocityResidualMax = 0.0;
+    size_t ddmcLeakReciprocityCheckCount = 0;
+    size_t ddmcLeakInvalidGeometryCount = 0;
+    size_t ddmcInterfaceBypassCount = 0;
+    size_t ddmcDopplerCutoffExitCount = 0;
 
     std::shared_ptr<SphericalObserver> observer_;
     std::unordered_map<size_t, double> adaptiveSourceScores_;
@@ -414,6 +455,10 @@ private:
     void validateDDMCTransportLocation(size_t cellIndex,
                                        Vector3D const &location,
                                        char const *context) const;
+    bool tryIMCToDDMCInterface(Particle &particle, Functionality &functionality,
+                               std::vector<Particle> &particlesToAdd,
+                               size_t sourceCellIndex, size_t targetCellIndex,
+                               size_t faceIndex);
     bool tryDDMCStep(Particle &particle, Functionality &functionality, double dopplerShift);
     void reduceDDMCFaceFluxTallies();
     void applyDDMCMomentumFeedback(double fullDt);

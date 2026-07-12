@@ -1085,7 +1085,7 @@ namespace {
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcUseMovingInterfaceCorrection(parameters.ddmcUseMovingInterfaceCorrection), ddmcMaxInterfaceVelocityOverC(parameters.ddmcMaxInterfaceVelocityOverC), ddmcInterfaceTargetWeightRatio(parameters.ddmcInterfaceTargetWeightRatio), ddmcMaxInterfaceSplits(parameters.ddmcMaxInterfaceSplits), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
 {
     if(postProcess_.enabled || postProcess_.polarization.enabled)
     {
@@ -1133,13 +1133,27 @@ namespace {
         throw UniversalError("RadiationIMC requested DDMC, but this executable was built without RadiationIMC_DDMC.cpp");
 #endif
     }
+    if(this->withDDMC)
+    {
+        if(!(this->ddmcMaxInterfaceVelocityOverC > 0.0) ||
+           !(this->ddmcMaxInterfaceVelocityOverC < 1.0))
+            throw UniversalError("RadiationIMC: DDMC interface velocity limit must lie in (0,1)");
+        if(!(this->ddmcInterfaceTargetWeightRatio > 0.0) ||
+           !std::isfinite(this->ddmcInterfaceTargetWeightRatio))
+            throw UniversalError("RadiationIMC: DDMC interface target-weight ratio must be positive and finite");
+        if(this->ddmcMaxInterfaceSplits == 0)
+            throw UniversalError("RadiationIMC: DDMC maximum interface split count must be nonzero");
+    }
     if(this->withCompton && this->withRandomWalk)
     {
         throw UniversalError("RadiationIMC Compton precompute is not compatible with random walk yet");
     }
     if(this->withCompton && this->withDDMC)
     {
-        throw UniversalError("RadiationIMC Compton precompute is not compatible with DDMC yet");
+        throw UniversalError(
+            "RadiationIMC: DDMC currently supports absorption, IMC effective "
+            "scattering, and elastic physical scattering only. Compton "
+            "redistribution with DDMC is intentionally deferred.");
     }
     if(this->withCompton && !parameters.withMultigroupOpacity)
     {
@@ -1247,8 +1261,16 @@ void RadiationIMC::clearSourceEmissionControl()
 
 typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std::vector<Particle> &particlesToAdd)
 {
-    (void)particlesToAdd;
     Functionality functionality;
+
+    size_t constexpr noBypassCell = std::numeric_limits<size_t>::max();
+    if(particle.ddmcBypassCellID != noBypassCell &&
+       particle.ddmcBypassCellID != particle.cellID)
+    {
+        particle.ddmcBypassCellID = noBypassCell;
+    }
+    bool const bypassDDMCInCurrentCell =
+        particle.ddmcBypassCellID != noBypassCell;
 
     bool debug = false;
 
@@ -1272,7 +1294,8 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     bool const useVelocityTransport = this->useTransportVelocities_ && !this->MMC;
     double dopplerShift = useVelocityTransport ? DopplerShift(particle, cell.velocity) : 1.0;
 
-    if(this->withDDMC && !particle.ddmcMode)
+    if(this->withDDMC && !particle.ddmcMode &&
+       !bypassDDMCInCurrentCell)
     {
 #ifdef RICH_IMC_DDMC_ENABLED
         if(this->tryDDMCStep(particle, functionality, dopplerShift))
@@ -1483,6 +1506,24 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 
     if(min.first == Events::INTERSECTION)
     {
+#ifdef RICH_IMC_DDMC_ENABLED
+        if(this->withDDMC && !particle.ddmcMode &&
+           this->tryIMCToDDMCInterface(particle, functionality,
+                                       particlesToAdd, cellIndex,
+                                       nextCellIndex, faceIntersect))
+        {
+            return functionality;
+        }
+#endif
+        // Keep a DDMC-bypass marker through a physical-boundary reflection:
+        // the manager may return the packet to this same cell.  Clear it only
+        // when this intersection really enters another mesh cell.
+        if(!this->grid.IsPointOutsideBox(nextCellIndex))
+        {
+            particle.ddmcBypassCellID = noBypassCell;
+            if(nextCellIndex < this->cells.size())
+                particle.cellID = this->cells[nextCellIndex].ID;
+        }
         functionality.change = MonteCarloParticleStatus::CELL_MOVE;
         functionality.nextCellIndex = nextCellIndex;
     }

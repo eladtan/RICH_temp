@@ -75,6 +75,7 @@ struct MonteCarloParticle
     bool ddmcComovingFrame = false;
     bool ddmcHasPendingFluxContribution = false;
     T ddmcPendingFluxContribution = T();
+    size_t ddmcBypassCellID = std::numeric_limits<size_t>::max();
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -174,6 +175,8 @@ struct MonteCarloParticle
                     if(particle.ddmcHasPendingFluxContribution)
                         stream << " pendingFlux=" << particle.ddmcPendingFluxContribution;
                 }
+                if(particle.ddmcBypassCellID != std::numeric_limits<size_t>::max())
+                    stream << ", ddmcBypassCellID=" << particle.ddmcBypassCellID;
 #ifdef MONTECARLO_POLARIZATION
                 stream << ", q " << particle.stokesQ
                        << ", u " << particle.stokesU
@@ -452,6 +455,7 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->ddmcComovingFrame);
     bytes += serializer->insert(this->ddmcHasPendingFluxContribution);
     bytes += serializer->insert(this->ddmcPendingFluxContribution);
+    bytes += serializer->insert(this->ddmcBypassCellID);
 #ifdef MONTECARLO_POLARIZATION
     bytes += serializer->insert(this->stokesQ);
     bytes += serializer->insert(this->stokesU);
@@ -512,6 +516,7 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->ddmcComovingFrame, byteOffset + bytes);
     bytes += serializer->extract(this->ddmcHasPendingFluxContribution, byteOffset + bytes);
     bytes += serializer->extract(this->ddmcPendingFluxContribution, byteOffset + bytes);
+    bytes += serializer->extract(this->ddmcBypassCellID, byteOffset + bytes);
 #ifdef MONTECARLO_POLARIZATION
     bytes += serializer->extract(this->stokesQ, byteOffset + bytes);
     bytes += serializer->extract(this->stokesU, byteOffset + bytes);
