@@ -1505,9 +1505,8 @@ check_fmm_gravity_mpi_guard_case() {
     local stdout_log="$3"
     local stderr_log="$4"
     local metrics_file="${run_dir}/fmm_gravity_mpi_guard_metrics.txt"
-    local rich_mpi
-    local constructor_rejected
-    local message_matched
+    local constructor_accepted
+    local potential_option_rejected
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -1519,17 +1518,20 @@ check_fmm_gravity_mpi_guard_case() {
         return 1
     fi
 
-    rich_mpi=$(awk '$1 == "rich_mpi" { print $2 }' "$metrics_file")
-    constructor_rejected=$(awk '$1 == "constructor_rejected" { print $2 }' "$metrics_file")
-    message_matched=$(awk '$1 == "message_matched" { print $2 }' "$metrics_file")
+    constructor_accepted=$(awk '$1 == "constructor_accepted" { print $2 }' "$metrics_file")
+    potential_option_rejected=$(awk '$1 == "potential_option_rejected" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ "$rich_mpi" != "1" ]]; then
-        set_check_msg "FMM MPI guard test was not compiled with RICH_MPI"
+    if [[ -z "$constructor_accepted" || -z "$potential_option_rejected" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM MPI guard metrics"
         return 1
     fi
-    if [[ "$constructor_rejected" != "1" || "$message_matched" != "1" ]]; then
-        set_check_msg "FastMultipoleAcceleration3D did not reject MPI construction correctly"
+    if [[ "$constructor_accepted" != "1" ]]; then
+        set_check_msg "FastMultipoleAcceleration3D MPI construction was not accepted"
+        return 1
+    fi
+    if [[ "$potential_option_rejected" != "1" ]]; then
+        set_check_msg "FastMultipoleAcceleration3D did not reject computePotential in MPI mode"
         return 1
     fi
     if [[ "$pass_flag" != "1" ]]; then
@@ -1537,7 +1539,119 @@ check_fmm_gravity_mpi_guard_case() {
         return 1
     fi
 
-    set_check_msg "FMM MPI guard check passed"
+    set_check_msg "FMM MPI guard check passed (constructor accepted, potential option rejected)"
+    return 0
+}
+
+check_fmm_gravity_mpi_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_mpi_metrics.txt"
+    local ranks
+    local max_scaled_error
+    local first_epoch
+    local second_epoch
+    local third_epoch
+    local mismatched_domain_rejected
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_mpi_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    max_scaled_error=$(awk '$1 == "max_scaled_error" { print $2 }' "$metrics_file")
+    first_epoch=$(awk '$1 == "first_epoch" { print $2 }' "$metrics_file")
+    second_epoch=$(awk '$1 == "second_epoch" { print $2 }' "$metrics_file")
+    third_epoch=$(awk '$1 == "third_epoch" { print $2 }' "$metrics_file")
+    mismatched_domain_rejected=$(awk '$1 == "mismatched_domain_rejected" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
+          -z "$second_epoch" || -z "$third_epoch" ||
+          -z "$mismatched_domain_rejected" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse distributed FMM gravity metrics"
+        return 1
+    fi
+    if ! is_finite_number "$max_scaled_error"; then
+        set_check_msg "distributed FMM max_scaled_error is not finite"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n >= 3) }'; then
+        set_check_msg "distributed FMM test did not use enough ranks (${ranks})"
+        return 1
+    fi
+    if ! awk -v e="$max_scaled_error" 'BEGIN { exit !(e < 2e-4) }'; then
+        set_check_msg "distributed FMM max_scaled_error too large (${max_scaled_error})"
+        return 1
+    fi
+    if [[ "$first_epoch" != "$second_epoch" ]]; then
+        set_check_msg "distributed FMM failed to reuse topology after a mass-only change (${first_epoch} -> ${second_epoch})"
+        return 1
+    fi
+    if ! awk -v second="$second_epoch" -v third="$third_epoch" 'BEGIN { exit !(third > second) }'; then
+        set_check_msg "distributed FMM failed to rebuild topology after particle motion (${second_epoch} -> ${third_epoch})"
+        return 1
+    fi
+    if [[ "$mismatched_domain_rejected" != "1" ]]; then
+        set_check_msg "distributed FMM did not collectively reject mismatched domains"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "distributed FMM gravity test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Distributed FMM gravity check passed (ranks=${ranks}, scaled_error=${max_scaled_error})"
+    return 0
+}
+
+check_fmm_process_pair_coverage_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_process_pair_coverage_metrics.txt"
+    local ranks
+    local cases
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_process_pair_coverage_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    cases=$(awk '$1 == "cases" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$cases" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM process-pair coverage metrics"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n > 1) }'; then
+        set_check_msg "FMM process-pair coverage test requires multiple ranks (${ranks})"
+        return 1
+    fi
+    if [[ "$cases" != "3" ]]; then
+        set_check_msg "FMM process-pair coverage did not run all cases (${cases})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM process-pair coverage test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM process-pair coverage check passed (ranks=${ranks}, cases=${cases})"
     return 0
 }
 
