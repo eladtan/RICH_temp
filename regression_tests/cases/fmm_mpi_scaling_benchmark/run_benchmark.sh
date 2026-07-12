@@ -9,6 +9,7 @@ fi
 
 RICH_BIN="$1"
 REPEATS="${FMM_MPI_BENCH_REPEATS:-2}"
+FMM_MAX_REMOTE_MIB="${FMM_MPI_BENCH_MAX_REMOTE_MIB:-512}"
 SMALL_PARTICLES=1000000
 LARGE_PARTICLES=10000000
 ALLOCATED_NODES="${SLURM_JOB_NUM_NODES:-0}"
@@ -20,6 +21,10 @@ if [[ ! -x "${RICH_BIN}" ]]; then
 fi
 if ! [[ "${REPEATS}" =~ ^[1-9][0-9]*$ ]]; then
     echo "FMM_MPI_BENCH_REPEATS must be a positive integer" >&2
+    exit 2
+fi
+if ! [[ "${FMM_MAX_REMOTE_MIB}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "FMM_MPI_BENCH_MAX_REMOTE_MIB must be a positive integer" >&2
     exit 2
 fi
 if (( ALLOCATED_NODES < 16 )); then
@@ -39,6 +44,10 @@ fi
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+# The benchmark is single-threaded per MPI rank.  Limit glibc arenas so many
+# ranks on one node do not retain independent multi-arena high-water marks.
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
 
 rm -f fmm_mpi_scaling_benchmark_*.txt \
       fmm_mpi_scaling_benchmark_metrics.txt
@@ -49,8 +58,8 @@ run_case() {
     local ranks=$((nodes * RANKS_PER_NODE))
     local output="fmm_mpi_scaling_benchmark_${particles}_nodes${nodes}.txt"
 
-    echo "=== particles=${particles}, nodes=${nodes}, ranks=${ranks}, ranks_per_node=${RANKS_PER_NODE}, repeats=${REPEATS} ==="
-    mpirun -np "${ranks}" \
+    echo "=== particles=${particles}, nodes=${nodes}, ranks=${ranks}, ranks_per_node=${RANKS_PER_NODE}, repeats=${REPEATS}, fmm_max_remote_mib=${FMM_MAX_REMOTE_MIB} ==="
+    if ! mpirun -np "${ranks}" \
         --map-by "ppr:${RANKS_PER_NODE}:node" \
         --bind-to core \
         "${RICH_BIN}" \
@@ -58,7 +67,16 @@ run_case() {
         --expected-nodes "${nodes}" \
         --expected-ranks-per-node "${RANKS_PER_NODE}" \
         --repeats "${REPEATS}" \
-        --output "${output}"
+        --fmm-max-remote-mib "${FMM_MAX_REMOTE_MIB}" \
+        --output "${output}"; then
+        echo "Benchmark MPI subcase failed before producing ${output}." >&2
+        echo "Last benchmark_stage line identifies the failing phase." >&2
+        if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+            echo "Inspect scheduler memory with:" >&2
+            echo "  sacct -j ${SLURM_JOB_ID} --format=JobID,State,ExitCode,Elapsed,MaxRSS,MaxVMSize,ReqMem,AllocTRES%80" >&2
+        fi
+        exit 1
+    fi
 
     if [[ ! -s "${output}" ]] || ! grep -q '^pass 1$' "${output}"; then
         echo "Benchmark subcase failed: ${output}" >&2

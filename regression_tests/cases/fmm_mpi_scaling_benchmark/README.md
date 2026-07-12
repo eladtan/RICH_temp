@@ -9,10 +9,10 @@ with a fixed MPI rank density on every node:
 
 | Global particles | Nodes | Default MPI ranks |
 |---:|---:|---:|
-| 1,000,000 | 8 | 128 |
-| 1,000,000 | 16 | 256 |
-| 10,000,000 | 8 | 128 |
-| 10,000,000 | 16 | 256 |
+| 1,000,000 | 8 | 32 |
+| 1,000,000 | 16 | 64 |
+| 10,000,000 | 8 | 32 |
+| 10,000,000 | 16 | 64 |
 
 Each solver is rebuilt from scratch for every repetition. Reported solve time
 is the minimum, over repetitions, of the maximum rank wall time. The output
@@ -25,8 +25,12 @@ sum. This accuracy sample is intentionally small so that the direct reference
 is affordable at ten million particles.
 
 The particle set is independent of MPI size. A fixed set of 4096 virtual
-spatial bins is assigned to ranks, so the 8-node and 16-node runs use identical
-positions and masses while retaining a spatial decomposition.
+spatial bins is ordered by a 3D Morton key and contiguous key ranges are assigned
+to ranks. The 8-node and 16-node runs therefore use identical positions and
+masses while each rank owns a compact spatial subdomain. Compact ownership is
+important here: slab ownership with full transverse extent makes all rank roots
+overlap and can turn both LET and quadrupole exchange into an O(NP)-like memory
+transient.
 
 Run it explicitly because it is tagged `manual benchmark`:
 
@@ -41,9 +45,10 @@ Run it explicitly because it is tagged `manual benchmark`:
   --verbose
 ```
 
-The default is 16 MPI ranks per node and two complete rebuild-and-solve
-repetitions per solver and configuration. Set `FMM_MPI_BENCH_RANKS_PER_NODE`
-to match the compute-node core layout, and `FMM_MPI_BENCH_REPEATS` for
-exploratory timing runs. The formal particle counts remain one million and ten
-million. OpenMP and MKL thread counts default to one so the MPI rank density is
-the controlled scaling variable.
+The memory-safe default is 4 MPI ranks per node and two complete
+rebuild-and-solve repetitions per solver and configuration. Set
+`FMM_MPI_BENCH_RANKS_PER_NODE` to increase the fixed rank density only after
+checking the stage `max_rss_kib` output. `FMM_MPI_BENCH_REPEATS` controls the
+repetition count and `FMM_MPI_BENCH_MAX_REMOTE_MIB` controls the per-rank FMM
+LET memory budget (512 MiB by default). The formal particle counts remain one
+million and ten million. OpenMP and MKL thread counts default to one.

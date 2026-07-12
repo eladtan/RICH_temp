@@ -15,6 +15,10 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #include <mpi.h>
 
 #include "source/3D/gravity/DistributedGravityCalculator.hpp"
@@ -24,7 +28,10 @@
 namespace
 {
 constexpr std::uint64_t kVirtualBins = 4096;
+constexpr unsigned int kVirtualBinsPerAxis = 16;
+constexpr unsigned int kMortonBitsPerAxis = 4;
 constexpr std::size_t kProbeCount = 8;
+constexpr std::size_t kMebibyte = 1024u * 1024u;
 
 struct Options
 {
@@ -32,6 +39,7 @@ struct Options
     int expectedNodes = 0;
     int expectedRanksPerNode = 0;
     int repeats = 2;
+    std::size_t fmmMaxRemoteBytes = 512u * kMebibyte;
     std::string outputPath;
 };
 
@@ -76,17 +84,76 @@ double radicalInverse(std::uint64_t index, unsigned int base)
     return result;
 }
 
+unsigned int mortonCoordinate(std::uint64_t code, unsigned int axis)
+{
+    unsigned int result = 0;
+    for(unsigned int bit = 0; bit < kMortonBitsPerAxis; ++bit)
+    {
+        const unsigned int sourceBit = 3u * bit + axis;
+        result |= static_cast<unsigned int>((code >> sourceBit) & 1u) << bit;
+    }
+    return result;
+}
+
 Vector3D positionForId(std::uint64_t id)
 {
     const std::uint64_t bin = id % kVirtualBins;
     const std::uint64_t ordinal = id / kVirtualBins;
-    const double withinBin = 0.1 + 0.8 * radicalInverse(ordinal + 1, 2);
-    const double x = -0.95 + 1.9 *
-        (static_cast<double>(bin) + withinBin) /
-        static_cast<double>(kVirtualBins);
-    const double y = 1.9 * radicalInverse(id + 1, 3) - 0.95;
-    const double z = 1.9 * radicalInverse(id + 1, 5) - 0.95;
-    return Vector3D(x, y, z);
+    const unsigned int bx = mortonCoordinate(bin, 0);
+    const unsigned int by = mortonCoordinate(bin, 1);
+    const unsigned int bz = mortonCoordinate(bin, 2);
+    const double ux = 0.1 + 0.8 * radicalInverse(ordinal + 1, 2);
+    const double uy = 0.1 + 0.8 * radicalInverse(ordinal + 1, 3);
+    const double uz = 0.1 + 0.8 * radicalInverse(ordinal + 1, 5);
+    const double scale = 1.9 / static_cast<double>(kVirtualBinsPerAxis);
+    return Vector3D(-0.95 + scale * (static_cast<double>(bx) + ux),
+                    -0.95 + scale * (static_cast<double>(by) + uy),
+                    -0.95 + scale * (static_cast<double>(bz) + uz));
+}
+
+std::array<unsigned long long, 2> localMemoryKiB()
+{
+    std::array<unsigned long long, 2> result{};
+    std::ifstream input("/proc/self/status");
+    std::string key;
+    while(input >> key)
+    {
+        if(key == "VmRSS:" || key == "VmHWM:")
+        {
+            unsigned long long value = 0;
+            std::string unit;
+            input >> value >> unit;
+            result[key == "VmRSS:" ? 0 : 1] = value;
+        }
+        else
+        {
+            input.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        }
+    }
+    return result;
+}
+
+void reportStage(const std::string& stage, const MPI_Comm& comm)
+{
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    const std::array<unsigned long long, 2> local = localMemoryKiB();
+    std::array<unsigned long long, 2> global{};
+    MPI_Allreduce(local.data(), global.data(), 2, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, comm);
+    if(rank == 0)
+    {
+        std::cout << "benchmark_stage " << stage
+                  << " max_rss_kib=" << global[0]
+                  << " max_hwm_kib=" << global[1] << std::endl;
+    }
+}
+
+void trimAllocator()
+{
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
 }
 
 std::uint64_t massUnitsForId(std::uint64_t id)
@@ -110,6 +177,17 @@ Options parseOptions(int argc, char** argv)
             result.expectedRanksPerNode = std::atoi(argv[++i]);
         else if(arg == "--repeats" && i + 1 < argc)
             result.repeats = std::atoi(argv[++i]);
+        else if(arg == "--fmm-max-remote-mib" && i + 1 < argc)
+        {
+            const unsigned long long value = std::strtoull(argv[++i], nullptr, 10);
+            if(value == 0 || value >
+               static_cast<unsigned long long>(
+                   std::numeric_limits<std::size_t>::max() / kMebibyte))
+                throw UniversalError(
+                    "fmm_mpi_scaling_benchmark: invalid FMM memory budget");
+            result.fmmMaxRemoteBytes = static_cast<std::size_t>(value) *
+                                       kMebibyte;
+        }
         else if(arg == "--output" && i + 1 < argc)
             result.outputPath = argv[++i];
         else
@@ -350,12 +428,14 @@ void updateTiming(double localSeconds,
 SolverResult runFmm(const LocalParticles& local,
                     const ProbeReference& reference,
                     int repeats,
+                    std::size_t maxRemoteBytes,
                     const MPI_Comm& comm)
 {
     SolverResult result;
     double sumMaximum = 0.0;
     for(int repeat = 0; repeat < repeats; ++repeat)
     {
+        reportStage("fmm_repeat_" + std::to_string(repeat) + "_begin", comm);
         MPI_Barrier(comm);
         const double start = MPI_Wtime();
         std::vector<Vector3D> acceleration;
@@ -368,8 +448,7 @@ SolverResult runFmm(const LocalParticles& local,
             options.computePotential = false;
             options.validateFinite = true;
             FmmDistributedOptions distributed;
-            distributed.maxRemoteBytes =
-                static_cast<std::size_t>(2) * 1024 * 1024 * 1024;
+            distributed.maxRemoteBytes = maxRemoteBytes;
             DistributedFmmGravityCalculator solver(options, distributed, comm);
             solver.solve(local.positions, local.masses, local.ids,
                          Vector3D(-1, -1, -1), Vector3D(1, 1, 1),
@@ -419,6 +498,10 @@ SolverResult runFmm(const LocalParticles& local,
             static_cast<std::uint64_t>(globalPeakRemote));
         result.peakProcessBytes = std::max(result.peakProcessBytes,
             static_cast<std::uint64_t>(globalPeakProcess));
+        reportStage("fmm_repeat_" + std::to_string(repeat) + "_solved", comm);
+        std::vector<Vector3D>().swap(acceleration);
+        trimAllocator();
+        reportStage("fmm_repeat_" + std::to_string(repeat) + "_end", comm);
     }
     result.meanMaxSeconds = sumMaximum / static_cast<double>(repeats);
     return result;
@@ -433,6 +516,8 @@ SolverResult runQuadrupole(const LocalParticles& local,
     double sumMaximum = 0.0;
     for(int repeat = 0; repeat < repeats; ++repeat)
     {
+        reportStage("quadrupole_repeat_" + std::to_string(repeat) +
+                    "_begin", comm);
         MPI_Barrier(comm);
         const double start = MPI_Wtime();
         std::vector<Vector3D> acceleration;
@@ -463,6 +548,12 @@ SolverResult runQuadrupole(const LocalParticles& local,
                 reference);
             result.checksum = accelerationChecksum(acceleration, local.ids, comm);
         }
+        reportStage("quadrupole_repeat_" + std::to_string(repeat) +
+                    "_solved", comm);
+        std::vector<Vector3D>().swap(acceleration);
+        trimAllocator();
+        reportStage("quadrupole_repeat_" + std::to_string(repeat) +
+                    "_end", comm);
     }
     result.meanMaxSeconds = sumMaximum / static_cast<double>(repeats);
     return result;
@@ -482,10 +573,13 @@ int main(int argc, char** argv)
     {
         const Options options = parseOptions(argc, argv);
         const int nodes = uniqueNodeCount(MPI_COMM_WORLD);
+        reportStage("start", MPI_COMM_WORLD);
         const LocalParticles local = makeLocalParticles(
             options.globalParticles, rank, size, MPI_COMM_WORLD);
+        reportStage("particles_ready", MPI_COMM_WORLD);
         const ProbeReference reference = computeProbeReference(
             local, options.globalParticles, MPI_COMM_WORLD);
+        reportStage("reference_ready", MPI_COMM_WORLD);
 
         const unsigned long long localCount =
             static_cast<unsigned long long>(local.positions.size());
@@ -496,10 +590,15 @@ int main(int argc, char** argv)
         MPI_Allreduce(&localCount, &maximumLocal, 1, MPI_UNSIGNED_LONG_LONG,
                       MPI_MAX, MPI_COMM_WORLD);
 
-        const SolverResult fmm = runFmm(local, reference, options.repeats,
-                                        MPI_COMM_WORLD);
+        const SolverResult fmm = runFmm(
+            local, reference, options.repeats, options.fmmMaxRemoteBytes,
+            MPI_COMM_WORLD);
+        reportStage("fmm_complete", MPI_COMM_WORLD);
+        trimAllocator();
+        reportStage("after_fmm_trim", MPI_COMM_WORLD);
         const SolverResult quadrupole = runQuadrupole(
             local, reference, options.repeats, MPI_COMM_WORLD);
+        reportStage("quadrupole_complete", MPI_COMM_WORLD);
 
         const bool timingFinite =
             fmm.bestMaxSeconds > 0.0 && std::isfinite(fmm.bestMaxSeconds) &&

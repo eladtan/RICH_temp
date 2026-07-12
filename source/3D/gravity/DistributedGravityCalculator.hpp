@@ -47,6 +47,8 @@ private:
     int rank, size;
     Vector3D domainLower;
     Vector3D domainUpper;
+    Vector3D treeLower;
+    Vector3D treeUpper;
     std::shared_ptr<EnvironmentAgent> environmentAgent;
     double theta;
     double thetaSquared;
@@ -79,7 +81,8 @@ private:
 
 DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_, const MPI_Comm &comm_):
     comm(comm_), rank(0), size(1), domainLower(), domainUpper(),
-    environmentAgent(tess_.GetEnvironmentAgent()), theta(theta_),
+    treeLower(), treeUpper(), environmentAgent(tess_.GetEnvironmentAgent()),
+    theta(theta_),
     thetaSquared(theta_ * theta_), quadrupole(quadrupole_),
     gravityTree(nullptr), realRootOfGravityTree(nullptr)
 {
@@ -88,6 +91,8 @@ DistributedGravityCalculator::DistributedGravityCalculator(const Tessellation3D 
     const std::pair<Vector3D, Vector3D> box = tess_.GetBoxCoordinates();
     this->domainLower = box.first;
     this->domainUpper = box.second;
+    this->treeLower = this->domainLower;
+    this->treeUpper = this->domainUpper;
     bool localInputValid = tess_.GetPointNo() == masses_.size() &&
                            tess_.GetPointNo() > 0 &&
                            std::isfinite(theta_) && theta_ > 0.0;
@@ -125,7 +130,8 @@ DistributedGravityCalculator::DistributedGravityCalculator(
     bool quadrupole_,
     const MPI_Comm &comm_):
     comm(comm_), rank(0), size(1), domainLower(domainLower_),
-    domainUpper(domainUpper_), environmentAgent(), theta(theta_),
+    domainUpper(domainUpper_), treeLower(domainLower_), treeUpper(domainUpper_),
+    environmentAgent(), theta(theta_),
     thetaSquared(theta_ * theta_), quadrupole(quadrupole_),
     gravityTree(nullptr), realRootOfGravityTree(nullptr)
 {
@@ -151,6 +157,47 @@ DistributedGravityCalculator::DistributedGravityCalculator(
         }
     }
     this->validateCollective(localInputValid);
+
+    // The vector-only adapter has no tessellation environment agent.  Building
+    // every local tree in the full global box makes the top-level boxes of all
+    // ranks overlap, which defeats geometric pruning and can replicate most of
+    // the local tree to every peer.  Use a tight, padded local box for the local
+    // tree while retaining the common global domain for validation and for the
+    // received remote tree.
+    this->treeLower = sourcePoints.front();
+    this->treeUpper = sourcePoints.front();
+    for(const Vector3D &point : sourcePoints)
+    {
+        for(size_t axis = 0; axis < 3; ++axis)
+        {
+            this->treeLower[axis] = std::min(this->treeLower[axis], point[axis]);
+            this->treeUpper[axis] = std::max(this->treeUpper[axis], point[axis]);
+        }
+    }
+    for(size_t axis = 0; axis < 3; ++axis)
+    {
+        const double domainWidth = this->domainUpper[axis] -
+                                   this->domainLower[axis];
+        const double localWidth = this->treeUpper[axis] -
+                                  this->treeLower[axis];
+        const double scale = std::max({1.0,
+            std::abs(this->domainLower[axis]),
+            std::abs(this->domainUpper[axis]),
+            std::abs(this->treeLower[axis]),
+            std::abs(this->treeUpper[axis])});
+        const double padding = std::max(
+            64.0 * std::numeric_limits<double>::epsilon() * scale,
+            1e-12 * std::max(domainWidth, localWidth));
+        this->treeLower[axis] = std::max(
+            this->domainLower[axis], this->treeLower[axis] - padding);
+        this->treeUpper[axis] = std::min(
+            this->domainUpper[axis], this->treeUpper[axis] + padding);
+        if(!(this->treeLower[axis] < this->treeUpper[axis]))
+        {
+            this->treeLower[axis] = this->domainLower[axis];
+            this->treeUpper[axis] = this->domainUpper[axis];
+        }
+    }
 
     std::vector<MassedPoint<Vector3D>> massedPoints;
     massedPoints.reserve(sourcePoints.size());
@@ -205,7 +252,7 @@ void DistributedGravityCalculator::initialize(
     try
     {
         gravTree.reset(new GravityTree<Vector3D>(
-            this->domainLower, this->domainUpper,
+            this->treeLower, this->treeUpper,
             this->theta, this->quadrupole));
         gravTree->build(massedPoints);
     }
@@ -404,11 +451,10 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     sendList.clear();
     sendList.shrink_to_fit();
 
-    // Stage 2 (overlapped with count exchange):
-    // addPruned + calculateMasses, then compile + local walk
-    this->gravityTree->addExternalValues(this->prunedSummaries);
-    this->gravityTree->calculateMasses();
-
+    // Stage 2 (overlapped with count exchange): compile and walk the local
+    // source tree.  Keep remote pruned summaries out of this tree: the
+    // vector-only constructor may use tight local bounds, so remote centers
+    // need to be inserted into the global-domain remote tree below.
     double walk_t0 = MPI_Wtime();
     FlatGravityTree localFlat(*this->gravityTree);
     std::vector<Vector3D> results;
@@ -428,6 +474,7 @@ std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::v
     // Build temporary tree from received data (non-pruned ranks only)
     GravityTree<Vector3D> remoteTree(this->domainLower, this->domainUpper,
                                      this->theta, this->quadrupole);
+    remoteTree.addExternalValues(this->prunedSummaries);
 
     for(int _rank = 0; _rank < this->size; _rank++)
     {

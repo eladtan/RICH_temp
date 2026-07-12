@@ -638,7 +638,7 @@ Runtime and relative accuracy wins are reported for every row. The largest row i
 
 **Tags:** `mpi`, `manual`, `benchmark`
 
-Uses the same deterministic global particle set for both distributed solvers and for both process counts. A fixed MPI rank density is used on every node (16 ranks per node by default). A single exclusive 16-node allocation runs global particle counts of one million and ten million on both 8 and 16 nodes, corresponding by default to 128 and 256 ranks. Every reported runtime covers construction, communication, and force evaluation from scratch.
+Uses the same deterministic global particle set for both distributed solvers and for both process counts. Morton-ordered virtual bins give each rank a compact 3D subdomain. A fixed MPI rank density is used on every node (4 ranks per node by default). A single exclusive 16-node allocation runs global particle counts of one million and ten million on both 8 and 16 nodes, corresponding by default to 32 and 64 ranks. Every reported runtime covers construction, communication, and force evaluation from scratch, and stage logs report maximum-rank RSS/high-water memory.
 
 **Source:** `regression_tests/cases/fmm_mpi_scaling_benchmark/test.cpp`
 
