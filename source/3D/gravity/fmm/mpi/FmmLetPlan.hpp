@@ -59,6 +59,7 @@ public:
                  std::vector<double>& localLocals,
                  std::vector<Vector3D>& acceleration,
                  std::vector<double>* positiveKernelPotential,
+                 FmmM2LOperatorCache& operatorCache,
                  std::size_t maxRemoteBytes,
                  std::size_t maxOperatorCacheBytes,
                  FmmSolveStats& stats) const;
@@ -105,7 +106,6 @@ private:
     std::vector<FmmLetP2PInteraction> p2pInteractions_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
-    mutable FmmM2LOperatorCache operatorCache_;
     FmmPeerExchange exchange_;
     MPI_Comm comm_;
     int rank_;

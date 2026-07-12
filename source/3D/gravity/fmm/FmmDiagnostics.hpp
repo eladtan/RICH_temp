@@ -52,10 +52,17 @@ struct FmmSolveStats
     std::size_t letPlanBytes = 0;
     std::size_t operatorCacheBytes = 0;
     std::size_t operatorCacheBudgetBytes = 0;
+    std::size_t operatorCacheEntries = 0;
+    std::size_t operatorCacheMaxEntries = 0;
+    std::size_t operatorCacheBytesAtSolveStart = 0;
+    std::size_t operatorCacheEntriesAtSolveStart = 0;
 
-    // The distributed solver divides the total operator-cache budget between
-    // the persistent local and LET caches.  The process-tree M2L phase uses
-    // reusable scratch only and therefore reports bypasses but no cache bytes.
+    // The distributed solver owns one persistent cache shared by LET and local
+    // traversal.  The phase byte/entry fields below are snapshots taken after
+    // each phase; hit/miss/bypass counters are phase local.  The final shared
+    // cache is reported by operatorCacheBytes/operatorCacheEntries.  The
+    // process-tree M2L phase still uses reusable scratch only and therefore
+    // reports bypasses but no cache bytes.
     std::size_t localOperatorCacheBytes = 0;
     std::size_t localOperatorCacheEntries = 0;
     std::size_t localOperatorCacheMaxEntries = 0;

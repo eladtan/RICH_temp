@@ -53,25 +53,32 @@ public:
                 "FmmM2LOperatorCache::configure: zero operator size");
 
         const std::size_t estimatedEntryBytes = estimatedBytesPerEntry(termCount);
-        std::size_t maxEntries = 0;
+        std::size_t budgetMaxEntries = 0;
         if(estimatedEntryBytes != 0 &&
            estimatedEntryBytes != std::numeric_limits<std::size_t>::max())
         {
-            maxEntries = std::min(entryHint, maxBytes / estimatedEntryBytes);
+            budgetMaxEntries = maxBytes / estimatedEntryBytes;
         }
+        const std::size_t reserveEntries =
+            std::min(entryHint, budgetMaxEntries);
 
-        if(termCount_ == termCount && configuredMaxEntries_ == maxEntries &&
+        // entryHint is only a reservation hint.  It must not be part of the
+        // cache identity: local and LET traversals use different hints while
+        // sharing the same scale-free operators, and topology rebuilds may
+        // change the hint without invalidating any cached direction.
+        if(termCount_ == termCount &&
+           configuredMaxEntries_ == budgetMaxEntries &&
            budgetBytes_ == maxBytes)
             return;
 
         std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
-        maxEntries_ = maxEntries;
-        configuredMaxEntries_ = maxEntries;
+        maxEntries_ = budgetMaxEntries;
+        configuredMaxEntries_ = budgetMaxEntries;
         termCount_ = termCount;
         budgetBytes_ = maxBytes;
-        if(maxEntries_ != 0)
+        if(reserveEntries != 0)
         {
-            entries_.reserve(maxEntries_);
+            entries_.reserve(reserveEntries);
             if(bytesOwned() > budgetBytes_)
             {
                 std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);

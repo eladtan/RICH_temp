@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "source/3D/gravity/fmm/FmmKernels.hpp"
+#include "source/3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "source/3D/gravity/fmm/FmmTaylorExpansion.hpp"
 #include "source/3D/gravity/fmm/SerialFmmGravityCalculator.hpp"
 #include "source/misc/universal_error.hpp"
@@ -123,6 +124,49 @@ std::pair<double, double> checkScaleFreeKernel()
         maxRelativeDifference(physicalOperator, scaledPrimitiveOperator),
         maxRelativeDifference(physicalLocals, scaleFreeLocals));
 }
+
+bool checkReconfigurePreservesEntries()
+{
+    const FmmTaylorExpansion layout(4);
+    FmmM2LOperatorCache cache;
+    const std::size_t budget = static_cast<std::size_t>(1) * 1024 * 1024;
+
+    FmmNode source;
+    FmmNode target;
+    source.center = Vector3D(0.0, 0.0, 0.0);
+    target.center = Vector3D(0.375, -0.25, 0.125);
+    source.latticeAligned = 1;
+    target.latticeAligned = 1;
+    source.latticeId = 17;
+    target.latticeId = 17;
+    source.latticeCenterX = 0;
+    source.latticeCenterY = 0;
+    source.latticeCenterZ = 0;
+    target.latticeCenterX = 6;
+    target.latticeCenterY = -4;
+    target.latticeCenterZ = 2;
+
+    std::vector<double> derivativeScratch;
+    std::vector<double> uncachedOperator;
+    cache.configure(budget, layout.m2lTerms().size(), 1);
+    cache.beginPhase();
+    const FmmM2LOperatorCache::Lookup first = cache.get(
+        source, target, layout, derivativeScratch, uncachedOperator);
+    const std::size_t retainedEntries = cache.entries();
+    if(first.coefficients == nullptr || !first.integerKey ||
+       cache.misses() != 1 || cache.hits() != 0 || retainedEntries != 1)
+        return false;
+
+    // A different traversal/topology may provide a very different entry hint.
+    // Reconfiguration with the same actual cache identity must retain entries.
+    cache.configure(budget, layout.m2lTerms().size(), 4096);
+    cache.beginPhase();
+    const FmmM2LOperatorCache::Lookup second = cache.get(
+        source, target, layout, derivativeScratch, uncachedOperator);
+    return second.coefficients != nullptr && second.integerKey &&
+           cache.entries() == retainedEntries && cache.hits() == 1 &&
+           cache.misses() == 0 && cache.bypasses() == 0;
+}
 }
 
 int main()
@@ -174,6 +218,8 @@ int main()
             maxDifference(firstAcceleration, canonicalAcceleration);
         const std::pair<double, double> kernelDifferences =
             checkScaleFreeKernel();
+        const bool reconfigurePreserved =
+            checkReconfigurePreservesEntries();
         const bool boundedPass =
             firstStats.m2lCount > 0 &&
             firstStats.localOperatorCacheBytes <= cacheBudget &&
@@ -226,6 +272,7 @@ int main()
                                    kernelDifferences.first <= 5e-12 &&
                                    kernelDifferences.second <= 5e-12;
         const bool passed = boundedPass && zeroPass && canonicalPass &&
+                            reconfigurePreserved &&
                             dyadicRootPass && numericalPass;
 
         std::ofstream output("fmm_operator_cache_metrics.txt");
@@ -272,6 +319,8 @@ int main()
                << canonicalStats.localOperatorIntegerKeyHits << "\n";
         output << "canonical_integer_misses "
                << canonicalStats.localOperatorIntegerKeyMisses << "\n";
+        output << "reconfigure_preserved "
+               << (reconfigurePreserved ? 1 : 0) << "\n";
         output << "dyadic_root_aligned " << (dyadicRootPass ? 1 : 0) << "\n";
         output << "pass " << (passed ? 1 : 0) << "\n";
 

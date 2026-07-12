@@ -568,18 +568,11 @@ void DistributedFmmGravityCalculator::solve(
     stats_ = FmmSolveStats();
     stats_.particleCount = positions.size();
     stats_.mpiRankCount = static_cast<std::size_t>(size_);
+    stats_.operatorCacheBytesAtSolveStart = operatorCache_.bytesOwned();
+    stats_.operatorCacheEntriesAtSolveStart = operatorCache_.entries();
 
     const Clock::time_point buildStart = Clock::now();
     const bool localChanged = prepareLocalTree(positions, domainLower, domainUpper);
-    if(localChanged)
-        localOperatorCache_.clear();
-    // Reserve one quarter for local canonical directions. After the LET phase
-    // has populated its persistent cache, local traversal may safely reuse any
-    // part of the total budget that the LET cache did not retain.
-    const std::size_t reservedLocalOperatorCacheBudget =
-        options_.maxOperatorCacheBytes / 4;
-    const std::size_t letOperatorCacheBudget =
-        options_.maxOperatorCacheBytes - reservedLocalOperatorCacheBudget;
     stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     FmmPasses::updateTreeStats(localTree_, stats_);
     stats_.buildSeconds = elapsed(buildStart);
@@ -846,25 +839,19 @@ void DistributedFmmGravityCalculator::solve(
     const Clock::time_point interactionStart = Clock::now();
     letPlan_.execute(localTree_, positions, masses, cellIds, layout,
                      localMultipoles_, localLocals_, acceleration,
-                     positiveKernelPotential, distributedOptions_.maxRemoteBytes,
-                     letOperatorCacheBudget, stats_);
+                     positiveKernelPotential, operatorCache_,
+                     distributedOptions_.maxRemoteBytes,
+                     options_.maxOperatorCacheBytes, stats_);
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
-    const std::size_t retainedLetOperatorBytes = std::min(
-        options_.maxOperatorCacheBytes, stats_.letOperatorCacheBytes);
-    const std::size_t localOperatorCacheBudget =
-        options_.maxOperatorCacheBytes - retainedLetOperatorBytes;
-    if(localOperatorCacheBudget < reservedLocalOperatorCacheBudget)
-        throw UniversalError(
-            "DistributedFmmGravityCalculator::solve: operator cache budget accounting failed");
 
     if(!localTree_.nodes().empty())
     {
         FmmDualTreeTraversal::run(localTree_, localTree_, positions, positions,
                                   masses, layout, localMultipoles_, localLocals_,
                                   true, options_.thetaCritical, acceleration,
-                                  positiveKernelPotential, localOperatorCache_,
-                                  localOperatorCacheBudget, stats_);
+                                  positiveKernelPotential, operatorCache_,
+                                  options_.maxOperatorCacheBytes, stats_);
     }
     stats_.interactionSeconds = elapsed(interactionStart);
 
@@ -879,11 +866,12 @@ void DistributedFmmGravityCalculator::solve(
         localMultipoles_.capacity() * sizeof(double);
     stats_.localLocalBytes = localLocals_.capacity() * sizeof(double);
     stats_.letPlanBytes = letPlan_.bytesOwned();
-    stats_.operatorCacheBytes = stats_.localOperatorCacheBytes +
-        stats_.letOperatorCacheBytes;
+    stats_.operatorCacheBytes = operatorCache_.bytesOwned();
+    stats_.operatorCacheEntries = operatorCache_.entries();
+    stats_.operatorCacheMaxEntries = operatorCache_.maxEntries();
     stats_.bytesOwned = stats_.localTreeBytes +
         stats_.localMultipoleBytes + stats_.localLocalBytes +
-        localOperatorCache_.bytesOwned() + rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
+        operatorCache_.bytesOwned() + rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
         lastLocalTopologySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +
         stats_.letPlanBytes + processUpExchange_.bytesOwned() +

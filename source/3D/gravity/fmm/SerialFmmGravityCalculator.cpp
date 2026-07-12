@@ -46,6 +46,8 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
     const Clock::time_point totalStart = Clock::now();
     stats_ = FmmSolveStats();
     stats_.particleCount = positions.size();
+    stats_.operatorCacheBytesAtSolveStart = operatorCache_.bytesOwned();
+    stats_.operatorCacheEntriesAtSolveStart = operatorCache_.entries();
     long double totalMass = 0.0L;
     long double totalAbsoluteMass = 0.0L;
     for(double mass : masses)
@@ -72,6 +74,8 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
         locals_.clear();
         stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
         stats_.operatorCacheBytes = operatorCache_.bytesOwned();
+        stats_.operatorCacheEntries = operatorCache_.entries();
+        stats_.operatorCacheMaxEntries = operatorCache_.maxEntries();
         stats_.bytesOwned = tree_.bytesOwned() +
             multipoles_.capacity() * sizeof(double) +
             locals_.capacity() * sizeof(double) + stats_.operatorCacheBytes;
@@ -112,6 +116,8 @@ void SerialFmmGravityCalculator::solve(const std::vector<Vector3D>& positions,
 
     stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     stats_.operatorCacheBytes = operatorCache_.bytesOwned();
+    stats_.operatorCacheEntries = operatorCache_.entries();
+    stats_.operatorCacheMaxEntries = operatorCache_.maxEntries();
     stats_.bytesOwned = tree_.bytesOwned() +
         multipoles_.capacity() * sizeof(double) +
         locals_.capacity() * sizeof(double) +

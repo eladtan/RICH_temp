@@ -255,7 +255,6 @@ void FmmLetPlan::build(const FmmTree& localTree,
     p2pInteractions_.clear();
     subscriptionsToSend_.clear();
     subscriptionsReceived_.clear();
-    operatorCache_.clear();
 
     if(localTree.nodes().size() >
        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
@@ -737,7 +736,6 @@ std::size_t FmmLetPlan::bytesOwned() const
                 entry.second.capacity(), sizeof(FmmSubscription)));
     }
 
-    result = saturatingAdd(result, operatorCache_.bytesOwned());
     return result;
 }
 
@@ -750,6 +748,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
                          std::vector<double>& localLocals,
                          std::vector<Vector3D>& acceleration,
                          std::vector<double>* positiveKernelPotential,
+                         FmmM2LOperatorCache& operatorCache,
                          std::size_t maxRemoteBytes,
                          std::size_t maxOperatorCacheBytes,
                          FmmSolveStats& stats) const
@@ -774,9 +773,9 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         throw UniversalError("FmmLetPlan::execute: inconsistent expansion storage");
     if(maxRemoteBytes < 2)
         throw UniversalError("FmmLetPlan::execute: remote memory budget is too small");
-    operatorCache_.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
-                             m2lInteractions_.size());
-    operatorCache_.beginPhase();
+    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
+                            m2lInteractions_.size());
+    operatorCache.beginPhase();
     std::unordered_map<int, std::size_t> plannedBytesByRank;
     std::size_t outgoingBytes = 0;
     for(const auto& entry : subscriptionsReceived_)
@@ -1163,8 +1162,8 @@ void FmmLetPlan::execute(const FmmTree& localTree,
                                    source);
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
         const FmmM2LOperatorCache::Lookup translationOperator =
-            operatorCache_.get(source, target, layout, derivativeScratch,
-                               uncachedOperator);
+            operatorCache.get(source, target, layout, derivativeScratch,
+                              uncachedOperator);
 
         FmmKernels::translateM2L(source, target, layout,
                                  remoteCoefficients, localLocals,
@@ -1173,14 +1172,14 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         ++stats.m2lCount;
         ++stats.letM2LCount;
     }
-    stats.letOperatorCacheEntries = operatorCache_.entries();
-    stats.letOperatorCacheMaxEntries = operatorCache_.maxEntries();
-    stats.letOperatorCacheBytes = operatorCache_.bytesOwned();
-    stats.letOperatorCacheHits = operatorCache_.hits();
-    stats.letOperatorCacheMisses = operatorCache_.misses();
-    stats.letOperatorCacheBypasses = operatorCache_.bypasses();
-    stats.letOperatorIntegerKeyHits = operatorCache_.integerKeyHits();
-    stats.letOperatorIntegerKeyMisses = operatorCache_.integerKeyMisses();
+    stats.letOperatorCacheEntries = operatorCache.entries();
+    stats.letOperatorCacheMaxEntries = operatorCache.maxEntries();
+    stats.letOperatorCacheBytes = operatorCache.bytesOwned();
+    stats.letOperatorCacheHits = operatorCache.hits();
+    stats.letOperatorCacheMisses = operatorCache.misses();
+    stats.letOperatorCacheBypasses = operatorCache.bypasses();
+    stats.letOperatorIntegerKeyHits = operatorCache.integerKeyHits();
+    stats.letOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
 
     for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
     {

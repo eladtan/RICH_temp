@@ -74,7 +74,7 @@ private:
     std::uint64_t topologyRebuildCount_;
 
     FmmTree localTree_;
-    FmmM2LOperatorCache localOperatorCache_;
+    FmmM2LOperatorCache operatorCache_;
     std::vector<double> localMultipoles_;
     std::vector<double> localLocals_;
     std::vector<FmmRankRootDescriptor> rootDescriptors_;
