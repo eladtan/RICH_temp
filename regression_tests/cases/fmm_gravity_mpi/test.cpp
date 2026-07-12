@@ -124,12 +124,6 @@ void unpack(const std::vector<Body>& bodies,
     }
 }
 
-void traceStage(int rank, const char* stage)
-{
-    std::cerr << "fmm_gravity_mpi_stage rank=" << rank
-              << " stage=" << stage << std::endl;
-}
-
 double checkSolve(const std::vector<Body>& localBodies,
                   const std::vector<Body>& globalBodies,
                   const std::vector<Vector3D>& acceleration,
@@ -159,7 +153,6 @@ int main(int argc, char** argv)
     int size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    traceStage(rank, "mpi_initialized");
 
     FmmGravityOptions options;
     options.expansionOrder = 5;
@@ -181,9 +174,7 @@ int main(int argc, char** argv)
     bool mismatchedDomainRejected = size == 1;
 
     {
-        traceStage(rank, "solver_construct_begin");
         DistributedFmmGravityCalculator solver(options, distributed);
-        traceStage(rank, "solver_construct_end");
         std::vector<Vector3D> positions;
         std::vector<double> masses;
         std::vector<std::uint64_t> ids;
@@ -192,10 +183,8 @@ int main(int argc, char** argv)
 
         std::vector<Body> localBodies = bodiesForRank(rank, size, 1.0, false);
         unpack(localBodies, positions, masses, ids);
-        traceStage(rank, "solve_1_begin");
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        traceStage(rank, "solve_1_end");
         localMaximumError = std::max(localMaximumError,
             checkSolve(localBodies, allBodies(size, 1.0, false),
                        acceleration, potential));
@@ -204,10 +193,8 @@ int main(int argc, char** argv)
 
         localBodies = bodiesForRank(rank, size, 1.01, false);
         unpack(localBodies, positions, masses, ids);
-        traceStage(rank, "solve_2_begin");
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        traceStage(rank, "solve_2_end");
         localMaximumError = std::max(localMaximumError,
             checkSolve(localBodies, allBodies(size, 1.01, false),
                        acceleration, potential));
@@ -216,10 +203,8 @@ int main(int argc, char** argv)
 
         localBodies = bodiesForRank(rank, size, 1.01, true);
         unpack(localBodies, positions, masses, ids);
-        traceStage(rank, "solve_3_rebuild_begin");
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        traceStage(rank, "solve_3_rebuild_end");
         localMaximumError = std::max(localMaximumError,
             checkSolve(localBodies, allBodies(size, 1.01, true),
                        acceleration, potential));
@@ -234,31 +219,23 @@ int main(int argc, char** argv)
 
         if(size > 1)
         {
-            traceStage(rank, "mismatched_domain_begin");
             try
             {
                 const Vector3D upper = rank == 0 ? Vector3D(1, 1, 1) :
                                                    Vector3D(1.01, 1, 1);
                 solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                              upper, acceleration, &potential);
-                traceStage(rank, "mismatched_domain_returned");
             }
             catch(...)
             {
                 mismatchedDomainRejected = true;
-                traceStage(rank, "mismatched_domain_caught");
             }
-            traceStage(rank, "mismatched_domain_end");
         }
-        traceStage(rank, "solver_destruct_begin");
     }
-    traceStage(rank, "solver_destruct_end");
 
     double globalMaximumError = 0.0;
-    traceStage(rank, "error_reduce_begin");
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
-    traceStage(rank, "error_reduce_end");
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
     const int localChecks[5] = {
         firstEpoch == secondEpoch ? 1 : 0,
@@ -267,10 +244,8 @@ int main(int argc, char** argv)
         finiteStats ? 1 : 0,
         mismatchedDomainRejected ? 1 : 0};
     int globalChecks[5] = {};
-    traceStage(rank, "checks_reduce_begin");
     MPI_Allreduce(localChecks, globalChecks, 5, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
-    traceStage(rank, "checks_reduce_end");
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
                            globalChecks[2] && globalChecks[3] &&
@@ -304,8 +279,6 @@ int main(int argc, char** argv)
                   << " pass=" << globalPass << std::endl;
     }
 
-    traceStage(rank, "mpi_finalize_begin");
     MPI_Finalize();
-    traceStage(rank, "mpi_finalize_end");
     return globalPass ? 0 : 1;
 }

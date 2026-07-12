@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -26,14 +25,6 @@ typedef std::chrono::steady_clock Clock;
 double elapsed(const Clock::time_point& start)
 {
     return std::chrono::duration<double>(Clock::now() - start).count();
-}
-
-void debugStage(int rank, std::uint64_t epoch, const char* stage, long long detail = -1)
-{
-    std::fprintf(stderr,
-                 "fmm_solver_stage rank=%d epoch=%llu stage=%s detail=%lld\n",
-                 rank, static_cast<unsigned long long>(epoch), stage, detail);
-    std::fflush(stderr);
 }
 
 bool finiteVector(const Vector3D& value)
@@ -484,7 +475,6 @@ FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() con
 
 void DistributedFmmGravityCalculator::rebuildTopology()
 {
-    debugStage(rank_, topologyEpoch_, "rebuild_enter");
     if(topologyEpoch_ == std::numeric_limits<std::uint64_t>::max() ||
        topologyRebuildCount_ == std::numeric_limits<std::uint64_t>::max())
         throw UniversalError(
@@ -493,22 +483,15 @@ void DistributedFmmGravityCalculator::rebuildTopology()
     ++topologyRebuildCount_;
     const FmmRankRootDescriptor local = localRootDescriptor();
     rootDescriptors_.resize(static_cast<std::size_t>(size_));
-    debugStage(rank_, topologyEpoch_, "rebuild_allgather_begin", local.active);
     MPI_Allgather(&local, static_cast<int>(sizeof(FmmRankRootDescriptor)), MPI_BYTE,
                   rootDescriptors_.data(),
                   static_cast<int>(sizeof(FmmRankRootDescriptor)), MPI_BYTE,
                   comm_);
-    debugStage(rank_, topologyEpoch_, "rebuild_allgather_end");
 
-    debugStage(rank_, topologyEpoch_, "rebuild_process_tree_begin");
     processTree_.build(rootDescriptors_);
-    debugStage(rank_, topologyEpoch_, "rebuild_process_tree_end",
-               static_cast<long long>(processTree_.nodes().size()));
-    debugStage(rank_, topologyEpoch_, "rebuild_process_traversal_begin");
     processPlan_ = FmmProcessTraversal::build(processTree_,
                                                options_.thetaCritical, topologyEpoch_,
                                                rank_, comm_);
-    debugStage(rank_, topologyEpoch_, "rebuild_process_traversal_end");
 
     std::set<int> upPeers;
     std::set<int> downPeers;
@@ -534,24 +517,12 @@ void DistributedFmmGravityCalculator::rebuildTopology()
     std::vector<int> m2lPeers;
     for(const auto& entry : processPlan_.processSendNodesByRank)
         m2lPeers.push_back(entry.first);
-    debugStage(rank_, topologyEpoch_, "rebuild_up_exchange_reset_begin",
-               static_cast<long long>(upPeers.size()));
     processUpExchange_.reset(comm_, std::vector<int>(upPeers.begin(), upPeers.end()));
-    debugStage(rank_, topologyEpoch_, "rebuild_up_exchange_reset_end");
-    debugStage(rank_, topologyEpoch_, "rebuild_m2l_exchange_reset_begin",
-               static_cast<long long>(m2lPeers.size()));
     processM2LExchange_.reset(comm_, m2lPeers);
-    debugStage(rank_, topologyEpoch_, "rebuild_m2l_exchange_reset_end");
-    debugStage(rank_, topologyEpoch_, "rebuild_down_exchange_reset_begin",
-               static_cast<long long>(downPeers.size()));
     processDownExchange_.reset(comm_,
         std::vector<int>(downPeers.begin(), downPeers.end()));
-    debugStage(rank_, topologyEpoch_, "rebuild_down_exchange_reset_end");
-    debugStage(rank_, topologyEpoch_, "rebuild_let_plan_begin");
     letPlan_.build(localTree_, rootDescriptors_, processPlan_,
                    options_.thetaCritical, topologyEpoch_, comm_, stats_);
-    debugStage(rank_, topologyEpoch_, "rebuild_let_plan_end");
-    debugStage(rank_, topologyEpoch_, "rebuild_exit");
 }
 
 void DistributedFmmGravityCalculator::solve(
@@ -599,13 +570,9 @@ void DistributedFmmGravityCalculator::solve(
     stats_.mpiRankCount = static_cast<std::size_t>(size_);
     stats_.operatorCacheBytesAtSolveStart = operatorCache_.bytesOwned();
     stats_.operatorCacheEntriesAtSolveStart = operatorCache_.entries();
-    debugStage(rank_, topologyEpoch_, "solve_internal_enter",
-               static_cast<long long>(positions.size()));
 
     const Clock::time_point buildStart = Clock::now();
     const bool localChanged = prepareLocalTree(positions, domainLower, domainUpper);
-    debugStage(rank_, topologyEpoch_, "solve_prepare_local_tree_end",
-               localChanged ? 1 : 0);
     stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     FmmPasses::updateTreeStats(localTree_, stats_);
     stats_.buildSeconds = elapsed(buildStart);
@@ -640,7 +607,6 @@ void DistributedFmmGravityCalculator::solve(
         static_cast<double>(localAbsoluteMassExtended)};
     double globalMassTerms[2] = {0.0, 0.0};
     MPI_Allreduce(localMassTerms, globalMassTerms, 2, MPI_DOUBLE, MPI_SUM, comm_);
-    debugStage(rank_, topologyEpoch_, "solve_mass_allreduce_end");
     stats_.totalMass = globalMassTerms[0];
     const double totalAbsoluteMass = globalMassTerms[1];
     if(!std::isfinite(stats_.totalMass) || !std::isfinite(totalAbsoluteMass))
@@ -650,14 +616,8 @@ void DistributedFmmGravityCalculator::solve(
     int localChangedInt = localChanged ? 1 : 0;
     int globalChangedInt = 0;
     MPI_Allreduce(&localChangedInt, &globalChangedInt, 1, MPI_INT, MPI_LOR, comm_);
-    debugStage(rank_, topologyEpoch_, "solve_changed_allreduce_end",
-               globalChangedInt);
     if(globalChangedInt != 0)
-    {
-        debugStage(rank_, topologyEpoch_, "solve_rebuild_begin");
         rebuildTopology();
-        debugStage(rank_, topologyEpoch_, "solve_rebuild_end");
-    }
 
     stats_.topologyEpoch = topologyEpoch_;
     stats_.topologyRebuildCount = topologyRebuildCount_;
@@ -727,7 +687,6 @@ void DistributedFmmGravityCalculator::solve(
         }
     }
     stats_.processUpwardSeconds = elapsed(processUpStart);
-    debugStage(rank_, topologyEpoch_, "solve_process_up_end");
 
     double localRootMass = 0.0;
     if(!processTree_.nodes().empty() &&
@@ -737,7 +696,6 @@ void DistributedFmmGravityCalculator::solve(
         localRootMass = processMultipoles.values[rootOffset + layout.index(0, 0, 0)];
     }
     MPI_Allreduce(&localRootMass, &stats_.rootMass, 1, MPI_DOUBLE, MPI_SUM, comm_);
-    debugStage(rank_, topologyEpoch_, "solve_root_mass_allreduce_end");
     if(!std::isfinite(stats_.rootMass))
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: non-finite global root mass");
@@ -799,7 +757,6 @@ void DistributedFmmGravityCalculator::solve(
         derivativeScratch.capacity() * sizeof(double) +
         processOperatorScratch.capacity() * sizeof(double));
     stats_.processInteractionSeconds = elapsed(processInteractionStart);
-    debugStage(rank_, topologyEpoch_, "solve_process_interaction_end");
     std::vector<double>().swap(processOperatorScratch);
     std::vector<double>().swap(derivativeScratch);
 
@@ -878,20 +835,16 @@ void DistributedFmmGravityCalculator::solve(
     processMultipoles.release();
     processLocals.release();
     std::vector<double>().swap(translatedProcessLocal);
-    debugStage(rank_, topologyEpoch_, "solve_process_down_end");
 
     const Clock::time_point interactionStart = Clock::now();
-    debugStage(rank_, topologyEpoch_, "solve_let_execute_begin");
     letPlan_.execute(localTree_, positions, masses, cellIds, layout,
                      localMultipoles_, localLocals_, acceleration,
                      positiveKernelPotential, operatorCache_,
                      distributedOptions_.maxRemoteBytes,
                      options_.maxOperatorCacheBytes, stats_);
-    debugStage(rank_, topologyEpoch_, "solve_let_execute_end");
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
 
-    debugStage(rank_, topologyEpoch_, "solve_local_traversal_begin");
     if(!localTree_.nodes().empty())
     {
         FmmDualTreeTraversal::run(localTree_, localTree_, positions, positions,
@@ -900,14 +853,12 @@ void DistributedFmmGravityCalculator::solve(
                                   positiveKernelPotential, operatorCache_,
                                   options_.maxOperatorCacheBytes, stats_);
     }
-    debugStage(rank_, topologyEpoch_, "solve_local_traversal_end");
     stats_.interactionSeconds = elapsed(interactionStart);
 
     const Clock::time_point downwardStart = Clock::now();
     if(!localTree_.nodes().empty())
         FmmPasses::downward(localTree_, positions, layout, localLocals_,
                             acceleration, positiveKernelPotential);
-    debugStage(rank_, topologyEpoch_, "solve_local_downward_end");
     stats_.downwardSeconds = elapsed(downwardStart);
 
     stats_.localTreeBytes = localTree_.bytesOwned();
@@ -949,7 +900,6 @@ void DistributedFmmGravityCalculator::solve(
             "DistributedFmmGravityCalculator::solve output validation", comm_);
     }
     stats_.totalSeconds = elapsed(totalStart);
-    debugStage(rank_, topologyEpoch_, "solve_internal_exit");
 }
 
 #endif // RICH_MPI
