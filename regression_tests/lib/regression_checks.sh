@@ -1678,6 +1678,54 @@ check_fmm_process_pair_coverage_case() {
     return 0
 }
 
+check_fmm_peer_exchange_rebuild_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_peer_exchange_rebuild_metrics.txt"
+    local ranks
+    local patterns
+    local cycles
+    local rounds
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_peer_exchange_rebuild_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    patterns=$(awk '$1 == "patterns" { print $2 }' "$metrics_file")
+    cycles=$(awk '$1 == "cycles" { print $2 }' "$metrics_file")
+    rounds=$(awk '$1 == "rounds" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$patterns" || -z "$cycles" ||
+          -z "$rounds" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM peer-exchange rebuild metrics"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n > 1) }'; then
+        set_check_msg "FMM peer-exchange rebuild test requires multiple ranks (${ranks})"
+        return 1
+    fi
+    if [[ "$patterns" != "7" || "$cycles" != "6" || "$rounds" != "42" ]]; then
+        set_check_msg "FMM peer-exchange rebuild test did not run the full graph-transition matrix"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM peer-exchange rebuild test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM peer-exchange rebuild check passed (ranks=${ranks}, rounds=${rounds})"
+    return 0
+}
+
 check_fmm_mpi_scaling_benchmark_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

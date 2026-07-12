@@ -120,12 +120,17 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
         throw UniversalError("FmmPeerExchange::reset: invalid graph peer on at least one rank");
 
     const int degree = static_cast<int>(peers.size());
-    const int sourceCount = degree == 0 ? 0 : 1;
-    checkMpi(MPI_Dist_graph_create(parent, sourceCount,
-                                   sourceCount == 0 ? nullptr : &rank,
-                                   sourceCount == 0 ? nullptr : &degree,
-                                   sourceCount == 0 ? nullptr : peers.data(),
-                                   MPI_UNWEIGHTED, MPI_INFO_NULL, 0, &graph_),
+    // Keep the distributed-graph constructor signature uniform across ranks.
+    // Open MPI validates array arguments before considering a zero degree; a
+    // valid dummy pointer avoids the null-pointer failure while n=1 on every
+    // rank also avoids implementation-specific mixed-n handling on rebuild.
+    // A zero-degree source consumes no destination entries, so the dummy is
+    // never dereferenced by a conforming MPI implementation.
+    const int dummyDestination = rank;
+    const int* destinations = degree == 0 ? &dummyDestination : peers.data();
+    checkMpi(MPI_Dist_graph_create(parent, 1, &rank, &degree,
+                                   destinations, MPI_UNWEIGHTED,
+                                   MPI_INFO_NULL, 0, &graph_),
              "FmmPeerExchange::reset MPI_Dist_graph_create");
 
     int indegree = 0;
