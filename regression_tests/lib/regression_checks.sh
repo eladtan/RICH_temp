@@ -1808,8 +1808,18 @@ check_fmm_operator_cache_case() {
             required[12] = "zero_cache_bypasses"
             required[13] = "repeated_max_difference"
             required[14] = "fallback_max_difference"
-            required[15] = "pass"
-            for (i = 1; i <= 15; ++i)
+            required[15] = "canonical_max_difference"
+            required[16] = "kernel_operator_relative_difference"
+            required[17] = "kernel_translation_relative_difference"
+            required[18] = "canonical_cache_entries"
+            required[19] = "canonical_cache_hits"
+            required[20] = "canonical_cache_misses"
+            required[21] = "canonical_cache_bypasses"
+            required[22] = "canonical_integer_hits"
+            required[23] = "canonical_integer_misses"
+            required[24] = "dyadic_root_aligned"
+            required[25] = "pass"
+            for (i = 1; i <= 25; ++i)
                 if (!(required[i] in value)) exit 1
             if (!(value["particles"] > 0 && value["cache_budget_bytes"] > 0 &&
                   value["first_cache_bytes"] <= value["cache_budget_bytes"] &&
@@ -1821,10 +1831,23 @@ check_fmm_operator_cache_case() {
                   value["zero_cache_entries"] == 0 &&
                   value["zero_cache_misses"] > 0 &&
                   value["zero_cache_bypasses"] == value["zero_cache_misses"] &&
+                  value["canonical_cache_entries"] > 0 &&
+                  value["canonical_cache_hits"] > 0 &&
+                  value["canonical_cache_misses"] > 0 &&
+                  value["canonical_cache_bypasses"] == 0 &&
+                  value["canonical_integer_hits"] == value["canonical_cache_hits"] &&
+                  value["canonical_integer_misses"] == value["canonical_cache_misses"] &&
+                  value["dyadic_root_aligned"] == 1 &&
                   finite_number(value["repeated_max_difference"]) &&
                   finite_number(value["fallback_max_difference"]) &&
-                  value["repeated_max_difference"] <= 1e-13 &&
-                  value["fallback_max_difference"] <= 1e-13 &&
+                  finite_number(value["canonical_max_difference"]) &&
+                  finite_number(value["kernel_operator_relative_difference"]) &&
+                  finite_number(value["kernel_translation_relative_difference"]) &&
+                  value["repeated_max_difference"] <= 5e-12 &&
+                  value["fallback_max_difference"] <= 5e-12 &&
+                  value["canonical_max_difference"] <= 5e-12 &&
+                  value["kernel_operator_relative_difference"] <= 5e-12 &&
+                  value["kernel_translation_relative_difference"] <= 5e-12 &&
                   value["pass"] == 1)) exit 1
         }
     ' "$metrics_file"; then

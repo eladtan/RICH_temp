@@ -2,26 +2,37 @@
 #define FMM_M2L_OPERATOR_CACHE_HPP
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <unordered_map>
 #include <vector>
 
 #include "3D/gravity/fmm/FmmKernels.hpp"
 #include "misc/universal_error.hpp"
 
-// A byte-bounded exact-displacement M2L cache.  Exact keys preserve the
-// existing numerical result.  Once the cache reaches its budget, additional
-// operators are computed into one reusable scratch vector instead of growing
-// persistent storage without bound.
+// A byte-bounded cache of scale-free M2L operators.  Nodes carrying the same
+// lattice id use an exact primitive integer direction key, so translations at
+// different octree levels share one operator.  Other geometries use exact bits
+// of a max-norm-normalized direction.  The omitted physical length is restored
+// analytically by FmmKernels::translateM2L.
 class FmmM2LOperatorCache
 {
 public:
+    struct Lookup
+    {
+        const std::vector<double>* coefficients = nullptr;
+        double inverseScale = 1.0;
+        bool integerKey = false;
+    };
+
     FmmM2LOperatorCache():
         maxEntries_(0), configuredMaxEntries_(0), termCount_(0),
-        budgetBytes_(0), hits_(0), misses_(0), bypasses_(0) {}
+        budgetBytes_(0), hits_(0), misses_(0), bypasses_(0),
+        integerKeyHits_(0), integerKeyMisses_(0) {}
 
     void clear()
     {
@@ -74,43 +85,51 @@ public:
         hits_ = 0;
         misses_ = 0;
         bypasses_ = 0;
+        integerKeyHits_ = 0;
+        integerKeyMisses_ = 0;
     }
 
-    const std::vector<double>& get(
-        const Vector3D& displacement,
-        const FmmTaylorExpansion& layout,
-        std::vector<double>& derivativeScratch,
-        std::vector<double>& uncachedOperator)
+    Lookup get(const FmmNode& source,
+               const FmmNode& target,
+               const FmmTaylorExpansion& layout,
+               std::vector<double>& derivativeScratch,
+               std::vector<double>& uncachedOperator)
     {
         if(layout.m2lTerms().size() != termCount_)
             throw UniversalError(
                 "FmmM2LOperatorCache::get: cache/layout size mismatch");
 
-        const Key key = makeKey(displacement);
-        const auto found = entries_.find(key);
+        const CanonicalGeometry geometry = canonicalGeometry(source, target);
+        const auto found = entries_.find(geometry.key);
         if(found != entries_.end())
         {
             ++hits_;
-            return found->second;
+            if(geometry.integerKey)
+                ++integerKeyHits_;
+            return Lookup{&found->second, geometry.inverseScale,
+                          geometry.integerKey};
         }
 
         ++misses_;
+        if(geometry.integerKey)
+            ++integerKeyMisses_;
         if(entries_.size() < maxEntries_)
         {
-            auto inserted = entries_.emplace(key, std::vector<double>());
+            auto inserted = entries_.emplace(geometry.key, std::vector<double>());
             if(!inserted.second)
                 throw UniversalError(
                     "FmmM2LOperatorCache::get: duplicate insertion");
             FmmKernels::computeM2LOperator(
-                displacement, layout, derivativeScratch, inserted.first->second);
+                geometry.direction, layout, derivativeScratch,
+                inserted.first->second);
 
             if(bytesOwned() <= budgetBytes_)
-                return inserted.first->second;
+                return Lookup{&inserted.first->second, geometry.inverseScale,
+                              geometry.integerKey};
 
-            // An implementation-specific hash/node allocation exceeded the
-            // conservative estimate.  Preserve the just-computed operator for
-            // this translation, remove it from persistent storage, and disable
-            // further insertions if the retained bucket array itself is too big.
+            // Preserve the just-computed operator for this translation, remove
+            // it from persistent storage, and stop growing if allocator/hash
+            // overhead has exhausted the byte budget.
             uncachedOperator.swap(inserted.first->second);
             entries_.erase(inserted.first);
             if(bytesOwned() > budgetBytes_)
@@ -123,13 +142,15 @@ public:
                 maxEntries_ = entries_.size();
             }
             ++bypasses_;
-            return uncachedOperator;
+            return Lookup{&uncachedOperator, geometry.inverseScale,
+                          geometry.integerKey};
         }
 
         FmmKernels::computeM2LOperator(
-            displacement, layout, derivativeScratch, uncachedOperator);
+            geometry.direction, layout, derivativeScratch, uncachedOperator);
         ++bypasses_;
-        return uncachedOperator;
+        return Lookup{&uncachedOperator, geometry.inverseScale,
+                      geometry.integerKey};
     }
 
     std::size_t bytesOwned() const
@@ -154,17 +175,27 @@ public:
     std::uint64_t hits() const { return hits_; }
     std::uint64_t misses() const { return misses_; }
     std::uint64_t bypasses() const { return bypasses_; }
+    std::uint64_t integerKeyHits() const { return integerKeyHits_; }
+    std::uint64_t integerKeyMisses() const { return integerKeyMisses_; }
 
 private:
+    enum : std::uint64_t
+    {
+        ExactDirectionKey = 0,
+        IntegerDirectionKey = 1
+    };
+
     struct Key
     {
         std::uint64_t x = 0;
         std::uint64_t y = 0;
         std::uint64_t z = 0;
+        std::uint64_t kind = ExactDirectionKey;
 
         bool operator==(const Key& other) const
         {
-            return x == other.x && y == other.y && z == other.z;
+            return x == other.x && y == other.y && z == other.z &&
+                   kind == other.kind;
         }
     };
 
@@ -177,19 +208,141 @@ private:
                 (result << 6u) + (result >> 2u);
             result ^= std::hash<std::uint64_t>()(key.z) + 0x9e3779b9u +
                 (result << 6u) + (result >> 2u);
+            result ^= std::hash<std::uint64_t>()(key.kind) + 0x9e3779b9u +
+                (result << 6u) + (result >> 2u);
             return result;
         }
     };
 
-    using EntryMap = std::unordered_map<Key, std::vector<double>, KeyHash>;
-
-    static Key makeKey(const Vector3D& displacement)
+    struct CanonicalGeometry
     {
         Key key;
-        std::memcpy(&key.x, &displacement.x, sizeof(double));
-        std::memcpy(&key.y, &displacement.y, sizeof(double));
-        std::memcpy(&key.z, &displacement.z, sizeof(double));
-        return key;
+        Vector3D direction;
+        double inverseScale = 1.0;
+        bool integerKey = false;
+    };
+
+    using EntryMap = std::unordered_map<Key, std::vector<double>, KeyHash>;
+
+    static std::uint64_t unsignedMagnitude(std::int64_t value)
+    {
+        return value < 0 ?
+            static_cast<std::uint64_t>(-(value + 1)) + 1u :
+            static_cast<std::uint64_t>(value);
+    }
+
+    static bool checkedDifference(std::int64_t target,
+                                  std::int64_t source,
+                                  std::int64_t& result)
+    {
+        if((source > 0 && target <
+            std::numeric_limits<std::int64_t>::min() + source) ||
+           (source < 0 && target >
+            std::numeric_limits<std::int64_t>::max() + source))
+            return false;
+        result = target - source;
+        return true;
+    }
+
+    static bool latticeDifference(const FmmNode& source,
+                                  const FmmNode& target,
+                                  std::int64_t& dx,
+                                  std::int64_t& dy,
+                                  std::int64_t& dz)
+    {
+        if(source.latticeAligned == 0 || target.latticeAligned == 0 ||
+           source.latticeId == 0 || source.latticeId != target.latticeId)
+            return false;
+        return checkedDifference(target.latticeCenterX,
+                                 source.latticeCenterX, dx) &&
+               checkedDifference(target.latticeCenterY,
+                                 source.latticeCenterY, dy) &&
+               checkedDifference(target.latticeCenterZ,
+                                 source.latticeCenterZ, dz);
+    }
+
+    static CanonicalGeometry canonicalGeometry(const FmmNode& source,
+                                                const FmmNode& target)
+    {
+        const Vector3D displacement = target.center - source.center;
+        std::int64_t dx = 0;
+        std::int64_t dy = 0;
+        std::int64_t dz = 0;
+        if(latticeDifference(source, target, dx, dy, dz))
+        {
+            const std::uint64_t gcd = std::gcd(unsignedMagnitude(dx),
+                std::gcd(unsignedMagnitude(dy), unsignedMagnitude(dz)));
+            if(gcd == 0)
+                throw UniversalError(
+                    "FmmM2LOperatorCache::get: coincident lattice centers");
+            if(gcd <= static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()))
+            {
+                const std::int64_t cx = dx / static_cast<std::int64_t>(gcd);
+                const std::int64_t cy = dy / static_cast<std::int64_t>(gcd);
+                const std::int64_t cz = dz / static_cast<std::int64_t>(gcd);
+                const std::uint64_t primitiveMax = std::max(
+                    unsignedMagnitude(cx),
+                    std::max(unsignedMagnitude(cy), unsignedMagnitude(cz)));
+                const double displacementMax = std::max(std::abs(displacement.x),
+                    std::max(std::abs(displacement.y), std::abs(displacement.z)));
+                const double physicalScale = displacementMax /
+                    static_cast<double>(primitiveMax);
+                if(!(physicalScale > 0.0) || !std::isfinite(physicalScale))
+                    throw UniversalError(
+                        "FmmM2LOperatorCache::get: invalid lattice scale");
+
+                const double tolerance = 128.0 *
+                    std::numeric_limits<double>::epsilon() *
+                    std::max(1.0, displacementMax);
+                const bool consistent =
+                    std::abs(displacement.x - physicalScale *
+                        static_cast<double>(cx)) <= tolerance &&
+                    std::abs(displacement.y - physicalScale *
+                        static_cast<double>(cy)) <= tolerance &&
+                    std::abs(displacement.z - physicalScale *
+                        static_cast<double>(cz)) <= tolerance;
+                if(!consistent)
+                    return canonicalGeometryWithoutLattice(displacement);
+                CanonicalGeometry result;
+                result.key.x = static_cast<std::uint64_t>(cx);
+                result.key.y = static_cast<std::uint64_t>(cy);
+                result.key.z = static_cast<std::uint64_t>(cz);
+                result.key.kind = IntegerDirectionKey;
+                result.direction = Vector3D(static_cast<double>(cx),
+                                            static_cast<double>(cy),
+                                            static_cast<double>(cz));
+                result.inverseScale = 1.0 / physicalScale;
+                result.integerKey = true;
+                return result;
+            }
+        }
+
+        return canonicalGeometryWithoutLattice(displacement);
+    }
+
+    static CanonicalGeometry canonicalGeometryWithoutLattice(
+        const Vector3D& displacement)
+    {
+        const double scale = std::max(std::abs(displacement.x),
+            std::max(std::abs(displacement.y), std::abs(displacement.z)));
+        if(!(scale > 0.0) || !std::isfinite(scale))
+            throw UniversalError(
+                "FmmM2LOperatorCache::get: invalid center separation");
+        CanonicalGeometry result;
+        result.direction = Vector3D(displacement.x / scale,
+                                    displacement.y / scale,
+                                    displacement.z / scale);
+        if(result.direction.x == 0.0) result.direction.x = 0.0;
+        if(result.direction.y == 0.0) result.direction.y = 0.0;
+        if(result.direction.z == 0.0) result.direction.z = 0.0;
+        std::memcpy(&result.key.x, &result.direction.x, sizeof(double));
+        std::memcpy(&result.key.y, &result.direction.y, sizeof(double));
+        std::memcpy(&result.key.z, &result.direction.z, sizeof(double));
+        result.key.kind = ExactDirectionKey;
+        result.inverseScale = 1.0 / scale;
+        result.integerKey = false;
+        return result;
     }
 
     static std::size_t saturatingAdd(std::size_t first, std::size_t second)
@@ -221,6 +374,8 @@ private:
     std::uint64_t hits_;
     std::uint64_t misses_;
     std::uint64_t bypasses_;
+    std::uint64_t integerKeyHits_;
+    std::uint64_t integerKeyMisses_;
 };
 
 #endif // FMM_M2L_OPERATOR_CACHE_HPP

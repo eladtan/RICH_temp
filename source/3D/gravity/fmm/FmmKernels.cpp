@@ -1,6 +1,7 @@
 #include "3D/gravity/fmm/FmmKernels.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "misc/universal_error.hpp"
@@ -207,12 +208,22 @@ void FmmKernels::translateM2L(const FmmNode& source,
                               const FmmTaylorExpansion& layout,
                               const std::vector<double>& multipoles,
                               std::vector<double>& locals,
-                              const std::vector<double>& translationOperator)
+                              const std::vector<double>& translationOperator,
+                              double inverseDistanceScale)
 {
     const std::vector<std::size_t>& offsets = layout.m2lOffsets();
     const std::vector<FmmM2LTerm>& terms = layout.m2lTerms();
     if(translationOperator.size() != terms.size())
         throw UniversalError("FmmKernels::translateM2L: operator size mismatch");
+    if(!(inverseDistanceScale > 0.0) || !std::isfinite(inverseDistanceScale))
+        throw UniversalError("FmmKernels::translateM2L: invalid inverse distance scale");
+
+    std::array<double, FMM_MAX_ORDER + 2> inversePowers{};
+    inversePowers[0] = 1.0;
+    for(int degree = 1; degree <= layout.order() + 1; ++degree)
+        inversePowers[static_cast<std::size_t>(degree)] =
+            inversePowers[static_cast<std::size_t>(degree - 1)] *
+            inverseDistanceScale;
 
     const double* sourceCoefficients =
         multipoles.data() + source.multipoleOffset;
@@ -222,8 +233,10 @@ void FmmKernels::translateM2L(const FmmNode& source,
         for(std::size_t termIndex = offsets[ai];
             termIndex < offsets[ai + 1]; ++termIndex)
         {
+            const FmmM2LTerm& term = terms[termIndex];
             translated += translationOperator[termIndex] *
-                sourceCoefficients[termIndex - offsets[ai]];
+                inversePowers[term.inverseScalePower] *
+                sourceCoefficients[term.sourceIndex];
         }
         locals[target.localOffset + ai] += layout.inverseFactorial(ai) * translated;
     }

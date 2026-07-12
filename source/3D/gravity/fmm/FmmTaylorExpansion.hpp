@@ -2,6 +2,7 @@
 #define FMM_TAYLOR_EXPANSION_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 struct FmmMultiIndex
@@ -22,6 +23,7 @@ struct FmmM2LTerm
     std::size_t sourceIndex;
     std::size_t derivativeIndex;
     double scale;
+    std::uint8_t inverseScalePower;
 };
 
 class FmmTaylorExpansion

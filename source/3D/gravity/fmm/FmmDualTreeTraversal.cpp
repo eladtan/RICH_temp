@@ -106,12 +106,13 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
             admissibility(target, source, identicalNode, thetaCritical);
         if(reason == RejectionReason::None)
         {
-            const Vector3D displacement = target.center - source.center;
-            const std::vector<double>& translationOperator =
-                operatorCache.get(displacement, layout, derivativeScratch,
+            const FmmM2LOperatorCache::Lookup translationOperator =
+                operatorCache.get(source, target, layout, derivativeScratch,
                                   uncachedOperator);
             FmmKernels::translateM2L(source, target, layout, sourceMultipoles,
-                                     targetLocals, translationOperator);
+                                     targetLocals,
+                                     *translationOperator.coefficients,
+                                     translationOperator.inverseScale);
             ++stats.m2lCount;
             continue;
         }
@@ -157,4 +158,6 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
     stats.localOperatorCacheHits = operatorCache.hits();
     stats.localOperatorCacheMisses = operatorCache.misses();
     stats.localOperatorCacheBypasses = operatorCache.bypasses();
+    stats.localOperatorIntegerKeyHits = operatorCache.integerKeyHits();
+    stats.localOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
 }

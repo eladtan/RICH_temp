@@ -25,6 +25,13 @@ struct FmmNode
     std::size_t multipoleOffset = 0;
     std::size_t localOffset = 0;
 
+    std::uint64_t latticeId = 0;
+    std::int64_t latticeCenterX = 0;
+    std::int64_t latticeCenterY = 0;
+    std::int64_t latticeCenterZ = 0;
+    std::uint64_t latticeHalfUnits = 0;
+    int latticeAligned = 0;
+
     bool isLeaf() const { return firstChild == std::numeric_limits<std::size_t>::max(); }
     std::size_t particleCount() const { return particleEnd - particleBegin; }
 };

@@ -15,7 +15,7 @@
 #include "misc/universal_error.hpp"
 
 static constexpr std::uint32_t FMM_MPI_PACKET_MAGIC = 0x52464d4du; // "RFMM"
-static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 2u;
+static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 3u;
 
 enum class FmmPacketKind : std::uint16_t
 {
@@ -78,6 +78,9 @@ struct FmmRankRootDescriptor
     std::uint64_t particleCount = 0;
     std::uint64_t topologyHash = 0;
     std::uint64_t epoch = 0;
+    std::uint64_t latticeId = 0;
+    std::int64_t latticeCenter[3] = {0, 0, 0};
+    std::uint64_t latticeHalfUnits = 0;
     std::uint32_t magic = FMM_MPI_PACKET_MAGIC;
     std::uint16_t version = FMM_MPI_PACKET_VERSION;
     std::uint16_t reserved16 = 0;
@@ -189,7 +192,7 @@ static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
               "Distributed FMM wire protocol requires <=64-bit size_t");
 static_assert(sizeof(FmmPacketStamp) == 16,
               "Distributed FMM packet stamp has unsupported padding");
-static_assert(sizeof(FmmRankRootDescriptor) == 80,
+static_assert(sizeof(FmmRankRootDescriptor) == 120,
               "Distributed FMM root descriptor has unsupported padding");
 static_assert(sizeof(FmmRemoteNodeDescriptor) == 72,
               "Distributed FMM node descriptor has unsupported padding");

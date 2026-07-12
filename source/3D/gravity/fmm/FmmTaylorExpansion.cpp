@@ -63,7 +63,9 @@ FmmTaylorExpansion::FmmTaylorExpansion(int order):
                 index(target.x + source.x, target.y + source.y, target.z + source.z);
             const double sign = (source.degree() & 1) == 0 ? 1.0 : -1.0;
             m2lTerms_.push_back(
-                FmmM2LTerm{sourceIndex, derivativeIndex, sign});
+                FmmM2LTerm{sourceIndex, derivativeIndex, sign,
+                    static_cast<std::uint8_t>(
+                        target.degree() + source.degree() + 1)});
         }
     }
     m2lOffsets_.push_back(m2lTerms_.size());

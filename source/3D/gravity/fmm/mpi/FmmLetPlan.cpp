@@ -3,6 +3,7 @@
 #ifdef RICH_MPI
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -140,6 +141,63 @@ std::size_t saturatingMultiply(std::size_t first, std::size_t second)
         std::numeric_limits<std::size_t>::max() : first * second;
 }
 
+std::int64_t shiftedLatticeCoordinate(std::int64_t center,
+                                      std::uint64_t offset,
+                                      bool upper)
+{
+    if(offset > static_cast<std::uint64_t>(
+            std::numeric_limits<std::int64_t>::max()))
+        throw UniversalError("FmmLetPlan: lattice offset overflow");
+    const std::int64_t signedOffset = static_cast<std::int64_t>(offset);
+    if((upper && center > std::numeric_limits<std::int64_t>::max() - signedOffset) ||
+       (!upper && center < std::numeric_limits<std::int64_t>::min() + signedOffset))
+        throw UniversalError("FmmLetPlan: lattice center overflow");
+    return upper ? center + signedOffset : center - signedOffset;
+}
+
+void applyRemoteLatticeMetadata(std::uint64_t latticeId,
+                                const std::int64_t rootCenter[3],
+                                std::uint64_t rootHalfUnits,
+                                std::uint64_t spatialKey,
+                                FmmNode& node)
+{
+    if(latticeId == 0 || rootHalfUnits == 0 || spatialKey == 0)
+        throw UniversalError("FmmLetPlan: invalid remote lattice metadata");
+    std::array<unsigned int, FMM_MAX_TREE_DEPTH> reversedOctants{};
+    std::size_t depth = 0;
+    std::uint64_t cursor = spatialKey;
+    while(cursor != 1)
+    {
+        if(cursor == 0 || depth >= reversedOctants.size())
+            throw UniversalError("FmmLetPlan: malformed remote spatial key");
+        reversedOctants[depth++] = static_cast<unsigned int>(cursor & 7u);
+        cursor >>= 3u;
+    }
+
+    std::int64_t coordinates[3] = {rootCenter[0], rootCenter[1], rootCenter[2]};
+    std::uint64_t halfUnits = rootHalfUnits;
+    for(std::size_t reverse = depth; reverse > 0; --reverse)
+    {
+        if(halfUnits < 2 || (halfUnits & 1u) != 0)
+            throw UniversalError("FmmLetPlan: indivisible remote lattice root");
+        halfUnits /= 2;
+        const unsigned int octant = reversedOctants[reverse - 1];
+        coordinates[0] = shiftedLatticeCoordinate(
+            coordinates[0], halfUnits, (octant & 4u) != 0);
+        coordinates[1] = shiftedLatticeCoordinate(
+            coordinates[1], halfUnits, (octant & 2u) != 0);
+        coordinates[2] = shiftedLatticeCoordinate(
+            coordinates[2], halfUnits, (octant & 1u) != 0);
+    }
+
+    node.latticeId = latticeId;
+    node.latticeCenterX = coordinates[0];
+    node.latticeCenterY = coordinates[1];
+    node.latticeCenterZ = coordinates[2];
+    node.latticeHalfUnits = halfUnits;
+    node.latticeAligned = 1;
+}
+
 }
 
 FmmLetPlan::FmmLetPlan():
@@ -191,11 +249,17 @@ void FmmLetPlan::build(const FmmTree& localTree,
     MPI_Comm_rank(comm_, &rank_);
     localNodeByKey_.clear();
     remoteDescriptors_.clear();
+    remoteLatticeRoots_.clear();
+    remoteLatticeRoots_.resize(rootDescriptors.size());
     m2lInteractions_.clear();
     p2pInteractions_.clear();
     subscriptionsToSend_.clear();
     subscriptionsReceived_.clear();
     operatorCache_.clear();
+
+    if(localTree.nodes().size() >
+       static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
+        throw UniversalError("FmmLetPlan::build: local tree exceeds compact index range");
 
     for(std::size_t i = 0; i < localTree.nodes().size(); ++i)
     {
@@ -221,8 +285,20 @@ void FmmLetPlan::build(const FmmTree& localTree,
             rootDescriptors[static_cast<std::size_t>(sourceRank)];
         if(root.active == 0 || root.epoch != topologyEpoch_ ||
            root.magic != FMM_MPI_PACKET_MAGIC ||
-           root.version != FMM_MPI_PACKET_VERSION)
+           root.version != FMM_MPI_PACKET_VERSION ||
+           root.latticeId == 0 || root.latticeHalfUnits == 0 ||
+           root.latticeHalfUnits > static_cast<std::uint64_t>(
+               std::numeric_limits<std::int64_t>::max()) ||
+           (!localTree.nodes().empty() &&
+            root.latticeId != localTree.nodes()[0].latticeId))
             throw UniversalError("FmmLetPlan::build: invalid or stale LET source root");
+        RemoteLatticeRoot& latticeRoot =
+            remoteLatticeRoots_[static_cast<std::size_t>(sourceRank)];
+        latticeRoot.latticeId = root.latticeId;
+        latticeRoot.center[0] = root.latticeCenter[0];
+        latticeRoot.center[1] = root.latticeCenter[1];
+        latticeRoot.center[2] = root.latticeCenter[2];
+        latticeRoot.halfUnits = root.latticeHalfUnits;
         FmmRemoteNodeDescriptor descriptor;
         descriptor.center[0] = root.center[0];
         descriptor.center[1] = root.center[1];
@@ -269,14 +345,16 @@ void FmmLetPlan::build(const FmmTree& localTree,
 
             if(admissible(target, source, thetaCritical))
             {
-                m2lInteractions_.push_back(
-                    FmmLetM2LInteraction{pair.targetNode, pair.sourceRank, pair.sourceKey});
+                m2lInteractions_.push_back(FmmLetM2LInteraction{
+                    static_cast<std::uint32_t>(pair.targetNode),
+                    pair.sourceRank, pair.sourceKey});
                 continue;
             }
             if(target.isLeaf() && source.isLeaf != 0)
             {
-                p2pInteractions_.push_back(
-                    FmmLetP2PInteraction{pair.targetNode, pair.sourceRank, pair.sourceKey});
+                p2pInteractions_.push_back(FmmLetP2PInteraction{
+                    static_cast<std::uint32_t>(pair.targetNode),
+                    pair.sourceRank, pair.sourceKey});
                 continue;
             }
 
@@ -567,14 +645,61 @@ void FmmLetPlan::build(const FmmTree& localTree,
         }
     }
 
+    // Descriptor pulling may visit many intermediate remote nodes.  Only
+    // descriptors referenced by terminal M2L/P2P interactions are needed by
+    // warm solves; discard the rest before the persistent plan is measured.
+    std::set<std::pair<int, std::uint64_t>> retainedDescriptorKeys;
+    for(const auto& terminal : terminalKeys)
+        retainedDescriptorKeys.insert(std::make_pair(
+            std::get<1>(terminal), std::get<2>(terminal)));
+    std::unordered_map<int,
+        std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>>
+        retainedDescriptors;
+    for(const auto& key : retainedDescriptorKeys)
+    {
+        const auto rankIt = remoteDescriptors_.find(key.first);
+        if(rankIt == remoteDescriptors_.end())
+            throw UniversalError(
+                "FmmLetPlan::build: terminal descriptor rank disappeared");
+        const auto descriptorIt = rankIt->second.find(key.second);
+        if(descriptorIt == rankIt->second.end())
+            throw UniversalError(
+                "FmmLetPlan::build: terminal descriptor disappeared");
+        retainedDescriptors[key.first].emplace(key.second,
+                                               descriptorIt->second);
+    }
+    remoteDescriptors_.swap(retainedDescriptors);
+    std::unordered_map<int,
+        std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>>().swap(
+            retainedDescriptors);
+
+    // The LET plan persists across warm solves. Release construction slack and
+    // keep the compact 16-byte interaction arrays at their final sizes.
+    localNodeByKey_.rehash(0);
+    remoteDescriptors_.rehash(0);
+    for(auto& entry : remoteDescriptors_)
+        entry.second.rehash(0);
+    m2lInteractions_.shrink_to_fit();
+    p2pInteractions_.shrink_to_fit();
+    for(auto* map : {&subscriptionsToSend_, &subscriptionsReceived_})
+    {
+        map->rehash(0);
+        for(auto& entry : *map)
+            entry.second.shrink_to_fit();
+    }
+
     stats.letPlanSeconds += elapsed(start);
 }
 
 std::size_t FmmLetPlan::bytesOwned() const
 {
     std::size_t result = exchange_.bytesOwned();
+    result = saturatingAdd(result, saturatingMultiply(
+        remoteLatticeRoots_.capacity(), sizeof(RemoteLatticeRoot)));
     const std::size_t localMapEntry =
         sizeof(std::pair<const std::uint64_t, std::size_t>) + 2 * sizeof(void*);
+    result = saturatingAdd(result, saturatingMultiply(
+        localNodeByKey_.bucket_count(), sizeof(void*)));
     result = saturatingAdd(result, saturatingMultiply(
         localNodeByKey_.size(), localMapEntry));
 
@@ -584,10 +709,16 @@ std::size_t FmmLetPlan::bytesOwned() const
     const std::size_t remoteInnerEntry = sizeof(std::pair<
         const std::uint64_t, FmmRemoteNodeDescriptor>) + 2 * sizeof(void*);
     result = saturatingAdd(result, saturatingMultiply(
+        remoteDescriptors_.bucket_count(), sizeof(void*)));
+    result = saturatingAdd(result, saturatingMultiply(
         remoteDescriptors_.size(), remoteOuterEntry));
     for(const auto& entry : remoteDescriptors_)
+    {
+        result = saturatingAdd(result, saturatingMultiply(
+            entry.second.bucket_count(), sizeof(void*)));
         result = saturatingAdd(result, saturatingMultiply(
             entry.second.size(), remoteInnerEntry));
+    }
 
     result = saturatingAdd(result, saturatingMultiply(
         m2lInteractions_.capacity(), sizeof(FmmLetM2LInteraction)));
@@ -1020,15 +1151,25 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         source.halfSize = descriptorIt->second.halfSize;
         source.radius = descriptorIt->second.geometricRadius();
         source.multipoleOffset = coefficientPayload->coefficientOffset;
+        if(interaction.sourceRank < 0 ||
+           static_cast<std::size_t>(interaction.sourceRank) >=
+               remoteLatticeRoots_.size())
+            throw UniversalError(
+                "FmmLetPlan::execute: missing remote lattice root");
+        const RemoteLatticeRoot& latticeRoot =
+            remoteLatticeRoots_[static_cast<std::size_t>(interaction.sourceRank)];
+        applyRemoteLatticeMetadata(latticeRoot.latticeId, latticeRoot.center,
+                                   latticeRoot.halfUnits, interaction.sourceKey,
+                                   source);
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
-        const Vector3D displacement = target.center - source.center;
-        const std::vector<double>& translationOperator =
-            operatorCache_.get(displacement, layout, derivativeScratch,
+        const FmmM2LOperatorCache::Lookup translationOperator =
+            operatorCache_.get(source, target, layout, derivativeScratch,
                                uncachedOperator);
 
         FmmKernels::translateM2L(source, target, layout,
                                  remoteCoefficients, localLocals,
-                                 translationOperator);
+                                 *translationOperator.coefficients,
+                                 translationOperator.inverseScale);
         ++stats.m2lCount;
         ++stats.letM2LCount;
     }
@@ -1038,6 +1179,8 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     stats.letOperatorCacheHits = operatorCache_.hits();
     stats.letOperatorCacheMisses = operatorCache_.misses();
     stats.letOperatorCacheBypasses = operatorCache_.bypasses();
+    stats.letOperatorIntegerKeyHits = operatorCache_.integerKeyHits();
+    stats.letOperatorIntegerKeyMisses = operatorCache_.integerKeyMisses();
 
     for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
     {

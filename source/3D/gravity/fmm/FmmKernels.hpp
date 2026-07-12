@@ -33,7 +33,8 @@ void translateM2L(const FmmNode& source,
                   const FmmTaylorExpansion& layout,
                   const std::vector<double>& multipoles,
                   std::vector<double>& locals,
-                  const std::vector<double>& translationOperator);
+                  const std::vector<double>& translationOperator,
+                  double inverseDistanceScale = 1.0);
 
 void translateL2L(const FmmNode& parent,
                   const FmmNode& child,

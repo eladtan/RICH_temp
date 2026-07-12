@@ -50,6 +50,20 @@ int bitCount(unsigned int value)
     }
     return result;
 }
+
+std::int64_t childLatticeCoordinate(std::int64_t parent,
+                                    std::uint64_t childHalfUnits,
+                                    bool upper)
+{
+    if(childHalfUnits > static_cast<std::uint64_t>(
+            std::numeric_limits<std::int64_t>::max()))
+        throw UniversalError("FmmTree::build: lattice half-size overflow");
+    const std::int64_t offset = static_cast<std::int64_t>(childHalfUnits);
+    if((upper && parent > std::numeric_limits<std::int64_t>::max() - offset) ||
+       (!upper && parent < std::numeric_limits<std::int64_t>::min() + offset))
+        throw UniversalError("FmmTree::build: lattice coordinate overflow");
+    return upper ? parent + offset : parent - offset;
+}
 }
 
 void FmmTree::build(const std::vector<Vector3D>& positions,
@@ -115,6 +129,12 @@ void FmmTree::buildWithRoot(const std::vector<Vector3D>& positions,
     root.center = rootGeometry.center;
     root.halfSize = rootGeometry.halfSize;
     root.particleEnd = positions.size();
+    root.latticeId = rootGeometry.latticeId;
+    root.latticeCenterX = rootGeometry.latticeCenterX;
+    root.latticeCenterY = rootGeometry.latticeCenterY;
+    root.latticeCenterZ = rootGeometry.latticeCenterZ;
+    root.latticeHalfUnits = rootGeometry.latticeHalfUnits;
+    root.latticeAligned = rootGeometry.latticeAligned;
     nodes_.push_back(root);
 
     buildNode(0, positions, options);
@@ -172,6 +192,21 @@ void FmmTree::buildNode(std::size_t nodeIndex,
         child.parent = nodeIndex;
         child.depth = node.depth + 1;
         child.spatialKey = (node.spatialKey << 3u) | static_cast<std::uint64_t>(octant);
+        if(node.latticeAligned != 0)
+        {
+            if(node.latticeHalfUnits < 2 || (node.latticeHalfUnits & 1u) != 0)
+                throw UniversalError("FmmTree::build: indivisible lattice half size");
+            const std::uint64_t childHalfUnits = node.latticeHalfUnits / 2;
+            child.latticeId = node.latticeId;
+            child.latticeCenterX = childLatticeCoordinate(
+                node.latticeCenterX, childHalfUnits, (octant & 4) != 0);
+            child.latticeCenterY = childLatticeCoordinate(
+                node.latticeCenterY, childHalfUnits, (octant & 2) != 0);
+            child.latticeCenterZ = childLatticeCoordinate(
+                node.latticeCenterZ, childHalfUnits, (octant & 1) != 0);
+            child.latticeHalfUnits = childHalfUnits;
+            child.latticeAligned = 1;
+        }
         nodes_.push_back(child);
         begin += count;
     }
@@ -253,7 +288,13 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
 {
     if(nodes_.empty() || nodes_[0].particleBegin != 0 ||
        nodes_[0].particleEnd != particleCount ||
-       nodes_[0].parent != std::numeric_limits<std::size_t>::max())
+       nodes_[0].parent != std::numeric_limits<std::size_t>::max() ||
+       nodes_[0].latticeId != rootGeometry_.latticeId ||
+       nodes_[0].latticeCenterX != rootGeometry_.latticeCenterX ||
+       nodes_[0].latticeCenterY != rootGeometry_.latticeCenterY ||
+       nodes_[0].latticeCenterZ != rootGeometry_.latticeCenterZ ||
+       nodes_[0].latticeHalfUnits != rootGeometry_.latticeHalfUnits ||
+       nodes_[0].latticeAligned != rootGeometry_.latticeAligned)
         throw UniversalError("FmmTree::build: invalid root invariants");
     if(preOrder_.size() != nodes_.size() || postOrder_.size() != nodes_.size())
         throw UniversalError("FmmTree::build: incomplete traversal orders");
@@ -282,6 +323,26 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
             if(child >= nodes_.size() || nodes_[child].parent != i ||
                nodes_[child].particleBegin != cursor)
                 throw UniversalError("FmmTree::build: invalid parent/child partition");
+            if(node.latticeAligned != 0)
+            {
+                const FmmNode& childNode = nodes_[child];
+                if(node.latticeHalfUnits < 2 ||
+                   (node.latticeHalfUnits & 1u) != 0)
+                    throw UniversalError(
+                        "FmmTree::build: invalid parent lattice half size");
+                const std::uint64_t childHalfUnits = node.latticeHalfUnits / 2;
+                if(childNode.latticeAligned == 0 ||
+                   childNode.latticeId != node.latticeId ||
+                   childNode.latticeHalfUnits != childHalfUnits ||
+                   childNode.latticeCenterX != childLatticeCoordinate(
+                       node.latticeCenterX, childHalfUnits, (octant & 4) != 0) ||
+                   childNode.latticeCenterY != childLatticeCoordinate(
+                       node.latticeCenterY, childHalfUnits, (octant & 2) != 0) ||
+                   childNode.latticeCenterZ != childLatticeCoordinate(
+                       node.latticeCenterZ, childHalfUnits, (octant & 1) != 0))
+                    throw UniversalError(
+                        "FmmTree::build: invalid child lattice metadata");
+            }
             cursor = nodes_[child].particleEnd;
         }
         if(cursor != node.particleEnd)

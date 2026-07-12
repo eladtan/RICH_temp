@@ -20,17 +20,22 @@
 
 struct FmmLetM2LInteraction
 {
-    std::size_t targetNode = 0;
+    std::uint32_t targetNode = 0;
     int sourceRank = -1;
     std::uint64_t sourceKey = 0;
 };
 
 struct FmmLetP2PInteraction
 {
-    std::size_t targetNode = 0;
+    std::uint32_t targetNode = 0;
     int sourceRank = -1;
     std::uint64_t sourceKey = 0;
 };
+
+static_assert(sizeof(FmmLetM2LInteraction) == 16,
+              "LET M2L interaction must remain compact");
+static_assert(sizeof(FmmLetP2PInteraction) == 16,
+              "LET P2P interaction must remain compact");
 
 class FmmLetPlan
 {
@@ -71,6 +76,13 @@ public:
     }
 
 private:
+    struct RemoteLatticeRoot
+    {
+        std::uint64_t latticeId = 0;
+        std::int64_t center[3] = {0, 0, 0};
+        std::uint64_t halfUnits = 0;
+    };
+
     struct PendingPair
     {
         std::size_t targetNode = 0;
@@ -86,6 +98,7 @@ private:
                            double thetaCritical);
 
     std::unordered_map<std::uint64_t, std::size_t> localNodeByKey_;
+    std::vector<RemoteLatticeRoot> remoteLatticeRoots_;
     std::unordered_map<int,
         std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>> remoteDescriptors_;
     std::vector<FmmLetM2LInteraction> m2lInteractions_;

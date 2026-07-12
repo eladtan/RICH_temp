@@ -62,12 +62,16 @@ struct FmmSolveStats
     std::uint64_t localOperatorCacheHits = 0;
     std::uint64_t localOperatorCacheMisses = 0;
     std::uint64_t localOperatorCacheBypasses = 0;
+    std::uint64_t localOperatorIntegerKeyHits = 0;
+    std::uint64_t localOperatorIntegerKeyMisses = 0;
     std::size_t letOperatorCacheBytes = 0;
     std::size_t letOperatorCacheEntries = 0;
     std::size_t letOperatorCacheMaxEntries = 0;
     std::uint64_t letOperatorCacheHits = 0;
     std::uint64_t letOperatorCacheMisses = 0;
     std::uint64_t letOperatorCacheBypasses = 0;
+    std::uint64_t letOperatorIntegerKeyHits = 0;
+    std::uint64_t letOperatorIntegerKeyMisses = 0;
     std::uint64_t processOperatorCacheMisses = 0;
     std::uint64_t processOperatorCacheBypasses = 0;
 

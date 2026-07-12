@@ -39,7 +39,13 @@ bool sameRoot(const FmmRootGeometry& first, const FmmRootGeometry& second)
         (!first.active || (first.center.x == second.center.x &&
                            first.center.y == second.center.y &&
                            first.center.z == second.center.z &&
-                           first.halfSize == second.halfSize));
+                           first.halfSize == second.halfSize &&
+                           first.latticeId == second.latticeId &&
+                           first.latticeCenterX == second.latticeCenterX &&
+                           first.latticeCenterY == second.latticeCenterY &&
+                           first.latticeCenterZ == second.latticeCenterZ &&
+                           first.latticeHalfUnits == second.latticeHalfUnits &&
+                           first.latticeAligned == second.latticeAligned));
 }
 
 std::vector<std::uint64_t> leafTopologySignature(const FmmTree& tree)
@@ -423,8 +429,9 @@ bool DistributedFmmGravityCalculator::prepareLocalTree(
             }
         }
         nextRoot = contained ? localRoot_ :
-            FmmRootGeometry::containingPoints(positions, domainLower, domainUpper,
-                                               distributedOptions_.rootSlackFactor);
+            FmmRootGeometry::containingPointsOnDyadicLattice(
+                positions, domainLower, domainUpper,
+                distributedOptions_.rootSlackFactor, options_.maxDepth);
     }
 
     localTree_.build(positions, nextRoot, options_);
@@ -455,6 +462,11 @@ FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() con
         result.center[2] = root.center.z;
         result.halfSize = root.halfSize;
         result.particleCount = static_cast<std::uint64_t>(root.particleCount());
+        result.latticeId = root.latticeId;
+        result.latticeCenter[0] = root.latticeCenterX;
+        result.latticeCenter[1] = root.latticeCenterY;
+        result.latticeCenter[2] = root.latticeCenterZ;
+        result.latticeHalfUnits = root.latticeHalfUnits;
         result.rootLeaf = root.isLeaf() ? 1 : 0;
         result.childMask = static_cast<int>(root.childMask);
     }
@@ -561,10 +573,13 @@ void DistributedFmmGravityCalculator::solve(
     const bool localChanged = prepareLocalTree(positions, domainLower, domainUpper);
     if(localChanged)
         localOperatorCache_.clear();
-    const std::size_t localOperatorCacheBudget =
-        options_.maxOperatorCacheBytes - options_.maxOperatorCacheBytes / 3;
+    // Reserve one quarter for local canonical directions. After the LET phase
+    // has populated its persistent cache, local traversal may safely reuse any
+    // part of the total budget that the LET cache did not retain.
+    const std::size_t reservedLocalOperatorCacheBudget =
+        options_.maxOperatorCacheBytes / 4;
     const std::size_t letOperatorCacheBudget =
-        options_.maxOperatorCacheBytes - localOperatorCacheBudget;
+        options_.maxOperatorCacheBytes - reservedLocalOperatorCacheBudget;
     stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     FmmPasses::updateTreeStats(localTree_, stats_);
     stats_.buildSeconds = elapsed(buildStart);
@@ -835,6 +850,13 @@ void DistributedFmmGravityCalculator::solve(
                      letOperatorCacheBudget, stats_);
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
+    const std::size_t retainedLetOperatorBytes = std::min(
+        options_.maxOperatorCacheBytes, stats_.letOperatorCacheBytes);
+    const std::size_t localOperatorCacheBudget =
+        options_.maxOperatorCacheBytes - retainedLetOperatorBytes;
+    if(localOperatorCacheBudget < reservedLocalOperatorCacheBudget)
+        throw UniversalError(
+            "DistributedFmmGravityCalculator::solve: operator cache budget accounting failed");
 
     if(!localTree_.nodes().empty())
     {
