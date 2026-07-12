@@ -1981,9 +1981,18 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
     Vector3D const &cellVel = this->cells[cellIndex].velocity;
     double internalLeakRateSum = 0.0;
     double internalConductanceSum = 0.0;
+    double ddmcChannelRateSum = 0.0;
+    double transportChannelRateSum = 0.0;
+    double boundaryRateSum = 0.0;
     size_t internalFaceCount = 0;
+    size_t mixedFaceCount = 0;
     for(DDMCFaceLeak const &face : data.faceLeaks)
     {
+        ddmcChannelRateSum += face.ddmcRate;
+        transportChannelRateSum += face.transportRate;
+        boundaryRateSum += face.boundaryRate;
+        if(face.ddmcRate > 0.0 && face.transportRate > 0.0)
+            ++mixedFaceCount;
         if(!face.targetDDMCEligible || !(face.internalRate > 0.0) ||
            !(face.conductance > 0.0))
             continue;
@@ -2011,11 +2020,16 @@ std::string RadiationIMC::getAccelerationDebugInfo(size_t cellIndex, double freq
        << " sigmaDiffusion=" << data.sigmaDiffusion
        << " sigmaParticleGate=" << data.sigmaParticleGate
        << " sigmaGroupExit=" << data.sigmaGroupExit
+       << " ddmc_gamma=" << data.gamma
        << " D=" << data.diffusionCoefficient
        << " leak_rate=" << data.totalLeakRate
        << " ddmc_internal_faces=" << internalFaceCount
        << " ddmc_internal_leak_rate_sum=" << internalLeakRateSum
        << " ddmc_internal_conductance_sum=" << internalConductanceSum
+       << " ddmc_channel_rate_sum=" << ddmcChannelRateSum
+       << " ddmc_transport_channel_rate_sum=" << transportChannelRateSum
+       << " ddmc_boundary_rate_sum=" << boundaryRateSum
+       << " ddmc_mixed_face_count=" << mixedFaceCount
        << " div_v=" << data.velocityDivergence
        << " max_face_dv_over_c=" << data.maxFaceVelocityJumpOverC
        << " faces=" << data.faceLeaks.size();
