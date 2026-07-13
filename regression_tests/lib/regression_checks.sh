@@ -1802,36 +1802,31 @@ check_fmm_operator_cache_case() {
             required[6] = "first_cache_misses"
             required[7] = "first_cache_bypasses"
             required[8] = "second_cache_hits"
-            required[9] = "second_cache_bypasses"
-            required[10] = "zero_cache_bytes"
-            required[11] = "zero_cache_entries"
-            required[12] = "zero_cache_misses"
-            required[13] = "zero_cache_bypasses"
-            required[14] = "repeated_max_difference"
-            required[15] = "fallback_max_difference"
-            required[16] = "canonical_max_difference"
-            required[17] = "kernel_operator_relative_difference"
-            required[18] = "kernel_translation_relative_difference"
-            required[19] = "canonical_cache_entries"
-            required[20] = "canonical_cache_hits"
-            required[21] = "canonical_cache_misses"
-            required[22] = "canonical_cache_bypasses"
-            required[23] = "canonical_integer_hits"
-            required[24] = "canonical_integer_misses"
-            required[25] = "reconfigure_preserved"
-            required[26] = "lru_replacement"
-            required[27] = "dyadic_root_aligned"
-            required[28] = "pass"
-            for (i = 1; i <= 28; ++i)
+            required[9] = "zero_cache_bytes"
+            required[10] = "zero_cache_entries"
+            required[11] = "zero_cache_misses"
+            required[12] = "zero_cache_bypasses"
+            required[13] = "repeated_max_difference"
+            required[14] = "fallback_max_difference"
+            required[15] = "canonical_max_difference"
+            required[16] = "kernel_operator_relative_difference"
+            required[17] = "kernel_translation_relative_difference"
+            required[18] = "canonical_cache_entries"
+            required[19] = "canonical_cache_hits"
+            required[20] = "canonical_cache_misses"
+            required[21] = "canonical_cache_bypasses"
+            required[22] = "canonical_integer_hits"
+            required[23] = "canonical_integer_misses"
+            required[24] = "dyadic_root_aligned"
+            required[25] = "pass"
+            for (i = 1; i <= 25; ++i)
                 if (!(required[i] in value)) exit 1
             if (!(value["particles"] > 0 && value["cache_budget_bytes"] > 0 &&
                   value["first_cache_bytes"] <= value["cache_budget_bytes"] &&
                   value["first_cache_entries"] <= value["first_cache_max_entries"] &&
-                  value["first_cache_max_entries"] > 0 &&
                   value["first_cache_misses"] > 0 &&
-                  value["first_cache_bypasses"] == 0 &&
+                  value["first_cache_bypasses"] > 0 &&
                   value["second_cache_hits"] > 0 &&
-                  value["second_cache_bypasses"] == 0 &&
                   value["zero_cache_bytes"] == 0 &&
                   value["zero_cache_entries"] == 0 &&
                   value["zero_cache_misses"] > 0 &&
@@ -1842,8 +1837,6 @@ check_fmm_operator_cache_case() {
                   value["canonical_cache_bypasses"] == 0 &&
                   value["canonical_integer_hits"] == value["canonical_cache_hits"] &&
                   value["canonical_integer_misses"] == value["canonical_cache_misses"] &&
-                  value["reconfigure_preserved"] == 1 &&
-                  value["lru_replacement"] == 1 &&
                   value["dyadic_root_aligned"] == 1 &&
                   finite_number(value["repeated_max_difference"]) &&
                   finite_number(value["fallback_max_difference"]) &&

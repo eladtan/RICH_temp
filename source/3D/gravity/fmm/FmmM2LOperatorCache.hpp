@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <list>
 #include <numeric>
 #include <unordered_map>
 #include <vector>
@@ -37,8 +36,7 @@ public:
 
     void clear()
     {
-        EntryMap().swap(entries_);
-        RecencyList().swap(recency_);
+        std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
         maxEntries_ = 0;
         configuredMaxEntries_ = 0;
         termCount_ = 0;
@@ -73,8 +71,7 @@ public:
            budgetBytes_ == maxBytes)
             return;
 
-        EntryMap().swap(entries_);
-        RecencyList().swap(recency_);
+        std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
         maxEntries_ = budgetMaxEntries;
         configuredMaxEntries_ = budgetMaxEntries;
         termCount_ = termCount;
@@ -84,8 +81,7 @@ public:
             entries_.reserve(reserveEntries);
             if(bytesOwned() > budgetBytes_)
             {
-                EntryMap().swap(entries_);
-                RecencyList().swap(recency_);
+                std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
                 maxEntries_ = 0;
             }
         }
@@ -111,63 +107,54 @@ public:
                 "FmmM2LOperatorCache::get: cache/layout size mismatch");
 
         const CanonicalGeometry geometry = canonicalGeometry(source, target);
-        auto found = entries_.find(geometry.key);
+        const auto found = entries_.find(geometry.key);
         if(found != entries_.end())
         {
-            recency_.splice(recency_.begin(), recency_, found->second.recency);
             ++hits_;
             if(geometry.integerKey)
                 ++integerKeyHits_;
-            return Lookup{&found->second.coefficients, geometry.inverseScale,
+            return Lookup{&found->second, geometry.inverseScale,
                           geometry.integerKey};
         }
 
         ++misses_;
         if(geometry.integerKey)
             ++integerKeyMisses_;
-        FmmKernels::computeM2LOperator(
-            geometry.direction, layout, derivativeScratch, uncachedOperator);
-        if(maxEntries_ == 0)
+        if(entries_.size() < maxEntries_)
         {
+            auto inserted = entries_.emplace(geometry.key, std::vector<double>());
+            if(!inserted.second)
+                throw UniversalError(
+                    "FmmM2LOperatorCache::get: duplicate insertion");
+            FmmKernels::computeM2LOperator(
+                geometry.direction, layout, derivativeScratch,
+                inserted.first->second);
+
+            if(bytesOwned() <= budgetBytes_)
+                return Lookup{&inserted.first->second, geometry.inverseScale,
+                              geometry.integerKey};
+
+            // Preserve the just-computed operator for this translation, remove
+            // it from persistent storage, and stop growing if allocator/hash
+            // overhead has exhausted the byte budget.
+            uncachedOperator.swap(inserted.first->second);
+            entries_.erase(inserted.first);
+            if(bytesOwned() > budgetBytes_)
+            {
+                std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
+                maxEntries_ = 0;
+            }
+            else
+            {
+                maxEntries_ = entries_.size();
+            }
             ++bypasses_;
             return Lookup{&uncachedOperator, geometry.inverseScale,
                           geometry.integerKey};
         }
 
-        if(entries_.size() >= maxEntries_)
-            evictLeastRecent();
-
-        recency_.push_front(geometry.key);
-        auto inserted = entries_.emplace(geometry.key, Entry());
-        if(!inserted.second)
-        {
-            recency_.pop_front();
-            throw UniversalError(
-                "FmmM2LOperatorCache::get: duplicate insertion");
-        }
-        inserted.first->second.recency = recency_.begin();
-        inserted.first->second.coefficients.swap(uncachedOperator);
-
-        if(bytesOwned() <= budgetBytes_)
-            return Lookup{&inserted.first->second.coefficients,
-                          geometry.inverseScale, geometry.integerKey};
-
-        // Preserve the just-computed operator for this translation.  Actual
-        // allocator/hash/list overhead can exceed the conservative estimate,
-        // so shrink the usable entry count rather than violating the byte cap.
-        uncachedOperator.swap(inserted.first->second.coefficients);
-        recency_.erase(inserted.first->second.recency);
-        entries_.erase(inserted.first);
-        if(bytesOwned() > budgetBytes_)
-        {
-            EntryMap().swap(entries_);
-            RecencyList().swap(recency_);
-            maxEntries_ = 0;
-        }
-        else
-        {
-            maxEntries_ = entries_.size();
-        }
+        FmmKernels::computeM2LOperator(
+            geometry.direction, layout, derivativeScratch, uncachedOperator);
         ++bypasses_;
         return Lookup{&uncachedOperator, geometry.inverseScale,
                       geometry.integerKey};
@@ -177,15 +164,14 @@ public:
     {
         const std::size_t mapEntry =
             sizeof(typename EntryMap::value_type) + 2 * sizeof(void*);
-        const std::size_t recencyEntry = sizeof(Key) + 2 * sizeof(void*);
         std::size_t result = entries_.empty() && entries_.bucket_count() <= 1 ?
             0 : saturatingMultiply(entries_.bucket_count(), sizeof(void*));
-        result = saturatingAdd(result, saturatingMultiply(entries_.size(),
-            saturatingAdd(mapEntry, recencyEntry)));
+        result = saturatingAdd(result,
+            saturatingMultiply(entries_.size(), mapEntry));
         for(const auto& entry : entries_)
         {
-            result = saturatingAdd(result, saturatingMultiply(
-                entry.second.coefficients.capacity(), sizeof(double)));
+            result = saturatingAdd(result,
+                saturatingMultiply(entry.second.capacity(), sizeof(double)));
         }
         return result;
     }
@@ -243,29 +229,7 @@ private:
         bool integerKey = false;
     };
 
-    using RecencyList = std::list<Key>;
-
-    struct Entry
-    {
-        std::vector<double> coefficients;
-        RecencyList::iterator recency;
-    };
-
-    using EntryMap = std::unordered_map<Key, Entry, KeyHash>;
-
-    void evictLeastRecent()
-    {
-        if(recency_.empty() || entries_.empty())
-            throw UniversalError(
-                "FmmM2LOperatorCache::get: inconsistent replacement state");
-        const Key victim = recency_.back();
-        const auto found = entries_.find(victim);
-        if(found == entries_.end())
-            throw UniversalError(
-                "FmmM2LOperatorCache::get: missing replacement victim");
-        entries_.erase(found);
-        recency_.pop_back();
-    }
+    using EntryMap = std::unordered_map<Key, std::vector<double>, KeyHash>;
 
     static std::uint64_t unsignedMagnitude(std::int64_t value)
     {
@@ -405,13 +369,11 @@ private:
     {
         const std::size_t mapEntry =
             sizeof(typename EntryMap::value_type) + 4 * sizeof(void*);
-        const std::size_t recencyEntry = sizeof(Key) + 2 * sizeof(void*);
-        return saturatingAdd(saturatingAdd(mapEntry, recencyEntry),
+        return saturatingAdd(mapEntry,
             saturatingMultiply(termCount, sizeof(double)));
     }
 
     EntryMap entries_;
-    RecencyList recency_;
     std::size_t maxEntries_;
     std::size_t configuredMaxEntries_;
     std::size_t termCount_;
