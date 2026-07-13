@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iostream>
@@ -167,6 +168,67 @@ bool checkReconfigurePreservesEntries()
            cache.entries() == retainedEntries && cache.hits() == 1 &&
            cache.misses() == 0 && cache.bypasses() == 0;
 }
+
+bool checkLruReplacement()
+{
+    const FmmTaylorExpansion layout(4);
+    FmmM2LOperatorCache cache;
+    const std::size_t budget = static_cast<std::size_t>(64) * 1024;
+    cache.configure(budget, layout.m2lTerms().size(), 1024);
+    const std::size_t capacity = cache.maxEntries();
+    if(capacity < 3 || capacity > 1024)
+        return false;
+
+    FmmNode source;
+    source.center = Vector3D(0.0, 0.0, 0.0);
+    source.latticeAligned = 1;
+    source.latticeId = 23;
+    source.latticeCenterX = 0;
+    source.latticeCenterY = 0;
+    source.latticeCenterZ = 0;
+
+    std::vector<FmmNode> targets(capacity + 1);
+    for(std::size_t i = 0; i < targets.size(); ++i)
+    {
+        const std::int64_t x = static_cast<std::int64_t>(2 * i + 1);
+        const std::int64_t y = static_cast<std::int64_t>(2 * i + 2);
+        const std::int64_t z = static_cast<std::int64_t>(2 * i + 4);
+        FmmNode& target = targets[i];
+        target.center = Vector3D(0.125 * static_cast<double>(x),
+                                 0.125 * static_cast<double>(y),
+                                 0.125 * static_cast<double>(z));
+        target.latticeAligned = 1;
+        target.latticeId = source.latticeId;
+        target.latticeCenterX = x;
+        target.latticeCenterY = y;
+        target.latticeCenterZ = z;
+    }
+
+    std::vector<double> derivativeScratch;
+    std::vector<double> uncachedOperator;
+    cache.beginPhase();
+    for(std::size_t i = 0; i < capacity; ++i)
+        cache.get(source, targets[i], layout, derivativeScratch,
+                  uncachedOperator);
+    if(cache.entries() != capacity || cache.bypasses() != 0 ||
+       cache.bytesOwned() > budget)
+        return false;
+
+    // Make the original oldest entry most recent, then force one replacement.
+    cache.get(source, targets[0], layout, derivativeScratch, uncachedOperator);
+    cache.get(source, targets[capacity], layout, derivativeScratch,
+              uncachedOperator);
+    if(cache.entries() != capacity || cache.bypasses() != 0 ||
+       cache.bytesOwned() > budget)
+        return false;
+
+    cache.beginPhase();
+    cache.get(source, targets[0], layout, derivativeScratch, uncachedOperator);
+    cache.get(source, targets[1], layout, derivativeScratch, uncachedOperator);
+    return cache.hits() == 1 && cache.misses() == 1 &&
+           cache.bypasses() == 0 && cache.entries() == capacity &&
+           cache.bytesOwned() <= budget;
+}
 }
 
 int main()
@@ -220,15 +282,18 @@ int main()
             checkScaleFreeKernel();
         const bool reconfigurePreserved =
             checkReconfigurePreservesEntries();
+        const bool lruReplacement = checkLruReplacement();
         const bool boundedPass =
             firstStats.m2lCount > 0 &&
             firstStats.localOperatorCacheBytes <= cacheBudget &&
             firstStats.localOperatorCacheEntries <=
                 firstStats.localOperatorCacheMaxEntries &&
+            firstStats.localOperatorCacheMaxEntries > 0 &&
             firstStats.localOperatorCacheMisses > 0 &&
-            firstStats.localOperatorCacheBypasses > 0 &&
+            firstStats.localOperatorCacheBypasses == 0 &&
             secondStats.localOperatorCacheBytes <= cacheBudget &&
-            secondStats.localOperatorCacheHits > 0;
+            secondStats.localOperatorCacheHits > 0 &&
+            secondStats.localOperatorCacheBypasses == 0;
         const bool zeroPass =
             zeroStats.localOperatorCacheBytes == 0 &&
             zeroStats.localOperatorCacheEntries == 0 &&
@@ -272,7 +337,7 @@ int main()
                                    kernelDifferences.first <= 5e-12 &&
                                    kernelDifferences.second <= 5e-12;
         const bool passed = boundedPass && zeroPass && canonicalPass &&
-                            reconfigurePreserved &&
+                            reconfigurePreserved && lruReplacement &&
                             dyadicRootPass && numericalPass;
 
         std::ofstream output("fmm_operator_cache_metrics.txt");
@@ -321,6 +386,7 @@ int main()
                << canonicalStats.localOperatorIntegerKeyMisses << "\n";
         output << "reconfigure_preserved "
                << (reconfigurePreserved ? 1 : 0) << "\n";
+        output << "lru_replacement " << (lruReplacement ? 1 : 0) << "\n";
         output << "dyadic_root_aligned " << (dyadicRootPass ? 1 : 0) << "\n";
         output << "pass " << (passed ? 1 : 0) << "\n";
 
