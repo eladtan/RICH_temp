@@ -3,8 +3,10 @@
 
 #include <array>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 #include "MonteCarloPhysics3D.hpp"
@@ -38,6 +40,8 @@ struct RadiationIMCParameters
     double ddmcInterfaceTargetWeightRatio = 2.0;
     size_t ddmcMaxInterfaceSplits = 64;
     bool ddmcUseMultigroupPGRW = false;
+    size_t ddmcMaxGroupCutoff = ENERGY_GROUPS_NUM;
+    bool ddmcInterfaceDiagnostics = false;
     bool noHydroFeedback = false;
     bool withEgTimeAvg = false;
     bool capAbsorptionOpacity = false;
@@ -87,6 +91,9 @@ struct DDMCFaceLeak
     double boundaryRate = 0.0;
     double ddmcRate = 0.0;
     double transportRate = 0.0;
+    double sourceBandMass = 1.0;
+    double commonBandMass = 1.0;
+    double ddmcFraction = 0.0;
     double area = 0.0;
     double sourceDistanceToFace = 0.0;
     double targetDistanceToFace = 0.0;
@@ -220,8 +227,15 @@ public:
     size_t getDDMCFallbackCount() const override { return this->ddmcFallbackCount; }
 #ifdef RICH_IMC_DDMC_ENABLED
     std::string getAccelerationDebugInfo(size_t cellIndex, double frequency) const override;
+    std::string getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const;
+    std::string getDDMCInterfaceEventDiagnosticsTSV(double xMin,
+                                                     double xMax) const;
 #else
     std::string getAccelerationDebugInfo(size_t, double) const override { return std::string(); }
+    std::string getDDMCFaceDiagnosticsTSV(double, double) const
+        { return std::string(); }
+    std::string getDDMCInterfaceEventDiagnosticsTSV(double, double) const
+        { return std::string(); }
 #endif
 
     Particle generateSingleParticle(size_t cellIndex, const ComputationalCell3D &cell) const override;
@@ -330,6 +344,8 @@ private:
     double ddmcInterfaceTargetWeightRatio;
     size_t ddmcMaxInterfaceSplits;
     bool ddmcUseMultigroupPGRW;
+    size_t ddmcMaxGroupCutoff;
+    bool ddmcInterfaceDiagnostics;
     bool noHydroFeedback;
     bool withEgTimeAvg;
     bool capAbsorptionOpacity;
@@ -423,6 +439,73 @@ private:
     size_t ddmcLeakInvalidGeometryCount = 0;
     size_t ddmcInterfaceBypassCount = 0;
     size_t ddmcDopplerCutoffExitCount = 0;
+
+#ifdef RICH_IMC_DDMC_ENABLED
+    enum class DDMCDiagnosticEventKind : unsigned char
+    {
+        IMCCandidate,
+        IMCFrequencyReject,
+        IMCIncident,
+        IMCAdmitted,
+        IMCReflected,
+        IMCBypass,
+        DDMCToDDMC,
+        DDMCToIMC
+    };
+
+    static constexpr size_t DDMC_DIAGNOSTIC_GREY_GROUP =
+        std::numeric_limits<size_t>::max();
+
+    struct DDMCDiagnosticEventKey
+    {
+        DDMCDiagnosticEventKind kind = DDMCDiagnosticEventKind::IMCCandidate;
+        size_t faceIndex = std::numeric_limits<size_t>::max();
+        size_t sourceCellID = std::numeric_limits<size_t>::max();
+        size_t targetCellID = std::numeric_limits<size_t>::max();
+        size_t group = DDMC_DIAGNOSTIC_GREY_GROUP;
+
+        bool operator<(DDMCDiagnosticEventKey const &other) const
+        {
+            return std::tie(kind, faceIndex, sourceCellID, targetCellID, group) <
+                   std::tie(other.kind, other.faceIndex, other.sourceCellID,
+                            other.targetCellID, other.group);
+        }
+    };
+
+    struct DDMCDiagnosticEventAccumulator
+    {
+        size_t faceIndex = std::numeric_limits<size_t>::max();
+        size_t sourceCellID = std::numeric_limits<size_t>::max();
+        size_t targetCellID = std::numeric_limits<size_t>::max();
+        size_t group = DDMC_DIAGNOSTIC_GREY_GROUP;
+        size_t sourceGroupCutoff = 0;
+        size_t targetGroupCutoff = 0;
+        double faceX = std::numeric_limits<double>::quiet_NaN();
+        double sourceGeneratorX = std::numeric_limits<double>::quiet_NaN();
+        double targetGeneratorX = std::numeric_limits<double>::quiet_NaN();
+        size_t count = 0;
+        double signedEnergy = 0.0;
+        double absoluteEnergy = 0.0;
+        double muSum = 0.0;
+        size_t muCount = 0;
+        double admissionProbabilitySum = 0.0;
+        size_t admissionProbabilityCount = 0;
+    };
+
+    std::map<DDMCDiagnosticEventKey, DDMCDiagnosticEventAccumulator>
+        ddmcDiagnosticEvents;
+
+    void recordDDMCDiagnosticEvent(DDMCDiagnosticEventKind kind,
+                                   size_t sourceCellIndex,
+                                   size_t targetCellIndex,
+                                   size_t faceIndex,
+                                   size_t group,
+                                   double energy,
+                                   size_t sourceGroupCutoff,
+                                   size_t targetGroupCutoff,
+                                   double mu,
+                                   double admissionProbability);
+#endif
 
     std::shared_ptr<SphericalObserver> observer_;
     std::unordered_map<size_t, double> adaptiveSourceScores_;

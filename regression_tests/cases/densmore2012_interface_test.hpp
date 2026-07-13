@@ -41,6 +41,13 @@ namespace densmore2012_interface_test
 {
     namespace fs = std::filesystem;
 
+    struct RunOptions
+    {
+        bool useCenteredInterfaceMesh = false;
+        std::size_t ddmcMaxGroupCutoff = ENERGY_GROUPS_NUM;
+        bool ddmcInterfaceDiagnostics = false;
+    };
+
     class InterfaceOpacity : public OpacityCalculator
     {
     public:
@@ -613,6 +620,20 @@ namespace densmore2012_interface_test
         }
     }
 
+    inline void AppendPrefixedDiagnostics(std::ostream &out,
+                                          std::size_t step,
+                                          double time,
+                                          std::string const &rows)
+    {
+        std::istringstream input(rows);
+        std::string line;
+        while(std::getline(input, line))
+        {
+            if(!line.empty())
+                out << step << '\t' << time << '\t' << line << '\n';
+        }
+    }
+
     inline void ValidateInterfaceFace(Tessellation3D const &grid)
     {
         // In an MPI tessellation each rank stores only its local/ghost subset
@@ -646,7 +667,8 @@ namespace densmore2012_interface_test
     int Run(int argc,
             char **argv,
             std::string const &outputDirectory,
-            std::string const &prefix)
+            std::string const &prefix,
+            RunOptions const &options = RunOptions{})
     {
         MPI_Init(&argc, &argv);
         MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
@@ -658,8 +680,9 @@ namespace densmore2012_interface_test
 
         try
         {
-            constexpr std::size_t Nx =
-                densmore2012_interface_mesh::cellCount;
+            std::size_t const Nx = options.useCenteredInterfaceMesh
+                ? densmore2012_interface_mesh::centeredInterfaceCellCount
+                : densmore2012_interface_mesh::cellCount;
             constexpr std::size_t newPhotonsPerCell = 50;
             constexpr std::size_t maxPhotonsPerCell = 200;
             constexpr bool useRandomWalk = false;
@@ -704,8 +727,11 @@ namespace densmore2012_interface_test
 
             std::vector<Vector3D> points;
             if(rank == 0)
-                points =
-                    densmore2012_interface_mesh::BuildVoronoiSites();
+            {
+                points = options.useCenteredInterfaceMesh
+                    ? densmore2012_interface_mesh::BuildCenteredInterfaceVoronoiSites()
+                    : densmore2012_interface_mesh::BuildVoronoiSites();
+            }
             points = MPI_Spread(points, 0, MPI_COMM_WORLD);
             MPI_Barrier(MPI_COMM_WORLD);
 
@@ -772,6 +798,8 @@ namespace densmore2012_interface_test
                 .withRandomWalk = useRandomWalk,
                 .withDDMC = EnableDDMC,
                 .ddmcUseMultigroupPGRW = EnableDDMC,
+                .ddmcMaxGroupCutoff = options.ddmcMaxGroupCutoff,
+                .ddmcInterfaceDiagnostics = options.ddmcInterfaceDiagnostics,
                 .noHydroFeedback = false,
                 .withEgTimeAvg = true
             };
@@ -810,6 +838,47 @@ namespace densmore2012_interface_test
             simulation.SetTimeStep(dt);
 
             fs::create_directories(outputDirectory);
+            std::ofstream faceHistoryOutput;
+            std::ofstream eventHistoryOutput;
+            if constexpr(EnableDDMC)
+            {
+                if(options.ddmcInterfaceDiagnostics)
+                {
+                    std::ostringstream rankText;
+                    rankText << std::setfill('0') << std::setw(4) << rank;
+                    faceHistoryOutput.open(
+                        fs::path(outputDirectory) /
+                        (prefix + "_rank" + rankText.str() +
+                         "_ddmc_face_history.tsv"));
+                    eventHistoryOutput.open(
+                        fs::path(outputDirectory) /
+                        (prefix + "_rank" + rankText.str() +
+                         "_ddmc_interface_events.tsv"));
+                    faceHistoryOutput << std::setprecision(17);
+                    eventHistoryOutput << std::setprecision(17);
+                    faceHistoryOutput
+                        << "step\ttime_s\tsource_cell_id\ttarget_cell_id"
+                        << "\tface_index\tsource_generator_x_cm"
+                        << "\tsource_cell_cm_x_cm\ttarget_generator_x_cm"
+                        << "\tface_x_cm\tsource_volume_cm3"
+                        << "\tsource_cutoff\ttarget_cutoff"
+                        << "\tsource_eligible\ttarget_eligible"
+                        << "\tsource_sigma_diffusion\ttarget_sigma_diffusion"
+                        << "\tsource_D\ttarget_D\tsource_distance_to_face"
+                        << "\ttarget_distance_to_face\tarea\tconductance"
+                        << "\tinternal_rate\tboundary_rate\tsource_band_mass"
+                        << "\tcommon_band_mass\tddmc_fraction\tddmc_rate"
+                        << "\ttransport_rate\ttotal_rate\n";
+                    eventHistoryOutput
+                        << "step\ttime_s\tkind\tsource_cell_id\ttarget_cell_id"
+                        << "\tface_index\tsource_generator_x_cm"
+                        << "\ttarget_generator_x_cm\tface_x_cm\tgroup"
+                        << "\tsource_cutoff\ttarget_cutoff\tcount"
+                        << "\tsigned_energy\tabsolute_energy\tmu_sum\tmu_count"
+                        << "\tadmission_probability_sum"
+                        << "\tadmission_probability_count\n";
+                }
+            }
             std::ofstream globalOutput;
             std::ofstream historyOutput;
             if(rank == 0)
@@ -827,11 +896,17 @@ namespace densmore2012_interface_test
                     << "Densmore exposed-interface diagnostic ("
                     << (EnableDDMC ? "DDMC" : "pure IMC") << ")"
                     << "\n  cells=" << Nx
-                    << " (100 nominal thin + 200 thick), ranks="
+                    << (options.useCenteredInterfaceMesh
+                        ? " (centered 0.005-cm interface cells), ranks="
+                        : " (100 nominal thin + 200 thick), ranks=")
                     << worldSize
                     << "\n  material face x=2 cm; first thick cell "
                     << "[2,2.005] cm"
                     << "\n  G=" << groupCount
+                    << ", max DDMC cutoff="
+                    << options.ddmcMaxGroupCutoff
+                    << ", interface event diagnostics="
+                    << options.ddmcInterfaceDiagnostics
                     << ", new/cell=" << newPhotonsPerCell
                     << ", max/cell=" << maxPhotonsPerCell
                     << "\n  dt=" << dt
@@ -854,6 +929,23 @@ namespace densmore2012_interface_test
                 simulation.SetTimeStep(dt);
 
                 std::size_t const completedStep = iteration + 1;
+
+                if constexpr(EnableDDMC)
+                {
+                    if(options.ddmcInterfaceDiagnostics)
+                    {
+                        AppendPrefixedDiagnostics(
+                            faceHistoryOutput, completedStep, simulationTime,
+                            physics->getDDMCFaceDiagnosticsTSV(1.90, 2.10));
+                        AppendPrefixedDiagnostics(
+                            eventHistoryOutput, completedStep, simulationTime,
+                            physics->getDDMCInterfaceEventDiagnosticsTSV(
+                                1.90, 2.10));
+                        faceHistoryOutput.flush();
+                        eventHistoryOutput.flush();
+                    }
+                }
+
                 bool const diagnosticStep = completedStep == 1 ||
                     completedStep % 10 == 0 ||
                     completedStep == iterations;

@@ -29,6 +29,10 @@ namespace densmore2012_interface_mesh
     constexpr std::size_t thinCellCount = 100;
     constexpr std::size_t thickCellCount = 200;
     constexpr std::size_t cellCount = thinCellCount + thickCellCount;
+    constexpr std::size_t centeredCoarseCellCount = 95;
+    constexpr std::size_t centeredFineLeftCellCount = 20;
+    constexpr std::size_t centeredInterfaceCellCount =
+        centeredCoarseCellCount + centeredFineLeftCellCount + thickCellCount;
 
     inline std::vector<Vector3D> BuildVoronoiSites()
     {
@@ -88,6 +92,56 @@ namespace densmore2012_interface_mesh
                 "Densmore interface mesh has the wrong first thick-cell width");
         }
 
+        return points;
+    }
+
+    inline std::vector<Vector3D> BuildCenteredInterfaceVoronoiSites()
+    {
+        // Preserve the 0.02-cm thin-side mesh through x=1.9, then use the same
+        // 0.005-cm spacing on both sides of the material interface.  This moves
+        // the unavoidable coarse/fine Voronoi distortion to x approximately
+        // 1.89625, while the two cells touching x=2 are exactly centered and
+        // both have width 0.005 cm.
+        std::vector<Vector3D> points;
+        points.reserve(centeredInterfaceCellCount);
+
+        for(std::size_t i = 0; i < centeredCoarseCellCount; ++i)
+        {
+            double const x = (static_cast<double>(i) + 0.5) * thinCellWidth;
+            points.emplace_back(x, 0.0, 0.0);
+        }
+        for(std::size_t i = 0; i < centeredFineLeftCellCount; ++i)
+        {
+            double const x = 1.9 +
+                (static_cast<double>(i) + 0.5) * thickCellWidth;
+            points.emplace_back(x, 0.0, 0.0);
+        }
+        for(std::size_t i = 0; i < thickCellCount; ++i)
+        {
+            double const x = interfacePosition +
+                (static_cast<double>(i) + 0.5) * thickCellWidth;
+            points.emplace_back(x, 0.0, 0.0);
+        }
+
+        if(points.size() != centeredInterfaceCellCount)
+            throw std::runtime_error(
+                "Centered Densmore diagnostic mesh has wrong point count");
+
+        std::size_t const firstThick =
+            centeredCoarseCellCount + centeredFineLeftCellCount;
+        double const interfaceFace = 0.5 *
+            (points[firstThick - 1].x + points[firstThick].x);
+        double const leftInterfaceFace = 0.5 *
+            (points[firstThick - 2].x + points[firstThick - 1].x);
+        double const rightInterfaceFace = 0.5 *
+            (points[firstThick].x + points[firstThick + 1].x);
+        if(std::abs(interfaceFace - interfacePosition) > 1e-14 ||
+           std::abs(leftInterfaceFace - (interfacePosition - thickCellWidth)) >
+               1e-14 ||
+           std::abs(rightInterfaceFace -
+                    (interfacePosition + thickCellWidth)) > 1e-14)
+            throw std::runtime_error(
+                "Centered Densmore diagnostic mesh has wrong interface cells");
         return points;
     }
 }

@@ -256,6 +256,7 @@ void RadiationIMC::precomputeDDMCData()
     this->ddmcLeakInvalidGeometryCount = 0;
     this->ddmcInterfaceBypassCount = 0;
     this->ddmcDopplerCutoffExitCount = 0;
+    this->ddmcDiagnosticEvents.clear();
 
     for(size_t i = 0; i < Ncells; ++i)
     {
@@ -323,6 +324,8 @@ void RadiationIMC::precomputeDDMCData()
             double sumBgOverSigTDiff = 0.0;
             size_t cutoff = 0;
             bool foundNonDiffusive = false;
+            size_t const cutoffLimit = std::min(
+                this->ddmcMaxGroupCutoff, static_cast<size_t>(ENERGY_GROUPS_NUM));
 
             for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
             {
@@ -333,6 +336,12 @@ void RadiationIMC::precomputeDDMCData()
                 double const sigT_g = sigA_g + scatOp;
 
                 totalSigABgAll += sigA_g * Bg;
+
+                if(g >= cutoffLimit)
+                {
+                    foundNonDiffusive = true;
+                    continue;
+                }
 
                 if(!foundNonDiffusive && sigT_g * meanChordLength >= this->ddmcMinCellOpticalDepth)
                 {
@@ -598,6 +607,9 @@ void RadiationIMC::precomputeDDMCData()
                 faceLeak.boundaryRate = boundaryRate;
                 faceLeak.ddmcRate = ddmcRate;
                 faceLeak.transportRate = transportRate;
+                faceLeak.sourceBandMass = sourceBandMass;
+                faceLeak.commonBandMass = ddmcFraction * sourceBandMass;
+                faceLeak.ddmcFraction = ddmcFraction;
                 faceLeak.area = area;
                 faceLeak.sourceDistanceToFace = sourceDistanceToFace;
                 faceLeak.targetDistanceToFace = targetDistanceToFace;
@@ -657,6 +669,206 @@ void RadiationIMC::precomputeDDMCData()
             ++this->ddmcLeakReciprocityCheckCount;
         }
     }
+}
+
+void RadiationIMC::recordDDMCDiagnosticEvent(
+    DDMCDiagnosticEventKind kind,
+    size_t sourceCellIndex,
+    size_t targetCellIndex,
+    size_t faceIndex,
+    size_t group,
+    double energy,
+    size_t sourceGroupCutoff,
+    size_t targetGroupCutoff,
+    double mu,
+    double admissionProbability)
+{
+    if(!this->ddmcInterfaceDiagnostics)
+        return;
+
+    auto pointID = [this](size_t index) {
+        if(index < this->ddmcPointCellID.size())
+            return this->ddmcPointCellID[index];
+        if(index < this->cells.size())
+            return this->cells[index].ID;
+        return std::numeric_limits<size_t>::max();
+    };
+    auto pointX = [this](size_t index) {
+        if(index < this->grid.getMeshPoints().size())
+            return this->grid.GetMeshPoint(index).x;
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    size_t const sourceCellID = pointID(sourceCellIndex);
+    size_t const targetCellID = pointID(targetCellIndex);
+    DDMCDiagnosticEventKey const key{
+        kind, faceIndex, sourceCellID, targetCellID, group};
+    auto inserted = this->ddmcDiagnosticEvents.emplace(
+        key, DDMCDiagnosticEventAccumulator{});
+    DDMCDiagnosticEventAccumulator &entry = inserted.first->second;
+    if(inserted.second)
+    {
+        entry.faceIndex = faceIndex;
+        entry.sourceCellID = sourceCellID;
+        entry.targetCellID = targetCellID;
+        entry.group = group;
+        entry.sourceGroupCutoff = sourceGroupCutoff;
+        entry.targetGroupCutoff = targetGroupCutoff;
+        entry.faceX = this->grid.FaceCM(faceIndex).x;
+        entry.sourceGeneratorX = pointX(sourceCellIndex);
+        entry.targetGeneratorX = pointX(targetCellIndex);
+    }
+
+    ++entry.count;
+    if(std::isfinite(energy))
+    {
+        entry.signedEnergy += energy;
+        entry.absoluteEnergy += std::abs(energy);
+    }
+    if(std::isfinite(mu))
+    {
+        entry.muSum += mu;
+        ++entry.muCount;
+    }
+    if(std::isfinite(admissionProbability))
+    {
+        entry.admissionProbabilitySum += admissionProbability;
+        ++entry.admissionProbabilityCount;
+    }
+}
+
+std::string RadiationIMC::getDDMCFaceDiagnosticsTSV(double xMin,
+                                                     double xMax) const
+{
+    std::ostringstream os;
+    os.precision(17);
+    if(!this->withDDMC || !this->ddmcInterfaceDiagnostics)
+        return os.str();
+
+    for(size_t i = 0; i < this->ddmcCellData.size(); ++i)
+    {
+        DDMCCellData const &data = this->ddmcCellData[i];
+        size_t const sourceID = i < this->ddmcPointCellID.size()
+            ? this->ddmcPointCellID[i] : this->cells[i].ID;
+        double const sourceGeneratorX = this->grid.GetMeshPoint(i).x;
+        double const sourceCellCMX = this->grid.GetCellCM(i).x;
+        double const volume = this->grid.GetVolume(i);
+        for(DDMCFaceLeak const &face : data.faceLeaks)
+        {
+            double const faceX = this->grid.FaceCM(face.faceIndex).x;
+            if(faceX < xMin || faceX > xMax)
+                continue;
+
+            size_t const target = face.nextCellIndex;
+            size_t const targetID = target < this->ddmcPointCellID.size()
+                ? this->ddmcPointCellID[target]
+                : std::numeric_limits<size_t>::max();
+            double const targetGeneratorX =
+                target < this->grid.getMeshPoints().size()
+                ? this->grid.GetMeshPoint(target).x
+                : std::numeric_limits<double>::quiet_NaN();
+            int const targetEligible = target < this->ddmcPointEligible.size()
+                ? this->ddmcPointEligible[target] : 0;
+            double const targetSigma =
+                target < this->ddmcPointSigmaDiffusion.size()
+                ? this->ddmcPointSigmaDiffusion[target] : 0.0;
+            double const targetD =
+                target < this->ddmcPointDiffusionCoefficient.size()
+                ? this->ddmcPointDiffusionCoefficient[target] : 0.0;
+
+            os << sourceID << '\t' << targetID
+               << '\t' << face.faceIndex
+               << '\t' << sourceGeneratorX
+               << '\t' << sourceCellCMX
+               << '\t' << targetGeneratorX
+               << '\t' << faceX
+               << '\t' << volume
+               << '\t' << data.groupCutoff
+               << '\t' << face.targetGroupCutoff
+               << '\t' << data.eligible
+               << '\t' << targetEligible
+               << '\t' << data.sigmaDiffusion
+               << '\t' << targetSigma
+               << '\t' << data.diffusionCoefficient
+               << '\t' << targetD
+               << '\t' << face.sourceDistanceToFace
+               << '\t' << face.targetDistanceToFace
+               << '\t' << face.area
+               << '\t' << face.conductance
+               << '\t' << face.internalRate
+               << '\t' << face.boundaryRate
+               << '\t' << face.sourceBandMass
+               << '\t' << face.commonBandMass
+               << '\t' << face.ddmcFraction
+               << '\t' << face.ddmcRate
+               << '\t' << face.transportRate
+               << '\t' << face.rate
+               << '\n';
+        }
+    }
+    return os.str();
+}
+
+std::string RadiationIMC::getDDMCInterfaceEventDiagnosticsTSV(
+    double xMin, double xMax) const
+{
+    std::ostringstream os;
+    os.precision(17);
+    if(!this->withDDMC || !this->ddmcInterfaceDiagnostics)
+        return os.str();
+
+    auto eventName = [](DDMCDiagnosticEventKind kind) {
+        switch(kind)
+        {
+            case DDMCDiagnosticEventKind::IMCCandidate:
+                return "imc_candidate";
+            case DDMCDiagnosticEventKind::IMCFrequencyReject:
+                return "imc_frequency_reject";
+            case DDMCDiagnosticEventKind::IMCIncident:
+                return "imc_incident";
+            case DDMCDiagnosticEventKind::IMCAdmitted:
+                return "imc_admitted";
+            case DDMCDiagnosticEventKind::IMCReflected:
+                return "imc_reflected";
+            case DDMCDiagnosticEventKind::IMCBypass:
+                return "imc_bypass";
+            case DDMCDiagnosticEventKind::DDMCToDDMC:
+                return "ddmc_to_ddmc";
+            case DDMCDiagnosticEventKind::DDMCToIMC:
+                return "ddmc_to_imc";
+        }
+        return "unknown";
+    };
+
+    for(auto const &item : this->ddmcDiagnosticEvents)
+    {
+        DDMCDiagnosticEventKey const &key = item.first;
+        DDMCDiagnosticEventAccumulator const &entry = item.second;
+        if(entry.faceX < xMin || entry.faceX > xMax)
+            continue;
+        long long const outputGroup =
+            key.group == DDMC_DIAGNOSTIC_GREY_GROUP
+            ? -1LL : static_cast<long long>(key.group);
+        os << eventName(key.kind)
+           << '\t' << entry.sourceCellID
+           << '\t' << entry.targetCellID
+           << '\t' << entry.faceIndex
+           << '\t' << entry.sourceGeneratorX
+           << '\t' << entry.targetGeneratorX
+           << '\t' << entry.faceX
+           << '\t' << outputGroup
+           << '\t' << entry.sourceGroupCutoff
+           << '\t' << entry.targetGroupCutoff
+           << '\t' << entry.count
+           << '\t' << entry.signedEnergy
+           << '\t' << entry.absoluteEnergy
+           << '\t' << entry.muSum
+           << '\t' << entry.muCount
+           << '\t' << entry.admissionProbabilitySum
+           << '\t' << entry.admissionProbabilityCount
+           << '\n';
+    }
+    return os.str();
 }
 
 bool RadiationIMC::tryIMCToDDMCInterface(
@@ -725,11 +937,32 @@ bool RadiationIMC::tryIMCToDDMCInterface(
     }
     if(this->multigroupOpacity)
         ClampFrequencyToBoundsDDMC(targetComoving.frequency);
+    size_t const sourceGroupCutoff =
+        sourceCellIndex < this->ddmcPointGroupCutoff.size()
+        ? this->ddmcPointGroupCutoff[sourceCellIndex] : 0;
+    size_t const targetGroupCutoff =
+        this->ddmcPointGroupCutoff[targetCellIndex];
+    size_t const diagnosticGroup = this->opacity->findGroup(
+        targetComoving.frequency);
+    this->recordDDMCDiagnosticEvent(
+        DDMCDiagnosticEventKind::IMCCandidate,
+        sourceCellIndex, targetCellIndex, faceIndex, diagnosticGroup,
+        faceComoving.weight, sourceGroupCutoff, targetGroupCutoff,
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN());
     if(!FrequencyFitsDDMCPoint(usePGRW,
             this->ddmcPointEligible[targetCellIndex],
-            this->ddmcPointGroupCutoff[targetCellIndex],
+            targetGroupCutoff,
             targetComoving.frequency))
+    {
+        this->recordDDMCDiagnosticEvent(
+            DDMCDiagnosticEventKind::IMCFrequencyReject,
+            sourceCellIndex, targetCellIndex, faceIndex, diagnosticGroup,
+            faceComoving.weight, sourceGroupCutoff, targetGroupCutoff,
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN());
         return false;
+    }
 
     double const speed = abs(faceComoving.velocity);
     if(!(speed > 0.0) || !std::isfinite(speed))
@@ -745,6 +978,11 @@ bool RadiationIMC::tryIMCToDDMCInterface(
     double const sigmaTransport = this->ddmcPointSigmaDiffusion[targetCellIndex];
 
     auto bypassInterfaceAsIMC = [&]() -> bool {
+        this->recordDDMCDiagnosticEvent(
+            DDMCDiagnosticEventKind::IMCBypass, sourceCellIndex,
+            targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+            sourceGroupCutoff, targetGroupCutoff, mu,
+            std::numeric_limits<double>::quiet_NaN());
         particle.ddmcMode = false;
         particle.ddmcCellResident = false;
         particle.ddmcComovingFrame = false;
@@ -799,6 +1037,11 @@ bool RadiationIMC::tryIMCToDDMCInterface(
         DDMCWollaeger::StaticAdmissionProbability(
             mu, sigmaTransport, ddmcDistance);
 
+    this->recordDDMCDiagnosticEvent(
+        DDMCDiagnosticEventKind::IMCIncident, sourceCellIndex,
+        targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+        sourceGroupCutoff, targetGroupCutoff, mu, admissionProbability);
+
     if(this->dist(this->re) > admissionProbability)
     {
         // Standard diffuse-albedo rejection.  The reflected packet remains
@@ -818,6 +1061,11 @@ bool RadiationIMC::tryIMCToDDMCInterface(
         particle.ddmcBypassCellID = std::numeric_limits<size_t>::max();
         functionality.change = MonteCarloParticleStatus::NO_CELL_MOVE;
         ++this->ddmcInterfaceReflectionCount;
+        this->recordDDMCDiagnosticEvent(
+            DDMCDiagnosticEventKind::IMCReflected, sourceCellIndex,
+            targetCellIndex, faceIndex, diagnosticGroup, faceComoving.weight,
+            sourceGroupCutoff, targetGroupCutoff, mu,
+            admissionProbability);
         return true;
     }
 
@@ -884,6 +1132,11 @@ bool RadiationIMC::tryIMCToDDMCInterface(
     functionality.change = MonteCarloParticleStatus::CELL_MOVE;
     functionality.nextCellIndex = targetCellIndex;
     ++this->ddmcInterfaceAdmissionCount;
+    this->recordDDMCDiagnosticEvent(
+        DDMCDiagnosticEventKind::IMCAdmitted, sourceCellIndex,
+        targetCellIndex, faceIndex, diagnosticGroup, admittedTargetWeight,
+        sourceGroupCutoff, targetGroupCutoff, mu,
+        admissionProbability);
     return true;
 }
 
@@ -1818,6 +2071,13 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
         if(localDDMCNeighbor)
         {
+            this->recordDDMCDiagnosticEvent(
+                DDMCDiagnosticEventKind::DDMCToDDMC, cellIndex,
+                chosen->nextCellIndex, chosen->faceIndex,
+                DDMC_DIAGNOSTIC_GREY_GROUP, materialParticle.weight,
+                data.groupCutoff, chosen->targetGroupCutoff,
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN());
             this->tallyDDMCFaceFlux(cellIndex, *chosen, materialParticle.weight,
                                     nOut, true);
             materialParticle = targetMaterialParticle;
@@ -1834,6 +2094,13 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
         if(remoteDDMCNeighbor)
         {
+            this->recordDDMCDiagnosticEvent(
+                DDMCDiagnosticEventKind::DDMCToDDMC, cellIndex,
+                chosen->nextCellIndex, chosen->faceIndex,
+                DDMC_DIAGNOSTIC_GREY_GROUP, materialParticle.weight,
+                data.groupCutoff, chosen->targetGroupCutoff,
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::quiet_NaN());
             this->tallyDDMCFaceFlux(cellIndex, *chosen, materialParticle.weight,
                                     nOut, true);
             setParticleCellIdentity(materialParticle, chosen->nextCellIndex);
@@ -1897,6 +2164,15 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
         assert(ScalarProd(materialParticle.velocity, nOut) > 0.0);
 
+        size_t const emittedGroup = this->opacity->findGroup(
+            materialParticle.frequency);
+        this->recordDDMCDiagnosticEvent(
+            DDMCDiagnosticEventKind::DDMCToIMC, cellIndex,
+            chosen->nextCellIndex, chosen->faceIndex, emittedGroup,
+            materialParticle.weight, data.groupCutoff,
+            chosen->targetGroupCutoff,
+            std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::quiet_NaN());
         this->tallyDDMCFaceFlux(cellIndex, *chosen, materialParticle.weight,
                                 nOut, false);
 

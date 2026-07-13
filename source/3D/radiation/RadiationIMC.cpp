@@ -1085,7 +1085,7 @@ namespace {
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcUseMovingInterfaceCorrection(parameters.ddmcUseMovingInterfaceCorrection), ddmcMaxInterfaceVelocityOverC(parameters.ddmcMaxInterfaceVelocityOverC), ddmcInterfaceTargetWeightRatio(parameters.ddmcInterfaceTargetWeightRatio), ddmcMaxInterfaceSplits(parameters.ddmcMaxInterfaceSplits), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcUseMovingInterfaceCorrection(parameters.ddmcUseMovingInterfaceCorrection), ddmcMaxInterfaceVelocityOverC(parameters.ddmcMaxInterfaceVelocityOverC), ddmcInterfaceTargetWeightRatio(parameters.ddmcInterfaceTargetWeightRatio), ddmcMaxInterfaceSplits(parameters.ddmcMaxInterfaceSplits), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), ddmcMaxGroupCutoff(parameters.ddmcMaxGroupCutoff), ddmcInterfaceDiagnostics(parameters.ddmcInterfaceDiagnostics), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
 {
     if(postProcess_.enabled || postProcess_.polarization.enabled)
     {
@@ -1143,6 +1143,10 @@ namespace {
             throw UniversalError("RadiationIMC: DDMC interface target-weight ratio must be positive and finite");
         if(this->ddmcMaxInterfaceSplits == 0)
             throw UniversalError("RadiationIMC: DDMC maximum interface split count must be nonzero");
+        if(this->ddmcMaxGroupCutoff == 0 ||
+           this->ddmcMaxGroupCutoff > ENERGY_GROUPS_NUM)
+            throw UniversalError(
+                "RadiationIMC: DDMC maximum group cutoff must lie in [1, ENERGY_GROUPS_NUM]");
     }
     if(this->withCompton && this->withRandomWalk)
     {
@@ -4480,11 +4484,8 @@ std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &paramet
     {
         os << "\t" << "DDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << std::endl;
         os << "\t" << "DDMC multigroup PGRW: " << parameters.ddmcUseMultigroupPGRW << std::endl;
-    }
-    if(parameters.withDDMC)
-    {
-        os << "\t" << "DDMC min cell optical depth: " << parameters.ddmcMinCellOpticalDepth << std::endl;
-        os << "\t" << "DDMC multigroup PGRW cutoff: " << parameters.ddmcUseMultigroupPGRW << std::endl;
+        os << "\t" << "DDMC maximum group cutoff: " << parameters.ddmcMaxGroupCutoff << std::endl;
+        os << "\t" << "DDMC interface diagnostics: " << parameters.ddmcInterfaceDiagnostics << std::endl;
     }
     os << "\t" << "no hydro feedback: " << parameters.noHydroFeedback << std::endl;
     if(parameters.postProcess.enabled)
