@@ -615,19 +615,29 @@ namespace densmore2012_interface_test
 
     inline void ValidateInterfaceFace(Tessellation3D const &grid)
     {
-        double closest = std::numeric_limits<double>::infinity();
+        // In an MPI tessellation each rank stores only its local/ghost subset
+        // of the global faces. Therefore most ranks are not expected to own
+        // the material interface at x=2. Validate the global minimum face
+        // displacement rather than requiring every rank to contain that face.
+        double localClosest = std::numeric_limits<double>::infinity();
         for(std::size_t faceIndex = 0;
             faceIndex < grid.GetTotalFacesNumber(); ++faceIndex)
         {
-            closest = std::min(closest,
+            localClosest = std::min(
+                localClosest,
                 std::abs(grid.FaceCM(faceIndex).x -
                          densmore2012_interface_mesh::interfacePosition));
         }
-        if(closest > 1e-12)
+
+        double globalClosest = std::numeric_limits<double>::infinity();
+        MPI_Allreduce(&localClosest, &globalClosest, 1, MPI_DOUBLE, MPI_MIN,
+                      MPI_COMM_WORLD);
+
+        if(globalClosest > 1e-12)
         {
             UniversalError error(
                 "Densmore interface diagnostic mesh missed x=2 face");
-            error.addEntry("Closest face displacement", closest);
+            error.addEntry("Global closest face displacement", globalClosest);
             throw error;
         }
     }
