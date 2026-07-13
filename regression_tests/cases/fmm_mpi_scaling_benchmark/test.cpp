@@ -58,8 +58,8 @@ struct ProbeReference
     std::array<double, kProbeCount> forceScale{};
 };
 
-constexpr std::size_t kFmmTimingMetricCount = 10;
-constexpr std::size_t kFmmWorkMetricCount = 12;
+constexpr std::size_t kFmmTimingMetricCount = 14;
+constexpr std::size_t kFmmWorkMetricCount = 18;
 
 const std::array<const char*, kFmmTimingMetricCount> kFmmTimingMetricNames = {{
     "build_seconds",
@@ -68,7 +68,11 @@ const std::array<const char*, kFmmTimingMetricCount> kFmmTimingMetricNames = {{
     "process_interaction_seconds",
     "process_downward_seconds",
     "let_plan_seconds",
+    "let_execute_seconds",
     "let_exchange_seconds",
+    "let_m2l_seconds",
+    "let_p2p_seconds",
+    "local_traversal_seconds",
     "interaction_seconds",
     "downward_seconds",
     "total_seconds"
@@ -86,7 +90,13 @@ const std::array<const char*, kFmmWorkMetricCount> kFmmWorkMetricNames = {{
     "bytes_sent",
     "bytes_received",
     "peak_remote_bytes",
-    "peak_process_bytes"
+    "peak_process_bytes",
+    "local_cache_hits",
+    "local_cache_misses",
+    "local_cache_bypasses",
+    "let_cache_hits",
+    "let_cache_misses",
+    "let_cache_bypasses"
 }};
 
 struct RankMetricSummary
@@ -553,7 +563,11 @@ void accumulateFmmProfile(const FmmSolveStats& stats,
         stats.processInteractionSeconds,
         stats.processDownwardSeconds,
         stats.letPlanSeconds,
+        stats.letExecuteSeconds,
         stats.letExchangeSeconds,
+        stats.letM2LSeconds,
+        stats.letP2PSeconds,
+        stats.localTraversalSeconds,
         stats.interactionSeconds,
         stats.downwardSeconds,
         stats.totalSeconds
@@ -596,7 +610,13 @@ void accumulateFmmProfile(const FmmSolveStats& stats,
         static_cast<unsigned long long>(stats.bytesSent),
         static_cast<unsigned long long>(stats.bytesReceived),
         static_cast<unsigned long long>(stats.peakRemoteBytes),
-        static_cast<unsigned long long>(stats.peakProcessBytes)
+        static_cast<unsigned long long>(stats.peakProcessBytes),
+        static_cast<unsigned long long>(stats.localOperatorCacheHits),
+        static_cast<unsigned long long>(stats.localOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.localOperatorCacheBypasses),
+        static_cast<unsigned long long>(stats.letOperatorCacheHits),
+        static_cast<unsigned long long>(stats.letOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.letOperatorCacheBypasses)
     }};
     std::array<unsigned long long, kFmmWorkMetricCount> minimumWork{};
     std::array<unsigned long long, kFmmWorkMetricCount> summedWork{};

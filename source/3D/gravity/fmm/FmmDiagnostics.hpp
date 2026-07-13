@@ -86,7 +86,11 @@ struct FmmSolveStats
     double processInteractionSeconds = 0;
     double processDownwardSeconds = 0;
     double letPlanSeconds = 0;
+    double letExecuteSeconds = 0;
     double letExchangeSeconds = 0;
+    double letM2LSeconds = 0;
+    double letP2PSeconds = 0;
+    double localTraversalSeconds = 0;
 };
 
 #endif // FMM_DIAGNOSTICS_HPP

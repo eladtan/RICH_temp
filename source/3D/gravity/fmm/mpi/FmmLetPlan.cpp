@@ -1133,6 +1133,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     derivativeScratch.reserve(layout.coefficientCount());
     std::vector<double> uncachedOperator;
     uncachedOperator.reserve(layout.m2lTerms().size());
+    const Clock::time_point m2lStart = Clock::now();
     for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
     {
         const auto descriptorRank = remoteDescriptors_.find(interaction.sourceRank);
@@ -1180,7 +1181,9 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     stats.letOperatorCacheBypasses = operatorCache.bypasses();
     stats.letOperatorIntegerKeyHits = operatorCache.integerKeyHits();
     stats.letOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
+    stats.letM2LSeconds += elapsed(m2lStart);
 
+    const Clock::time_point p2pStart = Clock::now();
     for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
     {
         const RemoteParticlePayload* particlePayload = findPayload(
@@ -1226,6 +1229,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         ++stats.p2pBlockCount;
         ++stats.letP2PBlockCount;
     }
+    stats.letP2PSeconds += elapsed(p2pStart);
 }
 
 #endif // RICH_MPI

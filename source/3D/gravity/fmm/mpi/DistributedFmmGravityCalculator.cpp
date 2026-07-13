@@ -837,14 +837,17 @@ void DistributedFmmGravityCalculator::solve(
     std::vector<double>().swap(translatedProcessLocal);
 
     const Clock::time_point interactionStart = Clock::now();
+    const Clock::time_point letExecuteStart = Clock::now();
     letPlan_.execute(localTree_, positions, masses, cellIds, layout,
                      localMultipoles_, localLocals_, acceleration,
                      positiveKernelPotential, operatorCache_,
                      distributedOptions_.maxRemoteBytes,
                      options_.maxOperatorCacheBytes, stats_);
+    stats_.letExecuteSeconds = elapsed(letExecuteStart);
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
 
+    const Clock::time_point localTraversalStart = Clock::now();
     if(!localTree_.nodes().empty())
     {
         FmmDualTreeTraversal::run(localTree_, localTree_, positions, positions,
@@ -853,6 +856,7 @@ void DistributedFmmGravityCalculator::solve(
                                   positiveKernelPotential, operatorCache_,
                                   options_.maxOperatorCacheBytes, stats_);
     }
+    stats_.localTraversalSeconds = elapsed(localTraversalStart);
     stats_.interactionSeconds = elapsed(interactionStart);
 
     const Clock::time_point downwardStart = Clock::now();
