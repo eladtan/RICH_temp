@@ -6,26 +6,17 @@ cd "${ROOT}"
 
 CONFIG="${CONFIG:-intelReleaseMPI}"
 NP="${NP:-32}"
-GROUPS="${GROUPS:-30}"
+D12_ENERGY_GROUPS=30
 PARTITION="${PARTITION:-bigrun}"
 SLURM_TIME="${SLURM_TIME:-30}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-71500}"
 RESUME="${RESUME:-1}"
 
-# The cutoff17 cases mean group 17 of the original 30-group discretization.
-# With another compile-time group count, especially 1100, cutoff 17 represents
-# a completely different energy and creates an extremely expensive IMC band.
-if [[ "${GROUPS}" != "30" ]]; then
-    echo "This debug matrix requires GROUPS=30; got GROUPS=${GROUPS}." >&2
-    echo "The cutoff17 ablation is an index-based 30-group experiment." >&2
-    exit 2
-fi
-
 if command -v ml >/dev/null 2>&1; then
     ml openmpi/4.1.6/Intel/OneApi/2024.2.1
 fi
 
-BINARY_DIR="${ROOT}/.densmore2012_interface_bins/${CONFIG}_g${GROUPS}"
+BINARY_DIR="${ROOT}/.densmore2012_interface_bins/${CONFIG}_g${D12_ENERGY_GROUPS}"
 mkdir -p "${BINARY_DIR}"
 
 EXPOSED_MC="regression_tests/cases/desmore2012_interface_mc"
@@ -68,7 +59,7 @@ case_complete() {
     [[ "${rows}" == "${expected_rows}" ]] || return 1
 
     [[ -s "${case_dir}/run.stdout.log" ]] || return 1
-    grep -q "G=${GROUPS}" "${case_dir}/run.stdout.log" || return 1
+    grep -q "G=${D12_ENERGY_GROUPS}" "${case_dir}/run.stdout.log" || return 1
     grep -q "new/cell=25" "${case_dir}/run.stdout.log" || return 1
     grep -q "max/cell=100" "${case_dir}/run.stdout.log" || return 1
 
@@ -107,7 +98,7 @@ build_case_binary() {
     echo "=== Building ${prefix} ==="
     ./build_rich.sh "${CONFIG}" \
         --test_name="${case_dir}" \
-        --energy_groups_num="${GROUPS}"
+        --energy_groups_num="${D12_ENERGY_GROUPS}"
 
     cp -L "./build/${CONFIG}/rich" "${binary}"
     chmod +x "${binary}"
@@ -139,7 +130,7 @@ for i in "${!CASE_DIRS[@]}"; do
 
     if [[ "${RESUME}" == "1" ]] && \
        case_complete "${case_dir}" "${prefix}" "${expected_rows}" "${has_events}"; then
-        echo "=== Reusing ${prefix} (${expected_rows} cells, G=${GROUPS}) ==="
+        echo "=== Reusing ${prefix} (${expected_rows} cells, G=${D12_ENERGY_GROUPS}) ==="
         continue
     fi
 
