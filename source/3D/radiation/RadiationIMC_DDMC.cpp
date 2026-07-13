@@ -1571,7 +1571,9 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             if(this->multigroupOpacity)
                 ClampFrequencyToBoundsDDMC(particle.frequency);
         }
-        particle.initialWeight = std::abs(particle.weight);
+        double const transportReferenceWeight = std::abs(particle.weight);
+        if(transportReferenceWeight > 0.0)
+            particle.initialWeight = transportReferenceWeight;
     };
 
     DDMCCellData const &data = this->ddmcCellData[cellIndex];
@@ -1837,7 +1839,10 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.frequency = transportParticle.frequency;
         particle.weight    = transportParticle.weight;
         setParticleCellIdentity(particle, transportParticle.cellIndex);
-        particle.initialWeight = std::abs(transportParticle.weight);
+        double const transportReferenceWeight =
+            std::abs(transportParticle.weight);
+        if(transportReferenceWeight > 0.0)
+            particle.initialWeight = transportReferenceWeight;
         particle.timeLeft  = transportParticle.timeLeft;
         particle.ddmcMode = false;
         particle.ddmcCellResident = false;
@@ -1920,8 +1925,12 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     double const lowWeightCutoff = this->postProcess_.enabled ? 1e-8 : 1e-3;
     double const initialCoWeight = materialParticle.initialWeight;
+    double const absoluteCoWeight = std::abs(materialParticle.weight);
+    double const referenceCoWeight = std::abs(initialCoWeight);
 
-    if(std::abs(materialParticle.weight) < std::abs(initialCoWeight) * lowWeightCutoff)
+    if(absoluteCoWeight == 0.0 ||
+       (referenceCoWeight > 0.0 &&
+        absoluteCoWeight <= referenceCoWeight * lowWeightCutoff))
     {
         removeParticle = true;
 

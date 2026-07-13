@@ -1267,6 +1267,30 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 {
     Functionality functionality;
 
+    // A zero-weight packet carries no energy, but all geometric and opacity
+    // event rates remain finite.  If initialWeight is also zero, the old
+    // relative cutoff `abs(weight) < initialWeight * eps` is false (0 < 0),
+    // allowing an energy-free packet to scatter forever in an optically thick
+    // cell.  Remove it before DDMC admission/fallback or IMC event sampling.
+    double const absoluteWeight = std::abs(particle.weight);
+    double const absoluteInitialWeight = std::abs(particle.initialWeight);
+    if(!std::isfinite(absoluteWeight) ||
+       !std::isfinite(absoluteInitialWeight))
+    {
+        UniversalError eo("Non-finite Monte Carlo particle weight");
+        eo.addEntry("Particle", particle);
+        eo.addEntry("Weight", particle.weight);
+        eo.addEntry("Initial weight", particle.initialWeight);
+        throw eo;
+    }
+    if(absoluteWeight == 0.0)
+    {
+        functionality.change = MonteCarloParticleStatus::REMOVE;
+        return functionality;
+    }
+    if(!(absoluteInitialWeight > 0.0))
+        particle.initialWeight = absoluteWeight;
+
     size_t constexpr noBypassCell = std::numeric_limits<size_t>::max();
     if(particle.ddmcBypassCellID != noBypassCell &&
        particle.ddmcBypassCellID != particle.cellID)
@@ -1455,7 +1479,10 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
     }
 
     double low_energy_threshold = postProcess_.enabled ? 1e-8 : 1e-3;
-    bool lowWeight = std::abs(particle.weight) < particle.initialWeight * low_energy_threshold;
+    double const referenceWeight = std::abs(particle.initialWeight);
+    bool const lowWeight = std::abs(particle.weight) == 0.0 ||
+        (referenceWeight > 0.0 &&
+         std::abs(particle.weight) <= referenceWeight * low_energy_threshold);
 
     if (postProcess_.enabled && observer_ && min.first == Events::OBSERVER)
     {

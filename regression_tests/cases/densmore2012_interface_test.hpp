@@ -683,8 +683,11 @@ namespace densmore2012_interface_test
             std::size_t const Nx = options.useCenteredInterfaceMesh
                 ? densmore2012_interface_mesh::centeredInterfaceCellCount
                 : densmore2012_interface_mesh::cellCount;
-            constexpr std::size_t newPhotonsPerCell = 50;
-            constexpr std::size_t maxPhotonsPerCell = 200;
+            // This is a mechanism-isolation matrix, not the final variance
+            // study.  Halve packet statistics so the six paired jobs are about
+            // twice as fast while preserving identical statistics in each pair.
+            constexpr std::size_t newPhotonsPerCell = 25;
+            constexpr std::size_t maxPhotonsPerCell = 100;
             constexpr bool useRandomWalk = false;
 
             std::size_t const groupCount = ENERGY_GROUPS_NUM;
@@ -782,7 +785,7 @@ namespace densmore2012_interface_test
                 sigma0Left, sigma0Right, groupCenters, groupBoundaries);
 
             constexpr bool withHydro = false;
-            constexpr std::size_t boundaryPhotonsPerCell = 100;
+            constexpr std::size_t boundaryPhotonsPerCell = 50;
             std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>>
                 boundaryCondition =
                     std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
