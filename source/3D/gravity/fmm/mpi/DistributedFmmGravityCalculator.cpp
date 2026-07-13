@@ -837,16 +837,10 @@ void DistributedFmmGravityCalculator::solve(
     std::vector<double>().swap(translatedProcessLocal);
 
     const Clock::time_point interactionStart = Clock::now();
-    const Clock::time_point letExecuteStart = Clock::now();
-    letPlan_.execute(localTree_, positions, masses, cellIds, layout,
-                     localMultipoles_, localLocals_, acceleration,
-                     positiveKernelPotential, operatorCache_,
-                     distributedOptions_.maxRemoteBytes,
-                     options_.maxOperatorCacheBytes, stats_);
-    stats_.letExecuteSeconds = elapsed(letExecuteStart);
-    if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
-        throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
-
+    // Populate the shared operator cache with the small, balanced local M2L
+    // operator set before rank-dependent LET interactions consume the remaining
+    // byte budget.  This ordering is intentional: when the cache is saturated,
+    // local misses otherwise become repeated uncached operator generations.
     const Clock::time_point localTraversalStart = Clock::now();
     if(!localTree_.nodes().empty())
     {
@@ -857,6 +851,17 @@ void DistributedFmmGravityCalculator::solve(
                                   options_.maxOperatorCacheBytes, stats_);
     }
     stats_.localTraversalSeconds = elapsed(localTraversalStart);
+
+    const Clock::time_point letExecuteStart = Clock::now();
+    letPlan_.execute(localTree_, positions, masses, cellIds, layout,
+                     localMultipoles_, localLocals_, acceleration,
+                     positiveKernelPotential, operatorCache_,
+                     distributedOptions_.maxRemoteBytes,
+                     options_.maxOperatorCacheBytes, stats_);
+    stats_.letExecuteSeconds = elapsed(letExecuteStart);
+    if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
+        throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
+
     stats_.interactionSeconds = elapsed(interactionStart);
 
     const Clock::time_point downwardStart = Clock::now();
