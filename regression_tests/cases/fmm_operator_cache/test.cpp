@@ -357,6 +357,8 @@ int main()
                << firstStats.localOperatorCacheBypasses << "\n";
         output << "second_cache_hits "
                << secondStats.localOperatorCacheHits << "\n";
+        output << "second_cache_bypasses "
+               << secondStats.localOperatorCacheBypasses << "\n";
         output << "zero_cache_bytes "
                << zeroStats.localOperatorCacheBytes << "\n";
         output << "zero_cache_entries "
