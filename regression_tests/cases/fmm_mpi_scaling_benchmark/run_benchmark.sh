@@ -11,6 +11,7 @@ RICH_BIN="$1"
 REPEATS="${FMM_MPI_BENCH_REPEATS:-2}"
 FMM_MAX_REMOTE_MIB="${FMM_MPI_BENCH_MAX_REMOTE_MIB:-512}"
 FMM_OPERATOR_CACHE_MIB="${FMM_MPI_BENCH_OPERATOR_CACHE_MIB:-64}"
+EXTRA_NODES="${FMM_MPI_BENCH_EXTRA_NODES:-}"
 SMALL_PARTICLES=1000000
 LARGE_PARTICLES=10000000
 ALLOCATED_NODES="${SLURM_JOB_NUM_NODES:-0}"
@@ -36,16 +37,38 @@ if (( ALLOCATED_NODES < 16 )); then
     echo "fmm_mpi_scaling_benchmark requires at least 16 allocated nodes; got ${ALLOCATED_NODES}" >&2
     exit 2
 fi
-if (( ALLOCATED_TASKS < 16 || ALLOCATED_TASKS % 16 != 0 )); then
-    echo "SLURM_NTASKS must be a positive multiple of 16; got ${ALLOCATED_TASKS}" >&2
+if (( ALLOCATED_TASKS < ALLOCATED_NODES ||
+      ALLOCATED_TASKS % ALLOCATED_NODES != 0 )); then
+    echo "SLURM_NTASKS must be a positive multiple of the allocated node count; got tasks=${ALLOCATED_TASKS}, nodes=${ALLOCATED_NODES}" >&2
     exit 2
 fi
 
-RANKS_PER_NODE=$((ALLOCATED_TASKS / 16))
+RANKS_PER_NODE=$((ALLOCATED_TASKS / ALLOCATED_NODES))
 if (( RANKS_PER_NODE < 1 )); then
     echo "Could not derive a positive ranks-per-node value" >&2
     exit 2
 fi
+
+EXTRA_NODE_COUNTS=()
+if [[ -n "${EXTRA_NODES//[[:space:]]/}" ]]; then
+    read -r -a EXTRA_NODE_COUNTS <<< "${EXTRA_NODES}"
+fi
+previous_nodes=16
+for nodes in "${EXTRA_NODE_COUNTS[@]}"; do
+    if ! [[ "${nodes}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "FMM_MPI_BENCH_EXTRA_NODES must contain positive integers" >&2
+        exit 2
+    fi
+    if (( nodes <= previous_nodes )); then
+        echo "FMM_MPI_BENCH_EXTRA_NODES must be strictly increasing and greater than 16" >&2
+        exit 2
+    fi
+    if (( nodes > ALLOCATED_NODES )); then
+        echo "Requested ${nodes} nodes but only ${ALLOCATED_NODES} are allocated" >&2
+        exit 2
+    fi
+    previous_nodes="${nodes}"
+done
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
@@ -56,7 +79,9 @@ export MALLOC_TRIM_THRESHOLD_="${MALLOC_TRIM_THRESHOLD_:-131072}"
 
 rm -f fmm_mpi_scaling_benchmark_*.txt \
       fmm_mpi_scaling_benchmark_metrics.txt \
-      fmm_mpi_scaling_profile.txt
+      fmm_mpi_scaling_profile.txt \
+      fmm_mpi_extended_scaling_metrics.txt \
+      fmm_mpi_extended_scaling_profile.txt
 
 run_case() {
     local particles="$1"
@@ -98,6 +123,9 @@ run_case "${SMALL_PARTICLES}" 8
 run_case "${SMALL_PARTICLES}" 16
 run_case "${LARGE_PARTICLES}" 8
 run_case "${LARGE_PARTICLES}" 16
+for nodes in "${EXTRA_NODE_COUNTS[@]}"; do
+    run_case "${LARGE_PARTICLES}" "${nodes}"
+done
 
 {
     echo "columns particles expected_nodes ranks unique_nodes ranks_per_node repeats local_particles_min local_particles_max fmm_best_max_seconds fmm_mean_max_seconds quadrupole_best_max_seconds quadrupole_mean_max_seconds fmm_probe_scaled_error quadrupole_probe_scaled_error quadrupole_over_fmm_speedup fmm_particles_per_second quadrupole_particles_per_second fmm_bytes_sent fmm_bytes_received fmm_peak_remote_bytes fmm_peak_process_bytes quadrupole_walk_max_seconds fmm_checksum quadrupole_checksum finite run_pass fmm_warm_best_max_seconds fmm_warm_mean_max_seconds fmm_cold_over_warm_speedup fmm_persistent_bytes fmm_local_tree_bytes fmm_local_multipole_bytes fmm_local_local_bytes fmm_let_plan_bytes fmm_operator_cache_bytes fmm_operator_cache_budget_bytes fmm_local_operator_cache_bytes fmm_local_operator_cache_entries fmm_local_operator_cache_max_entries fmm_local_operator_cache_hits fmm_local_operator_cache_misses fmm_local_operator_cache_bypasses fmm_let_operator_cache_bytes fmm_let_operator_cache_entries fmm_let_operator_cache_max_entries fmm_let_operator_cache_hits fmm_let_operator_cache_misses fmm_let_operator_cache_bypasses fmm_process_operator_cache_misses fmm_process_operator_cache_bypasses fmm_topology_reused"
@@ -196,7 +224,88 @@ END {
 cat "${summary_file}" >> fmm_mpi_scaling_benchmark_metrics.txt
 rm -f "${summary_file}"
 
+
+if (( ${#EXTRA_NODE_COUNTS[@]} > 0 )); then
+    EXTENDED_NODE_COUNTS=(8 16 "${EXTRA_NODE_COUNTS[@]}")
+    {
+        echo "columns particles expected_nodes ranks unique_nodes ranks_per_node repeats local_particles_min local_particles_max fmm_best_max_seconds fmm_mean_max_seconds quadrupole_best_max_seconds quadrupole_mean_max_seconds fmm_probe_scaled_error quadrupole_probe_scaled_error quadrupole_over_fmm_speedup fmm_particles_per_second quadrupole_particles_per_second fmm_bytes_sent fmm_bytes_received fmm_peak_remote_bytes fmm_peak_process_bytes quadrupole_walk_max_seconds fmm_checksum quadrupole_checksum finite run_pass fmm_warm_best_max_seconds fmm_warm_mean_max_seconds fmm_cold_over_warm_speedup fmm_persistent_bytes fmm_local_tree_bytes fmm_local_multipole_bytes fmm_local_local_bytes fmm_let_plan_bytes fmm_operator_cache_bytes fmm_operator_cache_budget_bytes fmm_local_operator_cache_bytes fmm_local_operator_cache_entries fmm_local_operator_cache_max_entries fmm_local_operator_cache_hits fmm_local_operator_cache_misses fmm_local_operator_cache_bypasses fmm_let_operator_cache_bytes fmm_let_operator_cache_entries fmm_let_operator_cache_max_entries fmm_let_operator_cache_hits fmm_let_operator_cache_misses fmm_let_operator_cache_bypasses fmm_process_operator_cache_misses fmm_process_operator_cache_bypasses fmm_topology_reused"
+        for nodes in "${EXTENDED_NODE_COUNTS[@]}"; do
+            grep '^row ' "fmm_mpi_scaling_benchmark_${LARGE_PARTICLES}_nodes${nodes}.txt"
+        done
+    } > fmm_mpi_extended_scaling_metrics.txt
+
+    {
+        echo "profile_columns particles expected_nodes mode category metric rank_min rank_mean rank_max max_over_mean"
+        for nodes in "${EXTENDED_NODE_COUNTS[@]}"; do
+            output="fmm_mpi_scaling_benchmark_${LARGE_PARTICLES}_nodes${nodes}.txt"
+            awk -v particles="${LARGE_PARTICLES}" -v nodes="${nodes}" '
+            $1 == "profile" {
+                print "profile", particles, nodes, $2, $3, $4, $5, $6, $7, $8
+            }
+            ' "${output}"
+        done
+    } > fmm_mpi_extended_scaling_profile.txt
+
+    extended_summary_file="$(mktemp)"
+    node_list="${EXTENDED_NODE_COUNTS[*]}"
+    awk -v particles="${LARGE_PARTICLES}" -v node_list="${node_list}" '
+    BEGIN {
+        expected = split(node_list, node, " ")
+    }
+    $1 == "row" {
+        rows++
+        n = $3 + 0
+        cold[n] = $10 + 0
+        quad[n] = $12 + 0
+        warm[n] = $28 + 0
+        cache_bytes[n] = $36 + 0
+        cache_bypasses[n] = $43 + $49 + $51
+        if (rows == 1) ranks_per_node = $6 + 0
+        if (($6 + 0) != ranks_per_node || ($27 + 0) != 1) bad = 1
+    }
+    END {
+        complete = rows == expected && !bad
+        for (i = 1; i <= expected; ++i)
+            if (!(node[i] in warm)) complete = 0
+        print "extended_row_count", rows
+        print "extended_particles", particles
+        print "extended_node_counts", node_list
+        print "extended_ranks_per_node", ranks_per_node
+        for (i = 2; i <= expected; ++i) {
+            a = node[i - 1] + 0
+            b = node[i] + 0
+            ratio = b / a
+            print "fmm_cold_" a "_to_" b "_speedup", cold[a] / cold[b]
+            print "fmm_cold_" a "_to_" b "_efficiency", (cold[a] / cold[b]) / ratio
+            print "fmm_warm_" a "_to_" b "_speedup", warm[a] / warm[b]
+            print "fmm_warm_" a "_to_" b "_efficiency", (warm[a] / warm[b]) / ratio
+            print "quadrupole_" a "_to_" b "_speedup", quad[a] / quad[b]
+            print "quadrupole_" a "_to_" b "_efficiency", (quad[a] / quad[b]) / ratio
+        }
+        first = node[1] + 0
+        last = node[expected] + 0
+        ratio = last / first
+        print "fmm_warm_" first "_to_" last "_speedup", warm[first] / warm[last]
+        print "fmm_warm_" first "_to_" last "_efficiency", (warm[first] / warm[last]) / ratio
+        for (i = 1; i <= expected; ++i) {
+            n = node[i] + 0
+            print "fmm_operator_cache_bytes_" n, cache_bytes[n]
+            print "fmm_operator_cache_bypasses_" n, cache_bypasses[n]
+        }
+        print "extended_pass", (complete ? 1 : 0)
+        if (!complete) exit 1
+    }
+    ' fmm_mpi_extended_scaling_metrics.txt > "${extended_summary_file}"
+    cat "${extended_summary_file}" >> fmm_mpi_extended_scaling_metrics.txt
+    rm -f "${extended_summary_file}"
+fi
+
 echo "=== aggregate scaling metrics ==="
 cat fmm_mpi_scaling_benchmark_metrics.txt
 echo "=== rank phase/work profile ==="
 cat fmm_mpi_scaling_profile.txt
+if (( ${#EXTRA_NODE_COUNTS[@]} > 0 )); then
+    echo "=== extended 10M-particle scaling metrics ==="
+    cat fmm_mpi_extended_scaling_metrics.txt
+    echo "Extended rank profile written to fmm_mpi_extended_scaling_profile.txt"
+fi
