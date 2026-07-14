@@ -1,4 +1,5 @@
 #include "SphericalObserver.hpp"
+#include "PolarizationStatistics.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
 #include "misc/universal_error.hpp"
@@ -1706,14 +1707,28 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         std::vector<double> polDegree(numObservers_), polAngle(numObservers_);
         std::vector<double> qLum(numObservers_), uLum(numObservers_);
         std::vector<double> qNorm(numObservers_), uNorm(numObservers_);
+        std::vector<double> polNeff(numObservers_, 0.0);
+        std::vector<double> polSigmaQ(numObservers_, 0.0);
+        std::vector<double> polSigmaU(numObservers_, 0.0);
+        std::vector<double> polSigmaP(numObservers_, 0.0);
+        std::vector<double> polSnr(numObservers_, 0.0);
+        std::vector<int> polSnrValid(numObservers_, 0);
         for (size_t i = 0; i < numObservers_; ++i) {
-            polDegree[i] = PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]);
-            polAngle[i] = PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]);
+            auto const quality = polarization_statistics::ComputeQuality(
+                observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i],
+                observerSumWeightSq_[i], observerSumWQ2_[i], observerSumWU2_[i]);
+            polDegree[i] = quality.degree;
+            polAngle[i] = quality.angle;
+            qNorm[i] = quality.q;
+            uNorm[i] = quality.u;
             qLum[i] = observerStokesQ_[i] * invDt;
             uLum[i] = observerStokesU_[i] * invDt;
-            double const invI = (observerEnergy_[i] > 0.0) ? 1.0 / observerEnergy_[i] : 0.0;
-            qNorm[i] = observerStokesQ_[i] * invI;
-            uNorm[i] = observerStokesU_[i] * invI;
+            polNeff[i] = quality.effectivePackets;
+            polSigmaQ[i] = quality.sigmaQ;
+            polSigmaU[i] = quality.sigmaU;
+            polSigmaP[i] = quality.sigmaP;
+            polSnr[i] = quality.snr;
+            polSnrValid[i] = quality.uncertaintyValid ? 1 : 0;
         }
         writer.WriteElement("/tally/observer_stokes_Q", observerStokesQ_);
         writer.WriteElement("/tally/observer_stokes_U", observerStokesU_);
@@ -1723,6 +1738,12 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/tally/observer_U_luminosity", uLum);
         writer.WriteElement("/tally/observer_polarization_degree", polDegree);
         writer.WriteElement("/tally/observer_polarization_angle", polAngle);
+        writer.WriteElement("/tally/observer_polarization_effective_packets", polNeff);
+        writer.WriteElement("/tally/observer_polarization_sigma_q", polSigmaQ);
+        writer.WriteElement("/tally/observer_polarization_sigma_u", polSigmaU);
+        writer.WriteElement("/tally/observer_polarization_sigma_p", polSigmaP);
+        writer.WriteElement("/tally/observer_polarization_snr", polSnr);
+        writer.WriteElement("/tally/observer_polarization_snr_valid", polSnrValid);
 
         std::vector<double> meanMismatch(numObservers_, 0.0);
         std::vector<double> rmsMismatch(numObservers_, 0.0);
@@ -1822,15 +1843,29 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             std::vector<std::vector<double>> gUNorm(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gQLum(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gULum(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gNeff(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSigmaQ(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSigmaU(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSigmaP(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSnr(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<int>> gSnrValid(numObservers_, std::vector<int>(numGroups_, 0));
             for (size_t i = 0; i < numObservers_; ++i) {
                 for (size_t g = 0; g < numGroups_; ++g) {
-                    gDegree[i][g] = PolarizationDegree(groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g]);
-                    gAngle[i][g] = PolarizationAngle(groupStokesQ_[i][g], groupStokesU_[i][g]);
-                    double const invI = (groupEnergy_[i][g] > 0.0) ? 1.0 / groupEnergy_[i][g] : 0.0;
-                    gQNorm[i][g] = groupStokesQ_[i][g] * invI;
-                    gUNorm[i][g] = groupStokesU_[i][g] * invI;
+                    auto const quality = polarization_statistics::ComputeQuality(
+                        groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g],
+                        groupEnergyWeightSq_[i][g], groupSumWQ2_[i][g], groupSumWU2_[i][g]);
+                    gDegree[i][g] = quality.degree;
+                    gAngle[i][g] = quality.angle;
+                    gQNorm[i][g] = quality.q;
+                    gUNorm[i][g] = quality.u;
                     gQLum[i][g] = groupStokesQ_[i][g] * invDt;
                     gULum[i][g] = groupStokesU_[i][g] * invDt;
+                    gNeff[i][g] = quality.effectivePackets;
+                    gSigmaQ[i][g] = quality.sigmaQ;
+                    gSigmaU[i][g] = quality.sigmaU;
+                    gSigmaP[i][g] = quality.sigmaP;
+                    gSnr[i][g] = quality.snr;
+                    gSnrValid[i][g] = quality.uncertaintyValid ? 1 : 0;
                 }
             }
             writer.WriteElement("/tally/multigroup/group_stokes_Q", groupStokesQ_);
@@ -1841,6 +1876,12 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/tally/multigroup/group_U_luminosity", gULum);
             writer.WriteElement("/tally/multigroup/group_polarization_degree", gDegree);
             writer.WriteElement("/tally/multigroup/group_polarization_angle", gAngle);
+            writer.WriteElement("/tally/multigroup/group_polarization_effective_packets", gNeff);
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_q", gSigmaQ);
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_u", gSigmaU);
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_p", gSigmaP);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr", gSnr);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr_valid", gSnrValid);
         }
 #endif
     }

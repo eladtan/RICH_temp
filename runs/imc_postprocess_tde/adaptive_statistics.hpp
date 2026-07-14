@@ -98,6 +98,7 @@ struct ObserverGroupQualityDiagnostics
     std::vector<std::vector<double>> neff;
     std::vector<std::vector<double>> polarizationDegree;
     std::vector<std::vector<double>> polarizationSnr;
+    std::vector<std::vector<int>> polarizationSnrValid;
     std::vector<std::vector<double>> latestPriority;
     std::vector<std::vector<double>> cumulativePriority;
     std::vector<std::vector<double>> predictedPriority;
@@ -243,6 +244,10 @@ void PrintAdaptiveGroupGenerationStats(
     ObserverGroupQualityDiagnostics const& gq,
     RadiationIMC::GroupSamplingDiagnostics const& gsd,
     size_t gen,
+    int rank);
+void PrintPolarizationSummary(
+    std::string const& label,
+    SphericalObserver::ObserverQualitySnapshot const& snap,
     int rank);
 std::unordered_map<size_t, std::array<double, ENERGY_GROUPS_NUM>> BuildGroupScoresForIMC(
     AdaptiveGroupSourceState const& groupState,

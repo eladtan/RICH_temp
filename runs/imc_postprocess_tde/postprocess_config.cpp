@@ -35,6 +35,7 @@ void printUsage(int rank)
               << "  --no-velocity            Ignore cell velocities (no Doppler shifts)\n"
               << "  --no-photosphere         Disable observer photosphere postprocessing\n"
               << "  --polarization           Enable postprocess linear polarization\n"
+              << "  --no-polarization        Disable postprocess linear polarization\n"
               << "  --polarization-manual-scatterings N\n"
               << "  --polarization-depolarization-scatterings N\n"
               << "  --polarization-closure NAME\n"
@@ -167,6 +168,7 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--no-velocity") { cfg.useCellVelocities = false; }
         else if (arg == "--no-photosphere") { cfg.photosphere = false; }
         else if (arg == "--polarization") { cfg.polarization = true; }
+        else if (arg == "--no-polarization") { cfg.polarization = false; }
         else if (arg == "--polarization-manual-scatterings" && i + 1 < argc) { cfg.polarizationManualScatterings = std::atoi(argv[++i]); }
         else if (arg == "--polarization-depolarization-scatterings" && i + 1 < argc) { cfg.polarizationDepolarizationScatterings = std::atof(argv[++i]); }
         else if (arg == "--polarization-closure" && i + 1 < argc) { cfg.polarizationClosure = argv[++i]; }

@@ -1,4 +1,5 @@
 #include "adaptive_statistics.hpp"
+#include "source/3D/radiation/PolarizationStatistics.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -693,30 +694,20 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
             deficit = cfg.adaptiveObserverDeficitMax;
         }
 
-        double polarizationNeff = 0.0;
         if (diag.polarizationMode && energy > 0.0) {
-            double const polarizationW2 = state.cumulativeObserverPolarizationWeightSq[i];
-            if (polarizationW2 > 0.0 && std::isfinite(polarizationW2))
-                polarizationNeff = energy * energy / polarizationW2;
-        }
-
-        if (diag.polarizationMode && energy > 0.0 && polarizationNeff > 0.0) {
-            double const q = state.cumulativeObserverStokesQ[i] / energy;
-            double const u = state.cumulativeObserverStokesU[i] / energy;
-            double varQ = state.cumulativeObserverSumWQ2[i] / energy - q * q;
-            double varU = state.cumulativeObserverSumWU2[i] / energy - u * u;
-            varQ = std::max(0.0, varQ);
-            varU = std::max(0.0, varU);
-            double const sigQ = std::sqrt(varQ / polarizationNeff);
-            double const sigU = std::sqrt(varU / polarizationNeff);
-            double const sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
-            double const polDegree = std::sqrt(q * q + u * u);
-            double const snr = (sigP > 0.0) ? polDegree / sigP : 0.0;
-            diag.snrByObserver[i] = snr;
+            auto const quality = polarization_statistics::ComputeQuality(
+                energy,
+                state.cumulativeObserverStokesQ[i],
+                state.cumulativeObserverStokesU[i],
+                state.cumulativeObserverPolarizationWeightSq[i],
+                state.cumulativeObserverSumWQ2[i],
+                state.cumulativeObserverSumWU2[i]);
+            diag.snrByObserver[i] = quality.snr;
             if (!includeInIntegratedStats)
                 deficit = 1.0;
-            else if (snr > 0.0)
-                deficit = std::max(deficit, cfg.adaptiveObserverTargetPolSnr / snr);
+            else if (quality.uncertaintyValid && quality.snr > 0.0)
+                deficit = std::max(
+                    deficit, cfg.adaptiveObserverTargetPolSnr / quality.snr);
             else
                 deficit = cfg.adaptiveObserverDeficitMax;
         }
@@ -1218,6 +1209,11 @@ void PrintAdaptiveIterationSummary(
         ? static_cast<double>(allocation.boostedCells) /
               static_cast<double>(allocation.sourceCells)
         : 0.0;
+    bool const observerQualityHasAccumulatedStats =
+        observerQuality.enabled &&
+        std::any_of(observerQuality.crossingsByObserver.begin(),
+                    observerQuality.crossingsByObserver.end(),
+                    [](unsigned long long crossings) { return crossings > 0; });
 
     std::cout << "ITERATION_SUMMARY type=" << label
               << " iteration=" << (gen + 1) << "/" << totalGenerations
@@ -1245,7 +1241,7 @@ void PrintAdaptiveIterationSummary(
               << " crossing_energy=" << update.totalEscapedEnergy
               << " crossing_count=" << update.totalCrossings
               << " observers_with_crossings=" << update.observersWithCrossings;
-    if (observerQuality.enabled) {
+    if (observerQualityHasAccumulatedStats) {
         std::cout << " weak_observers=" << observerQuality.weakObservers
                   << "/" << observerQuality.observerCount
                   << " zero_stat_observers=" << observerQuality.zeroStatObservers
@@ -1286,6 +1282,11 @@ void PrintAdaptiveGenerationStats(
     double learnedPhotonFrac = allocation.totalPhotons > 0
         ? static_cast<double>(allocation.learnedPhotons) / static_cast<double>(allocation.totalPhotons)
         : 0.0;
+    bool const observerQualityHasAccumulatedStats =
+        observerQuality.enabled &&
+        std::any_of(observerQuality.crossingsByObserver.begin(),
+                    observerQuality.crossingsByObserver.end(),
+                    [](unsigned long long crossings) { return crossings > 0; });
     std::cout << label << " adaptive stats after generation " << (gen + 1)
               << ": crossing_energy=" << update.totalEscapedEnergy
               << " crossing_count=" << update.totalCrossings
@@ -1333,7 +1334,7 @@ void PrintAdaptiveGenerationStats(
               << " max_packed_bytes=" << update.maxPackedBytes
               << std::endl;
 
-    if (observerQuality.enabled) {
+    if (observerQualityHasAccumulatedStats) {
         std::cout << label << " observer-equity stats: mode="
                   << (observerQuality.polarizationMode ? "polarization" : "luminosity")
                   << " weak_observers=" << observerQuality.weakObservers
@@ -1485,6 +1486,7 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
     diag.neff = make2d();
     diag.polarizationDegree = make2d();
     diag.polarizationSnr = make2d();
+    diag.polarizationSnrValid.assign(nObs, std::vector<int>(nGrp, 0));
     diag.latestPriority = make2d();
     diag.cumulativePriority = make2d();
     diag.predictedPriority = make2d(1.0);
@@ -1513,20 +1515,17 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
     if (snap.polarizationEnabled) {
         for (size_t o = 0; o < nObs; ++o) {
             for (size_t g = 0; g < nGrp; ++g) {
-                double E = snap.energy[o][g];
-                if (E <= eps) continue;
-                double q = snap.stokesQ[o][g] / E;
-                double u = snap.stokesU[o][g] / E;
-                double p = std::sqrt(q * q + u * u);
-                diag.polarizationDegree[o][g] = p;
-
-                double varQ = snap.sumWQ2[o][g] / E - q * q;
-                double varU = snap.sumWU2[o][g] / E - u * u;
-                double neff = diag.neff[o][g];
-                double sigQ = std::sqrt(std::max(varQ, 0.0) / std::max(neff, eps));
-                double sigU = std::sqrt(std::max(varU, 0.0) / std::max(neff, eps));
-                double sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
-                diag.polarizationSnr[o][g] = (sigP > eps) ? p / sigP : 0.0;
+                auto const quality = polarization_statistics::ComputeQuality(
+                    snap.energy[o][g],
+                    snap.stokesQ[o][g],
+                    snap.stokesU[o][g],
+                    snap.energyWeightSq[o][g],
+                    snap.sumWQ2[o][g],
+                    snap.sumWU2[o][g]);
+                diag.polarizationDegree[o][g] = quality.degree;
+                diag.polarizationSnr[o][g] = quality.snr;
+                diag.polarizationSnrValid[o][g] =
+                    quality.uncertaintyValid ? 1 : 0;
             }
         }
     }
@@ -1563,7 +1562,8 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
             if (snap.polarizationEnabled &&
                 diag.polarizationDegree[o][g] >= cfg.adaptiveGroupPolarizationFloor &&
                 snap.crossingCount[o][g] >= cfg.adaptiveGroupMinCrossings) {
-                if (diag.polarizationSnr[o][g] > eps)
+                if (diag.polarizationSnrValid[o][g] != 0 &&
+                    diag.polarizationSnr[o][g] > eps)
                     defPol = cfg.adaptiveGroupTargetPolSnr / diag.polarizationSnr[o][g];
                 else
                     defPol = cfg.adaptiveGroupDeficitMax;
@@ -1651,22 +1651,24 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
             double cumPolDegree = 0.0;
             double cumPolSnr = 0.0;
             if (snap.polarizationEnabled && cumE > eps) {
-                double cq = history.cumulativeStokesQ[o][g] / cumE;
-                double cu = history.cumulativeStokesU[o][g] / cumE;
-                cumPolDegree = std::sqrt(cq * cq + cu * cu);
-                double cvQ = history.cumulativeSumWQ2[o][g] / cumE - cq * cq;
-                double cvU = history.cumulativeSumWU2[o][g] / cumE - cu * cu;
-                double csigQ = std::sqrt(std::max(cvQ, 0.0) / std::max(cumNeff, eps));
-                double csigU = std::sqrt(std::max(cvU, 0.0) / std::max(cumNeff, eps));
-                double csigP = std::sqrt(csigQ * csigQ + csigU * csigU);
-                cumPolSnr = (csigP > eps) ? cumPolDegree / csigP : 0.0;
+                auto const quality = polarization_statistics::ComputeQuality(
+                    cumE,
+                    history.cumulativeStokesQ[o][g],
+                    history.cumulativeStokesU[o][g],
+                    cumW2,
+                    history.cumulativeSumWQ2[o][g],
+                    history.cumulativeSumWU2[o][g]);
+                cumPolDegree = quality.degree;
+                cumPolSnr = quality.snr;
                 if (history.integratedUpdateCount > 0) {
                     diag.polarizationDegree[o][g] = cumPolDegree;
                     diag.polarizationSnr[o][g] = cumPolSnr;
+                    diag.polarizationSnrValid[o][g] =
+                        quality.uncertaintyValid ? 1 : 0;
                 }
                 if (cumPolDegree >= cfg.adaptiveGroupPolarizationFloor &&
                     history.cumulativeCrossings[o][g] >= cfg.adaptiveGroupMinCrossings) {
-                    cumDefPol = (cumPolSnr > eps)
+                    cumDefPol = (quality.uncertaintyValid && cumPolSnr > eps)
                         ? cfg.adaptiveGroupTargetPolSnr / cumPolSnr
                         : cfg.adaptiveGroupDeficitMax;
                 }
@@ -2379,6 +2381,62 @@ void RecomputeOpacityScaleFactors(
               << " outliers(>2x)=" << globalOutliers << "/" << globalCount
               << std::endl;
   }
+}
+
+void PrintPolarizationSummary(
+    std::string const& label,
+    SphericalObserver::ObserverQualitySnapshot const& snap,
+    int rank)
+{
+    if (rank != 0)
+        return;
+
+    if (!snap.polarizationEnabled) {
+        std::cout << label
+                  << " polarization diagnostics unavailable: observer polarization tracking is disabled"
+                  << std::endl;
+        return;
+    }
+
+    size_t const observerCount = snap.energy.size();
+    std::vector<double> degree;
+    std::vector<double> snr;
+    degree.reserve(observerCount);
+    snr.reserve(observerCount);
+
+    size_t activeObservers = 0;
+    for (size_t i = 0; i < observerCount; ++i) {
+        if (i >= snap.stokesQ.size() || i >= snap.stokesU.size() ||
+            i >= snap.polarizationWeightSq.size() ||
+            i >= snap.sumWQ2.size() || i >= snap.sumWU2.size())
+            continue;
+
+        auto const quality = polarization_statistics::ComputeQuality(
+            snap.energy[i], snap.stokesQ[i], snap.stokesU[i],
+            snap.polarizationWeightSq[i], snap.sumWQ2[i], snap.sumWU2[i]);
+        if (!quality.intensityValid)
+            continue;
+
+        ++activeObservers;
+        degree.push_back(quality.degree);
+        if (quality.uncertaintyValid)
+            snr.push_back(quality.snr);
+    }
+
+    std::cout << label << " polarization summary: active_observers="
+              << activeObservers << "/" << observerCount
+              << " valid_snr_observers=" << snr.size()
+              << " degree_p05/med/p95=" << Percentile(degree, 0.05)
+              << "/" << Percentile(degree, 0.50)
+              << "/" << Percentile(degree, 0.95);
+    if (snr.empty()) {
+        std::cout << " snr_p05/med/p95=n/a";
+    } else {
+        std::cout << " snr_p05/med/p95=" << Percentile(snr, 0.05)
+                  << "/" << Percentile(snr, 0.50)
+                  << "/" << Percentile(snr, 0.95);
+    }
+    std::cout << std::endl;
 }
 
 bool MeasuredLBDebugMemory()

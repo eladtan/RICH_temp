@@ -91,7 +91,6 @@ void RunGreyPostprocess(
             greyParams.rwMinCellOpticalDepth = 15;
             greyParams.withDDMC = cfg.ddmc;
             greyParams.ddmcMinCellOpticalDepth = 15;
-            greyParams.ddmcMinParticleOpticalDepth = 5;
             greyParams.ddmcUseMultigroupPGRW = false;
             greyParams.MMC = false;
             greyParams.diffusionPressureGradient = false;
@@ -202,22 +201,25 @@ void RunGreyPostprocess(
                                              greyBurninGenerations,
                                              greyAdaptiveActiveThisGen, rank);
 
-                if (greyAdaptiveActiveThisGen)
+                if (greyAdaptiveActiveThisGen) {
+                    double const learnedMinFactorThisGen =
+                        greyLearnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
                     greyPhysics->setAdaptiveSourceCellScores(
                         greyAdaptive.scoreByCellID,
                         cfg.adaptiveSourceStrength,
                         cfg.adaptiveSourceMaxFactor,
                         cfg.adaptiveSourceLearnedReserveFrac,
-                        cfg.adaptiveSourceLearnedMinFactor,
+                        learnedMinFactorThisGen,
                         greyAdaptive.observerBudgetMultiplier);
-                else
+                } else {
                     greyPhysics->clearAdaptiveSourceCellScores();
+                }
                 if (greyFirstBurninThisGen)
                     greyPhysics->setSourceEmissionControl(false, true, 1);
                 else if (greyUniformBurninThisGen)
                     greyPhysics->setSourceEmissionControl(false, true, 3);
                 else if (greyLearnedProbeThisGen)
-                    greyPhysics->setSourceEmissionControl(true, true, 75);
+                    greyPhysics->setSourceEmissionControl(true, false, 1, 1);
                 else if (cfg.adaptiveSourceCells && greyFinalThisGen)
                     greyPhysics->setSourceEmissionControl(true, false, 1, 100, 2000);
                 else
@@ -450,8 +452,12 @@ void RunGreyPostprocess(
                 }
     #endif // RICH_MPI
             }
-            if (rank == 0)
+            if (rank == 0) {
                 greyObserver->loadStatisticalMeanTallies();
+                if (cfg.polarization)
+                    PrintPolarizationSummary(
+                        "Grey", greyObserver->getObserverQualitySnapshot(), rank);
+            }
 
             if (rank == 0) {
                 std::string const greyVtk = GreyVtkOutputPath(cfg);

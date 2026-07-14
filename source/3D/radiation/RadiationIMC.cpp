@@ -4482,6 +4482,27 @@ void RadiationIMC::adjustExistingParticles(std::vector<Particle> &particles, dou
     UpdateNewCells(this->grid, particles, this->cells);
 }
 
+void RadiationIMC::setObserver(std::shared_ptr<SphericalObserver> observer)
+{
+    observer_ = std::move(observer);
+    if(!observer_)
+        return;
+
+    bool const polarizationEnabled =
+        postProcess_.enabled && postProcess_.polarization.enabled;
+#ifdef MONTECARLO_POLARIZATION
+    observer_->setPolarizationMetadata(
+        polarizationEnabled,
+        postProcess_.polarization.manualScatteringsAfterAcceleration,
+        postProcess_.polarization.depolarizationScatterings,
+        postProcess_.polarization.acceleratedClosure);
+#else
+    if(polarizationEnabled)
+        throw UniversalError(
+            "RadiationIMC polarization requested, but MONTECARLO_POLARIZATION is not compiled");
+#endif
+}
+
 std::ostream &operator<<(std::ostream &os, const RadiationIMCParameters &parameters)
 {
     os << "IMC, with parameters:" << std::endl;

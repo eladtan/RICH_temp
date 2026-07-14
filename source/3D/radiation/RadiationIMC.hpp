@@ -254,7 +254,7 @@ public:
 
     inline const GroupArray &getComptonGroupWidths(void) const {return this->comptonGroupWidths;}
 
-    void setObserver(std::shared_ptr<SphericalObserver> observer) { observer_ = std::move(observer); }
+    void setObserver(std::shared_ptr<SphericalObserver> observer);
     void setNewPhotonsPerCell(size_t n) { newPhotonsPerCell = n; }
     void setAdaptiveSourceCellScores(std::unordered_map<size_t, double> scores,
                                      double strength, double maxFactor,

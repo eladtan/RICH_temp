@@ -143,12 +143,14 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 if (adaptiveActiveThisGen) {
                     auto combinedSourceScores =
                         BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState);
+                    double const learnedMinFactorThisGen =
+                        learnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
                     physics->setAdaptiveSourceCellScores(
                         std::move(combinedSourceScores),
                         cfg.adaptiveSourceStrength,
                         cfg.adaptiveSourceMaxFactor,
                         cfg.adaptiveSourceLearnedReserveFrac,
-                        cfg.adaptiveSourceLearnedMinFactor,
+                        learnedMinFactorThisGen,
                         mgAdaptive.observerBudgetMultiplier);
                 } else {
                     physics->clearAdaptiveSourceCellScores();
@@ -158,7 +160,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 else if (uniformBurninThisGen)
                     physics->setSourceEmissionControl(false, true, 3);
                 else if (learnedProbeThisGen)
-                    physics->setSourceEmissionControl(true, true, 75);
+                    physics->setSourceEmissionControl(true, false, 1, 1);
                 else if (cfg.adaptiveSourceCells && finalThisGen)
                     physics->setSourceEmissionControl(true, false, 1, 1000, 5000);
                 else
@@ -471,8 +473,12 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             // ============================================================
             // Finish diagnostics
             // ============================================================
-            if (rank == 0)
+            if (rank == 0) {
                 observer->loadStatisticalMeanTallies();
+                if (cfg.polarization)
+                    PrintPolarizationSummary(
+                        "MG", observer->getObserverQualitySnapshot(), rank);
+            }
 
             if (rank == 0) {
                 SphericalObserver::Diagnostics diag;

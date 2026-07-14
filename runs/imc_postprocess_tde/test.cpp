@@ -178,6 +178,19 @@ int main(int argc, char* argv[])
             return 1;
         }
 #endif
+#ifndef MONTECARLO_POLARIZATION
+        if (cfg.polarization) {
+            if (rank == 0)
+                std::cerr
+                    << "Error: polarization is enabled for imc_postprocess_tde, but this executable "
+                    << "was built without MONTECARLO_POLARIZATION. Rebuild with "
+                    << "--montecarlo-polarization or pass --no-polarization.\n";
+#ifdef RICH_MPI
+            MPI_Finalize();
+#endif
+            return 1;
+        }
+#endif
 
         if (rank == 0) {
             std::cout << "=== TDE IMC Post-Processing ===\n"
@@ -216,6 +229,9 @@ int main(int argc, char* argv[])
                       << "  observer equity:           " << ((cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) ? "enabled" : "disabled") << "\n"
                       << "  observer target neff:      " << cfg.adaptiveObserverTargetNeff << "\n"
                       << "  observer target pol SNR:   " << cfg.adaptiveObserverTargetPolSnr << "\n"
+                      << "  polarization SNR scoring:  "
+                      << ((cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity && cfg.polarization)
+                              ? "enabled" : "disabled") << "\n"
                       << "  observer deficit max/EMA:  " << cfg.adaptiveObserverDeficitMax << "/" << cfg.adaptiveObserverDeficitEma << "\n"
                       << "  observer extra budget max: " << cfg.adaptiveObserverExtraBudgetFrac << "\n"
                       << "  burnin/adapt LB: " << ((cfg.adaptiveSourceCells && cfg.measuredLoadBalance) ? "requested" : "disabled") << "\n"
@@ -587,6 +603,10 @@ int main(int argc, char* argv[])
         auto physics = std::make_shared<RadiationIMC>(
             tess, boundary, cells, extensives, eos, opacity, params);
         physics->setObserver(observer);
+        if (cfg.polarization &&
+            !observer->getObserverQualitySnapshot().polarizationEnabled)
+            throw UniversalError(
+                "Polarization was requested but observer polarization tracking is disabled");
 
         auto popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
