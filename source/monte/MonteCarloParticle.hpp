@@ -81,6 +81,7 @@ struct MonteCarloParticle
     double stokesU = 0.0;
     T polarizationBasis = T();
     bool polarizationInitialized = false;
+    double polarizationPendingMeanScatterings = 0.0;
 #endif
     size_t steps = 0;
     bool on_track = false;
@@ -156,6 +157,7 @@ struct MonteCarloParticle
         this->stokesU = 0.0;
         this->polarizationBasis = T();
         this->polarizationInitialized = false;
+        this->polarizationPendingMeanScatterings = 0.0;
 #endif
     };
 
@@ -180,7 +182,9 @@ struct MonteCarloParticle
 #ifdef MONTECARLO_POLARIZATION
                 stream << ", q " << particle.stokesQ
                        << ", u " << particle.stokesU
-                       << ", polInit " << particle.polarizationInitialized;
+                       << ", polInit " << particle.polarizationInitialized
+                       << ", pendingPolScatMean "
+                       << particle.polarizationPendingMeanScatterings;
 #endif
                 return stream << ")";
     }
@@ -461,6 +465,7 @@ size_t MonteCarloParticle<T, Grid>::dump(Serializer *serializer) const
     bytes += serializer->insert(this->stokesU);
     bytes += serializer->insert(this->polarizationBasis);
     bytes += serializer->insert(this->polarizationInitialized);
+    bytes += serializer->insert(this->polarizationPendingMeanScatterings);
 #endif
     bytes += serializer->insert(this->steps);
     bytes += serializer->insert(this->on_track);
@@ -522,6 +527,8 @@ size_t MonteCarloParticle<T, Grid>::load(const Serializer *serializer, size_t by
     bytes += serializer->extract(this->stokesU, byteOffset + bytes);
     bytes += serializer->extract(this->polarizationBasis, byteOffset + bytes);
     bytes += serializer->extract(this->polarizationInitialized, byteOffset + bytes);
+    bytes += serializer->extract(this->polarizationPendingMeanScatterings,
+                                 byteOffset + bytes);
 #endif
     bytes += serializer->extract(this->steps, byteOffset + bytes);
     bytes += serializer->extract(this->on_track, byteOffset + bytes);

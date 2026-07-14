@@ -1558,8 +1558,24 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     auto convertResidentDDMCToTransport = [&]() {
         particle.location = this->sampleDDMCTransportLocation(cellIndex);
-        particle.velocity = units::clight * SampleIsotropicDirection(
+        Vector3D const finalVelocityCo = units::clight * SampleIsotropicDirection(
             this->dist(this->re), this->dist(this->re));
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+        {
+            IMCPolarization::FinalizeAcceleratedPolarizationHistory(
+                particle,
+                finalVelocityCo,
+                this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+                this->postProcess_.polarization.depolarizationScatterings,
+                this->re,
+                this->dist);
+        }
+        else
+#endif
+        {
+            particle.velocity = finalVelocityCo;
+        }
         particle.ddmcMode = false;
         particle.ddmcCellResident = false;
         particle.ddmcComovingFrame = false;
@@ -1620,7 +1636,12 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     materialParticle.ddmcCellResident = true;
     materialParticle.ddmcComovingFrame = true;
     if(!continuingDDMC)
+    {
         materialParticle.initialWeight = std::abs(materialParticle.weight);
+#ifdef MONTECARLO_POLARIZATION
+        IMCPolarization::ClearAcceleratedPolarizationHistory(materialParticle);
+#endif
+    }
 
     bool const usePGRW = (this->multigroupOpacity != nullptr && this->ddmcUseMultigroupPGRW);
     if(usePGRW)
@@ -1805,6 +1826,28 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
 
     ++this->ddmcStepCount;
 
+    auto accumulateDDMCPolarizationHistory = [&]() {
+#ifdef MONTECARLO_POLARIZATION
+        if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
+        {
+            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
+            double const totalEffectiveResetOpacity = std::max(
+                0.0, (1.0 - f) * data.sigmaEnergyAbs);
+            double const explicitResetOpacity = std::max(
+                0.0, upscatterRateCo / units::clight);
+            double const sigmaUnresolvedReset = std::max(
+                0.0, totalEffectiveResetOpacity - explicitResetOpacity);
+            IMCPolarization::AccumulateAcceleratedPolarizationHistory(
+                materialParticle,
+                dtCo,
+                scatOp,
+                sigmaUnresolvedReset,
+                this->re,
+                this->dist);
+        }
+#endif
+    };
+
     auto setParticleCellIdentity = [&](Particle &p, size_t idx)
     {
         p.cellIndex = idx;
@@ -1830,6 +1873,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.stokesU = materialParticle.stokesU;
         particle.polarizationBasis = materialParticle.polarizationBasis;
         particle.polarizationInitialized = materialParticle.polarizationInitialized;
+        particle.polarizationPendingMeanScatterings =
+            materialParticle.polarizationPendingMeanScatterings;
 #endif
     };
 
@@ -1854,6 +1899,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.stokesU = transportParticle.stokesU;
         particle.polarizationBasis = transportParticle.polarizationBasis;
         particle.polarizationInitialized = transportParticle.polarizationInitialized;
+        particle.polarizationPendingMeanScatterings =
+            transportParticle.polarizationPendingMeanScatterings;
         if(particle.polarizationInitialized)
             particle.polarizationBasis =
                 IMCPolarization::ProjectBasisToDirection(particle.polarizationBasis,
@@ -1881,6 +1928,8 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         particle.stokesU = materialParticle.stokesU;
         particle.polarizationBasis = materialParticle.polarizationBasis;
         particle.polarizationInitialized = materialParticle.polarizationInitialized;
+        particle.polarizationPendingMeanScatterings =
+            materialParticle.polarizationPendingMeanScatterings;
 #endif
     };
 
@@ -1958,45 +2007,53 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             ComputationalCell3D::energyBoundaries[data.groupCutoff];
         materialParticle.frequency = std::nextafter(
             cutoffFrequency, std::numeric_limits<double>::max());
-        materialParticle.velocity = this->opacity->getRandomVelocity(cell);
+        accumulateDDMCPolarizationHistory();
+        Vector3D const finalVelocityCo = this->opacity->getRandomVelocity(cell);
 #ifdef MONTECARLO_POLARIZATION
         if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
-            IMCPolarization::ResetUnpolarized(materialParticle);
+        {
+            IMCPolarization::FinalizeAcceleratedPolarizationHistory(
+                materialParticle,
+                finalVelocityCo,
+                this->postProcess_.polarization.manualScatteringsAfterAcceleration,
+                this->postProcess_.polarization.depolarizationScatterings,
+                this->re,
+                this->dist);
+        }
+        else
 #endif
+        {
+            materialParticle.velocity = finalVelocityCo;
+        }
         ++this->ddmcDopplerCutoffExitCount;
         return finalizeAccelerationStep(false, false, false);
     }
 
     if(censusEvent)
     {
+        accumulateDDMCPolarizationHistory();
+        // Eq. (31) supplies the lost microscopic state of the grey particle.
+        // Sample it before finalizing polarization so the stored basis is
+        // transverse to the direction that is actually carried to census.
+        materialParticle.location = this->sampleDDMCTransportLocation(cellIndex);
+        Vector3D const finalVelocityCo = units::clight * SampleIsotropicDirection(
+            this->dist(this->re), this->dist(this->re));
 #ifdef MONTECARLO_POLARIZATION
         if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
         {
-            IMCPolarization::InitializeIfNeeded(materialParticle);
-            materialParticle.polarizationBasis =
-                IMCPolarization::ProjectBasisToDirection(materialParticle.polarizationBasis,
-                                                         materialParticle.velocity);
-
-            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
-            double const sigmaReset = (1.0 - f) * data.sigmaEnergyAbs;
-            IMCPolarization::ApplyAcceleratedPolarizationHistory(
+            IMCPolarization::FinalizeAcceleratedPolarizationHistory(
                 materialParticle,
-                dtCo,
-                scatOp,
-                sigmaReset,
-                materialParticle.velocity,
+                finalVelocityCo,
                 this->postProcess_.polarization.manualScatteringsAfterAcceleration,
                 this->postProcess_.polarization.depolarizationScatterings,
                 this->re,
                 this->dist);
         }
+        else
 #endif
-        // Eq. (31) supplies the lost microscopic state of the grey particle.
-        // Store it as a transport packet at census so the next time step can
-        // classify it against the newly recomputed cutoff.
-        materialParticle.location = this->sampleDDMCTransportLocation(cellIndex);
-        materialParticle.velocity = units::clight * SampleIsotropicDirection(
-            this->dist(this->re), this->dist(this->re));
+        {
+            materialParticle.velocity = finalVelocityCo;
+        }
         if(usePGRW)
             materialParticle.frequency = this->sampleDDMCPlanckFrequency(
                 cellIndex, 0, data.groupCutoff);
@@ -2008,6 +2065,7 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     double eventPick = this->dist(this->re) * eventRateCo;
     if(eventPick <= applicableLeakRate)
     {
+        accumulateDDMCPolarizationHistory();
         double facePick = this->dist(this->re) * applicableLeakRate;
         DDMCFaceLeak const *chosen = nullptr;
         for(DDMCFaceLeak const &faceLeak : data.faceLeaks)
@@ -2145,31 +2203,24 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
         Vector3D const dir = SampleHemisphereDirection(nOut, mu, phiLeak);
 
         materialParticle.location = leakFaceCenter;
-        Vector3D const oldVelocityCoForPol = materialParticle.velocity;
         Vector3D const finalVelocityCoForPol = normalize(dir) * units::clight;
-        materialParticle.velocity = finalVelocityCoForPol;
 
 #ifdef MONTECARLO_POLARIZATION
         if(this->postProcess_.enabled && this->postProcess_.polarization.enabled)
         {
-            materialParticle.velocity = oldVelocityCoForPol;
-
-            double const scatOp = this->opacity->CalcScatteringOpacity(cell);
-            double const sigmaReset = (1.0 - f) * data.sigmaEnergyAbs;
-            IMCPolarization::ApplyAcceleratedPolarizationHistory(
+            IMCPolarization::FinalizeAcceleratedPolarizationHistory(
                 materialParticle,
-                dtCo,
-                scatOp,
-                sigmaReset,
                 finalVelocityCoForPol,
                 this->postProcess_.polarization.manualScatteringsAfterAcceleration,
                 this->postProcess_.polarization.depolarizationScatterings,
                 this->re,
                 this->dist);
         }
+        else
 #endif
-
-        materialParticle.velocity = finalVelocityCoForPol;
+        {
+            materialParticle.velocity = finalVelocityCoForPol;
+        }
 
         assert(ScalarProd(materialParticle.velocity, nOut) > 0.0);
 

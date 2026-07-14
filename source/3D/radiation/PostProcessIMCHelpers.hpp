@@ -53,6 +53,7 @@ namespace PostProcessIMC
             p.stokesQ = 0.0;
             p.stokesU = 0.0;
             p.polarizationInitialized = false;
+            p.polarizationPendingMeanScatterings = 0.0;
 #endif
             emitted += p.weight;
         }
