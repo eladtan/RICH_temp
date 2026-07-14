@@ -50,6 +50,8 @@ struct FmmSolveStats
     std::size_t localMultipoleBytes = 0;
     std::size_t localLocalBytes = 0;
     std::size_t letPlanBytes = 0;
+    std::size_t localInteractionPlanBytes = 0;
+    bool localInteractionPlanReused = false;
     std::size_t operatorCacheBytes = 0;
     std::size_t operatorCacheBudgetBytes = 0;
     std::size_t operatorCacheEntries = 0;

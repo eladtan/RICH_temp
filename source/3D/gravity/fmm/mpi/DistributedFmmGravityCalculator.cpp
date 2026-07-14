@@ -844,12 +844,27 @@ void DistributedFmmGravityCalculator::solve(
     const Clock::time_point localTraversalStart = Clock::now();
     if(!localTree_.nodes().empty())
     {
-        FmmDualTreeTraversal::run(localTree_, localTree_, positions, positions,
-                                  masses, layout, localMultipoles_, localLocals_,
-                                  true, options_.thetaCritical, acceleration,
-                                  positiveKernelPotential, operatorCache_,
-                                  options_.maxOperatorCacheBytes, stats_);
+        bool planReused = false;
+        if(!localChanged && FmmDualTreeTraversal::localPlanReusable(
+                localTree_, localInteractionPlan_))
+        {
+            planReused = true;
+        }
+        else
+        {
+            FmmDualTreeTraversal::buildLocalPlan(
+                localTree_, options_.thetaCritical, localInteractionPlan_);
+        }
+        FmmDualTreeTraversal::runLocalPlan(
+            localTree_, localInteractionPlan_, positions, masses, layout,
+            localMultipoles_, localLocals_, acceleration,
+            positiveKernelPotential, operatorCache_,
+            options_.maxOperatorCacheBytes, stats_);
+        stats_.localInteractionPlanReused = planReused;
     }
+    else
+        localInteractionPlan_.clear();
+    stats_.localInteractionPlanBytes = localInteractionPlan_.bytesOwned();
     stats_.localTraversalSeconds = elapsed(localTraversalStart);
 
     const Clock::time_point letExecuteStart = Clock::now();
@@ -880,7 +895,8 @@ void DistributedFmmGravityCalculator::solve(
     stats_.operatorCacheMaxEntries = operatorCache_.maxEntries();
     stats_.bytesOwned = stats_.localTreeBytes +
         stats_.localMultipoleBytes + stats_.localLocalBytes +
-        operatorCache_.bytesOwned() + rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
+        stats_.localInteractionPlanBytes + operatorCache_.bytesOwned() +
+        rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
         lastLocalTopologySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +
         stats_.letPlanBytes + processUpExchange_.bytesOwned() +

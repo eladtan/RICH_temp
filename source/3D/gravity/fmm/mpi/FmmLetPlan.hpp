@@ -112,6 +112,9 @@ private:
     std::vector<FmmLetM2LInteraction> m2lInteractions_;
     std::vector<M2LSource> m2lSources_;
     std::vector<std::uint32_t> m2lSourceIndices_;
+    std::vector<FmmM2LOperatorCache::PreparedGeometry>
+        m2lOperatorGeometries_;
+    std::vector<std::uint32_t> m2lOperatorGeometryIndices_;
     std::vector<FmmLetP2PInteraction> p2pInteractions_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;

@@ -11,6 +11,7 @@
 
 #include "3D/gravity/fmm/FmmConfig.hpp"
 #include "3D/gravity/fmm/FmmDiagnostics.hpp"
+#include "3D/gravity/fmm/FmmDualTreeTraversal.hpp"
 #include "3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "3D/gravity/fmm/FmmRootGeometry.hpp"
 #include "3D/gravity/fmm/FmmTree.hpp"
@@ -75,6 +76,7 @@ private:
 
     FmmTree localTree_;
     FmmM2LOperatorCache operatorCache_;
+    FmmLocalInteractionPlan localInteractionPlan_;
     std::vector<double> localMultipoles_;
     std::vector<double> localLocals_;
     std::vector<FmmRankRootDescriptor> rootDescriptors_;

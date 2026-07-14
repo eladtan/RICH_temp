@@ -29,6 +29,21 @@ public:
         bool integerKey = false;
     };
 
+    // Canonical geometry can be prepared while a topology plan is built and
+    // reused for every solve in that topology epoch.  This removes repeated
+    // lattice gcd/normalization work from the hot M2L loops while preserving
+    // the same cache key and scale factor used by get().
+    struct PreparedGeometry
+    {
+        std::uint64_t keyX = 0;
+        std::uint64_t keyY = 0;
+        std::uint64_t keyZ = 0;
+        std::uint64_t keyKind = 0;
+        Vector3D direction;
+        double inverseScale = 1.0;
+        bool integerKey = false;
+    };
+
     FmmM2LOperatorCache():
         maxEntries_(0), configuredMaxEntries_(0), termCount_(0),
         budgetBytes_(0), hits_(0), misses_(0), bypasses_(0),
@@ -102,12 +117,40 @@ public:
                std::vector<double>& derivativeScratch,
                std::vector<double>& uncachedOperator)
     {
+        return getPrepared(prepare(source, target), layout,
+                           derivativeScratch, uncachedOperator);
+    }
+
+    static PreparedGeometry prepare(const FmmNode& source,
+                                    const FmmNode& target)
+    {
+        const CanonicalGeometry geometry = canonicalGeometry(source, target);
+        PreparedGeometry result;
+        result.keyX = geometry.key.x;
+        result.keyY = geometry.key.y;
+        result.keyZ = geometry.key.z;
+        result.keyKind = geometry.key.kind;
+        result.direction = geometry.direction;
+        result.inverseScale = geometry.inverseScale;
+        result.integerKey = geometry.integerKey;
+        return result;
+    }
+
+    Lookup getPrepared(const PreparedGeometry& geometry,
+                       const FmmTaylorExpansion& layout,
+                       std::vector<double>& derivativeScratch,
+                       std::vector<double>& uncachedOperator)
+    {
         if(layout.m2lTerms().size() != termCount_)
             throw UniversalError(
-                "FmmM2LOperatorCache::get: cache/layout size mismatch");
+                "FmmM2LOperatorCache::getPrepared: cache/layout size mismatch");
 
-        const CanonicalGeometry geometry = canonicalGeometry(source, target);
-        const auto found = entries_.find(geometry.key);
+        Key key;
+        key.x = geometry.keyX;
+        key.y = geometry.keyY;
+        key.z = geometry.keyZ;
+        key.kind = geometry.keyKind;
+        const auto found = entries_.find(key);
         if(found != entries_.end())
         {
             ++hits_;
@@ -122,10 +165,10 @@ public:
             ++integerKeyMisses_;
         if(entries_.size() < maxEntries_)
         {
-            auto inserted = entries_.emplace(geometry.key, std::vector<double>());
+            auto inserted = entries_.emplace(key, std::vector<double>());
             if(!inserted.second)
                 throw UniversalError(
-                    "FmmM2LOperatorCache::get: duplicate insertion");
+                    "FmmM2LOperatorCache::getPrepared: duplicate insertion");
             FmmKernels::computeM2LOperator(
                 geometry.direction, layout, derivativeScratch,
                 inserted.first->second);

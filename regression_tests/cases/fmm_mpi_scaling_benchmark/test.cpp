@@ -30,7 +30,7 @@ namespace
 constexpr std::uint64_t kVirtualBins = 4096;
 constexpr unsigned int kVirtualBinsPerAxis = 16;
 constexpr unsigned int kMortonBitsPerAxis = 4;
-constexpr std::size_t kProbeCount = 8;
+constexpr std::size_t kProbeCount = 100;
 constexpr std::size_t kMebibyte = 1024u * 1024u;
 
 struct Options
@@ -56,6 +56,12 @@ struct ProbeReference
     std::array<std::uint64_t, kProbeCount> ids{};
     std::array<Vector3D, kProbeCount> acceleration;
     std::array<double, kProbeCount> forceScale{};
+};
+
+struct ProbeErrorStats
+{
+    double maximum = 0.0;
+    double mean = 0.0;
 };
 
 constexpr std::size_t kFmmTimingMetricCount = 14;
@@ -153,6 +159,7 @@ struct SolverResult
     double warmMeanMaxSeconds = 0.0;
     double walkMaxSeconds = std::numeric_limits<double>::infinity();
     double probeScaledError = std::numeric_limits<double>::infinity();
+    double probeMeanScaledError = std::numeric_limits<double>::infinity();
     double checksum = 0.0;
     std::uint64_t bytesSent = 0;
     std::uint64_t bytesReceived = 0;
@@ -474,18 +481,23 @@ double norm(const Vector3D& value)
                      value.z * value.z);
 }
 
-double probeScaledError(
+ProbeErrorStats probeScaledErrors(
     const std::array<Vector3D, kProbeCount>& calculated,
     const ProbeReference& reference)
 {
-    double maximum = 0.0;
+    ProbeErrorStats result;
+    long double sum = 0.0L;
     for(std::size_t i = 0; i < kProbeCount; ++i)
     {
-        maximum = std::max(maximum,
+        const double scaledError =
             norm(calculated[i] - reference.acceleration[i]) /
-            std::max(reference.forceScale[i], 1e-30));
+            std::max(reference.forceScale[i], 1e-30);
+        result.maximum = std::max(result.maximum, scaledError);
+        sum += static_cast<long double>(scaledError);
     }
-    return maximum;
+    result.mean = static_cast<double>(
+        sum / static_cast<long double>(kProbeCount));
+    return result;
 }
 
 bool finiteAcceleration(const std::vector<Vector3D>& values)
@@ -797,9 +809,11 @@ SolverResult runFmm(const LocalParticles& local,
         result.finite = result.finite && globalFinite != 0;
         if(repeat == 0)
         {
-            result.probeScaledError = probeScaledError(
+            const ProbeErrorStats probeErrors = probeScaledErrors(
                 collectProbeAccelerations(local, acceleration, reference, comm),
                 reference);
+            result.probeScaledError = probeErrors.maximum;
+            result.probeMeanScaledError = probeErrors.mean;
             result.checksum = accelerationChecksum(acceleration, local.ids, comm);
         }
 
@@ -903,9 +917,11 @@ SolverResult runQuadrupole(const LocalParticles& local,
         result.finite = result.finite && globalFinite != 0;
         if(repeat == 0)
         {
-            result.probeScaledError = probeScaledError(
+            const ProbeErrorStats probeErrors = probeScaledErrors(
                 collectProbeAccelerations(local, acceleration, reference, comm),
                 reference);
+            result.probeScaledError = probeErrors.maximum;
+            result.probeMeanScaledError = probeErrors.mean;
             result.checksum = accelerationChecksum(acceleration, local.ids, comm);
         }
         reportStage("quadrupole_repeat_" + std::to_string(repeat) +
@@ -975,13 +991,19 @@ int main(int argc, char** argv)
             std::isfinite(quadrupole.walkMaxSeconds);
         const bool accuracyPass =
             fmm.probeScaledError < 5e-3 &&
-            quadrupole.probeScaledError < 5e-2;
+            quadrupole.probeScaledError < 5e-2 &&
+            fmm.probeMeanScaledError >= 0.0 &&
+            fmm.probeMeanScaledError <= fmm.probeScaledError &&
+            quadrupole.probeMeanScaledError >= 0.0 &&
+            quadrupole.probeMeanScaledError <= quadrupole.probeScaledError;
         const bool placementPass =
             nodes == options.expectedNodes &&
             size == options.expectedNodes * options.expectedRanksPerNode;
         const bool finite = timingFinite && fmm.finite && quadrupole.finite &&
             std::isfinite(fmm.probeScaledError) &&
             std::isfinite(quadrupole.probeScaledError) &&
+            std::isfinite(fmm.probeMeanScaledError) &&
+            std::isfinite(quadrupole.probeMeanScaledError) &&
             std::isfinite(fmm.checksum) &&
             std::isfinite(quadrupole.checksum);
         const bool passed = placementPass && accuracyPass && finite &&
@@ -1038,7 +1060,9 @@ int main(int argc, char** argv)
                    << "fmm_let_operator_cache_bypasses "
                    << "fmm_process_operator_cache_misses "
                    << "fmm_process_operator_cache_bypasses "
-                   << "fmm_topology_reused\n";
+                   << "fmm_topology_reused probe_count "
+                   << "fmm_probe_mean_scaled_error "
+                   << "quadrupole_probe_mean_scaled_error\n";
             output << "row " << options.globalParticles << " "
                    << options.expectedNodes << " " << size << " " << nodes
                    << " " << options.expectedRanksPerNode << " "
@@ -1077,7 +1101,10 @@ int main(int argc, char** argv)
                    << fmm.letOperatorCacheBypasses << " "
                    << fmm.processOperatorCacheMisses << " "
                    << fmm.processOperatorCacheBypasses << " "
-                   << (fmm.topologyReused ? 1 : 0) << "\n";
+                   << (fmm.topologyReused ? 1 : 0) << " "
+                   << kProbeCount << " "
+                   << fmm.probeMeanScaledError << " "
+                   << quadrupole.probeMeanScaledError << "\n";
             output << "profile_columns mode category metric rank_min rank_mean "
                    << "rank_max max_over_mean\n";
             writeFmmProfile(output, "cold", fmm.coldProfile);
@@ -1091,9 +1118,14 @@ int main(int argc, char** argv)
                       << " fmm_seconds=" << fmm.bestMaxSeconds
                       << " quadrupole_seconds="
                       << quadrupole.bestMaxSeconds
-                      << " fmm_probe_error=" << fmm.probeScaledError
-                      << " quadrupole_probe_error="
+                      << " probe_count=" << kProbeCount
+                      << " fmm_probe_max_error=" << fmm.probeScaledError
+                      << " fmm_probe_mean_error="
+                      << fmm.probeMeanScaledError
+                      << " quadrupole_probe_max_error="
                       << quadrupole.probeScaledError
+                      << " quadrupole_probe_mean_error="
+                      << quadrupole.probeMeanScaledError
                       << " speedup=" << speedup
                       << " fmm_warm_seconds=" << fmm.warmBestMaxSeconds
                       << " operator_cache_mib="

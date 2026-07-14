@@ -254,6 +254,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
     m2lInteractions_.clear();
     m2lSources_.clear();
     m2lSourceIndices_.clear();
+    m2lOperatorGeometries_.clear();
+    m2lOperatorGeometryIndices_.clear();
     p2pInteractions_.clear();
     subscriptionsToSend_.clear();
     subscriptionsReceived_.clear();
@@ -624,6 +626,46 @@ void FmmLetPlan::build(const FmmTree& localTree,
         throw UniversalError(
             "FmmLetPlan::build: incomplete LET M2L source index table");
 
+    typedef std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+                       std::uint64_t, std::uint64_t> GeometryKey;
+    std::map<GeometryKey, std::uint32_t> geometryIndexByKey;
+    m2lOperatorGeometryIndices_.reserve(m2lInteractions_.size());
+    for(std::size_t interactionIndex = 0;
+        interactionIndex < m2lInteractions_.size(); ++interactionIndex)
+    {
+        const FmmLetM2LInteraction& interaction =
+            m2lInteractions_[interactionIndex];
+        const std::uint32_t sourceIndex = m2lSourceIndices_[interactionIndex];
+        const FmmM2LOperatorCache::PreparedGeometry geometry =
+            FmmM2LOperatorCache::prepare(
+                m2lSources_[sourceIndex].node,
+                localTree.nodes()[interaction.targetNode]);
+        std::uint64_t inverseScaleBits = 0;
+        static_assert(sizeof(inverseScaleBits) == sizeof(geometry.inverseScale),
+                      "prepared inverse scale must be 64-bit");
+        std::memcpy(&inverseScaleBits, &geometry.inverseScale,
+                    sizeof(inverseScaleBits));
+        const GeometryKey key = std::make_tuple(
+            geometry.keyX, geometry.keyY, geometry.keyZ,
+            geometry.keyKind, inverseScaleBits);
+        auto inserted = geometryIndexByKey.emplace(
+            key, static_cast<std::uint32_t>(m2lOperatorGeometries_.size()));
+        if(inserted.second)
+        {
+            if(m2lOperatorGeometries_.size() >= static_cast<std::size_t>(
+                    std::numeric_limits<std::uint32_t>::max()))
+                throw UniversalError(
+                    "FmmLetPlan::build: too many prepared M2L geometries");
+            inserted.first->second = static_cast<std::uint32_t>(
+                m2lOperatorGeometries_.size());
+            m2lOperatorGeometries_.push_back(geometry);
+        }
+        m2lOperatorGeometryIndices_.push_back(inserted.first->second);
+    }
+    if(m2lOperatorGeometryIndices_.size() != m2lInteractions_.size())
+        throw UniversalError(
+            "FmmLetPlan::build: incomplete prepared M2L geometry table");
+
     std::sort(p2pInteractions_.begin(), p2pInteractions_.end(),
         [](const FmmLetP2PInteraction& a, const FmmLetP2PInteraction& b)
         {
@@ -745,6 +787,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
     m2lInteractions_.shrink_to_fit();
     m2lSources_.shrink_to_fit();
     m2lSourceIndices_.shrink_to_fit();
+    m2lOperatorGeometries_.shrink_to_fit();
+    m2lOperatorGeometryIndices_.shrink_to_fit();
     p2pInteractions_.shrink_to_fit();
     for(auto* map : {&subscriptionsToSend_, &subscriptionsReceived_})
     {
@@ -791,6 +835,10 @@ std::size_t FmmLetPlan::bytesOwned() const
         m2lSources_.capacity(), sizeof(M2LSource)));
     result = saturatingAdd(result, saturatingMultiply(
         m2lSourceIndices_.capacity(), sizeof(std::uint32_t)));
+    result = saturatingAdd(result, saturatingMultiply(
+        m2lOperatorGeometries_.capacity(), sizeof(FmmM2LOperatorCache::PreparedGeometry)));
+    result = saturatingAdd(result, saturatingMultiply(
+        m2lOperatorGeometryIndices_.capacity(), sizeof(std::uint32_t)));
     result = saturatingAdd(result, saturatingMultiply(
         p2pInteractions_.capacity(), sizeof(FmmLetP2PInteraction)));
 
@@ -1210,7 +1258,8 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     uncachedOperator.reserve(layout.m2lTerms().size());
     const Clock::time_point m2lStart = Clock::now();
     if(remoteMultipoles.size() != m2lSources_.size() ||
-       m2lSourceIndices_.size() != m2lInteractions_.size())
+       m2lSourceIndices_.size() != m2lInteractions_.size() ||
+       m2lOperatorGeometryIndices_.size() != m2lInteractions_.size())
         throw UniversalError(
             "FmmLetPlan::execute: resolved LET M2L source table mismatch");
     for(std::size_t i = 0; i < m2lSources_.size(); ++i)
@@ -1233,11 +1282,18 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         if(static_cast<std::size_t>(sourceIndex) >= resolvedM2LSources.size())
             throw UniversalError(
                 "FmmLetPlan::execute: invalid resolved LET M2L source index");
+        const std::uint32_t geometryIndex =
+            m2lOperatorGeometryIndices_[interactionIndex];
+        if(static_cast<std::size_t>(geometryIndex) >=
+           m2lOperatorGeometries_.size())
+            throw UniversalError(
+                "FmmLetPlan::execute: invalid prepared LET M2L geometry index");
         const FmmNode& source = resolvedM2LSources[sourceIndex];
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
         const FmmM2LOperatorCache::Lookup translationOperator =
-            operatorCache.get(source, target, layout, derivativeScratch,
-                              uncachedOperator);
+            operatorCache.getPrepared(m2lOperatorGeometries_[geometryIndex],
+                                      layout, derivativeScratch,
+                                      uncachedOperator);
 
         FmmKernels::translateM2L(source, target, layout,
                                  remoteCoefficients, localLocals,
