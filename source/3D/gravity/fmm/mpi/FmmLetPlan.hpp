@@ -84,6 +84,13 @@ private:
         std::uint64_t halfUnits = 0;
     };
 
+    struct M2LSource
+    {
+        int sourceRank = -1;
+        std::uint64_t spatialKey = 0;
+        FmmNode node;
+    };
+
     struct PendingPair
     {
         std::size_t targetNode = 0;
@@ -103,6 +110,8 @@ private:
     std::unordered_map<int,
         std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>> remoteDescriptors_;
     std::vector<FmmLetM2LInteraction> m2lInteractions_;
+    std::vector<M2LSource> m2lSources_;
+    std::vector<std::uint32_t> m2lSourceIndices_;
     std::vector<FmmLetP2PInteraction> p2pInteractions_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;

@@ -252,6 +252,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
     remoteLatticeRoots_.clear();
     remoteLatticeRoots_.resize(rootDescriptors.size());
     m2lInteractions_.clear();
+    m2lSources_.clear();
+    m2lSourceIndices_.clear();
     p2pInteractions_.clear();
     subscriptionsToSend_.clear();
     subscriptionsReceived_.clear();
@@ -560,6 +562,68 @@ void FmmLetPlan::build(const FmmTree& localTree,
     if(duplicateM2L != m2lInteractions_.end())
         throw UniversalError("FmmLetPlan::build: duplicate LET M2L interaction");
 
+    // Resolve each unique remote M2L source once while the topology is built.
+    // Warm solves keep target-major interaction order for local-locality, but
+    // use a compact direct source index instead of repeating descriptor hash
+    // lookups and lattice-key reconstruction for every interaction.
+    std::map<std::pair<int, std::uint64_t>, std::uint32_t> sourceIndexByKey;
+    for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
+        sourceIndexByKey.emplace(
+            std::make_pair(interaction.sourceRank, interaction.sourceKey), 0u);
+    if(sourceIndexByKey.size() > static_cast<std::size_t>(
+            std::numeric_limits<std::uint32_t>::max()))
+        throw UniversalError("FmmLetPlan::build: too many unique LET M2L sources");
+
+    m2lSources_.reserve(sourceIndexByKey.size());
+    std::uint32_t nextSourceIndex = 0;
+    for(auto& sourceEntry : sourceIndexByKey)
+    {
+        sourceEntry.second = nextSourceIndex++;
+        const int sourceRank = sourceEntry.first.first;
+        const std::uint64_t sourceKey = sourceEntry.first.second;
+        const auto descriptorRank = remoteDescriptors_.find(sourceRank);
+        if(descriptorRank == remoteDescriptors_.end())
+            throw UniversalError(
+                "FmmLetPlan::build: missing resolved M2L source rank");
+        const auto descriptorIt = descriptorRank->second.find(sourceKey);
+        if(descriptorIt == descriptorRank->second.end())
+            throw UniversalError(
+                "FmmLetPlan::build: missing resolved M2L source descriptor");
+        if(sourceRank < 0 || static_cast<std::size_t>(sourceRank) >=
+                              remoteLatticeRoots_.size())
+            throw UniversalError(
+                "FmmLetPlan::build: missing resolved M2L lattice root");
+
+        FmmNode source;
+        source.center = descriptorIt->second.centerVector();
+        source.halfSize = descriptorIt->second.halfSize;
+        source.radius = descriptorIt->second.geometricRadius();
+        const RemoteLatticeRoot& latticeRoot =
+            remoteLatticeRoots_[static_cast<std::size_t>(sourceRank)];
+        applyRemoteLatticeMetadata(latticeRoot.latticeId, latticeRoot.center,
+                                   latticeRoot.halfUnits, sourceKey, source);
+
+        M2LSource resolved;
+        resolved.sourceRank = sourceRank;
+        resolved.spatialKey = sourceKey;
+        resolved.node = source;
+        m2lSources_.push_back(resolved);
+    }
+
+    m2lSourceIndices_.reserve(m2lInteractions_.size());
+    for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
+    {
+        const auto found = sourceIndexByKey.find(
+            std::make_pair(interaction.sourceRank, interaction.sourceKey));
+        if(found == sourceIndexByKey.end())
+            throw UniversalError(
+                "FmmLetPlan::build: unresolved LET M2L source index");
+        m2lSourceIndices_.push_back(found->second);
+    }
+    if(m2lSourceIndices_.size() != m2lInteractions_.size())
+        throw UniversalError(
+            "FmmLetPlan::build: incomplete LET M2L source index table");
+
     std::sort(p2pInteractions_.begin(), p2pInteractions_.end(),
         [](const FmmLetP2PInteraction& a, const FmmLetP2PInteraction& b)
         {
@@ -679,6 +743,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
     for(auto& entry : remoteDescriptors_)
         entry.second.rehash(0);
     m2lInteractions_.shrink_to_fit();
+    m2lSources_.shrink_to_fit();
+    m2lSourceIndices_.shrink_to_fit();
     p2pInteractions_.shrink_to_fit();
     for(auto* map : {&subscriptionsToSend_, &subscriptionsReceived_})
     {
@@ -721,6 +787,10 @@ std::size_t FmmLetPlan::bytesOwned() const
 
     result = saturatingAdd(result, saturatingMultiply(
         m2lInteractions_.capacity(), sizeof(FmmLetM2LInteraction)));
+    result = saturatingAdd(result, saturatingMultiply(
+        m2lSources_.capacity(), sizeof(M2LSource)));
+    result = saturatingAdd(result, saturatingMultiply(
+        m2lSourceIndices_.capacity(), sizeof(std::uint32_t)));
     result = saturatingAdd(result, saturatingMultiply(
         p2pInteractions_.capacity(), sizeof(FmmLetP2PInteraction)));
 
@@ -1045,6 +1115,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     addRequestedBytes(expectedParticleRecords, sizeof(RemoteParticlePayload));
     addRequestedBytes(totalCoefficientCount, sizeof(double));
     addRequestedBytes(totalParticleCount, sizeof(FmmWireParticle));
+    addRequestedBytes(m2lSources_.size(), sizeof(FmmNode));
     if(decodedRequestedBytes == std::numeric_limits<std::size_t>::max() ||
        decodedRequestedBytes > maxRemoteBytes - received.totalBytes())
         abortLetInvariant(comm_,
@@ -1054,8 +1125,10 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     std::vector<RemoteParticlePayload> remoteParticles;
     std::vector<double> remoteCoefficients(totalCoefficientCount);
     std::vector<FmmWireParticle> remoteParticleStorage(totalParticleCount);
+    std::vector<FmmNode> resolvedM2LSources;
     remoteMultipoles.reserve(expectedMultipoleRecords);
     remoteParticles.reserve(expectedParticleRecords);
+    resolvedM2LSources.reserve(m2lSources_.size());
 
     std::size_t decodedBytes = 0;
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
@@ -1066,6 +1139,8 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         remoteCoefficients.capacity(), sizeof(double)));
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
         remoteParticleStorage.capacity(), sizeof(FmmWireParticle)));
+    decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
+        resolvedM2LSources.capacity(), sizeof(FmmNode)));
     if(decodedBytes == std::numeric_limits<std::size_t>::max() ||
        decodedBytes > maxRemoteBytes - received.totalBytes())
         abortLetInvariant(comm_,
@@ -1134,33 +1209,31 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     std::vector<double> uncachedOperator;
     uncachedOperator.reserve(layout.m2lTerms().size());
     const Clock::time_point m2lStart = Clock::now();
-    for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
+    if(remoteMultipoles.size() != m2lSources_.size() ||
+       m2lSourceIndices_.size() != m2lInteractions_.size())
+        throw UniversalError(
+            "FmmLetPlan::execute: resolved LET M2L source table mismatch");
+    for(std::size_t i = 0; i < m2lSources_.size(); ++i)
     {
-        const auto descriptorRank = remoteDescriptors_.find(interaction.sourceRank);
-        const RemoteMultipolePayload* coefficientPayload = findPayload(
-            remoteMultipoles, interaction.sourceRank, interaction.sourceKey);
-        if(descriptorRank == remoteDescriptors_.end() ||
-           coefficientPayload == nullptr)
-            throw UniversalError("FmmLetPlan::execute: missing remote M2L payload");
-        const auto descriptorIt = descriptorRank->second.find(interaction.sourceKey);
-        if(descriptorIt == descriptorRank->second.end())
-            throw UniversalError("FmmLetPlan::execute: missing remote M2L descriptor");
-
-        FmmNode source;
-        source.center = descriptorIt->second.centerVector();
-        source.halfSize = descriptorIt->second.halfSize;
-        source.radius = descriptorIt->second.geometricRadius();
-        source.multipoleOffset = coefficientPayload->coefficientOffset;
-        if(interaction.sourceRank < 0 ||
-           static_cast<std::size_t>(interaction.sourceRank) >=
-               remoteLatticeRoots_.size())
+        if(remoteMultipoles[i].sourceRank != m2lSources_[i].sourceRank ||
+           remoteMultipoles[i].spatialKey != m2lSources_[i].spatialKey)
             throw UniversalError(
-                "FmmLetPlan::execute: missing remote lattice root");
-        const RemoteLatticeRoot& latticeRoot =
-            remoteLatticeRoots_[static_cast<std::size_t>(interaction.sourceRank)];
-        applyRemoteLatticeMetadata(latticeRoot.latticeId, latticeRoot.center,
-                                   latticeRoot.halfUnits, interaction.sourceKey,
-                                   source);
+                "FmmLetPlan::execute: resolved LET M2L source order mismatch");
+        FmmNode source = m2lSources_[i].node;
+        source.multipoleOffset = remoteMultipoles[i].coefficientOffset;
+        resolvedM2LSources.push_back(source);
+    }
+    std::vector<RemoteMultipolePayload>().swap(remoteMultipoles);
+    for(std::size_t interactionIndex = 0;
+        interactionIndex < m2lInteractions_.size(); ++interactionIndex)
+    {
+        const FmmLetM2LInteraction& interaction =
+            m2lInteractions_[interactionIndex];
+        const std::uint32_t sourceIndex = m2lSourceIndices_[interactionIndex];
+        if(static_cast<std::size_t>(sourceIndex) >= resolvedM2LSources.size())
+            throw UniversalError(
+                "FmmLetPlan::execute: invalid resolved LET M2L source index");
+        const FmmNode& source = resolvedM2LSources[sourceIndex];
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
         const FmmM2LOperatorCache::Lookup translationOperator =
             operatorCache.get(source, target, layout, derivativeScratch,
