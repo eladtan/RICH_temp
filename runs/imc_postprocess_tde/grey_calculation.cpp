@@ -204,13 +204,22 @@ void RunGreyPostprocess(
                 if (greyAdaptiveActiveThisGen) {
                     double const learnedMinFactorThisGen =
                         greyLearnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
+                    size_t const learnedMinPhotonsThisGen =
+                        greyFinalThisGen ? cfg.adaptiveSourceLearnedMinPhotons : 0;
+                    size_t const learnedMaxPhotonsThisGen =
+                        greyFinalThisGen ? cfg.adaptiveSourceLearnedMaxPhotons : 0;
+                    double const scorePowerThisGen =
+                        greyFinalThisGen ? cfg.adaptiveSourceScorePower : 1.0;
                     greyPhysics->setAdaptiveSourceCellScores(
                         greyAdaptive.scoreByCellID,
                         cfg.adaptiveSourceStrength,
                         cfg.adaptiveSourceMaxFactor,
                         cfg.adaptiveSourceLearnedReserveFrac,
                         learnedMinFactorThisGen,
-                        greyAdaptive.observerBudgetMultiplier);
+                        greyAdaptive.observerBudgetMultiplier,
+                        learnedMinPhotonsThisGen,
+                        learnedMaxPhotonsThisGen,
+                        scorePowerThisGen);
                 } else {
                     greyPhysics->clearAdaptiveSourceCellScores();
                 }
@@ -221,7 +230,7 @@ void RunGreyPostprocess(
                 else if (greyLearnedProbeThisGen)
                     greyPhysics->setSourceEmissionControl(true, false, 1, 1);
                 else if (cfg.adaptiveSourceCells && greyFinalThisGen)
-                    greyPhysics->setSourceEmissionControl(true, false, 1, 100, 2000);
+                    greyPhysics->setSourceEmissionControl(true, false, 1, 1, 0);
                 else
                     greyPhysics->clearSourceEmissionControl();
                 greyObserver->resetGenerationSourceCellEscapeStats();
@@ -234,6 +243,18 @@ void RunGreyPostprocess(
 
                 auto greyAllocation = ReduceSourceAllocationSummary(
                     greyPhysics->getLastSourceAllocationSummary());
+                size_t const photonHistMin = greyFinalThisGen
+                    ? cfg.adaptiveSourceLearnedMinPhotons
+                    : 1;
+                size_t const photonHistMax = greyFinalThisGen
+                    ? cfg.adaptiveSourceLearnedMaxPhotons
+                    : std::max(photonHistMin, greyPhotonsThisGen * 20);
+                auto greyPhotonDistribution = ReduceSourcePhotonDistribution(
+                    greyPhysics->getLastSourcePhotonsPerCell(),
+                    photonHistMin,
+                    photonHistMax,
+                    rank,
+                    mpiSize);
                 auto greySourceStats = greyObserver->getGenerationSourceCellEscapeStats();
                 greyObserver->resetGenerationSourceCellEscapeStats();
                 ObserverQualityDiagnostics greyObserverQuality;
@@ -249,6 +270,7 @@ void RunGreyPostprocess(
                 bool const greyIncludeGenerationInFinal = greyFinalThisGen;
                 PrintAdaptiveGenerationStats(
                     "Grey", cfg, greyAdaptive, greyUpdate, greyAllocation,
+                    greyPhotonDistribution,
                     greyObserverQuality, gen, greyTotalGenerations,
                     greyBurninGenerations, greyAdaptiveActiveThisGen, rank);
                 PrintAdaptiveIterationSummary(

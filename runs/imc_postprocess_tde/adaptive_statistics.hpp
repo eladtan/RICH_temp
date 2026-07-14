@@ -176,6 +176,35 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
     bool includeInIntegratedStats);
 RadiationIMC::SourceAllocationSummary ReduceSourceAllocationSummary(
     RadiationIMC::SourceAllocationSummary local);
+struct SourcePhotonDistribution
+{
+    struct Bin
+    {
+        size_t lowerInclusive = 0;
+        size_t upperInclusive = 0;
+        unsigned long long cellCount = 0;
+        unsigned long long photonCount = 0;
+    };
+
+    std::vector<Bin> bins;
+    unsigned long long emittingCells = 0;
+    unsigned long long totalPhotons = 0;
+    double p05 = 0.0;
+    double p25 = 0.0;
+    double p50 = 0.0;
+    double p75 = 0.0;
+    double p95 = 0.0;
+};
+SourcePhotonDistribution ReduceSourcePhotonDistribution(
+    std::vector<size_t> const& localPhotonsPerCell,
+    size_t binMinPhotons,
+    size_t binMaxPhotons,
+    int rank,
+    int mpiSize);
+void PrintSourcePhotonDistribution(
+    std::string const& label,
+    SourcePhotonDistribution const& dist,
+    int rank);
 RadiationIMC::GroupSamplingDiagnostics ReduceGroupSamplingDiagnostics(
     RadiationIMC::GroupSamplingDiagnostics local);
 void AccumulateGroupSamplingDiagnostics(
@@ -204,6 +233,7 @@ void PrintAdaptiveGenerationStats(
     AdaptiveSourceState const& state,
     AdaptiveSourceUpdateSummary const& update,
     RadiationIMC::SourceAllocationSummary allocation,
+    SourcePhotonDistribution const& photonDistribution,
     ObserverQualityDiagnostics const& observerQuality,
     size_t gen,
     size_t totalGenerations,

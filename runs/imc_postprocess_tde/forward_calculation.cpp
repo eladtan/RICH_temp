@@ -145,13 +145,22 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState);
                     double const learnedMinFactorThisGen =
                         learnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
+                    size_t const learnedMinPhotonsThisGen =
+                        finalThisGen ? cfg.adaptiveSourceLearnedMinPhotons : 0;
+                    size_t const learnedMaxPhotonsThisGen =
+                        finalThisGen ? cfg.adaptiveSourceLearnedMaxPhotons : 0;
+                    double const scorePowerThisGen =
+                        finalThisGen ? cfg.adaptiveSourceScorePower : 1.0;
                     physics->setAdaptiveSourceCellScores(
                         std::move(combinedSourceScores),
                         cfg.adaptiveSourceStrength,
                         cfg.adaptiveSourceMaxFactor,
                         cfg.adaptiveSourceLearnedReserveFrac,
                         learnedMinFactorThisGen,
-                        mgAdaptive.observerBudgetMultiplier);
+                        mgAdaptive.observerBudgetMultiplier,
+                        learnedMinPhotonsThisGen,
+                        learnedMaxPhotonsThisGen,
+                        scorePowerThisGen);
                 } else {
                     physics->clearAdaptiveSourceCellScores();
                 }
@@ -162,7 +171,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 else if (learnedProbeThisGen)
                     physics->setSourceEmissionControl(true, false, 1, 1);
                 else if (cfg.adaptiveSourceCells && finalThisGen)
-                    physics->setSourceEmissionControl(true, false, 1, 1000, 5000);
+                    physics->setSourceEmissionControl(true, false, 1, 1, 0);
                 else
                     physics->clearSourceEmissionControl();
                 observer->resetGenerationSourceCellEscapeStats();
@@ -193,6 +202,18 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                 auto mgAllocation = ReduceSourceAllocationSummary(
                     physics->getLastSourceAllocationSummary());
+                size_t const photonHistMin = finalThisGen
+                    ? cfg.adaptiveSourceLearnedMinPhotons
+                    : 1;
+                size_t const photonHistMax = finalThisGen
+                    ? cfg.adaptiveSourceLearnedMaxPhotons
+                    : std::max(photonHistMin, photonsThisGen * 20);
+                auto mgPhotonDistribution = ReduceSourcePhotonDistribution(
+                    physics->getLastSourcePhotonsPerCell(),
+                    photonHistMin,
+                    photonHistMax,
+                    rank,
+                    mpiSize);
                 auto mgGroupSamplingDiag = ReduceGroupSamplingDiagnostics(
                     physics->getLastGroupSamplingDiagnostics());
                 mgLastGroupSamplingDiag = mgGroupSamplingDiag;
@@ -240,6 +261,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 bool const includeGenerationInFinal = finalThisGen;
                 PrintAdaptiveGenerationStats(
                     "MG", cfg, mgAdaptive, mgUpdate, mgAllocation,
+                    mgPhotonDistribution,
                     mgObserverQuality, gen, mgTotalGenerations,
                     mgBurninGenerations, adaptiveActiveThisGen, rank);
                 PrintAdaptiveIterationSummary(

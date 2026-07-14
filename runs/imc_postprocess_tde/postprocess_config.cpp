@@ -52,6 +52,10 @@ void printUsage(int rank)
               << "  --adaptive-source-burnin-photon-multiplier N Legacy flag accepted; fixed cadence ignores it\n"
               << "  --adaptive-source-learned-reserve-frac F (default: 0.25)\n"
               << "  --adaptive-source-learned-min-factor F (default: 20)\n"
+              << "  --adaptive-source-learned-min-photons N  Min photons/cell for learned cells (default: 200)\n"
+              << "  --adaptive-source-learned-max-photons N  Max photons/cell for top-scoring learned cells (default: 5000)\n"
+              << "  --adaptive-source-score-power F          Score shaping power for photon allocation (default: 2)\n"
+              << "  --adaptive-source-weight-score-frac F    Weight-squared fraction in learned score (default: 1)\n"
               << "  --adaptive-observer-equity       Boost cells feeding low-stat observers (default)\n"
               << "  --no-adaptive-observer-equity\n"
               << "  --adaptive-observer-extra-budget-frac F (default: 0.25)\n"
@@ -188,6 +192,10 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--adaptive-source-burnin-photon-multiplier" && i + 1 < argc) { cfg.adaptiveSourceBurninPhotonMultiplier = static_cast<size_t>(std::atoi(argv[++i])); }
         else if (arg == "--adaptive-source-learned-reserve-frac" && i + 1 < argc) { cfg.adaptiveSourceLearnedReserveFrac = std::atof(argv[++i]); }
         else if (arg == "--adaptive-source-learned-min-factor" && i + 1 < argc) { cfg.adaptiveSourceLearnedMinFactor = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-learned-min-photons" && i + 1 < argc) { cfg.adaptiveSourceLearnedMinPhotons = static_cast<size_t>(std::atoll(argv[++i])); }
+        else if (arg == "--adaptive-source-learned-max-photons" && i + 1 < argc) { cfg.adaptiveSourceLearnedMaxPhotons = static_cast<size_t>(std::atoll(argv[++i])); }
+        else if (arg == "--adaptive-source-score-power" && i + 1 < argc) { cfg.adaptiveSourceScorePower = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-source-weight-score-frac" && i + 1 < argc) { cfg.adaptiveSourceWeightScoreFrac = std::atof(argv[++i]); }
         else if (arg == "--adaptive-observer-equity") { cfg.adaptiveObserverEquity = true; }
         else if (arg == "--no-adaptive-observer-equity") { cfg.adaptiveObserverEquity = false; }
         else if (arg == "--adaptive-observer-extra-budget-frac" && i + 1 < argc) { cfg.adaptiveObserverExtraBudgetFrac = std::atof(argv[++i]); }
@@ -261,6 +269,10 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
     if (cfg.adaptiveSourceMaxFactor < 1.0 || !std::isfinite(cfg.adaptiveSourceMaxFactor)) { if (rank == 0) std::cerr << "--adaptive-source-max-factor must be finite and >= 1\n"; return false; }
     if (cfg.adaptiveSourceLearnedReserveFrac < 0.0 || cfg.adaptiveSourceLearnedReserveFrac > 1.0 || !std::isfinite(cfg.adaptiveSourceLearnedReserveFrac)) { if (rank == 0) std::cerr << "--adaptive-source-learned-reserve-frac must be finite in [0,1]\n"; return false; }
     if (cfg.adaptiveSourceLearnedMinFactor < 1.0 || !std::isfinite(cfg.adaptiveSourceLearnedMinFactor)) { if (rank == 0) std::cerr << "--adaptive-source-learned-min-factor must be finite and >= 1\n"; return false; }
+    if (cfg.adaptiveSourceLearnedMinPhotons == 0) { if (rank == 0) std::cerr << "--adaptive-source-learned-min-photons must be > 0\n"; return false; }
+    if (cfg.adaptiveSourceLearnedMaxPhotons <= cfg.adaptiveSourceLearnedMinPhotons) { if (rank == 0) std::cerr << "--adaptive-source-learned-max-photons must be > --adaptive-source-learned-min-photons\n"; return false; }
+    if (cfg.adaptiveSourceScorePower < 0.0 || !std::isfinite(cfg.adaptiveSourceScorePower)) { if (rank == 0) std::cerr << "--adaptive-source-score-power must be finite and >= 0\n"; return false; }
+    if (cfg.adaptiveSourceWeightScoreFrac < 0.0 || cfg.adaptiveSourceWeightScoreFrac > 1.0 || !std::isfinite(cfg.adaptiveSourceWeightScoreFrac)) { if (rank == 0) std::cerr << "--adaptive-source-weight-score-frac must be finite in [0,1]\n"; return false; }
     if (cfg.adaptiveObserverExtraBudgetFrac < 0.0 || !std::isfinite(cfg.adaptiveObserverExtraBudgetFrac)) { if (rank == 0) std::cerr << "--adaptive-observer-extra-budget-frac must be finite and nonnegative\n"; return false; }
     if (cfg.adaptiveObserverTargetNeff <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetNeff)) { if (rank == 0) std::cerr << "--adaptive-observer-target-neff must be finite and positive\n"; return false; }
     if (cfg.adaptiveObserverTargetPolSnr <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetPolSnr)) { if (rank == 0) std::cerr << "--adaptive-observer-target-pol-snr must be finite and positive\n"; return false; }

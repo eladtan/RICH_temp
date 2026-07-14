@@ -260,7 +260,10 @@ public:
                                      double strength, double maxFactor,
                                      double learnedReserveFrac,
                                      double learnedMinFactor,
-                                     double observerBudgetMultiplier);
+                                     double observerBudgetMultiplier,
+                                     size_t learnedMinPhotons = 0,
+                                     size_t learnedMaxPhotons = 0,
+                                     double scorePower = 1.0);
     void clearAdaptiveSourceCellScores();
 
     struct GroupSamplingDiagnostics
@@ -515,6 +518,9 @@ private:
     double adaptiveSourceLearnedReserveFrac_ = 0.0;
     double adaptiveSourceLearnedMinFactor_ = 1.0;
     double adaptiveSourceObserverBudgetMultiplier_ = 1.0;
+    size_t adaptiveSourceLearnedMinPhotons_ = 0;
+    size_t adaptiveSourceLearnedMaxPhotons_ = 0;
+    double adaptiveSourceScorePower_ = 1.0;
     bool sourceEmissionControlEnabled_ = false;
     bool sourceEmissionUseLearnedScores_ = false;
     bool sourceEmissionIncludeUniformBase_ = true;

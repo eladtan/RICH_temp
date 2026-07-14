@@ -49,6 +49,10 @@ struct Config
     size_t adaptiveSourceBurninPhotonMultiplier = 2;
     double adaptiveSourceLearnedReserveFrac = 0.25;
     double adaptiveSourceLearnedMinFactor = 20.0;
+    size_t adaptiveSourceLearnedMinPhotons = 200;
+    size_t adaptiveSourceLearnedMaxPhotons = 5000;
+    double adaptiveSourceScorePower = 2.0;
+    double adaptiveSourceWeightScoreFrac = 1.0;
     bool adaptiveObserverEquity = true;
     double adaptiveObserverExtraBudgetFrac = 2;
     double adaptiveObserverTargetNeff = 1000000;

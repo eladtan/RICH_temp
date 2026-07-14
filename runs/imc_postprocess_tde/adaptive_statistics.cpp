@@ -832,6 +832,220 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
     return local;
 }
 
+namespace {
+
+std::vector<std::pair<size_t, size_t>> MakePhotonHistogramEdges(
+    size_t binMinPhotons,
+    size_t binMaxPhotons)
+{
+    std::vector<std::pair<size_t, size_t>> edges;
+    if (binMinPhotons == 0)
+        binMinPhotons = 1;
+    if (binMaxPhotons < binMinPhotons)
+        binMaxPhotons = binMinPhotons;
+
+    edges.emplace_back(0, 0);
+    if (binMinPhotons > 1)
+        edges.emplace_back(1, binMinPhotons - 1);
+
+    size_t const width = 200;
+    for (size_t lo = binMinPhotons; lo <= binMaxPhotons; lo += width) {
+        size_t const hi = std::min(lo + width - 1, binMaxPhotons);
+        edges.emplace_back(lo, hi);
+    }
+    if (edges.empty() || edges.back().second < binMaxPhotons)
+        edges.emplace_back(binMaxPhotons, binMaxPhotons);
+    edges.emplace_back(binMaxPhotons + 1, std::numeric_limits<size_t>::max() / 4);
+
+    std::vector<std::pair<size_t, size_t>> uniqueEdges;
+    uniqueEdges.reserve(edges.size());
+    for (auto const& edge : edges) {
+        if (!uniqueEdges.empty() &&
+            uniqueEdges.back().first == edge.first &&
+            uniqueEdges.back().second == edge.second)
+            continue;
+        uniqueEdges.push_back(edge);
+    }
+    return uniqueEdges;
+}
+
+size_t BinIndexForPhotonCount(
+    std::vector<std::pair<size_t, size_t>> const& edges,
+    size_t photons)
+{
+    for (size_t i = 0; i < edges.size(); ++i) {
+        if (photons >= edges[i].first && photons <= edges[i].second)
+            return i;
+    }
+    return edges.empty() ? 0 : edges.size() - 1;
+}
+
+void ComputePhotonPercentiles(
+    std::vector<size_t> const& photonCounts,
+    SourcePhotonDistribution& dist)
+{
+    if (photonCounts.empty())
+        return;
+
+    std::vector<double> values;
+    values.reserve(photonCounts.size());
+    for (size_t const n : photonCounts)
+        values.push_back(static_cast<double>(n));
+
+    dist.p05 = Percentile(values, 0.05);
+    dist.p25 = Percentile(values, 0.25);
+    dist.p50 = Percentile(values, 0.50);
+    dist.p75 = Percentile(values, 0.75);
+    dist.p95 = Percentile(values, 0.95);
+}
+
+} // namespace
+
+SourcePhotonDistribution ReduceSourcePhotonDistribution(
+    std::vector<size_t> const& localPhotonsPerCell,
+    size_t binMinPhotons,
+    size_t binMaxPhotons,
+    int rank,
+    int mpiSize)
+{
+    auto const edges = MakePhotonHistogramEdges(binMinPhotons, binMaxPhotons);
+    SourcePhotonDistribution dist;
+    dist.bins.resize(edges.size());
+    for (size_t i = 0; i < edges.size(); ++i) {
+        dist.bins[i].lowerInclusive = edges[i].first;
+        dist.bins[i].upperInclusive = edges[i].second;
+    }
+
+    std::vector<size_t> localEmitting;
+    localEmitting.reserve(localPhotonsPerCell.size());
+    for (size_t const photons : localPhotonsPerCell) {
+        if (photons == 0)
+            continue;
+        size_t const bin = BinIndexForPhotonCount(edges, photons);
+        ++dist.bins[bin].cellCount;
+        dist.bins[bin].photonCount += static_cast<unsigned long long>(photons);
+        ++dist.emittingCells;
+        dist.totalPhotons += static_cast<unsigned long long>(photons);
+        localEmitting.push_back(photons);
+    }
+
+#ifdef RICH_MPI
+    if (!dist.bins.empty()) {
+        std::vector<unsigned long long> localCellCounts(dist.bins.size(), 0);
+        std::vector<unsigned long long> localPhotonCounts(dist.bins.size(), 0);
+        for (size_t i = 0; i < dist.bins.size(); ++i) {
+            localCellCounts[i] = dist.bins[i].cellCount;
+            localPhotonCounts[i] = dist.bins[i].photonCount;
+        }
+        MPI_Allreduce(MPI_IN_PLACE, localCellCounts.data(),
+                      static_cast<int>(localCellCounts.size()),
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, localPhotonCounts.data(),
+                      static_cast<int>(localPhotonCounts.size()),
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        for (size_t i = 0; i < dist.bins.size(); ++i) {
+            dist.bins[i].cellCount = localCellCounts[i];
+            dist.bins[i].photonCount = localPhotonCounts[i];
+        }
+    }
+
+    unsigned long long localEmittingCells = dist.emittingCells;
+    unsigned long long localTotalPhotons = dist.totalPhotons;
+    MPI_Allreduce(MPI_IN_PLACE, &localEmittingCells, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &localTotalPhotons, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, MPI_COMM_WORLD);
+    dist.emittingCells = localEmittingCells;
+    dist.totalPhotons = localTotalPhotons;
+
+    int const localCount = static_cast<int>(localEmitting.size());
+    std::vector<int> counts(static_cast<size_t>(mpiSize), 0);
+    std::vector<int> displs(static_cast<size_t>(mpiSize), 0);
+    MPI_Allgather(&localCount, 1, MPI_INT, counts.data(), 1, MPI_INT,
+                  MPI_COMM_WORLD);
+
+    int total = 0;
+    for (int r = 0; r < mpiSize; ++r) {
+        displs[static_cast<size_t>(r)] = total;
+        total += counts[static_cast<size_t>(r)];
+    }
+
+    std::vector<unsigned long long> gathered;
+    if (rank == 0)
+        gathered.resize(static_cast<size_t>(total));
+    if (total > 0) {
+        MPI_Gatherv(
+            localEmitting.empty() ? nullptr : localEmitting.data(),
+            localCount,
+            MPI_UNSIGNED_LONG_LONG,
+            rank == 0 ? gathered.data() : nullptr,
+            counts.data(),
+            displs.data(),
+            MPI_UNSIGNED_LONG_LONG,
+            0,
+            MPI_COMM_WORLD);
+    }
+
+    if (rank == 0) {
+        std::vector<size_t> globalEmitting;
+        globalEmitting.reserve(gathered.size());
+        for (unsigned long long const n : gathered)
+            globalEmitting.push_back(static_cast<size_t>(n));
+        ComputePhotonPercentiles(globalEmitting, dist);
+    }
+
+    double percentiles[5] = {
+        dist.p05, dist.p25, dist.p50, dist.p75, dist.p95};
+    MPI_Bcast(percentiles, 5, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    dist.p05 = percentiles[0];
+    dist.p25 = percentiles[1];
+    dist.p50 = percentiles[2];
+    dist.p75 = percentiles[3];
+    dist.p95 = percentiles[4];
+#else
+    ComputePhotonPercentiles(localEmitting, dist);
+#endif
+
+    return dist;
+}
+
+void PrintSourcePhotonDistribution(
+    std::string const& label,
+    SourcePhotonDistribution const& dist,
+    int rank)
+{
+    if (rank != 0 || dist.emittingCells == 0)
+        return;
+
+    std::cout << label << " source photons/cell distribution:"
+              << " emitting_cells=" << dist.emittingCells
+              << " total_photons=" << dist.totalPhotons
+              << " p05/p25/p50/p75/p95="
+              << dist.p05 << "/" << dist.p25 << "/" << dist.p50
+              << "/" << dist.p75 << "/" << dist.p95
+              << std::endl;
+
+    std::cout << label << " source photons/cell histogram:" << std::endl;
+    for (auto const& bin : dist.bins) {
+        if (bin.cellCount == 0)
+            continue;
+        double const cellFrac = static_cast<double>(bin.cellCount) /
+            static_cast<double>(dist.emittingCells);
+        double const photonFrac = dist.totalPhotons > 0
+            ? static_cast<double>(bin.photonCount) /
+                  static_cast<double>(dist.totalPhotons)
+            : 0.0;
+        std::cout << "  [" << bin.lowerInclusive << "," << bin.upperInclusive
+                  << "] cells=" << bin.cellCount
+                  << " cell_frac=" << std::fixed << std::setprecision(4)
+                  << cellFrac
+                  << " photons=" << bin.photonCount
+                  << " photon_frac=" << photonFrac
+                  << std::endl;
+    }
+    std::cout << std::defaultfloat;
+}
+
 RadiationIMC::GroupSamplingDiagnostics
 ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
 {
@@ -1054,7 +1268,9 @@ AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
 
         // In polarization mode, variance matters much more than energy:
         // a cell emitting a few huge packets can dominate Q/U uncertainty.
-        double const varianceMix = observerQuality.polarizationMode ? 0.85 : 0.35;
+        double const varianceMix = observerQuality.polarizationMode
+            ? std::clamp(cfg.adaptiveSourceWeightScoreFrac, 0.0, 1.0)
+            : 0.35;
 
         double const sourceQualityScore =
             (1.0 - varianceMix) * eFrac + varianceMix * w2Frac;
@@ -1264,6 +1480,7 @@ void PrintAdaptiveGenerationStats(
     AdaptiveSourceState const& state,
     AdaptiveSourceUpdateSummary const& update,
     RadiationIMC::SourceAllocationSummary allocation,
+    SourcePhotonDistribution const& photonDistribution,
     ObserverQualityDiagnostics const& observerQuality,
     size_t gen,
     size_t /*totalGenerations*/,
@@ -1325,6 +1542,8 @@ void PrintAdaptiveGenerationStats(
               << " learned_avg_photons_per_cell=" << learnedAvgPhotons
               << " all_avg_photons_per_cell=" << avgPhotons
               << std::endl;
+
+    PrintSourcePhotonDistribution(label, photonDistribution, rank);
 
     std::cout << label << " adaptive tally memory: max_local_pairs="
               << update.maxLocalSourcePairs

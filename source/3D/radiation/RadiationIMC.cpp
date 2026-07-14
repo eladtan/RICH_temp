@@ -1189,7 +1189,10 @@ void RadiationIMC::setAdaptiveSourceCellScores(
     std::unordered_map<size_t, double> scores,
     double strength, double maxFactor,
     double learnedReserveFrac, double learnedMinFactor,
-    double observerBudgetMultiplier)
+    double observerBudgetMultiplier,
+    size_t learnedMinPhotons,
+    size_t learnedMaxPhotons,
+    double scorePower)
 {
     adaptiveSourceScores_ = std::move(scores);
     adaptiveSourceStrength_ = std::clamp(strength, 0.0, 1.0);
@@ -1197,6 +1200,9 @@ void RadiationIMC::setAdaptiveSourceCellScores(
     adaptiveSourceLearnedReserveFrac_ = std::clamp(learnedReserveFrac, 0.0, 1.0);
     adaptiveSourceLearnedMinFactor_ = std::max(1.0, learnedMinFactor);
     adaptiveSourceObserverBudgetMultiplier_ = std::max(1.0, observerBudgetMultiplier);
+    adaptiveSourceLearnedMinPhotons_ = learnedMinPhotons;
+    adaptiveSourceLearnedMaxPhotons_ = learnedMaxPhotons;
+    adaptiveSourceScorePower_ = std::max(0.0, scorePower);
     adaptiveSourceScoresEnabled_ = !adaptiveSourceScores_.empty();
 }
 
@@ -1209,6 +1215,9 @@ void RadiationIMC::clearAdaptiveSourceCellScores()
     adaptiveSourceLearnedReserveFrac_ = 0.0;
     adaptiveSourceLearnedMinFactor_ = 1.0;
     adaptiveSourceObserverBudgetMultiplier_ = 1.0;
+    adaptiveSourceLearnedMinPhotons_ = 0;
+    adaptiveSourceLearnedMaxPhotons_ = 0;
+    adaptiveSourceScorePower_ = 1.0;
 }
 
 void RadiationIMC::setAdaptiveSourceCellGroupScores(
@@ -2749,14 +2758,31 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     if(sourceEmissionControlEnabled_)
     {
         double scoreSum = 0.0;
+        double scoreMax = 0.0;
         for(auto const &kv : adaptiveSourceScores_)
-            if(std::isfinite(kv.second) && kv.second > 0.0)
-                scoreSum += kv.second;
+        {
+            if(!std::isfinite(kv.second) || !(kv.second > 0.0))
+                continue;
+            scoreSum += kv.second;
+            scoreMax = std::max(scoreMax, kv.second);
+        }
+
+        bool const useScoreRangeAllocation =
+            sourceEmissionUseLearnedScores_ &&
+            adaptiveSourceScoresEnabled_ &&
+            adaptiveSourceLearnedMaxPhotons_ > adaptiveSourceLearnedMinPhotons_ &&
+            scoreMax > 0.0;
 
         size_t const basePhotons = this->newPhotonsPerCell * sourceEmissionBaseMultiplier_;
-        size_t const maxPhotons = static_cast<size_t>(std::ceil(
+        size_t const legacyMaxPhotons = static_cast<size_t>(std::ceil(
             static_cast<double>(std::max<size_t>(1, this->newPhotonsPerCell)) *
             adaptiveSourceMaxFactor_ * adaptiveSourceObserverBudgetMultiplier_));
+        size_t const maxPhotons = useScoreRangeAllocation
+            ? adaptiveSourceLearnedMaxPhotons_
+            : legacyMaxPhotons;
+        size_t const scoreRangeSpan =
+            adaptiveSourceLearnedMaxPhotons_ - adaptiveSourceLearnedMinPhotons_;
+
         for(size_t i = 0; i < Ncells; ++i)
         {
             auto const it = adaptiveSourceScores_.find(this->cells[i].ID);
@@ -2767,15 +2793,27 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             if(sourceEmissionUseLearnedScores_ && learned)
             {
                 size_t learnedPhotons = this->newPhotonsPerCell * sourceEmissionLearnedBoostFactor_;
-                if(scoreSum > 0.0 && sourceEmissionLearnedExtraBudget_ > 0)
+                if(useScoreRangeAllocation)
+                {
+                    double const scoreNorm = std::clamp(it->second / scoreMax, 0.0, 1.0);
+                    double const shaped = (adaptiveSourceScorePower_ > 0.0)
+                        ? std::pow(scoreNorm, adaptiveSourceScorePower_)
+                        : scoreNorm;
+                    learnedPhotons = adaptiveSourceLearnedMinPhotons_ +
+                        static_cast<size_t>(std::llround(
+                            shaped * static_cast<double>(scoreRangeSpan)));
+                }
+                else if(scoreSum > 0.0 && sourceEmissionLearnedExtraBudget_ > 0)
                 {
                     learnedPhotons += static_cast<size_t>(std::ceil(
                         adaptiveSourceStrength_ * static_cast<double>(sourceEmissionLearnedExtraBudget_) *
                         it->second / scoreSum));
                 }
-                size_t const minLearned = static_cast<size_t>(std::ceil(
-                    static_cast<double>(std::max<size_t>(1, this->newPhotonsPerCell)) *
-                    adaptiveSourceLearnedMinFactor_));
+                size_t const minLearned = useScoreRangeAllocation
+                    ? adaptiveSourceLearnedMinPhotons_
+                    : static_cast<size_t>(std::ceil(
+                        static_cast<double>(std::max<size_t>(1, this->newPhotonsPerCell)) *
+                        adaptiveSourceLearnedMinFactor_));
                 learnedPhotons = std::max(learnedPhotons, minLearned);
                 photons = std::max(photons, learnedPhotons);
             }
