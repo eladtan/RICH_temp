@@ -145,7 +145,7 @@ void RunGreyPostprocess(
             size_t greyIncludedFinalGenerations = 0;
             size_t greyDiscardedBurninGenerations = 0;
             size_t const greyInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
-            size_t const greyUniformBurninGenerations = cfg.adaptiveSourceCells ? 14 : 0;
+            size_t const greyUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
             size_t const greyBurninGenerations = greyInitialBurninGenerations + greyUniformBurninGenerations;
             size_t const greyLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
             size_t const greyFinalStartGeneration = greyBurninGenerations + greyLearnedProbeGenerations;

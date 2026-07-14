@@ -825,6 +825,25 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
     local.learnedMaxPhotons = static_cast<size_t>(learnedMaxPhotons);
 
     MPI_Allreduce(MPI_IN_PLACE, &local.adaptiveScoreSum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &local.learnedPhotonsAtLeast1000, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &local.learnedPhotonsAtLeast2000, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
+    double scoreStats[6] = {
+        local.adaptiveScoreP05,
+        local.adaptiveScoreP50,
+        local.adaptiveScoreP95,
+        local.adaptiveScoreMax,
+        local.adaptiveScoreSpanLow,
+        local.adaptiveScoreSpanHigh
+    };
+    MPI_Allreduce(MPI_IN_PLACE, scoreStats, 6, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    local.adaptiveScoreP05 = scoreStats[0];
+    local.adaptiveScoreP50 = scoreStats[1];
+    local.adaptiveScoreP95 = scoreStats[2];
+    local.adaptiveScoreMax = scoreStats[3];
+    local.adaptiveScoreSpanLow = scoreStats[4];
+    local.adaptiveScoreSpanHigh = scoreStats[5];
+
     int adaptive = local.adaptiveEnabled ? 1 : 0;
     MPI_Allreduce(MPI_IN_PLACE, &adaptive, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
     local.adaptiveEnabled = adaptive != 0;
@@ -1529,6 +1548,14 @@ void PrintAdaptiveGenerationStats(
               << " learned photons/cell min/avg/max=" << allocation.learnedMinPhotons
               << "/" << learnedAvgPhotons
               << "/" << allocation.learnedMaxPhotons
+              << " learned_cells_photons_ge1000=" << allocation.learnedPhotonsAtLeast1000
+              << " learned_cells_photons_ge2000=" << allocation.learnedPhotonsAtLeast2000
+              << " score_p05/p50/p95/max=" << allocation.adaptiveScoreP05
+              << "/" << allocation.adaptiveScoreP50
+              << "/" << allocation.adaptiveScoreP95
+              << "/" << allocation.adaptiveScoreMax
+              << " score_log_span_low/high=" << allocation.adaptiveScoreSpanLow
+              << "/" << allocation.adaptiveScoreSpanHigh
               << std::endl;
 
     std::cout << label << " emission learning effect: learned_score_cells="

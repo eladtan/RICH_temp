@@ -83,7 +83,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t mgDiscardedBurninGenerations = 0;
 
             size_t const mgInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
-            size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 14 : 0;
+            size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
             size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
             size_t const mgLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
             size_t const mgFinalStartGeneration = mgBurninGenerations + mgLearnedProbeGenerations;

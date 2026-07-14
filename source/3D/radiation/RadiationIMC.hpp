@@ -155,6 +155,14 @@ public:
         size_t learnedMinPhotons = 0;
         size_t learnedMaxPhotons = 0;
         double adaptiveScoreSum = 0.0;
+        double adaptiveScoreP05 = 0.0;
+        double adaptiveScoreP50 = 0.0;
+        double adaptiveScoreP95 = 0.0;
+        double adaptiveScoreMax = 0.0;
+        double adaptiveScoreSpanLow = 0.0;
+        double adaptiveScoreSpanHigh = 0.0;
+        size_t learnedPhotonsAtLeast1000 = 0;
+        size_t learnedPhotonsAtLeast2000 = 0;
     };
 
     struct ComptonCellData

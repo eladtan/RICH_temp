@@ -217,7 +217,7 @@ int main(int argc, char* argv[])
                       << "Opacity scale:   " << (cfg.opacityScaleMode == OpacityScaleMode::Planck ? "planck" :
                                                   cfg.opacityScaleMode == OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
-                      << "  MG schedule:   1 exact-1 burn-in, 14 exact-3 burn-in, learned-only exact-75 probe, LB, "
+                      << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-75 probe, LB, "
                       << cfg.nGenerations << " learned-only final steps (min=500 max=2000)\n"
                       << "  final LB cadence: every 10 learned-final steps before the last\n"
                       << "  min esc frac:  " << cfg.adaptiveSourceMinEscapedFrac << "\n"

@@ -16,6 +16,70 @@
 // #define MONTECARLO_EPS 1e-7
 
 namespace {
+
+double AdaptiveScorePercentile(std::vector<double> const& sorted, double percentile)
+{
+    if(sorted.empty())
+        return 0.0;
+    if(sorted.size() == 1)
+        return sorted.front();
+    double const idx = percentile * static_cast<double>(sorted.size() - 1);
+    size_t const i0 = static_cast<size_t>(std::floor(idx));
+    size_t const i1 = std::min(i0 + 1, sorted.size() - 1);
+    double const frac = idx - static_cast<double>(i0);
+    return sorted[i0] * (1.0 - frac) + sorted[i1] * frac;
+}
+
+struct AdaptiveScoreAllocationSpan
+{
+    double p05 = 0.0;
+    double p50 = 0.0;
+    double p95 = 0.0;
+    double max = 0.0;
+    double low = 0.0;
+    double high = 0.0;
+};
+
+AdaptiveScoreAllocationSpan
+BuildAdaptiveScoreAllocationSpan(std::unordered_map<size_t, double> const& scores)
+{
+    AdaptiveScoreAllocationSpan span;
+    std::vector<double> values;
+    values.reserve(scores.size());
+    for(auto const &kv : scores)
+    {
+        if(!std::isfinite(kv.second) || !(kv.second > 0.0))
+            continue;
+        values.push_back(kv.second);
+    }
+    if(values.empty())
+        return span;
+
+    std::sort(values.begin(), values.end());
+    span.p05 = AdaptiveScorePercentile(values, 0.05);
+    span.p50 = AdaptiveScorePercentile(values, 0.50);
+    span.p95 = AdaptiveScorePercentile(values, 0.95);
+    span.max = values.back();
+    span.low = span.p05;
+    span.high = span.p95;
+    if(!(span.high > span.low))
+        span.high = span.low + std::max(1e-30, std::abs(span.low) * 1.0e-6);
+    return span;
+}
+
+double AdaptiveScoreToUnitInterval(double score, AdaptiveScoreAllocationSpan const& span)
+{
+    if(!std::isfinite(score) || !(score > 0.0))
+        return 0.0;
+
+    double const logScore = std::log1p(score);
+    double const logLow = std::log1p(span.low);
+    double const logHigh = std::log1p(span.high);
+    if(!(logHigh > logLow))
+        return score >= span.high ? 1.0 : 0.0;
+    return std::clamp((logScore - logLow) / (logHigh - logLow), 0.0, 1.0);
+}
+
     const char *ComptonInducedModeName(ComptonInducedMode mode)
     {
         switch(mode)
@@ -2755,23 +2819,24 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
         nPhotons[i] = std::max(this->newPhotonsPerCell, std::min(proportionalShare, this->newPhotonsPerCell * 20));
     }
 
+    AdaptiveScoreAllocationSpan const scoreSpan =
+        BuildAdaptiveScoreAllocationSpan(adaptiveSourceScores_);
+
     if(sourceEmissionControlEnabled_)
     {
         double scoreSum = 0.0;
-        double scoreMax = 0.0;
         for(auto const &kv : adaptiveSourceScores_)
         {
             if(!std::isfinite(kv.second) || !(kv.second > 0.0))
                 continue;
             scoreSum += kv.second;
-            scoreMax = std::max(scoreMax, kv.second);
         }
 
         bool const useScoreRangeAllocation =
             sourceEmissionUseLearnedScores_ &&
             adaptiveSourceScoresEnabled_ &&
             adaptiveSourceLearnedMaxPhotons_ > adaptiveSourceLearnedMinPhotons_ &&
-            scoreMax > 0.0;
+            scoreSpan.max > 0.0;
 
         size_t const basePhotons = this->newPhotonsPerCell * sourceEmissionBaseMultiplier_;
         size_t const legacyMaxPhotons = static_cast<size_t>(std::ceil(
@@ -2795,7 +2860,8 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 size_t learnedPhotons = this->newPhotonsPerCell * sourceEmissionLearnedBoostFactor_;
                 if(useScoreRangeAllocation)
                 {
-                    double const scoreNorm = std::clamp(it->second / scoreMax, 0.0, 1.0);
+                    double const scoreNorm =
+                        AdaptiveScoreToUnitInterval(it->second, scoreSpan);
                     double const shaped = (adaptiveSourceScorePower_ > 0.0)
                         ? std::pow(scoreNorm, adaptiveSourceScorePower_)
                         : scoreNorm;
@@ -2824,6 +2890,12 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     lastSourceAllocationSummary_ = SourceAllocationSummary{};
     lastSourceAllocationSummary_.adaptiveEnabled =
         sourceEmissionControlEnabled_ && sourceEmissionUseLearnedScores_ && adaptiveSourceScoresEnabled_;
+    lastSourceAllocationSummary_.adaptiveScoreP05 = scoreSpan.p05;
+    lastSourceAllocationSummary_.adaptiveScoreP50 = scoreSpan.p50;
+    lastSourceAllocationSummary_.adaptiveScoreP95 = scoreSpan.p95;
+    lastSourceAllocationSummary_.adaptiveScoreMax = scoreSpan.max;
+    lastSourceAllocationSummary_.adaptiveScoreSpanLow = scoreSpan.low;
+    lastSourceAllocationSummary_.adaptiveScoreSpanHigh = scoreSpan.high;
     lastSourceAllocationSummary_.minPhotons = std::numeric_limits<size_t>::max();
     lastSourceAllocationSummary_.learnedMinPhotons = std::numeric_limits<size_t>::max();
     for(size_t i = 0; i < Ncells; ++i)
@@ -2850,6 +2922,10 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 std::min(lastSourceAllocationSummary_.learnedMinPhotons, photons);
             lastSourceAllocationSummary_.learnedMaxPhotons =
                 std::max(lastSourceAllocationSummary_.learnedMaxPhotons, photons);
+            if(photons >= 1000)
+                ++lastSourceAllocationSummary_.learnedPhotonsAtLeast1000;
+            if(photons >= 2000)
+                ++lastSourceAllocationSummary_.learnedPhotonsAtLeast2000;
             if (nPhotons[i] > this->newPhotonsPerCell)
             {
                 ++lastSourceAllocationSummary_.learnedBoostedCells;

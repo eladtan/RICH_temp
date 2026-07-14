@@ -43,7 +43,7 @@ export TEMP="$MPI_TMPDIR"
 export OMPI_MCA_orte_tmpdir_base="$MPI_TMPDIR"
 
 echo before
-mpirun -mca btl ^openib ./rich --vtk-output luminosity.vtk --adaptive-source-cells --adaptive-group-quality --adaptive-group-source-cells --adaptive-group-frequency-sampling --adaptive-source-learned-min-photons 200 --adaptive-source-learned-max-photons 5000 --adaptive-source-score-power 2 --adaptive-source-weight-score-frac 1 --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 50 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
+mpirun -mca btl ^openib ./rich --vtk-output luminosity.vtk --adaptive-source-cells --adaptive-group-quality --adaptive-group-source-cells --adaptive-group-frequency-sampling --adaptive-source-learned-min-photons 100 --adaptive-source-learned-max-photons 5000 --adaptive-source-score-power 2 --adaptive-source-weight-score-frac 0.85 --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 75 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
 
 # mpirun -mca btl ^openib ./rich --n-observers 32 --photons-per-cell 1 --n-generations 1 --source-dt 1 --transport-time 0 --radius 7.5e14 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
 
