@@ -66,6 +66,8 @@ void FmmLocalInteractionPlan::clear()
     std::vector<M2LPair>().swap(m2lPairs);
     std::vector<P2PPair>().swap(p2pPairs);
     std::vector<FmmM2LOperatorCache::PreparedGeometry>().swap(geometries);
+    std::vector<std::uint64_t>().swap(geometryUseCounts);
+    std::vector<NodeGeometry>().swap(nodeGeometry);
     rejectedSameNode = 0;
     rejectedOverlap = 0;
     rejectedRatio = 0;
@@ -78,7 +80,9 @@ std::size_t FmmLocalInteractionPlan::bytesOwned() const
     return m2lPairs.capacity() * sizeof(M2LPair) +
            p2pPairs.capacity() * sizeof(P2PPair) +
            geometries.capacity() *
-               sizeof(FmmM2LOperatorCache::PreparedGeometry);
+               sizeof(FmmM2LOperatorCache::PreparedGeometry) +
+           geometryUseCounts.capacity() * sizeof(std::uint64_t) +
+           nodeGeometry.capacity() * sizeof(NodeGeometry);
 }
 
 void FmmDualTreeTraversal::buildLocalPlan(
@@ -98,6 +102,12 @@ void FmmDualTreeTraversal::buildLocalPlan(
         throw UniversalError(
             "FmmDualTreeTraversal::buildLocalPlan: tree exceeds compact index range");
 
+    plan.nodeGeometry.reserve(nodes.size());
+    for(const FmmNode& node : nodes)
+    {
+        plan.nodeGeometry.push_back(FmmLocalInteractionPlan::NodeGeometry{
+            node.center, node.halfSize, node.radius, node.isLeaf()});
+    }
     typedef std::pair<std::size_t, std::size_t> NodePair;
     typedef std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
                        std::uint64_t, std::uint64_t> GeometryKey;
@@ -136,6 +146,7 @@ void FmmDualTreeTraversal::buildLocalPlan(
                 inserted.first->second =
                     static_cast<std::uint32_t>(plan.geometries.size());
                 plan.geometries.push_back(geometry);
+                plan.geometryUseCounts.push_back(0);
             }
 
             const Vector3D delta = target.center - source.center;
@@ -149,6 +160,11 @@ void FmmDualTreeTraversal::buildLocalPlan(
                 static_cast<std::uint32_t>(pair.first),
                 static_cast<std::uint32_t>(pair.second),
                 inserted.first->second, conservativeLimit});
+            if(plan.geometryUseCounts[inserted.first->second] ==
+               std::numeric_limits<std::uint64_t>::max())
+                throw UniversalError(
+                    "FmmDualTreeTraversal::buildLocalPlan: geometry use count overflow");
+            ++plan.geometryUseCounts[inserted.first->second];
             continue;
         }
 
@@ -192,6 +208,8 @@ void FmmDualTreeTraversal::buildLocalPlan(
     plan.m2lPairs.shrink_to_fit();
     plan.p2pPairs.shrink_to_fit();
     plan.geometries.shrink_to_fit();
+    plan.geometryUseCounts.shrink_to_fit();
+    plan.nodeGeometry.shrink_to_fit();
     plan.initialized = true;
 }
 
@@ -201,7 +219,48 @@ bool FmmDualTreeTraversal::localPlanReusable(
 {
     if(!plan.initialized)
         return false;
+    if(plan.geometryUseCounts.size() != plan.geometries.size())
+        return false;
+
+    std::uint64_t plannedM2LCount = 0;
+    for(std::uint64_t count : plan.geometryUseCounts)
+    {
+        if(count == 0 || count >
+           std::numeric_limits<std::uint64_t>::max() - plannedM2LCount)
+            return false;
+        plannedM2LCount += count;
+    }
+    if(plannedM2LCount != static_cast<std::uint64_t>(plan.m2lPairs.size()))
+        return false;
+
     const std::vector<FmmNode>& nodes = tree.nodes();
+    if(plan.nodeGeometry.size() != nodes.size())
+        return false;
+
+    bool radiiUnchanged = true;
+    for(std::size_t i = 0; i < nodes.size(); ++i)
+    {
+        const FmmNode& node = nodes[i];
+        const FmmLocalInteractionPlan::NodeGeometry& saved =
+            plan.nodeGeometry[i];
+        // Prepared operators depend on node centers, while overlap decisions
+        // depend on half sizes and P2P terminals depend on leaf status.  A
+        // change in any of those requires rebuilding the plan.
+        if(node.center.x != saved.center.x ||
+           node.center.y != saved.center.y ||
+           node.center.z != saved.center.z ||
+           node.halfSize != saved.halfSize ||
+           node.isLeaf() != saved.leaf)
+            return false;
+        if(node.radius != saved.radius)
+            radiiUnchanged = false;
+    }
+    if(radiiUnchanged)
+        return true;
+
+    // Centers/topology are unchanged, but particle motion changed bounding
+    // radii. Preserve the old conservative reuse test in that less-common
+    // case rather than forcing a topology-plan rebuild.
     for(const FmmLocalInteractionPlan::M2LPair& pair : plan.m2lPairs)
     {
         if(pair.targetNode >= nodes.size() || pair.sourceNode >= nodes.size() ||
@@ -246,6 +305,11 @@ void FmmDualTreeTraversal::runLocalPlan(
     std::vector<double> uncachedOperator;
     uncachedOperator.reserve(layout.m2lTerms().size());
 
+    std::vector<const std::vector<double>*> resolvedOperators;
+    const bool operatorsResolved = operatorCache.resolvePreparedBatch(
+        plan.geometries, plan.geometryUseCounts, layout,
+        derivativeScratch, uncachedOperator, resolvedOperators);
+
     stats.rejectedSameNode += plan.rejectedSameNode;
     stats.rejectedOverlap += plan.rejectedOverlap;
     stats.rejectedRatio += plan.rejectedRatio;
@@ -255,13 +319,23 @@ void FmmDualTreeTraversal::runLocalPlan(
     {
         const FmmNode& target = nodes[pair.targetNode];
         const FmmNode& source = nodes[pair.sourceNode];
-        const FmmM2LOperatorCache::Lookup translationOperator =
-            operatorCache.getPrepared(plan.geometries[pair.geometryIndex],
-                                      layout, derivativeScratch,
-                                      uncachedOperator);
+        const std::vector<double>* coefficients = nullptr;
+        double inverseScale = plan.geometries[pair.geometryIndex].inverseScale;
+        if(operatorsResolved)
+        {
+            coefficients = resolvedOperators[pair.geometryIndex];
+        }
+        else
+        {
+            const FmmM2LOperatorCache::Lookup translationOperator =
+                operatorCache.getPrepared(plan.geometries[pair.geometryIndex],
+                                          layout, derivativeScratch,
+                                          uncachedOperator);
+            coefficients = translationOperator.coefficients;
+            inverseScale = translationOperator.inverseScale;
+        }
         FmmKernels::translateM2L(source, target, layout, multipoles, locals,
-                                 *translationOperator.coefficients,
-                                 translationOperator.inverseScale);
+                                 *coefficients, inverseScale);
         ++stats.m2lCount;
     }
     for(const FmmLocalInteractionPlan::P2PPair& pair : plan.p2pPairs)

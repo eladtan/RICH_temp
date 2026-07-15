@@ -9,6 +9,7 @@
 #include <limits>
 #include <numeric>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "3D/gravity/fmm/FmmKernels.hpp"
@@ -203,6 +204,93 @@ public:
                       geometry.integerKey};
     }
 
+    // Resolve one stable coefficient pointer per prepared geometry.  The
+    // caller can then execute interactions in their original order without a
+    // hash lookup for every M2L pair.
+    //
+    // This method is deliberately transactional with respect to the fallback
+    // path: if the complete geometry set cannot fit, it returns false before
+    // modifying the cache or its diagnostics.  References to unordered_map
+    // elements remain valid across rehashes, so the returned pointers stay
+    // valid until the cache is reconfigured or cleared.
+    bool resolvePreparedBatch(
+        const std::vector<PreparedGeometry>& geometries,
+        const std::vector<std::uint64_t>& useCounts,
+        const FmmTaylorExpansion& layout,
+        std::vector<double>& derivativeScratch,
+        std::vector<double>& uncachedOperator,
+        std::vector<const std::vector<double>*>& coefficients)
+    {
+        if(geometries.size() != useCounts.size())
+            throw UniversalError(
+                "FmmM2LOperatorCache::resolvePreparedBatch: count mismatch");
+        if(layout.m2lTerms().size() != termCount_)
+            throw UniversalError(
+                "FmmM2LOperatorCache::resolvePreparedBatch: cache/layout size mismatch");
+
+        if(entries_.size() > maxEntries_)
+        {
+            coefficients.clear();
+            return false;
+        }
+        const std::size_t availableEntries = maxEntries_ - entries_.size();
+        std::unordered_set<Key, KeyHash> missingKeys;
+        const std::size_t reserveMissing = std::min(
+            geometries.size(), availableEntries);
+        missingKeys.reserve(reserveMissing);
+        for(std::size_t i = 0; i < geometries.size(); ++i)
+        {
+            if(useCounts[i] == 0)
+                throw UniversalError(
+                    "FmmM2LOperatorCache::resolvePreparedBatch: unused geometry");
+            const Key key = preparedKey(geometries[i]);
+            if(entries_.find(key) == entries_.end())
+            {
+                missingKeys.insert(key);
+                if(missingKeys.size() > availableEntries)
+                {
+                    coefficients.clear();
+                    return false;
+                }
+            }
+        }
+
+        const std::size_t currentBytes = bytesOwned();
+        const std::size_t additionalBytes = saturatingMultiply(
+            missingKeys.size(), estimatedBytesPerEntry(termCount_));
+        if(currentBytes > budgetBytes_ ||
+           additionalBytes > budgetBytes_ - currentBytes)
+        {
+            coefficients.clear();
+            return false;
+        }
+
+        coefficients.assign(geometries.size(), nullptr);
+        const std::uint64_t bypassesBefore = bypasses_;
+        for(std::size_t i = 0; i < geometries.size(); ++i)
+        {
+            const Lookup lookup = getPrepared(
+                geometries[i], layout, derivativeScratch, uncachedOperator);
+            if(lookup.coefficients == nullptr || bypasses_ != bypassesBefore)
+                throw UniversalError(
+                    "FmmM2LOperatorCache::resolvePreparedBatch: capacity preflight failed");
+            coefficients[i] = lookup.coefficients;
+        }
+
+        // Preserve per-interaction diagnostics. getPrepared() accounted for
+        // the first use of every prepared geometry; the remaining uses are
+        // cache hits when the direct pointer table is used.
+        for(std::size_t i = 0; i < geometries.size(); ++i)
+        {
+            const std::uint64_t additionalHits = useCounts[i] - 1;
+            hits_ = saturatingCounterAdd(hits_, additionalHits);
+            if(geometries[i].integerKey)
+                integerKeyHits_ = saturatingCounterAdd(
+                    integerKeyHits_, additionalHits);
+        }
+        return true;
+    }
+
     std::size_t bytesOwned() const
     {
         const std::size_t mapEntry =
@@ -263,6 +351,16 @@ private:
             return result;
         }
     };
+
+    static Key preparedKey(const PreparedGeometry& geometry)
+    {
+        Key key;
+        key.x = geometry.keyX;
+        key.y = geometry.keyY;
+        key.z = geometry.keyZ;
+        key.kind = geometry.keyKind;
+        return key;
+    }
 
     struct CanonicalGeometry
     {
@@ -414,6 +512,13 @@ private:
             sizeof(typename EntryMap::value_type) + 4 * sizeof(void*);
         return saturatingAdd(mapEntry,
             saturatingMultiply(termCount, sizeof(double)));
+    }
+
+    static std::uint64_t saturatingCounterAdd(std::uint64_t first,
+                                              std::uint64_t second)
+    {
+        return second > std::numeric_limits<std::uint64_t>::max() - first ?
+            std::numeric_limits<std::uint64_t>::max() : first + second;
     }
 
     EntryMap entries_;

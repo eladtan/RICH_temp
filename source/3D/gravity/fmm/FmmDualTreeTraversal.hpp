@@ -26,9 +26,19 @@ struct FmmLocalInteractionPlan
         std::uint32_t sourceNode = 0;
     };
 
+    struct NodeGeometry
+    {
+        Vector3D center;
+        double halfSize = 0.0;
+        double radius = 0.0;
+        bool leaf = false;
+    };
+
     std::vector<M2LPair> m2lPairs;
     std::vector<P2PPair> p2pPairs;
     std::vector<FmmM2LOperatorCache::PreparedGeometry> geometries;
+    std::vector<std::uint64_t> geometryUseCounts;
+    std::vector<NodeGeometry> nodeGeometry;
     std::uint64_t rejectedSameNode = 0;
     std::uint64_t rejectedOverlap = 0;
     std::uint64_t rejectedRatio = 0;

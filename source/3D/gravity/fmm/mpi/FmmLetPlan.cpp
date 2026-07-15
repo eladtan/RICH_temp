@@ -256,6 +256,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
     m2lSourceIndices_.clear();
     m2lOperatorGeometries_.clear();
     m2lOperatorGeometryIndices_.clear();
+    m2lOperatorGeometryUseCounts_.clear();
     p2pInteractions_.clear();
     subscriptionsToSend_.clear();
     subscriptionsReceived_.clear();
@@ -659,8 +660,14 @@ void FmmLetPlan::build(const FmmTree& localTree,
             inserted.first->second = static_cast<std::uint32_t>(
                 m2lOperatorGeometries_.size());
             m2lOperatorGeometries_.push_back(geometry);
+            m2lOperatorGeometryUseCounts_.push_back(0);
         }
         m2lOperatorGeometryIndices_.push_back(inserted.first->second);
+        if(m2lOperatorGeometryUseCounts_[inserted.first->second] ==
+           std::numeric_limits<std::uint64_t>::max())
+            throw UniversalError(
+                "FmmLetPlan::build: M2L geometry use count overflow");
+        ++m2lOperatorGeometryUseCounts_[inserted.first->second];
     }
     if(m2lOperatorGeometryIndices_.size() != m2lInteractions_.size())
         throw UniversalError(
@@ -789,6 +796,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
     m2lSourceIndices_.shrink_to_fit();
     m2lOperatorGeometries_.shrink_to_fit();
     m2lOperatorGeometryIndices_.shrink_to_fit();
+    m2lOperatorGeometryUseCounts_.shrink_to_fit();
     p2pInteractions_.shrink_to_fit();
     for(auto* map : {&subscriptionsToSend_, &subscriptionsReceived_})
     {
@@ -839,6 +847,8 @@ std::size_t FmmLetPlan::bytesOwned() const
         m2lOperatorGeometries_.capacity(), sizeof(FmmM2LOperatorCache::PreparedGeometry)));
     result = saturatingAdd(result, saturatingMultiply(
         m2lOperatorGeometryIndices_.capacity(), sizeof(std::uint32_t)));
+    result = saturatingAdd(result, saturatingMultiply(
+        m2lOperatorGeometryUseCounts_.capacity(), sizeof(std::uint64_t)));
     result = saturatingAdd(result, saturatingMultiply(
         p2pInteractions_.capacity(), sizeof(FmmLetP2PInteraction)));
 
@@ -1273,6 +1283,12 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         resolvedM2LSources.push_back(source);
     }
     std::vector<RemoteMultipolePayload>().swap(remoteMultipoles);
+
+    std::vector<const std::vector<double>*> resolvedOperators;
+    const bool operatorsResolved = operatorCache.resolvePreparedBatch(
+        m2lOperatorGeometries_, m2lOperatorGeometryUseCounts_, layout,
+        derivativeScratch, uncachedOperator, resolvedOperators);
+
     for(std::size_t interactionIndex = 0;
         interactionIndex < m2lInteractions_.size(); ++interactionIndex)
     {
@@ -1290,15 +1306,25 @@ void FmmLetPlan::execute(const FmmTree& localTree,
                 "FmmLetPlan::execute: invalid prepared LET M2L geometry index");
         const FmmNode& source = resolvedM2LSources[sourceIndex];
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
-        const FmmM2LOperatorCache::Lookup translationOperator =
-            operatorCache.getPrepared(m2lOperatorGeometries_[geometryIndex],
-                                      layout, derivativeScratch,
-                                      uncachedOperator);
+        const std::vector<double>* coefficients = nullptr;
+        double inverseScale = m2lOperatorGeometries_[geometryIndex].inverseScale;
+        if(operatorsResolved)
+        {
+            coefficients = resolvedOperators[geometryIndex];
+        }
+        else
+        {
+            const FmmM2LOperatorCache::Lookup translationOperator =
+                operatorCache.getPrepared(m2lOperatorGeometries_[geometryIndex],
+                                          layout, derivativeScratch,
+                                          uncachedOperator);
+            coefficients = translationOperator.coefficients;
+            inverseScale = translationOperator.inverseScale;
+        }
 
         FmmKernels::translateM2L(source, target, layout,
                                  remoteCoefficients, localLocals,
-                                 *translationOperator.coefficients,
-                                 translationOperator.inverseScale);
+                                 *coefficients, inverseScale);
         ++stats.m2lCount;
         ++stats.letM2LCount;
     }

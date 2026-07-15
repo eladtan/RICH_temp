@@ -546,23 +546,40 @@ void DistributedFmmGravityCalculator::solve(
         localInputsValid = false;
         localInputError = error.getErrorMessage();
     }
-    collectiveRequire(localInputsValid, localInputError,
-                      "DistributedFmmGravityCalculator::solve input validation",
-                      comm_);
-
     const double localDomain[6] = {
         domainLower.x, domainLower.y, domainLower.z,
         domainUpper.x, domainUpper.y, domainUpper.z};
-    double minimumDomain[6] = {};
-    double maximumDomain[6] = {};
-    MPI_Allreduce(localDomain, minimumDomain, 6, MPI_DOUBLE, MPI_MIN, comm_);
-    MPI_Allreduce(localDomain, maximumDomain, 6, MPI_DOUBLE, MPI_MAX, comm_);
+
+    // One MIN reduction performs the old validity AND, domain MIN, and domain
+    // MAX (encoded as MIN of the negated values). Invalid ranks contribute
+    // zero domain values, which are ignored because validity is checked first.
+    double localValidation[13] = {};
+    localValidation[0] = localInputsValid ? 1.0 : 0.0;
+    for(int i = 0; i < 6; ++i)
+    {
+        const double value = localInputsValid ? localDomain[i] : 0.0;
+        localValidation[1 + i] = value;
+        localValidation[7 + i] = -value;
+    }
+    double globalValidation[13] = {};
+    MPI_Allreduce(localValidation, globalValidation, 13, MPI_DOUBLE, MPI_MIN,
+                  comm_);
+    if(globalValidation[0] != 1.0)
+    {
+        if(!localInputsValid)
+            throw UniversalError(localInputError.empty() ?
+                "DistributedFmmGravityCalculator::solve input validation" :
+                localInputError);
+        throw UniversalError(
+            "DistributedFmmGravityCalculator::solve input validation failed on another MPI rank");
+    }
     bool commonDomain = true;
     for(int i = 0; i < 6; ++i)
-        commonDomain = commonDomain && minimumDomain[i] == maximumDomain[i];
-    collectiveRequire(commonDomain,
-        "DistributedFmmGravityCalculator::solve: domain bounds differ across MPI ranks",
-        "DistributedFmmGravityCalculator::solve domain validation", comm_);
+        commonDomain = commonDomain &&
+            globalValidation[1 + i] == -globalValidation[7 + i];
+    if(!commonDomain)
+        throw UniversalError(
+            "DistributedFmmGravityCalculator::solve: domain bounds differ across MPI ranks");
 
     const Clock::time_point totalStart = Clock::now();
     stats_ = FmmSolveStats();
@@ -602,21 +619,22 @@ void DistributedFmmGravityCalculator::solve(
         localMassExtended += static_cast<long double>(mass);
         localAbsoluteMassExtended += std::abs(static_cast<long double>(mass));
     }
-    const double localMassTerms[2] = {
+
+    // A SUM reduction carries both mass terms and the topology-change flag; a
+    // nonzero third component is equivalent to the former logical OR.
+    const double localMassTerms[3] = {
         static_cast<double>(localMassExtended),
-        static_cast<double>(localAbsoluteMassExtended)};
-    double globalMassTerms[2] = {0.0, 0.0};
-    MPI_Allreduce(localMassTerms, globalMassTerms, 2, MPI_DOUBLE, MPI_SUM, comm_);
+        static_cast<double>(localAbsoluteMassExtended),
+        localChanged ? 1.0 : 0.0};
+    double globalMassTerms[3] = {0.0, 0.0, 0.0};
+    MPI_Allreduce(localMassTerms, globalMassTerms, 3, MPI_DOUBLE, MPI_SUM, comm_);
     stats_.totalMass = globalMassTerms[0];
     const double totalAbsoluteMass = globalMassTerms[1];
     if(!std::isfinite(stats_.totalMass) || !std::isfinite(totalAbsoluteMass))
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: non-finite global mass sum");
 
-    int localChangedInt = localChanged ? 1 : 0;
-    int globalChangedInt = 0;
-    MPI_Allreduce(&localChangedInt, &globalChangedInt, 1, MPI_INT, MPI_LOR, comm_);
-    if(globalChangedInt != 0)
+    if(globalMassTerms[2] != 0.0)
         rebuildTopology();
 
     stats_.topologyEpoch = topologyEpoch_;

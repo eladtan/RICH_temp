@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "source/3D/gravity/fmm/FmmDualTreeTraversal.hpp"
 #include "source/3D/gravity/fmm/FmmKernels.hpp"
 #include "source/3D/gravity/fmm/FmmM2LOperatorCache.hpp"
 #include "source/3D/gravity/fmm/FmmTaylorExpansion.hpp"
@@ -167,6 +168,108 @@ bool checkReconfigurePreservesEntries()
            cache.entries() == retainedEntries && cache.hits() == 1 &&
            cache.misses() == 0 && cache.bypasses() == 0;
 }
+
+bool checkPreparedBatchResolution()
+{
+    const FmmTaylorExpansion layout(4);
+    FmmNode sourceA;
+    FmmNode targetA;
+    FmmNode sourceB;
+    FmmNode targetB;
+    sourceA.center = Vector3D(0.0, 0.0, 0.0);
+    targetA.center = Vector3D(0.5, 0.25, -0.125);
+    sourceB.center = Vector3D(-0.25, 0.125, 0.0);
+    targetB.center = Vector3D(0.375, -0.5, 0.25);
+
+    const std::vector<FmmM2LOperatorCache::PreparedGeometry> geometries = {
+        FmmM2LOperatorCache::prepare(sourceA, targetA),
+        FmmM2LOperatorCache::prepare(sourceB, targetB)};
+    const std::vector<std::uint64_t> useCounts = {3, 5};
+    std::vector<double> derivativeScratch;
+    std::vector<double> uncachedOperator;
+    std::vector<const std::vector<double>*> coefficients;
+
+    FmmM2LOperatorCache cache;
+    const std::size_t generousBudget =
+        static_cast<std::size_t>(1) * 1024 * 1024;
+    cache.configure(generousBudget, layout.m2lTerms().size(), geometries.size());
+    cache.beginPhase();
+    const bool resolved = cache.resolvePreparedBatch(
+        geometries, useCounts, layout, derivativeScratch,
+        uncachedOperator, coefficients);
+    if(!resolved || coefficients.size() != geometries.size() ||
+       coefficients[0] == nullptr || coefficients[1] == nullptr ||
+       coefficients[0]->size() != layout.m2lTerms().size() ||
+       coefficients[1]->size() != layout.m2lTerms().size() ||
+       cache.misses() != 2 || cache.hits() != 6 ||
+       cache.bypasses() != 0)
+        return false;
+
+    // An insufficient cache must reject the batch before mutating cache state
+    // or diagnostics, leaving the ordinary per-interaction fallback pristine.
+    FmmM2LOperatorCache zeroCache;
+    zeroCache.configure(0, layout.m2lTerms().size(), geometries.size());
+    zeroCache.beginPhase();
+    coefficients.push_back(nullptr);
+    const bool zeroResolved = zeroCache.resolvePreparedBatch(
+        geometries, useCounts, layout, derivativeScratch,
+        uncachedOperator, coefficients);
+    if(zeroResolved || !coefficients.empty() ||
+       zeroCache.entries() != 0 || zeroCache.hits() != 0 ||
+       zeroCache.misses() != 0 || zeroCache.bypasses() != 0)
+        return false;
+
+    // Re-resolving an already-populated batch must be all hits.
+    cache.beginPhase();
+    const bool repeatedResolved = cache.resolvePreparedBatch(
+        geometries, useCounts, layout, derivativeScratch,
+        uncachedOperator, coefficients);
+    return repeatedResolved && cache.misses() == 0 &&
+           cache.hits() == 8 && cache.bypasses() == 0;
+}
+
+bool checkLocalPlanGeometryGuard()
+{
+    std::vector<Vector3D> points;
+    std::vector<Vector3D> shifted;
+    for(int i = 0; i < 8; ++i)
+    {
+        for(int j = 0; j < 8; ++j)
+        {
+            for(int k = 0; k < 8; ++k)
+            {
+                const double x = static_cast<double>(2 * i - 7) / 16.0;
+                const double y = static_cast<double>(2 * j - 7) / 16.0;
+                const double z = static_cast<double>(2 * k - 7) / 16.0;
+                points.push_back(Vector3D(x, y, z));
+                shifted.push_back(Vector3D(x + 4.0, y, z));
+            }
+        }
+    }
+
+    FmmGravityOptions options;
+    options.expansionOrder = 4;
+    options.thetaCritical = 0.5;
+    options.leafCapacity = 4;
+
+    FmmTree firstTree;
+    firstTree.build(points, Vector3D(-1, -1, -1),
+                    Vector3D(1, 1, 1), options);
+    FmmLocalInteractionPlan plan;
+    FmmDualTreeTraversal::buildLocalPlan(
+        firstTree, options.thetaCritical, plan);
+    if(!FmmDualTreeTraversal::localPlanReusable(firstTree, plan))
+        return false;
+
+    // Translation preserves relative interactions and radii for these dyadic
+    // coordinates, but changes the root and absolute node geometry. The public
+    // reuse predicate must not rely on an unstated caller-side root check.
+    FmmTree shiftedTree;
+    shiftedTree.build(shifted, Vector3D(3, -1, -1),
+                      Vector3D(5, 1, 1), options);
+    return firstTree.nodes().size() == shiftedTree.nodes().size() &&
+           !FmmDualTreeTraversal::localPlanReusable(shiftedTree, plan);
+}
 }
 
 int main()
@@ -220,6 +323,10 @@ int main()
             checkScaleFreeKernel();
         const bool reconfigurePreserved =
             checkReconfigurePreservesEntries();
+        const bool preparedBatchPass =
+            checkPreparedBatchResolution();
+        const bool localPlanGeometryPass =
+            checkLocalPlanGeometryGuard();
         const bool boundedPass =
             firstStats.m2lCount > 0 &&
             firstStats.localOperatorCacheBytes <= cacheBudget &&
@@ -272,7 +379,8 @@ int main()
                                    kernelDifferences.first <= 5e-12 &&
                                    kernelDifferences.second <= 5e-12;
         const bool passed = boundedPass && zeroPass && canonicalPass &&
-                            reconfigurePreserved &&
+                            reconfigurePreserved && preparedBatchPass &&
+                            localPlanGeometryPass &&
                             dyadicRootPass && numericalPass;
 
         std::ofstream output("fmm_operator_cache_metrics.txt");
