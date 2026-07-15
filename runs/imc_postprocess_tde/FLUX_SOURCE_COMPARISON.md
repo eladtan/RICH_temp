@@ -38,9 +38,20 @@ source cell retains a one-packet floor so no part of the fixed source is
 dropped.  Source topology and luminosity are checked after every MPI
 repartition.
 
-Random-walk and DDMC acceleration are intentionally disabled in this mode.
-Their current closures do not enforce the new internal CER boundary, and using
-them would make the grey/MG comparison physically inconsistent.  Ordinary
+Random-walk acceleration remains disabled in this mode because it does not
+expose individual CER-face encounters.  DDMC is supported through a native
+one-sided thermalizing CER boundary.  A CER-adjacent exterior cell remains
+DDMC-eligible only when its diffusion optical depth from the cell generator to
+every attached CER face is at least
+`--flux-source-ddmc-face-tau` (default 5).  Cells failing that local face test
+fall back to explicit IMC; no fixed multi-cell buffer is imposed.
+
+A DDMC packet that reaches the CER preserves its comoving energy, loses its
+polarization memory, and is redistributed with the same Planck boundary law as
+the explicit calculation.  In the MG run, re-emission inside the local PGRW
+DDMC band stays DDMC, while re-emission above the local cutoff becomes an
+outward Lambertian IMC packet on the same CER face.  Passing `--no-ddmc` still
+provides a fully explicit reference calculation.  Ordinary
 `imc_postprocess_tde` runs are unchanged.
 
 ## Build
@@ -68,6 +79,7 @@ mpirun -np 64 ./rich \
   --photons-per-cell 100 \
   --flux-source-compare \
   --flux-source-tau 5 \
+  --flux-source-ddmc-face-tau 5 \
   --polarization \
   --adaptive-source-cells \
   --adaptive-group-quality \

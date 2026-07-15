@@ -8,6 +8,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "MonteCarloPhysics3D.hpp"
 #include "MultigroupOpacity.hpp"
@@ -35,6 +36,7 @@ struct RadiationIMCParameters
     double rwMinParticleOpticalDepth = 5.0;
     bool withDDMC = false;
     double ddmcMinCellOpticalDepth = 15.0;
+    double ddmcExternalSourceMinFaceOpticalDepth = 5.0;
     bool ddmcUseMovingInterfaceCorrection = true;
     double ddmcMaxInterfaceVelocityOverC = 0.1;
     double ddmcInterfaceTargetWeightRatio = 2.0;
@@ -78,7 +80,8 @@ struct RadiationIMCParameters
 enum class DDMCFaceKind
 {
     Internal,
-    InterfaceToIMC
+    InterfaceToIMC,
+    ThermalizingExternalSource
 };
 
 struct DDMCFaceLeak
@@ -108,6 +111,11 @@ struct DDMCCellData
     bool eligible = false;
     bool boundaryExcluded = false;
     bool observerExcluded = false;
+    bool externalSourceInteriorExcluded = false;
+    bool externalSourceFaceOpticalDepthExcluded = false;
+    size_t externalSourceBoundaryFaceCount = 0;
+    double minExternalSourceFaceOpticalDepth =
+        std::numeric_limits<double>::infinity();
     size_t rigidBoundaryFaceCount = 0;
     size_t unsupportedBoundaryFaceCount = 0;
     size_t firstUnsupportedBoundaryFace = std::numeric_limits<size_t>::max();
@@ -144,6 +152,7 @@ public:
     {
         size_t faceIndex = std::numeric_limits<size_t>::max();
         size_t cellID = std::numeric_limits<size_t>::max();
+        size_t interiorCellID = std::numeric_limits<size_t>::max();
         Vector3D location = Vector3D(0.0, 0.0, 0.0);
         Vector3D outwardNormal = Vector3D(0.0, 0.0, 1.0);
         double luminosity = 0.0;
@@ -376,6 +385,7 @@ private:
     double rwMinParticleOpticalDepth;
     bool withDDMC;
     double ddmcMinCellOpticalDepth;
+    double ddmcExternalSourceMinFaceOpticalDepth;
     bool ddmcUseMovingInterfaceCorrection;
     double ddmcMaxInterfaceVelocityOverC;
     double ddmcInterfaceTargetWeightRatio;
@@ -476,6 +486,17 @@ private:
     size_t ddmcLeakInvalidGeometryCount = 0;
     size_t ddmcInterfaceBypassCount = 0;
     size_t ddmcDopplerCutoffExitCount = 0;
+    size_t ddmcExternalSourceCandidateFaceCount = 0;
+    size_t ddmcExternalSourceAcceleratedFaceCount = 0;
+    size_t ddmcExternalSourceExplicitFallbackFaceCount = 0;
+    size_t ddmcExternalSourceInteriorExcludedCellCount = 0;
+    size_t ddmcExternalSourceThermalizationCount = 0;
+    size_t ddmcExternalSourceStayDDMCCount = 0;
+    size_t ddmcExternalSourceToIMCCount = 0;
+    double ddmcExternalSourceThermalizedEnergy = 0.0;
+    double ddmcExternalSourceToIMCEnergy = 0.0;
+    double ddmcExternalSourceMinimumFaceOpticalDepth =
+        std::numeric_limits<double>::infinity();
 
 #ifdef RICH_IMC_DDMC_ENABLED
     enum class DDMCDiagnosticEventKind : unsigned char
@@ -547,7 +568,9 @@ private:
     std::shared_ptr<SphericalObserver> observer_;
     bool postProcessExternalSourceMode_ = false;
     std::vector<PostProcessExternalSource> postProcessExternalSources_;
+    std::vector<size_t> postProcessExternalSourceLocalCellIndices_;
     std::unordered_map<size_t, size_t> postProcessExternalSourceFaceIndex_;
+    std::unordered_set<size_t> postProcessExternalSourceInteriorCellIDs_;
 
     std::unordered_map<size_t, double> adaptiveSourceScores_;
     bool adaptiveSourceScoresEnabled_ = false;

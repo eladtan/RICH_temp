@@ -169,7 +169,7 @@ int main(int argc, char* argv[])
             return 1;
         }
 #ifndef RICH_IMC_DDMC_ENABLED
-        if (cfg.ddmc && !cfg.fluxSourceCompare) {
+        if (cfg.ddmc) {
             if (rank == 0)
                 std::cerr << "Error: DDMC is enabled, but this executable was built without RadiationIMC_DDMC.cpp. "
                           << "Rebuild with forward DDMC support or pass --no-ddmc.\n";
@@ -208,17 +208,21 @@ int main(int argc, char* argv[])
                       << "Center:          (" << cfg.center.x << ", " << cfg.center.y << ", " << cfg.center.z << ")\n"
                       << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
                       << "DDMC:            "
-                      << ((cfg.ddmc && !cfg.fluxSourceCompare) ? "yes" : "no")
+                      << (cfg.ddmc ? "yes" : "no")
                       << (cfg.fluxSourceCompare && cfg.ddmc
-                          ? " (disabled for CER boundary)" : "") << "\n"
+                          ? " (native thermalizing CER boundary)" : "") << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Photosphere:     " << (cfg.photosphere ? "yes" : "no") << "\n"
                       << "Flux source test:" << (cfg.fluxSourceCompare ? " yes" : " no") << "\n"
                       << "Flux source tau: " << cfg.fluxSourceThermalizationTau << "\n"
+                      << "Flux source DDMC face tau: "
+                      << cfg.fluxSourceDDMCFaceOpticalDepth << "\n"
                       << "Flux source transport: "
                       << (cfg.fluxSourceCompare
-                          ? "explicit IMC (RW/DDMC disabled for CER boundary)"
+                          ? (cfg.ddmc
+                              ? "CER-aware DDMC with face-local explicit fallback"
+                              : "explicit IMC (--no-ddmc)")
                           : "not applicable") << "\n"
                       << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
                       << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
@@ -591,8 +595,10 @@ int main(int argc, char* argv[])
         params.noHydroFeedback = true;
         params.withRandomWalk = cfg.randomWalk && !cfg.fluxSourceCompare;
         params.rwMinCellOpticalDepth = 15;
-        params.withDDMC = cfg.ddmc && !cfg.fluxSourceCompare;
+        params.withDDMC = cfg.ddmc;
         params.ddmcMinCellOpticalDepth = 15;
+        params.ddmcExternalSourceMinFaceOpticalDepth =
+            cfg.fluxSourceDDMCFaceOpticalDepth;
         params.ddmcUseMultigroupPGRW = true;
         params.MMC = false;
         params.diffusionPressureGradient = false;

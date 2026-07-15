@@ -37,6 +37,7 @@ struct Config
     bool photosphere = true;
     bool fluxSourceCompare = false;
     double fluxSourceThermalizationTau = 5.0;
+    double fluxSourceDDMCFaceOpticalDepth = 5.0;
     int polarizationManualScatterings = 128;
     double polarizationDepolarizationScatterings = 0.5;
     std::string polarizationClosure = "damped_last_scatterings";

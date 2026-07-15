@@ -447,6 +447,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
             RadiationIMC::PostProcessExternalSource source;
             source.faceIndex = faces[j];
             source.cellID = runtime.cells[outerCell].ID;
+            source.interiorCellID = runtime.cells[innerCell].ID;
             source.location = runtime.tess.FaceCM(faces[j]);
             source.outwardNormal = normal;
             source.luminosity = luminosity;

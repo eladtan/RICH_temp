@@ -256,6 +256,17 @@ void RadiationIMC::precomputeDDMCData()
     this->ddmcLeakInvalidGeometryCount = 0;
     this->ddmcInterfaceBypassCount = 0;
     this->ddmcDopplerCutoffExitCount = 0;
+    this->ddmcExternalSourceCandidateFaceCount = 0;
+    this->ddmcExternalSourceAcceleratedFaceCount = 0;
+    this->ddmcExternalSourceExplicitFallbackFaceCount = 0;
+    this->ddmcExternalSourceInteriorExcludedCellCount = 0;
+    this->ddmcExternalSourceThermalizationCount = 0;
+    this->ddmcExternalSourceStayDDMCCount = 0;
+    this->ddmcExternalSourceToIMCCount = 0;
+    this->ddmcExternalSourceThermalizedEnergy = 0.0;
+    this->ddmcExternalSourceToIMCEnergy = 0.0;
+    this->ddmcExternalSourceMinimumFaceOpticalDepth =
+        std::numeric_limits<double>::infinity();
     this->ddmcDiagnosticEvents.clear();
 
     for(size_t i = 0; i < Ncells; ++i)
@@ -407,6 +418,82 @@ void RadiationIMC::precomputeDDMCData()
         }
     }
 
+    // Treat the installed CER as a one-sided thermalizing DDMC boundary.
+    // Interior exclusions are O(Ncells); the face test itself is O(N_CER)
+    // through the decomposition-local source-to-cell map rebuilt with the CER.
+    if(this->postProcessExternalSourceMode_)
+    {
+        if(this->postProcessExternalSourceLocalCellIndices_.size() !=
+           this->postProcessExternalSources_.size())
+            throw UniversalError(
+                "DDMC CER source-to-cell map has inconsistent size");
+
+        for(size_t i = 0; i < Ncells; ++i)
+        {
+            DDMCCellData &data = this->ddmcCellData[i];
+            if(this->postProcessExternalSourceInteriorCellIDs_.count(
+                   this->cells[i].ID) != 0)
+            {
+                data.externalSourceInteriorExcluded = true;
+                data.eligible = false;
+                ++this->ddmcExternalSourceInteriorExcludedCellCount;
+            }
+        }
+
+        for(size_t sourceIndex = 0;
+            sourceIndex < this->postProcessExternalSources_.size();
+            ++sourceIndex)
+        {
+            PostProcessExternalSource const &source =
+                this->postProcessExternalSources_[sourceIndex];
+            size_t const i =
+                this->postProcessExternalSourceLocalCellIndices_[sourceIndex];
+            if(i >= Ncells || this->cells[i].ID != source.cellID)
+                throw UniversalError(
+                    "DDMC CER source-to-cell map is stale or invalid");
+
+            DDMCCellData &data = this->ddmcCellData[i];
+            ++data.externalSourceBoundaryFaceCount;
+            ++this->ddmcExternalSourceCandidateFaceCount;
+
+            Vector3D normal = source.outwardNormal;
+            double const normalNorm = abs(normal);
+            double const faceDistance =
+                (normalNorm > 0.0 && std::isfinite(normalNorm))
+                ? std::abs(ScalarProd(
+                    this->grid.FaceCM(source.faceIndex) -
+                        this->grid.GetMeshPoint(i),
+                    normal / normalNorm))
+                : 0.0;
+            double const faceTau = data.sigmaDiffusion * faceDistance;
+            double const diagnosticFaceTau =
+                (faceTau >= 0.0 && std::isfinite(faceTau))
+                    ? faceTau : 0.0;
+            data.minExternalSourceFaceOpticalDepth = std::min(
+                data.minExternalSourceFaceOpticalDepth, diagnosticFaceTau);
+            this->ddmcExternalSourceMinimumFaceOpticalDepth = std::min(
+                this->ddmcExternalSourceMinimumFaceOpticalDepth,
+                diagnosticFaceTau);
+            if(!(faceTau >=
+                 this->ddmcExternalSourceMinFaceOpticalDepth) ||
+               !std::isfinite(faceTau))
+            {
+                data.externalSourceFaceOpticalDepthExcluded = true;
+                data.eligible = false;
+            }
+        }
+    }
+
+    if(this->postProcessExternalSourceMode_)
+    {
+        for(DDMCCellData const &data : this->ddmcCellData)
+        {
+            if(data.externalSourceBoundaryFaceCount > 0 && !data.eligible)
+                this->ddmcExternalSourceExplicitFallbackFaceCount +=
+                    data.externalSourceBoundaryFaceCount;
+        }
+    }
+
     // Finalize exclusions before exchanging eligibility.  The original patch
     // exchanged the first-pass flag and only afterwards removed unsupported
     // boundary cells, so neighboring ranks could construct an internal
@@ -421,6 +508,23 @@ void RadiationIMC::precomputeDDMCData()
         Vector3D const center = this->grid.GetMeshPoint(i);
         for(size_t faceIdx : this->grid.GetCellFaces(i))
         {
+            if(this->postProcessExternalSourceMode_)
+            {
+                auto const sourceFace =
+                    this->postProcessExternalSourceFaceIndex_.find(faceIdx);
+                if(sourceFace !=
+                   this->postProcessExternalSourceFaceIndex_.end() &&
+                   sourceFace->second <
+                       this->postProcessExternalSources_.size() &&
+                   this->postProcessExternalSources_[sourceFace->second].cellID ==
+                       this->cells[i].ID)
+                {
+                    // This face is represented by its one-sided CER first-
+                    // passage rate, not by an internal transport conductance.
+                    continue;
+                }
+            }
+
             const auto &neighbors = this->grid.GetFaceNeighbors(faceIdx);
             size_t const nextCellIndex =
                 (neighbors.first == i) ? neighbors.second : neighbors.first;
@@ -534,6 +638,67 @@ void RadiationIMC::precomputeDDMCData()
                !std::isfinite(sourceDistanceToFace) || !std::isfinite(area))
             {
                 ++this->ddmcLeakInvalidGeometryCount;
+                continue;
+            }
+
+            auto const externalSourceFace =
+                this->postProcessExternalSourceMode_
+                ? this->postProcessExternalSourceFaceIndex_.find(faceIdx)
+                : this->postProcessExternalSourceFaceIndex_.end();
+            if(externalSourceFace !=
+               this->postProcessExternalSourceFaceIndex_.end())
+            {
+                if(externalSourceFace->second >=
+                   this->postProcessExternalSources_.size())
+                    throw UniversalError(
+                        "DDMC CER face map contains an invalid source index");
+                PostProcessExternalSource const &source =
+                    this->postProcessExternalSources_[externalSourceFace->second];
+                if(source.cellID != this->cells[i].ID)
+                    throw UniversalError(
+                        "DDMC attempted to build a CER leak from the interior side");
+
+                double const boundaryRate =
+                    DDMCWollaeger::BoundaryLeakRate(
+                        area, volume, data.sigmaDiffusion,
+                        sourceDistanceToFace, units::clight);
+                if(!(boundaryRate > 0.0) || !std::isfinite(boundaryRate))
+                    throw UniversalError(
+                        "DDMC CER boundary produced a nonpositive leak rate");
+
+                Vector3D sourceNormal = source.outwardNormal;
+                double const sourceNormalNorm = abs(sourceNormal);
+                if(!(sourceNormalNorm > 0.0) ||
+                   !std::isfinite(sourceNormalNorm))
+                    throw UniversalError(
+                        "DDMC CER boundary has an invalid outward normal");
+                sourceNormal *= 1.0 / sourceNormalNorm;
+
+                DDMCFaceLeak faceLeak;
+                faceLeak.faceIndex = faceIdx;
+                faceLeak.nextCellIndex = i;
+                faceLeak.kind = DDMCFaceKind::ThermalizingExternalSource;
+                faceLeak.rate = boundaryRate;
+                faceLeak.boundaryRate = boundaryRate;
+                faceLeak.sourceBandMass = sourceBandMass;
+                faceLeak.commonBandMass = sourceBandMass;
+                faceLeak.ddmcFraction = 1.0;
+                faceLeak.area = area;
+                faceLeak.sourceDistanceToFace = sourceDistanceToFace;
+                faceLeak.targetDistanceToFace = 0.0;
+                faceLeak.targetDDMCEligible = true;
+                faceLeak.targetGroupCutoff = data.groupCutoff;
+                faceLeak.outwardNormal = sourceNormal;
+                data.faceLeaks.push_back(faceLeak);
+                data.totalLeakRate += boundaryRate;
+                data.faceAreaSum += area;
+                data.fluxMatrix[0] += area * sourceNormal.x * sourceNormal.x;
+                data.fluxMatrix[1] += area * sourceNormal.x * sourceNormal.y;
+                data.fluxMatrix[2] += area * sourceNormal.x * sourceNormal.z;
+                data.fluxMatrix[3] += area * sourceNormal.y * sourceNormal.y;
+                data.fluxMatrix[4] += area * sourceNormal.y * sourceNormal.z;
+                data.fluxMatrix[5] += area * sourceNormal.z * sourceNormal.z;
+                ++this->ddmcExternalSourceAcceleratedFaceCount;
                 continue;
             }
 
@@ -1671,7 +1836,11 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
     }
 
     double const f = this->factorFleck[cellIndex];
-    double const upscatterRateCo = (usePGRW && data.gamma < 1.0 && data.sigmaEnergyAbs > 0.0 && f > 0.0)
+    // The fixed-flux CER mode deliberately uses f=0, but effective absorption
+    // must still redistribute PGRW packets out of the DDMC band.
+    double const upscatterRateCo =
+        (usePGRW && data.gamma < 1.0 && data.sigmaEnergyAbs > 0.0 &&
+         (f > 0.0 || this->postProcessExternalSourceMode_))
         ? units::clight * (1.0 - f) * data.sigmaEnergyAbs * (1.0 - data.gamma)
         : 0.0;
     double applicableLeakRate = 0.0;
@@ -2102,6 +2271,82 @@ bool RadiationIMC::tryDDMCStep(Particle &particle, Functionality &functionality,
             return finalizeAccelerationStep(false, true, false);
         }
         nOut = normalize(nOut);
+
+        if(chosen->kind == DDMCFaceKind::ThermalizingExternalSource)
+        {
+            auto const sourceFace =
+                this->postProcessExternalSourceFaceIndex_.find(
+                    chosen->faceIndex);
+            if(sourceFace ==
+                   this->postProcessExternalSourceFaceIndex_.end() ||
+               sourceFace->second >=
+                   this->postProcessExternalSources_.size())
+                throw UniversalError(
+                    "DDMC selected a CER face without an installed source");
+            PostProcessExternalSource const &source =
+                this->postProcessExternalSources_[sourceFace->second];
+            if(source.cellID != cell.ID)
+                throw UniversalError(
+                    "DDMC selected a CER face from the wrong transport cell");
+
+            nOut = normalize(source.outwardNormal);
+            double const eventEnergy = std::abs(materialParticle.weight);
+            ++this->ddmcExternalSourceThermalizationCount;
+            this->ddmcExternalSourceThermalizedEnergy += eventEnergy;
+
+            if(this->multigroupOpacity)
+            {
+                materialParticle.frequency =
+                    this->samplePostProcessExternalSourcePlanckFrequency(cell);
+                ClampFrequencyToBoundsDDMC(materialParticle.frequency);
+            }
+
+            bool const leaveDDMCBand = usePGRW &&
+                data.groupCutoff < ENERGY_GROUPS_NUM &&
+                materialParticle.frequency >=
+                    ComputationalCell3D::energyBoundaries[data.groupCutoff];
+            if(leaveDDMCBand)
+            {
+                materialParticle.velocity = units::clight *
+                    this->samplePostProcessExternalSourceDirection(nOut);
+                if(!(ScalarProd(materialParticle.velocity, nOut) > 0.0))
+                    throw UniversalError(
+                        "DDMC CER thermalization sampled a non-outgoing IMC direction");
+#ifdef MONTECARLO_POLARIZATION
+                if(this->postProcess_.enabled &&
+                   this->postProcess_.polarization.enabled)
+                    IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
+                static constexpr double cerNudge = 1.0e-8;
+                materialParticle.location =
+                    (1.0 - cerNudge) * source.location +
+                    cerNudge * this->grid.GetMeshPoint(cellIndex);
+                this->validateDDMCTransportLocation(
+                    cellIndex, materialParticle.location,
+                    "DDMC CER thermalization to IMC");
+                functionality.change = MonteCarloParticleStatus::NO_CELL_MOVE;
+                ++this->ddmcExternalSourceToIMCCount;
+                this->ddmcExternalSourceToIMCEnergy += eventEnergy;
+                ++this->ddmcLeakCount;
+                ++this->ddmcTransportLeakCount;
+                return finalizeAccelerationStep(false, false, false);
+            }
+
+            materialParticle.location = this->grid.GetMeshPoint(cellIndex);
+            materialParticle.velocity = units::clight *
+                SampleIsotropicDirection(
+                    this->dist(this->re), this->dist(this->re));
+#ifdef MONTECARLO_POLARIZATION
+            if(this->postProcess_.enabled &&
+               this->postProcess_.polarization.enabled)
+                IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
+            functionality.change = MonteCarloParticleStatus::NO_CELL_MOVE;
+            ++this->ddmcExternalSourceStayDDMCCount;
+            ++this->ddmcLeakCount;
+            ++this->ddmcResidentLeakCount;
+            return finalizeAccelerationStep(false, true, false);
+        }
 
         Vector3D const sourceCenter = this->grid.GetMeshPoint(cellIndex);
         Vector3D towardNeighbor;

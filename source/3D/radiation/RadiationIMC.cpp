@@ -1150,7 +1150,7 @@ double AdaptiveScoreToUnitInterval(double score, AdaptiveScoreAllocationSpan con
 }
 
     RadiationIMC::RadiationIMC(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity, RadiationIMCParameters parameters)
-    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcUseMovingInterfaceCorrection(parameters.ddmcUseMovingInterfaceCorrection), ddmcMaxInterfaceVelocityOverC(parameters.ddmcMaxInterfaceVelocityOverC), ddmcInterfaceTargetWeightRatio(parameters.ddmcInterfaceTargetWeightRatio), ddmcMaxInterfaceSplits(parameters.ddmcMaxInterfaceSplits), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), ddmcMaxGroupCutoff(parameters.ddmcMaxGroupCutoff), ddmcInterfaceDiagnostics(parameters.ddmcInterfaceDiagnostics), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
+    : MonteCarloRadiationPhysics3D(grid, boundary, cells, conserved, eos, opacity), withHydro(parameters.withHydro), diffusionPressureGradient(parameters.diffusionPressureGradient), MMC(parameters.MMC), newPhotonsPerCell(parameters.newPhotonsPerCell), withRandomWalk(parameters.withRandomWalk), rwMinCellOpticalDepth(parameters.rwMinCellOpticalDepth), rwMinParticleOpticalDepth(parameters.rwMinParticleOpticalDepth), withDDMC(parameters.withDDMC), ddmcMinCellOpticalDepth(parameters.ddmcMinCellOpticalDepth), ddmcExternalSourceMinFaceOpticalDepth(parameters.ddmcExternalSourceMinFaceOpticalDepth), ddmcUseMovingInterfaceCorrection(parameters.ddmcUseMovingInterfaceCorrection), ddmcMaxInterfaceVelocityOverC(parameters.ddmcMaxInterfaceVelocityOverC), ddmcInterfaceTargetWeightRatio(parameters.ddmcInterfaceTargetWeightRatio), ddmcMaxInterfaceSplits(parameters.ddmcMaxInterfaceSplits), ddmcUseMultigroupPGRW(parameters.ddmcUseMultigroupPGRW), ddmcMaxGroupCutoff(parameters.ddmcMaxGroupCutoff), ddmcInterfaceDiagnostics(parameters.ddmcInterfaceDiagnostics), noHydroFeedback(parameters.noHydroFeedback), withEgTimeAvg(parameters.withEgTimeAvg), capAbsorptionOpacity(parameters.capAbsorptionOpacity), withCompton(parameters.withCompton), postProcess_(parameters.postProcess), useTransportVelocities_((parameters.withHydro && !parameters.MMC) || (parameters.postProcess.enabled && parameters.postProcess.useCellVelocities)), comptonUseInduced(parameters.comptonUseInduced), comptonInducedMode(parameters.comptonInducedMode), comptonAllowNZeroFallback(parameters.comptonAllowNZeroFallback), comptonAngleDependent(parameters.comptonAngleDependent), comptonDebugParityCheck(parameters.comptonDebugParityCheck), comptonCheckSignedTallies(parameters.comptonCheckSignedTallies), comptonDiagnostics(parameters.comptonDiagnostics), comptonSignedTallyTolerance(parameters.comptonSignedTallyTolerance), comptonMatrixSamples(parameters.comptonMatrixSamples)
 {
     if(postProcess_.enabled || postProcess_.polarization.enabled)
     {
@@ -1212,6 +1212,11 @@ double AdaptiveScoreToUnitInterval(double score, AdaptiveScoreAllocationSpan con
            this->ddmcMaxGroupCutoff > ENERGY_GROUPS_NUM)
             throw UniversalError(
                 "RadiationIMC: DDMC maximum group cutoff must lie in [1, ENERGY_GROUPS_NUM]");
+        if(!(this->ddmcExternalSourceMinFaceOpticalDepth > 0.0) ||
+           !std::isfinite(this->ddmcExternalSourceMinFaceOpticalDepth))
+            throw UniversalError(
+                "RadiationIMC: DDMC external-source face optical-depth "
+                "threshold must be positive and finite");
     }
     if(this->withCompton && this->withRandomWalk)
     {
@@ -1764,21 +1769,55 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
 {
     auto printAccelerationStats = [this]()
     {
-        unsigned long long counts[6] = {
+        unsigned long long counts[13] = {
             static_cast<unsigned long long>(this->rwStepCount),
             static_cast<unsigned long long>(this->ddmcStepCount),
             static_cast<unsigned long long>(this->ddmcLeakCount),
             static_cast<unsigned long long>(this->ddmcCensusCount),
             static_cast<unsigned long long>(this->ddmcUpscatterCount),
-            static_cast<unsigned long long>(this->ddmcFallbackCount)
+            static_cast<unsigned long long>(this->ddmcFallbackCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceCandidateFaceCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceAcceleratedFaceCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceExplicitFallbackFaceCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceInteriorExcludedCellCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceThermalizationCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceStayDDMCCount),
+            static_cast<unsigned long long>(
+                this->ddmcExternalSourceToIMCCount)
         };
+        double cerEnergies[2] = {
+            this->ddmcExternalSourceThermalizedEnergy,
+            this->ddmcExternalSourceToIMCEnergy
+        };
+        double minCerFaceTau =
+            this->ddmcExternalSourceMinimumFaceOpticalDepth;
         int rank = 0;
         #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         if(rank == 0)
-            MPI_Reduce(MPI_IN_PLACE, counts, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        {
+            MPI_Reduce(MPI_IN_PLACE, counts, 13, MPI_UNSIGNED_LONG_LONG,
+                       MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(MPI_IN_PLACE, cerEnergies, 2, MPI_DOUBLE,
+                       MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(MPI_IN_PLACE, &minCerFaceTau, 1, MPI_DOUBLE,
+                       MPI_MIN, 0, MPI_COMM_WORLD);
+        }
         else
-            MPI_Reduce(counts, nullptr, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        {
+            MPI_Reduce(counts, nullptr, 13, MPI_UNSIGNED_LONG_LONG,
+                       MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(cerEnergies, nullptr, 2, MPI_DOUBLE,
+                       MPI_SUM, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&minCerFaceTau, nullptr, 1, MPI_DOUBLE,
+                       MPI_MIN, 0, MPI_COMM_WORLD);
+        }
         #endif
         if(rank == 0)
         {
@@ -1792,6 +1831,22 @@ void RadiationIMC::postStep(const std::vector<Particle> &particles, double fullD
                           << " upscatter=" << counts[4]
                           << " fallback=" << counts[5]
                           << std::endl;
+                if(this->postProcessExternalSourceMode_)
+                {
+                    std::cout << "DDMC CER: candidate_faces=" << counts[6]
+                              << " accelerated_faces=" << counts[7]
+                              << " explicit_fallback_faces=" << counts[8]
+                              << " interior_excluded_cells=" << counts[9]
+                              << " thermalizations=" << counts[10]
+                              << " stay_ddmc=" << counts[11]
+                              << " to_imc=" << counts[12]
+                              << " thermalized_energy=" << cerEnergies[0]
+                              << " to_imc_energy=" << cerEnergies[1]
+                              << " min_face_tau="
+                              << (std::isfinite(minCerFaceTau)
+                                  ? minCerFaceTau : 0.0)
+                              << std::endl;
+                }
             }
         }
     };
@@ -4457,10 +4512,10 @@ void RadiationIMC::setPostProcessExternalSources(
     if(!this->postProcess_.enabled)
         throw UniversalError(
             "External sources require RadiationIMC post-process mode");
-    if(this->withRandomWalk || this->withDDMC)
+    if(this->withRandomWalk)
         throw UniversalError(
-            "External source surfaces currently require explicit IMC transport; "
-            "random-walk and DDMC do not honor the internal thermalizing boundary");
+            "External source surfaces currently require random-walk acceleration "
+            "to be disabled; DDMC uses a native thermalizing CER boundary");
 
     std::unordered_map<size_t, size_t> localCellIndexByID;
     localCellIndexByID.reserve(this->grid.GetPointNo());
@@ -4475,15 +4530,22 @@ void RadiationIMC::setPostProcessExternalSources(
 
     std::unordered_map<size_t, size_t> faceIndex;
     faceIndex.reserve(sources.size());
+    std::vector<size_t> localSourceCellIndices(
+        sources.size(), std::numeric_limits<size_t>::max());
     for(size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
     {
         PostProcessExternalSource const& source = sources[sourceIndex];
         if(source.faceIndex == std::numeric_limits<size_t>::max() ||
-           source.cellID == std::numeric_limits<size_t>::max())
+           source.cellID == std::numeric_limits<size_t>::max() ||
+           source.interiorCellID == std::numeric_limits<size_t>::max())
         {
             throw UniversalError(
-                "External source face is missing a face or transport-cell ID");
+                "External source face is missing a face, transport-cell ID, "
+                "or interior-cell ID");
         }
+        if(source.interiorCellID == source.cellID)
+            throw UniversalError(
+                "External source face has identical exterior and interior cell IDs");
         if(!(source.luminosity >= 0.0) || !std::isfinite(source.luminosity) ||
            !std::isfinite(source.location.x) ||
            !std::isfinite(source.location.y) ||
@@ -4500,11 +4562,28 @@ void RadiationIMC::setPostProcessExternalSources(
             throw UniversalError(
                 "External source references a non-local transport cell");
         size_t const cellIndex = cellIt->second;
+        localSourceCellIndices[sourceIndex] = cellIndex;
         auto const& cellFaces = this->grid.GetCellFaces(cellIndex);
         if(std::find(cellFaces.begin(), cellFaces.end(), source.faceIndex) ==
            cellFaces.end())
             throw UniversalError(
                 "External source face is not attached to its transport cell");
+
+        auto const faceNeighbors = this->grid.GetFaceNeighbors(source.faceIndex);
+        if(faceNeighbors.first != cellIndex && faceNeighbors.second != cellIndex)
+            throw UniversalError(
+                "External source face does not contain its transport cell");
+        size_t const interiorCellIndex =
+            faceNeighbors.first == cellIndex
+                ? faceNeighbors.second : faceNeighbors.first;
+        if(this->grid.IsPointOutsideBox(interiorCellIndex) ||
+           interiorCellIndex >= this->cells.size())
+            throw UniversalError(
+                "External source face has no material interior neighbor");
+        if(this->cells[interiorCellIndex].ID != source.interiorCellID)
+            throw UniversalError(
+                "External source interior-cell ID does not match the opposite face neighbor");
+
         Vector3D const outward = source.outwardNormal / normalNorm;
         if(!(ScalarProd(this->grid.GetMeshPoint(cellIndex) - source.location,
                         outward) > 0.0))
@@ -4516,8 +4595,64 @@ void RadiationIMC::setPostProcessExternalSources(
             throw UniversalError("Duplicate external source face index");
     }
 
+    std::unordered_set<size_t> globalInteriorIDs;
+    if(this->withDDMC)
+    {
+        std::unordered_set<size_t> localInteriorIDSet;
+        localInteriorIDSet.reserve(sources.size());
+        for(PostProcessExternalSource const &source : sources)
+            localInteriorIDSet.insert(source.interiorCellID);
+        std::vector<uint64_t> localInteriorIDs;
+        localInteriorIDs.reserve(localInteriorIDSet.size());
+        for(size_t id : localInteriorIDSet)
+            localInteriorIDs.push_back(static_cast<uint64_t>(id));
+
+#ifdef RICH_MPI
+        if(localInteriorIDs.size() >
+           static_cast<size_t>(std::numeric_limits<int>::max()))
+            throw UniversalError(
+                "External source has too many local interior IDs for MPI");
+        int mpiSize = 1;
+        MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+        int const localCount = static_cast<int>(localInteriorIDs.size());
+        std::vector<int> counts(static_cast<size_t>(mpiSize), 0);
+        MPI_Allgather(&localCount, 1, MPI_INT, counts.data(), 1, MPI_INT,
+                      MPI_COMM_WORLD);
+        std::vector<int> displacements(static_cast<size_t>(mpiSize), 0);
+        long long totalCount = 0;
+        for(int mpiRank = 0; mpiRank < mpiSize; ++mpiRank)
+        {
+            displacements[static_cast<size_t>(mpiRank)] =
+                static_cast<int>(totalCount);
+            totalCount += counts[static_cast<size_t>(mpiRank)];
+            if(totalCount > std::numeric_limits<int>::max())
+                throw UniversalError(
+                    "External source global interior-ID list exceeds MPI int range");
+        }
+        std::vector<uint64_t> allInteriorIDs(
+            static_cast<size_t>(totalCount));
+        MPI_Allgatherv(
+            localInteriorIDs.empty() ? nullptr : localInteriorIDs.data(),
+            localCount, MPI_UINT64_T,
+            allInteriorIDs.empty() ? nullptr : allInteriorIDs.data(),
+            counts.data(), displacements.data(), MPI_UINT64_T,
+            MPI_COMM_WORLD);
+        globalInteriorIDs.reserve(allInteriorIDs.size());
+        for(uint64_t id : allInteriorIDs)
+            globalInteriorIDs.insert(static_cast<size_t>(id));
+#else
+        globalInteriorIDs.reserve(localInteriorIDs.size());
+        for(uint64_t id : localInteriorIDs)
+            globalInteriorIDs.insert(static_cast<size_t>(id));
+#endif
+    }
+
     this->postProcessExternalSources_ = std::move(sources);
+    this->postProcessExternalSourceLocalCellIndices_ =
+        std::move(localSourceCellIndices);
     this->postProcessExternalSourceFaceIndex_ = std::move(faceIndex);
+    this->postProcessExternalSourceInteriorCellIDs_ =
+        std::move(globalInteriorIDs);
     // This flag is global in meaning: ranks with no local source faces must
     // still suppress the ordinary volume source.
     this->postProcessExternalSourceMode_ = true;
@@ -4526,7 +4661,9 @@ void RadiationIMC::setPostProcessExternalSources(
 void RadiationIMC::clearPostProcessExternalSources()
 {
     this->postProcessExternalSources_.clear();
+    this->postProcessExternalSourceLocalCellIndices_.clear();
     this->postProcessExternalSourceFaceIndex_.clear();
+    this->postProcessExternalSourceInteriorCellIDs_.clear();
     this->postProcessExternalSourceMode_ = false;
 }
 

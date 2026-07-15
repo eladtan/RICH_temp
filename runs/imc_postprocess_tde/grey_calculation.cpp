@@ -92,8 +92,10 @@ void RunGreyPostprocess(
             greyParams.noHydroFeedback = true;
             greyParams.withRandomWalk = cfg.randomWalk && !cfg.fluxSourceCompare;
             greyParams.rwMinCellOpticalDepth = 15;
-            greyParams.withDDMC = cfg.ddmc && !cfg.fluxSourceCompare;
+            greyParams.withDDMC = cfg.ddmc;
             greyParams.ddmcMinCellOpticalDepth = 15;
+            greyParams.ddmcExternalSourceMinFaceOpticalDepth =
+                cfg.fluxSourceDDMCFaceOpticalDepth;
             greyParams.ddmcUseMultigroupPGRW = false;
             greyParams.MMC = false;
             greyParams.diffusionPressureGradient = false;

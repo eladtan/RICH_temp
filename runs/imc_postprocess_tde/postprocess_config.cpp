@@ -36,8 +36,10 @@ void printUsage(int rank)
               << "  --no-photosphere         Disable observer photosphere postprocessing\n"
               << "  --flux-source-compare    Run MG and grey transport from one FLD-normalized CER source\n"
               << "  --flux-source-tau TAU    Grey effective optical depth of CER (default: 5)\n"
+              << "  --flux-source-ddmc-face-tau TAU\n"
+              << "                           Minimum DDMC optical depth from exterior cell center to CER face (default: 5)\n"
               << "                           Requires MG, positive snapshot Erad, and non-Compton transport\n"
-              << "                           Uses explicit IMC; RW/DDMC are disabled for this mode\n"
+              << "                           RW is disabled; DDMC uses native CER thermalization with face-local IMC fallback\n"
               << "  --polarization           Enable postprocess linear polarization\n"
               << "  --no-polarization        Disable postprocess linear polarization\n"
               << "  --polarization-manual-scatterings N\n"
@@ -177,6 +179,7 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--no-photosphere") { cfg.photosphere = false; }
         else if (arg == "--flux-source-compare") { cfg.fluxSourceCompare = true; }
         else if (arg == "--flux-source-tau" && i + 1 < argc) { cfg.fluxSourceThermalizationTau = std::atof(argv[++i]); }
+        else if (arg == "--flux-source-ddmc-face-tau" && i + 1 < argc) { cfg.fluxSourceDDMCFaceOpticalDepth = std::atof(argv[++i]); }
         else if (arg == "--polarization") { cfg.polarization = true; }
         else if (arg == "--no-polarization") { cfg.polarization = false; }
         else if (arg == "--polarization-manual-scatterings" && i + 1 < argc) { cfg.polarizationManualScatterings = std::atoi(argv[++i]); }
@@ -272,6 +275,12 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
     if (!(cfg.fluxSourceThermalizationTau > 0.0) ||
         !std::isfinite(cfg.fluxSourceThermalizationTau)) {
         if (rank == 0) std::cerr << "--flux-source-tau must be finite and positive\n";
+        return false;
+    }
+    if (!(cfg.fluxSourceDDMCFaceOpticalDepth > 0.0) ||
+        !std::isfinite(cfg.fluxSourceDDMCFaceOpticalDepth)) {
+        if (rank == 0)
+            std::cerr << "--flux-source-ddmc-face-tau must be finite and positive\n";
         return false;
     }
     if (cfg.fluxSourceCompare && cfg.compton) {
