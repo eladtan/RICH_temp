@@ -19,6 +19,7 @@
 #endif
 
 #include "adaptive_statistics.hpp"
+#include "flux_source_calculation.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
@@ -28,7 +29,7 @@ namespace imc_postprocess_tde {
 void RunGreyPostprocess(
     Config const& cfg,
     PostprocessRuntime& runtime,
-    ForwardPostprocessResult const& /*forwardResult*/)
+    ForwardPostprocessResult const& forwardResult)
 {
     int const rank = runtime.rank;
     int const mpiSize = runtime.mpiSize;
@@ -70,8 +71,10 @@ void RunGreyPostprocess(
             // ============================================================
             // Grey IMC run (half generations)
             // ============================================================
-            size_t nGreyGens = std::max<size_t>(1, cfg.nGenerations / 2);
-            size_t greyPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / (2 * nGreyGens));
+            size_t nGreyGens = cfg.fluxSourceCompare
+                ? cfg.nGenerations : std::max<size_t>(1, cfg.nGenerations / 2);
+            size_t greyBudgetDivisor = cfg.fluxSourceCompare ? nGreyGens : 2 * nGreyGens;
+            size_t greyPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / greyBudgetDivisor);
 
             if (rank == 0)
                 std::cout << "\n=== Starting Grey IMC run (" << nGreyGens << " generations) ===" << std::endl;
@@ -87,9 +90,9 @@ void RunGreyPostprocess(
             greyParams.newPhotonsPerCell = greyPhotonsPerCell;
             greyParams.withHydro = false;
             greyParams.noHydroFeedback = true;
-            greyParams.withRandomWalk = cfg.randomWalk;
+            greyParams.withRandomWalk = cfg.randomWalk && !cfg.fluxSourceCompare;
             greyParams.rwMinCellOpticalDepth = 15;
-            greyParams.withDDMC = cfg.ddmc;
+            greyParams.withDDMC = cfg.ddmc && !cfg.fluxSourceCompare;
             greyParams.ddmcMinCellOpticalDepth = 15;
             greyParams.ddmcUseMultigroupPGRW = false;
             greyParams.MMC = false;
@@ -108,6 +111,9 @@ void RunGreyPostprocess(
             auto greyPhysics = std::make_shared<RadiationIMC>(
                 tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
             greyPhysics->setObserver(greyObserver);
+            if(cfg.fluxSourceCompare)
+                ConfigureFluxSourceForCurrentDecomposition(
+                    cfg, runtime, *greyPhysics);
 
             auto greyPopControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
@@ -307,6 +313,7 @@ void RunGreyPostprocess(
                 RankStepImbalance const greyStepImbalance =
                     ComputeRankStepImbalance("Grey", gen, greyManager->GetCellsStepsCounters(), rank);
                 bool const greyDoBurninMeasuredLB =
+                    !cfg.fluxSourceCompare &&
                     greyMeasuredLBActive &&
                     cfg.adaptiveSourceCells &&
                     greyFirstBurninThisGen &&
@@ -323,7 +330,8 @@ void RunGreyPostprocess(
                     cfg.adaptiveSourceCells &&
                     greyFinalThisGen &&
                     greyFinalGenerationIndex + 1 < nGreyGens &&
-                    (greyFinalGenerationIndex + 1) % 50 == 0;
+                    (greyFinalGenerationIndex + 1) %
+                        (cfg.fluxSourceCompare ? 10 : 50) == 0;
                 std::string const greyLBLabel = greyDoBurninMeasuredLB
                     ? "MEASURED_LB_GREY_BURNIN"
                     : (greyDoPostAdaptiveMeasuredLB
@@ -440,6 +448,9 @@ void RunGreyPostprocess(
                         greyPhysics = std::make_shared<RadiationIMC>(
                             tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
                         greyPhysics->setObserver(greyObserver);
+                        if(cfg.fluxSourceCompare)
+                            ConfigureFluxSourceForCurrentDecomposition(
+                                cfg, runtime, *greyPhysics);
 
                         greyPopControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
@@ -549,6 +560,81 @@ void RunGreyPostprocess(
                 double greyCutoff = greyObserver->getCutoffEnergy();
                 double greyResidual = greyEmitted - greyAbsorbed - greyBoxEscape - greyTimedOut - greyCutoff;
                 double greyTimedOutFrac = (greyEmitted > 0.0) ? greyTimedOut / greyEmitted : 0.0;
+
+                if(cfg.fluxSourceCompare) {
+                    if(!forwardResult.ran)
+                        throw UniversalError(
+                            "Flux-source comparison is missing the MG result");
+                    FluxSourcePolarizationSummary const greyPol =
+                        ComputeFluxSourcePolarizationSummary(
+                            greyObserver->getObserverQualitySnapshot());
+                    double const sourceLum = runtime.fluxSourceInjectedLuminosity;
+                    double const greyEmittedLum = greyEmitted / cfg.sourceDt;
+                    auto safeRatio = [](double numerator, double denominator) {
+                        return denominator > 0.0 ? numerator / denominator : 0.0;
+                    };
+
+                    std::string const comparePath = ReplaceExtension(
+                        InsertSuffixBeforeExtension(cfg.outputPath, "_flux_compare"),
+                        ".tsv");
+                    std::ofstream compare(comparePath);
+                    if(!compare.is_open())
+                        throw UniversalError("Could not open flux-source comparison TSV");
+                    compare << std::scientific << std::setprecision(12);
+                    compare << "method\ttau_eff"
+                            << "\tdirect_surface_fraction"
+                            << "\tboundary_faces"
+                            << "\temitting_faces"
+                            << "\ttarget_source_luminosity_erg_s"
+                            << "\tnet_fld_luminosity_erg_s"
+                            << "\tclipped_inward_luminosity_erg_s"
+                            << "\tclipped_inward_fraction"
+                            << "\tactual_emitted_luminosity_erg_s"
+                            << "\tcrossing_luminosity_erg_s"
+                            << "\tcrossing_stderr_erg_s"
+                            << "\temitted_over_target"
+                            << "\tcrossing_over_target"
+                            << "\ttimed_out_fraction"
+                            << "\tluminosity_weighted_polarization_degree"
+                            << "\tpolarized_observer_count\n";
+                    compare << "MG\t" << runtime.fluxSourceTau
+                            << "\t" << runtime.fluxSourceDirectlyResolvedFraction
+                            << "\t" << runtime.fluxSourceBoundaryFaceCount
+                            << "\t" << runtime.fluxSourceEmittingFaceCount
+                            << "\t" << forwardResult.sourceLuminosity
+                            << "\t" << runtime.fluxSourceNetLuminosity
+                            << "\t" << runtime.fluxSourceInwardLuminosity
+                            << "\t" << safeRatio(
+                                runtime.fluxSourceInwardLuminosity, sourceLum)
+                            << "\t" << forwardResult.emittedLuminosity
+                            << "\t" << forwardResult.crossingLuminosity
+                            << "\t" << forwardResult.crossingLuminosityStderr
+                            << "\t" << safeRatio(
+                                forwardResult.emittedLuminosity, sourceLum)
+                            << "\t" << safeRatio(
+                                forwardResult.crossingLuminosity, sourceLum)
+                            << "\t" << forwardResult.timedOutFraction
+                            << "\t" << forwardResult.luminosityWeightedPolarizationDegree
+                            << "\t" << forwardResult.polarizedObserverCount << "\n";
+                    compare << "grey\t" << runtime.fluxSourceTau
+                            << "\t" << runtime.fluxSourceDirectlyResolvedFraction
+                            << "\t" << runtime.fluxSourceBoundaryFaceCount
+                            << "\t" << runtime.fluxSourceEmittingFaceCount
+                            << "\t" << sourceLum
+                            << "\t" << runtime.fluxSourceNetLuminosity
+                            << "\t" << runtime.fluxSourceInwardLuminosity
+                            << "\t" << safeRatio(
+                                runtime.fluxSourceInwardLuminosity, sourceLum)
+                            << "\t" << greyEmittedLum
+                            << "\t" << greyTotalLum
+                            << "\t" << greyObserver->getTotalLuminosityStderrGen(cfg.sourceDt)
+                            << "\t" << safeRatio(greyEmittedLum, sourceLum)
+                            << "\t" << safeRatio(greyTotalLum, sourceLum)
+                            << "\t" << greyTimedOutFrac
+                            << "\t" << greyPol.luminosityWeightedDegree
+                            << "\t" << greyPol.observerCount << "\n";
+                    std::cout << "Flux-source comparison TSV: " << comparePath << std::endl;
+                }
 
                 std::cout << "\n=== Grey IMC Results ===\n"
                           << "Generations:              " << nGreyGens << "\n"

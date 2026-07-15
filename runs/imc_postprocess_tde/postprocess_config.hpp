@@ -35,6 +35,8 @@ struct Config
     bool useCellVelocities = true;
     bool polarization = true;
     bool photosphere = true;
+    bool fluxSourceCompare = false;
+    double fluxSourceThermalizationTau = 5.0;
     int polarizationManualScatterings = 128;
     double polarizationDepolarizationScatterings = 0.5;
     std::string polarizationClosure = "damped_last_scatterings";

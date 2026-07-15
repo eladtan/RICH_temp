@@ -140,6 +140,15 @@ public:
     using GroupMatrix = std::array<GroupArray, ENERGY_GROUPS_NUM>;
     using GroupCdfMatrix = std::array<GroupCdf, ENERGY_GROUPS_NUM>;
 
+    struct PostProcessExternalSource
+    {
+        size_t faceIndex = std::numeric_limits<size_t>::max();
+        size_t cellID = std::numeric_limits<size_t>::max();
+        Vector3D location = Vector3D(0.0, 0.0, 0.0);
+        Vector3D outwardNormal = Vector3D(0.0, 0.0, 1.0);
+        double luminosity = 0.0;
+    };
+
     struct SourceAllocationSummary
     {
         bool adaptiveEnabled = false;
@@ -307,9 +316,26 @@ public:
     void clearSourceEmissionControl();
     SourceAllocationSummary getLastSourceAllocationSummary() const { return lastSourceAllocationSummary_; }
     std::vector<size_t> const &getLastSourcePhotonsPerCell() const { return lastSourcePhotonsPerCell_; }
+    void setPostProcessExternalSources(std::vector<PostProcessExternalSource> sources);
+    void clearPostProcessExternalSources();
+    bool hasPostProcessExternalSources() const { return postProcessExternalSourceMode_; }
 private:    
     std::vector<Particle> generateParticles(double fullDt);
     std::vector<Particle> generateComptonParticles(double fullDt);
+    Vector3D samplePostProcessExternalSourceDirection(
+        Vector3D const& outwardNormal);
+    GroupArray buildPostProcessExternalSourcePlanckPdf(
+        ComputationalCell3D const& cell) const;
+    double samplePostProcessExternalSourcePlanckFrequency(
+        ComputationalCell3D const& cell);
+    double samplePostProcessExternalSourcePlanckFrequencyInGroup(
+        ComputationalCell3D const& cell, size_t group);
+    Particle generatePostProcessExternalSourceParticle(
+        size_t cellIndex, ComputationalCell3D const& cell,
+        PostProcessExternalSource const& source);
+    bool handlePostProcessExternalSourceBoundary(
+        Particle& particle, size_t cellIndex, size_t faceIndex,
+        Functionality& functionality);
     void precomputeComptonData(double fullDt);
     void initializeComptonGroups();
     void initializeComptonMatrixGenerator();
@@ -519,6 +545,10 @@ private:
 #endif
 
     std::shared_ptr<SphericalObserver> observer_;
+    bool postProcessExternalSourceMode_ = false;
+    std::vector<PostProcessExternalSource> postProcessExternalSources_;
+    std::unordered_map<size_t, size_t> postProcessExternalSourceFaceIndex_;
+
     std::unordered_map<size_t, double> adaptiveSourceScores_;
     bool adaptiveSourceScoresEnabled_ = false;
     double adaptiveSourceStrength_ = 0.0;

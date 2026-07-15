@@ -18,6 +18,7 @@
 #endif
 
 #include "adaptive_statistics.hpp"
+#include "flux_source_calculation.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
@@ -463,6 +464,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         physics = std::make_shared<RadiationIMC>(
                             tess, boundary, cells, extensives, eos, opacity, params);
                         physics->setObserver(observer);
+                        if(cfg.fluxSourceCompare)
+                            ConfigureFluxSourceForCurrentDecomposition(
+                                cfg, runtime, *physics);
 
                         popControl = std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
@@ -642,6 +646,19 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                 - diag.boxEscapeEnergy - diag.timedOutEnergy - diag.cutoffEnergy;
                 double timedOutFrac = (diag.emittedEnergy > 0.0)
                     ? diag.timedOutEnergy / diag.emittedEnergy : 0.0;
+                result.sourceLuminosity = runtime.fluxSourceInjectedLuminosity;
+                result.emittedLuminosity = diag.emittedEnergy / cfg.sourceDt;
+                result.crossingLuminosity = totalLum;
+                result.crossingLuminosityStderr =
+                    observer->getTotalLuminosityStderrGen(cfg.sourceDt);
+                result.emittedEnergy = diag.emittedEnergy;
+                result.timedOutFraction = timedOutFrac;
+                FluxSourcePolarizationSummary const polSummary =
+                    ComputeFluxSourcePolarizationSummary(
+                        observer->getObserverQualitySnapshot());
+                result.luminosityWeightedPolarizationDegree =
+                    polSummary.luminosityWeightedDegree;
+                result.polarizedObserverCount = polSummary.observerCount;
 
                 std::cout << "\n=== TDE Post-Processing Results ===\n"
                           << "Generations:              " << mgFinalGenerations << "\n"
@@ -665,7 +682,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             }
     result.ran = true;
     result.usesVelocity = cfg.useCellVelocities;
-    result.usesDDMC = cfg.ddmc;
+    result.usesDDMC = params.withDDMC;
     result.usesPolarization = cfg.polarization;
     result.usesCompton = cfg.compton;
     if (physics && !physics->getFactorFleck().empty())

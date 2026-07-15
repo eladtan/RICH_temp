@@ -52,6 +52,7 @@
 #include "photosphere_calculation.hpp"
 #include "forward_calculation.hpp"
 #include "grey_calculation.hpp"
+#include "flux_source_calculation.hpp"
 
 using namespace imc_postprocess_tde;
 
@@ -168,7 +169,7 @@ int main(int argc, char* argv[])
             return 1;
         }
 #ifndef RICH_IMC_DDMC_ENABLED
-        if (cfg.ddmc) {
+        if (cfg.ddmc && !cfg.fluxSourceCompare) {
             if (rank == 0)
                 std::cerr << "Error: DDMC is enabled, but this executable was built without RadiationIMC_DDMC.cpp. "
                           << "Rebuild with forward DDMC support or pass --no-ddmc.\n";
@@ -206,10 +207,19 @@ int main(int argc, char* argv[])
                       << "Photons/cell:    " << cfg.photonsPerCell << "\n"
                       << "Center:          (" << cfg.center.x << ", " << cfg.center.y << ", " << cfg.center.z << ")\n"
                       << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
-                      << "DDMC:            " << (cfg.ddmc ? "yes" : "no") << "\n"
+                      << "DDMC:            "
+                      << ((cfg.ddmc && !cfg.fluxSourceCompare) ? "yes" : "no")
+                      << (cfg.fluxSourceCompare && cfg.ddmc
+                          ? " (disabled for CER boundary)" : "") << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Photosphere:     " << (cfg.photosphere ? "yes" : "no") << "\n"
+                      << "Flux source test:" << (cfg.fluxSourceCompare ? " yes" : " no") << "\n"
+                      << "Flux source tau: " << cfg.fluxSourceThermalizationTau << "\n"
+                      << "Flux source transport: "
+                      << (cfg.fluxSourceCompare
+                          ? "explicit IMC (RW/DDMC disabled for CER boundary)"
+                          : "not applicable") << "\n"
                       << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
                       << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
                       << "  max cell imbalance: " << MEASURED_LB_MAX_CELL_IMBALANCE << "\n"
@@ -579,9 +589,9 @@ int main(int argc, char* argv[])
         params.newPhotonsPerCell = genPhotonsPerCell;
         params.withHydro = false;
         params.noHydroFeedback = true;
-        params.withRandomWalk = cfg.randomWalk;
+        params.withRandomWalk = cfg.randomWalk && !cfg.fluxSourceCompare;
         params.rwMinCellOpticalDepth = 15;
-        params.withDDMC = cfg.ddmc;
+        params.withDDMC = cfg.ddmc && !cfg.fluxSourceCompare;
         params.ddmcMinCellOpticalDepth = 15;
         params.ddmcUseMultigroupPGRW = true;
         params.MMC = false;
@@ -662,6 +672,11 @@ int main(int argc, char* argv[])
 
         if (cfg.photosphere) {
             observer->setPhotosphereData(ComputeObserverPhotospheres(cfg, runtime));
+        }
+
+        if (cfg.fluxSourceCompare) {
+            InitializeFluxSourceSurface(cfg, runtime);
+            ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics);
         }
 
         ForwardPostprocessResult forwardResult = RunForwardPostprocess(cfg, runtime);

@@ -201,6 +201,17 @@ struct PostprocessRuntime
     ComputationalCell3D dummyCell;
     std::vector<double> fldLuminosity;
     double totalFldLuminosity;
+    bool fluxSourceEnabled = false;
+    double fluxSourceTau = 0.0;
+    std::vector<Vector3D> fluxSourceDirections;
+    std::vector<double> fluxSourceRadius;
+    std::vector<int> fluxSourceRadiusDirectlyResolved;
+    double fluxSourceDirectlyResolvedFraction = 0.0;
+    double fluxSourceInjectedLuminosity = 0.0;
+    double fluxSourceNetLuminosity = 0.0;
+    double fluxSourceInwardLuminosity = 0.0;
+    uint64_t fluxSourceBoundaryFaceCount = 0;
+    uint64_t fluxSourceEmittingFaceCount = 0;
 };
 
 struct ForwardPostprocessResult
@@ -211,6 +222,14 @@ struct ForwardPostprocessResult
     bool usesPolarization = false;
     bool usesCompton = false;
     std::vector<double> fleckFactors;
+    double sourceLuminosity = 0.0;
+    double emittedLuminosity = 0.0;
+    double crossingLuminosity = 0.0;
+    double crossingLuminosityStderr = 0.0;
+    double emittedEnergy = 0.0;
+    double timedOutFraction = 0.0;
+    double luminosityWeightedPolarizationDegree = 0.0;
+    uint64_t polarizedObserverCount = 0;
 };
 
 } // namespace imc_postprocess_tde

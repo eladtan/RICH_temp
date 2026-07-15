@@ -2,6 +2,7 @@
 #include "SphericalObserver.hpp"
 #include "PostProcessIMCHelpers.hpp"
 #include "IMCPolarization.hpp"
+#include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include "mpi/mpi_commands_3d.hpp"
 #include "Radiation/conj_grad_solve.hpp"
 #include <algorithm>
@@ -1610,6 +1611,11 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
 
     if(min.first == Events::INTERSECTION)
     {
+        if(this->postProcessExternalSourceMode_ &&
+           this->handlePostProcessExternalSourceBoundary(
+               particle, cellIndex, faceIntersect, functionality))
+            return functionality;
+
 #ifdef RICH_IMC_DDMC_ENABLED
         if(this->withDDMC && !particle.ddmcMode &&
            this->tryIMCToDDMCInterface(particle, functionality,
@@ -1693,6 +1699,13 @@ typename RadiationIMC::Functionality RadiationIMC::step(Particle &particle, std:
             this->applyComptonScatterEvent(cellIndex, cell, group, oldVelocity, oldWeight, dopplerShift, particle);
             didImplicitCompton = true;
         }
+#ifdef MONTECARLO_POLARIZATION
+        if(isEffectiveScatter && postProcess_.enabled &&
+           postProcess_.polarization.enabled)
+        {
+            IMCPolarization::ResetUnpolarized(particle);
+        }
+#endif
         if(this->multigroupOpacity)
         {
             if(!didImplicitCompton)
@@ -2782,7 +2795,12 @@ void RadiationIMC::applyComptonEndOfStepCorrection(double fullDt)
 std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(double fullDt)
 {
     if(this->withCompton)
+    {
+        if(this->postProcessExternalSourceMode_)
+            throw UniversalError(
+                "External fixed-flux post-process sources do not support Compton yet");
         return this->generateComptonParticles(fullDt);
+    }
 
     lastGroupSamplingDiagnostics_ = GroupSamplingDiagnostics{};
     if (adaptiveSourceCellGroupScoresEnabled_)
@@ -2791,28 +2809,113 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
     std::vector<Particle> newParticles;
     size_t Ncells = this->grid.GetPointNo();
 
-    std::vector<double> energyToCreateVec(Ncells);
+    // Keep the surface source representation flat.  A vector-of-vectors per
+    // hydro cell is prohibitively expensive for large TDE snapshots, while the
+    // emitting surface contains only O(N^(2/3)) faces.
+    std::vector<size_t> externalSourceOffsets(Ncells + 1, 0);
+    std::vector<size_t> externalSourceIndices;
+    if(this->postProcessExternalSourceMode_)
+    {
+        std::unordered_map<size_t, size_t> cellIndexByID;
+        cellIndexByID.reserve(Ncells);
+        for(size_t i = 0; i < Ncells; ++i)
+        {
+            auto const inserted = cellIndexByID.emplace(this->cells[i].ID, i);
+            if(!inserted.second)
+                throw UniversalError(
+                    "Duplicate local cell ID while mapping external sources");
+        }
+
+        for(PostProcessExternalSource const& source :
+            this->postProcessExternalSources_)
+        {
+            if(!(source.luminosity > 0.0) || !std::isfinite(source.luminosity))
+                continue;
+            auto const it = cellIndexByID.find(source.cellID);
+            if(it != cellIndexByID.end())
+                ++externalSourceOffsets[it->second + 1];
+        }
+        for(size_t i = 1; i < externalSourceOffsets.size(); ++i)
+            externalSourceOffsets[i] += externalSourceOffsets[i - 1];
+
+        externalSourceIndices.resize(externalSourceOffsets.back());
+        std::vector<size_t> cursor = externalSourceOffsets;
+        for(size_t sourceIndex = 0;
+            sourceIndex < this->postProcessExternalSources_.size();
+            ++sourceIndex)
+        {
+            PostProcessExternalSource const& source =
+                this->postProcessExternalSources_[sourceIndex];
+            if(!(source.luminosity > 0.0) || !std::isfinite(source.luminosity))
+                continue;
+            auto const it = cellIndexByID.find(source.cellID);
+            if(it != cellIndexByID.end())
+                externalSourceIndices[cursor[it->second]++] = sourceIndex;
+        }
+    }
+
+    std::vector<double> energyToCreateVec(Ncells, 0.0);
     std::vector<double> gammaVec(Ncells);
     double localTotalEnergy = 0;
     for(size_t i = 0; i < Ncells; i++)
     {
         ComputationalCell3D &cell = this->cells[i];
         gammaVec[i] = (this->useTransportVelocities_ && !this->MMC) ? 1 / std::sqrt(1 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2) : 1;
-        energyToCreateVec[i] = this->factorFleck[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities[i] * fullDt * units::clight;
+        if(this->postProcessExternalSourceMode_)
+        {
+            for(size_t sourceOffset = externalSourceOffsets[i];
+                sourceOffset < externalSourceOffsets[i + 1]; ++sourceOffset)
+            {
+                size_t const sourceIndex = externalSourceIndices[sourceOffset];
+                energyToCreateVec[i] +=
+                    this->postProcessExternalSources_[sourceIndex].luminosity * fullDt;
+            }
+        }
+        else
+        {
+            energyToCreateVec[i] = this->factorFleck[i] * this->grid.GetVolume(i) * units::arad * boost::math::pow<4>(cell.temperature) * this->planckOpacities[i] * fullDt * units::clight;
+        }
         localTotalEnergy += energyToCreateVec[i];
     }
 
     double globalTotalEnergy = localTotalEnergy;
     size_t globalTotalCells = Ncells;
+    unsigned long long const localSourceCells =
+        static_cast<unsigned long long>(std::count_if(
+            energyToCreateVec.begin(), energyToCreateVec.end(),
+            [](double energy) { return energy > 0.0; }));
+    unsigned long long globalSourceCells = localSourceCells;
     #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &globalTotalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &globalSourceCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     #endif
 
-    size_t totalParticles = globalTotalCells * this->newPhotonsPerCell * 10;
+    if(this->postProcessExternalSourceMode_ &&
+       (!(globalTotalEnergy > 0.0) || globalSourceCells == 0))
+    {
+        throw UniversalError(
+            "External post-process source has no positive global luminosity");
+    }
+
+    size_t const budgetCells = this->postProcessExternalSourceMode_
+        ? static_cast<size_t>(globalSourceCells) : globalTotalCells;
+    if(this->postProcessExternalSourceMode_ &&
+       (this->newPhotonsPerCell > std::numeric_limits<size_t>::max() / 10 ||
+        budgetCells > std::numeric_limits<size_t>::max() /
+            (10 * this->newPhotonsPerCell)))
+    {
+        throw UniversalError("External source particle budget overflow");
+    }
+    size_t totalParticles = budgetCells * this->newPhotonsPerCell * 10;
     std::vector<size_t> nPhotons(Ncells);
     for(size_t i = 0; i < Ncells; i++)
     {
+        if(!(energyToCreateVec[i] > 0.0))
+        {
+            nPhotons[i] = 0;
+            continue;
+        }
         size_t proportionalShare = (globalTotalEnergy > 0)
             ? static_cast<size_t>(energyToCreateVec[i] / globalTotalEnergy * totalParticles)
             : this->newPhotonsPerCell;
@@ -2850,6 +2953,11 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
 
         for(size_t i = 0; i < Ncells; ++i)
         {
+            if(!(energyToCreateVec[i] > 0.0))
+            {
+                nPhotons[i] = 0;
+                continue;
+            }
             auto const it = adaptiveSourceScores_.find(this->cells[i].ID);
             bool const learned = adaptiveSourceScoresEnabled_ && it != adaptiveSourceScores_.end()
                 && std::isfinite(it->second) && it->second > 0.0;
@@ -2885,6 +2993,17 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             }
             nPhotons[i] = std::min(photons, std::max<size_t>(1, maxPhotons));
         }
+    }
+
+    // The fixed-flux source must remain unbiased.  The legacy learned-only
+    // schedule may assign zero packets to unlearned cells; retain a one-packet
+    // floor for every positive-luminosity source cell while still applying all
+    // learned boosts above that floor.
+    if(this->postProcessExternalSourceMode_)
+    {
+        for(size_t i = 0; i < Ncells; ++i)
+            if(energyToCreateVec[i] > 0.0 && nPhotons[i] == 0)
+                nPhotons[i] = 1;
     }
 
     lastSourceAllocationSummary_ = SourceAllocationSummary{};
@@ -2957,7 +3076,7 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
         if (nPhotonsCell == 0)
             continue;
 
-        if(!this->noHydroFeedback)
+        if(!this->noHydroFeedback && !this->postProcessExternalSourceMode_)
         {
             this->conserved[i].internal_energy -= energyToCreate;
             this->conserved[i].energy -= energyToCreate * gamma;
@@ -2982,7 +3101,9 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             auto it = adaptiveSourceCellGroupScores_.find(cell.ID);
             if (it != adaptiveSourceCellGroupScores_.end()) {
                 groupScoreAvailable = true;
-                physicalPdf = this->multigroupOpacity->GetThermalGroupPdf(cell);
+                physicalPdf = this->postProcessExternalSourceMode_
+                    ? this->buildPostProcessExternalSourcePlanckPdf(cell)
+                    : this->multigroupOpacity->GetThermalGroupPdf(cell);
                 double totalPhys = 0.0;
                 size_t nPhysGroups = 0;
                 for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
@@ -3119,7 +3240,38 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
 
         for(size_t j = 0; j < nPhotonsCell; j++)
         {
-            MCParticle particle = this->generateSingleParticle(i, cell);
+            MCParticle particle;
+            if(this->postProcessExternalSourceMode_)
+            {
+                size_t const sourceBegin = externalSourceOffsets[i];
+                size_t const sourceEnd = externalSourceOffsets[i + 1];
+                if(sourceBegin == sourceEnd)
+                    throw UniversalError(
+                        "External source cell has energy but no source faces");
+
+                double const totalFaceLuminosity = energyToCreate / fullDt;
+                double target = this->dist(this->re) * totalFaceLuminosity;
+                size_t selectedSourceIndex =
+                    externalSourceIndices[sourceEnd - 1];
+                double cumulative = 0.0;
+                for(size_t sourceOffset = sourceBegin;
+                    sourceOffset < sourceEnd; ++sourceOffset)
+                {
+                    size_t const sourceIndex =
+                        externalSourceIndices[sourceOffset];
+                    cumulative +=
+                        this->postProcessExternalSources_[sourceIndex].luminosity;
+                    if(target <= cumulative)
+                    {
+                        selectedSourceIndex = sourceIndex;
+                        break;
+                    }
+                }
+                particle = this->generatePostProcessExternalSourceParticle(
+                    i, cell, this->postProcessExternalSources_[selectedSourceIndex]);
+            }
+            else
+                particle = this->generateSingleParticle(i, cell);
             particle.cellID = cell.ID;
             particle.sourceCellID = cell.ID;
             particle.timeLeft = fullDt * this->dist(this->re);
@@ -3158,8 +3310,12 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                         ++lastGroupSamplingDiagnostics_.weightCorrectionCount;
                         ++lastGroupSamplingDiagnostics_.totalSampled;
                         lastGroupSamplingDiagnostics_.sampledEnergy += energyPerPhoton;
-                        double rndFreq = this->dist(this->re);
-                        freqCo = this->multigroupOpacity->SampleThermalEnergyInGroup(cell, selectedGroup, rndFreq);
+                        double const rndFreq = this->dist(this->re);
+                        freqCo = this->postProcessExternalSourceMode_
+                            ? this->samplePostProcessExternalSourcePlanckFrequencyInGroup(
+                                cell, selectedGroup)
+                            : this->multigroupOpacity->SampleThermalEnergyInGroup(
+                                cell, selectedGroup, rndFreq);
                         usedGroupFrequencySampling = true;
                     } else {
                         ++lastGroupSamplingDiagnostics_.weightCorrectionFallback;
@@ -3183,8 +3339,10 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
                 double D = DopplerShift(particle, cell.velocity);
                 if(this->multigroupOpacity)
                 {
-                    double rnd = this->dist(this->re);
-                    double freqCo = this->multigroupOpacity->GetThermalEnergy(cell, rnd);
+                    double const freqCo = this->postProcessExternalSourceMode_
+                        ? this->samplePostProcessExternalSourcePlanckFrequency(cell)
+                        : this->multigroupOpacity->GetThermalEnergy(
+                            cell, this->dist(this->re));
                     particle.frequency = freqCo / D;
                 }
                 particle.weight = energyToCreate / (nPhotonsCell * D);
@@ -3193,7 +3351,10 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::generateParticles(dou
             {
                 if(this->multigroupOpacity)
                 {
-                    particle.frequency = this->multigroupOpacity->GetThermalEnergy(cell, this->dist(this->re));
+                    particle.frequency = this->postProcessExternalSourceMode_
+                        ? this->samplePostProcessExternalSourcePlanckFrequency(cell)
+                        : this->multigroupOpacity->GetThermalEnergy(
+                            cell, this->dist(this->re));
                 }
                 particle.weight = energyPerPhoton;
             }
@@ -4110,6 +4271,13 @@ std::vector<typename RadiationIMC::Particle> RadiationIMC::preStep(double fullDt
             factorFleck[i] = 1.0;
     }
 
+    // A fixed-flux CER source already supplies the net RHD luminosity.  Treat
+    // LTE absorption/re-emission conservatively as IMC effective scattering,
+    // instead of deleting absorbed packet energy and recreating an independent
+    // a*T^4 volume source.
+    if(postProcess_.enabled && postProcessExternalSourceMode_ && !withCompton)
+        std::fill(factorFleck.begin(), factorFleck.end(), 0.0);
+
     if(this->withCompton && !reuseComptonPrecompute)
         this->precomputeComptonData(emissionDt);
     this->comptonDataReusableInPreStep_ = false;
@@ -4281,6 +4449,308 @@ typename RadiationIMC::Particle RadiationIMC::generateSingleParticle(size_t cell
     static constexpr double nudge = 1e-10;
     particle.location = particle.location * (1 - nudge) + nudge * this->grid.GetMeshPoint(cellIndex);
     return particle;
+}
+
+void RadiationIMC::setPostProcessExternalSources(
+    std::vector<PostProcessExternalSource> sources)
+{
+    if(!this->postProcess_.enabled)
+        throw UniversalError(
+            "External sources require RadiationIMC post-process mode");
+    if(this->withRandomWalk || this->withDDMC)
+        throw UniversalError(
+            "External source surfaces currently require explicit IMC transport; "
+            "random-walk and DDMC do not honor the internal thermalizing boundary");
+
+    std::unordered_map<size_t, size_t> localCellIndexByID;
+    localCellIndexByID.reserve(this->grid.GetPointNo());
+    for(size_t cellIndex = 0; cellIndex < this->grid.GetPointNo(); ++cellIndex)
+    {
+        auto const inserted = localCellIndexByID.emplace(
+            this->cells[cellIndex].ID, cellIndex);
+        if(!inserted.second)
+            throw UniversalError(
+                "Duplicate local cell ID while installing external sources");
+    }
+
+    std::unordered_map<size_t, size_t> faceIndex;
+    faceIndex.reserve(sources.size());
+    for(size_t sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex)
+    {
+        PostProcessExternalSource const& source = sources[sourceIndex];
+        if(source.faceIndex == std::numeric_limits<size_t>::max() ||
+           source.cellID == std::numeric_limits<size_t>::max())
+        {
+            throw UniversalError(
+                "External source face is missing a face or transport-cell ID");
+        }
+        if(!(source.luminosity >= 0.0) || !std::isfinite(source.luminosity) ||
+           !std::isfinite(source.location.x) ||
+           !std::isfinite(source.location.y) ||
+           !std::isfinite(source.location.z))
+        {
+            throw UniversalError("External source face has invalid data");
+        }
+        double const normalNorm = abs(source.outwardNormal);
+        if(!(normalNorm > 0.0) || !std::isfinite(normalNorm))
+            throw UniversalError("External source face has an invalid normal");
+
+        auto const cellIt = localCellIndexByID.find(source.cellID);
+        if(cellIt == localCellIndexByID.end())
+            throw UniversalError(
+                "External source references a non-local transport cell");
+        size_t const cellIndex = cellIt->second;
+        auto const& cellFaces = this->grid.GetCellFaces(cellIndex);
+        if(std::find(cellFaces.begin(), cellFaces.end(), source.faceIndex) ==
+           cellFaces.end())
+            throw UniversalError(
+                "External source face is not attached to its transport cell");
+        Vector3D const outward = source.outwardNormal / normalNorm;
+        if(!(ScalarProd(this->grid.GetMeshPoint(cellIndex) - source.location,
+                        outward) > 0.0))
+            throw UniversalError(
+                "External source normal does not point into the transport region");
+
+        auto const inserted = faceIndex.emplace(source.faceIndex, sourceIndex);
+        if(!inserted.second)
+            throw UniversalError("Duplicate external source face index");
+    }
+
+    this->postProcessExternalSources_ = std::move(sources);
+    this->postProcessExternalSourceFaceIndex_ = std::move(faceIndex);
+    // This flag is global in meaning: ranks with no local source faces must
+    // still suppress the ordinary volume source.
+    this->postProcessExternalSourceMode_ = true;
+}
+
+void RadiationIMC::clearPostProcessExternalSources()
+{
+    this->postProcessExternalSources_.clear();
+    this->postProcessExternalSourceFaceIndex_.clear();
+    this->postProcessExternalSourceMode_ = false;
+}
+
+Vector3D RadiationIMC::samplePostProcessExternalSourceDirection(
+    Vector3D const& outwardNormal)
+{
+    Vector3D normal = outwardNormal;
+    double const normalNorm = abs(normal);
+    if(!(normalNorm > 0.0) || !std::isfinite(normalNorm))
+        throw UniversalError("External source face has an invalid normal");
+    normal *= 1.0 / normalNorm;
+
+    Vector3D helper = std::abs(normal.z) < 0.9
+        ? Vector3D(0.0, 0.0, 1.0)
+        : Vector3D(0.0, 1.0, 0.0);
+    Vector3D tangent1 = helper - ScalarProd(helper, normal) * normal;
+    double const tangentNorm = abs(tangent1);
+    if(!(tangentNorm > 0.0) || !std::isfinite(tangentNorm))
+        throw UniversalError(
+            "External source face cannot construct a tangent basis");
+    tangent1 *= 1.0 / tangentNorm;
+    Vector3D const tangent2 = normalize(CrossProduct(normal, tangent1));
+
+    // Lambertian outward intensity: p(mu)=2*mu on the outgoing hemisphere.
+    double const mu = std::sqrt(this->dist(this->re));
+    double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+    double const phi = 2.0 * M_PI * this->dist(this->re);
+    return mu * normal + sinTheta *
+        (std::cos(phi) * tangent1 + std::sin(phi) * tangent2);
+}
+
+RadiationIMC::GroupArray
+RadiationIMC::buildPostProcessExternalSourcePlanckPdf(
+    ComputationalCell3D const& cell) const
+{
+    GroupArray pdf{};
+    double const kT = units::k_boltz * cell.temperature;
+    if(!(kT > 0.0) || !std::isfinite(kT))
+        throw UniversalError(
+            "External source Planck spectrum requires positive finite temperature");
+
+    double total = 0.0;
+    for(size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
+    {
+        double const left = ComputationalCell3D::energyBoundaries[group];
+        double const right = ComputationalCell3D::energyBoundaries[group + 1];
+        if(!(left < right) || !std::isfinite(left) || !std::isfinite(right))
+            throw UniversalError(
+                "External source Planck spectrum has invalid group boundaries");
+        double const mass = planck_integral::planck_integral(
+            left / kT, right / kT);
+        pdf[group] = (mass > 0.0 && std::isfinite(mass)) ? mass : 0.0;
+        total += pdf[group];
+    }
+
+    if(total > 0.0 && std::isfinite(total))
+    {
+        for(double& value : pdf)
+            value /= total;
+        return pdf;
+    }
+
+    // Extremely displaced temperature/group grids can underflow every Planck
+    // integral.  Keep the source defined by putting it in the group nearest
+    // the Planck peak instead of silently reverting to kappa*B sampling.
+    double const peakEnergy = 2.8214393721220789 * kT;
+    size_t fallbackGroup = 0;
+    while(fallbackGroup + 1 < ENERGY_GROUPS_NUM &&
+          peakEnergy >= ComputationalCell3D::energyBoundaries[fallbackGroup + 1])
+        ++fallbackGroup;
+    pdf[fallbackGroup] = 1.0;
+    return pdf;
+}
+
+double RadiationIMC::samplePostProcessExternalSourcePlanckFrequencyInGroup(
+    ComputationalCell3D const& cell, size_t group)
+{
+    group = std::min(group, static_cast<size_t>(ENERGY_GROUPS_NUM - 1));
+    double const left = ComputationalCell3D::energyBoundaries[group];
+    double const right = ComputationalCell3D::energyBoundaries[group + 1];
+    double const kT = units::k_boltz * cell.temperature;
+    if(!(left < right) || !(kT > 0.0) || !std::isfinite(kT))
+        throw UniversalError(
+            "External source Planck group sampler received invalid bounds or temperature");
+
+    double const groupMass = planck_integral::planck_integral(
+        left / kT, right / kT);
+    if(!(groupMass > 0.0) || !std::isfinite(groupMass))
+        return 0.5 * (left + right);
+
+    double const target = this->dist(this->re) * groupMass;
+    double lo = left;
+    double hi = right;
+    for(int iteration = 0; iteration < 56; ++iteration)
+    {
+        double const mid = 0.5 * (lo + hi);
+        double const mass = planck_integral::planck_integral(
+            left / kT, mid / kT);
+        if(mass < target)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    double frequency = 0.5 * (lo + hi);
+    ClampFrequencyToBounds(frequency);
+    return frequency;
+}
+
+double RadiationIMC::samplePostProcessExternalSourcePlanckFrequency(
+    ComputationalCell3D const& cell)
+{
+    GroupArray const pdf =
+        this->buildPostProcessExternalSourcePlanckPdf(cell);
+    double const target = this->dist(this->re);
+    double cumulative = 0.0;
+    size_t selectedGroup = ENERGY_GROUPS_NUM - 1;
+    for(size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
+    {
+        cumulative += pdf[group];
+        if(target <= cumulative)
+        {
+            selectedGroup = group;
+            break;
+        }
+    }
+    return this->samplePostProcessExternalSourcePlanckFrequencyInGroup(
+        cell, selectedGroup);
+}
+
+typename RadiationIMC::Particle
+RadiationIMC::generatePostProcessExternalSourceParticle(
+    size_t cellIndex, ComputationalCell3D const& cell,
+    PostProcessExternalSource const& source)
+{
+    Particle particle;
+    particle.id = std::numeric_limits<size_t>::max();
+    particle.frequency = 0.0;
+    particle.weight = 0.0;
+    particle.initialWeight = 0.0;
+    particle.timeLeft = 0.0;
+    particle.cellIndex = cellIndex;
+    particle.velocity = units::clight *
+        this->samplePostProcessExternalSourceDirection(source.outwardNormal);
+
+    static constexpr double nudge = 1.0e-8;
+    particle.location = (1.0 - nudge) * source.location
+        + nudge * this->grid.GetMeshPoint(cellIndex);
+    if(!this->grid.IsPointInCell(particle.location, cellIndex))
+        throw UniversalError(
+            "External source face location did not nudge into its transport cell");
+
+    if(this->useTransportVelocities_ && !this->MMC)
+        ComovingToLabPacket(particle, cell.velocity);
+    return particle;
+}
+
+bool RadiationIMC::handlePostProcessExternalSourceBoundary(
+    Particle& particle, size_t cellIndex, size_t faceIndex,
+    Functionality& functionality)
+{
+    if(!this->postProcessExternalSourceMode_ ||
+       cellIndex >= this->cells.size())
+        return false;
+
+    auto const faceIt =
+        this->postProcessExternalSourceFaceIndex_.find(faceIndex);
+    if(faceIt == this->postProcessExternalSourceFaceIndex_.end())
+        return false;
+    PostProcessExternalSource const& source =
+        this->postProcessExternalSources_[faceIt->second];
+    if(this->cells[cellIndex].ID != source.cellID)
+        return false;
+
+    Vector3D normal = source.outwardNormal;
+    double const normalNorm = abs(normal);
+    if(!(normalNorm > 0.0) || !std::isfinite(normalNorm))
+        throw UniversalError("External source boundary has an invalid normal");
+    normal *= 1.0 / normalNorm;
+    double const normalVelocity = ScalarProd(particle.velocity, normal);
+    double const directionTolerance =
+        1.0e-12 * std::max(abs(particle.velocity), 1.0);
+    if(normalVelocity > directionTolerance)
+        throw UniversalError(
+            "Packet reached the CER face while moving away from the interior");
+
+    ComputationalCell3D const& cell = this->cells[cellIndex];
+    Particle materialParticle = particle;
+    if(this->useTransportVelocities_ && !this->MMC)
+        LabToComovingPacket(materialParticle, cell.velocity);
+
+    materialParticle.velocity = units::clight *
+        this->samplePostProcessExternalSourceDirection(normal);
+    if(this->multigroupOpacity)
+    {
+        materialParticle.frequency =
+            this->samplePostProcessExternalSourcePlanckFrequency(cell);
+        ClampFrequencyToBounds(materialParticle.frequency);
+    }
+#ifdef MONTECARLO_POLARIZATION
+    if(this->postProcess_.polarization.enabled)
+        IMCPolarization::ResetUnpolarized(materialParticle);
+#endif
+    if(this->useTransportVelocities_ && !this->MMC)
+    {
+        ComovingToLabPacket(materialParticle, cell.velocity);
+        if(this->multigroupOpacity)
+            ClampFrequencyToBounds(materialParticle.frequency);
+    }
+
+    static constexpr double nudge = 1.0e-8;
+    materialParticle.location = (1.0 - nudge) * source.location
+        + nudge * this->grid.GetMeshPoint(cellIndex);
+    if(!this->grid.IsPointInCell(materialParticle.location, cellIndex))
+        throw UniversalError(
+            "External source boundary did not return packet to transport cell");
+    materialParticle.initialWeight = std::abs(materialParticle.weight);
+    materialParticle.ddmcMode = false;
+    materialParticle.ddmcCellResident = false;
+    materialParticle.ddmcComovingFrame = false;
+    materialParticle.ddmcHasPendingFluxContribution = false;
+    materialParticle.ddmcPendingFluxContribution = Vector3D(0.0, 0.0, 0.0);
+    particle = materialParticle;
+    functionality.change = MonteCarloParticleStatus::NO_CELL_MOVE;
+    return true;
 }
 
 void RadiationIMC::reconcileComptonParticles(std::vector<Particle> &particles)
