@@ -50,6 +50,31 @@ public:
                const MPI_Comm& comm,
                FmmSolveStats& stats);
 
+    void beginExecute(const FmmTree& localTree,
+                      const std::vector<Vector3D>& positions,
+                      const std::vector<double>& masses,
+                      const std::vector<std::uint64_t>& cellIds,
+                      const FmmTaylorExpansion& layout,
+                      const std::vector<double>& localMultipoles,
+                      const std::vector<double>& localLocals,
+                      const std::vector<Vector3D>& acceleration,
+                      const std::vector<double>* positiveKernelPotential,
+                      std::size_t maxRemoteBytes,
+                      FmmSolveStats& stats);
+
+    void progressExecute();
+
+    void finishExecute(const FmmTree& localTree,
+                       const std::vector<Vector3D>& positions,
+                       const FmmTaylorExpansion& layout,
+                       std::vector<double>& localLocals,
+                       std::vector<Vector3D>& acceleration,
+                       std::vector<double>* positiveKernelPotential,
+                       FmmM2LOperatorCache& operatorCache,
+                       std::size_t maxRemoteBytes,
+                       std::size_t maxOperatorCacheBytes,
+                       FmmSolveStats& stats);
+
     void execute(const FmmTree& localTree,
                  const std::vector<Vector3D>& positions,
                  const std::vector<double>& masses,
@@ -62,7 +87,7 @@ public:
                  FmmM2LOperatorCache& operatorCache,
                  std::size_t maxRemoteBytes,
                  std::size_t maxOperatorCacheBytes,
-                 FmmSolveStats& stats) const;
+                 FmmSolveStats& stats);
 
     const std::vector<FmmLetM2LInteraction>& m2lInteractions() const
     {
@@ -120,6 +145,10 @@ private:
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
     FmmPeerExchange exchange_;
+    FmmPeerExchangeRequest pendingExchange_;
+    bool executePending_;
+    std::size_t pendingMaxRemoteBytes_;
+    double pendingExchangePreparationSeconds_;
     MPI_Comm comm_;
     int rank_;
     std::uint64_t topologyEpoch_;

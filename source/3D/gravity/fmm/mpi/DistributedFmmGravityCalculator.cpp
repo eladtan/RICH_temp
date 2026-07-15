@@ -48,6 +48,11 @@ bool sameRoot(const FmmRootGeometry& first, const FmmRootGeometry& second)
                            first.latticeAligned == second.latticeAligned));
 }
 
+void progressLetExchange(void* context)
+{
+    static_cast<FmmLetPlan*>(context)->progressExecute();
+}
+
 std::vector<std::uint64_t> leafTopologySignature(const FmmTree& tree)
 {
     static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
@@ -855,6 +860,15 @@ void DistributedFmmGravityCalculator::solve(
     std::vector<double>().swap(translatedProcessLocal);
 
     const Clock::time_point interactionStart = Clock::now();
+    // Pack and start the large LET payload before local work. The count
+    // exchange is already complete, so progress calls advance the payload.
+    const Clock::time_point letBeginStart = Clock::now();
+    letPlan_.beginExecute(localTree_, positions, masses, cellIds, layout,
+                          localMultipoles_, localLocals_, acceleration,
+                          positiveKernelPotential,
+                          distributedOptions_.maxRemoteBytes, stats_);
+    const double letBeginSeconds = elapsed(letBeginStart);
+
     // Populate the shared operator cache with the small, balanced local M2L
     // operator set before rank-dependent LET interactions consume the remaining
     // byte budget.  This ordering is intentional: when the cache is saturated,
@@ -877,21 +891,24 @@ void DistributedFmmGravityCalculator::solve(
             localTree_, localInteractionPlan_, positions, masses, layout,
             localMultipoles_, localLocals_, acceleration,
             positiveKernelPotential, operatorCache_,
-            options_.maxOperatorCacheBytes, stats_);
+            options_.maxOperatorCacheBytes, stats_,
+            progressLetExchange, &letPlan_);
         stats_.localInteractionPlanReused = planReused;
     }
     else
+    {
         localInteractionPlan_.clear();
+        letPlan_.progressExecute();
+    }
     stats_.localInteractionPlanBytes = localInteractionPlan_.bytesOwned();
     stats_.localTraversalSeconds = elapsed(localTraversalStart);
 
-    const Clock::time_point letExecuteStart = Clock::now();
-    letPlan_.execute(localTree_, positions, masses, cellIds, layout,
-                     localMultipoles_, localLocals_, acceleration,
-                     positiveKernelPotential, operatorCache_,
-                     distributedOptions_.maxRemoteBytes,
-                     options_.maxOperatorCacheBytes, stats_);
-    stats_.letExecuteSeconds = elapsed(letExecuteStart);
+    const Clock::time_point letFinishStart = Clock::now();
+    letPlan_.finishExecute(localTree_, positions, layout, localLocals_,
+                           acceleration, positiveKernelPotential,
+                           operatorCache_, distributedOptions_.maxRemoteBytes,
+                           options_.maxOperatorCacheBytes, stats_);
+    stats_.letExecuteSeconds = letBeginSeconds + elapsed(letFinishStart);
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");
 

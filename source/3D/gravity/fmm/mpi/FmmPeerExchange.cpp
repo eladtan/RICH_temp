@@ -27,6 +27,19 @@ void checkMpi(int status, const char* operation)
     MPI_Abort(comm, 91);
     throw UniversalError(message);
 }
+
+std::size_t saturatingAdd(std::size_t first, std::size_t second)
+{
+    return second > std::numeric_limits<std::size_t>::max() - first ?
+        std::numeric_limits<std::size_t>::max() : first + second;
+}
+
+std::size_t saturatingMultiply(std::size_t first, std::size_t second)
+{
+    return first != 0 &&
+           second > std::numeric_limits<std::size_t>::max() / first ?
+        std::numeric_limits<std::size_t>::max() : first * second;
+}
 }
 
 FmmByteView FmmPeerExchangeResult::view(const FmmReceivedMessage& message) const
@@ -37,10 +50,131 @@ FmmByteView FmmPeerExchangeResult::view(const FmmReceivedMessage& message) const
     return FmmByteView{storage_.data() + message.offset, message.size};
 }
 
+std::size_t FmmPeerExchangeResult::bytesOwned() const
+{
+    return saturatingAdd(
+        saturatingMultiply(storage_.capacity(), sizeof(char)),
+        saturatingMultiply(messages_.capacity(), sizeof(FmmReceivedMessage)));
+}
+
 void FmmPeerExchangeResult::releaseStorage()
 {
     std::vector<char>().swap(storage_);
     std::vector<FmmReceivedMessage>().swap(messages_);
+}
+
+FmmPeerExchangeRequest::FmmPeerExchangeRequest():
+    graph_(MPI_COMM_NULL), state_(State::Idle),
+    payloadRequest_(MPI_REQUEST_NULL), totalSend_(0), totalReceive_(0) {}
+
+FmmPeerExchangeRequest::~FmmPeerExchangeRequest()
+{
+    if(!active())
+        return;
+    int initialized = 0;
+    int finalized = 0;
+    MPI_Initialized(&initialized);
+    if(initialized != 0)
+        MPI_Finalized(&finalized);
+    if(initialized != 0 && finalized == 0 && graph_ != MPI_COMM_NULL)
+        MPI_Abort(graph_, 93);
+}
+
+bool FmmPeerExchangeRequest::active() const
+{
+    return state_ != State::Idle;
+}
+
+void FmmPeerExchangeRequest::finalizeMessages()
+{
+    if(state_ != State::Payload && state_ != State::Complete)
+        throw UniversalError(
+            "FmmPeerExchangeRequest::finalizeMessages: invalid request state");
+    result_.messages_.clear();
+    result_.messages_.reserve(sourceRanks_.size());
+    for(std::size_t i = 0; i < sourceRanks_.size(); ++i)
+    {
+        if(receiveCounts_[i] == 0)
+            continue;
+        result_.messages_.push_back(FmmReceivedMessage{
+            sourceRanks_[i],
+            static_cast<std::size_t>(receiveDisplacements_[i]),
+            static_cast<std::size_t>(receiveCounts_[i])});
+    }
+    state_ = State::Complete;
+}
+
+bool FmmPeerExchangeRequest::progress()
+{
+    if(state_ == State::Idle || state_ == State::Complete)
+        return true;
+    int complete = 0;
+    checkMpi(MPI_Test(&payloadRequest_, &complete, MPI_STATUS_IGNORE),
+             "FmmPeerExchangeRequest MPI_Test payload");
+    if(complete == 0)
+        return false;
+    finalizeMessages();
+    return true;
+}
+
+FmmPeerExchangeResult FmmPeerExchangeRequest::wait(
+    std::uint64_t* bytesSent,
+    std::uint64_t* bytesReceived)
+{
+    if(state_ == State::Idle)
+        throw UniversalError("FmmPeerExchangeRequest::wait: no active exchange");
+    if(state_ == State::Payload)
+    {
+        checkMpi(MPI_Wait(&payloadRequest_, MPI_STATUS_IGNORE),
+                 "FmmPeerExchangeRequest MPI_Wait payload");
+        finalizeMessages();
+    }
+    if(bytesSent != nullptr)
+        *bytesSent += static_cast<std::uint64_t>(totalSend_);
+    if(bytesReceived != nullptr)
+        *bytesReceived += static_cast<std::uint64_t>(totalReceive_);
+
+    FmmPeerExchangeResult result = std::move(result_);
+    state_ = State::Idle;
+    graph_ = MPI_COMM_NULL;
+    payloadRequest_ = MPI_REQUEST_NULL;
+    totalSend_ = 0;
+    totalReceive_ = 0;
+    sendBuffer_.clear();
+    result_.releaseStorage();
+    return result;
+}
+
+void FmmPeerExchangeRequest::clear()
+{
+    if(active())
+        throw UniversalError(
+            "FmmPeerExchangeRequest::clear: exchange is still active");
+    std::vector<int>().swap(sourceRanks_);
+    std::vector<int>().swap(sendCounts_);
+    std::vector<int>().swap(sendDisplacements_);
+    std::vector<int>().swap(receiveCounts_);
+    std::vector<int>().swap(receiveDisplacements_);
+    std::vector<char>().swap(sendBuffer_);
+    result_.releaseStorage();
+}
+
+std::size_t FmmPeerExchangeRequest::bytesOwned() const
+{
+    std::size_t result = 0;
+    result = saturatingAdd(result,
+        saturatingMultiply(sourceRanks_.capacity(), sizeof(int)));
+    result = saturatingAdd(result,
+        saturatingMultiply(sendCounts_.capacity(), sizeof(int)));
+    result = saturatingAdd(result,
+        saturatingMultiply(sendDisplacements_.capacity(), sizeof(int)));
+    result = saturatingAdd(result,
+        saturatingMultiply(receiveCounts_.capacity(), sizeof(int)));
+    result = saturatingAdd(result,
+        saturatingMultiply(receiveDisplacements_.capacity(), sizeof(int)));
+    result = saturatingAdd(result,
+        saturatingMultiply(sendBuffer_.capacity(), sizeof(char)));
+    return saturatingAdd(result, result_.bytesOwned());
 }
 
 FmmPeerExchange::FmmPeerExchange(): graph_(MPI_COMM_NULL) {}
@@ -169,14 +303,18 @@ std::size_t FmmPeerExchange::bytesOwned() const
            destinationSlot_.size() * mapEntryBytes;
 }
 
-FmmPeerExchangeResult FmmPeerExchange::exchangeBytes(
+void FmmPeerExchange::beginExchangeBytes(
     const std::unordered_map<int, std::vector<char>>& sendByRank,
-    std::uint64_t* bytesSent,
-    std::uint64_t* bytesReceived,
-    std::size_t maxReceiveBytes) const
+    FmmPeerExchangeRequest& request,
+    std::size_t maxReceiveBytes,
+    std::size_t maxRequestBytes) const
 {
     if(graph_ == MPI_COMM_NULL)
-        throw UniversalError("FmmPeerExchange::exchangeBytes: communicator is not initialized");
+        throw UniversalError(
+            "FmmPeerExchange::beginExchangeBytes: communicator is not initialized");
+    if(request.active())
+        throw UniversalError(
+            "FmmPeerExchange::beginExchangeBytes: request is already active");
 
     int localInvalid = 0;
     for(const auto& entry : sendByRank)
@@ -186,92 +324,111 @@ FmmPeerExchangeResult FmmPeerExchange::exchangeBytes(
             localInvalid = 1;
     }
 
-    std::vector<int> sendCounts(destinations_.size(), 0);
-    std::vector<int> sendDisplacements(destinations_.size(), 0);
-    std::size_t totalSend = 0;
+    request.graph_ = graph_;
+    request.sourceRanks_ = sources_;
+    request.sendCounts_.assign(destinations_.size(), 0);
+    request.sendDisplacements_.assign(destinations_.size(), 0);
+    request.totalSend_ = 0;
     for(std::size_t i = 0; i < destinations_.size(); ++i)
     {
-        const auto it = sendByRank.find(destinations_[i]);
-        const std::size_t count = it == sendByRank.end() ? 0 : it->second.size();
+        const auto found = sendByRank.find(destinations_[i]);
+        const std::size_t count =
+            found == sendByRank.end() ? 0 : found->second.size();
         if(count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-           totalSend > static_cast<std::size_t>(std::numeric_limits<int>::max()) - count)
+           request.totalSend_ >
+               static_cast<std::size_t>(std::numeric_limits<int>::max()) - count)
         {
             localInvalid = 1;
             continue;
         }
-        sendCounts[i] = static_cast<int>(count);
-        sendDisplacements[i] = static_cast<int>(totalSend);
-        totalSend += count;
+        request.sendCounts_[i] = static_cast<int>(count);
+        request.sendDisplacements_[i] = static_cast<int>(request.totalSend_);
+        request.totalSend_ += count;
     }
     if(localInvalid != 0)
         abortInvariant(graph_,
-            "FmmPeerExchange::exchangeBytes: invalid or oversized send");
+            "FmmPeerExchange::beginExchangeBytes: invalid or oversized send");
 
-    std::vector<char> sendBuffer(totalSend);
+    request.sendBuffer_.resize(request.totalSend_);
     for(std::size_t i = 0; i < destinations_.size(); ++i)
     {
-        const auto it = sendByRank.find(destinations_[i]);
-        if(it == sendByRank.end() || it->second.empty())
+        const auto found = sendByRank.find(destinations_[i]);
+        if(found == sendByRank.end() || found->second.empty())
             continue;
-        std::copy(it->second.begin(), it->second.end(),
-                  sendBuffer.begin() + sendDisplacements[i]);
+        std::copy(found->second.begin(), found->second.end(),
+            request.sendBuffer_.begin() + request.sendDisplacements_[i]);
     }
 
-    std::vector<int> recvCounts(sources_.size(), 0);
-    checkMpi(MPI_Neighbor_alltoall(sendCounts.empty() ? nullptr : sendCounts.data(),
-                                   1, MPI_INT,
-                                   recvCounts.empty() ? nullptr : recvCounts.data(),
-                                   1, MPI_INT, graph_),
-             "FmmPeerExchange::exchangeBytes MPI_Neighbor_alltoall");
+    // Count exchange is tiny and deliberately blocking. It lets us allocate
+    // the exact receive buffer and launch the large payload collective before
+    // local traversal begins, maximizing the useful overlap window.
+    request.receiveCounts_.assign(sources_.size(), 0);
+    checkMpi(MPI_Neighbor_alltoall(
+        request.sendCounts_.empty() ? nullptr : request.sendCounts_.data(),
+        1, MPI_INT,
+        request.receiveCounts_.empty() ? nullptr : request.receiveCounts_.data(),
+        1, MPI_INT, graph_),
+        "FmmPeerExchange::beginExchangeBytes MPI_Neighbor_alltoall");
 
-    std::vector<int> recvDisplacements(sources_.size(), 0);
-    std::size_t totalRecv = 0;
+    request.receiveDisplacements_.assign(sources_.size(), 0);
+    request.totalReceive_ = 0;
     localInvalid = 0;
     for(std::size_t i = 0; i < sources_.size(); ++i)
     {
-        if(recvCounts[i] < 0 ||
-           totalRecv > static_cast<std::size_t>(std::numeric_limits<int>::max()) -
-                       static_cast<std::size_t>(std::max(0, recvCounts[i])))
+        if(request.receiveCounts_[i] < 0 ||
+           request.totalReceive_ >
+               static_cast<std::size_t>(std::numeric_limits<int>::max()) -
+                   static_cast<std::size_t>(
+                       std::max(0, request.receiveCounts_[i])))
         {
             localInvalid = 1;
             continue;
         }
-        recvDisplacements[i] = static_cast<int>(totalRecv);
-        totalRecv += static_cast<std::size_t>(recvCounts[i]);
+        request.receiveDisplacements_[i] =
+            static_cast<int>(request.totalReceive_);
+        request.totalReceive_ +=
+            static_cast<std::size_t>(request.receiveCounts_[i]);
     }
-    if(totalRecv > maxReceiveBytes)
+    if(request.totalReceive_ > maxReceiveBytes)
         localInvalid = 1;
     if(localInvalid != 0)
         abortInvariant(graph_,
-            "FmmPeerExchange::exchangeBytes: receive size or memory budget exceeded");
+            "FmmPeerExchange::beginExchangeBytes: receive size or memory budget exceeded");
 
-    FmmPeerExchangeResult result;
-    result.storage_.resize(totalRecv);
-    checkMpi(MPI_Neighbor_alltoallv(sendBuffer.empty() ? nullptr : sendBuffer.data(),
-                                    sendCounts.empty() ? nullptr : sendCounts.data(),
-                                    sendDisplacements.empty() ? nullptr : sendDisplacements.data(),
-                                    MPI_BYTE,
-                                    result.storage_.empty() ? nullptr : result.storage_.data(),
-                                    recvCounts.empty() ? nullptr : recvCounts.data(),
-                                    recvDisplacements.empty() ? nullptr : recvDisplacements.data(),
-                                    MPI_BYTE, graph_),
-             "FmmPeerExchange::exchangeBytes MPI_Neighbor_alltoallv");
+    request.result_.storage_.clear();
+    request.result_.storage_.resize(request.totalReceive_);
+    request.result_.messages_.clear();
+    request.result_.messages_.reserve(request.sourceRanks_.size());
+    if(request.bytesOwned() > maxRequestBytes)
+        abortInvariant(graph_,
+            "FmmPeerExchange::beginExchangeBytes: request workspace exceeds memory budget");
 
-    if(bytesSent != nullptr)
-        *bytesSent += static_cast<std::uint64_t>(totalSend);
-    if(bytesReceived != nullptr)
-        *bytesReceived += static_cast<std::uint64_t>(totalRecv);
+    checkMpi(MPI_Ineighbor_alltoallv(
+        request.sendBuffer_.empty() ? nullptr : request.sendBuffer_.data(),
+        request.sendCounts_.empty() ? nullptr : request.sendCounts_.data(),
+        request.sendDisplacements_.empty() ? nullptr :
+                                             request.sendDisplacements_.data(),
+        MPI_BYTE,
+        request.result_.storage_.empty() ? nullptr :
+                                           request.result_.storage_.data(),
+        request.receiveCounts_.empty() ? nullptr :
+                                         request.receiveCounts_.data(),
+        request.receiveDisplacements_.empty() ? nullptr :
+                                                request.receiveDisplacements_.data(),
+        MPI_BYTE, graph_, &request.payloadRequest_),
+        "FmmPeerExchange::beginExchangeBytes MPI_Ineighbor_alltoallv");
+    request.state_ = FmmPeerExchangeRequest::State::Payload;
+}
 
-    result.messages_.reserve(sources_.size());
-    for(std::size_t i = 0; i < sources_.size(); ++i)
-    {
-        if(recvCounts[i] == 0)
-            continue;
-        result.messages_.push_back(FmmReceivedMessage{
-            sources_[i], static_cast<std::size_t>(recvDisplacements[i]),
-            static_cast<std::size_t>(recvCounts[i])});
-    }
-    return result;
+FmmPeerExchangeResult FmmPeerExchange::exchangeBytes(
+    const std::unordered_map<int, std::vector<char>>& sendByRank,
+    std::uint64_t* bytesSent,
+    std::uint64_t* bytesReceived,
+    std::size_t maxReceiveBytes) const
+{
+    FmmPeerExchangeRequest request;
+    beginExchangeBytes(sendByRank, request, maxReceiveBytes);
+    return request.wait(bytesSent, bytesReceived);
 }
 
 #endif // RICH_MPI

@@ -49,6 +49,8 @@ struct FmmLocalInteractionPlan
     std::size_t bytesOwned() const;
 };
 
+using FmmTraversalProgress = void (*)(void*);
+
 class FmmDualTreeTraversal
 {
 public:
@@ -70,7 +72,9 @@ public:
                              std::vector<double>* positiveKernelPotential,
                              FmmM2LOperatorCache& operatorCache,
                              std::size_t maxOperatorCacheBytes,
-                             FmmSolveStats& stats);
+                             FmmSolveStats& stats,
+                             FmmTraversalProgress progress = nullptr,
+                             void* progressContext = nullptr);
 
     static void run(const FmmTree& targetTree,
                     const FmmTree& sourceTree,

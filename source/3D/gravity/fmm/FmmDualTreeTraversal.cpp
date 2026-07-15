@@ -291,7 +291,9 @@ void FmmDualTreeTraversal::runLocalPlan(
     std::vector<double>* positiveKernelPotential,
     FmmM2LOperatorCache& operatorCache,
     std::size_t maxOperatorCacheBytes,
-    FmmSolveStats& stats)
+    FmmSolveStats& stats,
+    FmmTraversalProgress progress,
+    void* progressContext)
 {
     if(!plan.initialized)
         throw UniversalError(
@@ -315,6 +317,7 @@ void FmmDualTreeTraversal::runLocalPlan(
     stats.rejectedRatio += plan.rejectedRatio;
     stats.maxTraversalStack = std::max(stats.maxTraversalStack,
                                       plan.maxTraversalStack);
+    std::size_t progressCountdown = 4096;
     for(const FmmLocalInteractionPlan::M2LPair& pair : plan.m2lPairs)
     {
         const FmmNode& target = nodes[pair.targetNode];
@@ -337,6 +340,11 @@ void FmmDualTreeTraversal::runLocalPlan(
         FmmKernels::translateM2L(source, target, layout, multipoles, locals,
                                  *coefficients, inverseScale);
         ++stats.m2lCount;
+        if(progress != nullptr && --progressCountdown == 0)
+        {
+            progress(progressContext);
+            progressCountdown = 4096;
+        }
     }
     for(const FmmLocalInteractionPlan::P2PPair& pair : plan.p2pPairs)
     {
@@ -349,7 +357,14 @@ void FmmDualTreeTraversal::runLocalPlan(
             source.particleBegin, source.particleEnd,
             true, acceleration, positiveKernelPotential, stats.p2pPairCount);
         ++stats.p2pBlockCount;
+        if(progress != nullptr && --progressCountdown == 0)
+        {
+            progress(progressContext);
+            progressCountdown = 4096;
+        }
     }
+    if(progress != nullptr)
+        progress(progressContext);
 
     stats.localOperatorCacheBytes = operatorCache.bytesOwned();
     stats.localOperatorCacheEntries = operatorCache.entries();

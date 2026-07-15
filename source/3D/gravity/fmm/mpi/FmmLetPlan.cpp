@@ -201,6 +201,8 @@ void applyRemoteLatticeMetadata(std::uint64_t latticeId,
 }
 
 FmmLetPlan::FmmLetPlan():
+    executePending_(false), pendingMaxRemoteBytes_(0),
+    pendingExchangePreparationSeconds_(0.0),
     comm_(MPI_COMM_NULL), rank_(0), topologyEpoch_(0) {}
 
 FmmRemoteNodeDescriptor FmmLetPlan::descriptorForNode(
@@ -244,6 +246,10 @@ void FmmLetPlan::build(const FmmTree& localTree,
                        FmmSolveStats& stats)
 {
     const Clock::time_point start = Clock::now();
+    if(executePending_ || pendingExchange_.active())
+        throw UniversalError(
+            "FmmLetPlan::build: cannot rebuild with an active LET exchange");
+    pendingExchange_.clear();
     comm_ = comm;
     topologyEpoch_ = topologyEpoch;
     MPI_Comm_rank(comm_, &rank_);
@@ -810,7 +816,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
 
 std::size_t FmmLetPlan::bytesOwned() const
 {
-    std::size_t result = exchange_.bytesOwned();
+    std::size_t result = saturatingAdd(
+        exchange_.bytesOwned(), pendingExchange_.bytesOwned());
     result = saturatingAdd(result, saturatingMultiply(
         remoteLatticeRoots_.capacity(), sizeof(RemoteLatticeRoot)));
     const std::size_t localMapEntry =
@@ -867,43 +874,41 @@ std::size_t FmmLetPlan::bytesOwned() const
     return result;
 }
 
-void FmmLetPlan::execute(const FmmTree& localTree,
-                         const std::vector<Vector3D>& positions,
-                         const std::vector<double>& masses,
-                         const std::vector<std::uint64_t>& cellIds,
-                         const FmmTaylorExpansion& layout,
-                         const std::vector<double>& localMultipoles,
-                         std::vector<double>& localLocals,
-                         std::vector<Vector3D>& acceleration,
-                         std::vector<double>* positiveKernelPotential,
-                         FmmM2LOperatorCache& operatorCache,
-                         std::size_t maxRemoteBytes,
-                         std::size_t maxOperatorCacheBytes,
-                         FmmSolveStats& stats) const
+void FmmLetPlan::beginExecute(
+    const FmmTree& localTree,
+    const std::vector<Vector3D>& positions,
+    const std::vector<double>& masses,
+    const std::vector<std::uint64_t>& cellIds,
+    const FmmTaylorExpansion& layout,
+    const std::vector<double>& localMultipoles,
+    const std::vector<double>& localLocals,
+    const std::vector<Vector3D>& acceleration,
+    const std::vector<double>* positiveKernelPotential,
+    std::size_t maxRemoteBytes,
+    FmmSolveStats& stats)
 {
     const Clock::time_point start = Clock::now();
+    if(executePending_ || pendingExchange_.active())
+        throw UniversalError("FmmLetPlan::beginExecute: exchange already active");
     if(comm_ == MPI_COMM_NULL || topologyEpoch_ == 0)
-        throw UniversalError("FmmLetPlan::execute: LET plan is not initialized");
+        throw UniversalError("FmmLetPlan::beginExecute: LET plan is not initialized");
     if(positions.size() != masses.size() || positions.size() != cellIds.size() ||
        acceleration.size() != positions.size() ||
        localTree.particleOrder().size() != positions.size() ||
        (positiveKernelPotential != nullptr &&
         positiveKernelPotential->size() != positions.size()))
-        throw UniversalError("FmmLetPlan::execute: inconsistent particle or output storage");
+        throw UniversalError("FmmLetPlan::beginExecute: inconsistent particle or output storage");
     if(layout.coefficientCount() == 0 ||
        localTree.nodes().size() > std::numeric_limits<std::size_t>::max() /
                                   layout.coefficientCount())
-        throw UniversalError("FmmLetPlan::execute: expansion storage overflow");
+        throw UniversalError("FmmLetPlan::beginExecute: expansion storage overflow");
     const std::size_t expectedExpansionSize =
         localTree.nodes().size() * layout.coefficientCount();
     if(localMultipoles.size() != expectedExpansionSize ||
        localLocals.size() != expectedExpansionSize)
-        throw UniversalError("FmmLetPlan::execute: inconsistent expansion storage");
+        throw UniversalError("FmmLetPlan::beginExecute: inconsistent expansion storage");
     if(maxRemoteBytes < 2)
-        throw UniversalError("FmmLetPlan::execute: remote memory budget is too small");
-    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
-                            m2lInteractions_.size());
-    operatorCache.beginPhase();
+        throw UniversalError("FmmLetPlan::beginExecute: remote memory budget is too small");
     std::unordered_map<int, std::size_t> plannedBytesByRank;
     std::size_t outgoingBytes = 0;
     for(const auto& entry : subscriptionsReceived_)
@@ -1020,11 +1025,53 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     const std::size_t receiveLimit = std::min(
         maxRemoteBytes - sendCapacityBytes - outgoingBytes,
         maxRemoteBytes / 2);
-    FmmPeerExchangeResult received = exchange_.exchangeBytes(
-        sendBuffers, &stats.bytesSent, &stats.bytesReceived, receiveLimit);
+    exchange_.beginExchangeBytes(
+        sendBuffers, pendingExchange_, receiveLimit,
+        maxRemoteBytes - sendCapacityBytes);
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
-        sendCapacityBytes + outgoingBytes + received.totalBytes());
+        sendCapacityBytes + pendingExchange_.bytesOwned());
     std::unordered_map<int, std::vector<char>>().swap(sendBuffers);
+
+    pendingMaxRemoteBytes_ = maxRemoteBytes;
+    pendingExchangePreparationSeconds_ = elapsed(start);
+    executePending_ = true;
+}
+
+void FmmLetPlan::progressExecute()
+{
+    if(executePending_)
+        pendingExchange_.progress();
+}
+
+void FmmLetPlan::finishExecute(
+    const FmmTree& localTree,
+    const std::vector<Vector3D>& positions,
+    const FmmTaylorExpansion& layout,
+    std::vector<double>& localLocals,
+    std::vector<Vector3D>& acceleration,
+    std::vector<double>* positiveKernelPotential,
+    FmmM2LOperatorCache& operatorCache,
+    std::size_t maxRemoteBytes,
+    std::size_t maxOperatorCacheBytes,
+    FmmSolveStats& stats)
+{
+    if(!executePending_ || maxRemoteBytes != pendingMaxRemoteBytes_)
+        throw UniversalError(
+            "FmmLetPlan::finishExecute: no matching active exchange");
+    const Clock::time_point finishStart = Clock::now();
+    FmmPeerExchangeResult received = pendingExchange_.wait(
+        &stats.bytesSent, &stats.bytesReceived);
+    executePending_ = false;
+    const std::size_t exchangeWorkspaceBytes = pendingExchange_.bytesOwned();
+    const std::size_t receivedWorkspaceBytes = received.bytesOwned();
+    const std::size_t wireWorkspaceBytes = saturatingAdd(
+        exchangeWorkspaceBytes, receivedWorkspaceBytes);
+    if(wireWorkspaceBytes == std::numeric_limits<std::size_t>::max() ||
+       wireWorkspaceBytes > maxRemoteBytes)
+        abortLetInvariant(comm_,
+            "FmmLetPlan::finishExecute: exchange workspace exceeds memory budget");
+    stats.peakRemoteBytes = std::max(
+        stats.peakRemoteBytes, wireWorkspaceBytes);
 
     typedef std::tuple<int, std::uint64_t, int> PayloadKey;
     std::size_t expectedRecordCount = 0;
@@ -1070,11 +1117,11 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     std::size_t keyTableBytes = saturatingMultiply(
         keyTableCount, sizeof(PayloadKey));
     if(keyTableBytes == std::numeric_limits<std::size_t>::max() ||
-       keyTableBytes > maxRemoteBytes - received.totalBytes())
+       keyTableBytes > maxRemoteBytes - wireWorkspaceBytes)
         abortLetInvariant(comm_,
             "FmmLetPlan::execute: payload key tables exceed memory budget");
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
-                                    received.totalBytes() + keyTableBytes);
+        wireWorkspaceBytes + keyTableBytes);
     std::size_t totalCoefficientCount = 0;
     std::size_t totalParticleCount = 0;
     std::size_t actualMultipoleRecords = 0;
@@ -1175,7 +1222,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     addRequestedBytes(totalParticleCount, sizeof(FmmWireParticle));
     addRequestedBytes(m2lSources_.size(), sizeof(FmmNode));
     if(decodedRequestedBytes == std::numeric_limits<std::size_t>::max() ||
-       decodedRequestedBytes > maxRemoteBytes - received.totalBytes())
+       decodedRequestedBytes > maxRemoteBytes - wireWorkspaceBytes)
         abortLetInvariant(comm_,
             "FmmLetPlan::execute: decoded LET payload exceeds memory budget");
 
@@ -1200,7 +1247,7 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
         resolvedM2LSources.capacity(), sizeof(FmmNode)));
     if(decodedBytes == std::numeric_limits<std::size_t>::max() ||
-       decodedBytes > maxRemoteBytes - received.totalBytes())
+       decodedBytes > maxRemoteBytes - wireWorkspaceBytes)
         abortLetInvariant(comm_,
             "FmmLetPlan::execute: allocated LET payload exceeds memory budget");
 
@@ -1258,10 +1305,17 @@ void FmmLetPlan::execute(const FmmTree& localTree,
     std::sort(remoteParticles.begin(), remoteParticles.end(),
         payloadLess<RemoteParticlePayload>);
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
-                                    received.totalBytes() + decodedBytes);
+        wireWorkspaceBytes + decodedBytes);
     received.releaseStorage();
-    stats.letExchangeSeconds += elapsed(start);
+    // Report only exchange work exposed on the critical path: preparation,
+    // residual wait, and decode. Transfer time hidden by local traversal is
+    // intentionally excluded from this phase timer.
+    stats.letExchangeSeconds += pendingExchangePreparationSeconds_ +
+        elapsed(finishStart);
 
+    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
+                            m2lInteractions_.size());
+    operatorCache.beginPhase();
     std::vector<double> derivativeScratch;
     derivativeScratch.reserve(layout.coefficientCount());
     std::vector<double> uncachedOperator;
@@ -1385,6 +1439,28 @@ void FmmLetPlan::execute(const FmmTree& localTree,
         ++stats.letP2PBlockCount;
     }
     stats.letP2PSeconds += elapsed(p2pStart);
+}
+
+void FmmLetPlan::execute(const FmmTree& localTree,
+                         const std::vector<Vector3D>& positions,
+                         const std::vector<double>& masses,
+                         const std::vector<std::uint64_t>& cellIds,
+                         const FmmTaylorExpansion& layout,
+                         const std::vector<double>& localMultipoles,
+                         std::vector<double>& localLocals,
+                         std::vector<Vector3D>& acceleration,
+                         std::vector<double>* positiveKernelPotential,
+                         FmmM2LOperatorCache& operatorCache,
+                         std::size_t maxRemoteBytes,
+                         std::size_t maxOperatorCacheBytes,
+                         FmmSolveStats& stats)
+{
+    beginExecute(localTree, positions, masses, cellIds, layout,
+                 localMultipoles, localLocals, acceleration,
+                 positiveKernelPotential, maxRemoteBytes, stats);
+    finishExecute(localTree, positions, layout, localLocals, acceleration,
+                  positiveKernelPotential, operatorCache, maxRemoteBytes,
+                  maxOperatorCacheBytes, stats);
 }
 
 #endif // RICH_MPI

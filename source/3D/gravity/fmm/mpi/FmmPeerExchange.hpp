@@ -20,18 +20,66 @@ struct FmmReceivedMessage
     std::size_t size = 0;
 };
 
+class FmmPeerExchangeRequest;
+
 class FmmPeerExchangeResult
 {
 public:
     FmmByteView view(const FmmReceivedMessage& message) const;
     std::size_t totalBytes() const { return storage_.size(); }
+    std::size_t bytesOwned() const;
     const std::vector<FmmReceivedMessage>& messages() const { return messages_; }
     void releaseStorage();
 
 private:
     friend class FmmPeerExchange;
+    friend class FmmPeerExchangeRequest;
     std::vector<char> storage_;
     std::vector<FmmReceivedMessage> messages_;
+};
+
+class FmmPeerExchangeRequest
+{
+public:
+    FmmPeerExchangeRequest();
+    FmmPeerExchangeRequest(const FmmPeerExchangeRequest&) = delete;
+    FmmPeerExchangeRequest& operator=(const FmmPeerExchangeRequest&) = delete;
+    FmmPeerExchangeRequest(FmmPeerExchangeRequest&&) = delete;
+    FmmPeerExchangeRequest& operator=(FmmPeerExchangeRequest&&) = delete;
+    ~FmmPeerExchangeRequest();
+
+    bool active() const;
+    bool progress();
+    FmmPeerExchangeResult wait(
+        std::uint64_t* bytesSent = nullptr,
+        std::uint64_t* bytesReceived = nullptr);
+    void clear();
+    std::size_t bytesOwned() const;
+
+private:
+    friend class FmmPeerExchange;
+
+    enum class State
+    {
+        Idle,
+        Payload,
+        Complete
+    };
+
+    void finalizeMessages();
+
+    MPI_Comm graph_;
+    State state_;
+    MPI_Request payloadRequest_;
+    std::vector<int> sourceRanks_;
+    std::vector<int> sendCounts_;
+    std::vector<int> sendDisplacements_;
+    std::vector<int> receiveCounts_;
+    std::vector<int> receiveDisplacements_;
+    std::vector<char> sendBuffer_;
+    FmmPeerExchangeResult result_;
+    std::size_t totalSend_;
+    std::size_t totalReceive_;
 };
 
 class FmmPeerExchange
@@ -53,6 +101,13 @@ public:
         std::uint64_t* bytesSent = nullptr,
         std::uint64_t* bytesReceived = nullptr,
         std::size_t maxReceiveBytes = std::numeric_limits<std::size_t>::max()) const;
+
+    void beginExchangeBytes(
+        const std::unordered_map<int, std::vector<char>>& sendByRank,
+        FmmPeerExchangeRequest& request,
+        std::size_t maxReceiveBytes = std::numeric_limits<std::size_t>::max(),
+        std::size_t maxRequestBytes =
+            std::numeric_limits<std::size_t>::max()) const;
 
     const std::vector<int>& sources() const { return sources_; }
     const std::vector<int>& destinations() const { return destinations_; }
