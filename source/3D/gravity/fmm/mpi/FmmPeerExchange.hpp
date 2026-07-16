@@ -20,6 +20,14 @@ struct FmmReceivedMessage
     std::size_t size = 0;
 };
 
+struct FmmPeerExchangeTimings
+{
+    double flattenSeconds = 0;
+    double countExchangeSeconds = 0;
+    double receiveSetupSeconds = 0;
+    double payloadLaunchSeconds = 0;
+};
+
 class FmmPeerExchangeRequest;
 
 class FmmPeerExchangeResult
@@ -55,6 +63,9 @@ public:
         std::uint64_t* bytesReceived = nullptr);
     void clear();
     std::size_t bytesOwned() const;
+    double payloadLifetimeSeconds() const { return payloadLifetimeSeconds_; }
+    double residualWaitSeconds() const { return residualWaitSeconds_; }
+    bool completedByProgress() const { return completedByProgress_; }
 
 private:
     friend class FmmPeerExchange;
@@ -80,6 +91,10 @@ private:
     FmmPeerExchangeResult result_;
     std::size_t totalSend_;
     std::size_t totalReceive_;
+    double payloadLaunchTime_;
+    double payloadLifetimeSeconds_;
+    double residualWaitSeconds_;
+    bool completedByProgress_;
 };
 
 class FmmPeerExchange
@@ -107,7 +122,8 @@ public:
         FmmPeerExchangeRequest& request,
         std::size_t maxReceiveBytes = std::numeric_limits<std::size_t>::max(),
         std::size_t maxRequestBytes =
-            std::numeric_limits<std::size_t>::max()) const;
+            std::numeric_limits<std::size_t>::max(),
+        FmmPeerExchangeTimings* timings = nullptr) const;
 
     const std::vector<int>& sources() const { return sources_; }
     const std::vector<int>& destinations() const { return destinations_; }

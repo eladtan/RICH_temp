@@ -64,8 +64,8 @@ struct ProbeErrorStats
     double mean = 0.0;
 };
 
-constexpr std::size_t kFmmTimingMetricCount = 14;
-constexpr std::size_t kFmmWorkMetricCount = 18;
+constexpr std::size_t kFmmTimingMetricCount = 26;
+constexpr std::size_t kFmmWorkMetricCount = 22;
 
 const std::array<const char*, kFmmTimingMetricCount> kFmmTimingMetricNames = {{
     "build_seconds",
@@ -76,6 +76,18 @@ const std::array<const char*, kFmmTimingMetricCount> kFmmTimingMetricNames = {{
     "let_plan_seconds",
     "let_execute_seconds",
     "let_exchange_seconds",
+    "let_preparation_seconds",
+    "let_payload_planning_seconds",
+    "let_payload_packing_seconds",
+    "let_payload_flatten_seconds",
+    "let_count_exchange_seconds",
+    "let_receive_setup_seconds",
+    "let_payload_launch_seconds",
+    "let_payload_release_seconds",
+    "let_payload_lifetime_seconds",
+    "let_residual_wait_seconds",
+    "let_validation_seconds",
+    "let_decode_seconds",
     "let_m2l_seconds",
     "let_p2p_seconds",
     "local_traversal_seconds",
@@ -102,7 +114,11 @@ const std::array<const char*, kFmmWorkMetricCount> kFmmWorkMetricNames = {{
     "local_cache_bypasses",
     "let_cache_hits",
     "let_cache_misses",
-    "let_cache_bypasses"
+    "let_cache_bypasses",
+    "let_progress_calls",
+    "let_progress_incomplete_calls",
+    "let_completion_progress_call",
+    "let_completed_before_finish"
 }};
 
 struct RankMetricSummary
@@ -577,6 +593,18 @@ void accumulateFmmProfile(const FmmSolveStats& stats,
         stats.letPlanSeconds,
         stats.letExecuteSeconds,
         stats.letExchangeSeconds,
+        stats.letPreparationSeconds,
+        stats.letPayloadPlanningSeconds,
+        stats.letPayloadPackingSeconds,
+        stats.letPayloadFlattenSeconds,
+        stats.letCountExchangeSeconds,
+        stats.letReceiveSetupSeconds,
+        stats.letPayloadLaunchSeconds,
+        stats.letPayloadReleaseSeconds,
+        stats.letPayloadLifetimeSeconds,
+        stats.letResidualWaitSeconds,
+        stats.letValidationSeconds,
+        stats.letDecodeSeconds,
         stats.letM2LSeconds,
         stats.letP2PSeconds,
         stats.localTraversalSeconds,
@@ -628,7 +656,11 @@ void accumulateFmmProfile(const FmmSolveStats& stats,
         static_cast<unsigned long long>(stats.localOperatorCacheBypasses),
         static_cast<unsigned long long>(stats.letOperatorCacheHits),
         static_cast<unsigned long long>(stats.letOperatorCacheMisses),
-        static_cast<unsigned long long>(stats.letOperatorCacheBypasses)
+        static_cast<unsigned long long>(stats.letOperatorCacheBypasses),
+        static_cast<unsigned long long>(stats.letProgressCallCount),
+        static_cast<unsigned long long>(stats.letProgressIncompleteCount),
+        static_cast<unsigned long long>(stats.letCompletionProgressCall),
+        static_cast<unsigned long long>(stats.letCompletedBeforeFinishCount)
     }};
     std::array<unsigned long long, kFmmWorkMetricCount> minimumWork{};
     std::array<unsigned long long, kFmmWorkMetricCount> summedWork{};

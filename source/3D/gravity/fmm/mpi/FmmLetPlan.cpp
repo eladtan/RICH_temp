@@ -202,7 +202,8 @@ void applyRemoteLatticeMetadata(std::uint64_t latticeId,
 
 FmmLetPlan::FmmLetPlan():
     executePending_(false), pendingMaxRemoteBytes_(0),
-    pendingExchangePreparationSeconds_(0.0),
+    pendingExchangePreparationSeconds_(0.0), pendingProgressCallCount_(0),
+    pendingProgressIncompleteCount_(0), pendingCompletionProgressCall_(0),
     comm_(MPI_COMM_NULL), rank_(0), topologyEpoch_(0) {}
 
 FmmRemoteNodeDescriptor FmmLetPlan::descriptorForNode(
@@ -909,6 +910,9 @@ void FmmLetPlan::beginExecute(
         throw UniversalError("FmmLetPlan::beginExecute: inconsistent expansion storage");
     if(maxRemoteBytes < 2)
         throw UniversalError("FmmLetPlan::beginExecute: remote memory budget is too small");
+    pendingProgressCallCount_ = 0;
+    pendingProgressIncompleteCount_ = 0;
+    pendingCompletionProgressCall_ = 0;
     std::unordered_map<int, std::size_t> plannedBytesByRank;
     std::size_t outgoingBytes = 0;
     for(const auto& entry : subscriptionsReceived_)
@@ -959,7 +963,9 @@ void FmmLetPlan::beginExecute(
     if(outgoingBytes > maxRemoteBytes / 2)
         abortLetInvariant(comm_,
             "FmmLetPlan::execute: outgoing LET payload exceeds memory budget");
+    stats.letPayloadPlanningSeconds += elapsed(start);
 
+    const Clock::time_point packingStart = Clock::now();
     std::unordered_map<int, std::vector<char>> sendBuffers;
     for(const auto& entry : plannedBytesByRank)
         sendBuffers[entry.first].reserve(entry.second);
@@ -1006,6 +1012,7 @@ void FmmLetPlan::beginExecute(
         if(buffer.size() != plannedBytesByRank[entry.first])
             throw UniversalError("FmmLetPlan::execute: payload planning mismatch");
     }
+    stats.letPayloadPackingSeconds += elapsed(packingStart);
 
     std::size_t sendCapacityBytes = 0;
     for(const auto& entry : sendBuffers)
@@ -1025,22 +1032,38 @@ void FmmLetPlan::beginExecute(
     const std::size_t receiveLimit = std::min(
         maxRemoteBytes - sendCapacityBytes - outgoingBytes,
         maxRemoteBytes / 2);
+    FmmPeerExchangeTimings exchangeTimings;
     exchange_.beginExchangeBytes(
         sendBuffers, pendingExchange_, receiveLimit,
-        maxRemoteBytes - sendCapacityBytes);
+        maxRemoteBytes - sendCapacityBytes, &exchangeTimings);
+    stats.letPayloadFlattenSeconds += exchangeTimings.flattenSeconds;
+    stats.letCountExchangeSeconds += exchangeTimings.countExchangeSeconds;
+    stats.letReceiveSetupSeconds += exchangeTimings.receiveSetupSeconds;
+    stats.letPayloadLaunchSeconds += exchangeTimings.payloadLaunchSeconds;
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
         sendCapacityBytes + pendingExchange_.bytesOwned());
+    const Clock::time_point releaseStart = Clock::now();
     std::unordered_map<int, std::vector<char>>().swap(sendBuffers);
+    stats.letPayloadReleaseSeconds += elapsed(releaseStart);
 
     pendingMaxRemoteBytes_ = maxRemoteBytes;
     pendingExchangePreparationSeconds_ = elapsed(start);
+    stats.letPreparationSeconds += pendingExchangePreparationSeconds_;
     executePending_ = true;
 }
 
 void FmmLetPlan::progressExecute()
 {
-    if(executePending_)
-        pendingExchange_.progress();
+    if(!executePending_)
+        return;
+    ++pendingProgressCallCount_;
+    if(!pendingExchange_.progress())
+    {
+        ++pendingProgressIncompleteCount_;
+        return;
+    }
+    if(pendingCompletionProgressCall_ == 0)
+        pendingCompletionProgressCall_ = pendingProgressCallCount_;
 }
 
 void FmmLetPlan::finishExecute(
@@ -1059,9 +1082,18 @@ void FmmLetPlan::finishExecute(
         throw UniversalError(
             "FmmLetPlan::finishExecute: no matching active exchange");
     const Clock::time_point finishStart = Clock::now();
+    const bool completedBeforeFinish = pendingExchange_.completedByProgress();
     FmmPeerExchangeResult received = pendingExchange_.wait(
         &stats.bytesSent, &stats.bytesReceived);
+    stats.letPayloadLifetimeSeconds +=
+        pendingExchange_.payloadLifetimeSeconds();
+    stats.letResidualWaitSeconds += pendingExchange_.residualWaitSeconds();
+    stats.letProgressCallCount += pendingProgressCallCount_;
+    stats.letProgressIncompleteCount += pendingProgressIncompleteCount_;
+    stats.letCompletionProgressCall += pendingCompletionProgressCall_;
+    stats.letCompletedBeforeFinishCount += completedBeforeFinish ? 1u : 0u;
     executePending_ = false;
+    const Clock::time_point validationStart = Clock::now();
     const std::size_t exchangeWorkspaceBytes = pendingExchange_.bytesOwned();
     const std::size_t receivedWorkspaceBytes = received.bytesOwned();
     const std::size_t wireWorkspaceBytes = saturatingAdd(
@@ -1209,7 +1241,9 @@ void FmmLetPlan::finishExecute(
             "FmmLetPlan::execute: missing or duplicate subscribed LET payload");
     std::vector<PayloadKey>().swap(expectedPayloadKeys);
     std::vector<PayloadKey>().swap(seenPayloadKeys);
+    stats.letValidationSeconds += elapsed(validationStart);
 
+    const Clock::time_point decodeStart = Clock::now();
     std::size_t decodedRequestedBytes = 0;
     const auto addRequestedBytes = [&](std::size_t count, std::size_t elementSize)
     {
@@ -1307,6 +1341,7 @@ void FmmLetPlan::finishExecute(
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
         wireWorkspaceBytes + decodedBytes);
     received.releaseStorage();
+    stats.letDecodeSeconds += elapsed(decodeStart);
     // Report only exchange work exposed on the critical path: preparation,
     // residual wait, and decode. Transfer time hidden by local traversal is
     // intentionally excluded from this phase timer.

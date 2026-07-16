@@ -90,6 +90,28 @@ struct FmmSolveStats
     double letPlanSeconds = 0;
     double letExecuteSeconds = 0;
     double letExchangeSeconds = 0;
+
+    // Detailed LET exchange instrumentation.  letPayloadLifetimeSeconds is an
+    // overlapped interval and must not be added to critical-path phase totals.
+    // letExchangeSeconds remains the backward-compatible exposed total:
+    // preparation + residual wait + validation + decode.
+    double letPreparationSeconds = 0;
+    double letPayloadPlanningSeconds = 0;
+    double letPayloadPackingSeconds = 0;
+    double letPayloadFlattenSeconds = 0;
+    double letCountExchangeSeconds = 0;
+    double letReceiveSetupSeconds = 0;
+    double letPayloadLaunchSeconds = 0;
+    double letPayloadReleaseSeconds = 0;
+    double letPayloadLifetimeSeconds = 0;
+    double letResidualWaitSeconds = 0;
+    double letValidationSeconds = 0;
+    double letDecodeSeconds = 0;
+    std::uint64_t letProgressCallCount = 0;
+    std::uint64_t letProgressIncompleteCount = 0;
+    std::uint64_t letCompletionProgressCall = 0;
+    std::uint64_t letCompletedBeforeFinishCount = 0;
+
     double letM2LSeconds = 0;
     double letP2PSeconds = 0;
     double localTraversalSeconds = 0;

@@ -149,6 +149,9 @@ private:
     bool executePending_;
     std::size_t pendingMaxRemoteBytes_;
     double pendingExchangePreparationSeconds_;
+    std::uint64_t pendingProgressCallCount_;
+    std::uint64_t pendingProgressIncompleteCount_;
+    std::uint64_t pendingCompletionProgressCall_;
     MPI_Comm comm_;
     int rank_;
     std::uint64_t topologyEpoch_;
