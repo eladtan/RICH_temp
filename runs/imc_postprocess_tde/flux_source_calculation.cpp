@@ -25,6 +25,7 @@
 #ifdef RICH_MPI
 #include <mpi.h>
 #include "source/mpi/mpi_commands.hpp"
+#include "source/mpi/mpi_commands_3d.hpp"
 #endif
 
 namespace imc_postprocess_tde {
@@ -399,6 +400,24 @@ void ConfigureFluxSourceForCurrentDecomposition(
     std::vector<unsigned char> const outside =
         BuildOutsideSurfaceMask(cfg, runtime);
     size_t const nCells = runtime.tess.GetPointNo();
+    if(runtime.cells.size() < nCells)
+        throw UniversalError(
+            "Flux-source setup has fewer owned cells than tessellation points");
+
+    // FLD and surface-mask arrays contain MPI ghost slots.  Build the same
+    // point-indexed view of stable cell IDs so a CER face whose interior
+    // neighbor is a ghost can be represented without indexing the owned-only
+    // runtime.cells array.  Skipping such a face would make the physical CER
+    // and its luminosity depend on the MPI partition.
+    size_t const invalidCellID = std::numeric_limits<size_t>::max();
+    std::vector<size_t> pointCellIDs(nCells, invalidCellID);
+    for(size_t i = 0; i < nCells; ++i)
+        pointCellIDs[i] = runtime.cells[i].ID;
+#ifdef RICH_MPI
+    MPI_exchange_data(
+        runtime.tess, pointCellIDs, true, 1, &invalidCellID);
+#endif
+
     std::vector<RadiationIMC::PostProcessExternalSource> sources;
     std::vector<size_t> neighbors;
     double localLuminosity = 0.0;
@@ -422,6 +441,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
             size_t const innerCell = neighbors[j];
             if(runtime.tess.IsPointOutsideBox(innerCell) ||
                innerCell >= fldFlux.size() || innerCell >= outside.size() ||
+               innerCell >= pointCellIDs.size() ||
                outside[innerCell] != 0)
                 continue;
 
@@ -444,10 +464,19 @@ void ConfigureFluxSourceForCurrentDecomposition(
             localNetLuminosity += signedLuminosity;
             localInwardLuminosity += std::max(0.0, -signedLuminosity);
 
+            size_t const interiorCellID = pointCellIDs[innerCell];
+            if(interiorCellID == invalidCellID)
+            {
+                UniversalError eo(
+                    "Flux-source CER face is missing its interior ghost cell ID");
+                eo.addEntry("Interior point index", innerCell);
+                eo.addEntry("Exterior point index", outerCell);
+                throw eo;
+            }
             RadiationIMC::PostProcessExternalSource source;
             source.faceIndex = faces[j];
             source.cellID = runtime.cells[outerCell].ID;
-            source.interiorCellID = runtime.cells[innerCell].ID;
+            source.interiorCellID = interiorCellID;
             source.location = runtime.tess.FaceCM(faces[j]);
             source.outwardNormal = normal;
             source.luminosity = luminosity;

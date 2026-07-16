@@ -4517,9 +4517,26 @@ void RadiationIMC::setPostProcessExternalSources(
             "External source surfaces currently require random-walk acceleration "
             "to be disabled; DDMC uses a native thermalizing CER boundary");
 
+    size_t const localCellCount = this->grid.GetPointNo();
+    if(this->cells.size() < localCellCount)
+        throw UniversalError(
+            "External source installation has fewer cells than local tessellation points");
+
+    // Source faces may have an interior neighbor in an MPI ghost slot.  The
+    // cell array intentionally contains owned cells only, so validate against
+    // a point-indexed ID array expanded with the standard ghost exchange.
+    size_t const invalidCellID = std::numeric_limits<size_t>::max();
+    std::vector<size_t> pointCellIDs(localCellCount, invalidCellID);
+    for(size_t cellIndex = 0; cellIndex < localCellCount; ++cellIndex)
+        pointCellIDs[cellIndex] = this->cells[cellIndex].ID;
+#ifdef RICH_MPI
+    MPI_exchange_data(
+        this->grid, pointCellIDs, true, 1, &invalidCellID);
+#endif
+
     std::unordered_map<size_t, size_t> localCellIndexByID;
-    localCellIndexByID.reserve(this->grid.GetPointNo());
-    for(size_t cellIndex = 0; cellIndex < this->grid.GetPointNo(); ++cellIndex)
+    localCellIndexByID.reserve(localCellCount);
+    for(size_t cellIndex = 0; cellIndex < localCellCount; ++cellIndex)
     {
         auto const inserted = localCellIndexByID.emplace(
             this->cells[cellIndex].ID, cellIndex);
@@ -4577,10 +4594,11 @@ void RadiationIMC::setPostProcessExternalSources(
             faceNeighbors.first == cellIndex
                 ? faceNeighbors.second : faceNeighbors.first;
         if(this->grid.IsPointOutsideBox(interiorCellIndex) ||
-           interiorCellIndex >= this->cells.size())
+           interiorCellIndex >= pointCellIDs.size() ||
+           pointCellIDs[interiorCellIndex] == invalidCellID)
             throw UniversalError(
                 "External source face has no material interior neighbor");
-        if(this->cells[interiorCellIndex].ID != source.interiorCellID)
+        if(pointCellIDs[interiorCellIndex] != source.interiorCellID)
             throw UniversalError(
                 "External source interior-cell ID does not match the opposite face neighbor");
 
