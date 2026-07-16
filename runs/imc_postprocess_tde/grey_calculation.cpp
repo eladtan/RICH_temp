@@ -321,7 +321,8 @@ void RunGreyPostprocess(
                     greyFirstBurninThisGen &&
                     !greyBurninMeasuredLBDone;
                 bool const greyDoInitialMeasuredLB =
-                    (gen == 0 && greyMeasuredLBActive && !cfg.adaptiveSourceCells);
+                    gen == 0 && greyMeasuredLBActive &&
+                    (cfg.fluxSourceCompare || !cfg.adaptiveSourceCells);
                 bool const greyDoPostAdaptiveMeasuredLB =
                     greyMeasuredLBActive &&
                     cfg.adaptiveSourceCells &&
@@ -360,6 +361,8 @@ void RunGreyPostprocess(
                     PrintVmRSS("grey_before_measured_lb", rank);
 
                     std::vector<double> greyWeightsForExchange;
+                    imc_measured_lb::Parameters greyLBParamsThisPass =
+                        greyLBParams;
 
                     {
                         auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
@@ -372,12 +375,40 @@ void RunGreyPostprocess(
                             greyCellIDs, greyLocalSteps, greyPhysics->getLastSourcePhotonsPerCell());
 
                         uint64_t greyLocalTotalSteps = 0;
-                        for (auto const& m : greyLocalMeas)
+                        uint64_t greyLocalTotalSourceParticles = 0;
+                        for (auto const& m : greyLocalMeas) {
                             greyLocalTotalSteps += static_cast<uint64_t>(m.stepCount);
+                            greyLocalTotalSourceParticles +=
+                                static_cast<uint64_t>(m.particleCount);
+                        }
 
                         uint64_t greyGlobalTotalSteps = 0;
+                        uint64_t greyGlobalTotalSourceParticles = 0;
                         MPI_Allreduce(&greyLocalTotalSteps, &greyGlobalTotalSteps, 1,
                                       MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                        MPI_Allreduce(&greyLocalTotalSourceParticles,
+                                      &greyGlobalTotalSourceParticles, 1,
+                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                        if (cfg.fluxSourceCompare &&
+                            greyGlobalTotalSteps > 0 &&
+                            greyGlobalTotalSourceParticles > 0) {
+                            greyLBParamsThisPass.particleWeight = std::max(
+                                1.0,
+                                static_cast<double>(greyGlobalTotalSteps) /
+                                    static_cast<double>(greyGlobalTotalSourceParticles));
+                            greyLBParamsThisPass.particleCostAfterClamp = true;
+                            if (rank == 0) {
+                                std::cerr
+                                    << "MEASURED_LB_GREY_CER_SOURCE_COST"
+                                    << " global_steps=" << greyGlobalTotalSteps
+                                    << " global_source_particles="
+                                    << greyGlobalTotalSourceParticles
+                                    << " steps_per_source_particle="
+                                    << greyLBParamsThisPass.particleWeight
+                                    << " post_clamp=yes\n";
+                            }
+                        }
 
                         if (greyGlobalTotalSteps == 0) {
                             if (rank == 0)
@@ -385,14 +416,17 @@ void RunGreyPostprocess(
                                           << ": measured generation had zero total steps, skipping repartition\n";
                         } else {
                             auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(
-                                greyLocalMeas, greyLBParams, false, MPI_COMM_WORLD);
+                                greyLocalMeas, greyLBParamsThisPass,
+                                false, MPI_COMM_WORLD);
 
                             imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
                                 greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
 
                             IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
-                            greyCostCalcParams.floorCost = greyLBParams.floorCost;
-                            greyCostCalcParams.missingCellCost = greyLBParams.missingCellCost;
+                            greyCostCalcParams.floorCost =
+                                greyLBParamsThisPass.floorCost;
+                            greyCostCalcParams.missingCellCost =
+                                greyLBParamsThisPass.missingCellCost;
                             IMCStepCounterCostCalculator greyCostCalc(std::move(greyCostByCellID), greyCostCalcParams);
 
                             std::vector<Vector3D> greyCurrentPoints(Ncells);
@@ -417,7 +451,8 @@ void RunGreyPostprocess(
                     if (!greyWeightsForExchange.empty()) {
                         MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
 
-                        double greyDummyWeight = greyLBParams.missingCellCost;
+                        double greyDummyWeight =
+                            greyLBParamsThisPass.missingCellCost;
                         MPI_exchange_data(tess, greyWeightsForExchange, false, 1, &greyDummyWeight);
 
                         Ncells = tess.GetPointNo();

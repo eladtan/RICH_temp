@@ -1,6 +1,7 @@
 #include "postprocess_config.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -36,6 +37,8 @@ void printUsage(int rank)
               << "  --no-photosphere         Disable observer photosphere postprocessing\n"
               << "  --flux-source-compare    Run MG and grey transport from one FLD-normalized CER source\n"
               << "  --flux-source-tau TAU    Grey effective optical depth of CER (default: 5)\n"
+              << "  --flux-source-rays N     Inward rays used only to construct the CER\n"
+              << "                           (default: use --n-observers)\n"
               << "  --flux-source-ddmc-face-tau TAU\n"
               << "                           Minimum DDMC optical depth from exterior cell center to CER face (default: 5)\n"
               << "                           Requires MG, positive snapshot Erad, and non-Compton transport\n"
@@ -179,6 +182,7 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else if (arg == "--no-photosphere") { cfg.photosphere = false; }
         else if (arg == "--flux-source-compare") { cfg.fluxSourceCompare = true; }
         else if (arg == "--flux-source-tau" && i + 1 < argc) { cfg.fluxSourceThermalizationTau = std::atof(argv[++i]); }
+        else if (arg == "--flux-source-rays" && i + 1 < argc) { cfg.fluxSourceRays = static_cast<size_t>(std::atoll(argv[++i])); }
         else if (arg == "--flux-source-ddmc-face-tau" && i + 1 < argc) { cfg.fluxSourceDDMCFaceOpticalDepth = std::atof(argv[++i]); }
         else if (arg == "--polarization") { cfg.polarization = true; }
         else if (arg == "--no-polarization") { cfg.polarization = false; }
@@ -269,6 +273,11 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
 
     if (cfg.radius <= 0.0) { if (rank == 0) std::cerr << "--radius must be positive\n"; return false; }
     if (cfg.nObservers == 0) { if (rank == 0) std::cerr << "--n-observers must be > 0\n"; return false; }
+    if (cfg.fluxSourceRays > static_cast<size_t>(INT_MAX)) {
+        if (rank == 0)
+            std::cerr << "--flux-source-rays must be 0 or at most INT_MAX\n";
+        return false;
+    }
     if (cfg.sourceDt <= 0.0) { if (rank == 0) std::cerr << "--source-dt must be positive\n"; return false; }
     if (cfg.photonsPerCell == 0) { if (rank == 0) std::cerr << "--photons-per-cell must be > 0\n"; return false; }
     if (cfg.nGenerations == 0) { if (rank == 0) std::cerr << "--n-generations must be >= 1\n"; return false; }

@@ -14,6 +14,7 @@
 
 #include "source/3D/monte/MonteCarloManager3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
+#include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/universal_error.hpp"
 #include "source/misc/utils.hpp"
 #include "source/monte/MonteCarloFunctionality.hpp"
@@ -273,18 +274,24 @@ void InitializeFluxSourceSurface(
     Config const& cfg,
     PostprocessRuntime& runtime)
 {
-    size_t const nObservers = runtime.observer->getNumObservers();
-    if(nObservers == 0 || nObservers > static_cast<size_t>(INT_MAX))
-        throw UniversalError("Flux-source surface requires a valid observer count");
+    size_t const nSourceRays = cfg.fluxSourceRays > 0
+        ? cfg.fluxSourceRays
+        : runtime.observer->getNumObservers();
+    if(nSourceRays == 0 || nSourceRays > static_cast<size_t>(INT_MAX))
+        throw UniversalError("Flux-source surface requires a valid source-ray count");
 
-    std::vector<Vector3D> const& directions = runtime.observer->getDirections();
-    if(directions.size() != nObservers)
-        throw UniversalError("Flux-source observer direction count mismatch");
+    // The CER angular resolution is independent of the final observer binning.
+    // Keep the old behavior when --flux-source-rays is omitted by using the
+    // same ray count as --n-observers, but generate a dedicated direction set.
+    std::vector<Vector3D> const directions =
+        fibonacci_sphere_directions(nSourceRays);
+    if(directions.size() != nSourceRays)
+        throw UniversalError("Flux-source ray direction count mismatch");
     runtime.fluxSourceDirections = directions;
     std::vector<GreyThermalizationProbePhysics::Particle> particles;
-    particles.reserve(nObservers / std::max(1, runtime.mpiSize) + 1);
+    particles.reserve(nSourceRays / std::max(1, runtime.mpiSize) + 1);
 
-    for(size_t observerIndex = 0; observerIndex < nObservers; ++observerIndex)
+    for(size_t observerIndex = 0; observerIndex < nSourceRays; ++observerIndex)
     {
         Vector3D direction = directions[observerIndex];
         double const directionNorm = abs(direction);
@@ -323,7 +330,7 @@ void InitializeFluxSourceSurface(
         VacuumBoundaryCondition<Vector3D, Tessellation3D>>(runtime.tess);
     auto physics = std::make_shared<GreyThermalizationProbePhysics>(
         runtime.tess, boundary, runtime.cells, *runtime.greyOpacity,
-        cfg.center, cfg.fluxSourceThermalizationTau, nObservers);
+        cfg.center, cfg.fluxSourceThermalizationTau, nSourceRays);
     auto population = std::make_shared<
         NoPopulationControl<Vector3D, Tessellation3D>>(runtime.tess);
     std::shared_ptr<MonteCarloManager3D> manager;
@@ -359,7 +366,7 @@ void InitializeFluxSourceSurface(
         throw UniversalError(
             "No inward grey rays reached the requested flux-source optical depth");
 
-    for(size_t i = 0; i < nObservers; ++i)
+    for(size_t i = 0; i < nSourceRays; ++i)
     {
         if(runtime.fluxSourceRadiusDirectlyResolved[i] == 0)
             continue;
@@ -372,12 +379,14 @@ void InitializeFluxSourceSurface(
     runtime.fluxSourceEnabled = true;
     runtime.fluxSourceTau = cfg.fluxSourceThermalizationTau;
     runtime.fluxSourceDirectlyResolvedFraction =
-        static_cast<double>(directCount) / static_cast<double>(nObservers);
+        static_cast<double>(directCount) / static_cast<double>(nSourceRays);
     if(runtime.rank == 0)
         std::cout << "FLUX_SOURCE_SURFACE tau_eff="
                   << runtime.fluxSourceTau
+                  << " source_rays=" << nSourceRays
+                  << " output_observers=" << runtime.observer->getNumObservers()
                   << " directly_resolved=" << directCount << "/"
-                  << nObservers
+                  << nSourceRays
                   << " fraction="
                   << runtime.fluxSourceDirectlyResolvedFraction
                   << std::endl;

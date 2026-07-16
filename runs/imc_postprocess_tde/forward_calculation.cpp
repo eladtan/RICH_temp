@@ -302,7 +302,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 RankStepImbalance const mgStepImbalance =
                     ComputeRankStepImbalance("MG", gen, manager->GetCellsStepsCounters(), rank);
                 bool const doInitialMeasuredLB =
-                    (gen == 0 && measuredLBActive && !cfg.adaptiveSourceCells);
+                    gen == 0 && measuredLBActive &&
+                    (cfg.fluxSourceCompare || !cfg.adaptiveSourceCells);
                 bool const doPostAdaptiveMeasuredLB =
                     measuredLBActive &&
                     cfg.adaptiveSourceCells &&
@@ -344,6 +345,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     PrintVmRSS("before_measured_lb", rank);
 
                     std::vector<double> measuredWeightsForExchange;
+                    imc_measured_lb::Parameters measuredLBParamsThisPass =
+                        measuredLBParams;
 
                     {
                         auto const& localSteps = manager->GetCellsStepsCounters();
@@ -356,12 +359,48 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             cellIDs, localSteps, physics->getLastSourcePhotonsPerCell());
 
                         uint64_t localTotalSteps = 0;
-                        for (auto const& m : localMeasurements)
+                        uint64_t localTotalSourceParticles = 0;
+                        for (auto const& m : localMeasurements) {
                             localTotalSteps += static_cast<uint64_t>(m.stepCount);
+                            localTotalSourceParticles +=
+                                static_cast<uint64_t>(m.particleCount);
+                        }
 
                         uint64_t globalTotalSteps = 0;
+                        uint64_t globalTotalSourceParticles = 0;
                         MPI_Allreduce(&localTotalSteps, &globalTotalSteps, 1,
                                       MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                        MPI_Allreduce(&localTotalSourceParticles,
+                                      &globalTotalSourceParticles, 1,
+                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                        // In CER mode the measured step counter is charged to
+                        // transport cells, while all new packets are created by
+                        // a thin set of source cells.  The generic global-mean
+                        // clamp otherwise reduces those source cells to almost
+                        // zero partition weight and can place millions of
+                        // particles on one rank.  Charge source origins the
+                        // measured average downstream work per emitted packet,
+                        // and add that term after the generic cell-cost clamp.
+                        if (cfg.fluxSourceCompare &&
+                            globalTotalSteps > 0 &&
+                            globalTotalSourceParticles > 0) {
+                            measuredLBParamsThisPass.particleWeight = std::max(
+                                1.0,
+                                static_cast<double>(globalTotalSteps) /
+                                    static_cast<double>(globalTotalSourceParticles));
+                            measuredLBParamsThisPass.particleCostAfterClamp = true;
+                            if (rank == 0) {
+                                std::cerr
+                                    << "MEASURED_LB_CER_SOURCE_COST"
+                                    << " global_steps=" << globalTotalSteps
+                                    << " global_source_particles="
+                                    << globalTotalSourceParticles
+                                    << " steps_per_source_particle="
+                                    << measuredLBParamsThisPass.particleWeight
+                                    << " post_clamp=yes\n";
+                            }
+                        }
 
                         if (globalTotalSteps == 0) {
                             if (rank == 0)
@@ -370,7 +409,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         } else {
                             // Global-mean-based clamp via MPI_Allreduce (no per-cell allgather).
                             auto localCostByCellID = imc_measured_lb::BuildMeasuredCosts(
-                                localMeasurements, measuredLBParams, isMultigroup, MPI_COMM_WORLD);
+                                localMeasurements, measuredLBParamsThisPass,
+                                isMultigroup, MPI_COMM_WORLD);
 
                             imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
                                 localMeasurements, localCostByCellID, isMultigroup, MPI_COMM_WORLD);
@@ -392,8 +432,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             }
 
                             IMCStepCounterCostCalculator::Parameters costCalcParams;
-                            costCalcParams.floorCost = measuredLBParams.floorCost;
-                            costCalcParams.missingCellCost = measuredLBParams.missingCellCost;
+                            costCalcParams.floorCost =
+                                measuredLBParamsThisPass.floorCost;
+                            costCalcParams.missingCellCost =
+                                measuredLBParamsThisPass.missingCellCost;
                             IMCStepCounterCostCalculator measuredCostCalc(std::move(localCostByCellID), costCalcParams);
 
                             std::vector<Vector3D> currentPoints(Ncells);
@@ -420,7 +462,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     if (!measuredWeightsForExchange.empty()) {
                         MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
 
-                        double dummyWeight = measuredLBParams.missingCellCost;
+                        double dummyWeight =
+                            measuredLBParamsThisPass.missingCellCost;
                         MPI_exchange_data(tess, measuredWeightsForExchange, false, 1, &dummyWeight);
 
                         Ncells = tess.GetPointNo();

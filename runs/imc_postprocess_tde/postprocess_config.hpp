@@ -37,6 +37,7 @@ struct Config
     bool photosphere = true;
     bool fluxSourceCompare = false;
     double fluxSourceThermalizationTau = 5.0;
+    size_t fluxSourceRays = 0; // 0 means use nObservers (backward compatible)
     double fluxSourceDDMCFaceOpticalDepth = 5.0;
     int polarizationManualScatterings = 128;
     double polarizationDepolarizationScatterings = 0.5;

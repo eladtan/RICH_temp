@@ -37,9 +37,11 @@ std::unordered_map<size_t, double> BuildRawCosts(
     costByID.reserve(measurements.size());
 
     for (auto const& m : measurements) {
+        double const particleCost =
+            params.particleWeight * static_cast<double>(m.particleCount);
         double c = params.floorCost
                  + params.stepWeight * static_cast<double>(m.stepCount)
-                 + params.particleWeight * static_cast<double>(m.particleCount)
+                 + (params.particleCostAfterClamp ? 0.0 : particleCost)
                  + params.predictiveWeight * m.predictiveCost;
 
         if (m.stepCount == 0) {
@@ -59,6 +61,20 @@ void ClampCosts(std::unordered_map<size_t, double>& costByID,
 {
     for (auto& kv : costByID)
         kv.second = std::min(std::max(kv.second, floorCost), maxCost);
+}
+
+void AddPostClampParticleCosts(
+    std::unordered_map<size_t, double>& costByID,
+    std::vector<LocalCellMeasurement> const& measurements,
+    Parameters const& params)
+{
+    if (!params.particleCostAfterClamp || !(params.particleWeight > 0.0))
+        return;
+
+    for (auto const& m : measurements) {
+        costByID[m.globalCellID] +=
+            params.particleWeight * static_cast<double>(m.particleCount);
+    }
 }
 
 double CellCountFloor(double meanCost, Parameters const& params)
@@ -90,6 +106,7 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
         }
         ClampCosts(costByID, minCost, maxCost);
     }
+    AddPostClampParticleCosts(costByID, measurements, params);
 
     return costByID;
 }
@@ -144,6 +161,7 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
 
         ClampCosts(costByID, minCost, maxCost);
     }
+    AddPostClampParticleCosts(costByID, measurements, params);
 
     return costByID;
 }
