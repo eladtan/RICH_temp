@@ -39,8 +39,14 @@ struct Options
     int expectedNodes = 0;
     int expectedRanksPerNode = 0;
     int repeats = 2;
+    int fmmOrder = 4;
+    double fmmTheta = 0.5;
+    std::size_t fmmLeafCapacity = 32;
+    double fmmMeanErrorTarget = 1e-3;
+    double fmmMaxErrorTarget = 5e-3;
     std::size_t fmmMaxRemoteBytes = 512u * kMebibyte;
     std::size_t fmmMaxOperatorCacheBytes = 64u * kMebibyte;
+    bool warmOnly = false;
     std::string outputPath;
 };
 
@@ -300,6 +306,15 @@ std::uint64_t massUnitsForId(std::uint64_t id)
     return 101u + 2u * ((37u * id + 11u) % 101u);
 }
 
+std::size_t fmmM2LTermCount(int expansionOrder)
+{
+    std::size_t result = 1;
+    for(int factor = 1; factor <= 6; ++factor)
+        result = result * static_cast<std::size_t>(expansionOrder + factor) /
+                 static_cast<std::size_t>(factor);
+    return result;
+}
+
 Options parseOptions(int argc, char** argv)
 {
     Options result;
@@ -314,6 +329,29 @@ Options parseOptions(int argc, char** argv)
             result.expectedRanksPerNode = std::atoi(argv[++i]);
         else if(arg == "--repeats" && i + 1 < argc)
             result.repeats = std::atoi(argv[++i]);
+        else if(arg == "--warm-only")
+            result.warmOnly = true;
+        else if(arg == "--fmm-order" && i + 1 < argc)
+            result.fmmOrder = std::atoi(argv[++i]);
+        else if(arg == "--fmm-theta" && i + 1 < argc)
+            result.fmmTheta = std::strtod(argv[++i], nullptr);
+        else if(arg == "--fmm-leaf-capacity" && i + 1 < argc)
+        {
+            const char* text = argv[++i];
+            if(text[0] == '-')
+                throw UniversalError(
+                    "fmm_mpi_scaling_benchmark: invalid FMM leaf capacity");
+            const unsigned long long value = std::strtoull(text, nullptr, 10);
+            if(value == 0 || value > static_cast<unsigned long long>(
+                   std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "fmm_mpi_scaling_benchmark: invalid FMM leaf capacity");
+            result.fmmLeafCapacity = static_cast<std::size_t>(value);
+        }
+        else if(arg == "--fmm-mean-error-target" && i + 1 < argc)
+            result.fmmMeanErrorTarget = std::strtod(argv[++i], nullptr);
+        else if(arg == "--fmm-max-error-target" && i + 1 < argc)
+            result.fmmMaxErrorTarget = std::strtod(argv[++i], nullptr);
         else if(arg == "--fmm-max-remote-mib" && i + 1 < argc)
         {
             const unsigned long long value = std::strtoull(argv[++i], nullptr, 10);
@@ -342,7 +380,14 @@ Options parseOptions(int argc, char** argv)
     }
     if(result.globalParticles == 0 || result.expectedNodes <= 0 ||
        result.expectedRanksPerNode <= 0 || result.repeats <= 0 ||
-       result.outputPath.empty())
+       result.outputPath.empty() || result.fmmOrder < 1 ||
+       result.fmmOrder > FMM_MAX_ORDER ||
+       !(result.fmmTheta > 0.0) || result.fmmTheta > 1.0 ||
+       !std::isfinite(result.fmmTheta) || result.fmmLeafCapacity == 0 ||
+       !(result.fmmMeanErrorTarget > 0.0) ||
+       !std::isfinite(result.fmmMeanErrorTarget) ||
+       !(result.fmmMaxErrorTarget > 0.0) ||
+       !std::isfinite(result.fmmMaxErrorTarget))
         throw UniversalError("fmm_mpi_scaling_benchmark: missing or invalid option");
     return result;
 }
@@ -799,14 +844,18 @@ void accumulateFmmStats(const FmmSolveStats& stats,
 SolverResult runFmm(const LocalParticles& local,
                     const ProbeReference& reference,
                     int repeats,
+                    int expansionOrder,
+                    double thetaCritical,
+                    std::size_t leafCapacity,
+                    bool warmOnly,
                     std::size_t maxRemoteBytes,
                     std::size_t maxOperatorCacheBytes,
                     const MPI_Comm& comm)
 {
     FmmGravityOptions options;
-    options.expansionOrder = 4;
-    options.thetaCritical = 0.5;
-    options.leafCapacity = 32;
+    options.expansionOrder = expansionOrder;
+    options.thetaCritical = thetaCritical;
+    options.leafCapacity = leafCapacity;
     options.computePotential = false;
     options.validateFinite = true;
     FmmDistributedOptions distributed;
@@ -815,7 +864,8 @@ SolverResult runFmm(const LocalParticles& local,
 
     SolverResult result;
     double coldSumMaximum = 0.0;
-    for(int repeat = 0; repeat < repeats; ++repeat)
+    const int coldRepeats = warmOnly ? 0 : repeats;
+    for(int repeat = 0; repeat < coldRepeats; ++repeat)
     {
         reportStage("fmm_cold_repeat_" + std::to_string(repeat) +
                     "_begin", comm);
@@ -856,21 +906,51 @@ SolverResult runFmm(const LocalParticles& local,
         reportStage("fmm_cold_repeat_" + std::to_string(repeat) +
                     "_end", comm);
     }
-    result.meanMaxSeconds = coldSumMaximum / static_cast<double>(repeats);
+    if(coldRepeats > 0)
+        result.meanMaxSeconds = coldSumMaximum /
+                                static_cast<double>(coldRepeats);
 
     // Measure the production-relevant topology-reuse path separately.  The
     // setup solve populates the LET plan and the bounded operator cache; only
     // subsequent solves are included in the warm timing.
     reportStage("fmm_warm_setup_begin", comm);
+    double warmSetupStart = 0.0;
+    if(warmOnly)
+    {
+        MPI_Barrier(comm);
+        warmSetupStart = MPI_Wtime();
+    }
     DistributedFmmGravityCalculator warmSolver(options, distributed, comm);
     std::vector<Vector3D> warmAcceleration;
     warmSolver.solve(local.positions, local.masses, local.ids,
                      Vector3D(-1, -1, -1), Vector3D(1, 1, 1),
                      warmAcceleration);
+    const double warmSetupLocalSeconds = warmOnly ?
+        MPI_Wtime() - warmSetupStart : 0.0;
     const std::uint64_t warmEpoch = warmSolver.stats().topologyEpoch;
     const std::uint64_t warmRebuildCount =
         warmSolver.stats().topologyRebuildCount;
     accumulateFmmStats(warmSolver.stats(), result, comm);
+    if(warmOnly)
+    {
+        double warmSetupSumMaximum = 0.0;
+        updateTiming(warmSetupLocalSeconds, result.bestMaxSeconds,
+                     warmSetupSumMaximum, comm);
+        result.meanMaxSeconds = warmSetupSumMaximum;
+        accumulateFmmProfile(warmSolver.stats(), result.coldProfile, comm);
+
+        const int localFinite = finiteAcceleration(warmAcceleration) ? 1 : 0;
+        int globalFinite = 0;
+        MPI_Allreduce(&localFinite, &globalFinite, 1, MPI_INT, MPI_LAND, comm);
+        result.finite = result.finite && globalFinite != 0;
+
+        const ProbeErrorStats probeErrors = probeScaledErrors(
+            collectProbeAccelerations(local, warmAcceleration, reference, comm),
+            reference);
+        result.probeScaledError = probeErrors.maximum;
+        result.probeMeanScaledError = probeErrors.mean;
+        result.checksum = accelerationChecksum(warmAcceleration, local.ids, comm);
+    }
     reportStage("fmm_warm_setup_solved", comm);
 
     double warmSumMaximum = 0.0;
@@ -999,8 +1079,10 @@ int main(int argc, char** argv)
                       MPI_MAX, MPI_COMM_WORLD);
 
         const SolverResult fmm = runFmm(
-            local, reference, options.repeats, options.fmmMaxRemoteBytes,
-            options.fmmMaxOperatorCacheBytes, MPI_COMM_WORLD);
+            local, reference, options.repeats, options.fmmOrder,
+            options.fmmTheta, options.fmmLeafCapacity, options.warmOnly,
+            options.fmmMaxRemoteBytes, options.fmmMaxOperatorCacheBytes,
+            MPI_COMM_WORLD);
         reportStage("fmm_complete", MPI_COMM_WORLD);
         trimAllocator();
         reportStage("after_fmm_trim", MPI_COMM_WORLD);
@@ -1022,9 +1104,10 @@ int main(int argc, char** argv)
             quadrupole.walkMaxSeconds >= 0.0 &&
             std::isfinite(quadrupole.walkMaxSeconds);
         const bool accuracyPass =
-            fmm.probeScaledError < 5e-3 &&
+            fmm.probeScaledError <= options.fmmMaxErrorTarget &&
             quadrupole.probeScaledError < 5e-2 &&
             fmm.probeMeanScaledError >= 0.0 &&
+            fmm.probeMeanScaledError <= options.fmmMeanErrorTarget &&
             fmm.probeMeanScaledError <= fmm.probeScaledError &&
             quadrupole.probeMeanScaledError >= 0.0 &&
             quadrupole.probeMeanScaledError <= quadrupole.probeScaledError;
@@ -1061,6 +1144,16 @@ int main(int argc, char** argv)
                 throw UniversalError(
                     "fmm_mpi_scaling_benchmark: could not open output file");
             output << std::scientific << std::setprecision(16);
+            output << "fmm_config order " << options.fmmOrder
+                   << " theta " << options.fmmTheta
+                   << " leaf_capacity " << options.fmmLeafCapacity
+                   << " mean_error_target " << options.fmmMeanErrorTarget
+                   << " max_error_target " << options.fmmMaxErrorTarget
+                   << " warm_only " << (options.warmOnly ? 1 : 0)
+                   << " coefficient_count "
+                   << fmmTaylorCoefficientCount(options.fmmOrder)
+                   << " m2l_term_count "
+                   << fmmM2LTermCount(options.fmmOrder) << "\n";
             output << "columns particles expected_nodes ranks unique_nodes "
                    << "ranks_per_node repeats local_particles_min "
                    << "local_particles_max "
@@ -1147,6 +1240,14 @@ int main(int argc, char** argv)
                       << options.globalParticles << " nodes=" << nodes
                       << " ranks=" << size
                       << " ranks_per_node=" << options.expectedRanksPerNode
+                      << " fmm_order=" << options.fmmOrder
+                      << " fmm_theta=" << options.fmmTheta
+                      << " fmm_leaf_capacity=" << options.fmmLeafCapacity
+                      << " fmm_mean_error_target="
+                      << options.fmmMeanErrorTarget
+                      << " fmm_max_error_target="
+                      << options.fmmMaxErrorTarget
+                      << " warm_only=" << options.warmOnly
                       << " fmm_seconds=" << fmm.bestMaxSeconds
                       << " quadrupole_seconds="
                       << quadrupole.bestMaxSeconds
