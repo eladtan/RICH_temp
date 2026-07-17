@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <tuple>
 
@@ -679,6 +680,63 @@ void FmmLetPlan::build(const FmmTree& localTree,
     if(m2lOperatorGeometryIndices_.size() != m2lInteractions_.size())
         throw UniversalError(
             "FmmLetPlan::build: incomplete prepared M2L geometry table");
+
+    // The persistent operator cache is intentionally byte bounded.  When the
+    // complete LET operator set does not fit, resolvePreparedBatch() falls back
+    // to scratch storage.  Keep all interactions that use the same scale-free
+    // operator key contiguous so one scratch operator can serve the whole
+    // group instead of being regenerated for every interaction.  Geometry
+    // variants with different inverse scales remain separate inside a key
+    // group, preserving the per-interaction physical scaling.
+    std::vector<std::uint32_t> geometryOrder(
+        m2lOperatorGeometries_.size());
+    std::iota(geometryOrder.begin(), geometryOrder.end(), 0u);
+    std::sort(geometryOrder.begin(), geometryOrder.end(),
+        [&](std::uint32_t first, std::uint32_t second)
+        {
+            const FmmM2LOperatorCache::PreparedGeometry& a =
+                m2lOperatorGeometries_[first];
+            const FmmM2LOperatorCache::PreparedGeometry& b =
+                m2lOperatorGeometries_[second];
+            return std::tie(a.keyKind, a.keyX, a.keyY, a.keyZ,
+                            a.inverseScale) <
+                   std::tie(b.keyKind, b.keyX, b.keyY, b.keyZ,
+                            b.inverseScale);
+        });
+
+    std::vector<std::size_t> nextSlot(m2lOperatorGeometries_.size(), 0);
+    std::size_t orderedCount = 0;
+    for(std::uint32_t geometryIndex : geometryOrder)
+    {
+        nextSlot[geometryIndex] = orderedCount;
+        const std::uint64_t count =
+            m2lOperatorGeometryUseCounts_[geometryIndex];
+        if(count > static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max() - orderedCount))
+            throw UniversalError(
+                "FmmLetPlan::build: grouped M2L interaction count overflow");
+        orderedCount += static_cast<std::size_t>(count);
+    }
+    if(orderedCount != m2lInteractions_.size())
+        throw UniversalError(
+            "FmmLetPlan::build: grouped M2L interaction count mismatch");
+
+    std::vector<FmmLetM2LInteraction> orderedInteractions(orderedCount);
+    std::vector<std::uint32_t> orderedSourceIndices(orderedCount);
+    std::vector<std::uint32_t> orderedGeometryIndices(orderedCount);
+    for(std::size_t interactionIndex = 0;
+        interactionIndex < m2lInteractions_.size(); ++interactionIndex)
+    {
+        const std::uint32_t geometryIndex =
+            m2lOperatorGeometryIndices_[interactionIndex];
+        const std::size_t destination = nextSlot[geometryIndex]++;
+        orderedInteractions[destination] = m2lInteractions_[interactionIndex];
+        orderedSourceIndices[destination] = m2lSourceIndices_[interactionIndex];
+        orderedGeometryIndices[destination] = geometryIndex;
+    }
+    m2lInteractions_.swap(orderedInteractions);
+    m2lSourceIndices_.swap(orderedSourceIndices);
+    m2lOperatorGeometryIndices_.swap(orderedGeometryIndices);
 
     std::sort(p2pInteractions_.begin(), p2pInteractions_.end(),
         [](const FmmLetP2PInteraction& a, const FmmLetP2PInteraction& b)
@@ -1378,6 +1436,12 @@ void FmmLetPlan::finishExecute(
         m2lOperatorGeometries_, m2lOperatorGeometryUseCounts_, layout,
         derivativeScratch, uncachedOperator, resolvedOperators);
 
+    const std::vector<double>* groupedOperator = nullptr;
+    std::uint64_t groupedKeyX = 0;
+    std::uint64_t groupedKeyY = 0;
+    std::uint64_t groupedKeyZ = 0;
+    std::uint64_t groupedKeyKind = 0;
+    bool haveGroupedOperator = false;
     for(std::size_t interactionIndex = 0;
         interactionIndex < m2lInteractions_.size(); ++interactionIndex)
     {
@@ -1393,23 +1457,41 @@ void FmmLetPlan::finishExecute(
            m2lOperatorGeometries_.size())
             throw UniversalError(
                 "FmmLetPlan::execute: invalid prepared LET M2L geometry index");
+        const FmmM2LOperatorCache::PreparedGeometry& geometry =
+            m2lOperatorGeometries_[geometryIndex];
         const FmmNode& source = resolvedM2LSources[sourceIndex];
         const FmmNode& target = localTree.nodes()[interaction.targetNode];
         const std::vector<double>* coefficients = nullptr;
-        double inverseScale = m2lOperatorGeometries_[geometryIndex].inverseScale;
+        const double inverseScale = geometry.inverseScale;
         if(operatorsResolved)
         {
             coefficients = resolvedOperators[geometryIndex];
         }
         else
         {
-            const FmmM2LOperatorCache::Lookup translationOperator =
-                operatorCache.getPrepared(m2lOperatorGeometries_[geometryIndex],
-                                          layout, derivativeScratch,
-                                          uncachedOperator);
-            coefficients = translationOperator.coefficients;
-            inverseScale = translationOperator.inverseScale;
+            const bool sameOperator = haveGroupedOperator &&
+                geometry.keyX == groupedKeyX &&
+                geometry.keyY == groupedKeyY &&
+                geometry.keyZ == groupedKeyZ &&
+                geometry.keyKind == groupedKeyKind;
+            if(!sameOperator)
+            {
+                const FmmM2LOperatorCache::Lookup translationOperator =
+                    operatorCache.getPrepared(geometry, layout,
+                                              derivativeScratch,
+                                              uncachedOperator);
+                groupedOperator = translationOperator.coefficients;
+                groupedKeyX = geometry.keyX;
+                groupedKeyY = geometry.keyY;
+                groupedKeyZ = geometry.keyZ;
+                groupedKeyKind = geometry.keyKind;
+                haveGroupedOperator = true;
+            }
+            coefficients = groupedOperator;
         }
+        if(coefficients == nullptr)
+            throw UniversalError(
+                "FmmLetPlan::execute: missing grouped M2L operator");
 
         FmmKernels::translateM2L(source, target, layout,
                                  remoteCoefficients, localLocals,
