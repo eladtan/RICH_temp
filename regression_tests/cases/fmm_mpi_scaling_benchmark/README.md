@@ -27,9 +27,36 @@ remote/process storage, persistent-memory attribution, bounded M2L operator-cach
 entries/bytes/hits/misses/bypasses, quadrupole walk time, 8-to-16-node scaling,
 and cold-to-warm FMM speedup.
 
-Eight deterministic target particles are checked against a distributed direct
-sum. This accuracy sample is intentionally small so that the direct reference
-is affordable at ten million particles.
+One hundred deterministic target particles are checked against a distributed
+direct sum. The benchmark reports both maximum and arithmetic-mean scaled force
+errors.
+
+The executable accepts runtime FMM tuning options without changing the stable
+result-row schema:
+
+```text
+--fmm-order <1..FMM_MAX_ORDER>
+--fmm-theta <0..1>
+--fmm-leaf-capacity <positive integer>
+--fmm-mean-error-target <positive finite value>
+--fmm-max-error-target <positive finite value>
+--warm-only
+```
+
+The defaults remain order 4, theta 0.5, leaf capacity 32, mean-error target
+`1e-3`, and maximum-error target `5e-3`. A separate `fmm_config` line records
+the selected values plus the Taylor coefficient and M2L-term counts.
+
+`--warm-only` skips the redundant independent cold-repeat loop. The setup solve
+is still timed and recorded as the single cold sample, supplies the accuracy
+and checksum values, populates the persistent topology/operator cache, and is
+followed by the requested number of measured warm solves.
+
+For parameter screening inside an existing allocation, use
+`run_accuracy_sweep.sh <rich-binary> <result-directory>`. It runs the initial
+order/theta matrix and calls `summarize_accuracy_sweep.py`, which maps the
+`columns` line to the `row` by field name and ranks candidates by warm mean time
+subject to the configured error targets and the `8e-4` mean-error guardrail.
 
 The particle set is independent of MPI size. A fixed set of 4096 virtual
 spatial bins is ordered by a 3D Morton key and contiguous key ranges are assigned

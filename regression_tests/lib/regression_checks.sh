@@ -1955,8 +1955,11 @@ check_fmm_mpi_scaling_benchmark_case() {
             process_cache_misses = $50 + 0
             process_cache_bypasses = $51 + 0
             topology_reused = $52 + 0
+            probe_count = $53 + 0
+            fmm_mean_error = $54
+            quad_mean_error = $55
 
-            if (NF != 52 ||
+            if (NF != 55 ||
                 !((particles == 1000000 || particles == 10000000) &&
                   (nodes == 8 || nodes == 16))) bad = 1
             key = particles ":" nodes
@@ -1974,7 +1977,9 @@ check_fmm_mpi_scaling_benchmark_case() {
                 !finite_number(quad_rate) || !finite_number(quad_walk) ||
                 !finite_number(fmm_checksum) || !finite_number(quad_checksum) ||
                 !finite_number(warm_best) || !finite_number(warm_mean) ||
-                !finite_number(cold_over_warm)) bad = 1
+                !finite_number(cold_over_warm) ||
+                !finite_number(fmm_mean_error) ||
+                !finite_number(quad_mean_error)) bad = 1
             if (!(fmm_best > 0 && fmm_mean > 0 && warm_best > 0 &&
                   warm_mean > 0 && cold_over_warm > 0 && quad_best > 0 &&
                   quad_mean > 0 && speedup > 0 && fmm_rate > 0 &&
@@ -1996,6 +2001,9 @@ check_fmm_mpi_scaling_benchmark_case() {
                   process_cache_misses >= 0 &&
                   process_cache_bypasses == process_cache_misses)) bad = 1
             if (!(fmm_error < 5e-3 && quad_error < 5e-2)) bad = 1
+            if (!(probe_count == 100 && fmm_mean_error >= 0 &&
+                  fmm_mean_error <= fmm_error && fmm_mean_error <= 1e-3 &&
+                  quad_mean_error >= 0 && quad_mean_error <= quad_error)) bad = 1
             if (finite_flag != 1 || run_pass != 1 || topology_reused != 1) bad = 1
         }
         END {
