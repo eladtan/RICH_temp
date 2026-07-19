@@ -185,6 +185,7 @@ int main(void)
     FmmGravityOptions fmmOptions;
     fmmOptions.expansionOrder = 3;
     fmmOptions.thetaCritical = 0.9;
+    fmmOptions.leafCapacity = 64;
     FastMultipoleAcceleration3D acc(fmmOptions, G);
     ConservativeForce3D force(acc);
 

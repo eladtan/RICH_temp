@@ -544,6 +544,7 @@ declare -a ALL_SLURM_NTASKS=()
 declare -a ALL_SLURM_PARTITIONS=()
 declare -a ALL_SLURM_EXCLUSIVES=()
 declare -a ALL_SLURM_NODES=()
+declare -a ALL_SLURM_NTASKS_PER_NODE=()
 declare -a ALL_SLURM_TIME_LIMITS=()
 declare -a ALL_CASE_DIRS=()
 
@@ -562,6 +563,7 @@ load_test_definition() {
     local SLURM_PARTITION="bigrun"
     local SLURM_EXCLUSIVE="1"
     local SLURM_NODES=""
+    local SLURM_NTASKS_PER_NODE=""
     local SLURM_TIME_LIMIT="02:00:00"
 
     source "${def_file}"
@@ -608,6 +610,7 @@ load_test_definition() {
     ALL_SLURM_PARTITIONS+=("${SLURM_PARTITION}")
     ALL_SLURM_EXCLUSIVES+=("${SLURM_EXCLUSIVE}")
     ALL_SLURM_NODES+=("${SLURM_NODES}")
+    ALL_SLURM_NTASKS_PER_NODE+=("${SLURM_NTASKS_PER_NODE}")
     ALL_SLURM_TIME_LIMITS+=("${SLURM_TIME_LIMIT}")
     ALL_CASE_DIRS+=("${case_dir}")
     return 0
@@ -726,6 +729,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
     slurm_partition="${ALL_SLURM_PARTITIONS[$i]}"
     slurm_exclusive="${ALL_SLURM_EXCLUSIVES[$i]}"
     slurm_nodes="${ALL_SLURM_NODES[$i]}"
+    slurm_ntasks_per_node="${ALL_SLURM_NTASKS_PER_NODE[$i]}"
     slurm_time_limit="${ALL_SLURM_TIME_LIMITS[$i]}"
     case_dir="${ALL_CASE_DIRS[$i]}"
 
@@ -806,6 +810,9 @@ for i in "${!ALL_TEST_IDS[@]}"; do
 
         cd "${run_dir_abs}" || exit 1
         export ROOT_DIR CONFIG MPI_NP SLURM_NTASKS="${slurm_ntasks}"
+        if [[ -n "${slurm_ntasks_per_node}" ]]; then
+            export SLURM_NTASKS_PER_NODE="${slurm_ntasks_per_node}"
+        fi
         export RICH_BIN="${rich_bin}"
         export RUN_LOCAL="${RUN_LOCAL}"
         if [[ -n "${SLURM_PARTITION_OVERRIDE}" ]]; then
@@ -833,6 +840,9 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             fi
             if [[ -n "${slurm_nodes}" ]]; then
                 sbatch_args+=(--nodes="${slurm_nodes}")
+            fi
+            if [[ -n "${slurm_ntasks_per_node}" ]]; then
+                sbatch_args+=(--ntasks-per-node="${slurm_ntasks_per_node}")
             fi
             "${sbatch_args[@]}" || run_rc=$?
         else
