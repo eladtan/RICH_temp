@@ -17,6 +17,11 @@ TIMING_KEYS = (
     "descriptor_max",
     "process_topology_max",
     "let_plan_max",
+    "let_reset_max",
+    "let_descriptor_traversal_max",
+    "let_finalize_max",
+    "let_subscription_max",
+    "let_prune_compact_max",
     "local_traversal_max",
     "let_execute_max",
 )
@@ -33,6 +38,7 @@ INTEGER_KEYS = (
     "let_rebuilt",
     "process_comm_reused",
     "let_comm_reused",
+    "let_storage_reused",
     "forced_rebuild",
     "active_ranks",
     "local_plan_reused_ranks",
@@ -107,6 +113,7 @@ def print_group(name: str, records: list[dict[str, float | int]]) -> None:
         "let_rebuilt",
         "process_comm_reused",
         "let_comm_reused",
+        "let_storage_reused",
         "forced_rebuild",
         "local_plan_reused_all",
     ):

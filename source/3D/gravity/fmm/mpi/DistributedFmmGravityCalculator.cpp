@@ -558,7 +558,8 @@ void DistributedFmmGravityCalculator::rebuildTopology(
     }
 
     letPlan_.build(localTree_, rootDescriptors_, processPlan_,
-                   options_.thetaCritical, topologyEpoch_, comm_, stats_);
+                   options_.thetaCritical, topologyEpoch_, comm_,
+                   !rebuildProcessTopology, stats_);
     stats_.topologyRebuildSeconds = elapsed(topologyStart);
 }
 

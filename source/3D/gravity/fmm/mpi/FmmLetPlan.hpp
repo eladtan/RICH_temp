@@ -48,6 +48,7 @@ public:
                double thetaCritical,
                std::uint64_t topologyEpoch,
                const MPI_Comm& comm,
+               bool reuseBuildStorage,
                FmmSolveStats& stats);
 
     void beginExecute(const FmmTree& localTree,
@@ -142,6 +143,9 @@ private:
     std::vector<std::uint32_t> m2lOperatorGeometryIndices_;
     std::vector<std::uint64_t> m2lOperatorGeometryUseCounts_;
     std::vector<FmmLetP2PInteraction> p2pInteractions_;
+    std::vector<PendingPair> pendingScratch_;
+    std::vector<PendingPair> workScratch_;
+    std::vector<PendingPair> blockedScratch_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
     FmmPeerExchange exchange_;

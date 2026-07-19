@@ -62,6 +62,18 @@ struct FmmSolveStats
     double rootDescriptorExchangeSeconds = 0;
     double processTopologySeconds = 0;
 
+    // LET rebuild storage is recycled across leaf-only moving-mesh rebuilds.
+    // Full process-topology changes compact it so a transient high-water mark
+    // does not become permanent.  The subphase timers identify whether the
+    // remaining LET build cost is traversal, finalization, subscriptions, or
+    // allocator/compaction work.
+    bool letBuildStorageReused = false;
+    double letBuildResetSeconds = 0;
+    double letDescriptorTraversalSeconds = 0;
+    double letFinalizeSeconds = 0;
+    double letSubscriptionSeconds = 0;
+    double letPruneCompactSeconds = 0;
+
     // Persistent distributed-memory attribution.  bytesOwned remains the
     // aggregate value; these fields expose the dominant components.
     std::size_t localTreeBytes = 0;

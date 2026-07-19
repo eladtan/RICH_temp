@@ -245,18 +245,35 @@ void FmmLetPlan::build(const FmmTree& localTree,
                        double thetaCritical,
                        std::uint64_t topologyEpoch,
                        const MPI_Comm& comm,
+                       bool reuseBuildStorage,
                        FmmSolveStats& stats)
 {
     const Clock::time_point start = Clock::now();
     if(executePending_ || pendingExchange_.active())
         throw UniversalError(
             "FmmLetPlan::build: cannot rebuild with an active LET exchange");
+
+    const Clock::time_point resetStart = Clock::now();
     pendingExchange_.clear();
     comm_ = comm;
     topologyEpoch_ = topologyEpoch;
     MPI_Comm_rank(comm_, &rank_);
     localNodeByKey_.clear();
-    remoteDescriptors_.clear();
+    if(reuseBuildStorage)
+    {
+        for(auto& entry : remoteDescriptors_)
+            entry.second.clear();
+        for(auto& entry : subscriptionsToSend_)
+            entry.second.clear();
+        for(auto& entry : subscriptionsReceived_)
+            entry.second.clear();
+    }
+    else
+    {
+        remoteDescriptors_.clear();
+        subscriptionsToSend_.clear();
+        subscriptionsReceived_.clear();
+    }
     remoteLatticeRoots_.clear();
     remoteLatticeRoots_.resize(rootDescriptors.size());
     m2lInteractions_.clear();
@@ -266,12 +283,20 @@ void FmmLetPlan::build(const FmmTree& localTree,
     m2lOperatorGeometryIndices_.clear();
     m2lOperatorGeometryUseCounts_.clear();
     p2pInteractions_.clear();
-    subscriptionsToSend_.clear();
-    subscriptionsReceived_.clear();
+    pendingScratch_.clear();
+    workScratch_.clear();
+    blockedScratch_.clear();
+    stats.letBuildStorageReused = reuseBuildStorage;
+    stats.letBuildResetSeconds += elapsed(resetStart);
 
     if(localTree.nodes().size() >
        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
         throw UniversalError("FmmLetPlan::build: local tree exceeds compact index range");
+
+    if(static_cast<double>(localTree.nodes().size()) >
+       static_cast<double>(localNodeByKey_.bucket_count()) *
+           localNodeByKey_.max_load_factor())
+        localNodeByKey_.reserve(localTree.nodes().size());
 
     for(std::size_t i = 0; i < localTree.nodes().size(); ++i)
     {
@@ -288,7 +313,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
     stats.letCommunicatorReused =
         !exchange_.resetIfChanged(comm_, peers);
 
-    std::vector<PendingPair> pending;
+    const Clock::time_point descriptorStart = Clock::now();
+    std::vector<PendingPair>& pending = pendingScratch_;
     for(int sourceRank : processPlan.letSourceRanks)
     {
         if(sourceRank < 0 ||
@@ -334,8 +360,10 @@ void FmmLetPlan::build(const FmmTree& localTree,
         if(++descriptorRound > FMM_MAX_TREE_DEPTH + 2)
             throw UniversalError("FmmLetPlan::build: descriptor pull exceeded tree depth");
         std::unordered_map<int, std::set<std::uint64_t>> requestSets;
-        std::vector<PendingPair> blocked;
-        std::vector<PendingPair> work;
+        std::vector<PendingPair>& blocked = blockedScratch_;
+        std::vector<PendingPair>& work = workScratch_;
+        blocked.clear();
+        work.clear();
         work.swap(pending);
 
         while(!work.empty())
@@ -558,6 +586,9 @@ void FmmLetPlan::build(const FmmTree& localTree,
         pending.swap(blocked);
     }
 
+    stats.letDescriptorTraversalSeconds += elapsed(descriptorStart);
+    const Clock::time_point finalizeStart = Clock::now();
+
     std::sort(m2lInteractions_.begin(), m2lInteractions_.end(),
         [](const FmmLetM2LInteraction& a, const FmmLetM2LInteraction& b)
         {
@@ -768,6 +799,9 @@ void FmmLetPlan::build(const FmmTree& localTree,
             throw UniversalError("FmmLetPlan::build: interaction classified as both M2L and P2P");
     }
 
+    stats.letFinalizeSeconds += elapsed(finalizeStart);
+    const Clock::time_point subscriptionStart = Clock::now();
+
     std::unordered_map<int, std::set<std::pair<std::uint64_t, int>>> subscriptionSets;
     for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
         subscriptionSets[interaction.sourceRank].insert(
@@ -823,6 +857,9 @@ void FmmLetPlan::build(const FmmTree& localTree,
         }
     }
 
+    stats.letSubscriptionSeconds += elapsed(subscriptionStart);
+    const Clock::time_point compactionStart = Clock::now();
+
     // Descriptor pulling may visit many intermediate remote nodes.  Only
     // descriptors referenced by terminal M2L/P2P interactions are needed by
     // warm solves; discard the rest before the persistent plan is measured.
@@ -830,47 +867,63 @@ void FmmLetPlan::build(const FmmTree& localTree,
     for(const auto& terminal : terminalKeys)
         retainedDescriptorKeys.insert(std::make_pair(
             std::get<1>(terminal), std::get<2>(terminal)));
-    std::unordered_map<int,
-        std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>>
-        retainedDescriptors;
     for(const auto& key : retainedDescriptorKeys)
     {
         const auto rankIt = remoteDescriptors_.find(key.first);
         if(rankIt == remoteDescriptors_.end())
             throw UniversalError(
                 "FmmLetPlan::build: terminal descriptor rank disappeared");
-        const auto descriptorIt = rankIt->second.find(key.second);
-        if(descriptorIt == rankIt->second.end())
+        if(rankIt->second.find(key.second) == rankIt->second.end())
             throw UniversalError(
                 "FmmLetPlan::build: terminal descriptor disappeared");
-        retainedDescriptors[key.first].emplace(key.second,
-                                               descriptorIt->second);
     }
-    remoteDescriptors_.swap(retainedDescriptors);
-    std::unordered_map<int,
-        std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>>().swap(
-            retainedDescriptors);
-
-    // The LET plan persists across warm solves. Release construction slack and
-    // keep the compact 16-byte interaction arrays at their final sizes.
-    localNodeByKey_.rehash(0);
-    remoteDescriptors_.rehash(0);
-    for(auto& entry : remoteDescriptors_)
-        entry.second.rehash(0);
-    m2lInteractions_.shrink_to_fit();
-    m2lSources_.shrink_to_fit();
-    m2lSourceIndices_.shrink_to_fit();
-    m2lOperatorGeometries_.shrink_to_fit();
-    m2lOperatorGeometryIndices_.shrink_to_fit();
-    m2lOperatorGeometryUseCounts_.shrink_to_fit();
-    p2pInteractions_.shrink_to_fit();
-    for(auto* map : {&subscriptionsToSend_, &subscriptionsReceived_})
+    for(auto rankIt = remoteDescriptors_.begin();
+        rankIt != remoteDescriptors_.end();)
     {
-        map->rehash(0);
-        for(auto& entry : *map)
-            entry.second.shrink_to_fit();
+        auto& descriptors = rankIt->second;
+        for(auto nodeIt = descriptors.begin(); nodeIt != descriptors.end();)
+        {
+            if(retainedDescriptorKeys.count(std::make_pair(
+                   rankIt->first, nodeIt->first)) == 0)
+                nodeIt = descriptors.erase(nodeIt);
+            else
+                ++nodeIt;
+        }
+        if(descriptors.empty() && !reuseBuildStorage)
+            rankIt = remoteDescriptors_.erase(rankIt);
+        else
+            ++rankIt;
     }
 
+    // Leaf-only moving-mesh rebuilds are frequent and similar in size.  Keep
+    // their buckets/vector capacity so the next rebuild amortizes allocation.
+    // A full rank-root/process-topology rebuild is rare and is a natural point
+    // to compact a transient high-water mark.
+    if(!reuseBuildStorage)
+    {
+        localNodeByKey_.rehash(0);
+        remoteDescriptors_.rehash(0);
+        for(auto& entry : remoteDescriptors_)
+            entry.second.rehash(0);
+        m2lInteractions_.shrink_to_fit();
+        m2lSources_.shrink_to_fit();
+        m2lSourceIndices_.shrink_to_fit();
+        m2lOperatorGeometries_.shrink_to_fit();
+        m2lOperatorGeometryIndices_.shrink_to_fit();
+        m2lOperatorGeometryUseCounts_.shrink_to_fit();
+        p2pInteractions_.shrink_to_fit();
+        pendingScratch_.shrink_to_fit();
+        workScratch_.shrink_to_fit();
+        blockedScratch_.shrink_to_fit();
+        for(auto* map : {&subscriptionsToSend_, &subscriptionsReceived_})
+        {
+            map->rehash(0);
+            for(auto& entry : *map)
+                entry.second.shrink_to_fit();
+        }
+    }
+
+    stats.letPruneCompactSeconds += elapsed(compactionStart);
     stats.letPlanSeconds += elapsed(start);
 }
 
@@ -918,6 +971,12 @@ std::size_t FmmLetPlan::bytesOwned() const
         m2lOperatorGeometryUseCounts_.capacity(), sizeof(std::uint64_t)));
     result = saturatingAdd(result, saturatingMultiply(
         p2pInteractions_.capacity(), sizeof(FmmLetP2PInteraction)));
+    result = saturatingAdd(result, saturatingMultiply(
+        pendingScratch_.capacity(), sizeof(PendingPair)));
+    result = saturatingAdd(result, saturatingMultiply(
+        workScratch_.capacity(), sizeof(PendingPair)));
+    result = saturatingAdd(result, saturatingMultiply(
+        blockedScratch_.capacity(), sizeof(PendingPair)));
 
     const std::size_t subscriptionMapEntry =
         sizeof(std::pair<const int, std::vector<FmmSubscription>>) +

@@ -97,24 +97,32 @@ void traceFmmSolve(const FmmSolveStats& stats)
 
     static std::uint64_t call = 0;
     ++call;
-    const double localTimes[8] = {
+    const double localTimes[13] = {
         stats.totalSeconds, stats.buildSeconds, stats.topologyRebuildSeconds,
         stats.rootDescriptorExchangeSeconds, stats.processTopologySeconds,
-        stats.letPlanSeconds, stats.localTraversalSeconds,
+        stats.letPlanSeconds, stats.letBuildResetSeconds,
+        stats.letDescriptorTraversalSeconds, stats.letFinalizeSeconds,
+        stats.letSubscriptionSeconds, stats.letPruneCompactSeconds,
+        stats.localTraversalSeconds,
         stats.letExecuteSeconds};
-    double maximumTimes[8] = {};
+    double maximumTimes[13] = {};
     unsigned long long reusedActiveRanks =
         stats.localInteractionPlanReused ? 1ull : 0ull;
     unsigned long long globalReusedActiveRanks = reusedActiveRanks;
+    const unsigned long long localLetPlanBytes =
+        static_cast<unsigned long long>(stats.letPlanBytes);
+    unsigned long long maximumLetPlanBytes = localLetPlanBytes;
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Reduce(localTimes, maximumTimes, 8, MPI_DOUBLE, MPI_MAX, 0,
+    MPI_Reduce(localTimes, maximumTimes, 13, MPI_DOUBLE, MPI_MAX, 0,
                MPI_COMM_WORLD);
     MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localLetPlanBytes, &maximumLetPlanBytes, 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
 #else
-    for(int i = 0; i < 8; ++i)
+    for(int i = 0; i < 13; ++i)
         maximumTimes[i] = localTimes[i];
 #endif
     if(rank != 0)
@@ -130,8 +138,13 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " descriptor_max=" << maximumTimes[3]
          << " process_topology_max=" << maximumTimes[4]
          << " let_plan_max=" << maximumTimes[5]
-         << " local_traversal_max=" << maximumTimes[6]
-         << " let_execute_max=" << maximumTimes[7]
+         << " let_reset_max=" << maximumTimes[6]
+         << " let_descriptor_traversal_max=" << maximumTimes[7]
+         << " let_finalize_max=" << maximumTimes[8]
+         << " let_subscription_max=" << maximumTimes[9]
+         << " let_prune_compact_max=" << maximumTimes[10]
+         << " local_traversal_max=" << maximumTimes[11]
+         << " let_execute_max=" << maximumTimes[12]
          << " epoch=" << stats.topologyEpoch
          << " rebuilds=" << stats.topologyRebuildCount
          << " process_rebuilds=" << stats.processTopologyRebuildCount
@@ -143,6 +156,8 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " process_comm_reused="
          << (stats.processCommunicatorsReused ? 1 : 0)
          << " let_comm_reused=" << (stats.letCommunicatorReused ? 1 : 0)
+         << " let_storage_reused="
+         << (stats.letBuildStorageReused ? 1 : 0)
          << " forced_rebuild=" << (stats.topologyRebuildForced ? 1 : 0)
          << " active_ranks=" << stats.activeRankCount
          << " local_plan_reused_ranks=" << globalReusedActiveRanks

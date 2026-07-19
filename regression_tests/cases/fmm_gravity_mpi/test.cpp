@@ -195,6 +195,8 @@ int main(int argc, char** argv)
     std::uint64_t leafEpoch = 0;
     bool leafOnlyRebuild = false;
     bool rootProcessRebuild = false;
+    bool leafStorageReused = false;
+    bool rootStorageReset = false;
     bool finiteStats = false;
     bool mismatchedDomainRejected = size == 1;
 
@@ -242,6 +244,7 @@ int main(int argc, char** argv)
                        allBodies(size, 1.01, BodyLayout::LocalLeafChange),
                        acceleration, potential));
         leafEpoch = solver.stats().topologyEpoch;
+        leafStorageReused = solver.stats().letBuildStorageReused;
         leafOnlyRebuild =
             solver.stats().ranksWithRootGeometryChange == 0 &&
             solver.stats().ranksWithLeafTopologyChange > 0 &&
@@ -265,6 +268,7 @@ int main(int argc, char** argv)
                        allBodies(size, 1.01, BodyLayout::RootBreach),
                        acceleration, potential));
         thirdEpoch = solver.stats().topologyEpoch;
+        rootStorageReset = !solver.stats().letBuildStorageReused;
         rootProcessRebuild =
             solver.stats().ranksWithRootGeometryChange > 0 &&
             solver.stats().processTopologyRebuilt &&
@@ -277,6 +281,11 @@ int main(int argc, char** argv)
                       std::isfinite(solver.stats().topologyRebuildSeconds) &&
                       std::isfinite(solver.stats().rootDescriptorExchangeSeconds) &&
                       std::isfinite(solver.stats().processTopologySeconds) &&
+                      std::isfinite(solver.stats().letBuildResetSeconds) &&
+                      std::isfinite(solver.stats().letDescriptorTraversalSeconds) &&
+                      std::isfinite(solver.stats().letFinalizeSeconds) &&
+                      std::isfinite(solver.stats().letSubscriptionSeconds) &&
+                      std::isfinite(solver.stats().letPruneCompactSeconds) &&
                       std::isfinite(solver.stats().totalMass) &&
                       std::isfinite(solver.stats().rootMass) &&
                       solver.stats().activeRankCount ==
@@ -304,7 +313,7 @@ int main(int argc, char** argv)
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
-    const int localChecks[8] = {
+    const int localChecks[10] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
         leafEpoch > secondEpoch ? 1 : 0,
@@ -312,15 +321,18 @@ int main(int argc, char** argv)
         leafOnlyRebuild ? 1 : 0,
         rootProcessRebuild ? 1 : 0,
         finiteStats ? 1 : 0,
-        mismatchedDomainRejected ? 1 : 0};
-    int globalChecks[8] = {};
-    MPI_Allreduce(localChecks, globalChecks, 8, MPI_INT, MPI_LAND,
+        mismatchedDomainRejected ? 1 : 0,
+        leafStorageReused ? 1 : 0,
+        rootStorageReset ? 1 : 0};
+    int globalChecks[10] = {};
+    MPI_Allreduce(localChecks, globalChecks, 10, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
                            globalChecks[2] && globalChecks[3] &&
                            globalChecks[4] && globalChecks[5] &&
-                           globalChecks[6] && globalChecks[7];
+                           globalChecks[6] && globalChecks[7] &&
+                           globalChecks[8] && globalChecks[9];
 
     if(rank == 0)
     {
@@ -344,6 +356,8 @@ int main(int argc, char** argv)
         output << "root_process_rebuild " << globalChecks[5] << "\n";
         output << "finite_stats " << globalChecks[6] << "\n";
         output << "mismatched_domain_rejected " << globalChecks[7] << "\n";
+        output << "leaf_storage_reused " << globalChecks[8] << "\n";
+        output << "root_storage_reset " << globalChecks[9] << "\n";
         output << "pass " << globalPass << "\n";
         std::cout << "fmm_gravity_mpi ranks=" << size
                   << " max_scaled_error=" << globalMaximumError
