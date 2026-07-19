@@ -59,8 +59,23 @@ rank-local.
 
 ## Topology reuse
 
-The local tree is rebuilt every solve.  Distributed communication plans are
-split into two levels:
+The local particle ordering, ranges, radii, and expansions are rebuilt every
+solve.  By default, the distributed solver uses the previous local tree as a
+hysteresis template: an existing leaf splits only above
+`persistentLeafSplitFactor * leafCapacity`, while an existing internal subtree
+merges only at or below `persistentLeafMergeFactor * leafCapacity`.  The
+defaults are 1.5 and 0.5 respectively. A newly initialized tree still
+refines at `leafCapacity`; the wider thresholds apply only to later refits.
+
+Every persistent internal node materializes all eight spatial children,
+including empty leaf children.  A particle crossing into or out of an octant
+therefore changes occupancy without creating or deleting a child.  Empty leaf
+subscriptions carry a normal zero-count particle payload and contribute no P2P
+pairs.  Automatic merging removes an under-filled retained subtree when the low
+threshold is crossed.  Setting `persistentLocalTreeTopology=false` restores the
+fresh sparse tree built independently on every solve.
+
+Distributed communication plans are split into two levels:
 
 1. the rank-root process tree, process interaction plan, and process
    communication graphs;
@@ -90,6 +105,11 @@ conservative invalidation rule for A/B testing.  Structural changes still
 rebuild the LET, and root changes still rebuild both the process and LET
 topologies.  The 64-bit topology hash retained in diagnostics is not a
 correctness decision.
+
+Persistent-tree diagnostics report the number of refit ranks, leaf splits,
+subtree merges, and currently empty leaves.  A split or merge is a real
+structural change and rebuilds the LET; ordinary octant crossings and occupancy
+changes reuse it.
 
 MPI distributed-graph communicators are also retained when every rank reports
 the same normalized peer set.  `FmmSolveStats` reports root/leaf change counts,

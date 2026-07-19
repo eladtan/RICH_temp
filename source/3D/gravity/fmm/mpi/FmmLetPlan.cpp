@@ -56,7 +56,8 @@ bool validRemoteDescriptor(const FmmRemoteNodeDescriptor& descriptor)
         std::isfinite(center.y + descriptor.halfSize) &&
         std::isfinite(center.z - descriptor.halfSize) &&
         std::isfinite(center.z + descriptor.halfSize) &&
-        descriptor.spatialKey != 0 && descriptor.particleCount != 0 &&
+        descriptor.spatialKey != 0 &&
+        (descriptor.particleCount != 0 || descriptor.isLeaf != 0) &&
         (descriptor.isLeaf == 0 || descriptor.isLeaf == 1) &&
         descriptor.childMask >= 0 && descriptor.childMask <= 255 &&
         ((descriptor.isLeaf != 0 && descriptor.childMask == 0) ||
@@ -1335,10 +1336,6 @@ void FmmLetPlan::finishExecute(
                 if(descriptor->second.isLeaf == 0)
                     throw UniversalError(
                         "FmmLetPlan::execute: particle payload references non-leaf descriptor");
-                if(header.count == 0)
-                    throw UniversalError(
-                        "FmmLetPlan::execute: empty particle payload for subscribed leaf");
-
                 // The LET plan and its retained descriptors describe spatial
                 // structure.  Particle occupancy is dynamic and may change
                 // while that structure remains identical.  The sender packs

@@ -45,7 +45,39 @@ bool sameRoot(const FmmRootGeometry& first, const FmmRootGeometry& second)
                            first.latticeCenterY == second.latticeCenterY &&
                            first.latticeCenterZ == second.latticeCenterZ &&
                            first.latticeHalfUnits == second.latticeHalfUnits &&
-                           first.latticeAligned == second.latticeAligned));
+                            first.latticeAligned == second.latticeAligned));
+}
+
+std::size_t scaledPersistentCapacity(std::size_t leafCapacity,
+                                     double factor,
+                                     bool roundUp)
+{
+    const long double scaled = static_cast<long double>(leafCapacity) *
+        static_cast<long double>(factor);
+    const long double maximum = static_cast<long double>(
+        std::numeric_limits<std::size_t>::max());
+    if(!(scaled >= 0.0L) || scaled > maximum)
+        throw UniversalError(
+            "DistributedFmmGravityCalculator: persistent tree capacity overflow");
+    const long double rounded = roundUp ? std::ceil(scaled) : std::floor(scaled);
+    return static_cast<std::size_t>(rounded);
+}
+
+std::size_t persistentSplitCapacity(std::size_t leafCapacity,
+                                    double factor)
+{
+    if(leafCapacity == std::numeric_limits<std::size_t>::max())
+        throw UniversalError(
+            "DistributedFmmGravityCalculator: leaf capacity cannot support hysteresis");
+    return std::max(leafCapacity + 1,
+                    scaledPersistentCapacity(leafCapacity, factor, true));
+}
+
+std::size_t persistentMergeCapacity(std::size_t leafCapacity,
+                                    double factor)
+{
+    return std::min(leafCapacity - 1,
+                    scaledPersistentCapacity(leafCapacity, factor, false));
 }
 
 void progressLetExchange(void* context)
@@ -329,6 +361,39 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsOk = false;
         localOptionsError = "DistributedFmmGravityCalculator: remote memory budget is too small";
     }
+    else if(distributedOptions_.persistentLocalTreeTopology &&
+            (!(distributedOptions_.persistentLeafSplitFactor > 1.0) ||
+             !std::isfinite(distributedOptions_.persistentLeafSplitFactor)))
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: invalid persistent split factor";
+    }
+    else if(distributedOptions_.persistentLocalTreeTopology &&
+            (!(distributedOptions_.persistentLeafMergeFactor >= 0.0) ||
+             !(distributedOptions_.persistentLeafMergeFactor < 1.0) ||
+             !std::isfinite(distributedOptions_.persistentLeafMergeFactor)))
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: invalid persistent merge factor";
+    }
+    if(localOptionsOk && distributedOptions_.persistentLocalTreeTopology)
+    {
+        try
+        {
+            (void) persistentSplitCapacity(options_.leafCapacity,
+                distributedOptions_.persistentLeafSplitFactor);
+            (void) persistentMergeCapacity(options_.leafCapacity,
+                distributedOptions_.persistentLeafMergeFactor);
+        }
+        catch(const UniversalError&)
+        {
+            localOptionsOk = false;
+            localOptionsError =
+                "DistributedFmmGravityCalculator: invalid persistent tree capacities";
+        }
+    }
 
     int localValid = localOptionsOk ? 1 : 0;
     int globalValid = 0;
@@ -343,16 +408,18 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
             localOptionsError);
     }
 
-    const double localDoubleOptions[2] = {
-        options_.thetaCritical, distributedOptions_.rootSlackFactor};
-    double minimumDoubleOptions[2] = {0.0, 0.0};
-    double maximumDoubleOptions[2] = {0.0, 0.0};
-    MPI_Allreduce(localDoubleOptions, minimumDoubleOptions, 2,
+    const double localDoubleOptions[4] = {
+        options_.thetaCritical, distributedOptions_.rootSlackFactor,
+        distributedOptions_.persistentLeafSplitFactor,
+        distributedOptions_.persistentLeafMergeFactor};
+    double minimumDoubleOptions[4] = {0.0, 0.0, 0.0, 0.0};
+    double maximumDoubleOptions[4] = {0.0, 0.0, 0.0, 0.0};
+    MPI_Allreduce(localDoubleOptions, minimumDoubleOptions, 4,
                   MPI_DOUBLE, MPI_MIN, comm_);
-    MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 2,
+    MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 4,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[9] = {
+    const unsigned long long localIntegerOptions[10] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
@@ -361,19 +428,20 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         static_cast<unsigned long long>(options_.maxOperatorCacheBytes),
         static_cast<unsigned long long>(distributedOptions_.maxRemoteBytes),
         distributedOptions_.rebuildTopologyEverySolve ? 1ull : 0ull,
-        distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges ? 1ull : 0ull};
-    unsigned long long minimumIntegerOptions[9] = {};
-    unsigned long long maximumIntegerOptions[9] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 9,
+        distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges ? 1ull : 0ull,
+        distributedOptions_.persistentLocalTreeTopology ? 1ull : 0ull};
+    unsigned long long minimumIntegerOptions[10] = {};
+    unsigned long long maximumIntegerOptions[10] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 10,
                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 9,
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 10,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
-    for(int i = 0; i < 2; ++i)
+    for(int i = 0; i < 4; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 9; ++i)
+    for(int i = 0; i < 10; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -467,7 +535,28 @@ DistributedFmmGravityCalculator::prepareLocalTree(
     LocalTopologyChange change;
     change.rootGeometryChanged =
         !rootInitialized_ || !sameRoot(localRoot_, nextRoot);
-    localTree_.build(positions, nextRoot, options_);
+    if(distributedOptions_.persistentLocalTreeTopology)
+    {
+        FmmPersistentTreeStats persistentStats;
+        const bool initializeFromScratch =
+            change.rootGeometryChanged || localTree_.nodes().empty();
+        localTree_.buildPersistent(
+            positions, nextRoot, options_,
+            persistentSplitCapacity(options_.leafCapacity,
+                distributedOptions_.persistentLeafSplitFactor),
+            persistentMergeCapacity(options_.leafCapacity,
+                distributedOptions_.persistentLeafMergeFactor),
+            initializeFromScratch, persistentStats);
+        change.persistentTreeRefit =
+            !initializeFromScratch && !positions.empty();
+        change.persistentLeafSplits = persistentStats.leafSplits;
+        change.persistentSubtreeMerges = persistentStats.subtreeMerges;
+        change.persistentEmptyLeaves = persistentStats.emptyLeaves;
+    }
+    else
+    {
+        localTree_.build(positions, nextRoot, options_);
+    }
     const std::uint64_t hash = localTree_.topologyHash();
     std::vector<std::uint64_t> structuralSignature =
         structuralTopologySignature(localTree_);
@@ -705,14 +794,18 @@ void DistributedFmmGravityCalculator::solve(
     double globalMassTerms[2] = {0.0, 0.0};
     MPI_Allreduce(localMassTerms, globalMassTerms, 2, MPI_DOUBLE, MPI_SUM, comm_);
 
-    const unsigned long long localTopologyTerms[5] = {
+    const unsigned long long localTopologyTerms[9] = {
         static_cast<unsigned long long>(positions.size()),
         localChange.rootGeometryChanged ? 1ull : 0ull,
         localChange.leafTopologyChanged ? 1ull : 0ull,
         localChange.leafOccupancyChanged ? 1ull : 0ull,
-        localChange.countOnlyLeafChange ? 1ull : 0ull};
-    unsigned long long globalTopologyTerms[5] = {};
-    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 5,
+        localChange.countOnlyLeafChange ? 1ull : 0ull,
+        localChange.persistentTreeRefit ? 1ull : 0ull,
+        static_cast<unsigned long long>(localChange.persistentLeafSplits),
+        static_cast<unsigned long long>(localChange.persistentSubtreeMerges),
+        static_cast<unsigned long long>(localChange.persistentEmptyLeaves)};
+    unsigned long long globalTopologyTerms[9] = {};
+    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 9,
                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
 
     stats_.totalMass = globalMassTerms[0];
@@ -725,6 +818,14 @@ void DistributedFmmGravityCalculator::solve(
         static_cast<std::size_t>(globalTopologyTerms[3]);
     stats_.ranksWithCountOnlyLeafChange =
         static_cast<std::size_t>(globalTopologyTerms[4]);
+    stats_.persistentTreeRefitRankCount =
+        static_cast<std::size_t>(globalTopologyTerms[5]);
+    stats_.persistentLeafSplitCount =
+        static_cast<std::uint64_t>(globalTopologyTerms[6]);
+    stats_.persistentSubtreeMergeCount =
+        static_cast<std::uint64_t>(globalTopologyTerms[7]);
+    stats_.persistentEmptyLeafCount =
+        static_cast<std::uint64_t>(globalTopologyTerms[8]);
     if(!std::isfinite(stats_.totalMass) || !std::isfinite(totalAbsoluteMass))
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: non-finite global mass sum");

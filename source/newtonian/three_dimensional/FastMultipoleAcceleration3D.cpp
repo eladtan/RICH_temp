@@ -155,6 +155,14 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << stats.ranksWithLeafOccupancyChange
          << " count_only_change_ranks="
          << stats.ranksWithCountOnlyLeafChange
+         << " persistent_refit_ranks="
+         << stats.persistentTreeRefitRankCount
+         << " persistent_leaf_splits="
+         << stats.persistentLeafSplitCount
+         << " persistent_subtree_merges="
+         << stats.persistentSubtreeMergeCount
+         << " persistent_empty_leaves="
+         << stats.persistentEmptyLeafCount
          << " count_only_reused=" << (stats.countOnlyTopologyReused ? 1 : 0)
          << " process_rebuilt=" << (stats.processTopologyRebuilt ? 1 : 0)
          << " let_rebuilt=" << (stats.letTopologyRebuilt ? 1 : 0)

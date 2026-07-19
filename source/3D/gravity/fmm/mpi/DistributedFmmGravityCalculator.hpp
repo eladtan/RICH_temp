@@ -26,6 +26,11 @@ struct FmmDistributedOptions
     std::size_t maxRemoteBytes = static_cast<std::size_t>(2) * 1024 * 1024 * 1024;
     bool rebuildTopologyEverySolve = false;
     bool reuseInteractionPlansAcrossLeafCountChanges = true;
+
+    // Keep persistent-tree controls last for aggregate compatibility.
+    bool persistentLocalTreeTopology = true;
+    double persistentLeafSplitFactor = 1.5;
+    double persistentLeafMergeFactor = 0.5;
 };
 
 class DistributedFmmGravityCalculator
@@ -55,6 +60,10 @@ private:
         bool leafTopologyChanged = false;
         bool leafOccupancyChanged = false;
         bool countOnlyLeafChange = false;
+        bool persistentTreeRefit = false;
+        std::size_t persistentLeafSplits = 0;
+        std::size_t persistentSubtreeMerges = 0;
+        std::size_t persistentEmptyLeaves = 0;
     };
 
     void validateInputs(const std::vector<Vector3D>& positions,

@@ -24,6 +24,22 @@ bool finiteVector(const Vector3D& v)
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
 
+bool sameRootGeometry(const FmmRootGeometry& first,
+                      const FmmRootGeometry& second)
+{
+    return first.active == second.active &&
+        (!first.active || (first.center.x == second.center.x &&
+                           first.center.y == second.center.y &&
+                           first.center.z == second.center.z &&
+                           first.halfSize == second.halfSize &&
+                           first.latticeId == second.latticeId &&
+                           first.latticeCenterX == second.latticeCenterX &&
+                           first.latticeCenterY == second.latticeCenterY &&
+                           first.latticeCenterZ == second.latticeCenterZ &&
+                           first.latticeHalfUnits == second.latticeHalfUnits &&
+                           first.latticeAligned == second.latticeAligned));
+}
+
 // Match RICH's existing octree convention: x is bit 2, y bit 1, z bit 0.
 int octantOf(const Vector3D& point, const Vector3D& center)
 {
@@ -83,9 +99,9 @@ void FmmTree::build(const std::vector<Vector3D>& positions,
     buildWithRoot(positions, rootGeometry, options);
 }
 
-void FmmTree::buildWithRoot(const std::vector<Vector3D>& positions,
-                            const FmmRootGeometry& rootGeometry,
-                            const FmmGravityOptions& options)
+void FmmTree::initializeRoot(const std::vector<Vector3D>& positions,
+                             const FmmRootGeometry& rootGeometry,
+                             const FmmGravityOptions& options)
 {
     nodes_.clear();
     particleOrder_.resize(positions.size());
@@ -136,6 +152,15 @@ void FmmTree::buildWithRoot(const std::vector<Vector3D>& positions,
     root.latticeHalfUnits = rootGeometry.latticeHalfUnits;
     root.latticeAligned = rootGeometry.latticeAligned;
     nodes_.push_back(root);
+}
+
+void FmmTree::buildWithRoot(const std::vector<Vector3D>& positions,
+                            const FmmRootGeometry& rootGeometry,
+                            const FmmGravityOptions& options)
+{
+    initializeRoot(positions, rootGeometry, options);
+    if(nodes_.empty())
+        return;
 
     buildNode(0, positions, options);
     finishMetadata(positions);
@@ -143,25 +168,77 @@ void FmmTree::buildWithRoot(const std::vector<Vector3D>& positions,
     validateInvariants(positions.size());
 }
 
-void FmmTree::buildNode(std::size_t nodeIndex,
-                        const std::vector<Vector3D>& positions,
-                        const FmmGravityOptions& options)
+void FmmTree::buildPersistent(
+    const std::vector<Vector3D>& positions,
+    const FmmRootGeometry& rootGeometry,
+    const FmmGravityOptions& options,
+    std::size_t splitCapacity,
+    std::size_t mergeCapacity,
+    bool initializeFromScratch,
+    FmmPersistentTreeStats& stats)
 {
-    const FmmNode node = nodes_[nodeIndex];
-    if(node.particleCount() <= options.leafCapacity ||
-       node.depth >= static_cast<std::size_t>(options.maxDepth) ||
-       node.halfSize <= std::numeric_limits<double>::min())
+    if(splitCapacity <= options.leafCapacity ||
+       mergeCapacity >= options.leafCapacity ||
+       mergeCapacity >= splitCapacity)
+        throw UniversalError("FmmTree::buildPersistent: invalid hysteresis capacities");
+    if(!initializeFromScratch &&
+       (!rootGeometry_.active || nodes_.empty() ||
+        !sameRootGeometry(rootGeometry_, rootGeometry)))
+        throw UniversalError(
+            "FmmTree::buildPersistent: retained topology has a different root");
+    if(!initializeFromScratch)
+    {
+        for(const FmmNode& node : nodes_)
+        {
+            if(!node.isLeaf() && node.childMask != 0xffu)
+                throw UniversalError(
+                    "FmmTree::buildPersistent: retained topology is not full-octant");
+        }
+    }
+
+    std::vector<std::uint64_t> previousInternalKeys;
+    if(!initializeFromScratch)
+    {
+        previousInternalKeys.reserve(nodes_.size());
+        for(const FmmNode& node : nodes_)
+            if(!node.isLeaf())
+                previousInternalKeys.push_back(node.spatialKey);
+        std::sort(previousInternalKeys.begin(), previousInternalKeys.end());
+    }
+
+    stats = FmmPersistentTreeStats();
+    stats.initializedFromScratch = initializeFromScratch;
+    initializeRoot(positions, rootGeometry, options);
+    if(nodes_.empty())
         return;
 
-    std::array<std::size_t, 8> counts{};
+    buildPersistentNode(0, positions, options, splitCapacity, mergeCapacity,
+                        initializeFromScratch, previousInternalKeys, stats);
+    finishMetadata(positions);
+    collectOrders(0);
+    validateInvariants(positions.size());
+
+    for(const FmmNode& node : nodes_)
+        if(node.isLeaf() && node.particleCount() == 0)
+            ++stats.emptyLeaves;
+}
+
+void FmmTree::partitionNode(std::size_t nodeIndex,
+                            const std::vector<Vector3D>& positions,
+                            std::array<std::size_t, 8>& counts)
+{
+    const FmmNode node = nodes_[nodeIndex];
+    counts.fill(0);
     for(std::size_t k = node.particleBegin; k < node.particleEnd; ++k)
-        ++counts[static_cast<std::size_t>(octantOf(positions[particleOrder_[k]], node.center))];
+        ++counts[static_cast<std::size_t>(
+            octantOf(positions[particleOrder_[k]], node.center))];
 
     std::array<std::size_t, 8> offsets{};
     offsets[0] = node.particleBegin;
     for(int i = 1; i < 8; ++i)
         offsets[static_cast<std::size_t>(i)] =
-            offsets[static_cast<std::size_t>(i - 1)] + counts[static_cast<std::size_t>(i - 1)];
+            offsets[static_cast<std::size_t>(i - 1)] +
+            counts[static_cast<std::size_t>(i - 1)];
     std::array<std::size_t, 8> cursor = offsets;
 
     for(std::size_t k = node.particleBegin; k < node.particleEnd; ++k)
@@ -172,7 +249,13 @@ void FmmTree::buildNode(std::size_t nodeIndex,
     }
     for(std::size_t k = node.particleBegin; k < node.particleEnd; ++k)
         particleOrder_[k] = scratchOrder_[k];
+}
 
+void FmmTree::appendChildren(std::size_t nodeIndex,
+                             const std::array<std::size_t, 8>& counts,
+                             bool materializeEmptyChildren)
+{
+    const FmmNode node = nodes_[nodeIndex];
     const std::size_t firstChild = nodes_.size();
     const double childHalfSize = 0.5 * node.halfSize;
     std::uint8_t childMask = 0;
@@ -180,7 +263,7 @@ void FmmTree::buildNode(std::size_t nodeIndex,
     for(int octant = 0; octant < 8; ++octant)
     {
         const std::size_t count = counts[static_cast<std::size_t>(octant)];
-        if(count == 0)
+        if(count == 0 && !materializeEmptyChildren)
             continue;
         childMask |= static_cast<std::uint8_t>(1u << octant);
 
@@ -191,7 +274,8 @@ void FmmTree::buildNode(std::size_t nodeIndex,
         child.particleEnd = begin + count;
         child.parent = nodeIndex;
         child.depth = node.depth + 1;
-        child.spatialKey = (node.spatialKey << 3u) | static_cast<std::uint64_t>(octant);
+        child.spatialKey = (node.spatialKey << 3u) |
+            static_cast<std::uint64_t>(octant);
         if(node.latticeAligned != 0)
         {
             if(node.latticeHalfUnits < 2 || (node.latticeHalfUnits & 1u) != 0)
@@ -213,12 +297,74 @@ void FmmTree::buildNode(std::size_t nodeIndex,
 
     nodes_[nodeIndex].firstChild = firstChild;
     nodes_[nodeIndex].childMask = childMask;
+}
+
+void FmmTree::buildNode(std::size_t nodeIndex,
+                        const std::vector<Vector3D>& positions,
+                        const FmmGravityOptions& options)
+{
+    const FmmNode node = nodes_[nodeIndex];
+    if(node.particleCount() <= options.leafCapacity ||
+       node.depth >= static_cast<std::size_t>(options.maxDepth) ||
+       node.halfSize <= std::numeric_limits<double>::min())
+        return;
+
+    std::array<std::size_t, 8> counts{};
+    partitionNode(nodeIndex, positions, counts);
+    appendChildren(nodeIndex, counts, false);
 
     for(int octant = 0; octant < 8; ++octant)
     {
         const std::size_t child = childIndex(nodes_[nodeIndex], octant);
         if(child != std::numeric_limits<std::size_t>::max())
             buildNode(child, positions, options);
+    }
+}
+
+void FmmTree::buildPersistentNode(
+    std::size_t nodeIndex,
+    const std::vector<Vector3D>& positions,
+    const FmmGravityOptions& options,
+    std::size_t splitCapacity,
+    std::size_t mergeCapacity,
+    bool initializeFromScratch,
+    const std::vector<std::uint64_t>& previousInternalKeys,
+    FmmPersistentTreeStats& stats)
+{
+    const FmmNode node = nodes_[nodeIndex];
+    const bool wasInternal = !initializeFromScratch &&
+        std::binary_search(previousInternalKeys.begin(),
+                           previousInternalKeys.end(), node.spatialKey);
+    const bool canSplit =
+        node.depth < static_cast<std::size_t>(options.maxDepth) &&
+        node.halfSize > std::numeric_limits<double>::min();
+    const bool shouldSplit = canSplit &&
+        (initializeFromScratch ? node.particleCount() > options.leafCapacity :
+         (wasInternal ? node.particleCount() > mergeCapacity :
+                        node.particleCount() > splitCapacity));
+
+    if(!shouldSplit)
+    {
+        if(wasInternal)
+            ++stats.subtreeMerges;
+        return;
+    }
+    if(!initializeFromScratch && !wasInternal)
+        ++stats.leafSplits;
+
+    std::array<std::size_t, 8> counts{};
+    partitionNode(nodeIndex, positions, counts);
+    appendChildren(nodeIndex, counts, true);
+
+    for(int octant = 0; octant < 8; ++octant)
+    {
+        const std::size_t child = childIndex(nodes_[nodeIndex], octant);
+        if(child == std::numeric_limits<std::size_t>::max())
+            throw UniversalError(
+                "FmmTree::buildPersistent: full child materialization failed");
+        buildPersistentNode(child, positions, options, splitCapacity,
+                            mergeCapacity, initializeFromScratch,
+                            previousInternalKeys, stats);
     }
 }
 
@@ -231,7 +377,8 @@ void FmmTree::finishMetadata(const std::vector<Vector3D>& positions)
         if(node.isLeaf())
         {
             for(std::size_t k = node.particleBegin; k < node.particleEnd; ++k)
-                radius = std::max(radius, nodeDistance(positions[particleOrder_[k]], node.center));
+                radius = std::max(radius,
+                    nodeDistance(positions[particleOrder_[k]], node.center));
         }
         else
         {
@@ -241,8 +388,10 @@ void FmmTree::finishMetadata(const std::vector<Vector3D>& positions)
                 if(child == std::numeric_limits<std::size_t>::max())
                     continue;
                 const FmmNode& childNode = nodes_[child];
+                if(childNode.particleCount() == 0)
+                    continue;
                 radius = std::max(radius,
-                                  nodeDistance(childNode.center, node.center) + childNode.radius);
+                    nodeDistance(childNode.center, node.center) + childNode.radius);
             }
         }
         node.radius = radius;
@@ -276,7 +425,8 @@ void FmmTree::assignExpansionOffsets(std::size_t coefficientCount)
 {
     if(coefficientCount == 0 ||
        nodes_.size() > std::numeric_limits<std::size_t>::max() / coefficientCount)
-        throw UniversalError("FmmTree::assignExpansionOffsets: coefficient storage overflow");
+        throw UniversalError(
+            "FmmTree::assignExpansionOffsets: coefficient storage overflow");
     for(std::size_t i = 0; i < nodes_.size(); ++i)
     {
         nodes_[i].multipoleOffset = i * coefficientCount;
@@ -302,8 +452,10 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
     for(std::size_t i = 0; i < nodes_.size(); ++i)
     {
         const FmmNode& node = nodes_[i];
-        if(node.particleBegin > node.particleEnd || node.particleEnd > particleCount ||
-           !finiteVector(node.center) || !std::isfinite(node.radius) || node.radius < 0)
+        if(node.particleBegin > node.particleEnd ||
+           node.particleEnd > particleCount ||
+           !finiteVector(node.center) || !std::isfinite(node.radius) ||
+           node.radius < 0)
             throw UniversalError("FmmTree::build: invalid node metadata");
         if(node.isLeaf())
         {
@@ -312,7 +464,8 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
             continue;
         }
         if(node.childMask == 0 || node.firstChild >= nodes_.size())
-            throw UniversalError("FmmTree::build: internal node has no valid children");
+            throw UniversalError(
+                "FmmTree::build: internal node has no valid children");
 
         std::size_t cursor = node.particleBegin;
         for(int octant = 0; octant < 8; ++octant)
@@ -322,7 +475,8 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
                 continue;
             if(child >= nodes_.size() || nodes_[child].parent != i ||
                nodes_[child].particleBegin != cursor)
-                throw UniversalError("FmmTree::build: invalid parent/child partition");
+                throw UniversalError(
+                    "FmmTree::build: invalid parent/child partition");
             if(node.latticeAligned != 0)
             {
                 const FmmNode& childNode = nodes_[child];
@@ -330,23 +484,28 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
                    (node.latticeHalfUnits & 1u) != 0)
                     throw UniversalError(
                         "FmmTree::build: invalid parent lattice half size");
-                const std::uint64_t childHalfUnits = node.latticeHalfUnits / 2;
+                const std::uint64_t childHalfUnits =
+                    node.latticeHalfUnits / 2;
                 if(childNode.latticeAligned == 0 ||
                    childNode.latticeId != node.latticeId ||
                    childNode.latticeHalfUnits != childHalfUnits ||
                    childNode.latticeCenterX != childLatticeCoordinate(
-                       node.latticeCenterX, childHalfUnits, (octant & 4) != 0) ||
+                       node.latticeCenterX, childHalfUnits,
+                       (octant & 4) != 0) ||
                    childNode.latticeCenterY != childLatticeCoordinate(
-                       node.latticeCenterY, childHalfUnits, (octant & 2) != 0) ||
+                       node.latticeCenterY, childHalfUnits,
+                       (octant & 2) != 0) ||
                    childNode.latticeCenterZ != childLatticeCoordinate(
-                       node.latticeCenterZ, childHalfUnits, (octant & 1) != 0))
+                       node.latticeCenterZ, childHalfUnits,
+                       (octant & 1) != 0))
                     throw UniversalError(
                         "FmmTree::build: invalid child lattice metadata");
             }
             cursor = nodes_[child].particleEnd;
         }
         if(cursor != node.particleEnd)
-            throw UniversalError("FmmTree::build: child ranges do not cover parent");
+            throw UniversalError(
+                "FmmTree::build: child ranges do not cover parent");
     }
 }
 

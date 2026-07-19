@@ -36,6 +36,10 @@ INTEGER_KEYS = (
     "leaf_change_ranks",
     "occupancy_change_ranks",
     "count_only_change_ranks",
+    "persistent_refit_ranks",
+    "persistent_leaf_splits",
+    "persistent_subtree_merges",
+    "persistent_empty_leaves",
     "count_only_reused",
     "process_rebuilt",
     "let_rebuilt",
@@ -131,10 +135,26 @@ def print_group(name: str, records: list[dict[str, float | int]]) -> None:
     count_only_changes = [
         int(record.get("count_only_change_ranks", 0)) for record in records
     ]
+    persistent_refits = [
+        int(record.get("persistent_refit_ranks", 0)) for record in records
+    ]
+    persistent_splits = [
+        int(record.get("persistent_leaf_splits", 0)) for record in records
+    ]
+    persistent_merges = [
+        int(record.get("persistent_subtree_merges", 0)) for record in records
+    ]
+    persistent_empty = [
+        int(record.get("persistent_empty_leaves", 0)) for record in records
+    ]
     print(f"  root_change_ranks_max    {max(root_changes, default=0)}")
     print(f"  leaf_change_ranks_max    {max(leaf_changes, default=0)}")
     print(f"  occupancy_change_ranks_max {max(occupancy_changes, default=0)}")
     print(f"  count_only_change_ranks_max {max(count_only_changes, default=0)}")
+    print(f"  persistent_refit_ranks_max {max(persistent_refits, default=0)}")
+    print(f"  persistent_leaf_splits_max {max(persistent_splits, default=0)}")
+    print(f"  persistent_subtree_merges_max {max(persistent_merges, default=0)}")
+    print(f"  persistent_empty_leaves_max {max(persistent_empty, default=0)}")
 
 
 def write_tsv(path: Path, records: list[dict[str, float | int]]) -> None:

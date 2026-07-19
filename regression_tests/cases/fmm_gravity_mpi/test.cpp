@@ -25,6 +25,7 @@ enum class BodyLayout
     Baseline,
     CountOnlyLeafChange,
     LocalLeafChange,
+    PersistentSplit,
     RootBreach
 };
 
@@ -85,6 +86,25 @@ std::vector<Body> bodiesForRank(int rank, int size,
             0.9 * a.x + 0.1 * b.x,
             0.9 * a.y + 0.1 * b.y,
             0.9 * a.z + 0.1 * b.z);
+    }
+
+    if(layout == BodyLayout::PersistentSplit && rank == 0 && !result.empty())
+    {
+        const Vector3D anchor = result.front().position;
+        for(int i = 0; i < 5; ++i)
+        {
+            const double offset = 1e-4 * static_cast<double>(i + 1);
+            Body extra;
+            extra.position = Vector3D(anchor.x + offset,
+                                      anchor.y + 0.37 * offset,
+                                      anchor.z + 0.19 * offset);
+            extra.mass = massScale * (0.31 + 0.02 * i);
+            extra.id = static_cast<std::uint64_t>(i % 2);
+            extra.ownerRank = rank;
+            extra.ownerLocalIndex =
+                static_cast<std::uint64_t>(result.size());
+            result.push_back(extra);
+        }
     }
     return result;
 }
@@ -198,6 +218,10 @@ int main(int argc, char** argv)
 
     FmmDistributedOptions distributed;
     distributed.maxRemoteBytes = 64u * 1024u * 1024u;
+    // Preserve the legacy sparse-tree rebuild checks below. Persistent-tree
+    // execution, plan reuse, splitting, and automatic merging are exercised
+    // independently in the dedicated block below.
+    distributed.persistentLocalTreeTopology = false;
 
     double localMaximumError = 0.0;
     std::uint64_t firstEpoch = 0;
@@ -216,6 +240,10 @@ int main(int argc, char** argv)
     bool rootStorageReset = false;
     bool finiteStats = false;
     bool mismatchedDomainRejected = size == 1;
+    bool persistentEmptyLeavesExercised = false;
+    bool persistentTopologyReused = false;
+    bool persistentSplitRebuilt = false;
+    bool persistentMergeRebuilt = false;
 
     {
         FmmGravityOptions countOptions = options;
@@ -263,6 +291,122 @@ int main(int argc, char** argv)
             countSolver.stats().letTopologyRebuildCount == countLetRebuilds;
         countOnlyLocalPlanReused =
             localBodies.empty() || countSolver.stats().localInteractionPlanReused;
+    }
+
+    {
+        FmmDistributedOptions persistentDistributed = distributed;
+        persistentDistributed.persistentLocalTreeTopology = true;
+        persistentDistributed.persistentLeafSplitFactor = 1.5;
+        persistentDistributed.persistentLeafMergeFactor = 0.5;
+        DistributedFmmGravityCalculator persistentSolver(
+            options, persistentDistributed);
+        std::vector<Vector3D> positions;
+        std::vector<double> masses;
+        std::vector<std::uint64_t> ids;
+        std::vector<Vector3D> acceleration;
+        std::vector<double> potential;
+
+        std::vector<Body> localBodies = bodiesForRank(
+            rank, size, 1.0, BodyLayout::Baseline);
+        unpack(localBodies, positions, masses, ids);
+        persistentSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
+                       acceleration, potential));
+        const std::uint64_t persistentEpoch =
+            persistentSolver.stats().topologyEpoch;
+        const std::uint64_t persistentRebuilds =
+            persistentSolver.stats().topologyRebuildCount;
+        const std::uint64_t persistentProcessRebuilds =
+            persistentSolver.stats().processTopologyRebuildCount;
+        const std::uint64_t persistentLetRebuilds =
+            persistentSolver.stats().letTopologyRebuildCount;
+        persistentEmptyLeavesExercised =
+            persistentSolver.stats().persistentEmptyLeafCount > 0 &&
+            persistentSolver.stats().persistentLeafSplitCount == 0 &&
+            persistentSolver.stats().persistentSubtreeMergeCount == 0;
+
+        localBodies = bodiesForRank(
+            rank, size, 1.02, BodyLayout::Baseline);
+        unpack(localBodies, positions, masses, ids);
+        persistentSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies,
+                       allBodies(size, 1.02, BodyLayout::Baseline),
+                       acceleration, potential));
+        const std::size_t expectedActiveRanks =
+            static_cast<std::size_t>(size >= 3 ? size - 1 : size);
+        persistentTopologyReused =
+            persistentSolver.stats().persistentTreeRefitRankCount ==
+                expectedActiveRanks &&
+            persistentSolver.stats().persistentLeafSplitCount == 0 &&
+            persistentSolver.stats().persistentSubtreeMergeCount == 0 &&
+            persistentSolver.stats().ranksWithLeafTopologyChange == 0 &&
+            !persistentSolver.stats().processTopologyRebuilt &&
+            !persistentSolver.stats().letTopologyRebuilt &&
+            persistentSolver.stats().topologyEpoch == persistentEpoch &&
+            persistentSolver.stats().topologyRebuildCount ==
+                persistentRebuilds &&
+            persistentSolver.stats().letTopologyRebuildCount ==
+                persistentLetRebuilds &&
+            (localBodies.empty() ||
+             persistentSolver.stats().localInteractionPlanReused);
+
+        localBodies = bodiesForRank(
+            rank, size, 1.02, BodyLayout::PersistentSplit);
+        unpack(localBodies, positions, masses, ids);
+        persistentSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies,
+                       allBodies(size, 1.02, BodyLayout::PersistentSplit),
+                       acceleration, potential));
+        const std::uint64_t splitEpoch =
+            persistentSolver.stats().topologyEpoch;
+        const std::uint64_t splitRebuilds =
+            persistentSolver.stats().topologyRebuildCount;
+        const std::uint64_t splitLetRebuilds =
+            persistentSolver.stats().letTopologyRebuildCount;
+        persistentSplitRebuilt =
+            persistentSolver.stats().persistentLeafSplitCount > 0 &&
+            persistentSolver.stats().persistentSubtreeMergeCount == 0 &&
+            persistentSolver.stats().ranksWithLeafTopologyChange > 0 &&
+            !persistentSolver.stats().processTopologyRebuilt &&
+            persistentSolver.stats().letTopologyRebuilt &&
+            persistentSolver.stats().processTopologyRebuildCount ==
+                persistentProcessRebuilds &&
+            splitEpoch > persistentEpoch &&
+            splitRebuilds == persistentRebuilds + 1 &&
+            splitLetRebuilds == persistentLetRebuilds + 1;
+
+        localBodies = bodiesForRank(
+            rank, size, 1.02, BodyLayout::Baseline);
+        unpack(localBodies, positions, masses, ids);
+        persistentSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies,
+                       allBodies(size, 1.02, BodyLayout::Baseline),
+                       acceleration, potential));
+        persistentMergeRebuilt =
+            persistentSolver.stats().persistentSubtreeMergeCount > 0 &&
+            persistentSolver.stats().persistentLeafSplitCount == 0 &&
+            persistentSolver.stats().ranksWithLeafTopologyChange > 0 &&
+            !persistentSolver.stats().processTopologyRebuilt &&
+            persistentSolver.stats().letTopologyRebuilt &&
+            persistentSolver.stats().processTopologyRebuildCount ==
+                persistentProcessRebuilds &&
+            persistentSolver.stats().topologyEpoch > splitEpoch &&
+            persistentSolver.stats().topologyRebuildCount ==
+                splitRebuilds + 1 &&
+            persistentSolver.stats().letTopologyRebuildCount ==
+                splitLetRebuilds + 1;
     }
 
     {
@@ -378,7 +522,7 @@ int main(int argc, char** argv)
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
-    const int localChecks[12] = {
+    const int localChecks[16] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
         leafEpoch > secondEpoch ? 1 : 0,
@@ -390,9 +534,13 @@ int main(int argc, char** argv)
         finiteStats ? 1 : 0,
         mismatchedDomainRejected ? 1 : 0,
         leafStorageReused ? 1 : 0,
-        rootStorageReset ? 1 : 0};
-    int globalChecks[12] = {};
-    MPI_Allreduce(localChecks, globalChecks, 12, MPI_INT, MPI_LAND,
+        rootStorageReset ? 1 : 0,
+        persistentEmptyLeavesExercised ? 1 : 0,
+        persistentTopologyReused ? 1 : 0,
+        persistentSplitRebuilt ? 1 : 0,
+        persistentMergeRebuilt ? 1 : 0};
+    int globalChecks[16] = {};
+    MPI_Allreduce(localChecks, globalChecks, 16, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
@@ -400,7 +548,9 @@ int main(int argc, char** argv)
                            globalChecks[4] && globalChecks[5] &&
                            globalChecks[6] && globalChecks[7] &&
                            globalChecks[8] && globalChecks[9] &&
-                           globalChecks[10] && globalChecks[11];
+                           globalChecks[10] && globalChecks[11] &&
+                           globalChecks[12] && globalChecks[13] &&
+                           globalChecks[14] && globalChecks[15];
 
     if(rank == 0)
     {
@@ -428,6 +578,10 @@ int main(int argc, char** argv)
         output << "mismatched_domain_rejected " << globalChecks[9] << "\n";
         output << "leaf_storage_reused " << globalChecks[10] << "\n";
         output << "root_storage_reset " << globalChecks[11] << "\n";
+        output << "persistent_empty_leaves " << globalChecks[12] << "\n";
+        output << "persistent_topology_reused " << globalChecks[13] << "\n";
+        output << "persistent_split_rebuilt " << globalChecks[14] << "\n";
+        output << "persistent_merge_rebuilt " << globalChecks[15] << "\n";
         output << "pass " << globalPass << "\n";
         std::cout << "fmm_gravity_mpi ranks=" << size
                   << " max_scaled_error=" << globalMaximumError
@@ -437,6 +591,8 @@ int main(int argc, char** argv)
                   << " count_only_reused=" << globalChecks[6]
                   << " finite_stats=" << globalChecks[8]
                   << " domain_rejected=" << globalChecks[9]
+                  << " persistent_reused=" << globalChecks[13]
+                  << " persistent_merge=" << globalChecks[15]
                   << " pass=" << globalPass << std::endl;
     }
 

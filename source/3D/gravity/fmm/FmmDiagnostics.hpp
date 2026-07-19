@@ -45,6 +45,10 @@ struct FmmSolveStats
     std::size_t ranksWithLeafTopologyChange = 0;
     std::size_t ranksWithLeafOccupancyChange = 0;
     std::size_t ranksWithCountOnlyLeafChange = 0;
+    std::size_t persistentTreeRefitRankCount = 0;
+    std::uint64_t persistentLeafSplitCount = 0;
+    std::uint64_t persistentSubtreeMergeCount = 0;
+    std::uint64_t persistentEmptyLeafCount = 0;
     bool localRootGeometryChanged = false;
     bool localLeafTopologyChanged = false;
     bool localLeafOccupancyChanged = false;

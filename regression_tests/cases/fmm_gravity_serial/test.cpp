@@ -7,6 +7,7 @@
 
 #include "source/3D/gravity/fmm/DirectGravityReference.hpp"
 #include "source/3D/gravity/fmm/FmmExpansionLayout.hpp"
+#include "source/3D/gravity/fmm/FmmTree.hpp"
 #include "source/3D/gravity/fmm/LaplaceSolidHarmonics.hpp"
 #include "source/3D/gravity/fmm/SerialFmmGravityCalculator.hpp"
 #include "source/misc/universal_error.hpp"
@@ -209,6 +210,81 @@ bool clusteredTreePasses()
            solver.stats().maxDepth > 1 && solver.stats().nodeCount > 1;
 }
 
+std::vector<std::uint64_t> persistentTreeStructure(const FmmTree& tree)
+{
+    std::vector<std::uint64_t> result;
+    result.reserve(3 * tree.nodes().size());
+    for(const FmmNode& node : tree.nodes())
+    {
+        result.push_back(node.spatialKey);
+        result.push_back(static_cast<std::uint64_t>(node.childMask));
+        result.push_back(static_cast<std::uint64_t>(node.depth));
+    }
+    return result;
+}
+
+bool persistentTreeHysteresisPasses()
+{
+    FmmGravityOptions options;
+    options.leafCapacity = 2;
+    options.maxDepth = 8;
+    const FmmRootGeometry root = FmmRootGeometry::fromDomain(
+        Vector3D(-1, -1, -1), Vector3D(1, 1, 1), true);
+    const std::size_t splitCapacity = 4;
+    const std::size_t mergeCapacity = 1;
+
+    FmmTree tree;
+    FmmPersistentTreeStats stats;
+    std::vector<Vector3D> initial = {
+        Vector3D(-0.75, -0.75, -0.75),
+        Vector3D(-0.25, -0.75, -0.75),
+        Vector3D(0.25, -0.25, -0.25),
+        Vector3D(-0.25, 0.25, -0.25),
+        Vector3D(-0.25, -0.25, 0.25),
+        Vector3D(0.25, 0.25, 0.25)};
+    tree.buildPersistent(initial, root, options, splitCapacity,
+                         mergeCapacity, true, stats);
+    if(tree.nodes().empty() || tree.nodes()[0].isLeaf() ||
+       tree.nodes()[0].childMask != 0xffu ||
+       !stats.initializedFromScratch || stats.emptyLeaves == 0)
+        return false;
+    const std::vector<std::uint64_t> stableTopology =
+        persistentTreeStructure(tree);
+
+    // Move a particle into an octant that was empty. Full child
+    // materialization must turn this into an occupancy-only change.
+    std::vector<Vector3D> refit = initial;
+    refit[4] = Vector3D(-0.25, 0.25, 0.25);
+    tree.buildPersistent(refit, root, options, splitCapacity,
+                         mergeCapacity, false, stats);
+    if(stats.initializedFromScratch || stats.leafSplits != 0 ||
+       stats.subtreeMerges != 0 ||
+       persistentTreeStructure(tree) != stableTopology)
+        return false;
+
+    // Put five particles in one existing root leaf. The high threshold is
+    // crossed, so exactly that leaf is refined.
+    std::vector<Vector3D> split = {
+        Vector3D(0.25, 0.25, 0.25),
+        Vector3D(0.75, 0.25, 0.25),
+        Vector3D(0.25, 0.75, 0.25),
+        Vector3D(0.25, 0.25, 0.75),
+        Vector3D(0.75, 0.75, 0.75),
+        Vector3D(-0.75, -0.75, -0.75)};
+    tree.buildPersistent(split, root, options, splitCapacity,
+                         mergeCapacity, false, stats);
+    if(stats.leafSplits == 0 || stats.subtreeMerges != 0 ||
+       persistentTreeStructure(tree) == stableTopology)
+        return false;
+
+    // Return the refined child to one particle. Automatic merging must
+    // restore the original full-octant topology.
+    tree.buildPersistent(refit, root, options, splitCapacity,
+                         mergeCapacity, false, stats);
+    return stats.subtreeMerges > 0 &&
+           persistentTreeStructure(tree) == stableTopology;
+}
+
 bool expectedFailuresPass()
 {
     FmmGravityOptions options;
@@ -262,9 +338,11 @@ int main()
                 result += mass;
             return result;
         }();
+        const bool persistentHysteresis = persistentTreeHysteresisPasses();
 
         const bool passed =
             analyticCasesPass() && harmonicCasesPass() && clusteredTreePasses() &&
+            persistentHysteresis &&
             expectedFailuresPass() &&
             production.stats.m2lCount > 0 &&
             production.stats.p2pPairCount < points.size() * (points.size() - 1) &&
@@ -293,6 +371,7 @@ int main()
         out << "order6_scaled_error " << order6.error.maxScaledError << "\n";
         out << "loose_scaled_error " << loose.error.maxScaledError << "\n";
         out << "tight_scaled_error " << tight.error.maxScaledError << "\n";
+        out << "persistent_hysteresis " << (persistentHysteresis ? 1 : 0) << "\n";
         out << "pass " << (passed ? 1 : 0) << "\n";
 
         std::cout << "fmm_gravity_serial scaled_error="

@@ -1,6 +1,7 @@
 #ifndef FMM_TREE_HPP
 #define FMM_TREE_HPP
 
+#include <array>
 #include <cstdint>
 #include <cstddef>
 #include <limits>
@@ -36,6 +37,14 @@ struct FmmNode
     std::size_t particleCount() const { return particleEnd - particleBegin; }
 };
 
+struct FmmPersistentTreeStats
+{
+    std::size_t leafSplits = 0;
+    std::size_t subtreeMerges = 0;
+    std::size_t emptyLeaves = 0;
+    bool initializedFromScratch = false;
+};
+
 class FmmTree
 {
 public:
@@ -47,6 +56,20 @@ public:
     void build(const std::vector<Vector3D>& positions,
                const FmmRootGeometry& rootGeometry,
                const FmmGravityOptions& options);
+
+    // Rebuild particle ranges and metadata while using the previous tree as a
+    // hysteresis template. Existing leaves split only above splitCapacity and
+    // existing internal nodes merge only at or below mergeCapacity. Every
+    // retained internal node materializes all eight children, including empty
+    // leaves, so ordinary particles crossing octant boundaries do not change
+    // structural topology.
+    void buildPersistent(const std::vector<Vector3D>& positions,
+                         const FmmRootGeometry& rootGeometry,
+                         const FmmGravityOptions& options,
+                         std::size_t splitCapacity,
+                         std::size_t mergeCapacity,
+                         bool initializeFromScratch,
+                         FmmPersistentTreeStats& stats);
 
     const std::vector<FmmNode>& nodes() const { return nodes_; }
     const std::vector<std::size_t>& particleOrder() const { return particleOrder_; }
@@ -66,9 +89,27 @@ private:
     void buildWithRoot(const std::vector<Vector3D>& positions,
                        const FmmRootGeometry& rootGeometry,
                        const FmmGravityOptions& options);
+    void initializeRoot(const std::vector<Vector3D>& positions,
+                        const FmmRootGeometry& rootGeometry,
+                        const FmmGravityOptions& options);
     void buildNode(std::size_t nodeIndex,
                    const std::vector<Vector3D>& positions,
                    const FmmGravityOptions& options);
+    void buildPersistentNode(
+        std::size_t nodeIndex,
+        const std::vector<Vector3D>& positions,
+        const FmmGravityOptions& options,
+        std::size_t splitCapacity,
+        std::size_t mergeCapacity,
+        bool initializeFromScratch,
+        const std::vector<std::uint64_t>& previousInternalKeys,
+        FmmPersistentTreeStats& stats);
+    void partitionNode(std::size_t nodeIndex,
+                       const std::vector<Vector3D>& positions,
+                       std::array<std::size_t, 8>& counts);
+    void appendChildren(std::size_t nodeIndex,
+                        const std::array<std::size_t, 8>& counts,
+                        bool materializeEmptyChildren);
     void finishMetadata(const std::vector<Vector3D>& positions);
     void collectOrders(std::size_t nodeIndex);
     void validateInvariants(std::size_t particleCount) const;
