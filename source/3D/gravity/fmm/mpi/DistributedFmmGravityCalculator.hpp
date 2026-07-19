@@ -25,6 +25,7 @@ struct FmmDistributedOptions
     double rootSlackFactor = 1.25;
     std::size_t maxRemoteBytes = static_cast<std::size_t>(2) * 1024 * 1024 * 1024;
     bool rebuildTopologyEverySolve = false;
+    bool reuseInteractionPlansAcrossLeafCountChanges = true;
 };
 
 class DistributedFmmGravityCalculator
@@ -52,6 +53,8 @@ private:
     {
         bool rootGeometryChanged = false;
         bool leafTopologyChanged = false;
+        bool leafOccupancyChanged = false;
+        bool countOnlyLeafChange = false;
     };
 
     void validateInputs(const std::vector<Vector3D>& positions,
@@ -76,7 +79,8 @@ private:
     FmmRootGeometry localRoot_;
     bool rootInitialized_;
     std::uint64_t lastLocalTopologyHash_;
-    std::vector<std::uint64_t> lastLocalTopologySignature_;
+    std::vector<std::uint64_t> lastLocalStructuralSignature_;
+    std::vector<std::uint64_t> lastLocalOccupancySignature_;
     std::uint64_t topologyEpoch_;
     std::uint64_t topologyRebuildCount_;
     std::uint64_t processTopologyRebuildCount_;

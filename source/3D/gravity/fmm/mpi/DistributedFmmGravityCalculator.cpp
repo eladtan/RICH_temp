@@ -53,14 +53,35 @@ void progressLetExchange(void* context)
     static_cast<FmmLetPlan*>(context)->progressExecute();
 }
 
-std::vector<std::uint64_t> leafTopologySignature(const FmmTree& tree)
+std::vector<std::uint64_t> structuralTopologySignature(const FmmTree& tree)
 {
     static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
                   "Distributed FMM topology signatures require <=64-bit size_t");
     std::vector<std::uint64_t> signature;
-    if(tree.leafCount() > std::numeric_limits<std::size_t>::max() / 2)
+    if(tree.nodes().size() > std::numeric_limits<std::size_t>::max() / 2)
         throw UniversalError(
             "DistributedFmmGravityCalculator: topology signature size overflow");
+    signature.reserve(2 * tree.nodes().size());
+    for(const FmmNode& node : tree.nodes())
+    {
+        signature.push_back(node.spatialKey);
+        const std::uint64_t metadata =
+            static_cast<std::uint64_t>(node.childMask) |
+            (static_cast<std::uint64_t>(node.isLeaf() ? 1u : 0u) << 8u) |
+            (static_cast<std::uint64_t>(node.depth) << 9u);
+        signature.push_back(metadata);
+    }
+    return signature;
+}
+
+std::vector<std::uint64_t> leafOccupancySignature(const FmmTree& tree)
+{
+    static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
+                  "Distributed FMM occupancy signatures require <=64-bit size_t");
+    std::vector<std::uint64_t> signature;
+    if(tree.leafCount() > std::numeric_limits<std::size_t>::max() / 2)
+        throw UniversalError(
+            "DistributedFmmGravityCalculator: occupancy signature size overflow");
     signature.reserve(2 * tree.leafCount());
     for(const FmmNode& node : tree.nodes())
     {
@@ -331,7 +352,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 2,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[8] = {
+    const unsigned long long localIntegerOptions[9] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
@@ -339,19 +360,20 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         options_.validateFinite ? 1ull : 0ull,
         static_cast<unsigned long long>(options_.maxOperatorCacheBytes),
         static_cast<unsigned long long>(distributedOptions_.maxRemoteBytes),
-        distributedOptions_.rebuildTopologyEverySolve ? 1ull : 0ull};
-    unsigned long long minimumIntegerOptions[8] = {};
-    unsigned long long maximumIntegerOptions[8] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 8,
+        distributedOptions_.rebuildTopologyEverySolve ? 1ull : 0ull,
+        distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges ? 1ull : 0ull};
+    unsigned long long minimumIntegerOptions[9] = {};
+    unsigned long long maximumIntegerOptions[9] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 9,
                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 8,
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 9,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
     for(int i = 0; i < 2; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 8; ++i)
+    for(int i = 0; i < 9; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -447,12 +469,20 @@ DistributedFmmGravityCalculator::prepareLocalTree(
         !rootInitialized_ || !sameRoot(localRoot_, nextRoot);
     localTree_.build(positions, nextRoot, options_);
     const std::uint64_t hash = localTree_.topologyHash();
-    std::vector<std::uint64_t> signature = leafTopologySignature(localTree_);
+    std::vector<std::uint64_t> structuralSignature =
+        structuralTopologySignature(localTree_);
+    std::vector<std::uint64_t> occupancySignature =
+        leafOccupancySignature(localTree_);
     change.leafTopologyChanged =
-        signature != lastLocalTopologySignature_;
+        structuralSignature != lastLocalStructuralSignature_;
+    change.leafOccupancyChanged =
+        occupancySignature != lastLocalOccupancySignature_;
+    change.countOnlyLeafChange = !change.rootGeometryChanged &&
+        !change.leafTopologyChanged && change.leafOccupancyChanged;
     localRoot_ = nextRoot;
     lastLocalTopologyHash_ = hash;
-    lastLocalTopologySignature_.swap(signature);
+    lastLocalStructuralSignature_.swap(structuralSignature);
+    lastLocalOccupancySignature_.swap(occupancySignature);
     rootInitialized_ = true;
     return change;
 }
@@ -629,10 +659,16 @@ void DistributedFmmGravityCalculator::solve(
     const Clock::time_point buildStart = Clock::now();
     const LocalTopologyChange localChange =
         prepareLocalTree(positions, domainLower, domainUpper);
+    const bool occupancyRequiresRebuild =
+        localChange.leafOccupancyChanged &&
+        !distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges;
     const bool localTreeTopologyChanged =
-        localChange.rootGeometryChanged || localChange.leafTopologyChanged;
+        localChange.rootGeometryChanged || localChange.leafTopologyChanged ||
+        occupancyRequiresRebuild;
     stats_.localRootGeometryChanged = localChange.rootGeometryChanged;
     stats_.localLeafTopologyChanged = localChange.leafTopologyChanged;
+    stats_.localLeafOccupancyChanged = localChange.leafOccupancyChanged;
+    stats_.localCountOnlyLeafChange = localChange.countOnlyLeafChange;
     stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     FmmPasses::updateTreeStats(localTree_, stats_);
     stats_.buildSeconds = elapsed(buildStart);
@@ -663,22 +699,32 @@ void DistributedFmmGravityCalculator::solve(
         localAbsoluteMassExtended += std::abs(static_cast<long double>(mass));
     }
 
-    // A single SUM reduction carries both mass terms and separate root/leaf
-    // change counts.  Root changes invalidate the rank-level process topology;
-    // leaf-only changes invalidate only the LET/local interaction topology.
-    const double localMassTerms[4] = {
+    const double localMassTerms[2] = {
         static_cast<double>(localMassExtended),
-        static_cast<double>(localAbsoluteMassExtended),
-        localChange.rootGeometryChanged ? 1.0 : 0.0,
-        localChange.leafTopologyChanged ? 1.0 : 0.0};
-    double globalMassTerms[4] = {0.0, 0.0, 0.0, 0.0};
-    MPI_Allreduce(localMassTerms, globalMassTerms, 4, MPI_DOUBLE, MPI_SUM, comm_);
+        static_cast<double>(localAbsoluteMassExtended)};
+    double globalMassTerms[2] = {0.0, 0.0};
+    MPI_Allreduce(localMassTerms, globalMassTerms, 2, MPI_DOUBLE, MPI_SUM, comm_);
+
+    const unsigned long long localTopologyTerms[5] = {
+        static_cast<unsigned long long>(positions.size()),
+        localChange.rootGeometryChanged ? 1ull : 0ull,
+        localChange.leafTopologyChanged ? 1ull : 0ull,
+        localChange.leafOccupancyChanged ? 1ull : 0ull,
+        localChange.countOnlyLeafChange ? 1ull : 0ull};
+    unsigned long long globalTopologyTerms[5] = {};
+    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 5,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
+
     stats_.totalMass = globalMassTerms[0];
     const double totalAbsoluteMass = globalMassTerms[1];
     stats_.ranksWithRootGeometryChange =
-        static_cast<std::size_t>(globalMassTerms[2]);
+        static_cast<std::size_t>(globalTopologyTerms[1]);
     stats_.ranksWithLeafTopologyChange =
-        static_cast<std::size_t>(globalMassTerms[3]);
+        static_cast<std::size_t>(globalTopologyTerms[2]);
+    stats_.ranksWithLeafOccupancyChange =
+        static_cast<std::size_t>(globalTopologyTerms[3]);
+    stats_.ranksWithCountOnlyLeafChange =
+        static_cast<std::size_t>(globalTopologyTerms[4]);
     if(!std::isfinite(stats_.totalMass) || !std::isfinite(totalAbsoluteMass))
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: non-finite global mass sum");
@@ -686,9 +732,15 @@ void DistributedFmmGravityCalculator::solve(
     stats_.topologyRebuildForced =
         distributedOptions_.rebuildTopologyEverySolve;
     const bool processTopologyChanged =
-        stats_.topologyRebuildForced || globalMassTerms[2] != 0.0;
+        stats_.topologyRebuildForced || globalTopologyTerms[1] != 0ull;
+    const bool globalOccupancyRequiresRebuild =
+        !distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges &&
+        globalTopologyTerms[3] != 0ull;
     const bool letTopologyChanged =
-        processTopologyChanged || globalMassTerms[3] != 0.0;
+        processTopologyChanged || globalTopologyTerms[2] != 0ull ||
+        globalOccupancyRequiresRebuild;
+    stats_.countOnlyTopologyReused =
+        globalTopologyTerms[4] != 0ull && !letTopologyChanged;
     if(letTopologyChanged)
         rebuildTopology(processTopologyChanged);
     else
@@ -779,15 +831,8 @@ void DistributedFmmGravityCalculator::solve(
     if(!std::isfinite(stats_.rootMass))
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: non-finite global root mass");
-    std::uint64_t globalParticleCount = 0;
-    for(const FmmRankRootDescriptor& descriptor : rootDescriptors_)
-    {
-        if(descriptor.particleCount >
-           std::numeric_limits<std::uint64_t>::max() - globalParticleCount)
-            throw UniversalError(
-                "DistributedFmmGravityCalculator::solve: global particle count overflow");
-        globalParticleCount += descriptor.particleCount;
-    }
+    const std::uint64_t globalParticleCount =
+        static_cast<std::uint64_t>(globalTopologyTerms[0]);
     const long double accumulationFactor = static_cast<long double>(
         std::max<std::uint64_t>(1, globalParticleCount));
     const double massTolerance = static_cast<double>(

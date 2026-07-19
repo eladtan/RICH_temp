@@ -43,10 +43,15 @@ struct FmmSolveStats
     std::uint64_t letTopologyRebuildCount = 0;
     std::size_t ranksWithRootGeometryChange = 0;
     std::size_t ranksWithLeafTopologyChange = 0;
+    std::size_t ranksWithLeafOccupancyChange = 0;
+    std::size_t ranksWithCountOnlyLeafChange = 0;
     bool localRootGeometryChanged = false;
     bool localLeafTopologyChanged = false;
+    bool localLeafOccupancyChanged = false;
+    bool localCountOnlyLeafChange = false;
     bool processTopologyRebuilt = false;
     bool letTopologyRebuilt = false;
+    bool countOnlyTopologyReused = false;
     bool topologyRebuildForced = false;
     bool processCommunicatorsReused = false;
     bool letCommunicatorReused = false;

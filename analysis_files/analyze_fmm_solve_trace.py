@@ -34,11 +34,15 @@ INTEGER_KEYS = (
     "let_rebuilds",
     "root_change_ranks",
     "leaf_change_ranks",
+    "occupancy_change_ranks",
+    "count_only_change_ranks",
+    "count_only_reused",
     "process_rebuilt",
     "let_rebuilt",
     "process_comm_reused",
     "let_comm_reused",
     "let_storage_reused",
+    "let_plan_bytes_max",
     "forced_rebuild",
     "active_ranks",
     "local_plan_reused_ranks",
@@ -114,14 +118,23 @@ def print_group(name: str, records: list[dict[str, float | int]]) -> None:
         "process_comm_reused",
         "let_comm_reused",
         "let_storage_reused",
+        "count_only_reused",
         "forced_rebuild",
         "local_plan_reused_all",
     ):
         print(f"  {key:24s} fraction={fraction(records, key):.6f}")
     root_changes = [int(record.get("root_change_ranks", 0)) for record in records]
     leaf_changes = [int(record.get("leaf_change_ranks", 0)) for record in records]
+    occupancy_changes = [
+        int(record.get("occupancy_change_ranks", 0)) for record in records
+    ]
+    count_only_changes = [
+        int(record.get("count_only_change_ranks", 0)) for record in records
+    ]
     print(f"  root_change_ranks_max    {max(root_changes, default=0)}")
     print(f"  leaf_change_ranks_max    {max(leaf_changes, default=0)}")
+    print(f"  occupancy_change_ranks_max {max(occupancy_changes, default=0)}")
+    print(f"  count_only_change_ranks_max {max(count_only_changes, default=0)}")
 
 
 def write_tsv(path: Path, records: list[dict[str, float | int]]) -> None:

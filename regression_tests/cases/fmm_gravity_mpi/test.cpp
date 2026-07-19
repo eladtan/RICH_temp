@@ -23,6 +23,7 @@ struct Body
 enum class BodyLayout
 {
     Baseline,
+    CountOnlyLeafChange,
     LocalLeafChange,
     RootBreach
 };
@@ -57,6 +58,20 @@ std::vector<Body> bodiesForRank(int rank, int size,
         body.ownerRank = rank;
         body.ownerLocalIndex = static_cast<std::uint64_t>(i);
         result.push_back(body);
+    }
+
+    if(layout == BodyLayout::CountOnlyLeafChange && rank == 0 && result.size() >= 2)
+    {
+        Body extra;
+        extra.position = Vector3D(
+            0.5 * (result[0].position.x + result[1].position.x),
+            0.5 * (result[0].position.y + result[1].position.y),
+            0.5 * (result[0].position.z + result[1].position.z));
+        extra.mass = massScale * 0.91;
+        extra.id = 0;
+        extra.ownerRank = rank;
+        extra.ownerLocalIndex = static_cast<std::uint64_t>(result.size());
+        result.push_back(extra);
     }
 
     if(layout == BodyLayout::LocalLeafChange && rank == 0 && result.size() >= 4)
@@ -195,10 +210,60 @@ int main(int argc, char** argv)
     std::uint64_t leafEpoch = 0;
     bool leafOnlyRebuild = false;
     bool rootProcessRebuild = false;
+    bool countOnlyTopologyReused = false;
+    bool countOnlyLocalPlanReused = false;
     bool leafStorageReused = false;
     bool rootStorageReset = false;
     bool finiteStats = false;
     bool mismatchedDomainRejected = size == 1;
+
+    {
+        FmmGravityOptions countOptions = options;
+        countOptions.leafCapacity = 8;
+        DistributedFmmGravityCalculator countSolver(countOptions, distributed);
+        std::vector<Vector3D> positions;
+        std::vector<double> masses;
+        std::vector<std::uint64_t> ids;
+        std::vector<Vector3D> acceleration;
+        std::vector<double> potential;
+
+        std::vector<Body> localBodies = bodiesForRank(
+            rank, size, 1.0, BodyLayout::Baseline);
+        unpack(localBodies, positions, masses, ids);
+        countSolver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
+                          Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
+                       acceleration, potential));
+        const std::uint64_t countEpoch = countSolver.stats().topologyEpoch;
+        const std::uint64_t countRebuilds =
+            countSolver.stats().topologyRebuildCount;
+        const std::uint64_t countLetRebuilds =
+            countSolver.stats().letTopologyRebuildCount;
+
+        localBodies = bodiesForRank(
+            rank, size, 1.0, BodyLayout::CountOnlyLeafChange);
+        unpack(localBodies, positions, masses, ids);
+        countSolver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
+                          Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies,
+                       allBodies(size, 1.0, BodyLayout::CountOnlyLeafChange),
+                       acceleration, potential));
+        countOnlyTopologyReused =
+            countSolver.stats().ranksWithRootGeometryChange == 0 &&
+            countSolver.stats().ranksWithLeafTopologyChange == 0 &&
+            countSolver.stats().ranksWithLeafOccupancyChange > 0 &&
+            countSolver.stats().ranksWithCountOnlyLeafChange > 0 &&
+            countSolver.stats().countOnlyTopologyReused &&
+            !countSolver.stats().processTopologyRebuilt &&
+            !countSolver.stats().letTopologyRebuilt &&
+            countSolver.stats().topologyEpoch == countEpoch &&
+            countSolver.stats().topologyRebuildCount == countRebuilds &&
+            countSolver.stats().letTopologyRebuildCount == countLetRebuilds;
+        countOnlyLocalPlanReused =
+            localBodies.empty() || countSolver.stats().localInteractionPlanReused;
+    }
 
     {
         DistributedFmmGravityCalculator solver(options, distributed);
@@ -313,26 +378,29 @@ int main(int argc, char** argv)
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
-    const int localChecks[10] = {
+    const int localChecks[12] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
         leafEpoch > secondEpoch ? 1 : 0,
         thirdEpoch > leafEpoch ? 1 : 0,
         leafOnlyRebuild ? 1 : 0,
         rootProcessRebuild ? 1 : 0,
+        countOnlyTopologyReused ? 1 : 0,
+        countOnlyLocalPlanReused ? 1 : 0,
         finiteStats ? 1 : 0,
         mismatchedDomainRejected ? 1 : 0,
         leafStorageReused ? 1 : 0,
         rootStorageReset ? 1 : 0};
-    int globalChecks[10] = {};
-    MPI_Allreduce(localChecks, globalChecks, 10, MPI_INT, MPI_LAND,
+    int globalChecks[12] = {};
+    MPI_Allreduce(localChecks, globalChecks, 12, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
                            globalChecks[2] && globalChecks[3] &&
                            globalChecks[4] && globalChecks[5] &&
                            globalChecks[6] && globalChecks[7] &&
-                           globalChecks[8] && globalChecks[9];
+                           globalChecks[8] && globalChecks[9] &&
+                           globalChecks[10] && globalChecks[11];
 
     if(rank == 0)
     {
@@ -354,18 +422,21 @@ int main(int argc, char** argv)
         output << "topology_rebuilt " << globalChecks[3] << "\n";
         output << "leaf_only_rebuild " << globalChecks[4] << "\n";
         output << "root_process_rebuild " << globalChecks[5] << "\n";
-        output << "finite_stats " << globalChecks[6] << "\n";
-        output << "mismatched_domain_rejected " << globalChecks[7] << "\n";
-        output << "leaf_storage_reused " << globalChecks[8] << "\n";
-        output << "root_storage_reset " << globalChecks[9] << "\n";
+        output << "count_only_topology_reused " << globalChecks[6] << "\n";
+        output << "count_only_local_plan_reused " << globalChecks[7] << "\n";
+        output << "finite_stats " << globalChecks[8] << "\n";
+        output << "mismatched_domain_rejected " << globalChecks[9] << "\n";
+        output << "leaf_storage_reused " << globalChecks[10] << "\n";
+        output << "root_storage_reset " << globalChecks[11] << "\n";
         output << "pass " << globalPass << "\n";
         std::cout << "fmm_gravity_mpi ranks=" << size
                   << " max_scaled_error=" << globalMaximumError
                   << " topology_reused=" << globalChecks[0]
                   << " leaf_only_rebuild=" << globalChecks[4]
                   << " root_process_rebuild=" << globalChecks[5]
-                  << " finite_stats=" << globalChecks[6]
-                  << " domain_rejected=" << globalChecks[7]
+                  << " count_only_reused=" << globalChecks[6]
+                  << " finite_stats=" << globalChecks[8]
+                  << " domain_rejected=" << globalChecks[9]
                   << " pass=" << globalPass << std::endl;
     }
 

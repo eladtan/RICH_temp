@@ -151,6 +151,11 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " let_rebuilds=" << stats.letTopologyRebuildCount
          << " root_change_ranks=" << stats.ranksWithRootGeometryChange
          << " leaf_change_ranks=" << stats.ranksWithLeafTopologyChange
+         << " occupancy_change_ranks="
+         << stats.ranksWithLeafOccupancyChange
+         << " count_only_change_ranks="
+         << stats.ranksWithCountOnlyLeafChange
+         << " count_only_reused=" << (stats.countOnlyTopologyReused ? 1 : 0)
          << " process_rebuilt=" << (stats.processTopologyRebuilt ? 1 : 0)
          << " let_rebuilt=" << (stats.letTopologyRebuilt ? 1 : 0)
          << " process_comm_reused="
@@ -163,7 +168,8 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " local_plan_reused_ranks=" << globalReusedActiveRanks
          << " local_plan_reused_all="
          << (globalReusedActiveRanks ==
-                 static_cast<unsigned long long>(stats.activeRankCount) ? 1 : 0);
+                 static_cast<unsigned long long>(stats.activeRankCount) ? 1 : 0)
+         << " let_plan_bytes_max=" << maximumLetPlanBytes;
     std::cout << line.str() << std::endl;
 }
 }

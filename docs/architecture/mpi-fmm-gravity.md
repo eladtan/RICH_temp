@@ -70,17 +70,26 @@ A changed exact local-root cube or rank activation change rebuilds both
 levels.  `rebuildTopologyEverySolve` also forces both levels to rebuild, but is
 reported separately from actual root/leaf changes.  The forced mode also
 disables local interaction-plan reuse, preserving its previous semantics.  A
-changed exact local leaf-key/particle-count signature with unchanged rank roots rebuilds only the
+changed exact local node structure with unchanged rank roots rebuilds only the
 LET.  The process tree and its three communication graphs remain valid because
 their geometry and routing depend only on rank-root cubes.  The LET descriptor
 exchange still receives current root topology metadata before rebuilding.
 
 Mass-only changes therefore recompute expansions while reusing the process and
 LET plans.  Reuse is not decided by a probabilistic hash: a compact exact list
-of local leaf spatial keys and particle counts is compared.  Moving bodies that
-stay within the same spatial-node topology and preserve those leaf counts reuse
-the plan safely; payloads always contain current masses and positions.  The
-64-bit topology hash retained in diagnostics is not a correctness decision.
+of node spatial keys, child masks, leaf status, and depths is compared.  A
+separate exact leaf-occupancy signature records particle counts for diagnostics.
+Particle-count changes no longer invalidate interaction plans when the full
+node structure is unchanged: M2L geometry depends on fixed node cubes, while
+P2P subscriptions are keyed by leaf spatial key and payloads carry their current
+particle counts, masses, positions, and identities.
+
+`FmmDistributedOptions::reuseInteractionPlansAcrossLeafCountChanges` controls
+this behavior and defaults to true.  Setting it to false restores the previous
+conservative invalidation rule for A/B testing.  Structural changes still
+rebuild the LET, and root changes still rebuild both the process and LET
+topologies.  The 64-bit topology hash retained in diagnostics is not a
+correctness decision.
 
 MPI distributed-graph communicators are also retained when every rank reports
 the same normalized peer set.  `FmmSolveStats` reports root/leaf change counts,

@@ -1664,6 +1664,8 @@ check_fmm_gravity_mpi_case() {
     local mismatched_domain_rejected
     local leaf_storage_reused
     local root_storage_reset
+    local count_only_topology_reused
+    local count_only_local_plan_reused
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -1691,6 +1693,8 @@ check_fmm_gravity_mpi_case() {
     mismatched_domain_rejected=$(awk '$1 == "mismatched_domain_rejected" { print $2 }' "$metrics_file")
     leaf_storage_reused=$(awk '$1 == "leaf_storage_reused" { print $2 }' "$metrics_file")
     root_storage_reset=$(awk '$1 == "root_storage_reset" { print $2 }' "$metrics_file")
+    count_only_topology_reused=$(awk '$1 == "count_only_topology_reused" { print $2 }' "$metrics_file")
+    count_only_local_plan_reused=$(awk '$1 == "count_only_local_plan_reused" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
@@ -1699,6 +1703,8 @@ check_fmm_gravity_mpi_case() {
           -z "$rebuild_count_reused" || -z "$leaf_topology_rebuilt" ||
           -z "$topology_rebuilt" || -z "$leaf_only_rebuild" ||
           -z "$root_process_rebuild" ||
+          -z "$count_only_topology_reused" ||
+          -z "$count_only_local_plan_reused" ||
           -z "$leaf_storage_reused" || -z "$root_storage_reset" ||
           -z "$finite_stats" || -z "$mismatched_domain_rejected" ||
           -z "$pass_flag" ]]; then
@@ -1742,6 +1748,14 @@ check_fmm_gravity_mpi_case() {
     fi
     if [[ "$root_storage_reset" != "1" ]]; then
         set_check_msg "distributed FMM did not reset LET build storage on a full process rebuild"
+        return 1
+    fi
+    if [[ "$count_only_topology_reused" != "1" ]]; then
+        set_check_msg "distributed FMM rebuilt topology after a count-only leaf occupancy change"
+        return 1
+    fi
+    if [[ "$count_only_local_plan_reused" != "1" ]]; then
+        set_check_msg "distributed FMM failed to reuse the local plan after a count-only change"
         return 1
     fi
     if [[ "$finite_stats" != "1" ]]; then
