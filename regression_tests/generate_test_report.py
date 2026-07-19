@@ -75,6 +75,7 @@ TEST_CATEGORIES: list[tuple[str, list[str]]] = [
     ]),
     ("Self-Gravity", [
         "lane_self_gravity",
+        "lane_self_gravity_fmm",
     ]),
     ("Mesh and Infrastructure", [
         "amr_random",
@@ -539,7 +540,7 @@ TESTS = [
         ),
         "boundary_conditions": "Rigid walls at the outer boundary.",
         "mesh_movement": "Lagrangian with cell rounding. Gravity via a conservative force module.",
-        "execution": "MPI, 64~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "execution": "MPI, 512~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
         "pass_criteria": (
             r"The volume-weighted average density error vs.\ the analytical "
             r"Lane--Emden profile must satisfy:"
@@ -555,6 +556,48 @@ TESTS = [
             "Lane--Emden self-gravity: numerical density profile (black dots) "
             "vs.\\ the analytical Lane--Emden solution (red line) as a function "
             "of radius."
+        ),
+    },
+    {
+        "id": "lane_self_gravity_fmm",
+        "title": "Lane--Emden Self-Gravity Equilibrium (FMM)",
+        "description": (
+            "This test is identical to the Lane--Emden self-gravity benchmark, "
+            "but uses the distributed fast multipole method (FMM) gravity solver "
+            "instead of the quadrupole Barnes--Hut tree. The expansion order is "
+            "$P = 3$ and the multipole acceptance criterion is "
+            "$\\theta = 0.9$.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{FMM gravity in hydro:} The "
+            "\\texttt{FastMultipoleAcceleration3D} adapter must compute "
+            "consistent gravitational accelerations on the Voronoi mesh and "
+            "couple correctly to the conservative force module.\n"
+            "  \\item \\textbf{Hydrostatic balance with approximate gravity:} "
+            "The star should remain near the analytical Lane--Emden profile "
+            "despite using an approximate FMM solver rather than the direct "
+            "quadrupole tree.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Same as \\texttt{lane\\_self\\_gravity}: a polytropic star with "
+            r"$M = 2\times10^{33}\;\mathrm{g}$, $R = 7\times10^{10}\;\mathrm{cm}$, "
+            r"and Lane--Emden tables \\texttt{data/xsi32.txt} and "
+            r"\\texttt{data/theta32.txt}."
+        ),
+        "boundary_conditions": "Rigid walls at the outer boundary.",
+        "mesh_movement": "Lagrangian with cell rounding. Gravity via FMM conservative force.",
+        "execution": "MPI, 512~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"The volume-weighted average density error vs.\ the analytical "
+            r"Lane--Emden profile must satisfy "
+            r"$|\texttt{final\_metric}| < 4\times10^{-2}$."
+        ),
+        "plots": ["lane_self_gravity.png"],
+        "plot_caption": (
+            "Lane--Emden self-gravity: FMM density profile (blue dots) overlaid "
+            "on the quadrupole-tree result (black dots, if available) vs.\\ the "
+            "analytical Lane--Emden solution (red line)."
         ),
     },
     {
@@ -1841,8 +1884,8 @@ def _read_voronoi_metrics(cases_dir: Path) -> list[MetricRow]:
     return [("Relative volume error", rel_error, thr, passed)]
 
 
-def _read_lane_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_space(cases_dir / "lane_self_gravity" / "lane_gravity_metrics.txt")
+def _read_lane_metrics(cases_dir: Path, case_name: str = "lane_self_gravity") -> list[MetricRow]:
+    kv = _parse_kv_space(cases_dir / case_name / "lane_gravity_metrics.txt")
     if not kv:
         return []
     metric = kv.get("final_metric")
@@ -2103,6 +2146,7 @@ METRIC_READERS: dict[str, object] = {
     "amr_random": lambda cd: _read_amr_metrics(cd),
     "voronoi_volume": lambda cd: _read_voronoi_metrics(cd),
     "lane_self_gravity": lambda cd: _read_lane_metrics(cd),
+    "lane_self_gravity_fmm": lambda cd: _read_lane_metrics(cd, "lane_self_gravity_fmm"),
     "mach2_diffusion": lambda cd: _read_mach2_metrics(cd, "mach2_diffusion"),
     "mach2_multigroup": lambda cd: _read_mach2_metrics(cd, "mach2_multigroup"),
     "marshak_wave_1": lambda cd: _read_marshak_wave_metrics(cd, 1),
@@ -2525,7 +2569,8 @@ _SUMMARY_TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
     "moving_slab_mc": ("Moving Slab MC", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
     "moving_slab_mc_32": ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
-    "lane_self_gravity": ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
+    "lane_self_gravity": ("Lane--Emden", "MPI", "512", "Lagrangian", "Yes"),
+    "lane_self_gravity_fmm": ("Lane--Emden FMM", "MPI", "512", "Lagrangian", "Yes"),
     "amr_random": ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),
     "voronoi_volume": ("Voronoi Volume", "Serial + MPI", "1 / 64", "Static", "No"),
     "spherical_gauss_linear": ("Spherical LSQ Gradient", "Serial", "1", "Static", "No"),

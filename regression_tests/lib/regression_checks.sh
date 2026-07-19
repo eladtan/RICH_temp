@@ -497,6 +497,58 @@ check_lane_self_gravity_case() {
     return 0
 }
 
+check_lane_self_gravity_fmm_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/lane_gravity_metrics.txt"
+    local final_metric
+    local pass_flag
+    local max_metric
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale lane_gravity_metrics.txt"
+        return 1
+    fi
+
+    final_metric=$(awk '$1 == "final_metric" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$final_metric" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse lane self-gravity FMM metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$final_metric"; then
+        set_check_msg "lane_self_gravity_fmm final_metric is not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "lane_self_gravity_fmm pass flag must be 0 or 1"
+        return 1
+    fi
+
+    max_metric="${LANE_GRAVITY_FMM_MAX_METRIC:-${LANE_GRAVITY_MAX_METRIC:-4e-2}}"
+
+    if ! awk -v m="$final_metric" -v t="$max_metric" 'BEGIN { am = (m < 0 ? -m : m); exit !(am < t) }'; then
+        set_check_msg "lane_self_gravity_fmm |final_metric| exceeds threshold (${final_metric}, threshold ${max_metric})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "lane_self_gravity_fmm test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Lane self-gravity FMM equilibrium check passed (final_metric=${final_metric})"
+    return 0
+}
+
 check_mach2_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

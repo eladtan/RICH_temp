@@ -215,22 +215,45 @@ def plot_sedov(root: Path, out_dir: Path) -> bool:
 
 def plot_lane(root: Path, out_dir: Path) -> bool:
     """Lane-Emden: density vs r compared to initial (analytic) Lane-Emden profile."""
-    profile = root / "regression_tests" / "cases" / "lane_self_gravity" / "lane_profile.txt"
-    if not profile.exists():
-        print(f"  [lane_self_gravity] profile not found: {profile}")
+    quad_profile = root / "regression_tests" / "cases" / "lane_self_gravity" / "lane_profile.txt"
+    fmm_profile = root / "regression_tests" / "cases" / "lane_self_gravity_fmm" / "lane_profile.txt"
+
+    if not quad_profile.exists() and not fmm_profile.exists():
+        print(f"  [lane_self_gravity] no lane profile found under {root / 'regression_tests' / 'cases'}")
         return False
 
-    raw = np.loadtxt(str(profile))
-    if raw.ndim == 1:
-        raw = np.expand_dims(raw, axis=0)
-    r = raw[:, 0]
-    density = raw[:, 1]
-    density_analytic = raw[:, 2]
+    def _load_profile(path: Path):
+        raw = np.loadtxt(str(path))
+        if raw.ndim == 1:
+            raw = np.expand_dims(raw, axis=0)
+        return raw[:, 0], raw[:, 1], raw[:, 2]
 
     plt = _get_plt()
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(r, density, "k.", markersize=3, label="Numeric (binned)")
-    ax.plot(r, density_analytic, "r-", linewidth=1.5, label="Initial (Lane-Emden)")
+
+    plotted = False
+    if quad_profile.exists():
+        r, density, density_analytic = _load_profile(quad_profile)
+        ax.plot(r, density, "k.", markersize=3, label="Quadrupole tree (binned)")
+        plotted = True
+    else:
+        density_analytic = None
+
+    if fmm_profile.exists():
+        r_fmm, density_fmm, density_analytic_fmm = _load_profile(fmm_profile)
+        ax.plot(r_fmm, density_fmm, "b.", markersize=3, label="FMM P=3, θ=0.9 (binned)")
+        if density_analytic is None:
+            density_analytic = density_analytic_fmm
+            r = r_fmm
+        plotted = True
+
+    if density_analytic is not None:
+        analytic_r = r if quad_profile.exists() else r_fmm
+        ax.plot(analytic_r, density_analytic, "r-", linewidth=1.5, label="Initial (Lane-Emden)")
+
+    if not plotted:
+        return False
+
     ax.set_xlabel("r [cm]")
     ax.set_ylabel("Density [g/cm$^3$]")
     ax.set_title("Lane-Emden Self-Gravity -- Density")
@@ -1124,6 +1147,7 @@ ALL_PLOTTERS = {
     "sod_1d": plot_sod,
     "sedov_3d_mpi": plot_sedov,
     "lane_self_gravity": plot_lane,
+    "lane_self_gravity_fmm": plot_lane,
     "till_compton": plot_till,
     "till_compton_mc": plot_till_mc,
     "mach2_diffusion": plot_mach2_diffusion,

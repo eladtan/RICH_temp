@@ -16,7 +16,7 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/ConservativeForce3D.hpp"
-#include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
+#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 #include <fstream>
 #include <cmath>
 #include <unistd.h>
@@ -182,7 +182,10 @@ int main(void)
     vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
     ConditionExtensiveUpdater3D eu(eu_sequence);
 
-    GravityAcceleration3D acc(0.7, true, G);
+    FmmGravityOptions fmmOptions;
+    fmmOptions.expansionOrder = 3;
+    fmmOptions.thetaCritical = 0.9;
+    FastMultipoleAcceleration3D acc(fmmOptions, G);
     ConservativeForce3D force(acc);
 
     auto tsf = std::make_shared<CourantFriedrichsLewy>(0.25, 1, force, std::vector<std::string>(), false);
