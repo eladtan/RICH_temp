@@ -46,9 +46,9 @@ output_*
 !.cursor/skills/rich-self-gravity/
 !.cursor/skills/rich-self-gravity/**
 runs/clemon*
-runs/**/*.txt 
 /regression_results
 *.png
 *.pdf
 runs/*/venv/
 .specstory/*
+**/mpi_tmp*

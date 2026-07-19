@@ -1,6 +1,7 @@
 #include "flux_source_calculation.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <cmath>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <numeric>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -46,6 +48,214 @@ double EffectiveThermalizationOpacity(
         0.0, 3.0 * absorption * (absorption + scattering)));
 }
 
+#ifdef RICH_MPI
+constexpr int fluxSourceSlowRayMpiTag = 9942;
+#endif
+
+struct FluxSourceSlowRayReport
+{
+    int rank = 0;
+    size_t rayId = 0;
+    double elapsed_s = 0.0;
+    uint64_t steps = 0;
+    double location[3] = {0.0, 0.0, 0.0};
+    double radial_cm = 0.0;
+    size_t cellIndex = 0;
+    size_t cellId = 0;
+    double rho = 0.0;
+    double temperature = 0.0;
+    double tauAcc = 0.0;
+    double targetTau = 0.0;
+    double sigPlanck = 0.0;
+    double sigScat = 0.0;
+    double sigEff = 0.0;
+    double sigDiff = 0.0;
+};
+
+class FluxSourceSlowRayMonitor
+{
+public:
+    static constexpr double kInterval_s = 10.0;
+
+    FluxSourceSlowRayMonitor(
+        std::vector<ComputationalCell3D> const& cells,
+        OpacityCalculator const& opacity,
+        Vector3D center,
+        double targetTau)
+        : cells_(cells), opacity_(opacity), center_(center), targetTau_(targetTau)
+    {
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &mpiRank_);
+#else
+        mpiRank_ = 0;
+#endif
+    }
+
+    void touchRay(
+        size_t rayId,
+        size_t cellIndex,
+        Vector3D const& location,
+        uint64_t steps,
+        double tauAcc)
+    {
+        auto& tracked = tracked_[rayId];
+        if(!tracked.active)
+        {
+            tracked.active = true;
+            tracked.start = SteadyClock::now();
+            tracked.lastPrintElapsed_s = -kInterval_s;
+        }
+        tracked.cellIndex = cellIndex;
+        tracked.location = location;
+        tracked.steps = steps;
+        tracked.tauAcc = tauAcc;
+    }
+
+    void unregisterRay(size_t rayId) { tracked_.erase(rayId); }
+
+    // Must run on the main MPI thread only (OpenMPI/UCX is not thread-safe here).
+    void poll()
+    {
+        SteadyClock::time_point const now = SteadyClock::now();
+        if(lastPoll_ != SteadyClock::time_point{} &&
+           now - lastPoll_ < std::chrono::seconds(1))
+            return;
+        lastPoll_ = now;
+
+        std::vector<FluxSourceSlowRayReport> reports;
+        for(auto& entry : tracked_)
+        {
+            TrackedRay& ray = entry.second;
+            if(!ray.active || ray.cellIndex >= cells_.size())
+                continue;
+
+            double const elapsed_s = std::chrono::duration<double>(
+                now - ray.start).count();
+            if(elapsed_s < kInterval_s)
+                continue;
+            if(elapsed_s - ray.lastPrintElapsed_s < kInterval_s)
+                continue;
+
+            ray.lastPrintElapsed_s = elapsed_s;
+            reports.push_back(buildReport(entry.first, ray, elapsed_s));
+        }
+
+        for(FluxSourceSlowRayReport const& report : reports)
+            publishReport(report);
+
+        if(mpiRank_ == 0)
+            drainIncomingReports();
+    }
+
+private:
+    using SteadyClock = std::chrono::steady_clock;
+
+    struct TrackedRay
+    {
+        bool active = false;
+        SteadyClock::time_point start{};
+        double lastPrintElapsed_s = -kInterval_s;
+        size_t cellIndex = 0;
+        Vector3D location{};
+        uint64_t steps = 0;
+        double tauAcc = 0.0;
+    };
+
+    FluxSourceSlowRayReport buildReport(
+        size_t rayId,
+        TrackedRay const& ray,
+        double elapsed_s) const
+    {
+        ComputationalCell3D const& cell = cells_[ray.cellIndex];
+        FluxSourceSlowRayReport report;
+        report.rank = mpiRank_;
+        report.rayId = rayId;
+        report.elapsed_s = elapsed_s;
+        report.steps = ray.steps;
+        report.location[0] = ray.location.x;
+        report.location[1] = ray.location.y;
+        report.location[2] = ray.location.z;
+        report.radial_cm = fastabs(ray.location - center_);
+        report.cellIndex = ray.cellIndex;
+        report.cellId = cell.ID;
+        report.rho = cell.density;
+        report.temperature = cell.temperature;
+        report.tauAcc = ray.tauAcc;
+        report.targetTau = targetTau_;
+        report.sigPlanck = opacity_.CalcPlanckOpacity(cell);
+        report.sigScat = opacity_.CalcScatteringOpacity(cell);
+        report.sigEff = EffectiveThermalizationOpacity(opacity_, cell);
+        report.sigDiff = opacity_.CalcDiffusionCoefficient(cell);
+        return report;
+    }
+
+    void publishReport(FluxSourceSlowRayReport const& report)
+    {
+#ifdef RICH_MPI
+        if(mpiRank_ == 0)
+            printReport(report);
+        else
+        {
+            FluxSourceSlowRayReport sendBuffer = report;
+            MPI_Send(&sendBuffer, sizeof(sendBuffer), MPI_BYTE, 0,
+                     fluxSourceSlowRayMpiTag, MPI_COMM_WORLD);
+        }
+#else
+        printReport(report);
+#endif
+    }
+
+    void drainIncomingReports()
+    {
+#ifdef RICH_MPI
+        int hasMessage = 0;
+        MPI_Status status;
+        while(true)
+        {
+            MPI_Iprobe(MPI_ANY_SOURCE, fluxSourceSlowRayMpiTag, MPI_COMM_WORLD,
+                         &hasMessage, &status);
+            if(!hasMessage)
+                break;
+            FluxSourceSlowRayReport report{};
+            MPI_Recv(&report, sizeof(FluxSourceSlowRayReport), MPI_BYTE, status.MPI_SOURCE,
+                     fluxSourceSlowRayMpiTag, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            printReport(report);
+        }
+#endif
+    }
+
+    static void printReport(FluxSourceSlowRayReport const& report)
+    {
+        std::cerr << "[FluxSourceSlowRay] rank=" << report.rank
+                  << " ray_id=" << report.rayId
+                  << " elapsed_s=" << report.elapsed_s
+                  << " steps=" << report.steps
+                  << " location=(" << report.location[0] << ", "
+                  << report.location[1] << ", " << report.location[2] << ")"
+                  << " radial_cm=" << report.radial_cm
+                  << " cell_index=" << report.cellIndex
+                  << " cell_id=" << report.cellId
+                  << " rho=" << report.rho
+                  << " T=" << report.temperature
+                  << " tau_acc=" << report.tauAcc
+                  << " target_tau=" << report.targetTau
+                  << " sig_planck=" << report.sigPlanck
+                  << " sig_scat=" << report.sigScat
+                  << " sig_eff=" << report.sigEff
+                  << " sig_diff=" << report.sigDiff
+                  << std::endl;
+        std::cerr.flush();
+    }
+
+    std::vector<ComputationalCell3D> const& cells_;
+    OpacityCalculator const& opacity_;
+    Vector3D center_;
+    double targetTau_;
+    int mpiRank_ = 0;
+    SteadyClock::time_point lastPoll_{};
+    std::unordered_map<size_t, TrackedRay> tracked_;
+};
+
 class GreyThermalizationProbePhysics
     : public MonteCarloPhysics<Vector3D, Tessellation3D>
 {
@@ -65,11 +275,16 @@ public:
         : MonteCarloPhysics<Vector3D, Tessellation3D>(grid, boundary),
           cells_(cells), opacity_(opacity), center_(center),
           targetTau_(targetTau), radius_(observerCount, -1.0),
-          valid_(observerCount, 0)
+          valid_(observerCount, 0),
+          slowRayMonitor_(std::make_unique<FluxSourceSlowRayMonitor>(
+              cells, opacity, center, targetTau))
     {}
+
+    ~GreyThermalizationProbePhysics() override = default;
 
     std::vector<Particle> preStep(double) override { return {}; }
     void postStep(std::vector<Particle> const&, double) override {}
+    void onProgressTick() override { slowRayMonitor_->poll(); }
 
     Functionality step(Particle& particle, std::vector<Particle>&) override
     {
@@ -84,11 +299,19 @@ public:
         Vector3D const direction = particle.velocity * (1.0 / directionNorm);
         particle.velocity = direction;
 
+        slowRayMonitor_->touchRay(
+            particle.id, particle.cellIndex, particle.location,
+            particle.steps, particle.weight);
+        slowRayMonitor_->poll();
+
         auto const intersection = this->getIntersectionDetails(particle);
         double const ds = std::get<1>(intersection);
         size_t const nextCell = std::get<2>(intersection);
         if(!(ds >= 0.0) || !std::isfinite(ds))
+        {
+            slowRayMonitor_->unregisterRay(particle.id);
             return result;
+        }
 
         double const sigma = EffectiveThermalizationOpacity(
             opacity_, cells_[particle.cellIndex]);
@@ -103,6 +326,7 @@ public:
                 + direction * (fraction * ds);
             radius_[particle.id] = fastabs(crossing - center_);
             valid_[particle.id] = 1;
+            slowRayMonitor_->unregisterRay(particle.id);
             return result;
         }
 
@@ -110,7 +334,10 @@ public:
         particle.location += direction * ds;
         particle.timeLeft -= ds;
         if(this->grid.IsPointOutsideBox(nextCell))
+        {
+            slowRayMonitor_->unregisterRay(particle.id);
             return result;
+        }
         result.change = MonteCarloParticleStatus::CELL_MOVE;
         result.nextCellIndex = nextCell;
         return result;
@@ -126,6 +353,7 @@ private:
     double targetTau_;
     std::vector<double> radius_;
     std::vector<int> valid_;
+    std::unique_ptr<FluxSourceSlowRayMonitor> slowRayMonitor_;
 };
 
 size_t NearestObserverDirection(
@@ -321,8 +549,6 @@ void InitializeFluxSourceSurface(
         particle.cellID = runtime.cells[cellIndex].ID;
         particle.sourceCellID = particle.cellID;
         particle.weight = 0.0;
-        particle.initialWeight = 0.0;
-        particle.frequency = 0.0;
         particles.push_back(particle);
     }
 

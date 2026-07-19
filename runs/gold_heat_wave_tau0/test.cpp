@@ -118,7 +118,7 @@ int main(int argc, char* argv[])
 	// D = c / (3*sigma_R) = [c / (3*7200)] * HeV_K^{1.5} * T^{1.5} * rho^{-1.2}
 	double const D0 = CG::speed_of_light / (3.0 * 7200.0 * std::pow(HeV_K, 1.5));
 	// sigma_P = sigma_R = 7200 * HeV_K^{1.5} * rho^{1.2} * T^{-1.5}
-	double const planck0 = 100*7200.0 * std::pow(HeV_K, 1.5);
+	double const planck0 = 7200.0 * std::pow(HeV_K, 1.5);
 	PowerLawOpacity opacity(D0, -1.2, 1.5, planck0, 1.2, -1.5);
 
 	// Domain: 1D slab along x

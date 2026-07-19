@@ -58,6 +58,7 @@ namespace
 		std::vector<ComputationalCell3D> &cells = sim.getCells();
 		Tessellation3D const& tess = sim.getTessellation();
 		size_t const N = tess.GetPointNo();
+		size_t const remove_center_idx = binary_index_find(ComputationalCell3D::stickerNames, std::string("InsideRemoveCenter"));
 		// constexpr double alpha_relax = 0.05;
 		// std::vector<Vector3D> smoothed_vel(N);
 		// std::vector<size_t> neigh_buf;
@@ -95,6 +96,7 @@ namespace
 			double R = fastabs(tess.GetCellCM(i));
 			if(R < Rsmooth)
 			{
+				cells[i].stickers[remove_center_idx] = true;
 				double new_density = std::max(1e-20, cells[i].density * 0.8);
 				double density_ratio = cells[i].density / new_density;
 				double old_T = cells[i].temperature;
@@ -122,6 +124,7 @@ namespace
 			}
 			else 
 			{
+				cells[i].stickers[remove_center_idx] = false;
 				if(R < std::min(Rt * 0.8, Rsmooth * 1.5) && cells[i].temperature > 1e9)
 				{
 					cells[i].temperature *= 0.8;
@@ -616,6 +619,8 @@ namespace
 #ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+			double min_low_density_volume = std::min(8000.0, std::max(2000.0, 2000.0 * (rho_x / (rho_s * 5e-4))));
+			double min_density_factor = min_low_density_volume / 2000.0;
 			if(rank == 0)
 				std::cout << "rho_x = " << rho_x << std::endl;
 			for (size_t i = 0; i < Norg; ++i)
@@ -672,7 +677,7 @@ namespace
 				}
 				if((r_dist < 0.5 * apocenter && ((V > 0.01 * z_abs * z_abs * z_abs) || (z_abs < 20))))
 				{
-					if(V > std::min(2000.0, 4 * target_volume * std::pow(r_dist / Rt, 1.5)))
+					if(V > std::min(min_low_density_volume, min_density_factor * 4 * target_volume * std::pow(r_dist / Rt, 1.5)))
 					{
 						res.push_back(i);
 						continue;
@@ -743,6 +748,8 @@ namespace
 #ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+			double min_low_density_volume = std::min(2000.0, std::max(500.0, 500.0 * (rho_x / (rho_s * 5e-4))));
+			double min_density_factor = min_low_density_volume / 500.0;
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				bool good = true;
@@ -787,7 +794,7 @@ namespace
 				}
 				if((r_i < 0.5 * apocenter && ((Vol > 0.01 * z_abs * z_abs * z_abs) || z_abs < 20)))
 				{
-					if(Vol > std::min(500.0, 4 * target_volume * std::pow(r_i / Rt, 1.5)))
+					if(Vol > std::min(min_low_density_volume, min_density_factor * 4 * target_volume * std::pow(r_i / Rt, 1.5)))
 					{
 						continue;
 					}
@@ -995,7 +1002,7 @@ int main(void)
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
 	// std::cout<<"Here5"<<std::endl;
-	std::string run_directory("/home/elads/TDEMG/");
+	std::string run_directory("/data/users/elads/TDEMG/");
 	// std::cout<<"Here6"<<std::endl;
 	double const R = read_number("Rstar.txt");
 	// std::cout<<"Here7"<<std::endl;
@@ -1139,9 +1146,17 @@ int main(void)
 #endif
 		cells = snap.cells;
 		ComputationalCell3D::tracerNames = snap.tracerstickernames.first;
+		ComputationalCell3D::stickerNames = snap.tracerstickernames.second;
 #ifdef remove_center
 		if(ComputationalCell3D::tracerNames.size() < 3)
 			ComputationalCell3D::tracerNames.push_back("WasRemoved");
+		if(std::find(ComputationalCell3D::stickerNames.begin(), ComputationalCell3D::stickerNames.end(), "InsideRemoveCenter") == ComputationalCell3D::stickerNames.end())
+		{
+			ComputationalCell3D::stickerNames.push_back("InsideRemoveCenter");
+			size_t const idx = ComputationalCell3D::stickerNames.size() - 1;
+			for(auto& c : cells)
+				c.stickers[idx] = false;
+		}
 #endif
 	}
 	else
@@ -1184,6 +1199,14 @@ int main(void)
 		ComputationalCell3D::tracerNames.push_back("Entropy");
 		ComputationalCell3D::tracerNames.push_back("Star");
 		ComputationalCell3D::tracerNames.push_back("WasRemoved");
+#ifdef remove_center
+		ComputationalCell3D::stickerNames.push_back("InsideRemoveCenter");
+		{
+			size_t const idx = ComputationalCell3D::stickerNames.size() - 1;
+			for(auto& c : cells)
+				c.stickers[idx] = false;
+		}
+#endif
 	}
 	std::cout<<"Rank "<<rank<<" has "<<tess.GetPointNo()<<" points "<<" and "<<cells.size()<<" cells "<<std::endl;
 
@@ -1202,7 +1225,12 @@ int main(void)
 	bool const doppler_on = true;
 	bool const mixed_frame_on = false;
 	bool const protection_on = true;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on);
+#ifdef remove_center
+	std::vector<std::string> rad_zero_cells({"InsideRemoveCenter"});
+#else
+	std::vector<std::string> rad_zero_cells;
+#endif
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, rad_zero_cells, flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;

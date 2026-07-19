@@ -27,6 +27,8 @@ public:
 
     virtual void postStep(const std::vector<MCParticle> &particles, double fullDt) = 0;
 
+    virtual void onProgressTick() {}
+
     virtual size_t getRandomWalkStepCount() const { return 0; }
     virtual size_t getDDMCStepCount() const { return 0; }
     virtual size_t getDDMCLeakCount() const { return 0; }

@@ -7,8 +7,7 @@
 #SBATCH --exclusive
 ##SBATCH --time=820:00:00
 #SBATCH --constraint="ib"
-##SBATCH --nodelist=l20g[73-114,116-122]
-##SBATCH --nodelist=l20g[73-102,104-122]
+## SBATCH --nodelist=d25g[73-132]
 #SBATCH --exclude=l19g[1-71],l20g[1-51]
 
 # run whatever you need here

@@ -1869,6 +1869,8 @@ std::vector<typename MonteCarloManager<T, Grid>::MCParticle> MonteCarloManager<T
 
             amountManager.Progress();
 
+            this->physics->onProgressTick();
+
             auto now = std::chrono::high_resolution_clock::now();
             double elapsed_s = std::chrono::duration<double>(now - this->progressStartTime_).count();
 

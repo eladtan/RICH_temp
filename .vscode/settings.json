@@ -206,5 +206,6 @@
     "cmake.sourceDirectory": "RICH/source",
     "tabnine.cloudHost": "https://console.tabnine.com",
     "makefile.configureOnOpen": true,
-    "specstory.cloudSync.enabled": "always"
+    "specstory.cloudSync.enabled": "always",
+    "chatgpt.openOnStartup": true
 }
