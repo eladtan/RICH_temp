@@ -20,9 +20,16 @@ struct Body
     std::uint64_t ownerLocalIndex = 0;
 };
 
+enum class BodyLayout
+{
+    Baseline,
+    LocalLeafChange,
+    RootBreach
+};
+
 std::vector<Body> bodiesForRank(int rank, int size,
                                 double massScale,
-                                bool moveFirstBody)
+                                BodyLayout layout)
 {
     if(size >= 3 && rank == size - 1)
         return std::vector<Body>();
@@ -36,7 +43,7 @@ std::vector<Body> bodiesForRank(int rank, int size,
         body.position = Vector3D(-0.9 + 1.8 * u,
             0.21 * std::sin(1.7 * (rank + 1) * (i + 1)),
             0.17 * std::cos(0.9 * (rank + 2) * (i + 1)));
-        if(moveFirstBody && rank == 0 && i == 0)
+        if(layout == BodyLayout::RootBreach && rank == 0 && i == 0)
         {
             // Leave the retained slack root while remaining inside the
             // global [-1,1]^3 domain, guaranteeing a topology rebuild.
@@ -51,16 +58,29 @@ std::vector<Body> bodiesForRank(int rank, int size,
         body.ownerLocalIndex = static_cast<std::uint64_t>(i);
         result.push_back(body);
     }
+
+    if(layout == BodyLayout::LocalLeafChange && rank == 0 && result.size() >= 4)
+    {
+        // Move one body close to another body while staying inside the original
+        // local coordinate range.  The retained root cube therefore remains
+        // valid, but leaf occupancy/spatial keys change for leafCapacity=2.
+        const Vector3D& a = result[2].position;
+        const Vector3D& b = result[3].position;
+        result[0].position = Vector3D(
+            0.9 * a.x + 0.1 * b.x,
+            0.9 * a.y + 0.1 * b.y,
+            0.9 * a.z + 0.1 * b.z);
+    }
     return result;
 }
 
-std::vector<Body> allBodies(int size, double massScale, bool moveFirstBody)
+std::vector<Body> allBodies(int size, double massScale, BodyLayout layout)
 {
     std::vector<Body> result;
     for(int rank = 0; rank < size; ++rank)
     {
         const std::vector<Body> local =
-            bodiesForRank(rank, size, massScale, moveFirstBody);
+            bodiesForRank(rank, size, massScale, layout);
         result.insert(result.end(), local.begin(), local.end());
     }
     return result;
@@ -170,6 +190,11 @@ int main(int argc, char** argv)
     std::uint64_t thirdEpoch = 0;
     std::uint64_t firstRebuildCount = 0;
     std::uint64_t secondRebuildCount = 0;
+    std::uint64_t secondProcessRebuildCount = 0;
+    std::uint64_t secondLetRebuildCount = 0;
+    std::uint64_t leafEpoch = 0;
+    bool leafOnlyRebuild = false;
+    bool rootProcessRebuild = false;
     bool finiteStats = false;
     bool mismatchedDomainRejected = size == 1;
 
@@ -181,35 +206,77 @@ int main(int argc, char** argv)
         std::vector<Vector3D> acceleration;
         std::vector<double> potential;
 
-        std::vector<Body> localBodies = bodiesForRank(rank, size, 1.0, false);
+        std::vector<Body> localBodies = bodiesForRank(
+            rank, size, 1.0, BodyLayout::Baseline);
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
         localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies, allBodies(size, 1.0, false),
+            checkSolve(localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
                        acceleration, potential));
         firstEpoch = solver.stats().topologyEpoch;
         firstRebuildCount = solver.stats().topologyRebuildCount;
 
-        localBodies = bodiesForRank(rank, size, 1.01, false);
+        localBodies = bodiesForRank(
+            rank, size, 1.01, BodyLayout::Baseline);
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
         localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies, allBodies(size, 1.01, false),
+            checkSolve(localBodies,
+                       allBodies(size, 1.01, BodyLayout::Baseline),
                        acceleration, potential));
         secondEpoch = solver.stats().topologyEpoch;
         secondRebuildCount = solver.stats().topologyRebuildCount;
+        secondProcessRebuildCount =
+            solver.stats().processTopologyRebuildCount;
+        secondLetRebuildCount = solver.stats().letTopologyRebuildCount;
 
-        localBodies = bodiesForRank(rank, size, 1.01, true);
+        localBodies = bodiesForRank(
+            rank, size, 1.01, BodyLayout::LocalLeafChange);
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
         localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies, allBodies(size, 1.01, true),
+            checkSolve(localBodies,
+                       allBodies(size, 1.01, BodyLayout::LocalLeafChange),
+                       acceleration, potential));
+        leafEpoch = solver.stats().topologyEpoch;
+        leafOnlyRebuild =
+            solver.stats().ranksWithRootGeometryChange == 0 &&
+            solver.stats().ranksWithLeafTopologyChange > 0 &&
+            !solver.stats().processTopologyRebuilt &&
+            solver.stats().letTopologyRebuilt &&
+            solver.stats().processTopologyRebuildCount ==
+                secondProcessRebuildCount &&
+            solver.stats().letTopologyRebuildCount == secondLetRebuildCount + 1 &&
+            solver.stats().topologyRebuildCount == secondRebuildCount + 1 &&
+            solver.stats().processCommunicatorsReused &&
+            solver.stats().letCommunicatorReused &&
+            !solver.stats().topologyRebuildForced;
+
+        localBodies = bodiesForRank(
+            rank, size, 1.01, BodyLayout::RootBreach);
+        unpack(localBodies, positions, masses, ids);
+        solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
+                     Vector3D(1, 1, 1), acceleration, &potential);
+        localMaximumError = std::max(localMaximumError,
+            checkSolve(localBodies,
+                       allBodies(size, 1.01, BodyLayout::RootBreach),
                        acceleration, potential));
         thirdEpoch = solver.stats().topologyEpoch;
+        rootProcessRebuild =
+            solver.stats().ranksWithRootGeometryChange > 0 &&
+            solver.stats().processTopologyRebuilt &&
+            solver.stats().letTopologyRebuilt &&
+            solver.stats().processTopologyRebuildCount ==
+                secondProcessRebuildCount + 1 &&
+            solver.stats().letTopologyRebuildCount == secondLetRebuildCount + 2 &&
+            !solver.stats().topologyRebuildForced;
         finiteStats = std::isfinite(solver.stats().totalSeconds) &&
+                      std::isfinite(solver.stats().topologyRebuildSeconds) &&
+                      std::isfinite(solver.stats().rootDescriptorExchangeSeconds) &&
+                      std::isfinite(solver.stats().processTopologySeconds) &&
                       std::isfinite(solver.stats().totalMass) &&
                       std::isfinite(solver.stats().rootMass) &&
                       solver.stats().activeRankCount ==
@@ -237,19 +304,23 @@ int main(int argc, char** argv)
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
-    const int localChecks[5] = {
+    const int localChecks[8] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
-        thirdEpoch > secondEpoch ? 1 : 0,
+        leafEpoch > secondEpoch ? 1 : 0,
+        thirdEpoch > leafEpoch ? 1 : 0,
+        leafOnlyRebuild ? 1 : 0,
+        rootProcessRebuild ? 1 : 0,
         finiteStats ? 1 : 0,
         mismatchedDomainRejected ? 1 : 0};
-    int globalChecks[5] = {};
-    MPI_Allreduce(localChecks, globalChecks, 5, MPI_INT, MPI_LAND,
+    int globalChecks[8] = {};
+    MPI_Allreduce(localChecks, globalChecks, 8, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
                            globalChecks[2] && globalChecks[3] &&
-                           globalChecks[4];
+                           globalChecks[4] && globalChecks[5] &&
+                           globalChecks[6] && globalChecks[7];
 
     if(rank == 0)
     {
@@ -262,20 +333,25 @@ int main(int argc, char** argv)
         output << "first_epoch " << firstEpoch << "\n";
         output << "second_epoch " << secondEpoch << "\n";
         output << "third_epoch " << thirdEpoch << "\n";
+        output << "leaf_epoch " << leafEpoch << "\n";
         output << "first_rebuild_count " << firstRebuildCount << "\n";
         output << "second_rebuild_count " << secondRebuildCount << "\n";
         output << "topology_reused " << globalChecks[0] << "\n";
         output << "rebuild_count_reused " << globalChecks[1] << "\n";
-        output << "topology_rebuilt " << globalChecks[2] << "\n";
-        output << "finite_stats " << globalChecks[3] << "\n";
-        output << "mismatched_domain_rejected " << globalChecks[4] << "\n";
+        output << "leaf_topology_rebuilt " << globalChecks[2] << "\n";
+        output << "topology_rebuilt " << globalChecks[3] << "\n";
+        output << "leaf_only_rebuild " << globalChecks[4] << "\n";
+        output << "root_process_rebuild " << globalChecks[5] << "\n";
+        output << "finite_stats " << globalChecks[6] << "\n";
+        output << "mismatched_domain_rejected " << globalChecks[7] << "\n";
         output << "pass " << globalPass << "\n";
         std::cout << "fmm_gravity_mpi ranks=" << size
                   << " max_scaled_error=" << globalMaximumError
                   << " topology_reused=" << globalChecks[0]
-                  << " topology_rebuilt=" << globalChecks[2]
-                  << " finite_stats=" << globalChecks[3]
-                  << " domain_rejected=" << globalChecks[4]
+                  << " leaf_only_rebuild=" << globalChecks[4]
+                  << " root_process_rebuild=" << globalChecks[5]
+                  << " finite_stats=" << globalChecks[6]
+                  << " domain_rejected=" << globalChecks[7]
                   << " pass=" << globalPass << std::endl;
     }
 

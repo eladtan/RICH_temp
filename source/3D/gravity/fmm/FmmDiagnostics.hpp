@@ -39,10 +39,28 @@ struct FmmSolveStats
     std::uint64_t letP2PPairCount = 0;
     std::uint64_t topologyEpoch = 0;
     std::uint64_t topologyRebuildCount = 0;
+    std::uint64_t processTopologyRebuildCount = 0;
+    std::uint64_t letTopologyRebuildCount = 0;
+    std::size_t ranksWithRootGeometryChange = 0;
+    std::size_t ranksWithLeafTopologyChange = 0;
+    bool localRootGeometryChanged = false;
+    bool localLeafTopologyChanged = false;
+    bool processTopologyRebuilt = false;
+    bool letTopologyRebuilt = false;
+    bool topologyRebuildForced = false;
+    bool processCommunicatorsReused = false;
+    bool letCommunicatorReused = false;
     std::uint64_t bytesSent = 0;
     std::uint64_t bytesReceived = 0;
     std::size_t peakRemoteBytes = 0;
     std::size_t peakProcessBytes = 0;
+
+    // Topology construction is split into a rank-root process topology and a
+    // local-leaf-dependent LET topology.  These timings expose the cost paid
+    // when a moving mesh changes only the latter.
+    double topologyRebuildSeconds = 0;
+    double rootDescriptorExchangeSeconds = 0;
+    double processTopologySeconds = 0;
 
     // Persistent distributed-memory attribution.  bytesOwned remains the
     // aggregate value; these fields expose the dominant components.

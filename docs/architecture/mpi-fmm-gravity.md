@@ -60,12 +60,20 @@ rank-local.
 ## Topology reuse
 
 The local tree is rebuilt every solve.  Distributed communication plans are
-rebuilt only when any rank reports one of:
+split into two levels:
 
-- a changed exact local-root cube;
-- a changed exact local leaf-key/particle-count signature;
-- a rank becoming active or inactive; or
-- `rebuildTopologyEverySolve` being enabled.
+1. the rank-root process tree, process interaction plan, and process
+   communication graphs;
+2. the local-leaf-dependent LET plan.
+
+A changed exact local-root cube or rank activation change rebuilds both
+levels.  `rebuildTopologyEverySolve` also forces both levels to rebuild, but is
+reported separately from actual root/leaf changes.  The forced mode also
+disables local interaction-plan reuse, preserving its previous semantics.  A
+changed exact local leaf-key/particle-count signature with unchanged rank roots rebuilds only the
+LET.  The process tree and its three communication graphs remain valid because
+their geometry and routing depend only on rank-root cubes.  The LET descriptor
+exchange still receives current root topology metadata before rebuilding.
 
 Mass-only changes therefore recompute expansions while reusing the process and
 LET plans.  Reuse is not decided by a probabilistic hash: a compact exact list
@@ -73,6 +81,13 @@ of local leaf spatial keys and particle counts is compared.  Moving bodies that
 stay within the same spatial-node topology and preserve those leaf counts reuse
 the plan safely; payloads always contain current masses and positions.  The
 64-bit topology hash retained in diagnostics is not a correctness decision.
+
+MPI distributed-graph communicators are also retained when every rank reports
+the same normalized peer set.  `FmmSolveStats` reports root/leaf change counts,
+separate process/LET rebuild counters, communicator reuse, and topology phase
+timings.  Set `RICH_FMM_TRACE=1` to print one maximum-rank timing/rebuild line
+per gravity solve; this is intended for short profiling runs rather than normal
+production output.
 
 ## Identity
 

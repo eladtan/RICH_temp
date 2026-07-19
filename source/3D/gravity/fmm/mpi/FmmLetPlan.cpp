@@ -285,7 +285,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
                  processPlan.letTargetRanks.end());
     std::sort(peers.begin(), peers.end());
     peers.erase(std::unique(peers.begin(), peers.end()), peers.end());
-    exchange_.reset(comm_, peers);
+    stats.letCommunicatorReused =
+        !exchange_.resetIfChanged(comm_, peers);
 
     std::vector<PendingPair> pending;
     for(int sourceRank : processPlan.letSourceRanks)

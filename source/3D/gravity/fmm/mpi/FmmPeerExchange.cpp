@@ -243,7 +243,6 @@ void FmmPeerExchange::clear()
 void FmmPeerExchange::reset(const MPI_Comm& parent,
                             const std::vector<int>& outgoingPeers)
 {
-    clear();
     if(parent == MPI_COMM_NULL)
         throw UniversalError("FmmPeerExchange::reset: parent communicator is null");
     int rank = 0;
@@ -264,6 +263,63 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
     if(globalInvalid != 0)
         throw UniversalError("FmmPeerExchange::reset: invalid graph peer on at least one rank");
 
+    resetValidated(parent, peers);
+}
+
+bool FmmPeerExchange::resetIfChanged(
+    const MPI_Comm& parent,
+    const std::vector<int>& outgoingPeers)
+{
+    if(parent == MPI_COMM_NULL)
+        throw UniversalError(
+            "FmmPeerExchange::resetIfChanged: parent communicator is null");
+
+    int rank = 0;
+    int size = 0;
+    checkMpi(MPI_Comm_rank(parent, &rank),
+             "FmmPeerExchange::resetIfChanged MPI_Comm_rank");
+    checkMpi(MPI_Comm_size(parent, &size),
+             "FmmPeerExchange::resetIfChanged MPI_Comm_size");
+
+    std::vector<int> peers = outgoingPeers;
+    std::sort(peers.begin(), peers.end());
+    peers.erase(std::unique(peers.begin(), peers.end()), peers.end());
+    peers.erase(std::remove(peers.begin(), peers.end(), rank), peers.end());
+
+    int localInvalid = peers.size() >
+        static_cast<std::size_t>(std::numeric_limits<int>::max()) ? 1 : 0;
+    for(int peer : peers)
+        localInvalid = localInvalid || peer < 0 || peer >= size;
+
+    std::vector<int> current = destinations_;
+    std::sort(current.begin(), current.end());
+    const int localChanged = graph_ == MPI_COMM_NULL || current != peers ? 1 : 0;
+    const int localState[2] = {localInvalid, localChanged};
+    int globalState[2] = {0, 0};
+    checkMpi(MPI_Allreduce(localState, globalState, 2, MPI_INT, MPI_MAX,
+                           parent),
+             "FmmPeerExchange::resetIfChanged state reduction");
+    if(globalState[0] != 0)
+        throw UniversalError(
+            "FmmPeerExchange::resetIfChanged: invalid graph peer on at least one rank");
+    if(globalState[1] == 0)
+        return false;
+
+    // Rebuild collectively even on ranks whose own outgoing peer set did not
+    // change.  Another rank may have changed this rank's incoming neighbors.
+    resetValidated(parent, peers);
+    return true;
+}
+
+void FmmPeerExchange::resetValidated(
+    const MPI_Comm& parent,
+    const std::vector<int>& peers)
+{
+    clear();
+    int rank = 0;
+    checkMpi(MPI_Comm_rank(parent, &rank),
+             "FmmPeerExchange::resetValidated MPI_Comm_rank");
+
     const int degree = static_cast<int>(peers.size());
     // Keep the distributed-graph constructor signature uniform across ranks.
     // Open MPI validates array arguments before considering a zero degree, so
@@ -278,20 +334,21 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
     // can be released immediately.
     MPI_Comm constructionParent = MPI_COMM_NULL;
     checkMpi(MPI_Comm_dup(parent, &constructionParent),
-             "FmmPeerExchange::reset MPI_Comm_dup construction parent");
+             "FmmPeerExchange::resetValidated MPI_Comm_dup construction parent");
     const int graphStatus = MPI_Dist_graph_create(
         constructionParent, 1, &rank, &degree, destinations, MPI_UNWEIGHTED,
         MPI_INFO_NULL, 0, &graph_);
     const int freeStatus = MPI_Comm_free(&constructionParent);
-    checkMpi(graphStatus, "FmmPeerExchange::reset MPI_Dist_graph_create");
+    checkMpi(graphStatus,
+             "FmmPeerExchange::resetValidated MPI_Dist_graph_create");
     checkMpi(freeStatus,
-             "FmmPeerExchange::reset MPI_Comm_free construction parent");
+             "FmmPeerExchange::resetValidated MPI_Comm_free construction parent");
 
     int indegree = 0;
     int outdegree = 0;
     int weighted = 0;
     checkMpi(MPI_Dist_graph_neighbors_count(graph_, &indegree, &outdegree, &weighted),
-             "FmmPeerExchange::reset MPI_Dist_graph_neighbors_count");
+             "FmmPeerExchange::resetValidated MPI_Dist_graph_neighbors_count");
     sources_.resize(static_cast<std::size_t>(indegree));
     destinations_.resize(static_cast<std::size_t>(outdegree));
     checkMpi(MPI_Dist_graph_neighbors(graph_, indegree,
@@ -300,7 +357,7 @@ void FmmPeerExchange::reset(const MPI_Comm& parent,
                                       outdegree,
                                       outdegree == 0 ? nullptr : destinations_.data(),
                                       MPI_UNWEIGHTED),
-             "FmmPeerExchange::reset MPI_Dist_graph_neighbors");
+             "FmmPeerExchange::resetValidated MPI_Dist_graph_neighbors");
     for(int i = 0; i < outdegree; ++i)
         destinationSlot_[destinations_[static_cast<std::size_t>(i)]] = i;
 }

@@ -260,7 +260,9 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     rootInitialized_(false),
     lastLocalTopologyHash_(0),
     topologyEpoch_(0),
-    topologyRebuildCount_(0)
+    topologyRebuildCount_(0),
+    processTopologyRebuildCount_(0),
+    letTopologyRebuildCount_(0)
 {
     int initialized = 0;
     MPI_Initialized(&initialized);
@@ -413,7 +415,8 @@ void DistributedFmmGravityCalculator::validateInputs(
     }
 }
 
-bool DistributedFmmGravityCalculator::prepareLocalTree(
+DistributedFmmGravityCalculator::LocalTopologyChange
+DistributedFmmGravityCalculator::prepareLocalTree(
     const std::vector<Vector3D>& positions,
     const Vector3D& domainLower,
     const Vector3D& domainUpper)
@@ -439,17 +442,19 @@ bool DistributedFmmGravityCalculator::prepareLocalTree(
                 distributedOptions_.rootSlackFactor, options_.maxDepth);
     }
 
+    LocalTopologyChange change;
+    change.rootGeometryChanged =
+        !rootInitialized_ || !sameRoot(localRoot_, nextRoot);
     localTree_.build(positions, nextRoot, options_);
     const std::uint64_t hash = localTree_.topologyHash();
     std::vector<std::uint64_t> signature = leafTopologySignature(localTree_);
-    const bool changed = !rootInitialized_ || !sameRoot(localRoot_, nextRoot) ||
-                         signature != lastLocalTopologySignature_ ||
-                         distributedOptions_.rebuildTopologyEverySolve;
+    change.leafTopologyChanged =
+        signature != lastLocalTopologySignature_;
     localRoot_ = nextRoot;
     lastLocalTopologyHash_ = hash;
     lastLocalTopologySignature_.swap(signature);
     rootInitialized_ = true;
-    return changed;
+    return change;
 }
 
 FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() const
@@ -478,56 +483,83 @@ FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() con
     return result;
 }
 
-void DistributedFmmGravityCalculator::rebuildTopology()
+void DistributedFmmGravityCalculator::rebuildTopology(
+    bool rebuildProcessTopology)
 {
+    const Clock::time_point topologyStart = Clock::now();
     if(topologyEpoch_ == std::numeric_limits<std::uint64_t>::max() ||
-       topologyRebuildCount_ == std::numeric_limits<std::uint64_t>::max())
+       topologyRebuildCount_ == std::numeric_limits<std::uint64_t>::max() ||
+       letTopologyRebuildCount_ == std::numeric_limits<std::uint64_t>::max() ||
+       (rebuildProcessTopology && processTopologyRebuildCount_ ==
+            std::numeric_limits<std::uint64_t>::max()))
         throw UniversalError(
             "DistributedFmmGravityCalculator::rebuildTopology: topology epoch overflow");
     ++topologyEpoch_;
     ++topologyRebuildCount_;
+    ++letTopologyRebuildCount_;
+    if(rebuildProcessTopology)
+        ++processTopologyRebuildCount_;
+
+    const Clock::time_point descriptorStart = Clock::now();
     const FmmRankRootDescriptor local = localRootDescriptor();
     rootDescriptors_.resize(static_cast<std::size_t>(size_));
     MPI_Allgather(&local, static_cast<int>(sizeof(FmmRankRootDescriptor)), MPI_BYTE,
                   rootDescriptors_.data(),
                   static_cast<int>(sizeof(FmmRankRootDescriptor)), MPI_BYTE,
                   comm_);
+    stats_.rootDescriptorExchangeSeconds = elapsed(descriptorStart);
 
-    processTree_.build(rootDescriptors_);
-    processPlan_ = FmmProcessTraversal::build(processTree_,
-                                               options_.thetaCritical, topologyEpoch_,
-                                               rank_, comm_);
-
-    std::set<int> upPeers;
-    std::set<int> downPeers;
-    for(std::size_t i = 0; i < processTree_.nodes().size(); ++i)
+    stats_.processTopologyRebuilt = rebuildProcessTopology;
+    stats_.letTopologyRebuilt = true;
+    if(rebuildProcessTopology)
     {
-        const FmmProcessNode& node = processTree_.nodes()[i];
-        if(node.owner == rank_ && node.parent != FmmProcessTree::invalidIndex())
+        const Clock::time_point processStart = Clock::now();
+        processTree_.build(rootDescriptors_);
+        processPlan_ = FmmProcessTraversal::build(
+            processTree_, options_.thetaCritical, topologyEpoch_, rank_, comm_);
+
+        std::set<int> upPeers;
+        std::set<int> downPeers;
+        for(std::size_t i = 0; i < processTree_.nodes().size(); ++i)
         {
-            const int parentOwner = processTree_.nodes()[node.parent].owner;
-            if(parentOwner != rank_)
-                upPeers.insert(parentOwner);
+            const FmmProcessNode& node = processTree_.nodes()[i];
+            if(node.owner == rank_ &&
+               node.parent != FmmProcessTree::invalidIndex())
+            {
+                const int parentOwner = processTree_.nodes()[node.parent].owner;
+                if(parentOwner != rank_)
+                    upPeers.insert(parentOwner);
+            }
+            if(node.owner == rank_ && !node.isLeaf())
+            {
+                const int leftOwner = processTree_.nodes()[node.left].owner;
+                const int rightOwner = processTree_.nodes()[node.right].owner;
+                if(leftOwner != rank_)
+                    downPeers.insert(leftOwner);
+                if(rightOwner != rank_)
+                    downPeers.insert(rightOwner);
+            }
         }
-        if(node.owner == rank_ && !node.isLeaf())
-        {
-            const int leftOwner = processTree_.nodes()[node.left].owner;
-            const int rightOwner = processTree_.nodes()[node.right].owner;
-            if(leftOwner != rank_)
-                downPeers.insert(leftOwner);
-            if(rightOwner != rank_)
-                downPeers.insert(rightOwner);
-        }
+        std::vector<int> m2lPeers;
+        for(const auto& entry : processPlan_.processSendNodesByRank)
+            m2lPeers.push_back(entry.first);
+        const bool upReset = processUpExchange_.resetIfChanged(
+            comm_, std::vector<int>(upPeers.begin(), upPeers.end()));
+        const bool m2lReset = processM2LExchange_.resetIfChanged(comm_, m2lPeers);
+        const bool downReset = processDownExchange_.resetIfChanged(
+            comm_, std::vector<int>(downPeers.begin(), downPeers.end()));
+        stats_.processCommunicatorsReused =
+            !upReset && !m2lReset && !downReset;
+        stats_.processTopologySeconds = elapsed(processStart);
     }
-    std::vector<int> m2lPeers;
-    for(const auto& entry : processPlan_.processSendNodesByRank)
-        m2lPeers.push_back(entry.first);
-    processUpExchange_.reset(comm_, std::vector<int>(upPeers.begin(), upPeers.end()));
-    processM2LExchange_.reset(comm_, m2lPeers);
-    processDownExchange_.reset(comm_,
-        std::vector<int>(downPeers.begin(), downPeers.end()));
+    else
+    {
+        stats_.processCommunicatorsReused = true;
+    }
+
     letPlan_.build(localTree_, rootDescriptors_, processPlan_,
                    options_.thetaCritical, topologyEpoch_, comm_, stats_);
+    stats_.topologyRebuildSeconds = elapsed(topologyStart);
 }
 
 void DistributedFmmGravityCalculator::solve(
@@ -594,7 +626,12 @@ void DistributedFmmGravityCalculator::solve(
     stats_.operatorCacheEntriesAtSolveStart = operatorCache_.entries();
 
     const Clock::time_point buildStart = Clock::now();
-    const bool localChanged = prepareLocalTree(positions, domainLower, domainUpper);
+    const LocalTopologyChange localChange =
+        prepareLocalTree(positions, domainLower, domainUpper);
+    const bool localTreeTopologyChanged =
+        localChange.rootGeometryChanged || localChange.leafTopologyChanged;
+    stats_.localRootGeometryChanged = localChange.rootGeometryChanged;
+    stats_.localLeafTopologyChanged = localChange.leafTopologyChanged;
     stats_.operatorCacheBudgetBytes = options_.maxOperatorCacheBytes;
     FmmPasses::updateTreeStats(localTree_, stats_);
     stats_.buildSeconds = elapsed(buildStart);
@@ -625,25 +662,44 @@ void DistributedFmmGravityCalculator::solve(
         localAbsoluteMassExtended += std::abs(static_cast<long double>(mass));
     }
 
-    // A SUM reduction carries both mass terms and the topology-change flag; a
-    // nonzero third component is equivalent to the former logical OR.
-    const double localMassTerms[3] = {
+    // A single SUM reduction carries both mass terms and separate root/leaf
+    // change counts.  Root changes invalidate the rank-level process topology;
+    // leaf-only changes invalidate only the LET/local interaction topology.
+    const double localMassTerms[4] = {
         static_cast<double>(localMassExtended),
         static_cast<double>(localAbsoluteMassExtended),
-        localChanged ? 1.0 : 0.0};
-    double globalMassTerms[3] = {0.0, 0.0, 0.0};
-    MPI_Allreduce(localMassTerms, globalMassTerms, 3, MPI_DOUBLE, MPI_SUM, comm_);
+        localChange.rootGeometryChanged ? 1.0 : 0.0,
+        localChange.leafTopologyChanged ? 1.0 : 0.0};
+    double globalMassTerms[4] = {0.0, 0.0, 0.0, 0.0};
+    MPI_Allreduce(localMassTerms, globalMassTerms, 4, MPI_DOUBLE, MPI_SUM, comm_);
     stats_.totalMass = globalMassTerms[0];
     const double totalAbsoluteMass = globalMassTerms[1];
+    stats_.ranksWithRootGeometryChange =
+        static_cast<std::size_t>(globalMassTerms[2]);
+    stats_.ranksWithLeafTopologyChange =
+        static_cast<std::size_t>(globalMassTerms[3]);
     if(!std::isfinite(stats_.totalMass) || !std::isfinite(totalAbsoluteMass))
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: non-finite global mass sum");
 
-    if(globalMassTerms[2] != 0.0)
-        rebuildTopology();
+    stats_.topologyRebuildForced =
+        distributedOptions_.rebuildTopologyEverySolve;
+    const bool processTopologyChanged =
+        stats_.topologyRebuildForced || globalMassTerms[2] != 0.0;
+    const bool letTopologyChanged =
+        processTopologyChanged || globalMassTerms[3] != 0.0;
+    if(letTopologyChanged)
+        rebuildTopology(processTopologyChanged);
+    else
+    {
+        stats_.processCommunicatorsReused = true;
+        stats_.letCommunicatorReused = true;
+    }
 
     stats_.topologyEpoch = topologyEpoch_;
     stats_.topologyRebuildCount = topologyRebuildCount_;
+    stats_.processTopologyRebuildCount = processTopologyRebuildCount_;
+    stats_.letTopologyRebuildCount = letTopologyRebuildCount_;
     stats_.activeRankCount = processTree_.activeRanks().size();
     stats_.processNodeCount = processTree_.nodes().size();
 
@@ -877,7 +933,9 @@ void DistributedFmmGravityCalculator::solve(
     if(!localTree_.nodes().empty())
     {
         bool planReused = false;
-        if(!localChanged && FmmDualTreeTraversal::localPlanReusable(
+        const bool localPlanMustRebuild = localTreeTopologyChanged ||
+            distributedOptions_.rebuildTopologyEverySolve;
+        if(!localPlanMustRebuild && FmmDualTreeTraversal::localPlanReusable(
                 localTree_, localInteractionPlan_))
         {
             planReused = true;

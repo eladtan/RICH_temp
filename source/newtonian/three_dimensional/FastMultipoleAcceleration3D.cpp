@@ -1,6 +1,10 @@
 #include "newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstdint>
+#include <iostream>
+#include <sstream>
 
 #include "misc/memory_profile.hpp"
 #include "misc/universal_error.hpp"
@@ -59,6 +63,94 @@ void requireOnEveryRank(bool localCondition, const char* message)
         throw UniversalError(message);
 }
 #endif
+
+bool fmmTraceEnabled()
+{
+#ifdef RICH_MPI
+    static int enabled = -1;
+    if(enabled < 0)
+    {
+        int rank = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        int rootEnabled = 0;
+        if(rank == 0)
+        {
+            const char* value = std::getenv("RICH_FMM_TRACE");
+            rootEnabled = value != nullptr && value[0] != '\0' &&
+                          !(value[0] == '0' && value[1] == '\0') ? 1 : 0;
+        }
+        MPI_Bcast(&rootEnabled, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        enabled = rootEnabled;
+    }
+    return enabled != 0;
+#else
+    const char* value = std::getenv("RICH_FMM_TRACE");
+    return value != nullptr && value[0] != '\0' &&
+           !(value[0] == '0' && value[1] == '\0');
+#endif
+}
+
+void traceFmmSolve(const FmmSolveStats& stats)
+{
+    if(!fmmTraceEnabled())
+        return;
+
+    static std::uint64_t call = 0;
+    ++call;
+    const double localTimes[8] = {
+        stats.totalSeconds, stats.buildSeconds, stats.topologyRebuildSeconds,
+        stats.rootDescriptorExchangeSeconds, stats.processTopologySeconds,
+        stats.letPlanSeconds, stats.localTraversalSeconds,
+        stats.letExecuteSeconds};
+    double maximumTimes[8] = {};
+    unsigned long long reusedActiveRanks =
+        stats.localInteractionPlanReused ? 1ull : 0ull;
+    unsigned long long globalReusedActiveRanks = reusedActiveRanks;
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Reduce(localTimes, maximumTimes, 8, MPI_DOUBLE, MPI_MAX, 0,
+               MPI_COMM_WORLD);
+    MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+#else
+    for(int i = 0; i < 8; ++i)
+        maximumTimes[i] = localTimes[i];
+#endif
+    if(rank != 0)
+        return;
+
+    std::ostringstream line;
+    line.setf(std::ios::scientific);
+    line.precision(8);
+    line << "fmm_solve_trace call=" << call
+         << " total_max=" << maximumTimes[0]
+         << " build_max=" << maximumTimes[1]
+         << " topology_max=" << maximumTimes[2]
+         << " descriptor_max=" << maximumTimes[3]
+         << " process_topology_max=" << maximumTimes[4]
+         << " let_plan_max=" << maximumTimes[5]
+         << " local_traversal_max=" << maximumTimes[6]
+         << " let_execute_max=" << maximumTimes[7]
+         << " epoch=" << stats.topologyEpoch
+         << " rebuilds=" << stats.topologyRebuildCount
+         << " process_rebuilds=" << stats.processTopologyRebuildCount
+         << " let_rebuilds=" << stats.letTopologyRebuildCount
+         << " root_change_ranks=" << stats.ranksWithRootGeometryChange
+         << " leaf_change_ranks=" << stats.ranksWithLeafTopologyChange
+         << " process_rebuilt=" << (stats.processTopologyRebuilt ? 1 : 0)
+         << " let_rebuilt=" << (stats.letTopologyRebuilt ? 1 : 0)
+         << " process_comm_reused="
+         << (stats.processCommunicatorsReused ? 1 : 0)
+         << " let_comm_reused=" << (stats.letCommunicatorReused ? 1 : 0)
+         << " forced_rebuild=" << (stats.topologyRebuildForced ? 1 : 0)
+         << " active_ranks=" << stats.activeRankCount
+         << " local_plan_reused_ranks=" << globalReusedActiveRanks
+         << " local_plan_reused_all="
+         << (globalReusedActiveRanks ==
+                 static_cast<unsigned long long>(stats.activeRankCount) ? 1 : 0);
+    std::cout << line.str() << std::endl;
+}
 }
 
 FastMultipoleAcceleration3D::FastMultipoleAcceleration3D(FmmGravityOptions options,
@@ -132,6 +224,7 @@ void FastMultipoleAcceleration3D::operator()(const Tessellation3D& tess,
 #else
     calculator_.solve(points_, masses_, boundaries.first, boundaries.second, acc);
 #endif
+    traceFmmSolve(calculator_.stats());
 
     bool finiteAcceleration = true;
 #ifndef RICH_MPI

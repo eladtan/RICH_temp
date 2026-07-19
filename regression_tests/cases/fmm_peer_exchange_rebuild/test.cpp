@@ -85,16 +85,27 @@ int main(int argc, char** argv)
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     const int patternCount = 7;
-    const int cycles = 6;
-    const int rounds = patternCount * cycles;
+    const int cycles = 4;
+    const int repeatsPerPattern = 2;
+    const int rounds = patternCount * cycles * repeatsPerPattern;
     bool localPass = size > 1;
+    int rebuildRounds = 0;
+    int reuseRounds = 0;
     FmmPeerExchange exchange;
 
     for(int round = 0; round < rounds; ++round)
     {
-        const int pattern = round % patternCount;
+        const int pattern = (round / repeatsPerPattern) % patternCount;
+        const bool repeatedPattern = round % repeatsPerPattern != 0;
         const std::vector<int> peers = peersFor(rank, size, pattern);
-        exchange.reset(MPI_COMM_WORLD, peers);
+        const bool rebuilt = exchange.resetIfChanged(MPI_COMM_WORLD, peers);
+        const bool expectedRebuild = !repeatedPattern;
+        if(rebuilt)
+            ++rebuildRounds;
+        else
+            ++reuseRounds;
+        if(rebuilt != expectedRebuild)
+            localPass = false;
 
         std::unordered_map<int, std::vector<char>> sendByRank;
         for(int peer : peers)
@@ -139,10 +150,15 @@ int main(int argc, char** argv)
         output << "ranks " << size << "\n";
         output << "patterns " << patternCount << "\n";
         output << "cycles " << cycles << "\n";
+        output << "repeats_per_pattern " << repeatsPerPattern << "\n";
         output << "rounds " << rounds << "\n";
+        output << "rebuild_rounds " << rebuildRounds << "\n";
+        output << "reuse_rounds " << reuseRounds << "\n";
         output << "pass " << global << "\n";
         std::cout << "fmm_peer_exchange_rebuild ranks=" << size
                   << " rounds=" << rounds
+                  << " rebuilds=" << rebuildRounds
+                  << " reuses=" << reuseRounds
                   << " pass=" << global << std::endl;
     }
 

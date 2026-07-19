@@ -109,6 +109,11 @@ public:
     ~FmmPeerExchange();
 
     void reset(const MPI_Comm& parent, const std::vector<int>& outgoingPeers);
+    // Collective on parent.  Rebuild the distributed-graph communicator only
+    // when at least one rank's normalized outgoing peer set changed.  Returns
+    // true when a rebuild was performed.
+    bool resetIfChanged(const MPI_Comm& parent,
+                        const std::vector<int>& outgoingPeers);
     void clear();
 
     FmmPeerExchangeResult exchangeBytes(
@@ -131,6 +136,9 @@ public:
     std::size_t bytesOwned() const;
 
 private:
+    void resetValidated(const MPI_Comm& parent,
+                        const std::vector<int>& normalizedOutgoingPeers);
+
     MPI_Comm graph_;
     std::vector<int> sources_;
     std::vector<int> destinations_;

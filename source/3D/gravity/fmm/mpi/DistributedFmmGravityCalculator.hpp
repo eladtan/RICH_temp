@@ -48,16 +48,22 @@ public:
     const FmmSolveStats& stats() const noexcept { return stats_; }
 
 private:
+    struct LocalTopologyChange
+    {
+        bool rootGeometryChanged = false;
+        bool leafTopologyChanged = false;
+    };
+
     void validateInputs(const std::vector<Vector3D>& positions,
                         const std::vector<double>& masses,
                         const std::vector<std::uint64_t>& cellIds,
                         const Vector3D& domainLower,
                         const Vector3D& domainUpper,
                         std::vector<double>* positiveKernelPotential) const;
-    bool prepareLocalTree(const std::vector<Vector3D>& positions,
-                          const Vector3D& domainLower,
-                          const Vector3D& domainUpper);
-    void rebuildTopology();
+    LocalTopologyChange prepareLocalTree(const std::vector<Vector3D>& positions,
+                                         const Vector3D& domainLower,
+                                         const Vector3D& domainUpper);
+    void rebuildTopology(bool rebuildProcessTopology);
     FmmRankRootDescriptor localRootDescriptor() const;
 
     FmmGravityOptions options_;
@@ -73,6 +79,8 @@ private:
     std::vector<std::uint64_t> lastLocalTopologySignature_;
     std::uint64_t topologyEpoch_;
     std::uint64_t topologyRebuildCount_;
+    std::uint64_t processTopologyRebuildCount_;
+    std::uint64_t letTopologyRebuildCount_;
 
     FmmTree localTree_;
     FmmM2LOperatorCache operatorCache_;

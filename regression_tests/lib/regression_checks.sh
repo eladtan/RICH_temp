@@ -1652,10 +1652,14 @@ check_fmm_gravity_mpi_case() {
     local first_epoch
     local second_epoch
     local third_epoch
+    local leaf_epoch
     local error_within_tolerance
     local topology_reused
     local rebuild_count_reused
+    local leaf_topology_rebuilt
     local topology_rebuilt
+    local leaf_only_rebuild
+    local root_process_rebuild
     local finite_stats
     local mismatched_domain_rejected
     local pass_flag
@@ -1673,18 +1677,24 @@ check_fmm_gravity_mpi_case() {
     first_epoch=$(awk '$1 == "first_epoch" { print $2 }' "$metrics_file")
     second_epoch=$(awk '$1 == "second_epoch" { print $2 }' "$metrics_file")
     third_epoch=$(awk '$1 == "third_epoch" { print $2 }' "$metrics_file")
+    leaf_epoch=$(awk '$1 == "leaf_epoch" { print $2 }' "$metrics_file")
     error_within_tolerance=$(awk '$1 == "error_within_tolerance" { print $2 }' "$metrics_file")
     topology_reused=$(awk '$1 == "topology_reused" { print $2 }' "$metrics_file")
     rebuild_count_reused=$(awk '$1 == "rebuild_count_reused" { print $2 }' "$metrics_file")
+    leaf_topology_rebuilt=$(awk '$1 == "leaf_topology_rebuilt" { print $2 }' "$metrics_file")
     topology_rebuilt=$(awk '$1 == "topology_rebuilt" { print $2 }' "$metrics_file")
+    leaf_only_rebuild=$(awk '$1 == "leaf_only_rebuild" { print $2 }' "$metrics_file")
+    root_process_rebuild=$(awk '$1 == "root_process_rebuild" { print $2 }' "$metrics_file")
     finite_stats=$(awk '$1 == "finite_stats" { print $2 }' "$metrics_file")
     mismatched_domain_rejected=$(awk '$1 == "mismatched_domain_rejected" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
-          -z "$second_epoch" || -z "$third_epoch" ||
+          -z "$second_epoch" || -z "$leaf_epoch" || -z "$third_epoch" ||
           -z "$error_within_tolerance" || -z "$topology_reused" ||
-          -z "$rebuild_count_reused" || -z "$topology_rebuilt" ||
+          -z "$rebuild_count_reused" || -z "$leaf_topology_rebuilt" ||
+          -z "$topology_rebuilt" || -z "$leaf_only_rebuild" ||
+          -z "$root_process_rebuild" ||
           -z "$finite_stats" || -z "$mismatched_domain_rejected" ||
           -z "$pass_flag" ]]; then
         set_check_msg "failed to parse distributed FMM gravity metrics"
@@ -1711,9 +1721,14 @@ check_fmm_gravity_mpi_case() {
         set_check_msg "distributed FMM rebuild count changed after a mass-only update"
         return 1
     fi
-    if ! awk -v second="$second_epoch" -v third="$third_epoch" 'BEGIN { exit !(third > second) }' ||
-       [[ "$topology_rebuilt" != "1" ]]; then
-        set_check_msg "distributed FMM failed to rebuild topology after a root breach (${second_epoch} -> ${third_epoch})"
+    if ! awk -v second="$second_epoch" -v leaf="$leaf_epoch" 'BEGIN { exit !(leaf > second) }' ||
+       [[ "$leaf_topology_rebuilt" != "1" || "$leaf_only_rebuild" != "1" ]]; then
+        set_check_msg "distributed FMM failed the leaf-only LET rebuild (${second_epoch} -> ${leaf_epoch})"
+        return 1
+    fi
+    if ! awk -v leaf="$leaf_epoch" -v third="$third_epoch" 'BEGIN { exit !(third > leaf) }' ||
+       [[ "$topology_rebuilt" != "1" || "$root_process_rebuild" != "1" ]]; then
+        set_check_msg "distributed FMM failed the full rebuild after a root breach (${leaf_epoch} -> ${third_epoch})"
         return 1
     fi
     if [[ "$finite_stats" != "1" ]]; then
@@ -1729,7 +1744,7 @@ check_fmm_gravity_mpi_case() {
         return 1
     fi
 
-    set_check_msg "Distributed FMM gravity check passed (ranks=${ranks}, scaled_error=${max_scaled_error})"
+    set_check_msg "Distributed FMM gravity reuse passed (ranks=${ranks}, scaled_error=${max_scaled_error})"
     return 0
 }
 
@@ -1785,7 +1800,10 @@ check_fmm_peer_exchange_rebuild_case() {
     local ranks
     local patterns
     local cycles
+    local repeats_per_pattern
     local rounds
+    local rebuild_rounds
+    local reuse_rounds
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -1799,11 +1817,16 @@ check_fmm_peer_exchange_rebuild_case() {
     ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
     patterns=$(awk '$1 == "patterns" { print $2 }' "$metrics_file")
     cycles=$(awk '$1 == "cycles" { print $2 }' "$metrics_file")
+    repeats_per_pattern=$(awk '$1 == "repeats_per_pattern" { print $2 }' "$metrics_file")
     rounds=$(awk '$1 == "rounds" { print $2 }' "$metrics_file")
+    rebuild_rounds=$(awk '$1 == "rebuild_rounds" { print $2 }' "$metrics_file")
+    reuse_rounds=$(awk '$1 == "reuse_rounds" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$ranks" || -z "$patterns" || -z "$cycles" ||
-          -z "$rounds" || -z "$pass_flag" ]]; then
+          -z "$repeats_per_pattern" || -z "$rounds" ||
+          -z "$rebuild_rounds" || -z "$reuse_rounds" ||
+          -z "$pass_flag" ]]; then
         set_check_msg "failed to parse FMM peer-exchange rebuild metrics"
         return 1
     fi
@@ -1811,7 +1834,9 @@ check_fmm_peer_exchange_rebuild_case() {
         set_check_msg "FMM peer-exchange rebuild test requires multiple ranks (${ranks})"
         return 1
     fi
-    if [[ "$patterns" != "7" || "$cycles" != "6" || "$rounds" != "42" ]]; then
+    if [[ "$patterns" != "7" || "$cycles" != "4" ||
+          "$repeats_per_pattern" != "2" || "$rounds" != "56" ||
+          "$rebuild_rounds" != "28" || "$reuse_rounds" != "28" ]]; then
         set_check_msg "FMM peer-exchange rebuild test did not run the full graph-transition matrix"
         return 1
     fi
