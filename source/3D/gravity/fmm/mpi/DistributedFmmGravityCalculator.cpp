@@ -1036,7 +1036,8 @@ void DistributedFmmGravityCalculator::solve(
         stats_.localMultipoleBytes + stats_.localLocalBytes +
         stats_.localInteractionPlanBytes + operatorCache_.bytesOwned() +
         rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
-        lastLocalTopologySignature_.capacity() * sizeof(std::uint64_t) +
+        lastLocalStructuralSignature_.capacity() * sizeof(std::uint64_t) +
+        lastLocalOccupancySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +
         stats_.letPlanBytes + processUpExchange_.bytesOwned() +
         processM2LExchange_.bytesOwned() + processDownExchange_.bytesOwned();
