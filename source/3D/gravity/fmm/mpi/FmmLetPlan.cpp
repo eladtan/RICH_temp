@@ -1332,10 +1332,21 @@ void FmmLetPlan::finishExecute(
                            sizeof(FmmWireParticle))
                     throw UniversalError(
                         "FmmLetPlan::execute: truncated particle payload");
-                if(descriptor->second.isLeaf == 0 ||
-                   header.count != descriptor->second.particleCount)
+                if(descriptor->second.isLeaf == 0)
                     throw UniversalError(
-                        "FmmLetPlan::execute: particle payload does not match leaf descriptor");
+                        "FmmLetPlan::execute: particle payload references non-leaf descriptor");
+                if(header.count == 0)
+                    throw UniversalError(
+                        "FmmLetPlan::execute: empty particle payload for subscribed leaf");
+
+                // The LET plan and its retained descriptors describe spatial
+                // structure.  Particle occupancy is dynamic and may change
+                // while that structure remains identical.  The sender packs
+                // the current leaf contents and the packet framing above
+                // validates the current count, so refresh the cached
+                // diagnostic count instead of comparing against the count
+                // recorded when the LET was built.
+                descriptor->second.particleCount = header.count;
                 if(totalParticleCount >
                    std::numeric_limits<std::size_t>::max() - count)
                     abortLetInvariant(comm_,
