@@ -516,41 +516,6 @@ void InitializeFluxSourceSurface(
     if(directions.size() != nSourceRays)
         throw UniversalError("Flux-source ray direction count mismatch");
     runtime.fluxSourceDirections = directions;
-    std::vector<GreyThermalizationProbePhysics::Particle> particles;
-    particles.reserve(nSourceRays / std::max(1, runtime.mpiSize) + 1);
-
-    for(size_t observerIndex = 0; observerIndex < nSourceRays; ++observerIndex)
-    {
-        Vector3D direction = directions[observerIndex];
-        double const directionNorm = abs(direction);
-        if(!(directionNorm > 0.0))
-            continue;
-        direction *= 1.0 / directionNorm;
-        Vector3D const spherePoint = cfg.center + cfg.radius * direction;
-
-        bool local = false;
-#ifdef RICH_MPI
-        if(!runtime.tess.IsPointOutsideBox(spherePoint))
-            local = runtime.tess.GetOwner(spherePoint) == runtime.rank;
-#else
-        local = !runtime.tess.IsPointOutsideBox(spherePoint);
-#endif
-        if(!local)
-            continue;
-
-        size_t const cellIndex = runtime.tess.GetContainingCell(spherePoint);
-        if(cellIndex >= runtime.tess.GetPointNo())
-            continue;
-        GreyThermalizationProbePhysics::Particle particle;
-        particle.id = observerIndex;
-        particle.location = spherePoint;
-        particle.velocity = -1.0 * direction;
-        particle.cellIndex = cellIndex;
-        particle.cellID = runtime.cells[cellIndex].ID;
-        particle.sourceCellID = particle.cellID;
-        particle.weight = 0.0;
-        particles.push_back(particle);
-    }
 
     auto boundary = std::make_shared<
         VacuumBoundaryCondition<Vector3D, Tessellation3D>>(runtime.tess);
@@ -567,8 +532,87 @@ void InitializeFluxSourceSurface(
     manager = std::make_shared<MonteCarloManagerSerial3D>(
         runtime.tess, physics, population, boundary);
 #endif
-    (void)manager->step(
-        std::move(particles), runtime.cells, 2.01 * cfg.radius);
+
+    // Keep the global number of live probe rays below the default 500-slot
+    // RDMA peer buffer.  The probe creates no secondary particles, so a
+    // 400-ray global batch cannot require remote-handler reallocation.
+    size_t constexpr probeBatchSize = 400;
+    size_t const batchCount =
+        (nSourceRays + probeBatchSize - 1) / probeBatchSize;
+    for(size_t batchBegin = 0; batchBegin < nSourceRays;
+        batchBegin += probeBatchSize)
+    {
+        size_t const batchEnd = std::min(
+            nSourceRays, batchBegin + probeBatchSize);
+        std::vector<GreyThermalizationProbePhysics::Particle> particles;
+        particles.reserve(
+            (batchEnd - batchBegin) / std::max(1, runtime.mpiSize) + 1);
+
+        for(size_t rayIndex = batchBegin; rayIndex < batchEnd; ++rayIndex)
+        {
+            Vector3D direction = directions[rayIndex];
+            double const directionNorm = abs(direction);
+            if(!(directionNorm > 0.0))
+                continue;
+            direction *= 1.0 / directionNorm;
+            Vector3D const spherePoint = cfg.center + cfg.radius * direction;
+
+            bool local = false;
+#ifdef RICH_MPI
+            if(!runtime.tess.IsPointOutsideBox(spherePoint))
+                local = runtime.tess.GetOwner(spherePoint) == runtime.rank;
+#else
+            local = !runtime.tess.IsPointOutsideBox(spherePoint);
+#endif
+            if(!local)
+                continue;
+
+            size_t const cellIndex = runtime.tess.GetContainingCell(spherePoint);
+            if(cellIndex >= runtime.tess.GetPointNo())
+                continue;
+            GreyThermalizationProbePhysics::Particle particle;
+            particle.id = rayIndex;
+            particle.location = spherePoint;
+            particle.velocity = -1.0 * direction;
+            particle.cellIndex = cellIndex;
+            particle.cellID = runtime.cells[cellIndex].ID;
+            particle.sourceCellID = particle.cellID;
+            particle.weight = 0.0;
+            particles.push_back(particle);
+        }
+
+        unsigned long long localLaunched =
+            static_cast<unsigned long long>(particles.size());
+        unsigned long long globalLaunched = localLaunched;
+#ifdef RICH_MPI
+        MPI_Allreduce(&localLaunched, &globalLaunched, 1,
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        size_t const batchNumber = batchBegin / probeBatchSize + 1;
+        if(globalLaunched > static_cast<unsigned long long>(probeBatchSize) ||
+           globalLaunched > static_cast<unsigned long long>(batchEnd - batchBegin))
+        {
+            UniversalError eo(
+                "Flux-source probe batch exceeded its global ray limit");
+            eo.addEntry("Batch", batchNumber);
+            eo.addEntry("Batch begin", batchBegin);
+            eo.addEntry("Batch end", batchEnd);
+            eo.addEntry("Global launched rays", globalLaunched);
+            eo.addEntry("Probe batch limit", probeBatchSize);
+            throw eo;
+        }
+        if(runtime.rank == 0)
+            std::cout << "FLUX_SOURCE_PROBE_BATCH batch="
+                      << batchNumber << "/" << batchCount
+                      << " range=[" << batchBegin << "," << batchEnd << ")"
+                      << " global_rays=" << globalLaunched
+                      << " limit=" << probeBatchSize
+                      << std::endl;
+
+        if(globalLaunched > 0)
+            (void)manager->step(
+                std::move(particles), runtime.cells, 2.01 * cfg.radius);
+    }
 
     runtime.fluxSourceRadius = physics->radius();
     runtime.fluxSourceRadiusDirectlyResolved = physics->valid();
