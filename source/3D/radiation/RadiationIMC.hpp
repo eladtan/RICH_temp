@@ -16,6 +16,7 @@
 #include "monte/utils/RandomInCell.hpp"
 #include "monte/utils/LinearInterpolation.hpp"
 #include "monte/radiation/RadiationIMC.hpp"
+#include "SphericalObserver.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 
 class SphericalObserver;
@@ -303,6 +304,50 @@ public:
     using GroupSamplingDiagnostics = typename Impl::GroupSamplingDiagnostics;
     using ComptonCellData = typename Impl::ComptonCellData;
     using Parameters = typename Impl::Parameters;
+    using ComptonKernel = typename Impl::ComptonKernel;
+
+    class ObserverAdapter final : public STORM::RadiationObserver<Vector3D>
+    {
+    public:
+        explicit ObserverAdapter(std::shared_ptr<SphericalObserver> observer):
+            observer_(std::move(observer))
+        {}
+
+        Crossing nextOutwardCrossing(const Vector3D &position,
+                                     const Vector3D &velocity,
+                                     double maxTime) const override
+        {
+            auto const crossing = observer_->nextOutwardCrossing(position, velocity, maxTime);
+            return Crossing{crossing.hit, crossing.time, crossing.point};
+        }
+
+        void recordCrossing(const STORM::ObserverCrossingRecord<Vector3D> &record) override
+        {
+            ObserverCrossingRecord oldRecord;
+            oldRecord.crossingPoint = record.crossingPoint;
+            oldRecord.direction = record.direction;
+            oldRecord.weight = record.weight;
+            oldRecord.frequency = record.frequency;
+            oldRecord.sourceCellID = record.sourceCellID;
+#ifdef MONTECARLO_POLARIZATION
+            oldRecord.stokesQ = record.stokesQ;
+            oldRecord.stokesU = record.stokesU;
+            oldRecord.polBasis = record.polarizationBasis;
+            oldRecord.polarizationInitialized = record.polarizationInitialized;
+#endif
+            observer_->recordCrossing(oldRecord);
+        }
+
+        void addEmittedEnergy(double energy) override { observer_->addEmittedEnergy(energy); }
+        void addAbsorbedEnergy(double energy) override { observer_->addAbsorbedEnergy(energy); }
+        void addBoxEscapeEnergy(double energy) override { observer_->addBoxEscapeEnergy(energy); }
+        void addTimedOutEnergy(double energy) override { observer_->addTimedOutEnergy(energy); }
+        void addCutoffEnergy(double energy) override { observer_->addCutoffEnergy(energy); }
+        void resetTallies() override { observer_->resetTallies(); }
+
+    private:
+        std::shared_ptr<SphericalObserver> observer_;
+    };
 
     RadiationIMC(Tessellation3D &grid,
                  const std::shared_ptr<BoundaryCond> &boundary,
@@ -389,6 +434,14 @@ public:
     void setObserver(std::shared_ptr<SphericalObserver> observer)
     {
         observer_ = std::move(observer);
+        observerAdapter_ = observer_
+            ? std::make_shared<ObserverAdapter>(observer_) : nullptr;
+        this->impl_.setObserver(observerAdapter_);
+    }
+
+    void setComptonKernel(std::shared_ptr<const ComptonKernel> kernel)
+    {
+        this->impl_.setComptonKernel(std::move(kernel));
     }
 
     void setNewPhotonsPerCell(std::size_t n) { this->impl_.setNewPhotonsPerCell(n); }
@@ -475,6 +528,7 @@ private:
     std::shared_ptr<RICHRadiationOpacityAdapter> opacityAdapter_;
     Impl impl_;
     std::shared_ptr<SphericalObserver> observer_;
+    std::shared_ptr<ObserverAdapter> observerAdapter_;
 };
 
 #endif // RADIATION_IMC_HPP
