@@ -71,8 +71,19 @@ Every persistent internal node materializes all eight spatial children,
 including empty leaf children.  A particle crossing into or out of an octant
 therefore changes occupancy without creating or deleting a child.  Empty leaf
 subscriptions carry a normal zero-count particle payload and contribute no P2P
-pairs.  Automatic merging removes an under-filled retained subtree when the low
-threshold is crossed.  Setting `persistentLocalTreeTopology=false` restores the
+pairs.
+
+The full tree is only a stable address space and interaction superset. Hot
+execution is occupancy-masked on every solve: empty nodes skip P2M/M2M/L2L,
+local and LET interactions with an empty source or target skip operator
+resolution and kernel execution, and an empty subscribed multipole source sends
+only its record header rather than a zero coefficient array. This remains valid
+when occupancy changes because every retained interaction is still present in
+the plan and automatically becomes active when both endpoint subtrees become
+non-empty.
+
+Automatic merging removes an under-filled retained subtree when the low
+threshold is crossed. Setting `persistentLocalTreeTopology=false` restores the
 fresh sparse tree built independently on every solve.
 
 Distributed communication plans are split into two levels:

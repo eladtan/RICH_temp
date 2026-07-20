@@ -112,6 +112,15 @@ void traceFmmSolve(const FmmSolveStats& stats)
     const unsigned long long localLetPlanBytes =
         static_cast<unsigned long long>(stats.letPlanBytes);
     unsigned long long maximumLetPlanBytes = localLetPlanBytes;
+    const unsigned long long localInactiveCounts[5] = {
+        static_cast<unsigned long long>(stats.localInactiveM2LCount),
+        static_cast<unsigned long long>(stats.localInactiveP2PBlockCount),
+        static_cast<unsigned long long>(stats.letInactiveM2LCount),
+        static_cast<unsigned long long>(stats.letInactiveP2PBlockCount),
+        static_cast<unsigned long long>(stats.letZeroMultipolePayloadCount)};
+    unsigned long long globalInactiveCounts[5] = {
+        localInactiveCounts[0], localInactiveCounts[1], localInactiveCounts[2],
+        localInactiveCounts[3], localInactiveCounts[4]};
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -121,6 +130,8 @@ void traceFmmSolve(const FmmSolveStats& stats)
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localLetPlanBytes, &maximumLetPlanBytes, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localInactiveCounts, globalInactiveCounts, 5,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 #else
     for(int i = 0; i < 13; ++i)
         maximumTimes[i] = localTimes[i];
@@ -177,7 +188,12 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " local_plan_reused_all="
          << (globalReusedActiveRanks ==
                  static_cast<unsigned long long>(stats.activeRankCount) ? 1 : 0)
-         << " let_plan_bytes_max=" << maximumLetPlanBytes;
+         << " let_plan_bytes_max=" << maximumLetPlanBytes
+         << " local_inactive_m2l_sum=" << globalInactiveCounts[0]
+         << " local_inactive_p2p_blocks_sum=" << globalInactiveCounts[1]
+         << " let_inactive_m2l_sum=" << globalInactiveCounts[2]
+         << " let_inactive_p2p_blocks_sum=" << globalInactiveCounts[3]
+         << " let_zero_multipole_payloads_sum=" << globalInactiveCounts[4];
     std::cout << line.str() << std::endl;
 }
 }

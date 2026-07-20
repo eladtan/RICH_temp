@@ -49,6 +49,11 @@ struct FmmSolveStats
     std::uint64_t persistentLeafSplitCount = 0;
     std::uint64_t persistentSubtreeMergeCount = 0;
     std::uint64_t persistentEmptyLeafCount = 0;
+    std::uint64_t localInactiveM2LCount = 0;
+    std::uint64_t localInactiveP2PBlockCount = 0;
+    std::uint64_t letInactiveM2LCount = 0;
+    std::uint64_t letInactiveP2PBlockCount = 0;
+    std::uint64_t letZeroMultipolePayloadCount = 0;
     bool localRootGeometryChanged = false;
     bool localLeafTopologyChanged = false;
     bool localLeafOccupancyChanged = false;

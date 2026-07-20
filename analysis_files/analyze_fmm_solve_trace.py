@@ -47,6 +47,11 @@ INTEGER_KEYS = (
     "let_comm_reused",
     "let_storage_reused",
     "let_plan_bytes_max",
+    "local_inactive_m2l_sum",
+    "local_inactive_p2p_blocks_sum",
+    "let_inactive_m2l_sum",
+    "let_inactive_p2p_blocks_sum",
+    "let_zero_multipole_payloads_sum",
     "forced_rebuild",
     "active_ranks",
     "local_plan_reused_ranks",
@@ -155,6 +160,17 @@ def print_group(name: str, records: list[dict[str, float | int]]) -> None:
     print(f"  persistent_leaf_splits_max {max(persistent_splits, default=0)}")
     print(f"  persistent_subtree_merges_max {max(persistent_merges, default=0)}")
     print(f"  persistent_empty_leaves_max {max(persistent_empty, default=0)}")
+    for key in (
+        "local_inactive_m2l_sum",
+        "local_inactive_p2p_blocks_sum",
+        "let_inactive_m2l_sum",
+        "let_inactive_p2p_blocks_sum",
+        "let_zero_multipole_payloads_sum",
+    ):
+        print(
+            f"  {key:32s} median={median(records, key):.1f} "
+            f"mean={mean(records, key):.1f}"
+        )
 
 
 def write_tsv(path: Path, records: list[dict[str, float | int]]) -> None:

@@ -208,6 +208,8 @@ public:
     // caller can then execute interactions in their original order without a
     // hash lookup for every M2L pair.
     //
+    // A zero use count marks a geometry that is inactive for the current
+    // occupancy mask. Its returned coefficient pointer remains null.
     // This method is deliberately transactional with respect to the fallback
     // path: if the complete geometry set cannot fit, it returns false before
     // modifying the cache or its diagnostics.  References to unordered_map
@@ -241,8 +243,7 @@ public:
         for(std::size_t i = 0; i < geometries.size(); ++i)
         {
             if(useCounts[i] == 0)
-                throw UniversalError(
-                    "FmmM2LOperatorCache::resolvePreparedBatch: unused geometry");
+                continue;
             const Key key = preparedKey(geometries[i]);
             if(entries_.find(key) == entries_.end())
             {
@@ -269,6 +270,8 @@ public:
         const std::uint64_t bypassesBefore = bypasses_;
         for(std::size_t i = 0; i < geometries.size(); ++i)
         {
+            if(useCounts[i] == 0)
+                continue;
             const Lookup lookup = getPrepared(
                 geometries[i], layout, derivativeScratch, uncachedOperator);
             if(lookup.coefficients == nullptr || bypasses_ != bypassesBefore)
@@ -282,6 +285,8 @@ public:
         // cache hits when the direct pointer table is used.
         for(std::size_t i = 0; i < geometries.size(); ++i)
         {
+            if(useCounts[i] == 0)
+                continue;
             const std::uint64_t additionalHits = useCounts[i] - 1;
             hits_ = saturatingCounterAdd(hits_, additionalHits);
             if(geometries[i].integerKey)

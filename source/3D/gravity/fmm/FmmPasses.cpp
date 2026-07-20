@@ -39,6 +39,8 @@ void FmmPasses::upward(const FmmTree& tree,
     for(std::size_t nodeIndex : tree.postOrder())
     {
         const FmmNode& node = tree.nodes()[nodeIndex];
+        if(node.particleCount() == 0)
+            continue;
         if(node.isLeaf())
         {
             FmmKernels::accumulateP2M(node, positions, masses, tree.particleOrder(),
@@ -49,7 +51,8 @@ void FmmPasses::upward(const FmmTree& tree,
             for(int octant = 0; octant < 8; ++octant)
             {
                 const std::size_t child = tree.childIndex(node, octant);
-                if(child != std::numeric_limits<std::size_t>::max())
+                if(child != std::numeric_limits<std::size_t>::max() &&
+                   tree.nodes()[child].particleCount() != 0)
                     FmmKernels::translateM2M(tree.nodes()[child], node,
                                              layout, multipoles);
             }
@@ -77,6 +80,8 @@ void FmmPasses::downward(const FmmTree& tree,
     for(std::size_t nodeIndex : tree.preOrder())
     {
         const FmmNode& node = tree.nodes()[nodeIndex];
+        if(node.particleCount() == 0)
+            continue;
         if(node.parent != std::numeric_limits<std::size_t>::max())
             FmmKernels::translateL2L(tree.nodes()[node.parent], node,
                                      layout, locals);

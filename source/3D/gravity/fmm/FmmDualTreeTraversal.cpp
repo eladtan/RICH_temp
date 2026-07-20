@@ -299,8 +299,35 @@ void FmmDualTreeTraversal::runLocalPlan(
         throw UniversalError(
             "FmmDualTreeTraversal::runLocalPlan: uninitialized plan");
     const std::vector<FmmNode>& nodes = tree.nodes();
+
+    // The persistent full-octant tree is a stable superset of all interactions
+    // that may become active during this topology epoch. Build a cheap dynamic
+    // occupancy mask so empty source/target subtrees do not resolve operators
+    // or enter the hot M2L loop.
+    std::vector<std::uint64_t> activeGeometryUseCounts(
+        plan.geometries.size(), 0);
+    std::size_t activeM2LCount = 0;
+    for(const FmmLocalInteractionPlan::M2LPair& pair : plan.m2lPairs)
+    {
+        if(pair.targetNode >= nodes.size() || pair.sourceNode >= nodes.size() ||
+           pair.geometryIndex >= plan.geometries.size())
+            throw UniversalError(
+                "FmmDualTreeTraversal::runLocalPlan: invalid retained M2L pair");
+        if(nodes[pair.targetNode].particleCount() == 0 ||
+           nodes[pair.sourceNode].particleCount() == 0)
+        {
+            ++stats.localInactiveM2LCount;
+            continue;
+        }
+        if(activeGeometryUseCounts[pair.geometryIndex] ==
+           std::numeric_limits<std::uint64_t>::max())
+            throw UniversalError(
+                "FmmDualTreeTraversal::runLocalPlan: active geometry count overflow");
+        ++activeGeometryUseCounts[pair.geometryIndex];
+        ++activeM2LCount;
+    }
     operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
-                            plan.m2lPairs.size());
+                            activeM2LCount);
     operatorCache.beginPhase();
     std::vector<double> derivativeScratch;
     derivativeScratch.reserve(layout.coefficientCount());
@@ -309,7 +336,7 @@ void FmmDualTreeTraversal::runLocalPlan(
 
     std::vector<const std::vector<double>*> resolvedOperators;
     const bool operatorsResolved = operatorCache.resolvePreparedBatch(
-        plan.geometries, plan.geometryUseCounts, layout,
+        plan.geometries, activeGeometryUseCounts, layout,
         derivativeScratch, uncachedOperator, resolvedOperators);
 
     stats.rejectedSameNode += plan.rejectedSameNode;
@@ -322,6 +349,15 @@ void FmmDualTreeTraversal::runLocalPlan(
     {
         const FmmNode& target = nodes[pair.targetNode];
         const FmmNode& source = nodes[pair.sourceNode];
+        if(target.particleCount() == 0 || source.particleCount() == 0)
+        {
+            if(progress != nullptr && --progressCountdown == 0)
+            {
+                progress(progressContext);
+                progressCountdown = 4096;
+            }
+            continue;
+        }
         const std::vector<double>* coefficients = nullptr;
         double inverseScale = plan.geometries[pair.geometryIndex].inverseScale;
         if(operatorsResolved)
@@ -337,6 +373,9 @@ void FmmDualTreeTraversal::runLocalPlan(
             coefficients = translationOperator.coefficients;
             inverseScale = translationOperator.inverseScale;
         }
+        if(coefficients == nullptr)
+            throw UniversalError(
+                "FmmDualTreeTraversal::runLocalPlan: missing active M2L operator");
         FmmKernels::translateM2L(source, target, layout, multipoles, locals,
                                  *coefficients, inverseScale);
         ++stats.m2lCount;
@@ -350,6 +389,16 @@ void FmmDualTreeTraversal::runLocalPlan(
     {
         const FmmNode& target = nodes[pair.targetNode];
         const FmmNode& source = nodes[pair.sourceNode];
+        if(target.particleCount() == 0 || source.particleCount() == 0)
+        {
+            ++stats.localInactiveP2PBlockCount;
+            if(progress != nullptr && --progressCountdown == 0)
+            {
+                progress(progressContext);
+                progressCountdown = 4096;
+            }
+            continue;
+        }
         FmmKernels::accumulateP2P(
             positions, positions, masses,
             tree.particleOrder(), tree.particleOrder(),
@@ -418,6 +467,9 @@ void FmmDualTreeTraversal::run(const FmmTree& targetTree,
         stack.pop_back();
         const FmmNode& target = targetNodes[pair.first];
         const FmmNode& source = sourceNodes[pair.second];
+
+        if(target.particleCount() == 0 || source.particleCount() == 0)
+            continue;
 
         const bool identicalNode = sameParticleSet &&
             &targetTree == &sourceTree && pair.first == pair.second;

@@ -91,6 +91,7 @@ struct RemoteMultipolePayload
     int sourceRank = -1;
     std::uint64_t spatialKey = 0;
     std::size_t coefficientOffset = 0;
+    bool active = false;
 };
 
 struct RemoteParticlePayload
@@ -1049,10 +1050,13 @@ void FmmLetPlan::beginExecute(
             std::size_t payload = 0;
             if(subscription.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
-                if(layout.coefficientCount() >
+                if(node.particleCount() != 0 && layout.coefficientCount() >
                    std::numeric_limits<std::size_t>::max() / sizeof(double))
                     throw UniversalError("FmmLetPlan::execute: multipole payload overflow");
-                payload = layout.coefficientCount() * sizeof(double);
+                // Preserve one record per retained subscription, but do not
+                // transmit coefficient arrays for an empty source subtree.
+                payload = node.particleCount() == 0 ? 0 :
+                    layout.coefficientCount() * sizeof(double);
             }
             else if(subscription.kind == static_cast<int>(FmmSubscriptionKind::Particles))
             {
@@ -1103,11 +1107,20 @@ void FmmLetPlan::beginExecute(
             header.kind = subscription.kind;
             if(subscription.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
-                header.count = static_cast<std::uint64_t>(layout.coefficientCount());
+                const bool active = node.particleCount() != 0;
+                header.count = active ?
+                    static_cast<std::uint64_t>(layout.coefficientCount()) : 0;
                 FmmPacketIO::appendPod(buffer, header);
-                FmmPacketIO::appendDoubles(buffer,
-                    localMultipoles.data() + node.multipoleOffset,
-                    layout.coefficientCount());
+                if(active)
+                {
+                    FmmPacketIO::appendDoubles(buffer,
+                        localMultipoles.data() + node.multipoleOffset,
+                        layout.coefficientCount());
+                }
+                else
+                {
+                    ++stats.letZeroMultipolePayloadCount;
+                }
             }
             else
             {
@@ -1306,20 +1319,24 @@ void FmmLetPlan::finishExecute(
 
             if(header.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
-                if(header.count != layout.coefficientCount())
+                if(header.count != 0 &&
+                   header.count != static_cast<std::uint64_t>(
+                       layout.coefficientCount()))
                     throw UniversalError(
                         "FmmLetPlan::execute: multipole order mismatch");
-                if(layout.coefficientCount() >
+                const std::size_t coefficientCount =
+                    static_cast<std::size_t>(header.count);
+                if(coefficientCount >
                    FmmPacketIO::remaining(view, offset) / sizeof(double))
                     throw UniversalError(
                         "FmmLetPlan::execute: truncated multipole payload");
                 if(totalCoefficientCount >
                    std::numeric_limits<std::size_t>::max() -
-                       layout.coefficientCount())
+                       coefficientCount)
                     abortLetInvariant(comm_,
                         "FmmLetPlan::execute: decoded coefficient count overflow");
-                totalCoefficientCount += layout.coefficientCount();
-                offset += layout.coefficientCount() * sizeof(double);
+                totalCoefficientCount += coefficientCount;
+                offset += coefficientCount * sizeof(double);
                 ++actualMultipoleRecords;
             }
             else if(header.kind == static_cast<int>(FmmSubscriptionKind::Particles))
@@ -1381,6 +1398,7 @@ void FmmLetPlan::finishExecute(
     addRequestedBytes(totalCoefficientCount, sizeof(double));
     addRequestedBytes(totalParticleCount, sizeof(FmmWireParticle));
     addRequestedBytes(m2lSources_.size(), sizeof(FmmNode));
+    addRequestedBytes(m2lSources_.size(), sizeof(unsigned char));
     if(decodedRequestedBytes == std::numeric_limits<std::size_t>::max() ||
        decodedRequestedBytes > maxRemoteBytes - wireWorkspaceBytes)
         abortLetInvariant(comm_,
@@ -1391,9 +1409,11 @@ void FmmLetPlan::finishExecute(
     std::vector<double> remoteCoefficients(totalCoefficientCount);
     std::vector<FmmWireParticle> remoteParticleStorage(totalParticleCount);
     std::vector<FmmNode> resolvedM2LSources;
+    std::vector<unsigned char> resolvedM2LSourceActive;
     remoteMultipoles.reserve(expectedMultipoleRecords);
     remoteParticles.reserve(expectedParticleRecords);
     resolvedM2LSources.reserve(m2lSources_.size());
+    resolvedM2LSourceActive.reserve(m2lSources_.size());
 
     std::size_t decodedBytes = 0;
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
@@ -1406,6 +1426,8 @@ void FmmLetPlan::finishExecute(
         remoteParticleStorage.capacity(), sizeof(FmmWireParticle)));
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
         resolvedM2LSources.capacity(), sizeof(FmmNode)));
+    decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
+        resolvedM2LSourceActive.capacity(), sizeof(unsigned char)));
     if(decodedBytes == std::numeric_limits<std::size_t>::max() ||
        decodedBytes > maxRemoteBytes - wireWorkspaceBytes)
         abortLetInvariant(comm_,
@@ -1426,12 +1448,18 @@ void FmmLetPlan::finishExecute(
                                    "FmmLetPlan::execute LET payload decode");
             if(header.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
+                const bool active = header.count != 0;
                 remoteMultipoles.push_back(RemoteMultipolePayload{
-                    message.source, header.spatialKey, coefficientCursor});
-                FmmPacketIO::readDoubles(view, offset,
-                    remoteCoefficients.data() + coefficientCursor,
-                    layout.coefficientCount());
-                coefficientCursor += layout.coefficientCount();
+                    message.source, header.spatialKey, coefficientCursor,
+                    active});
+                if(active)
+                {
+                    const std::size_t count =
+                        static_cast<std::size_t>(header.count);
+                    FmmPacketIO::readDoubles(view, offset,
+                        remoteCoefficients.data() + coefficientCursor, count);
+                    coefficientCursor += count;
+                }
             }
             else
             {
@@ -1474,9 +1502,6 @@ void FmmLetPlan::finishExecute(
     stats.letExchangeSeconds += pendingExchangePreparationSeconds_ +
         elapsed(finishStart);
 
-    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
-                            m2lInteractions_.size());
-    operatorCache.beginPhase();
     std::vector<double> derivativeScratch;
     derivativeScratch.reserve(layout.coefficientCount());
     std::vector<double> uncachedOperator;
@@ -1494,14 +1519,52 @@ void FmmLetPlan::finishExecute(
             throw UniversalError(
                 "FmmLetPlan::execute: resolved LET M2L source order mismatch");
         FmmNode source = m2lSources_[i].node;
-        source.multipoleOffset = remoteMultipoles[i].coefficientOffset;
+        if(remoteMultipoles[i].active)
+            source.multipoleOffset = remoteMultipoles[i].coefficientOffset;
         resolvedM2LSources.push_back(source);
+        resolvedM2LSourceActive.push_back(
+            remoteMultipoles[i].active ? 1u : 0u);
     }
     std::vector<RemoteMultipolePayload>().swap(remoteMultipoles);
 
+    std::vector<std::uint64_t> activeGeometryUseCounts(
+        m2lOperatorGeometries_.size(), 0);
+    std::size_t activeM2LCount = 0;
+    for(std::size_t interactionIndex = 0;
+        interactionIndex < m2lInteractions_.size(); ++interactionIndex)
+    {
+        const FmmLetM2LInteraction& interaction =
+            m2lInteractions_[interactionIndex];
+        const std::uint32_t sourceIndex = m2lSourceIndices_[interactionIndex];
+        const std::uint32_t geometryIndex =
+            m2lOperatorGeometryIndices_[interactionIndex];
+        if(static_cast<std::size_t>(sourceIndex) >=
+               resolvedM2LSourceActive.size() ||
+           static_cast<std::size_t>(geometryIndex) >=
+               activeGeometryUseCounts.size() ||
+           interaction.targetNode >= localTree.nodes().size())
+            throw UniversalError(
+                "FmmLetPlan::execute: invalid retained M2L interaction");
+        if(resolvedM2LSourceActive[sourceIndex] == 0 ||
+           localTree.nodes()[interaction.targetNode].particleCount() == 0)
+        {
+            ++stats.letInactiveM2LCount;
+            continue;
+        }
+        if(activeGeometryUseCounts[geometryIndex] ==
+           std::numeric_limits<std::uint64_t>::max())
+            throw UniversalError(
+                "FmmLetPlan::execute: active geometry count overflow");
+        ++activeGeometryUseCounts[geometryIndex];
+        ++activeM2LCount;
+    }
+
+    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
+                            activeM2LCount);
+    operatorCache.beginPhase();
     std::vector<const std::vector<double>*> resolvedOperators;
     const bool operatorsResolved = operatorCache.resolvePreparedBatch(
-        m2lOperatorGeometries_, m2lOperatorGeometryUseCounts_, layout,
+        m2lOperatorGeometries_, activeGeometryUseCounts, layout,
         derivativeScratch, uncachedOperator, resolvedOperators);
 
     const std::vector<double>* groupedOperator = nullptr;
@@ -1519,6 +1582,9 @@ void FmmLetPlan::finishExecute(
         if(static_cast<std::size_t>(sourceIndex) >= resolvedM2LSources.size())
             throw UniversalError(
                 "FmmLetPlan::execute: invalid resolved LET M2L source index");
+        if(resolvedM2LSourceActive[sourceIndex] == 0 ||
+           localTree.nodes()[interaction.targetNode].particleCount() == 0)
+            continue;
         const std::uint32_t geometryIndex =
             m2lOperatorGeometryIndices_[interactionIndex];
         if(static_cast<std::size_t>(geometryIndex) >=
@@ -1587,6 +1653,12 @@ void FmmLetPlan::finishExecute(
         const FmmNode& targetNode = localTree.nodes()[interaction.targetNode];
         if(!targetNode.isLeaf())
             throw UniversalError("FmmLetPlan::execute: P2P target is not a leaf");
+        if(targetNode.particleCount() == 0 ||
+           particlePayload->particleCount == 0)
+        {
+            ++stats.letInactiveP2PBlockCount;
+            continue;
+        }
         for(std::size_t ti = targetNode.particleBegin;
             ti < targetNode.particleEnd; ++ti)
         {
