@@ -47,8 +47,8 @@ public:
 
     FmmM2LOperatorCache():
         maxEntries_(0), configuredMaxEntries_(0), termCount_(0),
-        budgetBytes_(0), hits_(0), misses_(0), bypasses_(0),
-        integerKeyHits_(0), integerKeyMisses_(0) {}
+        budgetBytes_(0), coefficientCapacityBytes_(0), hits_(0), misses_(0),
+        bypasses_(0), integerKeyHits_(0), integerKeyMisses_(0) {}
 
     void clear()
     {
@@ -57,6 +57,7 @@ public:
         configuredMaxEntries_ = 0;
         termCount_ = 0;
         budgetBytes_ = 0;
+        coefficientCapacityBytes_ = 0;
         beginPhase();
     }
 
@@ -88,6 +89,7 @@ public:
             return;
 
         std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
+        coefficientCapacityBytes_ = 0;
         maxEntries_ = budgetMaxEntries;
         configuredMaxEntries_ = budgetMaxEntries;
         termCount_ = termCount;
@@ -98,6 +100,7 @@ public:
             if(bytesOwned() > budgetBytes_)
             {
                 std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
+                coefficientCapacityBytes_ = 0;
                 maxEntries_ = 0;
             }
         }
@@ -173,6 +176,10 @@ public:
             FmmKernels::computeM2LOperator(
                 geometry.direction, layout, derivativeScratch,
                 inserted.first->second);
+            const std::size_t insertedCoefficientBytes = saturatingMultiply(
+                inserted.first->second.capacity(), sizeof(double));
+            coefficientCapacityBytes_ = saturatingAdd(
+                coefficientCapacityBytes_, insertedCoefficientBytes);
 
             if(bytesOwned() <= budgetBytes_)
                 return Lookup{&inserted.first->second, geometry.inverseScale,
@@ -182,10 +189,15 @@ public:
             // it from persistent storage, and stop growing if allocator/hash
             // overhead has exhausted the byte budget.
             uncachedOperator.swap(inserted.first->second);
+            if(insertedCoefficientBytes > coefficientCapacityBytes_)
+                throw UniversalError(
+                    "FmmM2LOperatorCache::getPrepared: coefficient byte accounting underflow");
+            coefficientCapacityBytes_ -= insertedCoefficientBytes;
             entries_.erase(inserted.first);
             if(bytesOwned() > budgetBytes_)
             {
                 std::unordered_map<Key, std::vector<double>, KeyHash>().swap(entries_);
+                coefficientCapacityBytes_ = 0;
                 maxEntries_ = 0;
             }
             else
@@ -304,12 +316,7 @@ public:
             0 : saturatingMultiply(entries_.bucket_count(), sizeof(void*));
         result = saturatingAdd(result,
             saturatingMultiply(entries_.size(), mapEntry));
-        for(const auto& entry : entries_)
-        {
-            result = saturatingAdd(result,
-                saturatingMultiply(entry.second.capacity(), sizeof(double)));
-        }
-        return result;
+        return saturatingAdd(result, coefficientCapacityBytes_);
     }
 
     std::size_t entries() const { return entries_.size(); }
@@ -531,6 +538,7 @@ private:
     std::size_t configuredMaxEntries_;
     std::size_t termCount_;
     std::size_t budgetBytes_;
+    std::size_t coefficientCapacityBytes_;
     std::uint64_t hits_;
     std::uint64_t misses_;
     std::uint64_t bypasses_;

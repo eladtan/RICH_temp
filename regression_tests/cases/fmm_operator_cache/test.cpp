@@ -202,7 +202,8 @@ bool checkPreparedBatchResolution()
        coefficients[0]->size() != layout.m2lTerms().size() ||
        coefficients[1]->size() != layout.m2lTerms().size() ||
        cache.misses() != 2 || cache.hits() != 6 ||
-       cache.bypasses() != 0)
+       cache.bypasses() != 0 ||
+       cache.bytesOwned() > generousBudget)
         return false;
 
     // An insufficient cache must reject the batch before mutating cache state
@@ -216,7 +217,8 @@ bool checkPreparedBatchResolution()
         uncachedOperator, coefficients);
     if(zeroResolved || !coefficients.empty() ||
        zeroCache.entries() != 0 || zeroCache.hits() != 0 ||
-       zeroCache.misses() != 0 || zeroCache.bypasses() != 0)
+       zeroCache.misses() != 0 || zeroCache.bypasses() != 0 ||
+       zeroCache.bytesOwned() != 0)
         return false;
 
     // Re-resolving an already-populated batch must be all hits.
@@ -224,8 +226,12 @@ bool checkPreparedBatchResolution()
     const bool repeatedResolved = cache.resolvePreparedBatch(
         geometries, useCounts, layout, derivativeScratch,
         uncachedOperator, coefficients);
-    return repeatedResolved && cache.misses() == 0 &&
-           cache.hits() == 8 && cache.bypasses() == 0;
+    const bool repeatedPass = repeatedResolved && cache.misses() == 0 &&
+        cache.hits() == 8 && cache.bypasses() == 0 &&
+        cache.bytesOwned() <= generousBudget;
+    cache.clear();
+    return repeatedPass && cache.entries() == 0 &&
+        cache.bytesOwned() == 0;
 }
 
 bool checkLocalPlanGeometryGuard()
