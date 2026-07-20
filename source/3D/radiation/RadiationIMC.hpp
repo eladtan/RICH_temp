@@ -436,6 +436,18 @@ public:
         observer_ = std::move(observer);
         observerAdapter_ = observer_
             ? std::make_shared<ObserverAdapter>(observer_) : nullptr;
+#ifdef MONTECARLO_POLARIZATION
+        if(observer_)
+        {
+            auto const &parameters = this->impl_.getParameters();
+            auto const &polarization = parameters.postProcess.polarization;
+            observer_->setPolarizationMetadata(
+                parameters.withPolarization || polarization.enabled,
+                polarization.manualScatteringsAfterAcceleration,
+                polarization.depolarizationScatterings,
+                polarization.acceleratedClosure);
+        }
+#endif
         this->impl_.setObserver(observerAdapter_);
     }
 
