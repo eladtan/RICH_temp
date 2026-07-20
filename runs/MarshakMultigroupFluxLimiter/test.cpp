@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 #include <sys/stat.h>
 #include <boost/math/tools/roots.hpp>
 #include <sstream>
-#include <source/Radiation/CMMC/src/planck_integral/planck_integral.hpp>
+#include <source/monte/deps/CMMC/src/planck_integral/planck_integral.hpp>
 #include <algorithm>
 
 

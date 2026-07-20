@@ -1,8 +1,8 @@
 #include "ReverseAdjointTransport3D.hpp"
 #include "SphericalObserver.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
-#include "Radiation/CMMC/src/units/units.hpp"
-#include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "CMMC/src/units/units.hpp"
+#include "CMMC/src/planck_integral/planck_integral.hpp"
 #include "MultigroupOpacity.hpp"
 #include "IMCPolarization.hpp"
 #include <algorithm>

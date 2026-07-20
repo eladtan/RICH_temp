@@ -17,7 +17,7 @@
 #include "monte/utils/LinearInterpolation.hpp"
 #include "monte/radiation/RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
-#include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "CMMC/src/planck_integral/planck_integral.hpp"
 
 class SphericalObserver;
 

@@ -3,8 +3,8 @@
 
 #include "RadiationOpacity.hpp"
 #include <memory>
-#include "Radiation/CMMC/src/units/units.hpp"
-#include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "CMMC/src/units/units.hpp"
+#include "CMMC/src/planck_integral/planck_integral.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "misc/utils.hpp"
 

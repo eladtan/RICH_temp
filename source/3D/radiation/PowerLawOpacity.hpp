@@ -2,7 +2,7 @@
 #define POWER_LAW_OPACITY_HPP
 
 #include "RadiationOpacity.hpp"
-#include "Radiation/CMMC/src/units/units.hpp"
+#include "CMMC/src/units/units.hpp"
 #include "LorentzTransformation.hpp"
 
 class MCPowerLawOpacity : public OpacityCalculator

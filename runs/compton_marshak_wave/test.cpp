@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
-#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/monte/deps/CMMC/src/planck_integral/planck_integral.hpp"
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
 #include "source/Radiation/MultigroupDiffusion.hpp"
 #include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"

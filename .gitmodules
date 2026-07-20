@@ -1,9 +1,6 @@
 [submodule "source/opt/vcl"]
 	path = source/opt/vcl
 	url = git@github.com:maormizrachi/vcl_rich.git
-[submodule "source/Radiation/CMMC"]
-	path = source/Radiation/CMMC
-	url = git@github.com:menahemkrief/CMMC.git
 [submodule "source/utils/hdf5"]
 	path = source/utils/hdf5
 	url = git@github.com:maormizrachi/EasyHDF5.git

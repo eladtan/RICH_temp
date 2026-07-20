@@ -6,7 +6,7 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "Radiation/OpacityCalculator.hpp"
 #include "newtonian/common/equation_of_state.hpp"
-#include "Radiation/CMMC/src/units/units.hpp"
+#include "CMMC/src/units/units.hpp"
 
 namespace fleck_helper {
 

@@ -8,8 +8,8 @@
 #include <numeric>
 #include <filesystem>
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
-#include "source/Radiation/CMMC/src/units/units.hpp"
-#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/monte/deps/CMMC/src/units/units.hpp"
+#include "source/monte/deps/CMMC/src/planck_integral/planck_integral.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
 #include "source/newtonian/three_dimensional/conserved_3d.hpp"

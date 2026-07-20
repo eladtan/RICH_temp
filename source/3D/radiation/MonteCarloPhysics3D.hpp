@@ -9,7 +9,7 @@
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/common/equation_of_state.hpp"
-#include "Radiation/CMMC/src/units/units.hpp"
+#include "CMMC/src/units/units.hpp"
 #include "monte/utils/RandomInCell.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "RadiationOpacity.hpp"

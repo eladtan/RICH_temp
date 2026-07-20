@@ -3,7 +3,7 @@
 
 #include <random>
 #include "3D/radiation/RadiationOpacity.hpp"
-#include "Radiation/CMMC/src/units/units.hpp"
+#include "CMMC/src/units/units.hpp"
 #include "3D/radiation/LorentzTransformation.hpp"
 
 class CrookedPipeOpacity : public OpacityCalculator

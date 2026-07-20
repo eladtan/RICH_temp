@@ -17,7 +17,7 @@
 #include "source/Radiation/MultigroupDiffusion.hpp"
 #include "source/Radiation/MultigroupDiffusionBoundaryCalculator.hpp"
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
-#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/monte/deps/CMMC/src/planck_integral/planck_integral.hpp"
 #include <chrono>
 #include <fstream>
 #include <libgen.h>

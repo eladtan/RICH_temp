@@ -2,7 +2,7 @@
 #define IMC_POLARIZATION_HPP
 
 #include "3D/elementary/Vector3D.hpp"
-#include "Radiation/CMMC/src/units/units.hpp"
+#include "CMMC/src/units/units.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

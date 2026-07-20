@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
-#include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/monte/deps/CMMC/src/planck_integral/planck_integral.hpp"
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/simple_io.hpp"
