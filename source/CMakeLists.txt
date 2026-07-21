@@ -41,21 +41,19 @@ endif()
 # message(STATUS "Adding linker -flto option")
 # add_link_options(-flto)
 
-if(NOT TEST_DIR)
-    message(FATAL_ERROR "TEST_DIR is not set. Please set it (using '-DTEST_DIR=XX') to a test directory under 'runs/' or a repo-relative directory.")
-endif()
-
-if(EXISTS "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}")
-    set(TEST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}")
-elseif(EXISTS "${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
-    set(TEST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
-else()
-    message(FATAL_ERROR "Could not find test directory. Checked: ${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR} and ${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
-endif()
-
-# files to compile
+# files to compile (source library)
 file(GLOB_RECURSE SRC FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/*.c")
-file(GLOB_RECURSE TEST_SRC FOLLOW_SYMLINKS "${TEST_SOURCE_DIR}/*.cpp" "${TEST_SOURCE_DIR}/*.c")
+
+if(TEST_DIR)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}")
+        set(TEST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR}")
+    elseif(EXISTS "${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
+        set(TEST_SOURCE_DIR "${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
+    else()
+        message(FATAL_ERROR "Could not find test directory. Checked: ${PROJECT_SOURCE_DIR}/../runs/${TEST_DIR} and ${PROJECT_SOURCE_DIR}/../${TEST_DIR}")
+    endif()
+    file(GLOB_RECURSE TEST_SRC FOLLOW_SYMLINKS "${TEST_SOURCE_DIR}/*.cpp" "${TEST_SOURCE_DIR}/*.c")
+endif()
 
 include(${CMAKE_SOURCE_DIR}/../config/find_HDF5.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_VTK.cmake)
@@ -203,78 +201,73 @@ if(DEFINED VTUNE_INCLUDE)
     include_directories(${VTUNE_INCLUDE})
 endif()
 
-add_executable(${EXE_NAME} ${TEST_SRC} ${SRC})
-
-if(${MIXED_BUILD})
-    message(STATUS "Mixed build: marking some files for debug")
-    mark_debug_sources("${EXE_NAME}")
-endif()
-
-# ======================= LINKING =======================
-
-if(CGAL_DIRECTORY)
-    # TODO: at least this line
-    # target_link_libraries(${EXE_NAME} PRIVATE CGAL::CGAL)
-
-    # # Optionally: if you use CGAL Core
-    # if(TARGET CGAL::CGAL_Core)
-    #     target_link_libraries(my_program PRIVATE CGAL::CGAL_Core)
-    # endif()
-endif()
+# ======================= rich_core LIBRARY =======================
+add_library(rich_core STATIC ${SRC})
+target_include_directories(rich_core PUBLIC "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/..")
 
 find_package(ZLIB REQUIRED)
-target_link_libraries(${EXE_NAME} PRIVATE ${HDF5_LIBS} ZLIB::ZLIB)
-
-target_link_libraries(
-    rich_core 
-    PUBLIC
-    ${HDF5_LIBS} 
-    ${VTK_LIBRARIES}
-)
+target_link_libraries(rich_core PUBLIC ${HDF5_LIBS} ${VTK_LIBRARIES} ZLIB::ZLIB)
 
 if(DEFINED JSONCPP_LIB)
-    target_link_libraries(${EXE_NAME} PRIVATE ${JSONCPP_LIB})
+    target_link_libraries(rich_core PUBLIC ${JSONCPP_LIB})
 endif()
 
 if(DEFINED PARMETIS_LIB)
-    target_link_libraries(${EXE_NAME} PRIVATE ${PARMETIS_LIB})
-    # define "WITH_PARMETIS"
+    target_link_libraries(rich_core PUBLIC ${PARMETIS_LIB})
     add_compile_definitions("WITH_PARMETIS")
 endif()
 
 if(DEFINED METIS_LIB)
-    target_link_libraries(${EXE_NAME} PRIVATE ${METIS_LIB})
+    target_link_libraries(rich_core PUBLIC ${METIS_LIB})
 endif()
 
 if(DEFINED GKLIB_LIB)
-    target_link_libraries(${EXE_NAME} PRIVATE ${GKLIB_LIB})
+    target_link_libraries(rich_core PUBLIC ${GKLIB_LIB})
 endif()
 
-# link boost
 if(DEFINED BOOST_DIR)
-    target_link_directories(${EXE_NAME} PRIVATE ${BOOST_DIR}/lib)
+    target_link_directories(rich_core PUBLIC ${BOOST_DIR}/lib)
 endif()
 
-# link pybind11
 if(pybind11_FOUND)
-    target_link_libraries(${EXE_NAME} PRIVATE pybind11::embed pybind11::module)
+    target_link_libraries(rich_core PUBLIC pybind11::embed pybind11::module)
 endif()
 
-# link python
 if(DEFINED PYTHON_LIB_LIBRARY)
-    target_link_libraries(${EXE_NAME} PRIVATE ${PYTHON_LIB})
+    target_link_libraries(rich_core PUBLIC ${PYTHON_LIB})
 endif()
 
-# link vtune
 if((DEFINED VTUNE_INCLUDE) AND (DEFINED VTUNE_LIB_DIRECTORY))
     set(VTUNE_LIB ${VTUNE_LIB_DIRECTORY}/libittnotify.a)
-    target_link_libraries(${EXE_NAME} PRIVATE "${VTUNE_LIB}")
+    target_link_libraries(rich_core PUBLIC "${VTUNE_LIB}")
     add_compile_definitions("WITH_VTUNE")
 endif()
 
 vtk_module_autoinit(
-  TARGETS ${EXE_NAME} rich_core
+  TARGETS rich_core
   MODULES ${VTK_LIBRARIES}
 )
 
+# ======================= MAIN EXECUTABLE (requires TEST_DIR) =======================
+if(TEST_DIR)
+    add_executable(${EXE_NAME} ${TEST_SRC})
+    target_link_libraries(${EXE_NAME} PRIVATE rich_core)
+
+    if(${MIXED_BUILD})
+        message(STATUS "Mixed build: marking some files for debug")
+        mark_debug_sources("${EXE_NAME}")
+    endif()
+
+    if(CGAL_DIRECTORY)
+        # TODO: at least this line
+        # target_link_libraries(${EXE_NAME} PRIVATE CGAL::CGAL)
+    endif()
+
+    vtk_module_autoinit(
+      TARGETS ${EXE_NAME}
+      MODULES ${VTK_LIBRARIES}
+    )
+endif()
+
+# ======================= UNIT TESTS =======================
 add_subdirectory(../tests_catch2 tests_catch2)

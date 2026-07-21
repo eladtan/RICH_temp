@@ -15,7 +15,7 @@
 #include "source/mpi/serialize/mpi_commands.hpp"
 #include "source/mpi/types.h"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
-#include "source/3D/tesselation/Tessellation3D.hpp"
+#include "source/3D/tessellation/Tessellation3D.hpp"
 #include <type_traits>
 
 #ifdef RICH_MPI

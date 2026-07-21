@@ -1,7 +1,7 @@
 #ifndef DIFFUSION_BOUNDARY_CALCULATOR_HPP
 #define DIFFUSION_BOUNDARY_CALCULATOR_HPP
 
-#include "source/3D/tesselation/Tessellation3D.hpp"
+#include "source/3D/tessellation/Tessellation3D.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
 #include "source/Radiation/GrayDiffusion/DiffusionCoefficientCalculator.hpp"
 

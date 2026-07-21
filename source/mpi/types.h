@@ -1,8 +1,6 @@
 #ifndef MPI_TYPES_H
 #define MPI_TYPES_H
 
-#ifdef RICH_MPI
-
 #include <type_traits> // for std::is_convertible
 #include <vector> // for std::vector
 

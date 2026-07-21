@@ -2,7 +2,7 @@
 include(FetchContent)
 FetchContent_Declare(
 catch2
-GIT_REPOSITORY git@github.com:catchorg/Catch2.git
+GIT_REPOSITORY https://github.com/catchorg/Catch2.git
 GIT_TAG v3.11.0
 )
 FetchContent_MakeAvailable(catch2)
@@ -22,6 +22,7 @@ endforeach()
 if (TESTS_SOURCES)
     add_executable(rich_tests ${TESTS_SOURCES})
     target_link_libraries(rich_tests PRIVATE rich_core Catch2::Catch2)
+    target_include_directories(rich_tests PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/..")
 
     include(Catch)
     set(CMAKE_CATCH_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)

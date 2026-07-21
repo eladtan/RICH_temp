@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/newtonian/three_dimensional/eulerian_3d.hpp"
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
