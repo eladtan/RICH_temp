@@ -334,11 +334,26 @@ void FmmDualTreeTraversal::runLocalPlan(
     std::vector<double> uncachedOperator;
     uncachedOperator.reserve(layout.m2lTerms().size());
 
+    std::size_t activeUniqueGeometryCount = 0;
+    for(const std::uint64_t count : activeGeometryUseCounts)
+    {
+        if(count != 0)
+            ++activeUniqueGeometryCount;
+    }
+    
+    // Avoid a long operator-generation phase with no LET communication progress.
+    // Large geometry sets are handled lazily in the progress-enabled M2L loop.
+    static constexpr std::size_t maxPreparedBatchGeometries = 4096;
+    
     std::vector<const std::vector<double>*> resolvedOperators;
-    const bool operatorsResolved = operatorCache.resolvePreparedBatch(
-        plan.geometries, activeGeometryUseCounts, layout,
-        derivativeScratch, uncachedOperator, resolvedOperators);
-
+    bool operatorsResolved = false;
+    
+    if(activeUniqueGeometryCount <= maxPreparedBatchGeometries)
+    {
+        operatorsResolved = operatorCache.resolvePreparedBatch(
+            plan.geometries, activeGeometryUseCounts, layout,
+            derivativeScratch, uncachedOperator, resolvedOperators);
+    }
     stats.rejectedSameNode += plan.rejectedSameNode;
     stats.rejectedOverlap += plan.rejectedOverlap;
     stats.rejectedRatio += plan.rejectedRatio;
