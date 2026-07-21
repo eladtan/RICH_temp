@@ -230,8 +230,11 @@ void LagrangianFlux3D::operator()(size_t face_index, const Tessellation3D & tess
 {
 	size_t N = tess.GetTotalFacesNumber();
 	ws_.resize(N, 0.0);
+	ws_.shrink_to_fit();
 	edge_vel_.resize(N, 0.0);
+	edge_vel_.shrink_to_fit();
 	Lag_calc_.resize(N, false);
+	Lag_calc_.shrink_to_fit();
 	const Vector3D normal = normalize(tess.Normal(face_index));
 	if (criteria_(face_index, tess, face_velocity, cells, eos, aux, face_values, time))
 	{

@@ -1,11 +1,4 @@
-#include <cassert>
 #include "hdsim_3d.hpp"
-#include "3D/hilbert/HilbertOrder3D.hpp"
-#include "misc/utils.hpp"
-#ifdef RICH_MPI
-#include "mpi/mpi_commands.hpp"
-#endif
-#include <chrono>
 
 namespace
 {
@@ -94,6 +87,9 @@ HDSim3D::HDSim3D(Tessellation3D& tess,
 	eos_(eos), cells_(cells), extensive_(), pm_(pm), tsc_(tsc), fc_(fc), cu_(cu), eu_(eu), source_(source), pt_()
 	, Max_ID_(0)
 	, dt_(0)
+	#ifdef RICH_MPI
+	, exchange_chain_(MPI_COMM_WORLD)
+	#endif // RICH_MPI
 {
 #ifdef RICH_MPI
 	int ws = 0, rank = 0;
@@ -197,7 +193,11 @@ namespace
 			points[i] += point_vel[i] * dt;
 	}
 
-	void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr)
+	#ifdef RICH_MPI
+		void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, ExchangeChain &chain, std::vector<Vector3D> const* orgpoints = nullptr)
+	#else // RICH_MPI
+		void UpdateTessellation(Tessellation3D& tess, const vector<Vector3D>& point_vel, double dt, std::vector<Vector3D> const* orgpoints = nullptr)
+	#endif // RICH_MPI
 	{
 		vector<Vector3D> points;
 		if (orgpoints == nullptr)
@@ -214,6 +214,7 @@ namespace
 		
 		#ifdef RICH_MPI
 		tess.BuildParallel(points);
+		chain.Exchange(tess.GetSentProcs(), tess.GetSentPoints(), tess.GetSelfIndex());
 		#else // RICH_MPI
 		tess.Build(points);
 		#endif // RICH_MPI
@@ -234,6 +235,9 @@ namespace
 
 void HDSim3D::timeAdvance2(void)
 {
+#ifdef RICH_MPI
+	this->exchange_chain_.Reset(tess_.GetPointNo());
+#endif // RICH_MPI
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
@@ -279,7 +283,11 @@ void HDSim3D::timeAdvance2(void)
 	{
 		MovePoints(tess_, point_vel, dt);
 		t1 = get_time();
-		UpdateTessellation(tess_, point_vel, dt);
+		#ifdef RICH_MPI
+			UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+		#else // RICH_MPI
+			UpdateTessellation(tess_, point_vel, dt);
+		#endif // RICH_MPI
 		t2 = get_time();
 		DisplayTime(t1, t2, "Voronoi build time ");
 #ifdef RICH_MPI
@@ -315,6 +323,10 @@ MPI_exchange_data(tess_, cells_, true);
 
 void HDSim3D::timeAdvance(void)
 {
+#ifdef RICH_MPI
+	this->exchange_chain_.Reset(tess_.GetPointNo());
+#endif // RICH_MPI
+
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
@@ -334,15 +346,23 @@ void HDSim3D::timeAdvance(void)
 		fc_(fluxes, tess_, face_vel, cells_, extensive_, eos_, pt_.getTime(), dt);
 	source_(tess_, cells_, fluxes, point_vel, pt_.getTime(), dt, extensive_);
 	eu_(fluxes, tess_, dt, cells_, extensive_, pt_.getTime(), face_vel, face_values);
+	if(pm_.MovedPoints())
+	{
 	MovePoints(tess_, point_vel, dt);
-	UpdateTessellation(tess_, point_vel, dt);
-#ifdef RICH_MPI
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt);
+	#endif // RICH_MPI
+
+	#ifdef RICH_MPI
 	// Keep relevant points
 	ComputationalCell3D cdummy;
 	Conserved3D edummy;
 	MPI_exchange_data(tess_, extensive_, false);
 	MPI_exchange_data(tess_, cells_, false);
 #endif
+	}
 	cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, cells_, true);
@@ -354,6 +374,10 @@ void HDSim3D::timeAdvance(void)
 
 void HDSim3D::timeAdvance3(void)
 {
+#ifdef RICH_MPI
+	this->exchange_chain_.Reset(tess_.GetPointNo());
+#endif // RICH_MPI
+
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
@@ -391,7 +415,11 @@ void HDSim3D::timeAdvance3(void)
 	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt * 0.5);
-	UpdateTessellation(tess_, point_vel, 0.5 * dt);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->exchange_chain_);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, 0.5 * dt);
+	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -418,7 +446,11 @@ void HDSim3D::timeAdvance3(void)
 	eu_(fluxes, tess_, 2 * dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 	mid_extensives = mid_extensives - 3 * (u1 - extensive_);
 
-	UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, &oldpoints);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -451,6 +483,10 @@ void HDSim3D::timeAdvance3(void)
 
 void HDSim3D::timeAdvance33(void)
 {
+#ifdef RICH_MPI
+	this->exchange_chain_.Reset(tess_.GetPointNo());
+#endif // RICH_MPI
+
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
@@ -487,7 +523,11 @@ void HDSim3D::timeAdvance33(void)
 	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt);
-	UpdateTessellation(tess_, point_vel, dt);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt);
+	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -512,7 +552,11 @@ void HDSim3D::timeAdvance33(void)
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 	mid_extensives = 0.25 * mid_extensives + 0.75 * extensive_;
 
-	UpdateTessellation(tess_, point_vel, dt / 2, &oldpoints);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt / 2, this->exchange_chain_, &oldpoints);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt / 2, &oldpoints);
+	#endif // RICH_MPI
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -536,7 +580,12 @@ void HDSim3D::timeAdvance33(void)
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 	extensive_ = 0.33333333333333333333333 * (2 * mid_extensives + extensive_);
 
-	UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, &oldpoints);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+	#endif // RICH_MPI
+
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, extensive_, false);
@@ -551,6 +600,10 @@ void HDSim3D::timeAdvance33(void)
 
 void HDSim3D::timeAdvance32(void)
 {
+#ifdef RICH_MPI
+	this->exchange_chain_.Reset(tess_.GetPointNo());
+#endif // RICH_MPI
+
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
@@ -585,8 +638,14 @@ void HDSim3D::timeAdvance32(void)
 		point_vel = VectorValues(point_vel, order);
 	}
 	MovePoints(tess_, point_vel, dt);
-	UpdateTessellation(tess_, point_vel, dt);
-#ifdef RICH_MPI
+
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt);
+	#endif // RICH_MPI
+
+	#ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
 	MPI_exchange_data(tess_, extensive_, false);
@@ -627,6 +686,10 @@ void HDSim3D::timeAdvance32(void)
 
 void HDSim3D::timeAdvance4(void)
 {
+#ifdef RICH_MPI
+	this->exchange_chain_.Reset(tess_.GetPointNo());
+#endif // RICH_MPI
+
 	vector<Vector3D> point_vel, face_vel;
 	pm_(tess_, cells_, pt_.getTime(), point_vel);
 #ifdef RICH_MPI
@@ -664,7 +727,12 @@ void HDSim3D::timeAdvance4(void)
 	std::vector<Vector3D> oldpoints = tess_.accessMeshPoints();
 	oldpoints.resize(tess_.GetPointNo());
 	MovePoints(tess_, point_vel, dt * 0.5);
-	UpdateTessellation(tess_, point_vel, 0.5 * dt);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->exchange_chain_);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, 0.5 * dt);
+	#endif // RICH_MPI
+
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -700,7 +768,12 @@ void HDSim3D::timeAdvance4(void)
 	mid_extensives = mid_extensives - du2;
 	eu_(fluxes, tess_, dt, cells_, mid_extensives, pt_.getTime(), face_vel, face_values);
 
-	UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+	#ifdef RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, this->exchange_chain_, &oldpoints);
+	#else // RICH_MPI
+		UpdateTessellation(tess_, point_vel, dt, &oldpoints);
+	#endif // RICH_MPI
+
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);

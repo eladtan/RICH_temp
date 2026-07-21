@@ -1,6 +1,8 @@
 #ifndef HILBERT_TREE_3D
 #define HILBERT_TREE_3D
 
+#ifdef RICH_MPI
+
 #define DEBUG_MODE
 
 #ifdef DEBUG_MODE
@@ -46,6 +48,7 @@ private:
     mutable std::vector<const Node*> nodes_stack;
     MPI_Comm comm;
     int rank, size;
+    size_t depth;
     #ifdef DEBUG_MODE
         const HilbertConvertor3D *convertor;
     #endif // DEBUG_MODE
@@ -66,6 +69,7 @@ public:
         #ifdef DEBUG_MODE
             this->convertor = convertor;
         #endif // DEBUG_MODE
+        this->depth = 0;
         this->buildTree(convertor, responsibilityRange);
     }
 
@@ -97,6 +101,10 @@ public:
     std::vector<std::vector<BoundingBox<Vector3D>>> getBoundingBoxesOfRanks(void) const;
 
     std::vector<const Node*> getValuesIf(const std::function<bool(const Node*)> ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const;
+
+    inline size_t getDepth() const{return this->depth;};
+
+    std::vector<int> getOwners(const Vector3D &point) const;
 };
 
 template<int max_ranks_per_leaf>
@@ -184,6 +192,8 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
         return;
     }
 
+    this->depth = std::max(this->depth, currentDepth);
+
     const DirectionVector3D &startPoint = current_args.startPoint;
     const DirectionVector3D &a = current_args.a;
     const DirectionVector3D &b = current_args.b;
@@ -206,7 +216,6 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTreeHelper(Node *currentNode, const
     currentNode->boundingBox = BoundingBox<Vector3D>(convertor->WidthHeightDepthToXYZ(ll.x, ll.y, ll.z), convertor->WidthHeightDepthToXYZ(ur.x, ur.y, ur.z));
 
     std::pair<int, int> ranksMatching = {0, this->size - 1};
-
 
     if(current_d >= responsibilityRange.back())
     {
@@ -331,6 +340,12 @@ void HilbertTree3D<max_ranks_per_leaf>::buildTree(const HilbertRectangularConver
     using RecursionArguments = HilbertRectangularConvertor3D::RecursionArguments;
     using direction_t = HilbertRectangularConvertor3D::direction_t;
     hilbert_index_t d = 0;
+    
+    if(responsibilityRange.empty())
+    {
+        UniversalError eo("Responsibility Range (Hilbert partition boundaries) given to tree is empty");
+        throw eo;
+    }
 
     this->root = new Node(nullptr);
     this->buildTreeHelper(this->root, {{0, 0, 0}, {convertor->div.x, 0, 0}, {0, convertor->div.y, 0}, {0, 0, convertor->div.z}}, 0, d, convertor, responsibilityRange);
@@ -349,22 +364,16 @@ template<typename U>
 typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per_leaf>::getIntersectingRanks(const Sphere<U> &sphere) const
 {
     RanksSet result;
+    if(this->root == nullptr || !SphereBoxIntersection(this->root->boundingBox, sphere))
+    {
+        return result;
+    }
     this->nodes_stack.push_back(this->root);
 
     while(not this->nodes_stack.empty())
     {
         const Node *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
-
-        if(node == nullptr)
-        {
-            continue;
-        }
-
-        if(not SphereBoxIntersection(node->boundingBox, sphere))
-        {
-            continue;
-        }
 
         if(node->is_leaf)
         {
@@ -378,7 +387,10 @@ typename HilbertTree3D<max_ranks_per_leaf>::RanksSet HilbertTree3D<max_ranks_per
         {
             for(const Node *child : node->children)
             {
-                this->nodes_stack.push_back(child); // recursively iterate
+                if(child != nullptr && SphereBoxIntersection(child->boundingBox, sphere))
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
         }
     }
@@ -411,7 +423,10 @@ std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_ty
     std::pair<Vector3D, Vector3D> initialPair = std::make_pair<Vector3D, Vector3D>(Vector3D(maxVal, maxVal, maxVal), Vector3D(minVal, minVal, minVal));
     std::vector<std::pair<coord_type, coord_type>> distances(this->size, {maxVal, minVal});
 
-    this->nodes_stack.push_back(this->root);
+    if(this->root != nullptr)
+    {
+        this->nodes_stack.push_back(this->root);
+    }
 
     Vector3D closestPoint, furthestPoint;
     while(not this->nodes_stack.empty())
@@ -419,19 +434,18 @@ std::vector<std::pair<typename Vector3D::coord_type, typename Vector3D::coord_ty
         const Node *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
         if(!node->is_leaf)
         {
             for(const Node *child : node->children)
             {
-                this->nodes_stack.push_back(child);
+                if(child != nullptr)
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
             continue;
         }
-        // node is a value node
+        // node is a leaf
         closestPoint = node->boundingBox.closestPoint(point);
         furthestPoint = node->boundingBox.furthestPoint(point);
         coord_type closestDist = 0, furthestDist = 0;
@@ -526,7 +540,7 @@ template<int max_leaf_ranks>
 std::vector<const typename HilbertTree3D<max_leaf_ranks>::Node*> HilbertTree3D<max_leaf_ranks>::getValuesIf(const std::function<bool(const Node*)> ifOpenFunction, const std::function<bool(const Node*)> &ifAddValueFunction) const
 {
     std::vector<const Node*> nodes = {this->root};
-    nodes.reserve(this->getDepth() * max_leaf_ranks);
+    // nodes.reserve(this->getDepth() * max_leaf_ranks);
 
     std::vector<Node*> result;
 
@@ -556,5 +570,43 @@ std::vector<const typename HilbertTree3D<max_leaf_ranks>::Node*> HilbertTree3D<m
     }
     return result;
 }
+
+template<int max_leaf_ranks>
+std::vector<int> HilbertTree3D<max_leaf_ranks>::getOwners(const Vector3D &point) const
+{
+    std::vector<int> result;
+    this->nodes_stack.push_back(this->root);
+
+    while(not this->nodes_stack.empty())
+    {
+        const Node *node = this->nodes_stack.back();
+        this->nodes_stack.pop_back();
+
+        if(node == nullptr)
+        {
+            continue;
+        }
+
+        if(node->is_leaf)
+        {
+            size_t numOwners = node->owners.size();
+            for(size_t i = 0; i < numOwners; i++)
+            {
+                result.push_back(node->owners[i]);
+            }
+            continue;
+        }
+        else
+        {
+            if(node->boundingBox.isInside(point))
+            {
+                this->nodes_stack.push_back(node);
+            }
+        }
+    }
+    return result;
+}
+
+#endif // RICH_MPI
 
 #endif // HILBERT_TREE_3D

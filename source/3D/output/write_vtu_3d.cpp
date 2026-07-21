@@ -4,13 +4,16 @@
 namespace write_vtu3d
 {
 	void write_vtu_3d(std::filesystem::path const& file_name,
-				std::vector<std::string> const& cell_variable_names,
-				std::vector<std::vector<double>> const& cell_variables,
-				std::vector<std::string> const& cell_vectors_names,
-				std::vector<std::vector<Vector3D> > const& cell_vectors,
-				double const time,
-				std::size_t cycle,
-				Tessellation3D const& tess){
+					std::vector<std::string> const& cell_variable_names,
+					std::vector<std::vector<double>> const& cell_variables,
+					std::vector<std::string> const& cell_strings_names,
+					std::vector<std::vector<std::string>> const& cell_strings,
+					std::vector<std::string> const& cell_vectors_names,
+					std::vector<std::vector<Vector3D> > const& cell_vectors,
+					std::vector<std::pair<std::string, double>> const &scalar_values,
+					double const time,
+					std::size_t cycle,
+					Tessellation3D const& tess){
 		std::vector<Vector3D> const& vertices = tess.GetFacePoints();
 		std::size_t const num_vertices = vertices.size();
 		std::size_t const num_cells = tess.GetPointNo();
@@ -45,6 +48,15 @@ namespace write_vtu3d
 			cd->SetNumberOfTuples(1);
 			cd->SetTuple1(0, cycle);
 			ugrid->GetFieldData()->AddArray(cd);
+		}
+
+		for(const std::pair<std::string, double> &scalar : scalar_values)
+		{
+			vtkNew<vtkDoubleArray> v;
+			v->SetName(scalar.first.c_str());
+			v->SetNumberOfTuples(1);
+			v->SetTuple1(0, scalar.second);
+			ugrid->GetFieldData()->AddArray(v);
 		}
 
 	// ----------- grid vertices coordinates
@@ -101,6 +113,20 @@ namespace write_vtu3d
 			var_data->SetNumberOfComponents(1);
 			var_data->SetNumberOfValues(num_cells);
 			auto const& var = cell_variables[var_index];
+			assert(var.size() == num_cells);
+			for(std::size_t cell=0; cell<num_cells; ++cell){
+				var_data->SetValue(cell, var[cell]);
+			}
+			ugrid->GetCellData()->AddArray(var_data);
+		}
+
+		// cell strings data
+		for(std::size_t var_index=0; var_index<cell_strings_names.size(); ++var_index){
+			vtkNew<vtkStringArray> var_data;
+			var_data->SetName(cell_strings_names[var_index].c_str());
+			var_data->SetNumberOfComponents(1);
+			var_data->SetNumberOfValues(num_cells);
+			auto const& var = cell_strings[var_index];
 			assert(var.size() == num_cells);
 			for(std::size_t cell=0; cell<num_cells; ++cell){
 				var_data->SetValue(cell, var[cell]);

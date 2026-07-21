@@ -89,7 +89,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 	last_time_ = time;
-	if (debug_ || res<1e-7)
+	if (debug_)
 	{
 		if (1.0000001 * res > old_res && (dt_first_ < 0 || old_res < 0.99999 * dt_first_))
 		{
@@ -106,7 +106,7 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 				for (size_t j = 0; j < Nloop; ++j)
 				{
 					max_face_area = std::max(max_face_area, tess.GetArea(faces[j]));
-					std::cout << " face_vel " << fastabs(v - face_velocities[faces[j]]) << " ";
+					std::cout << " face_vel " << face_velocities[faces[j]] <<" dv= " <<fastabs(v - face_velocities[faces[j]]) << " ";
 					Vector3D p1 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).first);
 					Vector3D p2 = tess.GetMeshPoint(tess.GetFaceNeighbors(faces[j]).second);
 					std::cout<<"p1="<<p1.x<<","<<p1.y<<","<<p1.z<<" p2="<<p2.x<<","<<p2.y<<","<<p2.z<<std::endl;

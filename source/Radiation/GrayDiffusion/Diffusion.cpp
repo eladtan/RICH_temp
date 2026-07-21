@@ -49,7 +49,8 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                      std::vector<std::string> const zero_cells, 
                      bool const flux_limiter, 
                      bool const hydro_on, 
-                     bool const compton_on) : 
+                     bool const compton_on,
+                     bool const cooling_time_limiter_on) : 
                                             RadiationDriver(eos, 
                                                             zero_cells, 
                                                             flux_limiter, 
@@ -67,7 +68,8 @@ Diffusion::Diffusion(DiffusionCoefficientCalculator const& D_coefficient_calc,
                                              new_Er_full(),
                                              old_Er(),
                                              do_iterations_on_Um(false),
-                                             use_new_Er_for_x0(false) {}
+                                             use_new_Er_for_x0(false),
+                                             cooling_time_limiter_on_(cooling_time_limiter_on) {}
 
 double Diffusion::GetSingleFleckFactor(
     ComputationalCell3D const& cell, 
@@ -95,17 +97,26 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     auto const N = tess.GetPointNo();
     
     sigma_planck.resize(N, 0.0);
+    sigma_planck.shrink_to_fit();
     sigma_s.resize(N, 0.0);
+    sigma_s.shrink_to_fit();
     fleck_factor.resize(N, 0.0);
+    fleck_factor.shrink_to_fit();
     D.resize(N, 0.0);
+    D.shrink_to_fit();
     R2.resize(N, 0.0);
+    R2.shrink_to_fit();
     cell_flux_limiter.resize(N, 0.0);
+    cell_flux_limiter.shrink_to_fit();
     old_T.resize(N, 0.0);
 
 
     new_Er.resize(N, 0.0);
+    new_Er.shrink_to_fit();
     new_Er_full.resize(N, 0.0);
+    new_Er_full.shrink_to_fit();
     old_Er.resize(N, 0.0);
+    old_Er.shrink_to_fit();
 
     cells_cgs.resize(N);
 
@@ -223,6 +234,7 @@ bool Diffusion::step(double const tolerance,
     load_cells_cgs(tess, cells);
     calculate_planck_absorption_coefficient(tess);
     calculate_scattering_coefficient(tess);
+    apply_opacity_limiters(tess, cells, dt);
     calculate_cell_diffusion_coefficients(tess);
 
     calculate_fleck_factor(tess, cells, dt);
@@ -331,6 +343,7 @@ void Diffusion::BuildMatrix(
     for(size_t i = 0; i < Nlocal; ++i)
     {
         double const volume = tess.GetVolume(i) * volume_scale_;
+        double const cell_width = std::max(tess.GetWidth(i) * length_scale_, 1e-200);
         bool set_to_zero = false;
         
         for(size_t j = 0; j < Nzero; ++j)
@@ -341,6 +354,7 @@ void Diffusion::BuildMatrix(
         new_Er[i] = Er;
 
         double const T = cells_cgs[i].temperature;
+
 
         b[i] = volume * Er;
 
@@ -543,8 +557,21 @@ void Diffusion::BuildMatrix(
         double const grad_magnitude = std::max(std::numeric_limits<double>::min() * 1e40, std::abs(fastabs(gradE[i])));
         if(grad_magnitude < 0.5 * max_neighbor_R[i])
             gradE[i] *= 0.5 * max_neighbor_R[i] / grad_magnitude;
-        
-        double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(gradE[i], D[i], Er_for_limit[i]) : 1;
+        Vector3D grad_for_limiter = gradE[i];
+        if(flux_limiter_)
+        {
+            double const cell_width = std::max(tess.GetWidth(i) * length_scale_, 1e-200);
+            double const min_grad = std::abs(Er_for_limit[i]) / (1000.0 * cell_width);
+            double const grad_abs = std::abs(fastabs(grad_for_limiter));
+            if(grad_abs < min_grad)
+            {
+                if(grad_abs > 0)
+                    grad_for_limiter *= min_grad / grad_abs;
+                else
+                    grad_for_limiter = Vector3D(min_grad, 0, 0);
+            }
+        }
+        double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(grad_for_limiter, D[i], Er_for_limit[i]) : 1;
         cell_flux_limiter[i] = flux_limiter;
         Vector3D const CM = tess.GetCellCM(i);
         double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
@@ -812,6 +839,80 @@ void Diffusion::calculate_scattering_coefficient(
             throw UniversalError("Negative Sigma Scattering")
                     .addEntry("Sigma Scattering", sigma_s[i])
                     .addEntry("cell ID", cells_cgs[i].ID);
+        }
+    }
+}
+
+void Diffusion::apply_opacity_limiters(
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D> const& cells,
+    double const dt
+) const
+{
+    size_t const Nlocal = tess.GetPointNo();
+    double const dt_cgs = dt * time_scale_;
+
+    for(size_t i = 0; i < Nlocal; ++i)
+    {
+        sigma_planck[i] = std::min(sigma_planck[i], 10.0 / (CG::speed_of_light * dt_cgs));
+    }
+
+    if(!cooling_time_limiter_on_)
+        return;
+
+    std::vector<size_t> neighbors;
+    face_vec faces;
+    for(size_t i = 0; i < Nlocal; ++i)
+    {
+        double const volume = tess.GetVolume(i) * volume_scale_;
+        double const cell_width = std::max(tess.GetWidth(i) * length_scale_, 1e-200);
+        double const Er = cells_cgs[i].Erad * cells_cgs[i].density;
+
+        faces = tess.GetCellFaces(i);
+        tess.GetNeighbors(i, neighbors);
+        double div_v = 0;
+        for(size_t j = 0; j < neighbors.size(); ++j)
+        {
+            size_t const neigh = neighbors[j];
+            Vector3D const r_ij = normalize(tess.GetMeshPoint(i) - tess.GetMeshPoint(neigh));
+            Vector3D vel_j = cells_cgs[i].velocity;
+            if(neigh < Nlocal || !tess.IsPointOutsideBox(neigh))
+                vel_j = cells_cgs[neigh].velocity;
+            div_v -= 0.5 * ScalarProd(cells_cgs[i].velocity + vel_j, r_ij) * tess.GetArea(faces[j]) * length_scale_ * length_scale_;
+        }
+        div_v /= std::max(volume, 1e-200);
+
+        double const speed = fastabs(cells_cgs[i].velocity);
+        double const compression_speed = std::max(-div_v, 0.0) * cell_width;
+        if(speed > 1.0 && compression_speed > 0.25 * speed && compression_speed * speed > cells[i].internal_energy * 0.25)
+        {
+            double const hydro_time = 1.0 / std::max(-div_v, 1e-200);
+            double const T_local = std::max(cells_cgs[i].temperature, 1.0);
+            double const radiation_eq = CG::radiation_constant * std::pow(T_local, 4);
+            double const planck_exchange = CG::speed_of_light * sigma_planck[i] * (radiation_eq - Er);
+            double compton_exchange = 0.0;
+            if(compton_on_)
+            {
+                double const Tr = std::pow(std::max(Er / CG::radiation_constant, 1e-200), 0.25);
+                compton_exchange = 16.0 * sigma_s[i] * CG::boltzmann_constant * Er *
+                                   (T_local - Tr) / (CG::electron_mass * CG::speed_of_light);
+            }
+
+            double const net_cooling_power = planck_exchange + compton_exchange;
+            if(net_cooling_power > 0)
+            {
+                double const thermal_energy = std::max(cells_cgs[i].internal_energy * cells_cgs[i].density, 1e-200);
+                double const cool_time = thermal_energy / net_cooling_power;
+                double const target_cool_time = 2.0 * hydro_time;
+                if(cool_time < target_cool_time)
+                {
+                    double const target_cooling_power = thermal_energy / target_cool_time;
+                    double const opacity_scale = std::max(target_cooling_power / std::max(net_cooling_power, 1e-200), 1e-8);
+                    sigma_planck[i] *= opacity_scale;
+                    if(compton_on_)
+                        sigma_s[i] *= opacity_scale;
+                }
+            }
         }
     }
 }
@@ -1257,6 +1358,7 @@ bool Diffusion::iterations(
     
     calculate_planck_absorption_coefficient(tess);
     calculate_scattering_coefficient(tess);
+    apply_opacity_limiters(tess, cells, dt);
     calculate_cell_diffusion_coefficients(tess);
 
     auto const N = tess.GetPointNo();

@@ -8,6 +8,7 @@
 #include <utility>
 #include <type_traits>
 #include <stack>
+#include <queue>
 
 #ifdef DEBUG_MODE
 #include <iostream>
@@ -15,7 +16,7 @@
 
 #include "ds/utils/raw_type.h"
 #include "ds/utils/geometry.hpp"
-#include "source/misc/universal_error.hpp"
+#include "misc/universal_error.hpp"
 
 #define DIM 3
 #define CHILDREN 8 // 2^DIM
@@ -91,7 +92,7 @@ public:
         #endif // DEBUG_MODE
 
         bool isLeaf; // if a leaf
-        T value; // if a leaf, that's a point value, otherwise, thats the value for partition
+        T value; // if a leaf, that's a point value, and otherwise - the center of the bounding box
         BoundingBox<Raw_type> boundingBox; // the bounding box this node induces
         std::array<OctTreeNode*, CHILDREN> children; // if a leaf, all children are nullptr
         OctTreeNode *parent;
@@ -120,7 +121,7 @@ protected:
     inline OctTreeNode *tryFindParent(const U &point){return const_cast<OctTreeNode*>(std::as_const(*this).tryFindParent(point));};
 
     template<typename U>
-    OctTreeNode *tryInsert(const U &point);
+    OctTreeNode *tryInsert(const U &point, OctTreeNode *startHint = nullptr);
 
     #ifdef DEBUG_MODE
     void printHelper(const OctTreeNode *node, int indent) const;
@@ -159,6 +160,9 @@ public:
     inline explicit OctTree(): root(nullptr), treeSize(0), nodesNumber(0){};
 
     virtual inline ~OctTree(){this->deleteSubtree(this->getRoot());};
+
+    template<typename U>
+    const T &GetContainingNodeValue(const U &point) const;
 
     inline void clear()
     {
@@ -209,7 +213,6 @@ public:
         }
         return node;
     }
-
 
     template<typename U>
     const OctTreeNode *findNodeContainingBoundingBox(const BoundingBox<U> &boundingBox) const; // TODO: necessary? What about just find value of that node?
@@ -288,13 +291,13 @@ public:
     const OctTreeNode *getNodeByDirections(const direction_t *directions = nullptr) const;
 
     template<typename U>
-    std::pair<T, typename T::coord_type> getClosestPointInfo(const U &point) const;
+    std::pair<T, typename T::coord_type> getClosestPointInfo(const U &point, bool includeSelf = true) const;
 
     template<typename U>
-    inline T closestPoint(const U &point) const{return this->getClosestPointInfo(point).first;};
+    inline T closestPoint(const U &point, bool includeSelf = true) const{return this->getClosestPointInfo(point, includeSelf).first;};
 
     template<typename U>
-    inline typename T::coord_type closestPointDistance(const U &point) const{return this->getClosestPointInfo(point).second;};
+    inline typename T::coord_type closestPointDistance(const U &point, bool includeSelf = true) const{return this->getClosestPointInfo(point, includeSelf).second;};
 };
 
 template<typename T>
@@ -424,7 +427,7 @@ const typename OctTree<T>::OctTreeNode *OctTree<T>::findNodeContainingBoundingBo
     const U &BB_center = (boundingBox.getLL() + boundingBox.getUR()) * 0.5;
     while(current != nullptr)
     {
-        if(boundingBox.contained(current->boundingBox))
+        if(boundingBox.contains(current->boundingBox))
         {
             return current;
         }
@@ -549,7 +552,25 @@ void OctTree<T>::printHelper(const OctTreeNode *node, int indent) const
 
 template<typename T>
 template<typename U>
-typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
+const T &OctTree<T>::GetContainingNodeValue(const U &point) const
+{
+    const OctTreeNode *node = this->root;
+    while(not node->isLeaf)
+    {
+        node = node->getChildContaining(point);
+    }
+    if(node == nullptr)
+    {
+        UniversalError eo("OctTree: No node containing the point found. This should generally not happen.");
+        eo.addEntry("Point", point);
+        throw eo;
+    }
+    return node->value;
+}
+
+template<typename T>
+template<typename U>
+typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point, OctTreeNode *startHint)
 {
     if(this->getRoot() == nullptr)
     {
@@ -562,7 +583,7 @@ typename OctTree<T>::OctTreeNode *OctTree<T>::tryInsert(const U &point)
         throw eo;
     }
 
-    OctTreeNode *current = this->getRoot();
+    OctTreeNode *current = (startHint == nullptr)? this->getRoot() : startHint;
     while(current != nullptr)
     {
         // if we reached a leaf with the value `v`, start splitting until `v` and `point` are not in the same rectangle
@@ -662,25 +683,20 @@ std::vector<T> OctTree<T>::range(const Sphere<U> &sphere, size_t N, const Filter
 {
     std::vector<T> result;
     size_t resultSize = 0;
-    this->nodes_stack.push_back(this->getRoot());
+    const OctTreeNode *root = this->getRoot();
+    if(root == nullptr || !SphereBoxIntersection(root->boundingBox, sphere))
+    {
+        return result;
+    }
+    this->nodes_stack.push_back(root);
 
     while((not this->nodes_stack.empty()) and (resultSize < N))
     {
         const OctTreeNode *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
-
         // DO NOT CHANGE THIS LINE TO "if `node->value` is in `sphere`"
         // that is because a leaf does not necessarily have to be a point (it can be a box, as in `DistributedOctTree`)
-        if(not SphereBoxIntersection(node->boundingBox, sphere))
-        {
-            continue;
-        }
-        
         if(node->isLeaf)
         {
             if(filter(node->value))
@@ -693,7 +709,11 @@ std::vector<T> OctTree<T>::range(const Sphere<U> &sphere, size_t N, const Filter
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push_back(node->children[i]); // recursively iterate
+                const OctTreeNode *child = node->children[i];
+                if(child != nullptr && SphereBoxIntersection(child->boundingBox, sphere))
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
         }
     }
@@ -707,32 +727,27 @@ template<typename T>
 template<typename U, typename FilterFunction>
 std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const Sphere<U> &sphere, const T &point, const FilterFunction &filter) const
 {
-    this->nodes_stack.push_back(this->getRoot());
-
     T closestPoint;
     typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+
+    const OctTreeNode *root = this->getRoot();
+    if(root == nullptr || !SphereBoxIntersection(root->boundingBox, sphere))
+    {
+        return {closestPoint, closestDistance};
+    }
+    this->nodes_stack.push_back(root);
 
     while(not this->nodes_stack.empty())
     {
         const OctTreeNode *node = this->nodes_stack.back();
         this->nodes_stack.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
-        // calculate distance squared
-        typename T::coord_type dist = node->boundingBox.distanceSquared(point);
-        if((dist >= closestDistance) or (not SphereBoxIntersection(node->boundingBox, sphere)))
-        {
-            continue;
-        }
-        // there might be a closer point in the subtrees
         if(node->isLeaf)
         {
-            if(filter(node->value))
+            // calculate distance squared from the point value (not bounding box) to the query point
+            typename T::coord_type dist = node->boundingBox.distanceSquared(point);
+            if(dist < closestDistance && filter(node->value))
             {
-                // should not be ignored
                 closestPoint = node->value;
                 closestDistance = dist;
             }
@@ -741,7 +756,13 @@ std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInSphere(const S
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push_back(node->children[i]);
+                const OctTreeNode *child = node->children[i];
+                if(child == nullptr) continue;
+                typename T::coord_type dist = child->boundingBox.distanceSquared(point);
+                if(dist < closestDistance && SphereBoxIntersection(child->boundingBox, sphere))
+                {
+                    this->nodes_stack.push_back(child);
+                }
             }
         }
     }
@@ -814,53 +835,107 @@ void OctTree<T>::getAllDecendantsHelper(const OctTreeNode *node, std::vector<T> 
 
 template<typename T>
 template<typename U>
-std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point) const
+std::pair<T, typename T::coord_type> OctTree<T>::getClosestPointInfo(const U &point, bool includeSelf) const
 {
-    this->nodes_stack.push_back(this->getRoot());
-
-    T closestPoint;
-    typename T::coord_type closestDistance = std::numeric_limits<typename T::coord_type>::max();
+    // Use priority queue for better traversal order (closest nodes first)
+    struct NodeDistancePair {
+        const OctTreeNode* node;
+        typename T::coord_type distSquared;
+        
+        bool operator>(const NodeDistancePair& other) const {
+            return distSquared > other.distSquared;
+        }
+    };
     
-    while(!this->nodes_stack.empty())
-    {
-        const OctTreeNode *node = this->nodes_stack.back();
-        this->nodes_stack.pop_back();
+    std::priority_queue<NodeDistancePair, std::vector<NodeDistancePair>, std::greater<NodeDistancePair>> pq;
+    
+    T closestPoint;
+    typename T::coord_type closestDistanceSquared = std::numeric_limits<typename T::coord_type>::max();
 
+    // quick good guess
+    if(includeSelf)
+    {
+        const OctTreeNode* commonAncestor = this->tryFindParent(point);
+        while(not commonAncestor->isLeaf)
+        {
+            // pick a child
+            for(size_t i = 0; i < CHILDREN; i++)
+            {
+                if(commonAncestor->children[i] != nullptr)
+                {
+                    commonAncestor = commonAncestor->children[i];
+                    break;
+                }
+            }
+        }
+        closestPoint = commonAncestor->value;
+        typename T::coord_type containingDistanceSquared = (closestPoint[0] - point[0]) * (closestPoint[0] - point[0]) + (closestPoint[1] - point[1]) * (closestPoint[1] - point[1]) + (closestPoint[2] - point[2]) * (closestPoint[2] - point[2]);
+        closestDistanceSquared = containingDistanceSquared;
+    }
+    if(this->getRoot() != nullptr)
+    {
+        typename T::coord_type rootDist = this->getRoot()->boundingBox.distanceSquared(point);
+        pq.push({this->getRoot(), rootDist});
+    }
+    
+    while(!pq.empty())
+    {
+        NodeDistancePair current = pq.top();
+        pq.pop();
+        
+        const OctTreeNode *node = current.node;
+        
         if(node == nullptr)
         {
             continue;
         }
-        const T &closestPointInBox = node->boundingBox.closestPoint(point);
-        // calculate distance squared
-        typename T::coord_type dist = 0;
-        for(int i = 0; i < DIM; i++)
-        {
-            dist += (closestPointInBox[i] - point[i]) * (closestPointInBox[i] - point[i]);
-        }
-        if(dist >= closestDistance)
+        
+        // Early termination: if this node's minimum distance is already worse than our best
+        if(current.distSquared >= closestDistanceSquared)
         {
             continue;
         }
-        // there might be a closer point in the subtrees
+        
         if(node->isLeaf)
         {
-            if(node->value == point)
+            // Calculate actual distance to the point stored in leaf
+            typename T::coord_type actualDistSquared = 0;
+            typename T::coord_type diff_x = node->value[0] - point[0];
+            typename T::coord_type diff_y = node->value[1] - point[1];
+            typename T::coord_type diff_z = node->value[2] - point[2];
+            actualDistSquared = diff_x * diff_x + diff_y * diff_y + diff_z * diff_z;
+            
+            if(not includeSelf and actualDistSquared < EPSILON * EPSILON)
             {
-                // don't check that point (otherwise the distance is 0...)
+                // Skip if this is the same point and we don't want to include self
                 continue;
             }
-            closestPoint = node->value;
-            closestDistance = dist;
+            
+            if(actualDistSquared < closestDistanceSquared)
+            {
+                closestPoint = node->value;
+                closestDistanceSquared = actualDistSquared;
+            }
         }
         else
         {
+            // Add children to priority queue with their distances
             for(int i = 0; i < CHILDREN; i++)
             {
-                this->nodes_stack.push_back(node->children[i]);
+                if(node->children[i] != nullptr)
+                {
+                    typename T::coord_type childDist = node->children[i]->boundingBox.distanceSquared(point);
+                    // Only add if it could potentially be better than current best
+                    if(childDist < closestDistanceSquared)
+                    {
+                        pq.push({node->children[i], childDist});
+                    }
+                }
             }
         }
     }
-    return {closestPoint, closestDistance};
+
+    return {closestPoint, sqrt(closestDistanceSquared)};
 }
 #endif // _OCTTREE_HPP
 

@@ -6,7 +6,7 @@
 #ifndef GHOST_POINT_GENERATOR_HPP
 #define GHOST_POINT_GENERATOR_HPP 1
 
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "computational_cell.hpp"
 #include <boost/container/flat_map.hpp>
 

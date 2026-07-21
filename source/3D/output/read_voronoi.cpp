@@ -1,12 +1,14 @@
 #include "read3D.hpp"
 
-std::vector<Vector3D> ReadVoronoiPointsHelper(H5File &file)
+std::vector<Vector3D> ReadVoronoiPointsHelper(const HDF5Reader &reader)
 {
     std::vector<Vector3D> res;
-    Group read_location = file.openGroup("/");
-    const vector<double> x = read_double_vector_from_hdf5(read_location, "mesh_point_x");
-    const vector<double> y = read_double_vector_from_hdf5(read_location, "mesh_point_y");
-    const vector<double> z = read_double_vector_from_hdf5(read_location, "mesh_point_z");
+    std::vector<double> x;
+    std::vector<double> y;
+    std::vector<double> z;
+    reader.ReadElement("/mesh_point_x", x);
+    reader.ReadElement("/mesh_point_y", y);
+    reader.ReadElement("/mesh_point_z", z);
     size_t const N = x.size();
     for(size_t i = 0; i < N; ++i)
     {
@@ -14,23 +16,21 @@ std::vector<Vector3D> ReadVoronoiPointsHelper(H5File &file)
     }
     return res;
 }
+
 std::vector<Vector3D> ReadVoronoiPoints(const std::string &filename)
 {
-    H5File file(filename, H5F_ACC_RDONLY);
-    std::vector<Vector3D> res = ReadVoronoiPointsHelper(file);
-    file.close();
-    return res;
+    HDF5Reader reader(filename);
+    return ReadVoronoiPointsHelper(reader);
 }
 
 #ifdef RICH_MPI
     std::vector<Vector3D> ReadVoronoiPointsParallel(const std::string &filename)
     {
-        std::filesystem::path input_directory = std::filesystem::path(filename).replace_extension("");
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        H5File file(input_directory / std::to_string(rank) / ".h5", H5F_ACC_RDONLY);
-        std::vector<Vector3D> res = ReadVoronoiPointsHelper(file);
-        file.close();
-        return res;
+        std::filesystem::path input_directory = std::filesystem::path(filename).replace_extension("");
+        std::string rank_file = (input_directory / std::to_string(rank) / ".h5").string();
+        HDF5Reader reader(rank_file);
+        return ReadVoronoiPointsHelper(reader);
     }
 #endif // RICH_MPI

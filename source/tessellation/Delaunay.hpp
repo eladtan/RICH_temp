@@ -335,5 +335,7 @@ public:
   \param points The points to add
   */
   void AddBoundaryPoints(vector<Vector2D> const& points);
+
+  std::vector<size_t> newTetras;
 };
 #endif //DELAUNAYMPI_HPP

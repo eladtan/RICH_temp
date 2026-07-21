@@ -23,6 +23,10 @@ public:
     };
 
     virtual ~EnvironmentAgent() = default;
+
+    virtual void onExchange(const std::vector<Vector3D> &newPoints) = 0;
+
+    virtual void onRebalance(void) = 0;
     
     virtual RanksSet getIntersectingRanks(const Vector3D &center, double radius) const = 0;
 

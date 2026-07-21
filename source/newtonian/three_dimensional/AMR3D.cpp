@@ -3,9 +3,15 @@
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
 #include <limits>
-#include "3D/r3d/Intersection3D.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include <unordered_set>
+#include <unordered_map>
+#include "3D/tessellation/utils/PolyClip.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
+#include "misc/universal_error.hpp"
 #include "misc/utils.hpp"
+#include "newtonian/three_dimensional/SpatialReconstruction3D.hpp"
+#include "newtonian/three_dimensional/conserved_3d.hpp"
+#include "3D/tessellation/Neighbors.hpp"
 
 //#define debug_amr 1
 
@@ -44,57 +50,20 @@ namespace
 		refine_direction = new_direction;
 	}
 
-	std::pair<vector<size_t>, vector<double> > RemoveNeighbors(vector<double> const& merits, vector<size_t> const& candidates,
+	std::pair<vector<size_t>, vector<double> > GreedyRemoveCandidates(
+		vector<double> const& merits, vector<size_t> const& candidates,
 		Tessellation3D const& tess)
 	{
-		vector<size_t> result_names;
-		vector<double> result_merits;
 		if (merits.size() != candidates.size())
-			throw UniversalError("Merits and Candidates don't have same size in RemoveNeighbors");
-		// Make sure there are no neighbors
-		vector<size_t> bad_neigh;
-		vector<size_t> neigh;
-		for (size_t i = 0; i < merits.size(); ++i)
-		{
-			bool good = true;
-			tess.GetNeighbors(candidates[i], neigh);
-			size_t nneigh = neigh.size();
-			if (find(bad_neigh.begin(), bad_neigh.end(), candidates[i]) != bad_neigh.end())
-				good = false;
-			else
-			{
-				for (size_t j = 0; j < nneigh; ++j)
-				{
-					if (binary_search(candidates.begin(), candidates.end(), neigh[j]))
-					{
-						if (merits[i] < merits[static_cast<size_t>(lower_bound(candidates.begin(), candidates.end(),
-							neigh[j]) - candidates.begin())])
-						{
-							good = false;
-							break;
-						}
-						if (fabs(merits[i] - merits[static_cast<size_t>(lower_bound(candidates.begin(), candidates.end(),
-							neigh[j]) - candidates.begin())]) < 1e-9)
-						{
-							if (find(bad_neigh.begin(), bad_neigh.end(), neigh[j]) == bad_neigh.end())
-								bad_neigh.push_back(neigh[j]);
-						}
-					}
-				}
-			}
-			if (good)
-			{
-				result_names.push_back(candidates[i]);
-				result_merits.push_back(merits[i]);
-			}
-		}
-		return std::pair<vector<size_t>, vector<double> >(result_names, result_merits);
-	}
+			throw UniversalError("Merits and Candidates don't have same size in GreedyRemoveCandidates");
+		size_t N = candidates.size();
+
+		vector<size_t> all_candidates = candidates;
+		vector<double> all_merits = merits;
 
 #ifdef RICH_MPI
-	std::pair<vector<size_t>, vector<double> > RemoveMPINeighbors(vector<double> const& merits, vector<size_t> const& candidates,
-		Tessellation3D const& tess)
-	{
+		size_t Norg = tess.GetPointNo();
+		// Exchange candidate info with MPI neighbor ranks
 		vector<vector<size_t> > duplicated_indeces = tess.GetDuplicatedPoints();
 		vector<vector<size_t> > sort_indeces(duplicated_indeces.size());
 		for (size_t i = 0; i < duplicated_indeces.size(); ++i)
@@ -105,80 +74,122 @@ namespace
 		size_t nproc = duplicated_indeces.size();
 		vector<vector<size_t> > indeces(nproc);
 		vector<vector<double> > merit_send(nproc);
-		vector<size_t> neigh;
-		size_t Norg = tess.GetPointNo();
-		size_t Nreomve = merits.size();
-		// Send/recv data
-		for (size_t i = 0; i < Nreomve; ++i)
+		vector<size_t> neigh_tmp;
+		for (size_t i = 0; i < N; ++i)
 		{
-			tess.GetNeighbors(candidates[i], neigh);
-			size_t Nneigh = neigh.size();
-			for (size_t j = 0; j < Nneigh; ++j)
+			tess.GetNeighbors(candidates[i], neigh_tmp);
+			bool has_ghost = false;
+			for (size_t j = 0; j < neigh_tmp.size(); ++j)
 			{
-				if (neigh[j] >= Norg)
+				if (neigh_tmp[j] >= Norg)
 				{
-					for (size_t k = 0; k < nproc; ++k)
+					has_ghost = true;
+					break;
+				}
+			}
+			if (has_ghost)
+			{
+				for (size_t k = 0; k < nproc; ++k)
+				{
+					vector<size_t>::const_iterator it = binary_find(duplicated_indeces[k].begin(),
+						duplicated_indeces[k].end(), candidates[i]);
+					if (it != duplicated_indeces[k].end())
 					{
-						vector<size_t>::const_iterator it = binary_find(duplicated_indeces[k].begin(),
-							duplicated_indeces[k].end(), candidates[i]);
-						if (it != duplicated_indeces[k].end())
-						{
-							indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
-							merit_send[k].push_back(merits[i]);
-						}
+						indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
+						merit_send[k].push_back(merits[i]);
 					}
 				}
 			}
 		}
 		indeces = MPI_exchange_data(tess.GetDuplicatedProcs(), indeces);
 		merit_send = MPI_exchange_data(tess.GetDuplicatedProcs(), merit_send);
-		vector<size_t> all_indeces, temp;
-		vector<double> all_merits;
 		for (size_t i = 0; i < nproc; ++i)
 		{
 			if (!indeces[i].empty())
 			{
 				indeces[i] = VectorValues(tess.GetGhostIndeces()[i], indeces[i]);
-				all_indeces.insert(all_indeces.end(), indeces[i].begin(), indeces[i].end());
+				all_candidates.insert(all_candidates.end(), indeces[i].begin(), indeces[i].end());
 				all_merits.insert(all_merits.end(), merit_send[i].begin(), merit_send[i].end());
 			}
 		}
-		sort_index(all_indeces, temp);
-		std::sort(all_indeces.begin(), all_indeces.end());
-		all_merits = VectorValues(all_merits, temp);
-		// remove neighbors
-		std::pair<vector<size_t>, vector<double> > res;
-		res.first.reserve(Nreomve);
-		res.second.reserve(Nreomve);
-		for (size_t i = 0; i < Nreomve; ++i)
+#endif // RICH_MPI
+
+		// Build candidate lookup set and adjacency map
+		size_t Nall = all_candidates.size();
+		std::unordered_set<size_t> candidate_set(all_candidates.begin(), all_candidates.end());
+
+		// Pre-build adjacency between candidates using GetNeighbors on local cells only
+		// (ghost cells don't support GetNeighbors; the symmetric relationship is captured
+		// from the local side since if L neighbors G, then G neighbors L)
+		std::unordered_map<size_t, vector<size_t> > candidate_adj;
+		vector<size_t> neigh;
+		for (size_t k = 0; k < Nall; ++k)
 		{
-			bool good = true;
-			tess.GetNeighbors(candidates[i], neigh);
-			size_t Nneigh = neigh.size();
-			for (size_t j = 0; j < Nneigh; ++j)
+			size_t cell = all_candidates[k];
+#ifdef RICH_MPI
+			if (cell >= Norg)
+				continue;
+#endif
+			tess.GetNeighbors(cell, neigh);
+			for (size_t j = 0; j < neigh.size(); ++j)
 			{
-				if (neigh[j] >= Norg)
+				if (candidate_set.count(neigh[j]))
 				{
-					vector<size_t>::const_iterator it = binary_find(all_indeces.begin(), all_indeces.end(), neigh[j]);
-					if (it != all_indeces.end())
-					{
-						if (all_merits[static_cast<size_t>(it - all_indeces.begin())] > merits[i])
-						{
-							good = false;
-							break;
-						}
-					}
+					candidate_adj[cell].push_back(neigh[j]);
+					if (neigh[j] != cell)
+						candidate_adj[neigh[j]].push_back(cell);
 				}
 			}
-			if (good)
+		}
+
+		// Sort by merit descending; break ties by cell index ascending
+		vector<size_t> order(Nall);
+		for (size_t i = 0; i < Nall; ++i)
+			order[i] = i;
+		std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
+		{
+			if (all_merits[a] != all_merits[b])
+				return all_merits[a] > all_merits[b];
+			return all_candidates[a] < all_candidates[b];
+		});
+
+		// Greedy: accept highest-merit candidate, exclude its candidate-neighbors
+		std::unordered_set<size_t> excluded;
+		vector<size_t> result_names;
+		vector<double> result_merits;
+		result_names.reserve(N);
+		result_merits.reserve(N);
+		for (size_t k = 0; k < Nall; ++k)
+		{
+			size_t idx = order[k];
+			size_t cell = all_candidates[idx];
+			if (excluded.count(cell))
+				continue;
+			// Accept this candidate (only add local cells to result)
+#ifdef RICH_MPI
+			if (cell < Norg)
 			{
-				res.first.push_back(candidates[i]);
-				res.second.push_back(merits[i]);
+#endif
+				result_names.push_back(cell);
+				result_merits.push_back(all_merits[idx]);
+#ifdef RICH_MPI
+			}
+#endif
+			// Exclude all its candidate-neighbors
+			std::unordered_map<size_t, vector<size_t> >::const_iterator adj_it = candidate_adj.find(cell);
+			if (adj_it != candidate_adj.end())
+			{
+				for (size_t j = 0; j < adj_it->second.size(); ++j)
+					excluded.insert(adj_it->second[j]);
 			}
 		}
-		return res;
+
+		// Sort results by cell index for downstream compatibility
+		vector<size_t> sort_idx = sort_index(result_names);
+		result_names = VectorValues(result_names, sort_idx);
+		result_merits = VectorValues(result_merits, sort_idx);
+		return std::pair<vector<size_t>, vector<double> >(result_names, result_merits);
 	}
-#endif //RICH_MPI
 
 	std::vector<Vector3D> GetNewPoints(Tessellation3D const& tess, std::pair<vector<size_t>,
 		vector<Vector3D> > &ToRefine)
@@ -257,7 +268,7 @@ namespace
 #ifdef RICH_MPI
 	void SendRecvMPIFullRemove(Tessellation3D const& tess, vector<size_t> const& toremove, vector<vector<size_t> >
 		&nghost_index, vector<vector<vector<size_t> > > &duplicated_index, vector<vector<vector<Vector3D> > > &planes,
-		vector<vector<vector<double> > > &planes_d)
+		vector<vector<vector<double>>> &planes_d, SpatialReconstruction3D &interp)
 	{
 		vector<size_t> temp;
 		size_t Nprocs = tess.GetDuplicatedProcs().size();
@@ -282,7 +293,7 @@ namespace
 
 		size_t nremove = toremove.size();
 		size_t Norg = tess.GetPointNo();
-		vector<r3d_plane> r_planes;
+		vector<Plane> r_planes;
 		for (size_t i = 0; i < nremove; ++i)
 		{
 			vector<vector<size_t> > ghosts(Nprocs);
@@ -307,16 +318,16 @@ namespace
 			}
 			if (added)
 			{
-				GetPlanes(r_planes, tess, toremove[i]);
+				CreatePolyPlanes(tess, toremove[i], r_planes);
 				size_t nplanes = r_planes.size();
 				vector<Vector3D> v_plane(nplanes);
 				vector<double> d_plane(nplanes);
 				for (size_t j = 0; j < nplanes; ++j)
 				{
-					d_plane[j] = r_planes[j].d;
-					v_plane[j].x = r_planes[j].n.xyz[0];
-					v_plane[j].y = r_planes[j].n.xyz[1];
-					v_plane[j].z = r_planes[j].n.xyz[2];
+					d_plane[j] = ScalarProd(r_planes[j].normal, r_planes[j].point);
+					v_plane[j].x = r_planes[j].normal.x;
+					v_plane[j].y = r_planes[j].normal.y;
+					v_plane[j].z = r_planes[j].normal.z;
 				}
 				for (size_t k = 0; k < Nprocs; ++k)
 					if (!ghosts[k].empty())
@@ -324,8 +335,8 @@ namespace
 						duplicated_index[k].push_back(ghosts[k]);
 						nghost_index[k].push_back(sort_indeces[k][static_cast<size_t>(binary_find(duplicated_points[k].begin(),
 							duplicated_points[k].end(), toremove[i]) - duplicated_points[k].begin())]);
-						planes[k].push_back(v_plane);
-						planes_d[k].push_back(d_plane);
+                        planes[k].push_back(v_plane);
+                        planes_d[k].push_back(d_plane);
 					}
 			}
 		}
@@ -349,87 +360,83 @@ namespace
 		}
 	}
 
-	void SendRecvMPIRefine(Tessellation3D const& tess, std::vector<std::vector<size_t> > const& to_send,
-		std::vector<size_t> const& refined_points, Tessellation3D const& oldtess,
+	void SendRecvMPIRefine(Tessellation3D const& tess,
+		std::vector<size_t> const& refined_points,
+		std::vector<size_t> const& ToRefine_for_send,
+		Tessellation3D const& oldtess,
+		PointsToNeighborsMap const& k2_neighbors,
 		std::vector<std::vector<std::vector<size_t> > > &neigh_index, std::vector<std::vector<double> > &planes,
-		std::vector < std::vector<size_t> > &n_planes, std::vector<std::vector<size_t> > &changed_byouter)
+		std::vector<std::vector<size_t> > &n_planes, std::vector<std::vector<size_t> > &changed_byouter)
 	{
-		// to_send is the list of outer neighbors for each refine point
 		// refined_points is the index of the refined points in new tess
-		assert(refined_points.size() == to_send.size());
-		vector<vector<size_t> > duplicated_points = oldtess.GetDuplicatedPoints();
-		size_t Nprocs = duplicated_points.size();
-		vector<vector<size_t> > ghost_points = oldtess.GetGhostIndeces();
-		vector<vector<size_t> > sort_indeces(Nprocs), sort_indecesg(Nprocs);
-		// sort the indeces
-		for (size_t i = 0; i < Nprocs; ++i)
-		{
-			sort_index(duplicated_points[i], sort_indeces[i]);
-			sort(duplicated_points[i].begin(), duplicated_points[i].end());
-			sort_index(ghost_points[i], sort_indecesg[i]);
-			sort(ghost_points[i].begin(), ghost_points[i].end());
-		}
-		// Create send data
+		// ToRefine_for_send is the corresponding old tess index for each refined point
+		// k2_neighbors maps old cell index -> set of RemotePoint (k<=2 neighbors)
+		int myrank = 0, world_size = 1;
+		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		size_t ws = static_cast<size_t>(world_size);
+
+		assert(refined_points.size() == ToRefine_for_send.size());
+
+		// Initialize world-rank-indexed structures (indexed by MPI rank, not duplicatedprocs index)
 		neigh_index.clear();
-		neigh_index.resize(Nprocs);
+		neigh_index.resize(ws);
 		planes.clear();
-		planes.resize(Nprocs);
+		planes.resize(ws);
 		n_planes.clear();
-		n_planes.resize(Nprocs);
+		n_planes.resize(ws);
 		changed_byouter.clear();
-		changed_byouter.resize(Nprocs);
-		size_t nsend = to_send.size();
-		vector<r3d_plane> r_planes;
-		for (size_t i = 0; i < nsend; ++i)
+		changed_byouter.resize(ws);
+
+		vector<Plane> r_planes;
+
+		for (size_t i = 0; i < refined_points.size(); ++i)
 		{
+			size_t old_cell = ToRefine_for_send[i];
+			auto it = k2_neighbors.find(old_cell);
+			if (it == k2_neighbors.end())
+				continue;
+
+			// Get the polyhedra planes of the new refined cell
 			r_planes.clear();
-			// Get the polyhedra of new cell
-			GetPlanes(r_planes, tess, refined_points[i]);
-			// find indeces of neighbors
-			for (size_t k = 0; k < Nprocs; ++k)
+			CreatePolyPlanes(tess, refined_points[i], r_planes);
+			
+
+			// Group remote k=2 neighbors by rank
+			boost::container::flat_map<int, std::vector<size_t> > rank_to_indices;
+			for (const RemotePoint& rp : it->second)
 			{
-				std::vector<size_t> indeces_toadd;
-				for (size_t j = 0; j < to_send[i].size(); ++j)
+				if (rp.rank != myrank)
+					rank_to_indices[rp.rank].push_back(rp.indexOnRank);
+			}
+
+			// Pack data for each remote rank
+			for (auto& kv : rank_to_indices)
+			{
+				int target_rank = kv.first;
+				auto& indices = kv.second;
+				size_t tr = static_cast<size_t>(target_rank);
+
+				changed_byouter[tr].push_back(refined_points[i]);
+				neigh_index[tr].push_back(indices);
+				size_t nplanes = r_planes.size();
+				for (size_t j = 0; j < nplanes; ++j)
 				{
-					vector<size_t>::const_iterator it = binary_find(ghost_points[k].begin(),
-						ghost_points[k].end(), to_send[i][j]);
-					if (it != ghost_points[k].end())
-						indeces_toadd.push_back(sort_indecesg[k][static_cast<size_t>(it - ghost_points[k].begin())]);
+					planes[tr].push_back(ScalarProd(r_planes[j].normal, r_planes[j].point));
+					planes[tr].push_back(r_planes[j].normal.x);
+					planes[tr].push_back(r_planes[j].normal.y);
+					planes[tr].push_back(r_planes[j].normal.z);
 				}
-				if (!indeces_toadd.empty())
-				{
-					changed_byouter[k].push_back(refined_points[i]);
-					neigh_index[k].push_back(indeces_toadd);
-					size_t nplanes = r_planes.size();
-					for (size_t j = 0; j < nplanes; ++j)
-					{
-						planes[k].push_back(r_planes[j].d);
-						planes[k].push_back(r_planes[j].n.xyz[0]);
-						planes[k].push_back(r_planes[j].n.xyz[1]);
-						planes[k].push_back(r_planes[j].n.xyz[2]);
-					}
-					n_planes[k].push_back(nplanes);
-				}
+				n_planes[tr].push_back(nplanes);
 			}
 		}
-		// send/recv the data
-		neigh_index = MPI_exchange_data(oldtess, neigh_index);
-		planes = MPI_exchange_data(oldtess.GetDuplicatedProcs(), planes);
-		n_planes = MPI_exchange_data(oldtess.GetDuplicatedProcs(), n_planes);
-		// convert the data
-		for (size_t i = 0; i < Nprocs; ++i)
-		{
-			size_t size = neigh_index[i].size();
-			for (size_t j = 0; j < size; ++j)
-			{
-				size_t size2 = neigh_index[i][j].size();
-				for (size_t k = 0; k < size2; ++k)
-				{
-					neigh_index[i][j][k] = oldtess.GetDuplicatedPoints()[i].at(neigh_index[i][j][k]);
-				}
-			}
-		}
-	}
+		// Exchange using MPI_Exchange_all_to_all (communicates with all ranks, not just duplicatedprocs)
+		neigh_index = MPI_Exchange_all_to_all(neigh_index, MPI_COMM_WORLD);
+		planes = MPI_Exchange_all_to_all(planes, MPI_COMM_WORLD);
+		n_planes = MPI_Exchange_all_to_all(n_planes, MPI_COMM_WORLD);
+		// No post-exchange index conversion needed: indices from GetKOrderNeighbors
+		// are already local cell indices on the receiving rank
+	}	
 #endif
 
 	void LocalRemove(Tessellation3D const& oldtess, std::vector<size_t> const& ToRemove, AMRExtensiveUpdater3D const& eu,
@@ -438,60 +445,69 @@ namespace
 	{
 		std::vector<size_t> neigh,temp2;
 		point_vec temp;
-		r3d_poly poly, poly2;
 		std::vector<std::vector<int> > i_temp;
 		size_t NRemove = ToRemove.size();
 		size_t Norg = oldtess.GetPointNo();
+		std::vector<Face> poly;
 		for (size_t i = 0; i < NRemove; ++i)
 		{
 			oldtess.GetNeighbors(ToRemove[i], neigh);
+			double org_volume = oldtess.GetVolume(ToRemove[i]);
 			size_t Nneigh = neigh.size();
 			// Get old poly
-			if (GetPoly(oldtess, ToRemove[i], poly, temp, temp2, i_temp))
+			try
 			{
+				CreatePolyFaces(oldtess, ToRemove[i], poly);
 				for (size_t j = 0; j < Nneigh; ++j)
 				{
 					if (neigh[j] >= Norg)
 						continue;
-					// copy poly
-					poly2.nverts = poly.nverts;
-					for (int k = 0; k < poly2.nverts; ++k)
-					{
-						for (size_t l = 0; l < 3; ++l)
-						{
-							poly2.verts[k].pos.xyz[l] = poly.verts[k].pos.xyz[l];
-							poly2.verts[k].pnbrs[l] = poly.verts[k].pnbrs[l];
-						}
-					}
-
+					
 					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(), neigh[j])
 						- ToRemove.begin());
-					std::pair<bool, std::array<double,4> > dv = PolyhedraIntersection(tess, neigh[j] - index_remove, poly2);
+					auto [dv, clip_vol, clip_CM] = clipCells(tess, neigh[j] - index_remove, poly);
 #ifdef RICH_DEBUG
 					try
 					{
 #endif
-						if(dv.first)
-							extensives[neigh[j] - index_remove] += eu.ConvertPrimitveToExtensive3D(cells[ToRemove[i]], eos, dv.second[0], interp.GetSlopes()[ToRemove[i]],
-								oldtess.GetCellCM(ToRemove[i]), Vector3D(dv.second[1], dv.second[2], dv.second[3]));
+						if(dv > org_volume * 1e-10)
+						{
+                            Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[ToRemove[i]], eos, dv, interp.GetSlopes()[ToRemove[i]],
+                            oldtess.GetCellCM(ToRemove[i]), clip_CM);
+							if(cells[ToRemove[i]].ID == -1)
+							{
+                                std::cout << "To add local remove" << toadd << std::endl;
+                                std::cout << "volume " << dv << " org volume " << oldtess.GetVolume(ToRemove[i]) << std::endl;
+							}
+							extensives[neigh[j] - index_remove] += toadd;
+							if(extensives[neigh[j] - index_remove].mass < 0)
+							{
+								// todo: print message
+							}
+						}
 #ifdef RICH_DEBUG
-				}
-				catch (UniversalError &eo)
-				{
-					eo.addEntry("Error in LocalRemove", 0);
-					eo.addEntry("Volume", dv.second[0]);
-					eo.addEntry("Current remove", ToRemove[i]);
-					eo.addEntry("Current remove ID", cells[ToRemove[i]].ID);
-					eo.addEntry("New mass", extensives[neigh[j] - index_remove].mass);
-					eo.addEntry("Remove index", i);
-					eo.addEntry("neigh index",j);
-					eo.addEntry("neigh", neigh[j]);
-					eo.addEntry("index_remove", index_remove);
-					throw;
-				}
+					}
+					catch (UniversalError &eo)
+					{
+						eo.addEntry("Error in LocalRemove", 0);
+						eo.addEntry("Volume", dv.second[0]);
+						eo.addEntry("Current remove", ToRemove[i]);
+						eo.addEntry("Current remove ID", cells[ToRemove[i]].ID);
+						eo.addEntry("New mass", extensives[neigh[j] - index_remove].mass);
+						eo.addEntry("Remove index", i);
+						eo.addEntry("neigh index",j);
+						eo.addEntry("neigh", neigh[j]);
+						eo.addEntry("index_remove", index_remove);
+						throw;
+					}
 #endif
 
 				}
+			}
+			catch(UniversalError &eo)
+			{
+				eo.addEntry("ID", cells[ToRemove[i]].ID);
+				throw eo;
 			}
 		}
 	}
@@ -505,13 +521,13 @@ namespace
 		vector<vector<vector<size_t> > > duplicate_index;
 		vector<vector < vector<Vector3D> > > planes_v;
 		vector<vector < vector<double> > > planes_d;
-		vector<r3d_plane> planes;
-		r3d_poly poly, poly2;
 		std::vector<size_t>  temp2;
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
-		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d);
+		SendRecvMPIFullRemove(oldtess, ToRemove, nghost_index, duplicate_index, planes_v, planes_d, interp);
 		size_t Nproc = nghost_index.size();
+		std::vector<Plane> planes;
+		std::vector<Face> poly;
 		for (size_t i = 0; i < Nproc; ++i)
 		{
 			size_t NremoveMPI = duplicate_index[i].size();
@@ -522,58 +538,65 @@ namespace
 				planes.resize(Nplane);
 				for (size_t k = 0; k < Nplane; ++k)
 				{
-					planes[k].d = planes_d[i][j].at(k);
-					planes[k].n.xyz[0] = planes_v[i][j].at(k).x;
-					planes[k].n.xyz[1] = planes_v[i][j][k].y;
-					planes[k].n.xyz[2] = planes_v[i][j][k].z;
+					planes[k].normal = planes_v[i][j].at(k);
+					if(std::abs(planes[k].normal.x) > 0.1)
+					{
+						planes[k].point = Vector3D(planes_d[i][j][k] / planes[k].normal.x, 0.0, 0.0);
+					}
+					else
+					{
+						if(std::abs(planes[k].normal.y) > 0.1)
+						{
+							planes[k].point = Vector3D(0.0, planes_d[i][j][k] / planes[k].normal.y, 0.0);
+						}
+						else
+						{
+							planes[k].point = Vector3D(0.0, 0.0, planes_d[i][j][k] / planes[k].normal.z);
+						}
+					}
 				}
 				size_t NChangeLocal = duplicate_index[i][j].size();
 				for (size_t k = 0; k < NChangeLocal; ++k)
 				{
 					size_t index_remove = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(),
 						duplicate_index[i][j].at(k)) - ToRemove.begin());
-					if (GetPoly(tess, duplicate_index[i][j][k] - index_remove, poly, temp, temp2, i_temp))
+					try
 					{
-						// copy poly
-						poly2.nverts = poly.nverts;
-						for (int kk = 0; kk < poly2.nverts; ++kk)
+						CreatePolyFaces(tess, duplicate_index[i][j][k] - index_remove, poly);
+						double org_volume = tess.GetVolume(duplicate_index[i][j][k] - index_remove);
 						{
-							for (size_t l = 0; l < 3; ++l)
+							auto [dv, clip_vol, clip_CM] = clipCells(poly, planes);
+							try
 							{
-								poly2.verts[kk].pos.xyz[l] = poly.verts[kk].pos.xyz[l];
-								poly2.verts[kk].pnbrs[l] = poly.verts[kk].pnbrs[l];
+								if(dv > org_volume * 1e-10)
+								{
+                                    Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[nghost_index[i][j]], eos, dv, interp.GetSlopes()[nghost_index[i][j]], oldtess.GetCellCM(nghost_index[i][j]),
+                                                    clip_CM);
+									extensives[duplicate_index[i][j][k] - index_remove] += toadd;
+								}
+							}
+							catch(UniversalError &eo)
+							{
+								eo.addEntry("Error in MPIRemove", 0);
+								eo.addEntry("Volume", dv);
+								eo.addEntry("Current remove", nghost_index[i][j]);
+								eo.addEntry("Current remove ID", cells[nghost_index[i][j]].ID);
+								eo.addEntry("New mass", extensives[duplicate_index[i][j][k] - index_remove].mass);
+								eo.addEntry("Remove index i", i);
+								eo.addEntry("Remove index j", j);
+								eo.addEntry("Remove index k", k);
+								eo.addEntry("neigh index", j);
+								eo.addEntry("duplicate_index[i][j][k] - index_remove", duplicate_index[i][j][k] - index_remove);
+								eo.addEntry("index_remove", index_remove);
+								throw;
 							}
 						}
-						std::pair<bool, std::array<double,4> > dv = PolyhedraIntersection(oldtess, 0, poly2, &planes);
-#ifdef RICH_DEBUG
-						try
-						{
-#endif
-						if(dv.first)
-						{
-							extensives[duplicate_index[i][j][k] - index_remove] += eu.ConvertPrimitveToExtensive3D(
-								cells[nghost_index[i][j]], eos, dv.second[0], interp.GetSlopes()[nghost_index[i][j]],oldtess.GetCellCM(nghost_index[i][j]),
-								Vector3D(dv.second[1], dv.second[2], dv.second[3]));
-						}
-#ifdef RICH_DEBUG
 					}
-					catch (UniversalError &eo)
+					catch(UniversalError &eo)
 					{
 						eo.addEntry("Error in MPIRemove", 0);
-						eo.addEntry("Volume", dv.second[0]);
 						eo.addEntry("Current remove", nghost_index[i][j]);
 						eo.addEntry("Current remove ID", cells[nghost_index[i][j]].ID);
-						eo.addEntry("New mass", extensives[duplicate_index[i][j][k] - index_remove].mass);
-						eo.addEntry("Remove index i", i);
-						eo.addEntry("Remove index j", j);
-						eo.addEntry("Remove index k", k);
-						eo.addEntry("neigh index", j);
-						eo.addEntry("duplicate_index[i][j][k] - index_remove", duplicate_index[i][j][k] - index_remove);
-						eo.addEntry("index_remove", index_remove);
-						throw;
-					}
-#endif
-
 					}
 				}
 			}
@@ -584,94 +607,98 @@ namespace
 	void LocalRefine(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRefine,
 		std::vector<ComputationalCell3D> const& cells, EquationOfState const& eos, AMRExtensiveUpdater3D const&eu, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
 	{
+		int rank = 0;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif // RICH_MPI
 		size_t Nrefine = ToRefine.size();
 		std::vector<size_t> neigh, temp2;
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
-		r3d_poly poly, poly2;
+		// r3d_poly poly, poly2;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
 		size_t Norg = tess.GetPointNo() - ToRefine.size();
 		size_t Norg2 = oldtess.GetPointNo();
+		std::vector<Face> polyhedron;
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
 			checked.clear();
-			double total_dv = 0;
 			// Get new cell poly
-			bool const good_poly = GetPoly(tess, Norg + i, poly, temp, temp2, i_temp);
-			if (good_poly)
+			CreatePolyFaces(tess, Norg + i, polyhedron);
+			double org_volume = tess.GetVolume(Norg + i);
+			bool print = false;
+			if(print)
 			{
-				// Get neigh to check
-				oldtess.GetNeighbors(ToRefine[i], neigh);
-				size_t Nneigh = neigh.size();
-				for (size_t j = 0; j < Nneigh; ++j)
-					tocheck.push(neigh[j]);
-				tocheck.push(ToRefine[i]);
-				while (!tocheck.empty())
+				std::cout << "New poly is " << polyhedron << std::endl;
+			}
+			double new_volume = tess.GetVolume(Norg + i);
+			double total_dv = 0, total_dv2 = 0;
+			// Get neigh to check
+			oldtess.GetNeighbors(ToRefine[i], neigh);
+			size_t Nneigh = neigh.size();
+			for (size_t j = 0; j < Nneigh; ++j)
+				tocheck.push(neigh[j]);
+			tocheck.push(ToRefine[i]);
+			while (!tocheck.empty())
+			{
+				size_t cur_check = tocheck.top();
+				tocheck.pop();
+				// did we check this cell yet?
+				if (checked.count(cur_check) == 1)
+					continue;
+				else // keep track of visted cells
+					checked.insert(cur_check);
+				if (cur_check >= Norg2)
+					continue;
+				// Check intersectrion
+				auto [dv, clip_vol, clip_CM] = clipCells(oldtess, cur_check, polyhedron, nullptr, cells[cur_check].ID == -1);
+				if(cells[cur_check].ID == -1)
 				{
-					size_t cur_check = tocheck.top();
-					tocheck.pop();
-					// did we check this cell yet?
-					if (checked.count(cur_check) == 1)
-						continue;
-					else // keep track of visted cells
-						checked.insert(cur_check);
-					if (cur_check >= Norg2)
-						continue;
-					// copy poly
-					poly2.nverts = poly.nverts;
-					for (int k = 0; k < poly2.nverts; ++k)
-					{
-						for (size_t l = 0; l < 3; ++l)
-						{
-							poly2.verts[k].pos.xyz[l] = poly.verts[k].pos.xyz[l];
-							poly2.verts[k].pnbrs[l] = poly.verts[k].pnbrs[l];
-						}
-					}
-					// Check intersectrion
-					std::pair<bool, std::array<double, 4> > dv = PolyhedraIntersection(oldtess, cur_check, poly2, nullptr, false);
-					if (dv.first)
-					{
-						total_dv += dv.second[0];
-						// Remove extensive from neigh cell and add to new cell
+					std::cout << "Clipping cell " << cur_check << " ID " << cells[cur_check].ID << " dv " << dv << " init volume " << oldtess.GetVolume(cur_check) << " refine index " << ToRefine[i] << std::endl;
+				}
+				if(dv > org_volume * 1e-10)
+				{
+					total_dv += dv;
+					// Remove extensive from neigh cell and add to new cell
+					// Remove extensive from neigh cell and add to new cell
 #ifdef RICH_DEBUG
-						try
-						{
+					try
+					{
 #endif
-							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv.second[0], interp.GetSlopes()[cur_check],
-								oldtess.GetCellCM(cur_check), Vector3D(dv.second[1], dv.second[2], dv.second[3]));
-							extensives[cur_check] -= toadd;
-							//extensives[Norg2 + i].tracers.resize(toadd.tracers.size());
-							extensives[Norg2 + i] += toadd;
-							oldtess.GetNeighbors(cur_check, neigh);
-							Nneigh = neigh.size();
-							for (size_t j = 0; j < Nneigh; ++j)
-								tocheck.push(neigh[j]);
+                        Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv, interp.GetSlopes()[cur_check],
+                            oldtess.GetCellCM(cur_check), clip_CM);
+						extensives[cur_check] -= toadd;
+						//extensives[Norg2 + i].tracers.resize(toadd.tracers.size());
+						extensives[Norg2 + i] += toadd;
+						oldtess.GetNeighbors(cur_check, neigh);
+						Nneigh = neigh.size();
+						for (size_t j = 0; j < Nneigh; ++j)
+							tocheck.push(neigh[j]);
 #ifdef RICH_DEBUG
-						}
-						catch (UniversalError &eo)
-						{
-							eo.addEntry("Error in LocalRefine", 0);
-							eo.addEntry("Volume", dv.second[0]);
-							eo.addEntry("Current check", cur_check);
-							eo.addEntry("Current check ID",cells[cur_check].ID);
-							eo.addEntry("Old mass", extensives[cur_check].mass);
-							eo.addEntry("Old density", cells[cur_check].density);
-							eo.addEntry("New mass", extensives[Norg + i].mass);
-							eo.addEntry("Refine index", i);
-							eo.addEntry("Norg", Norg2);
-							throw;
-						}
-#endif
 					}
+					catch (UniversalError &eo)
+					{
+						eo.addEntry("Error in LocalRefine", 0);
+						eo.addEntry("Volume", dv);
+						eo.addEntry("Current check", cur_check);
+						eo.addEntry("Current check ID",cells[cur_check].ID);
+						eo.addEntry("Old mass", extensives[cur_check].mass);
+						eo.addEntry("Old density", cells[cur_check].density);
+						eo.addEntry("New mass", extensives[Norg + i].mass);
+						eo.addEntry("Refine index", i);
+						eo.addEntry("Norg", Norg2);
+						throw;
+					}
+#endif
 				}
 			}
-			if(not good_poly || total_dv < std::numeric_limits<double>::min() * 100)
+			if(total_dv < std::numeric_limits<double>::min() * 100)
 			{
 				extensives[Norg2 + i] = eu.ConvertPrimitveToExtensive3D(cells[ToRefine[i]], eos, tess.GetVolume(Norg + i), Slope3D(), 
 					Vector3D(), Vector3D());
 				extensives[ToRefine[i]] -= extensives[Norg2 + i];
-				std::cout << "Warning no good poly localrefine good_poly " <<good_poly<<" loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<<" old ID "<<cells[ToRefine[i]].ID<<std::endl;
+				std::cout << "Warning no good poly localrefine loc "<<oldtess.GetMeshPoint(ToRefine[i])<<" volume "<<oldtess.GetVolume(ToRefine[i])<<" old ID "<<cells[ToRefine[i]].ID<<std::endl;
 			}
 		}
 	}
@@ -681,43 +708,100 @@ namespace
 		AMRExtensiveUpdater3D const& eu, EquationOfState const& eos, 
 		std::vector<ComputationalCell3D> const& cells, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
 	{
+		int myrank = 0, world_size = 1;
+		MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		size_t ws = static_cast<size_t>(world_size);
+
 		std::vector<size_t> temp, temp2;
 		point_vec ptemp;
 		size_t Norg = oldtess.GetPointNo();
-		// Get outer refine points
 		size_t Nrefine = ToRefine.size();
-		std::vector<std::vector<size_t> >  to_send;
-		std::vector<size_t> refined_points;
+
+		// Step 1: Identify boundary-sensitive refine cells
+		// These are cells to refine whose neighbors or neighbor-of-neighbors is a ghost cell
+		std::vector<size_t> boundary_refine_indices; // indices into ToRefine
+		std::vector<size_t> neigh_neigh;
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
 			oldtess.GetNeighbors(ToRefine[i], temp);
-			temp2.clear();
+			bool has_ghost_k2 = false;
 			for (size_t j = 0; j < temp.size(); ++j)
 			{
 				if (temp[j] >= Norg && !oldtess.IsPointOutsideBox(temp[j]))
-					temp2.push_back(temp[j]);
+				{
+					has_ghost_k2 = true;
+					break;
+				}
+				if (temp[j] < Norg)
+				{
+					oldtess.GetNeighbors(temp[j], neigh_neigh);
+					for (size_t k = 0; k < neigh_neigh.size(); ++k)
+					{
+						if (neigh_neigh[k] >= Norg && !oldtess.IsPointOutsideBox(neigh_neigh[k]))
+						{
+							has_ghost_k2 = true;
+							break;
+						}
+					}
+					if (has_ghost_k2) break;
+				}
 			}
-			if (!temp2.empty())
+			if (has_ghost_k2)
+				boundary_refine_indices.push_back(i);
+		}
+
+		// Step 2: Get k=2 neighbors for boundary-sensitive cells using GetKOrderNeighbors
+		std::vector<size_t> boundary_cells;
+		boundary_cells.reserve(boundary_refine_indices.size());
+		for (size_t idx : boundary_refine_indices)
+			boundary_cells.push_back(ToRefine[idx]);
+
+		PointsToNeighborsMap k2_neighbors = GetKOrderNeighbors(oldtess, boundary_cells, 2, true, MPI_COMM_WORLD);
+
+		// Build refined_points and ToRefine_for_send for cells with remote k=2 neighbors
+		std::vector<size_t> refined_points;
+		std::vector<size_t> ToRefine_for_send;
+		for (size_t idx : boundary_refine_indices)
+		{
+			auto it = k2_neighbors.find(ToRefine[idx]);
+			if (it != k2_neighbors.end())
 			{
-				refined_points.push_back(tess.GetPointNo() - Nrefine + i);
-				to_send.push_back(temp2);
+				bool has_remote = false;
+				for (const RemotePoint& rp : it->second)
+				{
+					if (rp.rank != myrank)
+					{
+						has_remote = true;
+						break;
+					}
+				}
+				if (has_remote)
+				{
+					refined_points.push_back(tess.GetPointNo() - Nrefine + idx);
+					ToRefine_for_send.push_back(ToRefine[idx]);
+				}
 			}
 		}
-		// send / recv data
+
+		// Step 3-4: Send/recv planes and neighbor info with all relevant ranks
 		std::vector<std::vector<size_t> > n_planes;
 		std::vector<std::vector<std::vector<size_t> > > neigh_index;
 		std::vector < std::vector<double> > planes;
 		std::vector<std::vector<size_t> > changed_byouter;
-		SendRecvMPIRefine(tess, to_send, refined_points, oldtess, neigh_index, planes, n_planes, changed_byouter);
-		// Find the intersections
-		r3d_poly poly;
-		std::vector<r3d_plane> r_planes;
+		SendRecvMPIRefine(tess, refined_points, ToRefine_for_send, oldtess, k2_neighbors,
+			neigh_index, planes, n_planes, changed_byouter);
+
+		// Step 5: Find the intersections
+		std::vector<Plane> r_planes;
 		std::vector<std::vector<int> > i_temp;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
-		size_t Nprocs = neigh_index.size();
-		std::vector<std::vector<Conserved3D> > extensive_tosend(Nprocs);
-		for (size_t i = 0; i < Nprocs; ++i)
+		std::vector<std::vector<Conserved3D> > extensive_tosend(ws);
+		int rank = 0;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		std::vector<Face> polyhedron;
+		for (size_t i = 0; i < ws; ++i)
 		{
 			extensive_tosend[i].resize(neigh_index[i].size());
 			size_t counter = 0;
@@ -728,10 +812,24 @@ namespace
 				r_planes.resize(n_planes[i][j]);
 				for (size_t k = 0; k < n_planes[i][j]; ++k)
 				{
-					r_planes[k].d = planes[i][counter];
-					r_planes[k].n.xyz[0] = planes[i][counter + 1];
-					r_planes[k].n.xyz[1] = planes[i][counter + 2];
-					r_planes[k].n.xyz[2] = planes[i].at(counter + 3);
+					r_planes[k].normal.x = planes[i][counter + 1];
+					r_planes[k].normal.y = planes[i][counter + 2];
+					r_planes[k].normal.z = planes[i].at(counter + 3);
+					if(std::abs(r_planes[k].normal.x) > 0.1)
+					{
+						r_planes[k].point = Vector3D(planes[i][counter] / r_planes[k].normal.x, 0.0, 0.0);
+					}
+					else
+					{
+						if(std::abs(r_planes[k].normal.y) > 0.1)
+						{
+							r_planes[k].point = Vector3D(0.0, planes[i][counter] / r_planes[k].normal.y, 0.0);
+						}
+						else
+						{
+							r_planes[k].point = Vector3D(0.0, 0.0, planes[i][counter] / r_planes[k].normal.z);
+						}
+					}
 					counter += 4;
 				}
 				// Check for intersections
@@ -748,18 +846,19 @@ namespace
 						checked.insert(cur_check);
 					if (cur_check >= Norg)
 						continue;
-					if (GetPoly(oldtess, cur_check, poly, ptemp, temp2, i_temp))
+					CreatePolyFaces(oldtess, cur_check, polyhedron);
+					double org_volume = oldtess.GetVolume(cur_check);
+					auto [dv, clip_vol, clip_CM] = clipCells(polyhedron, r_planes);
+
+					if(dv > org_volume * 1e-10)
 					{
-						std::pair<bool, std::array<double,4> > dv = PolyhedraIntersection(oldtess, cur_check, poly, &r_planes);
-						if (dv.first)
-						{
 							// add and remove the extensive
 #ifdef RICH_DEBUG
-							try
-							{
+						try
+						{
 #endif
-							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv.second[0], interp.GetSlopes()[cur_check],
-								oldtess.GetCellCM(cur_check), Vector3D(dv.second[1], dv.second[2], dv.second[3]));
+						Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[cur_check], eos, dv, interp.GetSlopes()[cur_check],
+							oldtess.GetCellCM(cur_check), clip_CM);
 							extensives[cur_check] -= toadd;
 							extensive_tosend[i][j] += toadd;
 							oldtess.GetNeighbors(cur_check, temp);
@@ -768,40 +867,32 @@ namespace
 								tocheck.push(temp[k]);
 #ifdef RICH_DEBUG
 						}
-							catch (UniversalError &eo)
-							{
-								eo.addEntry("Error in MPIRefine", 0);
-								eo.addEntry("Volume", dv.second[0]);
-								eo.addEntry("Current check", cur_check);
-								eo.addEntry("Current check ID", cells[cur_check].ID);
-								eo.addEntry("Old mass", extensives[cur_check].mass);
-								eo.addEntry("Old density", cells[cur_check].density);
-								eo.addEntry("Refine index i", i);
-								eo.addEntry("Refine index j", j);
-								throw;
-							}
-#endif
+						catch (UniversalError &eo)
+						{
+							eo.addEntry("Error in MPIRefine", 0);
+							eo.addEntry("Volume", dv);
+							eo.addEntry("Current check", cur_check);
+							eo.addEntry("Current check ID", cells[cur_check].ID);
+							eo.addEntry("Old mass", extensives[cur_check].mass);
+							eo.addEntry("Old density", cells[cur_check].density);
+							eo.addEntry("Refine index i", i);
+							eo.addEntry("Refine index j", j);
+							throw;
 						}
-					}
-					else
-					{
-						int rank = 0;
-						MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-						std::cout << "warning bad poly in MPIRefine in rank " <<rank<< std::endl;
+#endif
 					}
 				}
 			}
 		}
-		extensive_tosend = MPI_exchange_data(oldtess.GetDuplicatedProcs(), extensive_tosend);
+		extensive_tosend = MPI_Exchange_all_to_all(extensive_tosend, MPI_COMM_WORLD);
 		size_t Nremove = oldtess.GetPointNo() + Nrefine - tess.GetPointNo();
-		for (size_t i = 0; i < Nprocs; ++i)
+		for (size_t i = 0; i < ws; ++i)
 		{
 			for (size_t j = 0; j < extensive_tosend[i].size(); ++j)
 				extensives[changed_byouter[i][j] + Nremove] += extensive_tosend[i][j];
 		}
 	}
 #endif
-
 }
 
 AMRCellUpdater3D::AMRCellUpdater3D(void) = default;
@@ -1017,11 +1108,8 @@ void AMR3D::operator() (HDSim3D &sim)
 	vector<size_t> indeces = sort_index(ToRemove.first);
 	ToRemove.second = VectorValues(ToRemove.second, indeces);
 	ToRemove.first = VectorValues(ToRemove.first, indeces);
-	// remove neighboring remove points
-	ToRemove = RemoveNeighbors(ToRemove.second, ToRemove.first, tess);
-#ifdef RICH_MPI
-	ToRemove = RemoveMPINeighbors(ToRemove.second, ToRemove.first, tess);
-#endif
+	// Remove neighboring candidates via greedy independent set
+	ToRemove = GreedyRemoveCandidates(ToRemove.second, ToRemove.first, tess);
 	// Get points to refine
 	std::pair<vector<size_t>, std::vector<Vector3D> > ToRefine = refine_.ToRefine(tess, cells, time);
 	sort_index(ToRefine.first, indeces);
@@ -1059,7 +1147,7 @@ void AMR3D::operator() (HDSim3D &sim)
 	RemoveVector(mask, ToRemove.first);
 	mask.resize(new_mesh.size(), std::numeric_limits<size_t>::max());
 	tess.PreparePoints(new_mesh, mask);
-	tess.BuildParallel(new_mesh, true);
+	tess.BuildParallel(new_mesh, true /* no rebalance */, true /* no exchange */);
 #else // RICH_MPI
 	tess.Build(new_mesh);
 #endif

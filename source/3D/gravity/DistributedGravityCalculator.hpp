@@ -2,7 +2,7 @@
 #define DISTRIUBTED_GRAVITY_CALCULATOR_HPP
 
 #ifdef RICH_MPI
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
 #include "mpi/mpi_commands.hpp"
 #include "GravityTree.hpp"
@@ -198,7 +198,7 @@ void DistributedGravityCalculator::getSendListHelper(const LocalNode *localNode,
             bool contained = std::any_of(this->boundingBoxesOfRanks[_rank].begin(), this->boundingBoxesOfRanks[_rank].end(),
                                         [localNode](const GravityNodeData &remote)
                                         {
-                                            return remote.boundingBox.contained(localNode->boundingBox); // if local node is contained in `remote`'s bounding box
+                                            return remote.boundingBox.contains(localNode->boundingBox); // if local node is contained in `remote`'s bounding box
                                         });
             bool shouldOpen = false;
             if(contained)

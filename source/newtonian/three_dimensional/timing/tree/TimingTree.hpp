@@ -7,7 +7,7 @@
 #include <vector>
 #include <boost/container/flat_map.hpp>
 #include "../timesteps.h"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "ds/OctTree/OctTree.hpp"
 #include "ds/utils/raw_type.h"

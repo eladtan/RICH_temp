@@ -10,7 +10,7 @@
 #endif // _MSC_VER
 #include <vector>
 #include <cmath>
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include <algorithm>
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/random/uniform_real_distribution.hpp>
@@ -91,6 +91,33 @@ vector<Vector3D> RandSphereR1(std::size_t PointNum, Vector3D const& ll, Vector3D
   \return List of points
  */
 vector<Vector3D> RandSphereRa(std::size_t PointNum, Vector3D const& ll, Vector3D const& ur, double Rmin, double Rmax,double a, Vector3D const& center);
+
+/*! \brief Generate points on a sphere by projecting a uniform cube grid onto it
+  \param Radius Radius of the sphere
+  \param N_per_edge Number of points per edge on each cube face (total ~ 6*N^2)
+  \param center Sphere centre (default is origin)
+  \param Niterations Number of Voronoi relaxation iterations (default is 100)
+  \return List of points on the sphere surface
+ */
+std::vector<Vector3D> CubedSphereSurface(double const Radius, size_t const N_per_edge,
+	Vector3D const center = Vector3D(0, 0, 0), size_t const Niterations = 100);
+
+/*! \brief Generate random points on a sphere surface with iterative rounding
+  \param Radius Radius of the sphere
+  \param PointNum Number of points to generate
+  \param center Sphere centre (default is origin)
+  \param Niterations Number of iterations for rounding/optimization (default is 100)
+  \return List of points on the sphere surface
+ */
+std::vector<Vector3D> RandSphereSurfaceRounded(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0), size_t const Niterations = 100);
+
+/*! \brief Generate random points on a sphere surface
+  \param Radius Radius of the sphere
+  \param PointNum Number of points to generate
+  \param center Sphere centre (default is origin)
+  \return List of points on the sphere surface
+ */
+std::vector<Vector3D> RandSphereSurface(double const Radius, size_t const PointNum, Vector3D const center = Vector3D(0, 0, 0));
 
 #endif //MESHGENERATOR3D_HPP
 

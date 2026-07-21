@@ -25,7 +25,8 @@ public:
               std::vector<std::string> const zero_cells = std::vector<std::string> (), 
               bool const flux_limiter = true, 
               bool const hydro_on = true, 
-              bool const compton_on = false);
+              bool const compton_on = false,
+              bool const cooling_time_limiter_on = false);
     
     ~Diffusion() = default;
 
@@ -75,6 +76,7 @@ public:
     mutable std::vector<double> new_Er_full;
     mutable std::vector<double> old_Er;
     mutable std::vector<double> old_T;
+    bool const cooling_time_limiter_on_;
     
     private:
     void load_cells_cgs(
@@ -87,6 +89,12 @@ public:
     
     void calculate_scattering_coefficient(
         Tessellation3D const& tess
+    ) const;
+
+    void apply_opacity_limiters(
+        Tessellation3D const& tess,
+        std::vector<ComputationalCell3D> const& cells,
+        double const dt
     ) const;
     
     void calculate_fleck_factor(

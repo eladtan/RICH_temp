@@ -9,50 +9,101 @@ namespace
 {
     typedef std::vector<double>::const_iterator cit;
 
+    // Optimized cubic Hermite interpolation with pre-computed common subexpressions
     double cubichermite(cit x_begin, cit x_end, cit y_begin, cit y_end, double xi)
     {
         size_t index = static_cast<size_t>(std::upper_bound(x_begin, x_end, xi) - x_begin);
-        if ((index < 2 && xi < *(x_begin + 1)) || index >= static_cast<size_t>(y_end - y_begin - 1))
+        
+        // Boundary checks - cache pointer base for efficiency
+        double const* __restrict xp = &(*x_begin);
+        double const* __restrict yp = &(*y_begin);
+        size_t const y_size = static_cast<size_t>(y_end - y_begin);
+        
+        if ((index < 2 && xi < xp[1]) || index >= y_size - 1)
         {
-            if(index == 1 && std::abs(*(x_begin + index) -  xi) < 1e-13)
+            if(index == 1 && std::abs(xp[index] - xi) < 1e-13)
                 ++index;
             else
             {
-                if(index == 3 && std::abs(*(x_begin + index - 1) -  xi) < 1e-13)
+                if(index == 3 && std::abs(xp[index - 1] - xi) < 1e-13)
                     --index;
                 else
                 {
                     UniversalError eo("Bad interpolation");
                     eo.addEntry("xi", xi);
                     eo.addEntry("index", index);
-                    eo.addEntry("Closest value", *(x_begin + index));
+                    eo.addEntry("Closest value", xp[index]);
                     throw eo;
                 }
             }
         }
-        double m0 = (*(y_begin + index) - *(y_begin + index - 2)) / (*(x_begin + index) - *(x_begin + index - 2));
-        double m1 = (*(y_begin + index + 1) - *(y_begin + index - 1)) / (*(x_begin + index + 1) - *(x_begin + index - 1));
-        double dx = *(x_begin + index) - *(x_begin + index - 1);
-
-        std::array<double, 4> x, y;
-        for (size_t i = 0; i < 4; ++i)
-        {
-            x[i] = *(x_begin + (index + i - 2));
-            y[i] = *(y_begin + (index + i - 2));
-        }
-        double dxother = *(x_begin + index - 1) - *(x_begin + index - 2);
-        m0 = -dx * (*(y_begin + index - 2)) / (dxother * (dxother + dx)) + (dx - dxother) * (*(y_begin + index - 1)) / (dx * dxother) + dxother * (*(y_begin + index)) / (dx * (dxother + dx));
-        double m00 = 2 * (y[0] * dx - (dxother + dx) * y[1] + dxother * y[2]) / (dx * dxother * (dxother + dx));
-        dxother = *(x_begin + index + 1) - *(x_begin + index);
-        m1 = -dxother * (*(y_begin + index - 1)) / (dx * (dxother + dx)) - (dx - dxother) * (*(y_begin + index)) / (dx * dxother) + dx * (*(y_begin + index + 1)) / (dxother * (dxother + dx));
-        double m11 = 2 * (y[1] * dxother - (dxother + dx) * y[2] + dx * y[3]) / (dx * dxother * (dxother + dx));
-        double dx0 = xi - x[1];
-        double dx1 = xi - x[2];
-
-        double temp0 = y[1] + m0 * dx0 + 0.5 * m00 * dx0 * dx0;
-        double temp1 = (y[2] - y[1] - m0 * (dx0 - dx1) - m00 * 0.5 * (dx0 - dx1) * (dx0 - dx1)) * dx0 * dx0 * dx0 / ((dx0 - dx1) * (dx0 - dx1) * (dx0 - dx1));
-        double temp2 = (3 * y[1] - 3 * y[2] + (2 * m0 + m1) * (dx0 - dx1) + 0.5 * m00 * (dx0 - dx1) * (dx0 - dx1)) * dx0 * dx0 * dx0 * dx1 / ((dx0 - dx1) * (dx0 - dx1) * (dx0 - dx1) * (dx0 - dx1));
-        double temp3 = (6 * y[2] - 6 * y[1] - 3 * (m0 + m1) * (dx0 - dx1) + 0.5 * (m11 - m00) * (dx0 - dx1) * (dx1 - dx0)) * dx0 * dx0 * dx0 * dx1 * dx1 / ((dx0 - dx1) * (dx0 - dx1) * (dx0 - dx1) * (dx0 - dx1) * (dx0 - dx1));
+        
+        // Load the 4 stencil points into local variables (cache-friendly)
+        size_t const base = index - 2;
+        double const x0 = xp[base];
+        double const x1 = xp[base + 1];
+        double const x2 = xp[base + 2];
+        double const x3 = xp[base + 3];
+        double const y0 = yp[base];
+        double const y1 = yp[base + 1];
+        double const y2 = yp[base + 2];
+        double const y3 = yp[base + 3];
+        
+        // Pre-compute spacing values
+        double const dx = x2 - x1;           // spacing between x[1] and x[2]
+        double const dxL = x1 - x0;          // spacing on left (x[0] to x[1])
+        double const dxR = x3 - x2;          // spacing on right (x[2] to x[3])
+        double const dxL_plus_dx = dxL + dx;
+        double const dxR_plus_dx = dxR + dx;
+        
+        // Pre-compute inverse of common denominators
+        double const inv_dxL_dxLplusdx = 1.0 / (dxL * dxL_plus_dx);
+        double const inv_dx_dxL = 1.0 / (dx * dxL);
+        double const inv_dx_dxLplusdx = 1.0 / (dx * dxL_plus_dx);
+        double const inv_dxR_dxRplusdx = 1.0 / (dxR * dxR_plus_dx);
+        double const inv_dx_dxR = 1.0 / (dx * dxR);
+        double const inv_dx_dxL_dxLplusdx = 1.0 / (dx * dxL * dxL_plus_dx);
+        double const inv_dx_dxR_dxRplusdx = 1.0 / (dx * dxR * dxR_plus_dx);
+        
+        // Compute derivatives at x[1] and x[2]
+        double const m0 = -dx * y0 * inv_dxL_dxLplusdx 
+                        + (dx - dxL) * y1 * inv_dx_dxL 
+                        + dxL * y2 * inv_dx_dxLplusdx;
+        double const m00 = 2.0 * (y0 * dx - dxL_plus_dx * y1 + dxL * y2) * inv_dx_dxL_dxLplusdx;
+        
+        double const inv_dx_dxRplusdx = 1.0 / (dx * dxR_plus_dx);
+        double const m1 = -dxR * y1 * inv_dx_dxRplusdx 
+                        - (dx - dxR) * y2 * inv_dx_dxR 
+                        + dx * y3 * inv_dxR_dxRplusdx;
+        double const m11 = 2.0 * (y1 * dxR - dxR_plus_dx * y2 + dx * y3) * inv_dx_dxR_dxRplusdx;
+        
+        // Compute interpolation position
+        double const dx0 = xi - x1;
+        double const dx1 = xi - x2;
+        
+        // Pre-compute powers of (dx0 - dx1) = dx (the spacing)
+        double const ddx = dx0 - dx1;  // = dx = x2 - x1
+        double const ddx2 = ddx * ddx;
+        double const ddx3 = ddx2 * ddx;
+        double const ddx4 = ddx3 * ddx;
+        double const ddx5 = ddx4 * ddx;
+        double const inv_ddx3 = 1.0 / ddx3;
+        double const inv_ddx4 = 1.0 / ddx4;
+        double const inv_ddx5 = 1.0 / ddx5;
+        
+        // Pre-compute powers of dx0
+        double const dx0_2 = dx0 * dx0;
+        double const dx0_3 = dx0_2 * dx0;
+        
+        // Pre-compute powers of dx1
+        double const dx1_2 = dx1 * dx1;
+        
+        // Compute interpolation terms
+        double const temp0 = y1 + m0 * dx0 + 0.5 * m00 * dx0_2;
+        double const temp1 = (y2 - y1 - m0 * ddx - 0.5 * m00 * ddx2) * dx0_3 * inv_ddx3;
+        double const temp2 = (3.0 * y1 - 3.0 * y2 + (2.0 * m0 + m1) * ddx + 0.5 * m00 * ddx2) * dx0_3 * dx1 * inv_ddx4;
+        double const temp3 = (6.0 * y2 - 6.0 * y1 - 3.0 * (m0 + m1) * ddx - 0.5 * (m11 - m00) * ddx2) * dx0_3 * dx1_2 * inv_ddx5;
+        
         return temp0 + temp1 + temp2 + temp3;
     }
 }

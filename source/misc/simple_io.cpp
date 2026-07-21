@@ -61,6 +61,13 @@ vector<double> read_vector(string const& fname)
 	double buf = 0;
 	vector<double> res;
 	ifstream f(fname.c_str());
+  if(not f.good())
+  {
+    UniversalError eo("read_number: could not open file");
+    eo.addEntry("Filename", fname);
+    throw eo;
+  }
+
 	assert(f || missing_file_data(fname));
 	while (f >> buf)
 		res.push_back(buf);
@@ -72,6 +79,13 @@ double read_number(string const& fname)
 {
   double buf = 0;
   ifstream f(fname.c_str());
+  if(not f.good())
+  {
+    UniversalError eo("read_number: could not open file");
+    eo.addEntry("Filename", fname);
+    throw eo;
+  }
+
   assert(f || missing_file_data(fname));
   f >> buf;
   f.close();

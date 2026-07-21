@@ -2,7 +2,7 @@
 #define HYDRO_TIME_ADVANCE_HPP
 
 #include "newtonian/three_dimensional/computational_cell.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "newtonian/common/equation_of_state.hpp"
 #include "newtonian/three_dimensional/point_motion_3d.hpp"

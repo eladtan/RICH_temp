@@ -8,6 +8,7 @@
 #ifdef RICH_MPI
     #include "utils/queryAgent/BusyWaitQueryAgent.hpp"
     #include "utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp"
+    #include "utils/queryAgent/BuffersManagerQueryAgent.hpp"
     #include "3D/environment/hilbert/DistributedOctEnvAgent.hpp" 
     #include "SentPointsContainer.hpp"
     #include "mpi/serialize/Serializer.hpp"
@@ -17,7 +18,7 @@
 
 struct BigRangeQueryData : public RangeQueryData
 {
-    _3DPoint originalPoint;
+    Vector3D originalPoint;
     bool askOnlyClose; // in a case of a big query, we can ask all the ranks, or only the close ranks 
 
     friend inline std::ostream &operator<<(std::ostream &stream, const BigRangeQueryData &query)
@@ -25,10 +26,10 @@ struct BigRangeQueryData : public RangeQueryData
         return stream << "[BIG, point is " << query.originalPoint << ", sphere is (center = " << query.center << ", r = " << query.radius << ")]";
     }
 
-    BigRangeQueryData(size_t pointIdx, const _3DPoint &center, typename _3DPoint::coord_type radius, const _3DPoint &originalPoint, bool askOnlyClose): RangeQueryData(pointIdx, center, radius), originalPoint(originalPoint), askOnlyClose(askOnlyClose)
+    BigRangeQueryData(size_t pointIdx, const Vector3D &center, typename Vector3D::coord_type radius, const Vector3D &originalPoint, bool askOnlyClose): RangeQueryData(pointIdx, center, radius), originalPoint(originalPoint), askOnlyClose(askOnlyClose)
     {}
     
-    BigRangeQueryData(): RangeQueryData(), originalPoint(_3DPoint()), askOnlyClose(false)
+    BigRangeQueryData(): RangeQueryData(), originalPoint(Vector3D()), askOnlyClose(false)
     {}
 
     #ifdef RICH_MPI
@@ -66,7 +67,7 @@ class BigRangeAgent
 private:
     class BigRangeAnswerAgent
         #ifdef RICH_MPI
-            : public AnswerAgent<BigRangeQueryData, _3DPoint>
+            : public AnswerAgent<BigRangeQueryData, Vector3D>
         #endif // RICH_MPI
     {
         friend class RangeAgent;
@@ -79,7 +80,7 @@ private:
         #endif // RICH_MPI
         {}
 
-        std::vector<size_t> selfAnswer(const BigRangeQueryData &query, boost::container::flat_set<size_t> &ignore)
+        std::vector<size_t> selfAnswer(const BigRangeQueryData &query, RangeFinder::_set<size_t> &ignore)
         {
             // a big query, bring only the closest point
             std::vector<size_t> indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.originalPoint.x, query.originalPoint.y, query.originalPoint.z), ignore);
@@ -88,7 +89,7 @@ private:
         }
 
         #ifdef RICH_MPI
-            std::vector<_3DPoint> answer(const BigRangeQueryData &query, int _rank) override
+            std::vector<Vector3D> answer(const BigRangeQueryData &query, int _rank) override
             {
                 const SentPointsContainer::PointsSet &ignore = this->pointsContainer.getSentDataSetRank(_rank);
 
@@ -96,11 +97,11 @@ private:
                 std::vector<size_t> indicesResult = this->rangeFinder->closestPointInSphere(Vector3D(query.center.x, query.center.y, query.center.z), query.radius, Vector3D(query.originalPoint.x, query.originalPoint.y, query.originalPoint.z), ignore);
                 indicesResult = this->pointsContainer.addPointsAsSent(_rank, indicesResult);
 
-                std::vector<_3DPoint> result;
+                std::vector<Vector3D> result;
                 result.reserve(indicesResult.size());
                 for(const size_t &pointIdx : indicesResult)
                 {
-                    result.push_back(_3DPoint(this->rangeFinder->getPoint(pointIdx)));
+                    result.push_back(this->rangeFinder->getPoint(pointIdx));
                 }
                 // std::cout << "answering to rank " << _rank << " " << result.size() << " points " << std::endl;            
                 return result;
@@ -121,7 +122,7 @@ private:
             template<typename K, typename V>
             using _map = boost::container::flat_map<K, V>;
 
-            BigRangeTalkAgent(const EnvironmentAgent *envAgent,         
+            BigRangeTalkAgent(const std::shared_ptr<EnvironmentAgent> envAgent,         
                             #ifdef RICH_MPI
                                 const MPI_Comm &comm = MPI_COMM_WORLD
                             #endif // RICH_MPI
@@ -135,17 +136,17 @@ private:
                     this->size = 1;
                 #endif // RICH_MPI
 
-                const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent);
+                const DistributedOctEnvironmentAgent *distribuedOctEnvAgent = dynamic_cast<const DistributedOctEnvironmentAgent*>(this->envAgent.get());
                 if(distribuedOctEnvAgent != nullptr)
                 {
                     this->supportsFurthestClosestRanks = true;
-                    this->getFurthestClosestRanks = [distribuedOctEnvAgent](const _3DPoint &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
+                    this->getFurthestClosestRanks = [distribuedOctEnvAgent](const Vector3D &point){return distribuedOctEnvAgent->getClosestFurthestPointsByRanks(point);};
                 }
-                const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(this->envAgent);
+                const HilbertTreeEnvironmentAgent *hilbertTreeEnvAgent = dynamic_cast<const HilbertTreeEnvironmentAgent*>(this->envAgent.get());
                 if(hilbertTreeEnvAgent != nullptr)
                 {
                     this->supportsFurthestClosestRanks = true;
-                    this->getFurthestClosestRanks = [hilbertTreeEnvAgent](const _3DPoint &point){return hilbertTreeEnvAgent->getClosestFurthestPointsByRanks(point);};
+                    this->getFurthestClosestRanks = [hilbertTreeEnvAgent](const Vector3D &point){return hilbertTreeEnvAgent->getClosestFurthestPointsByRanks(point);};
                 }
             };
 
@@ -157,7 +158,7 @@ private:
                     eo.addEntry("Query", query);
                     throw eo;
                 }
-
+                
                 // std::cout << "rank " << this->rank << " calculates the talk list of query " << query << std::endl;
                 EnvironmentAgent::RanksSet intersectingRanks = this->envAgent->getIntersectingRanks(Vector3D(query.center.x, query.center.y, query.center.z), query.radius);
                 if(intersectingRanks.empty())
@@ -245,22 +246,23 @@ private:
             }
 
         private:
-            const EnvironmentAgent *envAgent;
+            const std::shared_ptr<EnvironmentAgent> envAgent;
             mutable _map<size_t, std::vector<std::pair<double, double>>> resultCache;
             int rank, size;
             bool supportsFurthestClosestRanks;
             #ifdef RICH_MPI
-                std::function<HilbertCurveEnvironmentAgent::DistancesVector(const _3DPoint&)> getFurthestClosestRanks;
+                std::function<HilbertCurveEnvironmentAgent::DistancesVector(const Vector3D&)> getFurthestClosestRanks;
             #endif // RICH_MPI
         };
     #endif // RICH_MPI
 
 public:
+    // Use RangeFinder::_set (unordered_set) for consistency
     template<typename T>
-    using _set = boost::container::flat_set<T>;
+    using _set = RangeFinder::_set<T>;
 
     #ifdef RICH_MPI
-        BigRangeAgent(const RangeFinder *rangeFinder, const EnvironmentAgent *envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
+        BigRangeAgent(const RangeFinder *rangeFinder, const std::shared_ptr<EnvironmentAgent> &envAgent, SentPointsContainer &pointsContainer, const MPI_Comm &comm = MPI_COMM_WORLD): pointsContainer(pointsContainer)
     #else // RICH_MPI
         BigRangeAgent(const RangeFinder *rangeFinder)
     #endif // RICH_MPI
@@ -268,8 +270,9 @@ public:
         #ifdef RICH_MPI
             this->ansAgent = new BigRangeAnswerAgent(rangeFinder, pointsContainer, comm);
             this->talkAgent = new BigRangeTalkAgent(envAgent, comm);
-            this->queryAgent = new BusyWaitQueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
-            //this->queryAgent = new WaitUntilAnsweredQueryAgent<BigRangeQueryData, _3DPoint>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            this->queryAgent = new BuffersManagerQueryAgent<BigRangeQueryData, Vector3D>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            // this->queryAgent = new BusyWaitQueryAgent<BigRangeQueryData, Vector3D>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
+            //this->queryAgent = new WaitUntilAnsweredQueryAgent<BigRangeQueryData, Vector3D>(this->talkAgent, this->ansAgent, false /* dont send messages to self */, comm);
         #else // RICH_MPI
             this->ansAgent = new BigRangeAnswerAgent(rangeFinder);
         #endif // RICH_MPI
@@ -285,13 +288,13 @@ public:
     }
 
     #ifdef RICH_MPI
-        inline QueryBatchInfo<BigRangeQueryData, _3DPoint> runBatch(const std::vector<BigRangeQueryData> &queries)
+        inline QueryBatchInfo<BigRangeQueryData, Vector3D> runBatch(const std::vector<BigRangeQueryData> &queries)
         {
             return this->queryAgent->runBatch(queries);
         };
     #endif // RICH_MPI
 
-    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<BigRangeQueryData> &bigQueriesBatch, boost::container::flat_set<size_t> &ignore)
+    std::vector<std::vector<size_t>> selfBatchAnswer(const std::vector<BigRangeQueryData> &bigQueriesBatch, _set<size_t> &ignore)
     {
         std::vector<std::vector<size_t>> result;
         for(const BigRangeQueryData &query : bigQueriesBatch)
@@ -312,7 +315,7 @@ private:
     BigRangeAnswerAgent *ansAgent;
     #ifdef RICH_MPI
         BigRangeTalkAgent *talkAgent;
-        QueryAgent<BigRangeQueryData, _3DPoint> *queryAgent;
+        QueryAgent<BigRangeQueryData, Vector3D> *queryAgent;
         SentPointsContainer &pointsContainer;
     #endif // RICH_MPI
 };

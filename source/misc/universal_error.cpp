@@ -1,5 +1,8 @@
 #include <iostream>
 #include <algorithm>
+#ifdef RICH_MPI
+  #include <mpi.h>
+#endif // RICH_MPI
 #include "universal_error.hpp"
 
 using namespace std;
@@ -27,8 +30,14 @@ UniversalError::UniversalError(const UniversalError& eo):
 
 void reportError(UniversalError const& eo, std::ostream& os)
 {
+  std::string prefix = "";
+  #ifdef RICH_MPI
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    prefix = "============" + to_string(rank) + "============ ";
+  #endif // RICH_MPI
   os.precision(14);
-  os << eo.getErrorMessage() << std::endl;
+  os << prefix << eo.getErrorMessage() << std::endl;
   for_each(eo.fields_.begin(), eo.fields_.end(),
-          [&os](const pair<string, UniversalError::PrintableAny>& f) {os << f.first << " " << f.second << endl;});
+          [&os, &prefix](const pair<string, UniversalError::PrintableAny>& f) {os << prefix << f.first << " " << f.second << endl;});
 }

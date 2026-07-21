@@ -4,11 +4,13 @@
 #include <H5Cpp.h>
 #include <string>
 #include <filesystem>
-#include "3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "misc/hdf5_utils.hpp"
 #include "write_vtu_3d.hpp"
 #include "DiagnosticAppendix3D.hpp"
 #include "Snapshot3D.hpp"
+#include "MC/read_write_particles.hpp"
+#include "utils/hdf5/HDF5Writer.hpp"
 
 namespace fs = std::filesystem;
 using namespace H5;
@@ -24,7 +26,10 @@ using namespace H5;
     \param filename Name of output file
     \param write_vtu whether to write to vtu as well
   */
-  void WriteVoronoiParallel(const Voronoi3D &tri, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(), bool write_vtu = true);
+void WriteVoronoiParallel(const Voronoi3D &tri, const std::string &filename,
+                          const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(),
+                          const std::vector<std::vector<std::string>> &dataStr = std::vector<std::vector<std::string>>(), const std::vector<std::string>& namesStr = std::vector<std::string>(),
+                          const std::vector<std::pair<std::string, double>> &scalar_values = std::vector<std::pair<std::string, double>>(), bool write_vtu = true);
 #endif // RICH_MPI
 
 /*! \brief Write voronoi data to a file, of all the ranks, but not parallely (excusively)
@@ -32,15 +37,25 @@ using namespace H5;
   \param filename Name of output file
   \param write_vtu whether to write to vtu as well
  */
-void WriteVoronoi(const Voronoi3D &tri, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(), bool write_vtu = true);
+void WriteVoronoi(const Voronoi3D &tri, const std::string &filename,
+                          const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(),
+                          const std::vector<std::vector<std::string>> &dataStr = std::vector<std::vector<std::string>>(), const std::vector<std::string>& namesStr = std::vector<std::string>(),
+                          const std::vector<std::pair<std::string, double>> &scalar_values = std::vector<std::pair<std::string, double>>(), bool write_vtu = true);
+
+void WriteVoronoiVTKOnly(const Voronoi3D &tri, const std::string &filename,
+                          const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(),
+                          const std::vector<std::vector<std::string>> &dataStr = std::vector<std::vector<std::string>>(), const std::vector<std::string>& namesStr = std::vector<std::string>(),
+                          const std::vector<std::pair<std::string, double>> &scalar_values = std::vector<std::pair<std::string, double>>());
 
 /*! \brief Write voronoi data to a file
   \param tri Voronoit tessellation
   \param filename Name of output file
   \param write_vtu whether to write to vtu as well
  */
-void WriteVoronoiSerial(const Voronoi3D &tri, const std::string &filename, const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(), bool write_vtu = true);
-
+void WriteVoronoiSerial(const Voronoi3D &tri, const std::string &filename,
+                          const std::vector<std::vector<double>> &data = std::vector<std::vector<double>>(), const std::vector<std::string>& names = std::vector<std::string>(),
+                          const std::vector<std::vector<std::string>> &dataStr = std::vector<std::vector<std::string>>(), const std::vector<std::string>& namesStr = std::vector<std::string>(),
+                          const std::vector<std::pair<std::string, double>> &scalar_values = std::vector<std::pair<std::string, double>>(), bool write_vtu = true);
 #if RICH_MPI
 /*! \brief Write snapshot to file
   \param sim Simulation

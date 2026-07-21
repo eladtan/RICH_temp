@@ -5,7 +5,7 @@
 
 #ifndef SOURCETERM3D_HPP
 #define SOURCETERM3D_HPP 1
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "misc/utils.hpp"
 #include "computational_cell.hpp"
 #include "conserved_3d.hpp"

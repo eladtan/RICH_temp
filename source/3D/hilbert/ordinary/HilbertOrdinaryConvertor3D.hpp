@@ -9,6 +9,8 @@ class HilbertOrdinaryConvertor3D : public HilbertConvertor3D
 public:
     explicit HilbertOrdinaryConvertor3D(const Vector3D &ll, const Vector3D &ur, size_t order);
     
+    ~HilbertOrdinaryConvertor3D() override = default;
+    
     void changeOrder(size_t order) override
     {
         this->order = order;
@@ -18,6 +20,12 @@ public:
         
     Vector3D d2xyz(hilbert_index_t d) const override;
     
+
+    inline std::shared_ptr<HilbertConvertor3D> clone(void) const override
+    {
+        return std::make_shared<HilbertOrdinaryConvertor3D>(this->ll, this->ur, this->order);
+    }
+
 private:
     HilbertCurve3D curve;
     Vector3D length;

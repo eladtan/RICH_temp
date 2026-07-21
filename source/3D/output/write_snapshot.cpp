@@ -15,7 +15,7 @@ void writeVTU(const std::string &filename, const HDSim3D &sim, const VTU_Output 
     write_vtu3d::write_vtu_3d(vtu_name, data.vtu_cell_variable_names, data.vtu_cell_variables, data.vtu_cell_vectors_names, data.vtu_cell_vectors, sim.getTime(), sim.getCycle(), sim.getTesselation());
 }
 
-VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers, Group &stickers, const std::string &filename, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
+VTU_Output WriteSnapshot3DHelper(HDF5Writer &file, const std::string &prefix, const std::string &filename, const HDSim3D &sim, const std::vector<DiagnosticAppendix3D*> &appendices, bool write_vtu)
 {
     Tessellation3D const &tess = sim.getTesselation();
     vector<ComputationalCell3D> const &cells = sim.getCells();
@@ -33,19 +33,19 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = tess.GetMeshPoint(i).x;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "X");
+    file.WriteElement(prefix +"/X", temp);
 
     for(size_t i = 0; i < Ncells; ++i)
     {
         temp[i] = tess.GetMeshPoint(i).y;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Y");
+    file.WriteElement(prefix + "/Y", temp);
 
     for(size_t i = 0; i < Ncells; ++i)
     {
         temp[i] = tess.GetMeshPoint(i).z;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Z");
+    file.WriteElement(prefix + "/Z", temp);
     
     if(write_vtu)
     {
@@ -60,19 +60,19 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = tess.GetCellCM(i).x;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "CMx");
+    file.WriteElement(prefix + "/CMx", temp);
 
     for(size_t i = 0; i < Ncells; ++i)
     {
         temp[i] = tess.GetCellCM(i).y;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "CMy");
+    file.WriteElement(prefix + "/CMy", temp);
 
     for(size_t i = 0; i < Ncells; ++i)
     {
         temp[i] = tess.GetCellCM(i).z;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "CMz");
+    file.WriteElement(prefix + "/CMz", temp);
 
     Ncells = tess.GetPointNo();
     temp.resize(Ncells);
@@ -80,7 +80,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = cells[i].density;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Density");
+    file.WriteElement(prefix + "/Density", temp);
 
     if(write_vtu)
     {
@@ -92,7 +92,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = cells[i].pressure;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Pressure");
+    file.WriteElement(prefix + "/Pressure", temp);
 
     if(write_vtu)
     {
@@ -104,7 +104,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = cells[i].internal_energy;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "InternalEnergy");
+    file.WriteElement(prefix + "/InternalEnergy", temp);
 
     if(write_vtu)
     {
@@ -117,7 +117,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         ids[i] = cells[i].ID;
     }
-    write_std_vector_to_hdf5(writegroup, ids, "ID");
+    file.WriteElement(prefix + "/ID", ids);
 
     if(write_vtu)
     {
@@ -133,19 +133,19 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = cells[i].velocity.x;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Vx");
+    file.WriteElement(prefix + "/Vx", temp);
 
     for(size_t i = 0; i < Ncells; ++i)
     {
         temp[i] = cells[i].velocity.y;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Vy");
+    file.WriteElement(prefix + "/Vy", temp);
 
     for(size_t i = 0; i < Ncells; ++i)
     {
         temp[i] = cells[i].velocity.z;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Vz");
+    file.WriteElement(prefix + "/Vz", temp);
 
     if(write_vtu)
     {
@@ -162,7 +162,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = cells[i].temperature;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Temperature");
+    file.WriteElement(prefix + "/Temperature", temp);
 
     if(write_vtu)
     {
@@ -174,7 +174,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = cells[i].Erad;
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Erad");
+    file.WriteElement(prefix + "/Erad", temp);
 
     if(write_vtu)
     {
@@ -187,7 +187,7 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
             temp[i] = cells[i].Eg[g];
         }
         
-        write_std_vector_to_hdf5(writegroup, temp, "Eg_" + std::to_string(g));
+        file.WriteElement(prefix + "/Eg_" + std::to_string(g), temp);
         
         if(write_vtu)
         {
@@ -196,14 +196,14 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
         }
     }
 
-
     for(size_t j = 0; j < ComputationalCell3D::tracerNames.size(); ++j)
     {
         for(size_t i = 0; i < Ncells; ++i)
         {
             temp[i] = cells[i].tracers[j];
         }
-        write_std_vector_to_hdf5(tracers, temp, ComputationalCell3D::tracerNames[j]);
+        file.WriteElement(prefix + "/tracers/" + ComputationalCell3D::tracerNames[j], temp);
+
         if(write_vtu)
         {
             vtu_cell_variables.push_back(temp);
@@ -217,7 +217,8 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
         {
             temp[i] = cells[i].stickers[j];
         }
-        write_std_vector_to_hdf5(stickers, temp, ComputationalCell3D::stickerNames[j]);
+        file.WriteElement(prefix + "/stickers/" + ComputationalCell3D::stickerNames[j], temp);
+
         if(write_vtu)
         {
             vtu_cell_variables.push_back(temp);
@@ -229,7 +230,8 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         temp[i] = tess.GetVolume(i);
     }
-    write_std_vector_to_hdf5(writegroup, temp, "Volume");
+    file.WriteElement(prefix + "/Volume", temp);
+
     if(write_vtu)
     {
         vtu_cell_variables.push_back(temp);
@@ -240,7 +242,8 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     for(size_t i = 0; i < appendices.size(); ++i)
     {
         temp = (*(appendices.at(i)))(sim);
-        write_std_vector_to_hdf5(writegroup, temp, appendices.at(i)->getName());
+        file.WriteElement(prefix + "/" + appendices.at(i)->getName(), temp);
+
         if(write_vtu)
         {
             vtu_cell_variables.push_back(temp);
@@ -256,10 +259,8 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
     {
         int rank = 0;
         int ws = 0; // MPI_COMM_WORLD size
-        H5File file;
 
         fs::path path = fs::absolute(filename).parent_path();
-        std::string myFilePath;
         fs::path ranks_files_path = path / fs::path(filename).filename().replace_extension();
         if(not fs::exists(ranks_files_path))
         {
@@ -267,17 +268,12 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
         }
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &ws);
-        myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
-
-        // truncate my file and open it
-        H5File file2(H5std_string(myFilePath), H5F_ACC_TRUNC);
-        file2.close();
-        file.openFile(H5std_string(myFilePath), H5F_ACC_RDWR);
-
-        Group writegroup = file.openGroup("/");
-
+        std::string myFilePath = (ranks_files_path / std::to_string(rank)).string() + ".h5";
         Tessellation3D const &tess = sim.getTesselation();
 
+        HDF5Writer filewriter(myFilePath);
+        std::shared_ptr<HDF5Writer> globalFileWriter = (rank == 0) ? std::make_shared<HDF5Writer>(filename) : nullptr;
+        
         if(rank == 0)
         {
             std::vector<double> box(6);
@@ -287,52 +283,29 @@ VTU_Output WriteSnapshot3DHelper(H5File &file, Group &writegroup, Group &tracers
             box[3] = tess.GetBoxCoordinates().second.x;
             box[4] = tess.GetBoxCoordinates().second.y;
             box[5] = tess.GetBoxCoordinates().second.z;
-            write_std_vector_to_hdf5(file, box, "Box");
+            globalFileWriter->WriteElement("/Box", box);
         }
 
-        Group tracers, stickers;
 
-        tracers = writegroup.createGroup("/tracers");
-        stickers = writegroup.createGroup("/stickers");
-
-        VTU_Output vtu = WriteSnapshot3DHelper(file, writegroup, tracers, stickers, filename, sim, appendices, write_vtu);
+        VTU_Output vtu = WriteSnapshot3DHelper(filewriter, "", filename, sim, appendices, write_vtu);
 
         if(rank == 0)
         {
-            vector<double> time(1, sim.getTime());
-            write_std_vector_to_hdf5(file, time, "Time");
-
-            vector<int> cycle(1, static_cast<int>(sim.getCycle()));
-            write_std_vector_to_hdf5(file, cycle, "Cycle");
+            globalFileWriter->WriteElement("/Time", sim.getTime());
+            globalFileWriter->WriteElement("/Cycle", sim.getCycle());
         }
-
-        stickers.close();
-        tracers.close();
-        writegroup.close();
-        file.close();
 
         writeVTU(filename, sim, vtu);
         MPI_Barrier(MPI_COMM_WORLD);
         // only rank 0 makes the shared file
         if(rank == 0)
         {
-            file2 = H5File(H5std_string(filename), H5F_ACC_TRUNC);
-            file2.close();
-            hid_t shared_file_id = H5Fcreate(filename.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-
             for(int _rank = 0; _rank < ws; _rank++)
             {
                 // merge `_rank`'s file
                 std::string rankFile((ranks_files_path / std::to_string(_rank)).string() + ".h5");
-                std::string rankGroupName("/rank" + std::to_string(_rank));
-                H5Lcreate_external(rankFile.c_str(),
-                                                    "/",
-                                                    shared_file_id,
-                                                    rankGroupName.c_str(),
-                                                    H5P_DEFAULT,
-                                                    H5P_DEFAULT);
+                globalFileWriter->AddExternalLink(rankFile, "/", "/rank" + std::to_string(_rank));
             }
-            H5Fclose(shared_file_id);
         }
     }
 #endif // RICH_MPI
@@ -352,14 +325,14 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
             MPI_Comm_size(MPI_COMM_WORLD, &ws);
         }
     #endif
-    H5File file;
+
+    std::shared_ptr<HDF5Writer> filewriter = nullptr;
+
     #ifdef RICH_MPI
         if(rank == 0)
         {
     #endif // RICH_MPI
-            H5File file2(H5std_string(filename), H5F_ACC_TRUNC);
-            file2.close();
-            file.openFile(H5std_string(filename), H5F_ACC_RDWR);
+        filewriter = std::make_shared<HDF5Writer>(filename);
     #ifdef RICH_MPI
         }
     #endif // RICH_MPI
@@ -377,12 +350,13 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
         box[3] = tess.GetBoxCoordinates().second.x;
         box[4] = tess.GetBoxCoordinates().second.y;
         box[5] = tess.GetBoxCoordinates().second.z;
-        write_std_vector_to_hdf5(file, box, "Box");
+        filewriter->WriteElement("/Box", box);
     #ifdef RICH_MPI
         }
     #endif // RICH_MPI
 
-    Group writegroup;
+    std::string prefix = "";
+
     #ifdef RICH_MPI
         if(mpi_write)
         {
@@ -391,48 +365,26 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
             if(rank > 0)
             {
                 MPI_Recv(&dummy, 1, MPI_INT, rank - 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                file.openFile(H5std_string(filename), H5F_ACC_RDWR);
+                filewriter = std::make_shared<HDF5Writer>(filename, false /* don't truncate */);
             }
-            file.createGroup("/rank" + std::to_string(rank));
-            writegroup = file.openGroup("/rank" + std::to_string(rank));
+            prefix = "/rank" + std::to_string(rank);
         }
         else
         {
-            writegroup = file.openGroup("/");
+            prefix = "";
         }
     #else
-        writegroup = file.openGroup("/");
+        prefix = "";
     #endif
 
-    Group tracers, stickers;
-
-    #ifdef RICH_MPI
-        if(mpi_write)
-        {
-            tracers = writegroup.createGroup("/rank" + std::to_string(rank) + "/tracers");
-            stickers = writegroup.createGroup("/rank" + std::to_string(rank) + "/stickers");
-        }
-        else
-        {
-            tracers = writegroup.createGroup("/tracers");
-            stickers = writegroup.createGroup("/stickers");
-        }
-    #else // RICH_MPI
-        tracers = writegroup.createGroup("/tracers");
-        stickers = writegroup.createGroup("/stickers");
-    #endif // RICH_MPI
-
-    VTU_Output vtu = WriteSnapshot3DHelper(file, writegroup, tracers, stickers, filename, sim, appendices, write_vtu);
+    VTU_Output vtu = WriteSnapshot3DHelper(*filewriter, prefix, filename, sim, appendices, write_vtu);
 
     #ifdef RICH_MPI
         if(rank == 0)
         {
     #endif // RICH_MPI
-        vector<double> time(1, sim.getTime());
-        write_std_vector_to_hdf5(file, time, "Time");
-
-        vector<int> cycle(1, static_cast<int>(sim.getCycle()));
-        write_std_vector_to_hdf5(file, cycle, "Cycle");
+        filewriter->WriteElement("/Time", sim.getTime());
+        filewriter->WriteElement("/Cycle", sim.getCycle());
     #ifdef RICH_MPI
         }
     #endif // RICH_MPI
@@ -443,22 +395,21 @@ void WriteSnapshot3D(HDSim3D const &sim, std::string const &filename, const vect
             if(rank < (ws - 1))
             {
                 int dummy = 0;
-                tracers.close();
-                stickers.close();
-                writegroup.close();
-                file.close();
+                filewriter->Close();
                 MPI_Send(&dummy, 1, MPI_INT, rank + 1, HDF5_WRITE_BLOCK_TAG, MPI_COMM_WORLD);
             }
             MPI_Barrier(MPI_COMM_WORLD);
         }
         else
         {
-            file.close();
+            filewriter->Close();
         }
     #else
-        file.close();
+        filewriter->Close();
     #endif
 
     if(write_vtu)
+    {
         writeVTU(filename, sim, vtu);
+    }
 }

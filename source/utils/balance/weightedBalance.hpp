@@ -174,6 +174,10 @@ struct OrderStatisticsJob
     MPI_Comm comm;
     std::vector<T> result;
     SubJob subjob; // changes recursively
+    size_t currDepth = 0;
+    size_t maxDepth = 0;
+    size_t totalJobs = 0;
+    size_t totalLeafJobs = 0;
 };
 
 template<typename T, typename Comparator>
@@ -247,6 +251,10 @@ LocationSpecifier<T> getWeightedMedianOfMedians(const OrderStatisticsJob<T> &job
 template<typename T, typename Comparator = std::function<bool(const T&, const T&)>>
 void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
 {
+    job.currDepth = job.currDepth + 1;
+    job.maxDepth = std::max(job.maxDepth, job.currDepth);
+    job.totalJobs += 1;
+
     assert(std::distance(job.subjob.valuesVecBegin, job.subjob.valuesVecEnd) == std::distance(job.subjob.weightsVecBegin, job.subjob.weightsVecEnd));
     assert(job.subjob.elementsBefore <= job.values.size());
     assert(job.subjob.elementsAfter <= job.values.size());
@@ -256,6 +264,7 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     // step 1 - if the list of statistics is empty, return
     if(job.subjob.orderStatisticsBegin == job.subjob.orderStatisticsEnd)
     {
+        job.totalLeafJobs += 1;
         return; // no stats to find
     }
     
@@ -265,11 +274,13 @@ void recursivelyGetWeightedStatOrder(OrderStatisticsJob<T, Comparator> &job)
     // step 3 (collective) - get the local weighted median of medians
     LocationSpecifier<T> medianOfMedians = getWeightedMedianOfMedians(job, localWeightedMedian);
     
+    double tolerance = 0.05 / static_cast<double>(job.size);
+
     // step 4 - get the stat order of the element
     // the element might occupy multiple statisticle orders, if there are any duplications
     // so, we calculate the minimal stat order it occupy, and the maximal one
-    size_t medianOfMediansMinStatOrder = static_cast<size_t>(std::floor(job.allElementsNum * medianOfMedians.weightBefore / job.allWeight));
-    size_t medianOfMediansMaxStatOrder = static_cast<size_t>(std::ceil(job.allElementsNum * (medianOfMedians.weightBefore + medianOfMedians.weightEqual) / job.allWeight));
+    size_t medianOfMediansMinStatOrder = static_cast<size_t>(std::floor(job.allElementsNum * (medianOfMedians.weightBefore / job.allWeight - tolerance)));
+    size_t medianOfMediansMaxStatOrder = static_cast<size_t>(std::ceil(job.allElementsNum * (tolerance + ((medianOfMedians.weightBefore + medianOfMedians.weightEqual) / job.allWeight))));
 
     // find how many times the median is in the list of the statistics. Cut the list of statistics accordingly
     auto statOrderLastBelow = std::lower_bound(job.subjob.orderStatisticsBegin, job.subjob.orderStatisticsEnd, medianOfMediansMinStatOrder);
@@ -357,6 +368,11 @@ std::vector<T> getWeightedOrderStatistics(const std::vector<T> &values, const st
     job.subjob.weightAfter = 0;
     recursivelyGetWeightedStatOrder(job);
     std::sort(job.result.begin(), job.result.end());
+    
+    if(job.rank == 0)
+    {
+        std::cout << "Weighted statistics max depth: " << job.maxDepth << " (total calls: " << job.totalJobs << ", total leaf calls: " << job.totalLeafJobs << ")" << std::endl;
+    }
 
     MPI_Barrier(job.comm);
     return job.result;

@@ -5,7 +5,7 @@
 
 #include <mpi.h>
 #include <vector>
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
 
 /*!
@@ -21,7 +21,6 @@ inline void MPI_exchange_data(const Tessellation3D& tess, std::vector<T>& cells,
 	const std::vector<std::vector<size_t>> &indices = (ghost_or_sent)? tess.GetDuplicatedPoints() : tess.GetSentPoints();
 	std::vector<MPI_Request> req(correspondents.size());
 	
-
 	std::vector<std::vector<T>> exchange = MPI_exchange_data_indexed(correspondents, cells, indices, extent);
 	const std::vector<std::vector<size_t>> &ghost_indices = tess.GetGhostIndeces();
 	if(ghost_or_sent)

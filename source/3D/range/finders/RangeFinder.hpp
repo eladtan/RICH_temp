@@ -11,19 +11,14 @@
 class RangeFinder
 {
 public:
+    // Using unordered_set for O(1) lookup instead of O(log N) for flat_set
     template<typename T>
-    using _set = boost::container::flat_set<T>; // boost::unordered_set<T>; // std::unordered_set<T>; // boost::container::flat_set<T>;
+    using _set = std::unordered_set<T>;
     virtual ~RangeFinder() = default;
     
-    virtual std::vector<size_t> range(const Vector3D &center, double radius, size_t N = std::numeric_limits<size_t>::max(), const _set<size_t> &ignore = _set<size_t>()) const
-    {
-        throw UniversalError("RangeFinder::range: method not implemented");
-    }
+    virtual std::vector<size_t> range(const Vector3D &center, double radius, size_t N = std::numeric_limits<size_t>::max(), const _set<size_t> &ignore = _set<size_t>()) const = 0;
     
-    virtual std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const
-    {
-        throw UniversalError("RangeFinder::closestPointInSphere: method not implemented");
-    }
+    virtual std::vector<size_t> closestPointInSphere(const Vector3D &center, double radius, const Vector3D &point, const _set<size_t> &ignore) const = 0;
     
     virtual const Vector3D &getPoint(size_t index) const = 0;
     

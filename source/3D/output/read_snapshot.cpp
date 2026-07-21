@@ -1,41 +1,61 @@
+#include "misc/universal_error.hpp"
 #include "read3D.hpp"
 
-Snapshot3D ReadSnapshot3DHelper(H5File &file, H5File &globalfile, Group &read_location, bool const good_open)
+Snapshot3D ReadSnapshot3DHelper(const HDF5Reader &reader,
+                                const HDF5Reader &globalfile,
+                                bool const good_open,
+                                const std::string& rank_prefix = "")
 {
     Snapshot3D res;
-    const vector<double> box = read_double_vector_from_hdf5(globalfile, "Box");
+    const auto rank_path = [&rank_prefix](const std::string& path)
+    {
+        return rank_prefix.empty() ? path : rank_prefix + path;
+    };
+    std::vector<double> box;
+    globalfile.ReadElement("/Box", box);
+
     res.ll.Set(box[0], box[1], box[2]);
     res.ur.Set(box[3], box[4], box[5]);
     // Misc
     {
-        const vector<double> time = read_double_vector_from_hdf5(globalfile, "Time");
-        res.time = time.at(0);
-        const vector<int> cycle = read_int_vector_from_hdf5(globalfile, "Cycle");
-        res.cycle = cycle.at(0);
-        Group g_tracers = read_location.openGroup("tracers");
-        Group g_stickers = read_location.openGroup("stickers");
-        vector<string> tracernames(g_tracers.getNumObjs());
-        for(hsize_t n = 0; n < g_tracers.getNumObjs(); ++n)
+        try
         {
-            const H5std_string name = g_tracers.getObjnameByIdx(n);
-            tracernames[n] = name;
+            globalfile.ReadElement("/Time", res.time);
+            globalfile.ReadElement("/Cycle", res.cycle);
         }
-        vector<string> stickernames(g_stickers.getNumObjs());
-        for(hsize_t n = 0; n < g_stickers.getNumObjs(); ++n)
+        catch(...)
         {
-            const H5std_string name = g_stickers.getObjnameByIdx(n);
-            stickernames[n] = name;
+            std::vector<double> time;
+            std::vector<int> cycle;
+            globalfile.ReadElement("/Time", time);
+            globalfile.ReadElement("/Cycle", cycle);
+            res.time = time[0];
+            res.cycle = cycle[0];
         }
-        res.tracerstickernames.first = tracernames;
-        res.tracerstickernames.second = stickernames;
+
+        if(reader.Exists(rank_path("/tracers")))
+        {
+            for(const std::string &tracerName : reader.ReadGroupNames(rank_path("/tracers")))
+            {
+                res.tracerstickernames.first.push_back(tracerName);
+            }   
+        }
+        if(reader.Exists(rank_path("/stickers")))
+        {
+            for(const std::string &stickerName : reader.ReadGroupNames(rank_path("/stickers")))
+            {
+                res.tracerstickernames.second.push_back(stickerName);
+            }
+        }
     }
     if(good_open)
     {
     // Mesh points
         {
-            const vector<double> x = read_double_vector_from_hdf5(read_location, "X");
-            const vector<double> y = read_double_vector_from_hdf5(read_location, "Y");
-            const vector<double> z = read_double_vector_from_hdf5(read_location, "Z");
+            std::vector<double> x, y, z;
+            reader.ReadElement(rank_path("/X"), x);
+            reader.ReadElement(rank_path("/Y"), y);
+            reader.ReadElement(rank_path("/Z"), z);
             res.mesh_points.resize(x.size());
             for(size_t i = 0; i < x.size(); ++i)
             {
@@ -45,53 +65,61 @@ Snapshot3D ReadSnapshot3DHelper(H5File &file, H5File &globalfile, Group &read_lo
 
         // Hydrodynamic
         {
-            vector<double> Erad, temperature;
-            const vector<double> density = read_double_vector_from_hdf5(read_location, "Density");
-            if(H5Lexists(read_location.getId(), std::string("Erad").c_str(), H5P_DEFAULT ) > 0)
-                Erad = read_double_vector_from_hdf5(read_location, "Erad");
+            vector<double> density;
+            reader.ReadElement(rank_path("/Density"), density);
+
+            std::vector<double> Erad;
+            if(reader.Exists(rank_path("/Erad")))
+            {
+                reader.ReadElement(rank_path("/Erad"), Erad);
+            }
             else
+            {
                 Erad.resize(density.size(), 0);
-            if(H5Lexists(read_location.getId(), std::string("Temperature").c_str(), H5P_DEFAULT ) > 0)
-                temperature = read_double_vector_from_hdf5(read_location, "Temperature");
+            }
+            std::vector<double> temperature;
+            if(reader.Exists(rank_path("/Temperature")))
+            {
+                reader.ReadElement(rank_path("/Temperature"), temperature);
+            }
             else
+            {
                 temperature.resize(density.size(), 0);
-            const vector<double> pressure = read_double_vector_from_hdf5(read_location, "Pressure");
-            const vector<double> energy = read_double_vector_from_hdf5(read_location, "InternalEnergy");
+            }
+
+            std::vector<double> pressure;
+            reader.ReadElement(rank_path("/Pressure"), pressure);
+            std::vector<double> energy;
+            reader.ReadElement(rank_path("/InternalEnergy"), energy);
+
             vector<size_t> IDs(density.size(), 0);
-            hsize_t objcount = read_location.getNumObjs();
-            for(hsize_t i = 0; i < objcount; ++i)
+            if(reader.Exists(rank_path("/ID")))
             {
-                std::string name = read_location.getObjnameByIdx(i);
-                if(name.compare(std::string("ID")) == 0)
-                {
-                    IDs = read_sizet_vector_from_hdf5(read_location, "ID");
-                }
-            }
-            const vector<double> x_velocity = read_double_vector_from_hdf5(read_location, "Vx");
-            const vector<double> y_velocity = read_double_vector_from_hdf5(read_location, "Vy");
-            const vector<double> z_velocity = read_double_vector_from_hdf5(read_location, "Vz");
-
-            Group g_tracers = read_location.openGroup("tracers");
-            Group g_stickers = read_location.openGroup("stickers");
-            vector<vector<double>> tracers(g_tracers.getNumObjs());
-            vector<string> tracernames(tracers.size());
-            for(hsize_t n = 0; n < g_tracers.getNumObjs(); ++n)
-            {
-                const H5std_string name = g_tracers.getObjnameByIdx(n);
-                tracernames[n] = name;
-                tracers[n] = read_double_vector_from_hdf5(g_tracers, name);
+                reader.ReadElement(rank_path("/ID"), IDs);
             }
 
-            vector<vector<int>> stickers(g_stickers.getNumObjs());
-            vector<string> stickernames(stickers.size());
-            for(hsize_t n = 0; n < g_stickers.getNumObjs(); ++n)
+            std::vector<double> x_velocity;
+            reader.ReadElement(rank_path("/Vx"), x_velocity);
+            std::vector<double> y_velocity;
+            reader.ReadElement(rank_path("/Vy"), y_velocity);
+            std::vector<double> z_velocity;
+            reader.ReadElement(rank_path("/Vz"), z_velocity);
+
+            vector<vector<double>> tracers(res.tracerstickernames.first.size());
+
+            for(size_t n = 0; n < res.tracerstickernames.first.size(); ++n)
             {
-                const H5std_string name = g_stickers.getObjnameByIdx(n);
-                stickernames[n] = name;
-                stickers[n] = read_int_vector_from_hdf5(g_stickers, name);
+                std::string tracerName = res.tracerstickernames.first[n];
+                reader.ReadElement(rank_path("/tracers/" + tracerName), tracers[n]);
             }
-            res.tracerstickernames.first = tracernames;
-            res.tracerstickernames.second = stickernames;
+
+            vector<vector<int>> stickers(res.tracerstickernames.second.size());
+            for(size_t n = 0; n < res.tracerstickernames.second.size(); ++n)
+            {
+                std::string stickerName = res.tracerstickernames.second[n];
+                reader.ReadElement(rank_path("/stickers/" + stickerName), stickers[n]);
+            }
+
             res.cells.resize(density.size());
             for(size_t i = 0; i < res.cells.size(); ++i)
             {
@@ -104,32 +132,36 @@ Snapshot3D ReadSnapshot3DHelper(H5File &file, H5File &globalfile, Group &read_lo
                 res.cells.at(i).velocity.x = x_velocity.at(i);
                 res.cells.at(i).velocity.y = y_velocity.at(i);
                 res.cells.at(i).velocity.z = z_velocity.at(i);
-                for(size_t j = 0; j < tracernames.size(); ++j)
+                for(size_t j = 0; j < res.tracerstickernames.first.size(); ++j)
                 {
                     res.cells.at(i).tracers.at(j) = tracers.at(j).at(i);
                 }
-                for(size_t j = 0; j < stickernames.size(); ++j)
+                for(size_t j = 0; j < res.tracerstickernames.second.size(); ++j)
                 {
                     res.cells.at(i).stickers.at(j) = (stickers.at(j).at(i) == 1);
                 }
             }
             for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g)
             {
-                if(H5Lexists(read_location.getId(), ("Eg_" + std::to_string(g)).c_str(), H5P_DEFAULT ) > 0)
+                if(reader.Exists(rank_path("/Eg_" + std::to_string(g))))
                 {
-                    auto Eg_temp = read_double_vector_from_hdf5(read_location, "Eg_" + std::to_string(g));
-                     for(size_t i = 0; i < res.cells.size(); ++i)
+                    std::vector<double> Eg_temp;
+                    reader.ReadElement(rank_path("/Eg_" + std::to_string(g)), Eg_temp);
+                    for(size_t i = 0; i < res.cells.size(); ++i)
                         res.cells.at(i).Eg[g] = Eg_temp[i];
                 }
                 else
+                {
                     if(ENERGY_GROUPS_NUM > 1)
-                        throw UniversalError("Missing energy group Eg_" + std::to_string(g) + " in snapshot");
+                        throw std::runtime_error("Missing energy group Eg_" + std::to_string(g) + " in snapshot");
+                }
             }
         }
 
         // Volume
         {
-            const vector<double> volume = read_double_vector_from_hdf5(read_location, "Volume");
+            std::vector<double> volume;
+            reader.ReadElement(rank_path("/Volume"), volume);
             res.volumes = volume;
         }
     }
@@ -144,34 +176,49 @@ Snapshot3D ReadSnapshot3D(const string &fname
 #endif
 )
 {
-    H5File file(fname, H5F_ACC_RDONLY);
-    Group read_location = file.openGroup("/");
+    #ifdef RICH_MPI
+        int rank = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    #endif // RICH_MPI
+
+    HDF5Reader globalfile(fname);
+    
+    std::shared_ptr<HDF5Reader> reader = nullptr;
     bool good_open = true;
+    std::string rank_prefix;
+
     #ifdef RICH_MPI
         if(mpi_write)
         {
-            int rank = 0;
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            if(fake_rank >= 0)
+            int rank_to_read = (fake_rank >= 0)? fake_rank : rank;
+            std::string dirname = std::filesystem::path(fname).replace_extension("").string();
+            std::string rank_file = dirname + "/" + std::to_string(rank_to_read) + ".h5";
+            const std::string embedded_rank_group = "/rank" + std::to_string(rank_to_read);
+            if(std::filesystem::exists(rank_file))
             {
-                rank = fake_rank;
+                reader = std::make_shared<HDF5Reader>(rank_file);
             }
-            try
+            else if(globalfile.Exists(embedded_rank_group))
             {
-                read_location = file.openGroup("/rank" + std::to_string(rank));
+                reader = std::make_shared<HDF5Reader>(fname);
+                rank_prefix = embedded_rank_group;
             }
-            catch (Exception& notFoundError)
+            else
             {
+                rank_file = dirname + "/0.h5";
                 good_open = false;
-                read_location = file.openGroup("/rank" + std::to_string(0));
+                reader = std::make_shared<HDF5Reader>(rank_file);
             }
         }
-    #endif
+        else
+        {
+            reader = std::make_shared<HDF5Reader>(fname);
+        }
+    #else // RICH_MPI
+        reader = std::make_shared<HDF5Reader>(fname);
+    #endif // RICH_MPI
 
-    Snapshot3D res = ReadSnapshot3DHelper(file, file, read_location, good_open);
-
-    read_location.close();
-    file.close();
+    Snapshot3D res = ReadSnapshot3DHelper(*reader, globalfile, good_open, rank_prefix);
 
     return res;
 }
@@ -179,59 +226,25 @@ Snapshot3D ReadSnapshot3D(const string &fname
 #ifdef RICH_MPI
 Snapshot3D ReadSnapshot3DParallel(const string &fname, int fake_rank)
 {
-    std::filesystem::path input_directory = std::filesystem::path(fname).replace_extension("");
-    int rank = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    if(fake_rank >= 0)
-    {
-        rank = fake_rank;
-    }
-
-    H5File file(input_directory / std::to_string(rank) / ".h5", H5F_ACC_RDONLY);
-    Group read_location = file.openGroup("/");
-    H5File globalfile(fname, H5F_ACC_RDONLY);
-
-    Snapshot3D res = ReadSnapshot3DHelper(file, globalfile, read_location, true);
-
-    globalfile.close();
-    read_location.close();
-    file.close();
-
-    return res;
+    return ReadSnapshot3D(fname, true, fake_rank);
 }
 
-int suppress_stderr()
-{
-    int fd = dup(STDERR_FILENO);
-    freopen("/dev/null", "w", stderr);
-    return fd;
-}
-
-void restore_stderr(int fd)
-{
-    fflush(stderr);
-    dup2(fd, fileno(stderr));
-    close(fd);
-
-}
 rank_t GetNumberOfRanksInHDF(std::string const& fname)
 {
-    H5File file(fname, H5F_ACC_RDONLY);
+    HDF5Reader file(fname);
     int counter = 0;
-    int fd = suppress_stderr();
+    std::vector<std::string> groupNames = file.ReadGroupNames("/");
+    std::set<std::string> groupNamesSet(groupNames.cbegin(), groupNames.cend());
+
     while(true)
     {
-        try
+        if(groupNamesSet.find("rank" + std::to_string(counter)) == groupNamesSet.end())
         {
-            auto read_location = file.openGroup("/rank" + std::to_string(counter));
-            ++counter;
+            break;
         }
-        catch (Exception& notFoundError)
-        {
-            restore_stderr(fd);
-            return counter;
-        }
+        ++counter;
     }
+    return counter;
 }
 
 #endif // RICH_MPI

@@ -18,6 +18,8 @@
 #endif // TIMING
 
 #include "QueryAgent.hpp"
+#include "mpi/serialize/Serializer.hpp"
+#include "misc/universal_error.hpp"
 
 #define TAG_REQUEST 200
 #define TAG_RESPONSE 201
@@ -47,7 +49,7 @@ public:
 
 private:
     std::vector<MPI_Request> requests;
-    std::vector<std::vector<char>> buffers; // send buffers, so that they will not be allocated on the stack
+    std::vector<Serializer> buffers; // send buffers, so that they will not be allocated on the stack
     size_t receivedUntilNow; // number of answers I received until now
     size_t shouldReceiveInTotal; // number of answers I have to receive (to know when to finish)
     bool finishedMyQueries; // if finished to answer my queries
@@ -90,61 +92,45 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::receiveQueries(_queryBatchInfo &
     MPI_Message msg;
     MPI_Improbe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &msg, &status);
 
-    std::vector<char> buffer;
-
     while(receivedAnswer)
     {
         // received a message
         ++this->receivedUntilNow;
-
+        
         // prepare the reading buffer for receiving
         int count;
         MPI_Get_count(&status, MPI_BYTE, &count);
-        if(buffer.size() < static_cast<size_t>(count))
-        {
-            buffer.resize(count);
-        }
+        Serializer serializer;
+        serializer.resize(count);
 
-        // receive
-        MPI_Mrecv(&buffer[0], count, MPI_BYTE, &msg, MPI_STATUS_IGNORE);
-
-        // decode the message - id first, then length, then the data itself
+        MPI_Mrecv(serializer.getData(), serializer.size(), MPI_BYTE, &msg, MPI_STATUS_IGNORE);
+        
+        // decode message: first id, then result
         long int id;
-        long int length;
-
-        id = *reinterpret_cast<long int*>(buffer.data()); // decode id
-        length = *reinterpret_cast<long int*>(buffer.data() + sizeof(long int)); // decode length
-
+        size_t bytes = 0;
+        bytes += serializer.extract(id, bytes);
         if(id < 0 or static_cast<size_t>(id) >= queries.size())
         {
             UniversalError eo("BusyWaitQueryAgent::receiveQueries, id of answered query is illegal");
             eo.addEntry("Id", id);
             eo.addEntry("Expected range", "0-" + std::to_string(queries.size()));
-            eo.addEntry("Received Query", *reinterpret_cast<const QueryData*>(buffer.data()));
             throw eo;
         }
-        if(length > 0)
-        {
-            // insert the results to the data received by rank `status.MPI_SOURCE` and to the queries result
-            queries[id].finalResults.resize(queries[id].finalResults.size() + length);
+        
+        std::vector<AnswerType> result;
+        bytes += serializer.extract(result, bytes);
+        // std::cout << "Receiving response for id " << id << " (should receive in total is " << this->shouldReceiveInTotal << ", currently received: " << this->receivedUntilNow << ") - serializer size is " << serializer.size() << " bytes, result size is " << result.size() << " answers" << std::endl;
 
-            // base pointers to data
-            AnswerType* base = reinterpret_cast<AnswerType*>(buffer.data() + 2 * sizeof(long int));
-            for(size_t i = 0; i < static_cast<size_t>(length); i++)
-            {
-                queries[id].finalResults[i] = base[i];
-                batch.dataByRanks[status.MPI_SOURCE].emplace_back(base[i]);
-            }
-        }
-        else
+        size_t length = result.size();
+        // insert the results to the data received by rank `status.MPI_SOURCE` and to the queries result
+        queries[id].finalResults.resize(queries[id].finalResults.size() + length);
+
+        for(size_t i = 0; i < static_cast<size_t>(length); i++)
         {
-            if(length < 0)
-            {
-                UniversalError eo("In BusyWaitQueryAgent::receiveQueries, length of query is negative");
-                eo.addEntry("Length", length);
-                throw eo;
-            }
+            queries[id].finalResults[i] = result[i];
+            batch.dataByRanks[status.MPI_SOURCE].emplace_back(result[i]);
         }
+
         MPI_Improbe(MPI_ANY_SOURCE, TAG_RESPONSE, this->comm, &receivedAnswer, &msg, &status);
     }
 
@@ -165,45 +151,37 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::answerQueries()
     MPI_Message msg;
     MPI_Improbe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &msg, &status);
     
-    std::vector<char> arriveBuffer;
-
     // while arrived new messages, and we should answer until the end, or answer until a bound we haven't reached to
     while(arrivedNew != 0)
     {
+        Serializer queryRecvSerializer;
         int count;
         MPI_Get_count(&status, MPI_BYTE, &count);
-        if(arriveBuffer.size() < static_cast<size_t>(count))
+        queryRecvSerializer.resize(count);
+        
+        MPI_Mrecv(queryRecvSerializer.getData(), queryRecvSerializer.size(), MPI_BYTE, &msg, MPI_STATUS_IGNORE);
+        
+        std::vector<_subQueryData> queries;
+        size_t bytes = 0;
+        while(bytes < count)
         {
-            arriveBuffer.resize(count);
+            bytes += queryRecvSerializer.extract(queries.emplace_back(), bytes);
         }
-
-        MPI_Mrecv(&arriveBuffer[0], count, MPI_BYTE, &msg, MPI_STATUS_IGNORE);
-        int subQueries = count / sizeof(_subQueryData);
-        totalArrived += subQueries;
-        for(int i = 0; i < subQueries; i++)
+        // std::cout << "Resizing query recv serializer to " << count << " bytes for " << queries.size() << " queries" << std::endl;
+        totalArrived += queries.size();
+        for(const _subQueryData &query : queries)
         {
-            const _subQueryData &query = *reinterpret_cast<_subQueryData*>(&arriveBuffer[i * sizeof(_subQueryData)]);
+            // std::cout << "Answering query " << query.data << std::endl;
+
             // calculate the result
             std::vector<AnswerType> result = this->answerAgent->answer(query.data, status.MPI_SOURCE);
-            long int resultSize = static_cast<long int>(result.size());
 
-            this->buffers.push_back(std::vector<char>());
-            std::vector<char> &to_send = this->buffers.back();
-            size_t msg_size = 2 * sizeof(long int) + resultSize * sizeof(AnswerType);
-            to_send.resize(msg_size);
-
-            long int id = query.parent_id;
-
-           *reinterpret_cast<long int*>(to_send.data()) = id;
-           *reinterpret_cast<long int*>(to_send.data() + sizeof(long int)) = resultSize;
-
-            if(resultSize > 0)
-            {
-                AnswerType *toSendData = reinterpret_cast<AnswerType*>(to_send.data() + sizeof(id) + sizeof(resultSize));
-                std::memcpy(toSendData, result.data(), resultSize * sizeof(AnswerType));
-            }
+            Serializer &serializer = this->buffers.emplace_back();
+            serializer.insert(query.parent_id);
+            serializer.insert(result);
             this->requests.push_back(MPI_REQUEST_NULL);
-            MPI_Isend(&to_send[0], msg_size, MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, &this->requests.back());
+            // std::cout << "Sending response for id " << query.parent_id << " - serializer size is " << serializer.size() << " bytes, response size is " << result.size() << " answers" << std::endl;
+            MPI_Isend(serializer.getData(), serializer.size(), MPI_BYTE, status.MPI_SOURCE, TAG_RESPONSE, this->comm, &this->requests.back());
         }
         MPI_Improbe(MPI_ANY_SOURCE, TAG_REQUEST, this->comm, &arrivedNew, &msg, &status);
     }
@@ -227,18 +205,19 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::sendQuery(const _queryInfo &quer
             // send buffer
             this->flushBuffer(_rank);
         }
+
         bufferIdx = this->ranksBufferIdx[_rank];
         if(bufferIdx == UNDEFINED_BUFFER_IDX)
         {
             this->ranksBufferIdx[_rank] = this->buffers.size();
-            this->buffers.emplace_back(std::vector<char>());
-            this->buffers.back().reserve(sizeof(_subQueryData) * FLUSH_QUERIES_NUM);
+            this->buffers.emplace_back();
         }
         bufferIdx = this->ranksBufferIdx[_rank];
-        this->buffers[bufferIdx].resize(this->buffers[bufferIdx].size() + sizeof(_subQueryData));
-        _subQueryData &subQuery = *reinterpret_cast<_subQueryData*>(&(*(this->buffers[bufferIdx].end() - sizeof(_subQueryData))));
+        _subQueryData subQuery;
         subQuery.data = query.data;
         subQuery.parent_id = query.id;
+        Serializer &serializer = this->buffers[bufferIdx];
+        serializer.insert(subQuery);
         ++this->shouldReceiveInTotal;
     }
 }
@@ -251,11 +230,10 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::sendFinish(_queryBatchInfo &quer
         queriesBatch.receivedAllTime = std::chrono::duration_cast<std::chrono::duration<double>>(now - queriesBatch.beginClockTime).count();
     #endif // TIMING
 
-    int dummy;
     for(int _rank = 0; _rank < this->size; _rank++)
     {
         this->requests.push_back(MPI_REQUEST_NULL);
-        MPI_Isend(&dummy, 1, MPI_BYTE, _rank, TAG_FINISHED, this->comm, &this->requests.back());
+        MPI_Isend(NULL, 0, MPI_BYTE, _rank, TAG_FINISHED, this->comm, &this->requests.back());
     }
 }
 
@@ -267,8 +245,7 @@ int BusyWaitQueryAgent<QueryData, AnswerType>::checkForFinishMessages() const
     MPI_Iprobe(MPI_ANY_SOURCE, TAG_FINISHED, this->comm, &arrived, &status);
     if(arrived)
     {
-        int dummy = 0;
-        MPI_Recv(&dummy, 1, MPI_BYTE, MPI_ANY_SOURCE, TAG_FINISHED, this->comm, MPI_STATUS_IGNORE);
+        MPI_Recv(NULL, 0, MPI_BYTE, MPI_ANY_SOURCE, TAG_FINISHED, this->comm, MPI_STATUS_IGNORE);
         return 1;
     }
     return 0;
@@ -289,11 +266,12 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::flushBuffer(int _rank)
         return;
     }
 
-    std::vector<char> &buffer = this->buffers[bufferIdx];
-    if(buffer.size() > 0)
+    Serializer &serializer = this->buffers[bufferIdx];
+    if(serializer.size() > 0)
     {
         this->requests.push_back(MPI_REQUEST_NULL);
-        MPI_Isend(buffer.data(), buffer.size(), MPI_BYTE, _rank, TAG_REQUEST, this->comm, &this->requests.back());
+        // std::cout << "Sending serializer of size " << serializer.size() << " bytes to rank " << _rank << " for " << serializer.size() / sizeof(_subQueryData) << " queries (currently should receive: " << this->shouldReceiveInTotal << ")" << std::endl;
+        MPI_Isend(serializer.getData(), serializer.size(), MPI_BYTE, _rank, TAG_REQUEST, this->comm, &this->requests.back());
     }
     this->ranksBufferIdx[_rank] = UNDEFINED_BUFFER_IDX;
 }
@@ -321,7 +299,6 @@ void BusyWaitQueryAgent<QueryData, AnswerType>::rearrangeResult(_queryBatchInfo 
 template<typename QueryData, typename AnswerType>
 QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>::runBatch(const std::vector<QueryData> &queries)
 {
-
     this->receivedUntilNow = 0; // reset the receive counter
     this->shouldReceiveInTotal = 0; // reset the should-be-received counter
     for(std::vector<size_t> &_receivedDataFromRank : this->recvData)
@@ -375,7 +352,7 @@ QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>:
 
                 this->finishedMyQueries = true;
                 // if had several queries, but no communication was needed, send a finish message
-                if(this->shouldReceiveInTotal == 0)
+                if(this->shouldReceiveInTotal == this->receivedUntilNow)
                 {
                     this->sendFinish(queriesBatch);
                 }
@@ -401,9 +378,9 @@ QueryBatchInfo<QueryData, AnswerType> BusyWaitQueryAgent<QueryData, AnswerType>:
                     break;
                 default:
                     UniversalError eo("Received unrecognized tag in BusyWaitQueryAgent");
+                    eo.addEntry("Tag", status.MPI_TAG);
                     eo.addEntry("My rank", this->rank);
                     eo.addEntry("From whom", status.MPI_SOURCE);
-                    eo.addEntry("Tag", status.MPI_TAG);
                     throw eo;
             }
         }

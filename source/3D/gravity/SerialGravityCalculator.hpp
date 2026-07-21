@@ -2,7 +2,7 @@
 #define SERIAL_GRAVITY_CALCULATOR_HPP
 
 #include <vector>
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "GravityTree.hpp"
 
 class SerialGravityCalculator

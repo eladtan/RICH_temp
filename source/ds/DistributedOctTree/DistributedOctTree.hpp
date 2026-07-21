@@ -69,6 +69,9 @@ public:
 
     std::vector<std::vector<direction_t>> getRankDirections(int _rank) const;
 
+    template<typename U>
+    std::vector<rank_t> GetRanksOfPoint(const U &point) const;
+
     inline std::vector<const DistributedOctTreeNode*> getRankNodes(int _rank) const
     {
         return this->getValuesIf([](const DistributedOctTreeNode *node){return node->value.owners.empty();}, 
@@ -312,6 +315,19 @@ boost::container::flat_set<int> DistributedOctTree<T, max_ranks_per_leaf>::getIn
 
 template<typename T, int max_ranks_per_leaf>
 template<typename U>
+std::vector<rank_t> DistributedOctTree<T, max_ranks_per_leaf>::GetRanksOfPoint(const U &point) const
+{
+    const RankedValue &value = this->octTree->GetContainingNodeValue(point);
+    std::vector<rank_t> ranks;
+    for(const rank_t &rank : value.owners)
+    {
+        ranks.push_back(rank);
+    }
+    return ranks;
+}
+
+template<typename T, int max_ranks_per_leaf>
+template<typename U>
 std::vector<std::pair<typename T::coord_type, typename T::coord_type>> DistributedOctTree<T, max_ranks_per_leaf>::getClosestFurthestPointsByRanks(const U &point) const
 {
     const typename T::coord_type &maxVal = std::numeric_limits<typename T::coord_type>::max();
@@ -322,7 +338,10 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
 
     std::vector<const DistributedOctTreeNode*> nodes;
     nodes.reserve(this->getDepth() * CHILDREN);
-    nodes.push_back(this->octTree->getRoot());
+    if(this->octTree->getRoot() != nullptr)
+    {
+        nodes.push_back(this->octTree->getRoot());
+    }
 
     T closestPoint, furthestPoint;
     while(!nodes.empty())
@@ -330,15 +349,14 @@ std::vector<std::pair<typename T::coord_type, typename T::coord_type>> Distribut
         const DistributedOctTreeNode *node = nodes.back();
         nodes.pop_back();
 
-        if(node == nullptr)
-        {
-            continue;
-        }
         if(!node->isLeaf)
         {
             for(int i = 0; i < CHILDREN; i++)
             {
-                nodes.push_back(node->children[i]);
+                if(node->children[i] != nullptr)
+                {
+                    nodes.push_back(node->children[i]);
+                }
             }
             continue;
         }

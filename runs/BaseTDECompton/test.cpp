@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
@@ -41,10 +41,66 @@ namespace fs = std::filesystem;
 
 typedef std::array<double, 4> state_type;
 
-#define smooth_factor 0.6
+#define smooth_factor 0.5
+#define remove_center 1
 // #define hi_res 1
 namespace
 {
+	void RemoveCenter(HDSim3D& sim, double MBH, double Mstar, double Rstar,
+		EquationOfState const& eos, double beta)
+	{
+		double const Rt = Rstar * std::pow(MBH / Mstar, 0.333333333) / beta;
+		double const Vt = std::sqrt(2 * MBH / Rt);
+		double Rsmooth = std::max(Rt * 0.4, std::min(Rt - Rstar * 15, Rt * smooth_factor));
+		std::vector<Conserved3D> &extensives = sim.getExtensives();
+		std::vector<ComputationalCell3D> &cells = sim.getCells();
+		size_t const N = sim.getTesselation().GetPointNo();
+		for(size_t i = 0; i < N; ++i)
+		{
+			double R = fastabs(sim.getTesselation().GetCellCM(i));
+			if(R < Rsmooth)
+			{
+				double new_density = std::max(1e-20, cells[i].density * 0.8);
+				double density_ratio = cells[i].density / new_density;
+				double old_T = cells[i].temperature;
+				double new_T = std::min(1e7, std::max(1e4, cells[i].temperature * 0.8));
+				cells[i].tracers[2] *= cells[i].density;
+				cells[i].tracers[2] += cells[i].density - new_density;
+				cells[i].density = new_density;
+				cells[i].tracers[2] /= new_density;
+				cells[i].temperature = new_T;
+				double cell_v = fastabs(cells[i].velocity);
+				if(cell_v > Vt * 2)
+					cells[i].velocity *= 0.9;
+				else
+					if(R < Rsmooth * 0.95 && cell_v * Rsmooth > Vt * R * 0.8)
+						cells[i].velocity *=  R / (0.95 * Rsmooth);
+				cells[i].internal_energy = eos.dT2e(new_density, new_T, cells[i].tracers, ComputationalCell3D::tracerNames);
+				cells[i].pressure = eos.de2p(new_density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+				cells[i].tracers[0] = eos.dp2s(new_density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
+				double Erad_ratio = 1;//boost::math::pow<4>(new_T / old_T);
+				cells[i].Erad *= density_ratio * Erad_ratio;
+				for(size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+					cells[i].Eg[g] *= density_ratio * Erad_ratio;
+				cells[i].Erad_dt *= density_ratio * Erad_ratio;
+				cells[i].Erad_dt_dt *= density_ratio * Erad_ratio;
+				PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+			}
+			else 
+			{
+				if(R < std::min(Rt * 0.8, Rsmooth * 1.5) && cells[i].temperature > 1e9)
+				{
+					cells[i].temperature *= 0.8;
+					cells[i].internal_energy = eos.dT2e(cells[i].density, cells[i].temperature, cells[i].tracers, ComputationalCell3D::tracerNames);
+					cells[i].pressure = eos.de2p(cells[i].density, cells[i].internal_energy, cells[i].tracers, ComputationalCell3D::tracerNames);
+					cells[i].tracers[0] = eos.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
+					PrimitiveToConserved(cells[i], sim.getTesselation().GetVolume(i), extensives[i]);
+				}
+			}
+		}
+		MPI_exchange_data(sim.getTesselation(), cells, true);
+		MPI_exchange_data(sim.getTesselation(), extensives, true);
+	}
 	class DissipationDiag: public DiagnosticAppendix3D
 	{
 		private:
@@ -187,6 +243,7 @@ namespace
 					return std::string("divV");
 					break;
 			}
+			return std::string("Unknown");
 		}
 	};
 
@@ -394,7 +451,7 @@ namespace
 				T = T_.back();
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 				double const scattering = CalcScatteringCoefficientGroup(cell, group);
 				double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
@@ -402,7 +459,7 @@ namespace
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
@@ -450,12 +507,12 @@ namespace
 			double d_ratio = 1;
 			if(d < rho_[0])
 			{
-				d_ratio = std::exp(rho_[0]) / cell.density;
+				d_ratio = cell.density / std::exp(rho_[0]);
 				d = rho_[0];
 			}
 			if(d > rho_.back())
 			{
-				d_ratio = std::exp(rho_.back()) / cell.density;
+				d_ratio = cell.density / std::exp(rho_.back());
 				d = rho_.back();
 			}
 			if(T < T_[0])
@@ -482,6 +539,8 @@ namespace
 
 		std::pair<vector<size_t>, vector<Vector3D>> ToRefine(Tessellation3D const &tess, vector<ComputationalCell3D> const &cells, double time) const
 		{
+			int rank = 0;
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 			std::vector<std::vector<double>> maxr;
 			std::vector<std::vector<double>> phi;
 			std::vector<double> theta;
@@ -494,14 +553,28 @@ namespace
 			MaxMass *= 0.25;
 			min_cell_size *= std::pow(0.25, 0.33333);
 #endif
+#ifdef low_res
+			MaxMass *= 4;
+			min_cell_size *= std::pow(4.0, 0.33333);
+#endif
 			std::vector<size_t> neigh;
 			std::vector<double> volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
 			MPI_exchange_data(tess, volumes, true);
 #endif
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
-			double const apocenter_time = 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
-
+			// double const apocenter_time = std::pow(Mbh_ / 1e4, 0.166666) * 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
+			double rho_s = Mstar_ / (apocenter * apocenter * 10);
+			double rho_x = rho_s * 1e-6;
+			double target_volume = 4 * M_PI * std::pow(min_cell_size * 2, 3.0) / 3;
+			for (size_t i = 0; i < Norg; ++i)
+			{
+				if(tess.GetMeshPoint(i).x > 0.85 * Rt && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
+					rho_x = std::max(rho_x, cells[i].density);
+			}
+			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+			if(rank == 0)
+				std::cout << "rho_x = " << rho_x << std::endl;
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				if (fastabs(tess.GetCellCM(i) - tess.GetMeshPoint(i)) > (tess.GetWidth(i) * 0.15))
@@ -509,14 +582,21 @@ namespace
 				double r_dist = std::max(fastabs(tess.GetMeshPoint(i)), Rt * smooth_factor);
 				if (tess.GetWidth(i) < min_cell_size * (r_dist < (0.65 * Rt) ? smooth_factor / 0.6 : 1))
 					continue;
-				
-				if (r_dist < (1.5 * Rt) || r_dist > 0.75*apocenter)
+				double const z_abs = std::abs(tess.GetCellCM(i).z);
+				double V = tess.GetVolume(i);
+				bool first_refine = false;
+				if(cells[i].density < 1e-19 && r_dist < 0.5 * apocenter && r_dist > 0.6 * Rt && ((V > 0.01 * z_abs * z_abs * z_abs) || (z_abs < 20)))
+				{
+					if(V > 4*target_volume * std::max(1.0, std::pow(r_dist / Rt, 1.5)))
+						first_refine = true;
+				}
+				if ((r_dist < (1.5 * Rt) || r_dist > 3 * apocenter) && (not first_refine))
+					continue;
+				if (r_dist < (1.25 * Rt))
 					continue;
 
 				double MaxMass2 = (tess.GetMeshPoint(i).x > (-apocenter * 4.5)) ? MaxMass : MaxMass * 30;
-				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
-
-				double V = tess.GetVolume(i);
+				
 				tess.GetNeighbors(i, neigh);
 				size_t Nneigh = neigh.size();
 				bool good = true, good2 = false;
@@ -524,7 +604,7 @@ namespace
 				{
 					if (!tess.IsPointOutsideBox(neigh[j]))
 					{
-						if (fastabs(tess.GetCellCM(neigh[j]) - tess.GetMeshPoint(neigh[j])) > (0.09 * std::pow(volumes[neigh[j]], 0.33333333333)))
+						if (fastabs(tess.GetCellCM(neigh[j]) - tess.GetMeshPoint(neigh[j])) > (0.15 * std::pow(volumes[neigh[j]], 0.33333333333)))
 						{
 							good = false;
 							break;
@@ -539,6 +619,23 @@ namespace
 				{
 					res.push_back(i);
 					continue;
+				}
+				
+				if((r_dist < 1.25 * apocenter && cells[i].density > rho_x * 0.01))
+				{
+					if(V > std::min(200.0, target_volume * std::max(1.0, std::pow(0.5 * r_dist / Rt, 1.0))))
+					{
+						res.push_back(i);
+						continue;
+					}
+				}
+				if((r_dist < 0.5 * apocenter && ((V > 0.01 * z_abs * z_abs * z_abs) || (z_abs < 20))))
+				{
+					if(V > std::min(2000.0, target_volume * std::pow(r_dist / Rt, 1.5)))
+					{
+						res.push_back(i);
+						continue;
+					}
 				}
 				if ((V * cells[i].density) > (MaxMass2 * std::min(std::pow(0.05 * r_dist / Rt, 2.5), 1.0)) || V > domain_size_ * 1e-5)
 				{
@@ -582,34 +679,75 @@ namespace
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0) / beta_;
 			double const time_Rt = std::sqrt(Rt * Rt * Rt / Mbh_);
+			double const apocenter_time = std::sqrt(apocenter * apocenter * apocenter / Mbh_);
 			double min_cell_size = Rt * 1e-2;
-			double const apocenter_time = 1.25 * std::sqrt(apocenter * apocenter * apocenter / Mbh_);
-
-			double MaxMass = 3.5e-8 * Mstar_;
+			double rho_s = Mstar_ / (apocenter * apocenter * 10);
+			double rho_x = rho_s * 1e-6;
+			double MaxMass = 3.5e-8 * Mstar_ * std::min(1.0, std::pow(time / apocenter_time, 2.0));
 #ifdef hi_res
 			MaxMass *= 0.25;
 			min_cell_size *= std::pow(0.25, 0.33333);
 #endif
+#ifdef low_res
+			MaxMass *= 4;
+			min_cell_size *= std::pow(4.0, 0.33333);
+#endif
+			double target_volume = 4 * M_PI * std::pow(1.2 * min_cell_size, 3.0) / 3;
+			for (size_t i = 0; i < Norg; ++i)
+			{
+				if(tess.GetMeshPoint(i).x > Rt * 0.85 && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
+					rho_x = std::max(rho_x, cells[i].density);
+			}
+			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				bool good = true;
 				// Do we have little mass amount?
 				if (Norg < 500)
 					continue;
-				if(fastabs(tess.GetMeshPoint(i)) < 1.5 * Rt && tess.GetMeshPoint(i).x > 0.65 * Rt)
-					continue;
-				double Vol = tess.GetVolume(i);
-				double w = tess.GetWidth(i);
-				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 4.5) ? MaxMass : MaxMass * 30;
 				double const r_org = fastabs(tess.GetMeshPoint(i));
-				double r_i = std::max(Rt * smooth_factor, r_org);
-				MaxMass2 *= std::max(1e-1, std::min(1.0, std::pow(std::abs(time) / apocenter_time, 3.0)));
-				MaxMass2 = MaxMass2 * std::min(std::pow(0.05 * r_i / Rt, 2.5), 1.0);
-				double const dt = w / (eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers) + 0.5 * fastabs(cells[i].velocity));
-				double const in_factor = r_i < 0.65 * Rt ? smooth_factor / 0.6 : 1;
-				MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
-				if (Vol * cells[i].density > MaxMass2 && w > (in_factor * 0.75 * min_cell_size) && dt > (0.02 * time_Rt * in_factor))
+				double w = tess.GetWidth(i);
+				double Vol = tess.GetVolume(i);
+				if(cells[i].ID == 77958597)
+					std::cout<<"In AMR remove w = "<<w<<" min_cell_size = "<<min_cell_size<<" r_org = "<<r_org<<" Rt = "<<Rt<<std::endl;
+				if(w < 0.6 * min_cell_size || (w < 1.5 * min_cell_size && r_org < 0.7 * Rt))
+				{
+					res.push_back(i);
+					merits.push_back(1.0 / Vol);
 					continue;
+				}
+				if(cells[i].ID == 77958597)
+					std::cout<<"In AMR remove, not removed w = "<<w<<" min_cell_size = "<<min_cell_size<<" r_org = "<<r_org<<" Rt = "<<Rt<<std::endl;
+				if(r_org < 1.75 * Rt && r_org > 0.6 * Rt)
+					continue;
+				// if(r_org < 3 * Rt && cells[i].temperature < 1e7 && cells[i].velocity.x < -10)
+				//     continue;
+				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 4.5) ? MaxMass : MaxMass * 30;
+				double r_i = std::max(Rt * smooth_factor, r_org);
+				if(r_i < apocenter)
+					MaxMass2 = MaxMass2 * std::min(std::pow(0.05 * r_i / Rt, 2.5), 1.0);
+				double const dt = w / (eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers) + 0.3 * fastabs(cells[i].velocity));
+				double const in_factor = r_i < (0.65 * Rt) ? (smooth_factor / 0.6) : 1;
+				// MaxMass2 *= std::max(1.0, std::pow(r_i / r_org, 2.0));
+				if (Vol * cells[i].density > MaxMass2 && w > (in_factor * 0.25 * min_cell_size) && dt > (0.02 * time_Rt * in_factor))
+					continue;
+				// if(dt < (0.02 * time_Rt * in_factor))
+				// 	std::cout<<"Trying to remove cell "<<cells[i]<<" location "<<tess.GetMeshPoint(i)<<" dt "<<dt<<" time_Rt "<<time_Rt<<" in_factor "<<in_factor<<std::endl;
+				double const z_abs = std::abs(tess.GetCellCM(i).z);
+				if((r_i < 1.25 * apocenter && cells[i].density > rho_x * 0.01 && r_i > Rt))
+				{
+					if(Vol > std::min(50.0, target_volume * std::max(1.0, std::pow(0.5 * r_i / Rt, 1.0))))
+					{
+						continue;
+					}
+				}
+				if((r_i < 0.5 * apocenter && ((Vol > 0.01 * z_abs * z_abs * z_abs) || z_abs < 20)))
+				{
+					if(Vol > std::min(500.0, target_volume * std::pow(r_i / Rt, 1.5)))
+					{
+						continue;
+					}
+				}
 				if (Vol > domain_size_ * 0.5e-5)
 					continue;
 				// Make sure we are not that much bigger than smallest neighbor
@@ -618,7 +756,7 @@ namespace
 				for (size_t j = 0; j < Nneigh; ++j)
 				{
 					if (!tess.IsPointOutsideBox(neigh[j]))
-						if (volumes[neigh[j]] < Vol * 0.4)
+						if (volumes[neigh[j]] < Vol * 0.3)
 						{
 							good = false;
 							break;
@@ -946,13 +1084,17 @@ int main(void)
 #endif
 		cells = snap.cells;
 		ComputationalCell3D::tracerNames = snap.tracerstickernames.first;
+#ifdef remove_center
+		if(ComputationalCell3D::tracerNames.size() < 3)
+			ComputationalCell3D::tracerNames.push_back("WasRemoved");
+#endif
 	}
 	else
 	{
 		double startfactor = 3;
 		double fstart = -acos(2 * Rp / (startfactor * Rt) - 1);
 		tstart = 0.3333333 * sqrt(2 * Rp * Rp * Rp / Mbh) * tan(0.5 * fstart) * (3 + tan(0.5 * fstart) * tan(0.5 * fstart));
-		size_t const np = std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4));
+		size_t const np = std::max(1e6, std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4)));
 		vector<Vector3D> ptemp;
 		if(rank == 0)
 		{
@@ -986,6 +1128,7 @@ int main(void)
 		}
 		ComputationalCell3D::tracerNames.push_back("Entropy");
 		ComputationalCell3D::tracerNames.push_back("Star");
+		ComputationalCell3D::tracerNames.push_back("WasRemoved");
 	}
 	std::cout<<"Rank "<<rank<<" has "<<tess.GetPointNo()<<" points "<<" and "<<cells.size()<<" cells "<<std::endl;
 
@@ -1004,7 +1147,8 @@ int main(void)
 	bool const doppler_on = true;
 	bool const mixed_frame_on = false;
 	bool const protection_on = true;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, mixed_frame_on, 2000, protection_on);
+	bool const cooling_time_limiter_on = true;
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on, cooling_time_limiter_on);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -1030,9 +1174,9 @@ int main(void)
 	std::shared_ptr<ZeroForce3D> zero_force = std::make_shared<ZeroForce3D>();
 
 	forces.push_back(gravity_force);
-	forces.push_back(zero_force);
+	// forces.push_back(zero_force);
 	SeveralSources3D force(forces);
-	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (),	false);
+	CourantFriedrichsLewy tsf(0.3, 1, force, std::vector<std::string> (), false);
 
 	std::unique_ptr<HDSim3D> sim;
 	if(restart)
@@ -1055,7 +1199,7 @@ int main(void)
 	double mindt = 0.001;
 	double nextT = 0;
 	nextT = (t_restart < -20) ? sim->getTime() : t_restart;
-	nextT += std::min(8.0, mindt + 0.05 * std::pow(std::abs(sim->getTime()), 0.666666));
+	nextT += std::min(50.0, mindt + 0.2 * std::pow(std::abs(sim->getTime()), 0.666666));
 	nextT = std::max(nextT, sim->getTime() + 0.01);
 
 	RemoveBig remove(8 * width * width * width, eos, Mbh, M, R, beta);
@@ -1095,7 +1239,7 @@ int main(void)
 	double old_dt = init_dt;
 	double step_time = 0;
 	double const restart_wtime = 15000;
-	double const min_dt_output = 0.02 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
+	double const min_dt_output = 0.025 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
 	// if(not restart)
 	// {
 	// 	interp(tess, sim->getCells(), 0, dissipation.face_values);
@@ -1128,7 +1272,7 @@ int main(void)
 			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true);
 			if (rank == 0)
 				write_int(counter, counter_name);
-			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.1 * std::pow(std::abs(sim->getTime()), 0.666666));
+			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.2 * std::pow(std::abs(sim->getTime()), 0.666666));
 			++counter;
 			dissipation.face_values.clear();
 			dissipation.face_values.shrink_to_fit();
@@ -1155,23 +1299,38 @@ int main(void)
 			}
 			double step_tstart = MPI_Wtime();
 #endif
+#ifdef RICH_MPI
+			MPI_Barrier(MPI_COMM_WORLD);
+			double rad_start_time = MPI_Wtime();
+#endif
 			double new_dt = sim->RadiationTimeStep(old_dt, matrix_builder);
-			new_dt = std::max(2.01e-4, new_dt);
+#ifdef RICH_MPI
+			MPI_Barrier(MPI_COMM_WORLD);
+			double rad_end_time = MPI_Wtime();
+			if(rank == 0)
+				std::cout << "Radiation step time: " << rad_end_time - rad_start_time << std::endl;
+#endif
+			new_dt = std::min(5e-3, std::max(2.01e-4, new_dt));
 			// Prevent small time step
 			if(new_dt < 0.5 * old_dt)
 			    new_dt = 0.5 * old_dt;
+			new_dt = std::min(new_dt, 0.03);
 			tsf.SetTimeStep(new_dt);
 			if (rank == 0)
 				std::cout << "Finished rad step" << std::endl;
 			sim->timeAdvance2();
 			if (rank == 0)
 				std::cout << "Finished hydro step" << std::endl;
-			if (full_gravity && sim->getCycle() % 10 == 0)
+			if (full_gravity && sim->getCycle() % 5 == 0)
 			{
 				if(rank == 0)
 					std::cout<<"Doing AMR"<<std::endl;
 				amr(*sim);
 			}
+#ifdef remove_center
+			if(full_gravity)
+				RemoveCenter(*sim, Mbh, M, R, eos, beta);
+#endif
 			old_dt = sim->getTime() - old_t;
 			old_t = sim->getTime();
 			if(not full_gravity)

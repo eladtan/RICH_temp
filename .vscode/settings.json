@@ -80,7 +80,12 @@
         "charconv": "cpp",
         "source_location": "cpp",
         "regex": "cpp",
-        "shared_mutex": "cpp"
+        "shared_mutex": "cpp",
+        "format": "cpp",
+        "span": "cpp",
+        "stdfloat": "cpp",
+        "text_encoding": "cpp",
+        "ranges": "cpp"
     },
     "cmake.configureOnOpen": true,
 
@@ -95,6 +100,7 @@
     "explorer.confirmDelete": false,
     "workbench.editor.closeOnFileDelete": true,
     "workbench.colorTheme": "Atom One Dark",
+    "remote.SSH.reconnectOnTimeout": false,
 
     "editor.tokenColorCustomizations": {
         "textMateRules": [
@@ -197,5 +203,7 @@
         "**/.vscode": true,
         "**/.vs": true
     },
-    "cmake.sourceDirectory": "RICH/source"
+    "cmake.sourceDirectory": "RICH/source",
+    "tabnine.cloudHost": "https://console.tabnine.com",
+    "makefile.configureOnOpen": true
 }

@@ -1,4 +1,4 @@
-#include "source/3D/tesselation/voronoi/Voronoi3D.hpp"
+#include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/SeveralSources3D.hpp"
@@ -45,9 +45,9 @@ namespace fs = std::filesystem;
 typedef std::array<double, 4> state_type;
 
 #define smooth_factor 0.6
-// #define hi_res 1
+#define hi_res 1
 // #define low_res 1
-#define remove_center 1
+// #define remove_center 1
 namespace
 {
 	void RemoveCenter(HDSim3D& sim, double MBH, double Mstar, double Rstar,
@@ -752,8 +752,8 @@ namespace
 				}
 				if(r_org < 1.75 * Rt && r_org > 0.6 * Rt)
 					continue;
-				if(r_org < 3 * Rt && cells[i].temperature < 1e7 && cells[i].velocity.x < -10)
-					continue;
+				// if(r_org < 3 * Rt && cells[i].temperature < 1e7 && cells[i].velocity.x < -10)
+				//     continue;
 				double MaxMass2 = (tess.GetMeshPoint(i).x > -apocenter * 4.5) ? MaxMass : MaxMass * 30;
 				double r_i = std::max(Rt * smooth_factor, r_org);
 				if(r_i < apocenter)
@@ -976,9 +976,9 @@ int main(void)
 
 	ss<<"NewAMR";
 
-#ifdef remove_center
-	ss<<"RemoveCenter";
-#endif
+// #ifdef remove_center
+// 	ss<<"RemoveCenter";
+// #endif
 
 	if(rank == 0)
 		std::cout<<"Creating directory "<<ss.str()<<std::endl;
@@ -1188,6 +1188,7 @@ int main(void)
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
+	
 
 	// std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
 	DefaultCellUpdater cu(false, 0, true, 2000, &matrix_builder);
@@ -1276,7 +1277,7 @@ int main(void)
 	double old_dt = init_dt;
 	double step_time = 0;
 	double const restart_wtime = 15000;
-	double const min_dt_output = 0.02 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
+	double const min_dt_output = 0.05 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
 	// if(not restart)
 	// {
 	// 	interp(tess, sim->getCells(), 0, dissipation.face_values);
@@ -1309,7 +1310,7 @@ int main(void)
 			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true);
 			if (rank == 0)
 				write_int(counter, counter_name);
-			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.1 * std::pow(std::abs(sim->getTime()), 0.666666));
+			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.2 * std::pow(std::abs(sim->getTime()), 0.666666));
 			++counter;
 			dissipation.face_values.clear();
 			dissipation.face_values.shrink_to_fit();

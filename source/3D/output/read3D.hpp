@@ -2,9 +2,10 @@
 #define OUTPUT_READ_3D_HPP
 
 #include <filesystem>
-#include "read_utils.hpp"
+#include <set>
 #include "Snapshot3D.hpp"
-#include "3D/tesselation/voronoi/Voronoi3D.hpp" // includes Tessellation3D as well
+#include "3D/tessellation/voronoi/Voronoi3D.hpp" // includes Tessellation3D as well
+#include "utils/hdf5/HDF5Reader.hpp"
 
 #if RICH_MPI
 /*! \brief Load snapshot data into memory

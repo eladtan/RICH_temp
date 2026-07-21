@@ -2,7 +2,7 @@
 #define HYDRO_ADVANCE_UTILS_HPP
 
 #include <chrono>
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 
 void MovePoints(Tessellation3D& tess, std::vector<Vector3D> const& point_vel, double const dt);

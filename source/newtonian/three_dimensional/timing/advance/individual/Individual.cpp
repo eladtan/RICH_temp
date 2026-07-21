@@ -3,7 +3,7 @@
 #include "Individual.hpp"
 
 #include "mpi/mpi_exchange_commands.hpp"
-#include "3D/tesselation/mpi_exchange.hpp"
+#include "3D/tessellation/mpi_exchange.hpp"
 
 IndividualTimeStep::IndividualTimeStep(HydroTimeAdvance &hydroAdvance, const PointMotion3D &pm, dt_t currentTime):
     TimeStep(hydroAdvance, pm, currentTime)

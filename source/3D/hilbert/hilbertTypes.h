@@ -3,9 +3,9 @@
 
 #include <iostream>
 #include <cmath>
-#include "utils/point/3DPoint.hpp"
+#include "3D/tessellation/loadBalancing/CurveLoadBalancer.hpp"
 
-typedef double coord_t;
-typedef unsigned long int hilbert_index_t;
+using hilbert_index_t = curve_index_t;
+using coord_t = double;
 
 #endif // _HILBERT_TYPES_H

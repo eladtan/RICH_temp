@@ -11,41 +11,35 @@ class HilbertTreeEnvironmentAgent : public HilbertCurveEnvironmentAgent
 public:
     using HilbertTree_Type = HilbertTree3D<DEFAULT_RANKS_IN_LEAVES>;
 
-    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::vector<Vector3D> &points, const std::vector<hilbert_index_t> &ranges, HilbertConvertor3D *convertor, const MPI_Comm &comm = MPI_COMM_WORLD): 
-            HilbertCurveEnvironmentAgent(ll, ur, ranges, convertor, comm)
+    inline HilbertTreeEnvironmentAgent(const Vector3D &ll, const Vector3D &ur, const std::shared_ptr<HilbertLoadBalancer> loadBalancer, const MPI_Comm &comm = MPI_COMM_WORLD): 
+            HilbertCurveEnvironmentAgent(ll, ur, loadBalancer, comm)
     {
-        this->rectangularConvertor = dynamic_cast<HilbertRectangularConvertor3D*>(this->convertor);
-        if(this->rectangularConvertor == nullptr)
-        {
-            throw UniversalError("'HilbertTreeEnvironmentAgent' should be initialized with a rectangular hilbert convertor");
-        }
-
-        this->hilbertTree = new HilbertTree_Type(this->rectangularConvertor, this->range, this->comm);
+        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
     };
 
     inline ~HilbertTreeEnvironmentAgent() override
+    {};
+
+    inline std::shared_ptr<HilbertCurveEnvironmentAgent> clone(const std::shared_ptr<HilbertLoadBalancer> newLoadBalancer) const override
     {
-        delete this->hilbertTree;
-    };
+        return std::make_shared<HilbertTreeEnvironmentAgent>(this->ll, this->ur, newLoadBalancer, this->comm);
+    }
 
     inline EnvironmentAgent::RanksSet getIntersectingRanks(const Vector3D &center, double radius) const override
     {
         return this->hilbertTree->getIntersectingRanks(center, radius);
     };
 
-    inline void updatePoints(const std::vector<Vector3D> &newPoints) override
+    inline void onExchange(const std::vector<Vector3D> &newPoints) override
     {
-        this->HilbertCurveEnvironmentAgent::updatePoints(newPoints);
+        this->HilbertCurveEnvironmentAgent::onExchange(newPoints);
     }
     
-    inline void updateBorders(const std::vector<hilbert_index_t> &newRange, int newOrder) override
+    inline void onRebalance(void) override
     {
-        this->HilbertCurveEnvironmentAgent::updateBorders(newRange, newOrder);
-        delete this->hilbertTree;
-        this->hilbertTree = new HilbertTree_Type(this->rectangularConvertor, this->range, this->comm);
+        this->HilbertCurveEnvironmentAgent::onRebalance();
+        this->hilbertTree = std::make_shared<HilbertTree_Type>(dynamic_cast<const HilbertRectangularConvertor3D*>(this->loadBalancer->convertor.get()), this->loadBalancer->boundaries, this->comm);
     }
-
-    inline int getOrder() const{return this->order;};
     
     template<typename U>
     inline HilbertCurveEnvironmentAgent::DistancesVector getClosestFurthestPointsByRanks(const U &point) const
@@ -53,11 +47,10 @@ public:
         return this->hilbertTree->getClosestFurthestPointsByRanks(point);
     }
 
-    inline const HilbertTree_Type *getHilbertTree() const{return this->hilbertTree;};
+    inline const std::shared_ptr<HilbertTree_Type> &getHilbertTree() const{return this->hilbertTree;};
 
 private:
-    const HilbertTree_Type *hilbertTree;
-    HilbertRectangularConvertor3D *rectangularConvertor;
+    std::shared_ptr<HilbertTree_Type> hilbertTree;
 };
 
 #endif // RICH_MPI

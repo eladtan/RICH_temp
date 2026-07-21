@@ -6,7 +6,7 @@
 #ifndef SPATIAL_RECONSTRUCTION3D_HPP
 #define SPATIAL_RECONSTRUCTION3D_HPP 1
 
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "../three_dimensional/computational_cell.hpp"
 
 using std::pair;

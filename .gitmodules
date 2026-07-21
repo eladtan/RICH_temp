@@ -1,15 +1,9 @@
-[submodule "compilation/buildutils"]
-	path = compilation/buildutils
-	url = git@gitlab.com:nadavhalahmi/buildutils.git
-[submodule "source/opt/r3d"]
-	path = source/opt/r3d
-	url = git@github.com:maormizrachi/r3d_rich
 [submodule "source/opt/vcl"]
 	path = source/opt/vcl
 	url = git@github.com:maormizrachi/vcl_rich.git
-[submodule "analysis_files /radiative_shock"]
-	path = analysis_files/radiative_shock
-	url = git@gitlab.com:menikrief/radiative_shock.git
 [submodule "source/Radiation/CMMC"]
 	path = source/Radiation/CMMC
 	url = git@github.com:menahemkrief/CMMC.git
+[submodule "source/utils/hdf5"]
+	path = source/utils/hdf5
+	url = git@github.com:maormizrachi/EasyHDF5.git

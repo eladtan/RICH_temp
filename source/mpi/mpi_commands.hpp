@@ -1,6 +1,8 @@
 #ifndef MPI_COMMANDS_HPP
 #define MPI_COMMANDS_HPP 1
 
+using rank_t = int;
+
 #ifdef RICH_MPI
 
 #include <vector>
@@ -8,19 +10,17 @@
 #include <mpi.h>
 #include <functional>
 #include "misc/utils.hpp"
-#include "3D/tesselation/Tessellation3D.hpp"
+#include "3D/tessellation/Tessellation3D.hpp"
 #include "mpi/serialize/Serializer.hpp"
 #include "stdint.h"
 
 #define MPI_TIMED_BARRIER_TAG 110503
 #define MPI_EXCHANGE_TAG 5
 
-using rank_t = int;
-
 using std::vector;
 
 template<typename T, typename Index_T = size_t>
-std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>& correspondents, const std::vector<T>& data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
+std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t> &correspondents, const std::vector<T> &data, const std::vector<std::vector<Index_T>> &indices = std::vector<std::vector<Index_T>>(), const size_t &extent = 1)
 {
 	std::vector<MPI_Request> req(correspondents.size());
 	std::vector<Serializer> senders(correspondents.size());
@@ -41,6 +41,7 @@ std::vector<std::vector<T>> MPI_exchange_data_indexed(const std::vector<rank_t>&
 		if(location >= correspondents.size())
 		{
 			UniversalError eo("Bad location in mpi exchange");
+			eo.addEntry("Type", typeid(T).name());
 			eo.addEntry("Location (Index)", location);
 			eo.addEntry("Correspondents.size()", correspondents.size());
 			throw eo;
@@ -83,6 +84,7 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 		if(location >= correspondents.size())
 		{
 			UniversalError eo("Bad location in mpi exchange");
+			eo.addEntry("Type", typeid(T).name());
 			eo.addEntry("Location (Index)", location);
 			eo.addEntry("Correspondents.size()", correspondents.size());
 			throw eo;
@@ -101,6 +103,61 @@ std::vector<std::vector<T>> MPI_exchange_data(const std::vector<rank_t>& corresp
 	}
 	MPI_Barrier(MPI_COMM_WORLD);
 	return result;
+}
+
+template<typename T>
+std::pair<rank_t, T> MPI_Minmax_loc(const T &data, const MPI_Comm &comm, bool max)
+{
+	rank_t rank;
+	MPI_Comm_rank(comm, &rank);
+
+	MPI_Datatype dtype;
+	if constexpr(std::is_same_v<T, double>)
+	{
+		dtype = MPI_DOUBLE_INT;
+	}
+	else if constexpr(std::is_same_v<T, int>)
+	{
+		dtype = MPI_2INT;
+	}
+	else
+	{
+		UniversalError eo("Unsupported type for MPI_Minmax_loc");
+		eo.addEntry("Type", typeid(T).name());
+		throw eo;
+	}
+	struct
+	{
+		T value;
+		rank_t rank;
+	} myVal = {data, rank}, outVal;
+	MPI_Allreduce(&myVal, &outVal, 1, dtype, max ? MPI_MAXLOC : MPI_MINLOC, comm);
+	return std::make_pair(outVal.rank, outVal.value);
+}
+
+template<typename T>
+std::pair<rank_t, T> MPI_Max_loc(const T &data, const MPI_Comm &comm = MPI_COMM_WORLD)
+{
+	return MPI_Minmax_loc(data, comm, true);
+}
+
+template<typename T>
+std::pair<rank_t, T> MPI_Min_loc(const T &data, const MPI_Comm &comm = MPI_COMM_WORLD)
+{
+	return MPI_Minmax_loc(data, comm, false);
+}
+
+
+template<typename T>
+std::pair<rank_t, T> MPI_Max_loc(const std::vector<T> &data, const MPI_Comm &comm = MPI_COMM_WORLD)
+{
+	return MPI_Minmax_loc(data.empty()? std::numeric_limits<T>::lowest() : *std::max_element(data.begin(), data.end()), comm, true);
+}
+
+template<typename T>
+std::pair<rank_t, T> MPI_Min_loc(const std::vector<T> &data, const MPI_Comm &comm = MPI_COMM_WORLD)
+{
+	return MPI_Minmax_loc(data.empty()? std::numeric_limits<T>::max() : *std::min_element(data.begin(), data.end()), comm, false);
 }
 
 #include "mpi_commands_2d.hpp"
