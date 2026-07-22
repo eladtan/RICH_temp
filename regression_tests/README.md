@@ -12,8 +12,10 @@ RICH uses the THUNDER submodule as its regression runner:
 
 Tests are discovered automatically. Any directory below the roots in
 [`config.json`](config.json) containing a `REGRESSION_INFO` file is a test.
-RICH cases live below `regression_tests/cases`; embedded STORM examples are
-also discovered below `source/monte/examples`.
+RICH cases live below `regression_tests/cases`. STORM tests are discovered
+recursively through the subproject configuration referenced by
+[`config.json`](config.json), so RICH does not duplicate STORM's test roots,
+build commands, or check-library settings.
 
 The metadata file is the only test registration required. Project-specific
 build mappings, profiles, test roots, and check libraries are defined in
