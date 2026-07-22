@@ -1428,58 +1428,6 @@ $T_{\mathrm{gas}}$ $L_1$ [keV] & 1.62079351e-02 & 0.05 & {\color{green!60!black}
 \section{Moving Slab MC Benchmark}
 \label{sec:moving_slab}
 
-\subsection{Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)}
-\label{sec:moving_slab_mc}
-
-\subsubsection*{Description}
-Frequency-dependent moving slab benchmark from McClarren \& Gentile (2021), original vacuum variant. A slab of aluminum ($\rho = 0.1$~g/cm$^3$, $L = 0.4$~cm, $T = 1$~keV) moves at $v = 0.5994$~cm/ns ($\approx 2\%$ of $c$) toward a stationary observer at $z_O = 12$~cm. The 124-group opacity table from the 2026 paper is used. At $t_O = 10$~ns the per-group radiation energy density spectrum at the observer is compared to the semi-analytic solution.
-
-\textbf{Code and physics aspects verified:}
-\begin{itemize}
-  \item \textbf{Material motion corrections:} Doppler shift and relativistic path-length modification $L/(\mu - \beta)$.
-  \item \textbf{Lagrangian mesh rebuild:} Manual mesh point translation and Voronoi rebuild each time step.
-  \item \textbf{Multigroup opacity:} 124-group frequency-dependent absorption with thermal emission.
-  \item \textbf{Transparent boundary tally:} Tallying escaping photons at the observer plane.
-\end{itemize}
-
-\subsubsection*{Initial Conditions}
-80 mesh points (20 slab + 60 vacuum), $x \in [0,\,12.1]$~cm, $\rho_{\mathrm{slab}} = 0.1$~g/cm$^3$, $T_{\mathrm{slab}} = 1$~keV, $v_{\mathrm{slab}} = 0.5994$~cm/ns, 124 energy groups from 1~eV to 30~keV, $t_O = 10$~ns, adaptive $\Delta t$ from $10^{-3}$ to $0.1$~ns.
-
-\subsubsection*{Boundary Conditions}
-Left: rigid (reflective). Right: transparent (photon tally at $x = z_O$). Transverse (y,z): rigid.
-
-\subsubsection*{Mesh Movement}
-Manual Lagrangian rebuild: slab mesh points translate at $v_{\mathrm{slab}}$ each step, vacuum points fixed, Voronoi rebuilt, cell properties re-prescribed analytically.
-
-\subsubsection*{Execution}
-Serial (local).
-
-\subsubsection*{Pass Criteria}
-Energy-weighted fractional error (Eq.~20 of the 2026 paper) must be $\le 0.30$.
-
-\subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Energy-weighted $f$-error & 1.90847928e-02 & 0.30 & {\color{green!60!black}PASS} \\
-Rel. $L_1$ & 1.92664603e-02 & -- & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{cases/moving_slab_mc/moving_slab_mc_comparison.pdf}
-  \caption{Moving slab MC benchmark: MC simulation (circles) vs.\ semi-analytic solution (solid line). Log-log plot of per-group radiation energy density.}
-  \label{fig:moving_slab_mc}
-\end{figure}
-
-\newpage
-
 \subsection{Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)}
 \label{sec:moving_slab_mc_32}
 
