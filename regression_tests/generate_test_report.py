@@ -317,6 +317,587 @@ TESTS = [
         ),
     },
     {
+        "id": "amr_random",
+        "title": "AMR Random Refine/Coarsen Consistency",
+        "description": (
+            "This test checks that adaptive mesh refinement (AMR) operations "
+            "(random cell splitting and merging) preserve the hydrodynamic state "
+            "of a uniform gas at rest. Any drift from the baseline indicates a "
+            "conservation or interpolation bug in the AMR machinery.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Cell refinement (splitting):} When a Voronoi cell "
+            "is refined, the parent cell's conserved quantities (mass, momentum, "
+            "energy) must be exactly partitioned among the children. The test "
+            "verifies that the volume-weighted interpolation and the geometric "
+            "insertion of new seed points are correct.\n"
+            "  \\item \\textbf{Cell coarsening (merging):} When cells are merged, "
+            "the reverse operation must exactly recover the combined conserved "
+            "quantities. Errors here would cause mass or energy to be created or "
+            "destroyed.\n"
+            "  \\item \\textbf{Voronoi re-tessellation:} After adding or removing "
+            "seed points, the tessellation must be rebuilt consistently. "
+            "Cell volumes, face areas, and neighbour connectivity must all be "
+            "updated without introducing geometric artefacts.\n"
+            "  \\item \\textbf{MPI consistency:} In the parallel variant, cells "
+            "near processor boundaries may be refined or coarsened while their "
+            "ghost copies reside on a different rank. The test checks that "
+            "cross-rank AMR operations maintain consistency.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} AMR is a critical capability for production "
+            "simulations that need to resolve local features (shocks, contact "
+            "discontinuities, collapse regions) without paying the cost of a "
+            "globally fine mesh. Because AMR touches the deepest layers of the "
+            "data structures---cell connectivity, conserved-variable storage, "
+            "MPI communication patterns---even small bugs can cause silent "
+            "conservation errors that accumulate over thousands of time steps. "
+            "A uniform-gas test is the most stringent check: the answer must be "
+            "exactly unchanged to machine precision."
+        ),
+        "initial_conditions": (
+            r"The domain is a cube $[-1,\,1]^3$ with a Voronoi tessellation from "
+            r"random points. The gas is uniform and at rest: $\rho = 1$, "
+            r"$e_{\mathrm{int}} = 2.5$, $\mathbf{v} = 0$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": (
+            "Lagrangian with cell rounding. AMR randomly refines and coarsens cells "
+            "during the simulation."
+        ),
+        "execution": (
+            "Both serial and MPI. Serial: 1~CPU, direct execution. "
+            "MPI: 64~CPUs via SLURM (partition \\texttt{bigrun}, exclusive)."
+        ),
+        "pass_criteria": (
+            r"After AMR operations, the maximum relative drift in density, "
+            r"internal energy, pressure, and velocity must stay small:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item Serial: $\texttt{max\_drift} \le 10^{-8}$." "\n"
+            r"  \item MPI: $\texttt{max\_drift} \le 10^{-6}$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "voronoi_volume",
+        "title": "Voronoi Volume Conservation",
+        "description": (
+            "A pure-geometry test that verifies the Voronoi tessellation correctly "
+            "partitions the domain. The sum of all cell volumes must match the "
+            "known analytical box volume to machine precision.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Voronoi geometry kernel:} The convex-hull and "
+            "face-clipping algorithms that compute each cell's vertices, faces, "
+            "and volume are tested end-to-end. A bug in vertex computation or "
+            "face orientation would cause the total volume to deviate from the "
+            "box volume.\n"
+            "  \\item \\textbf{Boundary handling:} Cells adjacent to the domain "
+            "boundary are clipped against the bounding box. Correct clipping is "
+            "essential for volume conservation and for imposing boundary "
+            "conditions in production simulations.\n"
+            "  \\item \\textbf{Parallel tessellation:} In the MPI variant, each "
+            "rank builds a local Voronoi diagram with ghost layers from "
+            "neighbouring ranks. The sum of all local volumes must still equal "
+            "the global box volume, verifying that no gaps or overlaps exist at "
+            "processor boundaries.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} The Voronoi tessellation is the geometric "
+            "foundation of the entire code. Every flux calculation, gradient "
+            "reconstruction, and cell-centred update depends on correct cell "
+            "volumes and face areas. This test catches low-level geometric bugs "
+            "(floating-point degeneracies, clipping errors, parallel "
+            "inconsistencies) that would otherwise manifest as mysterious "
+            "conservation violations in physics simulations. It is also extremely "
+            "cheap to run, making it ideal as a first-line diagnostic."
+        ),
+        "initial_conditions": (
+            r"The domain is a unit cube $[0,\,1]^3$ filled with a Voronoi "
+            r"tessellation from random points. No hydrodynamics or time evolution "
+            r"is performed."
+        ),
+        "boundary_conditions": "Rigid walls (domain boundary).",
+        "mesh_movement": "Static (no time evolution).",
+        "execution": (
+            "Both serial and MPI. Serial: 1~CPU, direct execution. "
+            "MPI: 64~CPUs via SLURM (partition \\texttt{bigrun}, exclusive)."
+        ),
+        "pass_criteria": (
+            r"The relative volume error must be negligible:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item $\texttt{rel\_error} = |V_{\mathrm{total}} - V_{\mathrm{box}}|"
+            r" / V_{\mathrm{box}} < 10^{-10}$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": [],
+        "plot_caption": "",
+    },
+    {
+        "id": "lane_self_gravity",
+        "title": "Lane--Emden Self-Gravity Equilibrium",
+        "description": (
+            "This test initializes a polytropic star in hydrostatic equilibrium "
+            "according to the Lane--Emden equation \\cite{chandrasekhar1939,lane1870} "
+            "(polytropic index $n = 1.5$) "
+            "and evolves it with self-gravity. The density profile should remain "
+            "close to the analytical solution. This is a standard benchmark for "
+            "codes coupling hydrodynamics and Newtonian gravity.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Self-gravity solver:} The Newtonian gravitational "
+            "potential and its gradient must be computed accurately enough that "
+            "the gravitational acceleration balances the pressure gradient, "
+            "maintaining hydrostatic equilibrium. Errors in the gravity solver "
+            "would cause the star to spuriously expand or collapse.\n"
+            "  \\item \\textbf{Hydrostatic balance on an unstructured mesh:} "
+            "Maintaining a static equilibrium with steep density gradients on a "
+            "Voronoi mesh is challenging. The pressure-gradient reconstruction "
+            "and the gravity-source coupling must be well-balanced to avoid "
+            "generating spurious velocities.\n"
+            "  \\item \\textbf{Spherical geometry on a Cartesian domain:} The "
+            "spherical star is embedded in a Cartesian bounding box. The test "
+            "checks that the boundary between the star's interior and the "
+            "low-density exterior is handled cleanly.\n"
+            "  \\item \\textbf{Conservation under long-time evolution:} The "
+            "simulation runs for multiple dynamical times. Slow drifts in total "
+            "energy or mass, or gradual distortion of the density profile, "
+            "would indicate conservation or well-balancing defects.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Self-gravity is essential for astrophysical "
+            "applications (star formation, stellar structure, compact-object "
+            "mergers). The Lane--Emden equilibrium is one of the few "
+            "configurations with an analytical density profile, making it "
+            "invaluable for verifying the gravity module. It is also a "
+            "sensitive test of the code's ability to maintain a static "
+            "equilibrium---a prerequisite for reliable long-duration "
+            "simulations of gravitationally bound systems."
+        ),
+        "initial_conditions": (
+            r"A sphere of mass $M = 2\times10^{33}\;\mathrm{g}$ and radius "
+            r"$R = 7\times10^{10}\;\mathrm{cm}$ is set up with the Lane--Emden "
+            r"density profile (read from tabulated data files "
+            r"\texttt{data/xsi32.txt} and \texttt{data/theta32.txt}). "
+            r"The gravitational constant is $G = 6.674\times10^{-8}\;\mathrm{cgs}$. "
+            r"The Voronoi mesh uses stratified random sampling inside the sphere."
+        ),
+        "boundary_conditions": "Rigid walls at the outer boundary.",
+        "mesh_movement": "Lagrangian with cell rounding. Gravity via a conservative force module.",
+        "execution": "MPI, 64~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"The volume-weighted average density error vs.\ the analytical "
+            r"Lane--Emden profile must satisfy:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item $|\texttt{final\_metric}| = "
+            r"\frac{\sum |\rho_{\mathrm{num}} - \rho_{\mathrm{analytic}}|\,V}"
+            r"{\sum V} < 4\times10^{-2}$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": ["lane_self_gravity.png"],
+        "plot_caption": (
+            "Lane--Emden self-gravity: numerical density profile (black dots) "
+            "vs.\\ the analytical Lane--Emden solution (red line) as a function "
+            "of radius."
+        ),
+    },
+    {
+        "id": "mach2_diffusion",
+        "title": "Mach~2 Radiative Shock -- Gray Diffusion",
+        "description": (
+            "A Mach~2 radiative shock with gray (single-group) flux-limited "
+            "diffusion \\cite{lowrie2008,lowrie1999}. Radiative shocks exhibit a "
+            "rich structure including a precursor region where radiation preheats "
+            "the upstream material and a relaxation zone behind the shock "
+            "\\cite{mihalas1984,zel2002}. "
+            "The numerical profiles are compared to the NLTE "
+            "analytical solution for density, gas temperature, and radiation "
+            "temperature.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Radiation--hydrodynamics coupling:} This is the "
+            "first test in the suite that couples radiation transport and "
+            "hydrodynamics in a non-trivial flow. The radiation precursor heats "
+            "the upstream gas before the shock arrives, modifying the shock "
+            "structure. Getting both the precursor length and the post-shock "
+            "relaxation zone correct requires accurate coupling between the "
+            "radiation and hydro solvers.\n"
+            "  \\item \\textbf{Flux-limited diffusion:} The gray radiation "
+            "diffusion equation with a flux limiter must transition smoothly "
+            "between the diffusion regime (optically thick) and the "
+            "free-streaming regime (optically thin). The flux limiter is "
+            "critical for preventing superluminal radiation transport.\n"
+            "  \\item \\textbf{Implicit radiation solve:} The radiation "
+            "diffusion equation is solved implicitly. The linear solver, "
+            "matrix assembly, and convergence criteria are all exercised.\n"
+            "  \\item \\textbf{Non-equilibrium radiation:} The gas and radiation "
+            "temperatures differ throughout the precursor and relaxation regions "
+            "($T_{\\mathrm{gas}} \\neq T_{\\mathrm{rad}}$). The test verifies "
+            "that the code correctly handles non-equilibrium conditions and "
+            "evolves toward the correct downstream equilibrium.\n"
+            "  \\item \\textbf{Steady-state shock structure:} The simulation "
+            "must reach a steady state in the shock frame, requiring correct "
+            "inflow boundary conditions and long enough run time.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Radiative shocks are ubiquitous in HEDP "
+            "experiments and astrophysical phenomena (accretion shocks, "
+            "supernova remnants, stellar atmospheres). The Mach~2 Lowrie "
+            "benchmark is one of the few radiation-hydrodynamics problems "
+            "with a semi-analytical solution, making it a cornerstone "
+            "verification test. Passing this test gives confidence that the "
+            "code can simulate radiation-dominated flows where the radiation "
+            "field significantly modifies the hydrodynamic structure."
+        ),
+        "initial_conditions": (
+            r"A 1D Cartesian mesh with 1024 cells spanning "
+            r"$x \in [-10^3,\;2\times10^3]\;\mathrm{cm}$. "
+            r"The left and right states are:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item \textbf{Left (upstream):} $\rho = 5.459\times10^{-13}\;\mathrm{g/cm^3}$, "
+            r"$v = 2.355\times10^{5}\;\mathrm{cm/s}$, $T = 100\;\mathrm{K}$." "\n"
+            r"  \item \textbf{Right (downstream):} $\rho = 1.248\times10^{-12}\;\mathrm{g/cm^3}$, "
+            r"$v = 1.03\times10^{5}\;\mathrm{cm/s}$, $T = 207.8\;\mathrm{K}$." "\n"
+            r"\end{itemize}" "\n"
+            r"Adiabatic index $\gamma = 5/3$; Rosseland opacity "
+            r"$\sigma_{\mathrm{Ross}} = 0.849\;\mathrm{cm^{-1}}$; "
+            r"absorption opacity $\sigma_{\mathrm{abs}} = 3.93\times10^{-5}\;\mathrm{cm^{-1}}$. "
+            r"The simulation time is $t = 0.01\;\mathrm{s}$."
+        ),
+        "boundary_conditions": "Inflow boundaries at left and right.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Profiles are compared to the NLTE analytical solution. "
+            r"The relative $L_1$ error must satisfy:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item Density: relative $L_1 \le 0.025$." "\n"
+            r"  \item Temperature: relative $L_1 \le 0.025$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": ["mach2_diffusion.png"],
+        "plot_caption": (
+            "Mach~2 gray radiative shock: numerical profiles (black dots) vs.\\ "
+            "NLTE analytical solution (colored lines) for density, gas temperature, "
+            "and radiation temperature."
+        ),
+    },
+    {
+        "id": "mach2_multigroup",
+        "title": "Mach~2 Radiative Shock -- Multigroup",
+        "description": (
+            "The same Mach~2 radiative shock as the gray diffusion test "
+            "\\cite{lowrie2008,lowrie1999}, but using "
+            "multigroup radiation transport with 32 logarithmically spaced energy "
+            "groups. This tests the frequency-dependent radiation solver and "
+            "verifies that the multigroup solution reproduces the correct spatial "
+            "profiles. In addition, the radiation spectrum of the "
+            "hottest cell is compared to a Planck distribution at the local gas "
+            "temperature to check spectral equilibrium.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Multigroup radiation transport:} Unlike the gray "
+            "test, the radiation field is resolved into 32 frequency groups. "
+            "Each group has its own diffusion equation with frequency-dependent "
+            "opacities. The test verifies that the group-by-group solver, the "
+            "opacity evaluation, and the energy-group coupling are all correct.\n"
+            "  \\item \\textbf{Spectral equilibrium:} In the post-shock region "
+            "where radiation and matter are in thermal equilibrium, the radiation "
+            "spectrum should follow a Planck distribution at the local gas "
+            "temperature. Comparing the computed spectrum to the Planck function "
+            "checks that the multigroup solver correctly thermalises the radiation "
+            "field.\n"
+            "  \\item \\textbf{Consistency with gray solution:} The multigroup "
+            "spatial profiles (density, $T_{\\mathrm{gas}}$, $T_{\\mathrm{rad}}$) "
+            "should closely match the gray solution. Significant deviations would "
+            "indicate a bug in the frequency-dependent opacity averaging or "
+            "group-boundary treatment.\n"
+            "  \\item \\textbf{Planck and Rosseland mean opacities:} The "
+            "effective gray opacity emerges from averaging the frequency-dependent "
+            "values. The test implicitly checks that the Planck and Rosseland "
+            "means are computed consistently.\n"
+            "\\end{itemize}\n\n"
+            "\\textbf{Importance:} Production radiation-hydrodynamics simulations "
+            "almost always use multigroup (or full-spectrum) transport. The gray "
+            "approximation is a useful simplification for verification, but "
+            "real applications require frequency dependence to capture "
+            "line-driven effects, spectral hardening, and non-Planckian radiation "
+            "fields. This test bridges the gap between the simple gray benchmark "
+            "and production-level multigroup capability, ensuring that the "
+            "frequency-dependent machinery does not introduce errors beyond those "
+            "already present in the gray solution."
+        ),
+        "initial_conditions": (
+            r"Identical to the gray diffusion case (1024-cell Cartesian mesh, same "
+            r"left/right states and opacities). The energy groups span "
+            r"$E_{\min} = 10^{-3}\,k_B\!\cdot\!200\;\mathrm{K}$ to "
+            r"$E_{\max} = 10^{3}\,k_B\!\cdot\!200\;\mathrm{K}$, logarithmically spaced."
+        ),
+        "boundary_conditions": "Inflow boundaries at left and right.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": (
+            "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive). "
+            "Built with \\texttt{--energy\\_groups\\_num=32}."
+        ),
+        "pass_criteria": (
+            r"Same spatial profile thresholds as the gray case:"
+            "\n"
+            r"\begin{itemize}" "\n"
+            r"  \item Density: relative $L_1 \le 0.025$." "\n"
+            r"  \item Temperature: relative $L_1 \le 0.025$." "\n"
+            r"\end{itemize}"
+        ),
+        "plots": ["mach2_multigroup.png", "mach2_multigroup_spectrum.png"],
+        "plot_caption": (
+            "Mach~2 multigroup radiative shock. Top: spatial profiles of density, "
+            "gas temperature, and radiation temperature (numerical vs.\\ NLTE analytical). "
+            "Bottom: radiation energy spectrum at the hottest cell (numerical vs.\\ "
+            "Planck distribution at $T_{\\mathrm{gas}}$)."
+        ),
+    },
+    {
+        "id": "marshak_wave_1_diffusion",
+        "title": "Marshak Wave Problem~1 (Non-Equilibrium, Uniform Density)",
+        "description": (
+            "Problem~1 from Giron et~al.\\ (2026, arXiv:2601.05120), originally "
+            "defined as Test~2 in Krief \\& McClarren (2024, arXiv:2401.05138). "
+            "A supersonic non-equilibrium Marshak wave propagates into a cold, "
+            "uniform-density medium. The opacity is strongly temperature-dependent: "
+            "$\\kappa_R = 100\\,(T/\\mathrm{keV})^{-3}$ and the Planck opacity is "
+            "$\\kappa_P = 0.001\\,\\kappa_R$ (far from equilibrium). "
+            "The material energy is $u = 6.86\\times10^{14}\\,(T/\\mathrm{keV})^4$.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Grey flux-limited diffusion (FLD):} Exercises the "
+            "implicit diffusion solver with power-law opacities and no flux limiter.\n"
+            "  \\item \\textbf{Non-equilibrium radiation--matter coupling:} With "
+            "$\\kappa_P \\ll \\kappa_R$, the radiation and gas temperatures decouple "
+            "significantly, testing the absorption/emission coupling.\n"
+            "  \\item \\textbf{Time-dependent Marshak boundary condition.}\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Domain $x \in [0,\,0.2]$ with 512 uniform cells. "
+            r"$\rho = 1$ (uniform), initially cold ($T \approx 0$). "
+            r"The bath temperature at $x=0$ is "
+            r"$T_{\mathrm{bath}}(t) = 1.008038\,(t/\mathrm{ns})^{1/3}\;\mathrm{keV}$."
+        ),
+        "boundary_conditions": "Marshak (radiation inflow) at left, zero-flux at right.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
+            r"must be $\le 10^{-2}$, compared to the self-similar analytical solution."
+        ),
+        "plots": ["marshak_wave_1_diffusion.png"],
+        "plot_caption": (
+            "Marshak wave Problem~1 at $t=1$~ns: gas and radiation temperature "
+            "profiles (RICH vs.\\ analytical self-similar solution)."
+        ),
+    },
+    {
+        "id": "marshak_wave_2_diffusion",
+        "title": "Marshak Wave Problem~2 (Equilibrium Limit, Uniform Density)",
+        "description": (
+            "Problem~2 from Giron et~al.\\ (2026), originally Test~3 in "
+            "Krief \\& McClarren (2024). Same as Problem~1 except the Planck "
+            "opacity equals the Rosseland opacity ($\\kappa_P = \\kappa_R$), "
+            "placing the system in the equilibrium (LTE) limit where "
+            "$T_{\\mathrm{rad}} \\approx T_{\\mathrm{gas}}$.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Equilibrium radiation diffusion:} Tests that the "
+            "code correctly recovers the LTE limit where matter and radiation "
+            "temperatures converge.\n"
+            "  \\item \\textbf{Marshak boundary with time-dependent driving temperature.}\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Domain $x \in [0,\,0.2]$ with 512 uniform cells, $\rho=1$, initially cold. "
+            r"$T_{\mathrm{bath}}(t) = 1.014565\,(t/\mathrm{ns})^{1/3}\;\mathrm{keV}$."
+        ),
+        "boundary_conditions": "Marshak (radiation inflow) at left, zero-flux at right.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
+            r"must be $\le 10^{-2}$."
+        ),
+        "plots": ["marshak_wave_2_diffusion.png"],
+        "plot_caption": (
+            "Marshak wave Problem~2 (equilibrium) at $t=1$~ns: gas and radiation "
+            "temperature profiles (RICH vs.\\ analytical)."
+        ),
+    },
+    {
+        "id": "marshak_wave_3_diffusion",
+        "title": "Marshak Wave Problem~3 (Non-Uniform Density, Power-Law Profile)",
+        "description": (
+            "Problem~3 from Giron et~al.\\ (2026), originally Test~1 in "
+            "Derei et~al.\\ (2024, arXiv:2411.14891). The material density "
+            "varies as $\\rho(x) = x^{20/19}$, and both the opacity and the "
+            "energy depend on density: "
+            "$\\kappa_R = 40\\,(T/\\mathrm{keV})^{-1.5}\\,\\rho^{1.2}$, "
+            "$\\kappa_P = 0.0025\\,\\kappa_R$, "
+            "$u = 10^{14}\\,(T/\\mathrm{keV})^{3.4}\\,\\rho^{0.86}$.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Density-dependent opacities and EOS:} Tests the "
+            "code's ability to handle coupled density--temperature dependence "
+            "in the diffusion coefficients.\n"
+            "  \\item \\textbf{Non-uniform initial density profile.}\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Domain $x \in [0,\,1]$, 512 uniform cells. "
+            r"$\rho(x) = x^{20/19}$, initially cold. "
+            r"$T_{\mathrm{bath}}(t) = 1.0470478\,(t/\mathrm{ns})^{86/57}\;\mathrm{keV}$."
+        ),
+        "boundary_conditions": "Marshak at left, zero-flux at right.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
+            r"must be $\le 10^{-2}$."
+        ),
+        "plots": ["marshak_wave_3_diffusion.png"],
+        "plot_caption": (
+            "Marshak wave Problem~3 (non-uniform density) at $t=1$~ns."
+        ),
+    },
+    {
+        "id": "marshak_wave_4_diffusion",
+        "title": "Marshak Wave Problem~4 (Divergent Density, Stretched Grid)",
+        "description": (
+            "Problem~4 from Giron et~al.\\ (2026), originally Test~3 in "
+            "Derei et~al.\\ (2024). The density diverges toward the origin as "
+            "$\\rho(x) = x^{-40/139}$. A stretched grid (geometric progression) "
+            "is used to resolve the steep gradients near $x=0$. "
+            "$\\kappa_R = 2\\,(T/\\mathrm{keV})^{-4.5}\\,\\rho^{1.9}$, "
+            "$\\kappa_P = 5{\\times}10^{-4}\\,\\kappa_R$, "
+            "$u = 10^{14}\\,(T/\\mathrm{keV})^{6}\\,\\rho^{0.7}$.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Stretched (non-uniform) grid:} The geometric "
+            "progression mesh tests the diffusion solver on highly non-uniform "
+            "cell sizes.\n"
+            "  \\item \\textbf{Divergent density at origin:} Stresses the "
+            "opacity and energy evaluations near singular density profiles.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Domain with 512 stretched cells (geometric progression). "
+            r"$\rho(x) = x^{-40/139}$, initially cold. "
+            r"$T_{\mathrm{bath}}(t) = 1.01008116\,(t/\mathrm{ns})^{14/139}\;\mathrm{keV}$."
+        ),
+        "boundary_conditions": "Marshak at left, zero-flux at right.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
+            r"must be $\le 10^{-2}$."
+        ),
+        "plots": ["marshak_wave_4_diffusion.png"],
+        "plot_caption": (
+            "Marshak wave Problem~4 (divergent density, stretched grid) at $t=1$~ns."
+        ),
+    },
+    {
+        "id": "gresho_euler",
+        "title": "Gresho Vortex (Eulerian)",
+        "description": (
+            "The Gresho vortex \\cite{liska2003} is a stationary azimuthal flow "
+            "in centrifugal equilibrium: the pressure gradient exactly balances "
+            "the centripetal acceleration, so the exact solution at any time is "
+            "the initial condition. Numerical dissipation and dispersion cause "
+            "the vortex to decay over time, making this an excellent test of a "
+            "code's ability to preserve rotating structures.\n\n"
+            "This test uses an \\textbf{Eulerian (fixed) mesh}, which subjects "
+            "the solution to advection errors as the vortex sweeps across the "
+            "grid. The 3D setup uses a single cell in $z$ to approximate a 2D "
+            "problem.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Euler fluxes on a fixed mesh:} The vortex tests "
+            "whether the Riemann solver and spatial reconstruction preserve a "
+            "smooth, subsonic rotating flow.\n"
+            "  \\item \\textbf{Numerical dissipation:} The rate of vortex decay "
+            "is a direct measure of the scheme's numerical viscosity.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Domain $[-0.5,\,0.5]^2 \times [0,\,\Delta z]$, Cartesian $50\times50\times1$. "
+            r"$\gamma = 5/3$, $\rho = 1$. "
+            r"Azimuthal velocity: $v_\theta = 5r$ for $r<0.2$, "
+            r"$v_\theta = 2-5r$ for $0.2 \le r \le 0.4$, $v_\theta = 0$ for $r>0.4$. "
+            r"Pressure set for centrifugal equilibrium. "
+            r"Simulation runs to $t = 5$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Eulerian (fixed mesh).",
+        "execution": "Serial, 1~CPU, direct execution.",
+        "pass_criteria": (
+            r"Relative $L_1$ error for the azimuthal velocity profile "
+            r"(volume-averaged, radially binned) at $t=5$ compared to the initial "
+            r"condition must be $\le 0.1$."
+        ),
+        "plots": [
+            "gresho_euler_pressure.png",
+            "gresho_euler_vtheta_2d.png",
+            "gresho_euler_vtheta_r.png",
+        ],
+        "plot_caption": (
+            "Gresho vortex (Eulerian) at $t=5$: pressure field (top left), "
+            "azimuthal velocity field (top right), and radially binned azimuthal "
+            "velocity profile vs.\\ initial condition (bottom)."
+        ),
+    },
+    {
+        "id": "gresho_lagrangian",
+        "title": "Gresho Vortex (Lagrangian + RoundCells)",
+        "description": (
+            "Same Gresho vortex problem as the Eulerian case, but run with a "
+            "\\textbf{Lagrangian mesh} augmented by the Arepo-style cell-rounding "
+            "correction (\\texttt{RoundCells3D}). Mesh point motion is restricted "
+            "to the $xy$-plane.\n\n"
+            "Because the mesh co-rotates with the fluid, advection errors are "
+            "eliminated. The primary error source becomes the mesh deformation "
+            "and the cell-rounding correction. The Lagrangian scheme should "
+            "preserve the vortex significantly better than the Eulerian scheme.\n\n"
+            "\\textbf{Code and physics aspects verified:}\n"
+            "\\begin{itemize}\n"
+            "  \\item \\textbf{Lagrangian mesh motion:} Verifies that the moving "
+            "mesh correctly tracks the rotating flow.\n"
+            "  \\item \\textbf{Cell rounding:} The RoundCells correction must "
+            "maintain mesh quality without introducing excessive dissipation.\n"
+            "  \\item \\textbf{Custom point-motion wrapper:} The $z$-velocity "
+            "zeroing wrapper is tested for correctness.\n"
+            "\\end{itemize}"
+        ),
+        "initial_conditions": (
+            r"Identical to the Eulerian case: $50\times50\times1$ Cartesian mesh, "
+            r"$\gamma = 5/3$, same velocity and pressure profiles, $t_{\mathrm{end}} = 5$."
+        ),
+        "boundary_conditions": "Rigid (reflective) walls on all faces.",
+        "mesh_movement": "Lagrangian + RoundCells (restricted to $xy$-plane).",
+        "execution": "MPI, 8~CPUs, submitted via SLURM (partition \\texttt{bigrun}, exclusive).",
+        "pass_criteria": (
+            r"Relative $L_1$ error for the azimuthal velocity profile must be $\le 0.05$."
+        ),
+        "plots": [
+            "gresho_lagrangian_pressure.png",
+            "gresho_lagrangian_vtheta_2d.png",
+            "gresho_lagrangian_vtheta_r.png",
+        ],
+        "plot_caption": (
+            "Gresho vortex (Lagrangian + RoundCells) at $t=5$: pressure, azimuthal "
+            "velocity field, and radially binned azimuthal velocity vs.\\ initial condition."
+        ),
+    },
+    {
         "id": "desmore2012_mc",
         "title": "Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo IMC)",
         "description": (
