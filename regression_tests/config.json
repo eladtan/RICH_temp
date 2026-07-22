@@ -17,7 +17,8 @@
       "name": "storm",
       "config": "source/monte/regression_tests/config.json",
       "option_overrides": {
-        "deps_dir": "{project_root}/source/utils"
+        "deps_dir": "{project_root}/source/utils",
+        "extra_include_dirs": "{project_root}/source/3D/tessellation;{project_root}/source/3D/tessellation/voronoi;{project_root}/source/3D/tessellation/voronoi/range/finders"
       }
     }
   ],
