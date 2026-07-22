@@ -580,16 +580,16 @@ def _plot_marshak_wave(root: Path, out_dir: Path, prob_num: int) -> bool:
     return True
 
 
-def plot_marshak_wave_1(root: Path, out_dir: Path) -> bool:
+def plot_marshak_wave_1_diffusion(root: Path, out_dir: Path) -> bool:
     return _plot_marshak_wave(root, out_dir, 1)
 
-def plot_marshak_wave_2(root: Path, out_dir: Path) -> bool:
+def plot_marshak_wave_2_diffusion(root: Path, out_dir: Path) -> bool:
     return _plot_marshak_wave(root, out_dir, 2)
 
-def plot_marshak_wave_3(root: Path, out_dir: Path) -> bool:
+def plot_marshak_wave_3_diffusion(root: Path, out_dir: Path) -> bool:
     return _plot_marshak_wave(root, out_dir, 3)
 
-def plot_marshak_wave_4(root: Path, out_dir: Path) -> bool:
+def plot_marshak_wave_4_diffusion(root: Path, out_dir: Path) -> bool:
     return _plot_marshak_wave(root, out_dir, 4)
 
 
@@ -1120,10 +1120,10 @@ ALL_PLOTTERS = {
     "till_compton_mc": plot_till_mc,
     "mach2_diffusion": plot_mach2_diffusion,
     "mach2_multigroup": plot_mach2_multigroup,
-    "marshak_wave_1": plot_marshak_wave_1,
-    "marshak_wave_2": plot_marshak_wave_2,
-    "marshak_wave_3": plot_marshak_wave_3,
-    "marshak_wave_4": plot_marshak_wave_4,
+    "marshak_wave_1_diffusion": plot_marshak_wave_1_diffusion,
+    "marshak_wave_2_diffusion": plot_marshak_wave_2_diffusion,
+    "marshak_wave_3_diffusion": plot_marshak_wave_3_diffusion,
+    "marshak_wave_4_diffusion": plot_marshak_wave_4_diffusion,
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
     "desmore2012_mc": plot_desmore2012_mc,

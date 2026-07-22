@@ -679,7 +679,7 @@ Fitted $\sigma$ & 9.25169924e-01 & (analytical: 1.02332671e+00) & {\color{green!
 \label{sec:marshak_waves}
 
 \subsection{Marshak Wave Problem~1 (Non-Equilibrium, Uniform Density)}
-\label{sec:marshak_wave_1}
+\label{sec:marshak_wave_1_diffusion}
 
 \subsubsection*{Description}
 Problem~1 from Giron et~al.\ (2026, arXiv:2601.05120), originally defined as Test~2 in Krief \& McClarren (2024, arXiv:2401.05138). A supersonic non-equilibrium Marshak wave propagates into a cold, uniform-density medium. The opacity is strongly temperature-dependent: $\kappa_R = 100\,(T/\mathrm{keV})^{-3}$ and the Planck opacity is $\kappa_P = 0.001\,\kappa_R$ (far from equilibrium). The material energy is $u = 6.86\times10^{14}\,(T/\mathrm{keV})^4$.
@@ -722,15 +722,15 @@ $T_{\mathrm{rad}}$ rel. $L_1$ & 6.279616e-03 & 1e-2 & {\color{green!60!black}PAS
 \subsubsection*{Plots}
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_1.pdf}
+  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_1_diffusion.pdf}
   \caption{Marshak wave Problem~1 at $t=1$~ns: gas and radiation temperature profiles (RICH vs.\ analytical self-similar solution).}
-  \label{fig:marshak_wave_1}
+  \label{fig:marshak_wave_1_diffusion}
 \end{figure}
 
 \newpage
 
 \subsection{Marshak Wave Problem~2 (Equilibrium Limit, Uniform Density)}
-\label{sec:marshak_wave_2}
+\label{sec:marshak_wave_2_diffusion}
 
 \subsubsection*{Description}
 Problem~2 from Giron et~al.\ (2026), originally Test~3 in Krief \& McClarren (2024). Same as Problem~1 except the Planck opacity equals the Rosseland opacity ($\kappa_P = \kappa_R$), placing the system in the equilibrium (LTE) limit where $T_{\mathrm{rad}} \approx T_{\mathrm{gas}}$.
@@ -772,15 +772,15 @@ $T_{\mathrm{rad}}$ rel. $L_1$ & 9.879197e-03 & 1e-2 & {\color{green!60!black}PAS
 \subsubsection*{Plots}
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_2.pdf}
+  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_2_diffusion.pdf}
   \caption{Marshak wave Problem~2 (equilibrium) at $t=1$~ns: gas and radiation temperature profiles (RICH vs.\ analytical).}
-  \label{fig:marshak_wave_2}
+  \label{fig:marshak_wave_2_diffusion}
 \end{figure}
 
 \newpage
 
 \subsection{Marshak Wave Problem~3 (Non-Uniform Density, Power-Law Profile)}
-\label{sec:marshak_wave_3}
+\label{sec:marshak_wave_3_diffusion}
 
 \subsubsection*{Description}
 Problem~3 from Giron et~al.\ (2026), originally Test~1 in Derei et~al.\ (2024, arXiv:2411.14891). The material density varies as $\rho(x) = x^{20/19}$, and both the opacity and the energy depend on density: $\kappa_R = 40\,(T/\mathrm{keV})^{-1.5}\,\rho^{1.2}$, $\kappa_P = 0.0025\,\kappa_R$, $u = 10^{14}\,(T/\mathrm{keV})^{3.4}\,\rho^{0.86}$.
@@ -822,15 +822,15 @@ $T_{\mathrm{rad}}$ rel. $L_1$ & 7.443748e-03 & 1e-2 & {\color{green!60!black}PAS
 \subsubsection*{Plots}
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_3.pdf}
+  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_3_diffusion.pdf}
   \caption{Marshak wave Problem~3 (non-uniform density) at $t=1$~ns.}
-  \label{fig:marshak_wave_3}
+  \label{fig:marshak_wave_3_diffusion}
 \end{figure}
 
 \newpage
 
 \subsection{Marshak Wave Problem~4 (Divergent Density, Stretched Grid)}
-\label{sec:marshak_wave_4}
+\label{sec:marshak_wave_4_diffusion}
 
 \subsubsection*{Description}
 Problem~4 from Giron et~al.\ (2026), originally Test~3 in Derei et~al.\ (2024). The density diverges toward the origin as $\rho(x) = x^{-40/139}$. A stretched grid (geometric progression) is used to resolve the steep gradients near $x=0$. $\kappa_R = 2\,(T/\mathrm{keV})^{-4.5}\,\rho^{1.9}$, $\kappa_P = 5{\times}10^{-4}\,\kappa_R$, $u = 10^{14}\,(T/\mathrm{keV})^{6}\,\rho^{0.7}$.
@@ -872,9 +872,9 @@ $T_{\mathrm{rad}}$ rel. $L_1$ & 4.249283e-03 & 1e-2 & {\color{green!60!black}PAS
 \subsubsection*{Plots}
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_4.pdf}
+  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_4_diffusion.pdf}
   \caption{Marshak wave Problem~4 (divergent density, stretched grid) at $t=1$~ns.}
-  \label{fig:marshak_wave_4}
+  \label{fig:marshak_wave_4_diffusion}
 \end{figure}
 
 \newpage

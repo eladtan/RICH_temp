@@ -10,7 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Comprehensive documentation under `docs/`
 - GitLab wiki pages under `wiki/`
 - Regression test framework (`regression_tests/run_all.sh`)
-- 14 regression tests: sod_1d, sedov_3d_mpi, till_compton, amr_random, voronoi_volume, lane_self_gravity, mach2_diffusion, mach2_multigroup, marshak_wave_1-4, gresho_euler, gresho_lagrangian
+- 14 regression tests: sod_1d, sedov_3d_mpi, till_compton, amr_random, voronoi_volume, lane_self_gravity, mach2_diffusion, mach2_multigroup, marshak_wave_1_diffusion-4, gresho_euler, gresho_lagrangian
 - Regression result plotting (`regression_tests/plot_results.py`)
 - LaTeX test report generation (`regression_tests/generate_test_report.py`)
 - Marshak wave benchmarks (Problems 1-4) with self-similar analytical validation

@@ -37,7 +37,7 @@ TEST_GROUPS: dict[str, tuple[str, list[str]]] = {
     "gresho": ("Gresho Vortex", ["gresho_euler", "gresho_lagrangian"]),
     "yee_vortex": ("Yee Isentropic Vortex", ["yee_vortex_64", "yee_vortex_128"]),
     "marshak_waves": ("Marshak Wave Problems", [
-        "marshak_wave_1", "marshak_wave_2", "marshak_wave_3", "marshak_wave_4",
+        "marshak_wave_1_diffusion", "marshak_wave_2_diffusion", "marshak_wave_3_diffusion", "marshak_wave_4_diffusion",
     ]),
     "mach2": ("Mach~2 Radiative Shock", ["mach2_diffusion", "mach2_multigroup"]),
     "eulerian_diffusion": ("1D Eulerian Diffusion Suite", [
@@ -713,7 +713,7 @@ TESTS = [
         ),
     },
     {
-        "id": "marshak_wave_1",
+        "id": "marshak_wave_1_diffusion",
         "title": "Marshak Wave Problem~1 (Non-Equilibrium, Uniform Density)",
         "description": (
             "Problem~1 from Giron et~al.\\ (2026, arXiv:2601.05120), originally "
@@ -746,14 +746,14 @@ TESTS = [
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
             r"must be $\le 10^{-2}$, compared to the self-similar analytical solution."
         ),
-        "plots": ["marshak_wave_1.png"],
+        "plots": ["marshak_wave_1_diffusion.png"],
         "plot_caption": (
             "Marshak wave Problem~1 at $t=1$~ns: gas and radiation temperature "
             "profiles (RICH vs.\\ analytical self-similar solution)."
         ),
     },
     {
-        "id": "marshak_wave_2",
+        "id": "marshak_wave_2_diffusion",
         "title": "Marshak Wave Problem~2 (Equilibrium Limit, Uniform Density)",
         "description": (
             "Problem~2 from Giron et~al.\\ (2026), originally Test~3 in "
@@ -780,14 +780,14 @@ TESTS = [
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
             r"must be $\le 10^{-2}$."
         ),
-        "plots": ["marshak_wave_2.png"],
+        "plots": ["marshak_wave_2_diffusion.png"],
         "plot_caption": (
             "Marshak wave Problem~2 (equilibrium) at $t=1$~ns: gas and radiation "
             "temperature profiles (RICH vs.\\ analytical)."
         ),
     },
     {
-        "id": "marshak_wave_3",
+        "id": "marshak_wave_3_diffusion",
         "title": "Marshak Wave Problem~3 (Non-Uniform Density, Power-Law Profile)",
         "description": (
             "Problem~3 from Giron et~al.\\ (2026), originally Test~1 in "
@@ -817,13 +817,13 @@ TESTS = [
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
             r"must be $\le 10^{-2}$."
         ),
-        "plots": ["marshak_wave_3.png"],
+        "plots": ["marshak_wave_3_diffusion.png"],
         "plot_caption": (
             "Marshak wave Problem~3 (non-uniform density) at $t=1$~ns."
         ),
     },
     {
-        "id": "marshak_wave_4",
+        "id": "marshak_wave_4_diffusion",
         "title": "Marshak Wave Problem~4 (Divergent Density, Stretched Grid)",
         "description": (
             "Problem~4 from Giron et~al.\\ (2026), originally Test~3 in "
@@ -854,7 +854,7 @@ TESTS = [
             r"Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ "
             r"must be $\le 10^{-2}$."
         ),
-        "plots": ["marshak_wave_4.png"],
+        "plots": ["marshak_wave_4_diffusion.png"],
         "plot_caption": (
             "Marshak wave Problem~4 (divergent density, stretched grid) at $t=1$~ns."
         ),
@@ -2037,10 +2037,10 @@ METRIC_READERS: dict[str, object] = {
     "lane_self_gravity": lambda cd: _read_lane_metrics(cd),
     "mach2_diffusion": lambda cd: _read_mach2_metrics(cd, "mach2_diffusion"),
     "mach2_multigroup": lambda cd: _read_mach2_metrics(cd, "mach2_multigroup"),
-    "marshak_wave_1": lambda cd: _read_marshak_wave_metrics(cd, 1),
-    "marshak_wave_2": lambda cd: _read_marshak_wave_metrics(cd, 2),
-    "marshak_wave_3": lambda cd: _read_marshak_wave_metrics(cd, 3),
-    "marshak_wave_4": lambda cd: _read_marshak_wave_metrics(cd, 4),
+    "marshak_wave_1_diffusion": lambda cd: _read_marshak_wave_metrics(cd, 1),
+    "marshak_wave_2_diffusion": lambda cd: _read_marshak_wave_metrics(cd, 2),
+    "marshak_wave_3_diffusion": lambda cd: _read_marshak_wave_metrics(cd, 3),
+    "marshak_wave_4_diffusion": lambda cd: _read_marshak_wave_metrics(cd, 4),
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
@@ -2442,10 +2442,10 @@ _SUMMARY_TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "yee_vortex_128": ("Yee Vortex ($128^2$)", "MPI", "16", "Lagrangian", "No"),
     "spherical_collapse": ("Spherical Collapse", "MPI", "64", "Eulerian", "Yes"),
     "rayleigh_taylor_mpi": ("Rayleigh--Taylor", "MPI", "128", "Lagrangian", "Yes"),
-    "marshak_wave_1": ("Marshak Wave 1", "Serial", "1", "Eulerian", "Yes"),
-    "marshak_wave_2": ("Marshak Wave 2", "Serial", "1", "Eulerian", "Yes"),
-    "marshak_wave_3": ("Marshak Wave 3", "Serial", "1", "Eulerian", "Yes"),
-    "marshak_wave_4": ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_1_diffusion": ("Marshak Wave 1", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_2_diffusion": ("Marshak Wave 2", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_3_diffusion": ("Marshak Wave 3", "Serial", "1", "Eulerian", "Yes"),
+    "marshak_wave_4_diffusion": ("Marshak Wave 4", "Serial", "1", "Eulerian", "Yes"),
     "mach2_diffusion": ("Mach 2 Gray", "MPI", "8", "Eulerian", "Yes"),
     "mach2_multigroup": ("Mach 2 Multigroup", "MPI", "8", "Eulerian", "Yes"),
     "eulerian_diffusion_freefree_suite": ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),

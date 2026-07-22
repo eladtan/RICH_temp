@@ -19,7 +19,7 @@ The benchmark problems use self-similar analytical solutions for validation.
 
 ## Configuration
 
-From `regression_tests/cases/marshak_wave_1/test.cpp` (conceptual overview):
+From `regression_tests/cases/marshak_wave_1_diffusion/test.cpp` (conceptual overview):
 
 - **Domain:** 1D slab, 512 cells
 - **Radiation:** Grey diffusion, no flux limiter
@@ -40,13 +40,13 @@ where C depends on the problem variant.
 ### Build
 
 ```bash
-./build_rich.sh gnuRelease --test_name=regression_tests/cases/marshak_wave_1
+./build_rich.sh gnuRelease --test_name=regression_tests/cases/marshak_wave_1_diffusion
 ```
 
 ### Run
 
 ```bash
-cd regression_tests/cases/marshak_wave_1
+cd regression_tests/cases/marshak_wave_1_diffusion
 ../../../build/gnuRelease/rich
 ```
 
@@ -54,7 +54,7 @@ cd regression_tests/cases/marshak_wave_1
 
 ```bash
 # Run one Marshak test
-./regression_tests/run_all.sh --test marshak_wave_1 --config gnuRelease --verbose
+./regression_tests/run_all.sh --test marshak_wave_1_diffusion --config gnuRelease --verbose
 
 # Run all four variants
 ./regression_tests/run_all.sh --mode serial --verbose
@@ -75,7 +75,7 @@ The simulation produces:
 import numpy as np
 import matplotlib.pyplot as plt
 
-data = np.loadtxt("regression_tests/cases/marshak_wave_1/marshak_profile.txt")
+data = np.loadtxt("regression_tests/cases/marshak_wave_1_diffusion/marshak_profile.txt")
 x, Tgas, Trad = data[:, 0], data[:, 1], data[:, 2]
 
 plt.figure(figsize=(8, 5))

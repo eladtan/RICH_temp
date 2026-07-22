@@ -396,7 +396,7 @@ Same as `mach2_diffusion`.
 
 ---
 
-## 10-13. marshak_wave_1 through marshak_wave_4 -- Marshak Wave Benchmarks
+## 10-13. marshak_wave_1_diffusion through marshak_wave_4_diffusion -- Marshak Wave Benchmarks
 
 **Tags:** `serial`
 
@@ -938,10 +938,10 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
 | `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
 | `mach2_multigroup` | mpi | Radiative shock (MG) | NLTE solution | rel L1 <= 0.025 |
-| `marshak_wave_1` | serial | Marshak wave (non-eq) | Self-similar ODE | rel L1 <= 1e-2 |
-| `marshak_wave_2` | serial | Marshak wave (eq limit) | Self-similar ODE | rel L1 <= 1e-2 |
-| `marshak_wave_3` | serial | Marshak wave (non-uniform) | Fitted profiles | rel L1 <= 1e-2 |
-| `marshak_wave_4` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
+| `marshak_wave_1_diffusion` | serial | Marshak wave (non-eq) | Self-similar ODE | rel L1 <= 1e-2 |
+| `marshak_wave_2_diffusion` | serial | Marshak wave (eq limit) | Self-similar ODE | rel L1 <= 1e-2 |
+| `marshak_wave_3_diffusion` | serial | Marshak wave (non-uniform) | Fitted profiles | rel L1 <= 1e-2 |
+| `marshak_wave_4_diffusion` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |

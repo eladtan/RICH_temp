@@ -84,10 +84,10 @@ Available test IDs:
 | `amr_random` | serial, mpi |
 | `amr_distributed_clip` | mpi |
 | `voronoi_volume` | serial, mpi |
-| `marshak_wave_1` | serial |
-| `marshak_wave_2` | serial |
-| `marshak_wave_3` | serial |
-| `marshak_wave_4` | serial |
+| `marshak_wave_1_diffusion` | serial |
+| `marshak_wave_2_diffusion` | serial |
+| `marshak_wave_3_diffusion` | serial |
+| `marshak_wave_4_diffusion` | serial |
 | `gresho_euler` | serial |
 | `gresho_lagrangian` | mpi |
 | `sedov_3d_mpi` | mpi |
@@ -195,8 +195,8 @@ You can tune pass/fail thresholds via environment variables:
 | `LANE_GRAVITY_MAX_METRIC` | `4e-2` | lane_self_gravity |
 | `MACH2_MAX_DENSITY_REL_L1` | `0.025` | mach2_diffusion, mach2_multigroup |
 | `MACH2_MAX_TEMPERATURE_REL_L1` | `0.025` | mach2_diffusion, mach2_multigroup |
-| `MARSHAK_MAX_TGAS_REL_L1` | `1e-2` | marshak_wave_1 through _4 |
-| `MARSHAK_MAX_TRAD_REL_L1` | `1e-2` | marshak_wave_1 through _4 |
+| `MARSHAK_MAX_TGAS_REL_L1` | `1e-2` | marshak_wave_1_diffusion through _4 |
+| `MARSHAK_MAX_TRAD_REL_L1` | `1e-2` | marshak_wave_1_diffusion through _4 |
 | `GRESHO_EULER_MAX_L1` | `0.1` | gresho_euler |
 | `GRESHO_LAGRANGIAN_MAX_L1` | `0.05` | gresho_lagrangian |
 

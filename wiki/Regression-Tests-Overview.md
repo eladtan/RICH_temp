@@ -60,7 +60,7 @@ regression_tests/
 │   ├── lane_self_gravity.sh
 │   ├── mach2_diffusion.sh
 │   ├── mach2_multigroup.sh
-│   ├── marshak_wave_1.sh .. marshak_wave_4.sh
+│   ├── marshak_wave_1_diffusion.sh .. marshak_wave_4_diffusion.sh
 │   ├── gresho_euler.sh
 │   ├── gresho_lagrangian.sh
 │   ├── yee_vortex_64.sh

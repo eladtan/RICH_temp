@@ -228,7 +228,7 @@ This source term adds the radiation pressure gradient to the momentum equation.
 
 ## Example: Marshak Wave
 
-The Marshak wave tests in the regression suite provide clean examples of grey diffusion setup. See `regression_tests/cases/marshak_wave_1/test.cpp` for a complete configuration with:
+The Marshak wave tests in the regression suite provide clean examples of grey diffusion setup. See `regression_tests/cases/marshak_wave_1_diffusion/test.cpp` for a complete configuration with:
 
 - Temperature-dependent opacities
 - Time-dependent boundary temperature
