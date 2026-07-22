@@ -26,3 +26,7 @@
 [submodule "source/monte"]
 	path = source/monte
 	url = git@github.com:maormizrachi/STORM.git
+[submodule "regression_tests/THUNDER"]
+	path = regression_tests/THUNDER
+	url = git@github.com:maormizrachi/THUNDER.git
+	branch = main

@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "description": "RICH and embedded STORM regression tests",
+  "project_root": "..",
+  "artifact_root": "regression_results",
+  "discovery": {
+    "metadata": "REGRESSION_INFO",
+    "test_roots": [
+      {
+        "path": "regression_tests/cases",
+        "namespace": "rich"
+      },
+      {
+        "path": "source/monte/examples",
+        "namespace": "storm"
+      }
+    ]
+  },
+  "builds": {
+    "rich": {
+      "mode": "per_test",
+      "build_dir": "build",
+      "command": [
+        "{project_root}/build_rich.sh",
+        "{profile}",
+        "--test_name={build_test_name}",
+        "--build-subdir={build_id}",
+        "--jobs={nproc}"
+      ],
+      "binary": "{project_root}/build/{profile}/{build_id}/rich"
+    },
+    "storm": {
+      "mode": "grouped",
+      "build_dir": "source/monte/build_regression",
+      "configure_command": [
+        "cmake",
+        "-S",
+        "{project_root}/source/monte",
+        "-B",
+        "{build_dir}"
+      ],
+      "configure_args": [
+        "-DSTORM_BUILD_EXAMPLES=ON"
+      ],
+      "build_command": [
+        "cmake",
+        "--build",
+        "{build_dir}",
+        "-j",
+        "{nproc}"
+      ],
+      "binary": "{test_dir}/{build_target}"
+    }
+  },
+  "runs": {
+    "rich": {
+      "mode": "direct",
+      "binary_environment": "RICH_BIN",
+      "timeout": 7200
+    },
+    "storm": {
+      "mode": "slurm",
+      "binary_environment": "STORM_BIN",
+      "timeout": 7200
+    }
+  },
+  "checks": {
+    "libraries": {
+      "rich": "regression_tests/lib/regression_checks.sh",
+      "storm": "source/monte/regression_tests/lib/regression_checks.sh"
+    }
+  },
+  "defaults": {
+    "mode": "serial"
+  },
+  "mode_profiles": {
+    "serial": "gnuRelease",
+    "mpi": "gnuReleaseMPI",
+    "all": "gnuReleaseMPI"
+  },
+  "options": [
+    {
+      "flags": [
+        "--profile"
+      ],
+      "dest": "profile",
+      "type": "enum",
+      "choices": [
+        "gnuRelease",
+        "gnuDebug",
+        "gnuReleaseMPI",
+        "gnuDebugMPI",
+        "intelRelease",
+        "intelDebug",
+        "intelReleaseMPI",
+        "intelDebugMPI",
+        "gnuMixedMPI",
+        "intelMixedMPI"
+      ],
+      "default": null,
+      "help": "RICH build profile used by build_rich.sh"
+    },
+    {
+      "flags": [
+        "--with-mpi"
+      ],
+      "dest": "with_mpi",
+      "type": "bool",
+      "default": false,
+      "mode_when_true": "all",
+      "help": "Include MPI-tagged tests",
+      "cmake": {
+        "STORM_WITH_MPI": "ON"
+      },
+      "mode_cmake": {
+        "mpi": "STORM_WITH_MPI=ON",
+        "all": "STORM_WITH_MPI=ON"
+      }
+    },
+    {
+      "flags": [
+        "--build-type"
+      ],
+      "dest": "build_type",
+      "type": "enum",
+      "choices": [
+        "Release",
+        "Debug",
+        "RelWithDebInfo"
+      ],
+      "default": "Release",
+      "help": "Reserved for project-specific CMake builds"
+    }
+  ],
+  "environment": {
+    "ROOT_DIR": "{project_root}",
+    "CONFIG": "{profile}"
+  }
+}

@@ -1,0 +1,9 @@
+# THUNDER regression metadata migrated from regression_tests/tests/eulerian_diffusion_freefree_multigroup_suite.sh.sh
+TEST_ID="eulerian_diffusion_freefree_multigroup_suite"
+TAGS="mpi"
+BUILD_TEST_NAME="regression_tests/cases/eulerian_diffusion_freefree_multigroup_1d"
+BUILD_ARGS="--energy_groups_num=32"
+RUN_DIR_REL="regression_tests/cases/eulerian_diffusion_freefree_multigroup_1d"
+RUN_COMMAND="bash \"${ROOT_DIR}/regression_tests/run_freefree_multigroup_512_32.sh\" \"${CONFIG}\""
+CHECK_FUNCTION="check_eulerian_diffusion_freefree_multigroup_suite_case"
+RUN_MODE="direct"
