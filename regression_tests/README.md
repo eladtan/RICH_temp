@@ -23,3 +23,8 @@ build mappings, profiles, test roots, and check libraries are defined in
 configuration schema live in the
 [`THUNDER`](THUNDER) submodule.
 
+Normal test execution submits one SLURM job per test. Configuration,
+compilation, and execution happen inside the job; the gate-side wrapper only
+discovers tests, submits jobs, and collects results. Use `--local` only as an
+explicit development override.
+
