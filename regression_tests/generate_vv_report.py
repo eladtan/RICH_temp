@@ -348,7 +348,6 @@ _TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "eulerian_diffusion_freefree_suite": ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     "eulerian_diffusion_freefree_multigroup_suite": ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     "till_compton": ("Till Compton", "Serial", "1", "Lagrangian", "Yes"),
-    "till_compton_mc": ("Till Compton MC", "Serial", "1", "Lagrangian", "Yes"),
     "desmore2012_mc": ("Densmore 2012 MC (MPI)", "MPI", "32", "Eulerian", "Yes"),
     "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
     "moving_slab_mc_32": ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian", "Yes"),

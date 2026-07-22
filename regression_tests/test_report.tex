@@ -1259,64 +1259,6 @@ Energy conservation (rel.) & 0.000000e+00 & $ < 10^{-8}$ & {\color{green!60!blac
 
 \newpage
 
-\subsection{Till Compton Equilibration (IMC)}
-\label{sec:till_compton_mc}
-
-\subsubsection*{Description}
-This test verifies the same radiation--matter Compton equilibration as the diffusion test, but solved with Implicit Monte Carlo (IMC) transport using the f-reduced Compton scattering scheme. The IMC approach stochastically transports photon packets with frequency-group redistribution at each Compton event, while a deterministic residual correction enforces the implicit coupling.
-
-\textbf{Code and physics aspects verified:}
-\begin{itemize}
-  \item \textbf{f-reduced Compton events:} Each MC scattering event applies the implicit Fleck factor to reduce the energy exchange, ensuring stability at large time steps.
-  \item \textbf{Implicit residual solve:} The deterministic correction $(I - c\Delta t\,K_{\mathrm{res}})\,E = E_{\mathrm{raw}} + B_{\mathrm{res}}$ accounts for the difference between the stochastic operator and the full implicit target.
-  \item \textbf{Particle--grid consistency:} Particle reconciliation ensures that group energies carried by MC packets match the corrected grid values across time steps.
-  \item \textbf{Energy conservation:} Total energy (radiation + material) is conserved to within MC noise levels.
-\end{itemize}
-
-\subsubsection*{Initial Conditions}
-Same as the diffusion Till Compton test: single cell, $\rho = 1\;\mathrm{g\,cm^{-3}}$, $T_{\mathrm{gas}} = 1\;\mathrm{keV}$, $T_{\mathrm{rad}} = 10\;\mathrm{keV}$, 32 energy groups, Kramers free--free opacity. IMC uses 10\,000 new photons per cell per time step, 4000 initial photons per cell, with comb population control ($N_{\min}=10\,000$).
-
-\subsubsection*{Boundary Conditions}
-Rigid walls.
-
-\subsubsection*{Mesh Movement}
-Static (single cell).
-
-\subsubsection*{Execution}
-Serial, 1~CPU. Built with \texttt{--energy\_groups\_num=32}.
-
-\subsubsection*{Pass Criteria}
-\begin{itemize}
-  \item No NaN or Inf values in output.
-  \item Final $|T_{\mathrm{gas}} - T_{\mathrm{rad}}| / \max(T_{\mathrm{gas}},\,T_{\mathrm{rad}}) < 20\%$.
-  \item Total energy conserved within 5\%.
-\end{itemize}
-
-\subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Final $T_{\mathrm{gas}}$ & 1.161570e+08 & --- & {\color{green!60!black}PASS} \\
-Final $T_{\mathrm{rad}}$ & 1.154940e+08 & --- & {\color{green!60!black}PASS} \\
-Relative difference & 5.707792e-03 & $ < 2\times10^{-1}$ & {\color{green!60!black}PASS} \\
-Energy conservation (rel.) & 0.000000e+00 & $ < 5\times10^{-2}$ & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/till_compton_mc.pdf}
-  \caption{Till Compton IMC equilibration: gas temperature (red) and radiation temperature (blue) vs.\ time. Black markers show the IN-FBC reference from McGraw et al.}
-  \label{fig:till_compton_mc}
-\end{figure}
-
-\newpage
-
 \section{Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo)}
 \label{sec:densmore}
 

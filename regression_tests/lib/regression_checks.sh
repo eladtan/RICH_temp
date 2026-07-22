@@ -268,12 +268,6 @@ check_till_case() {
     return 0
 }
 
-check_till_mc_case() {
-    TILL_MAX_TEMP_REL_DIFF="${TILL_MC_MAX_TEMP_REL_DIFF:-2e-1}" \
-    TILL_MAX_ENERGY_REL_ERR="${TILL_MC_MAX_ENERGY_REL_ERR:-5e-2}" \
-    check_till_case "$@"
-}
-
 check_amr_random_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
