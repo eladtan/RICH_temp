@@ -351,7 +351,6 @@ _TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "till_compton_mc": ("Till Compton MC", "Serial", "1", "Lagrangian", "Yes"),
     "desmore2012_mc": ("Densmore 2012 MC (MPI)", "MPI", "32", "Eulerian", "Yes"),
     "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
-    "moving_slab_mc": ("Moving Slab MC", "Serial", "1", "Lagrangian", "Yes"),
     "moving_slab_mc_32": ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian", "Yes"),
     "lane_self_gravity": ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
     "amr_random": ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),

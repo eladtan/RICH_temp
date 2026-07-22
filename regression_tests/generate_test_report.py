@@ -48,7 +48,7 @@ TEST_GROUPS: dict[str, tuple[str, list[str]]] = {
     "densmore": ("Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo)", [
         "desmore2012_mc", "desmore2012_mc_serial",
     ]),
-    "moving_slab": ("Moving Slab MC Benchmark", ["moving_slab_mc", "moving_slab_mc_32"]),
+    "moving_slab": ("Moving Slab MC Benchmark", ["moving_slab_mc_32"]),
     "lsq_gradient": ("LSQ Gradient Verification", [
         "spherical_gauss_linear", "cartesian_gauss_linear",
     ]),
@@ -1050,59 +1050,6 @@ TESTS = [
         "plot_caption": "",
     },
     {
-        "id": "moving_slab_mc",
-        "title": "Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)",
-        "description": (
-            "Frequency-dependent moving slab benchmark from McClarren \\& Gentile "
-            "(2021), original vacuum variant. A slab of aluminum "
-            "($\\rho = 0.1$~g/cm$^3$, $L = 0.4$~cm, $T = 1$~keV) moves at "
-            "$v = 0.5994$~cm/ns ($\\approx 2\\%$ of $c$) toward a stationary "
-            "observer at $z_O = 12$~cm. The 124-group opacity table from the "
-            "2026 paper is used. At $t_O = 10$~ns the per-group radiation energy "
-            "density spectrum at the observer is compared to the semi-analytic "
-            "solution.\n\n"
-            "\\textbf{Code and physics aspects verified:}\n"
-            "\\begin{itemize}\n"
-            "  \\item \\textbf{Material motion corrections:} Doppler shift and "
-            "relativistic path-length modification $L/(\\mu - \\beta)$.\n"
-            "  \\item \\textbf{Lagrangian mesh rebuild:} Manual mesh point "
-            "translation and Voronoi rebuild each time step.\n"
-            "  \\item \\textbf{Multigroup opacity:} 124-group frequency-dependent "
-            "absorption with thermal emission.\n"
-            "  \\item \\textbf{Transparent boundary tally:} Tallying escaping "
-            "photons at the observer plane.\n"
-            "\\end{itemize}"
-        ),
-        "initial_conditions": (
-            r"80 mesh points (20 slab + 60 vacuum), $x \in [0,\,12.1]$~cm, "
-            r"$\rho_{\mathrm{slab}} = 0.1$~g/cm$^3$, "
-            r"$T_{\mathrm{slab}} = 1$~keV, $v_{\mathrm{slab}} = 0.5994$~cm/ns, "
-            r"124 energy groups from 1~eV to 30~keV, "
-            r"$t_O = 10$~ns, adaptive $\Delta t$ from $10^{-3}$ to $0.1$~ns."
-        ),
-        "boundary_conditions": (
-            "Left: rigid (reflective). Right: transparent (photon tally at "
-            "$x = z_O$). Transverse (y,z): rigid."
-        ),
-        "mesh_movement": (
-            "Manual Lagrangian rebuild: slab mesh points translate at "
-            "$v_{\\mathrm{slab}}$ each step, vacuum points fixed, "
-            "Voronoi rebuilt, cell properties re-prescribed analytically."
-        ),
-        "execution": "Serial (local).",
-        "pass_criteria": (
-            r"Energy-weighted fractional error (Eq.~20 of the 2026 paper) "
-            r"must be $\le 0.30$."
-        ),
-        "plot_dir": "moving_slab_mc",
-        "plots": ["moving_slab_mc_comparison.png"],
-        "plot_caption": (
-            "Moving slab MC benchmark: MC simulation (circles) vs.\\ "
-            "semi-analytic solution (solid line). Log-log plot of per-group "
-            "radiation energy density."
-        ),
-    },
-    {
         "id": "moving_slab_mc_32",
         "title": "Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)",
         "description": (
@@ -1932,21 +1879,6 @@ def _read_desmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
 
 
 
-def _read_moving_slab_mc_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_equals(cases_dir / "moving_slab_mc" / "moving_slab_mc_check.stdout.log")
-    if not kv:
-        return []
-    rows = []
-    val = kv.get("MOVING_SLAB_MC_FERROR")
-    if val is not None:
-        passed = float(val) <= 0.30
-        rows.append(("Energy-weighted $f$-error", val, "0.30", passed))
-    val_l1 = kv.get("MOVING_SLAB_MC_L1")
-    if val_l1 is not None:
-        rows.append(("Rel. $L_1$", val_l1, "--", True))
-    return rows
-
-
 def _read_moving_slab_mc_32_metrics(cases_dir: Path) -> list[MetricRow]:
     kv = _parse_kv_equals(cases_dir / "moving_slab_mc_32" / "moving_slab_mc_32_check.stdout.log")
     if not kv:
@@ -2113,7 +2045,6 @@ METRIC_READERS: dict[str, object] = {
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
     "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
     "desmore2012_mc_serial": lambda cd: _read_desmore2012_mc_serial_metrics(cd),
-    "moving_slab_mc": lambda cd: _read_moving_slab_mc_metrics(cd),
     "moving_slab_mc_32": lambda cd: _read_moving_slab_mc_32_metrics(cd),
     "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
     "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
@@ -2523,7 +2454,6 @@ _SUMMARY_TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "till_compton_mc": ("Till Compton MC", "Serial", "1", "Lagrangian", "Yes"),
     "desmore2012_mc": ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
     "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
-    "moving_slab_mc": ("Moving Slab MC", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
     "moving_slab_mc_32": ("Moving Slab MC (32-group)", "Serial", "1", "Lagrangian (rebuild)", "Yes"),
     "lane_self_gravity": ("Lane--Emden", "MPI", "64", "Lagrangian", "Yes"),
     "amr_random": ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),

@@ -581,57 +581,7 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 
 ---
 
-## 19. moving_slab_mc -- Moving Slab MC Benchmark (Frequency-Dependent, Original Vacuum)
-
-**Tags:** `serial`
-
-### Physics
-
-Frequency-dependent moving slab benchmark from McClarren & Gentile (2021), original vacuum variant. A slab of aluminum (rho=0.1 g/cm^3, L=0.4 cm, T=1 keV) moves at v=0.5994 cm/ns (~2% of c) toward a stationary observer at z_O=12 cm. The 124-group opacity table from the 2026 paper is used. At t_O=10 ns the per-group radiation energy density spectrum at the observer is compared to the semi-analytic solution.
-
-This test verifies material motion corrections (Doppler shift + relativistic path-length modification), manual Lagrangian mesh rebuild, multigroup frequency-dependent absorption with thermal emission, and transparent boundary tally.
-
-**Governing equations:** Radiative transfer (IMC Monte Carlo) with frequency-dependent opacity and material motion.
-
-### Configuration
-
-| Parameter | Value |
-|-----------|-------|
-| Domain | [0, 12.1] cm in x, thin y,z |
-| Mesh points | 80 (20 slab + 60 vacuum) |
-| EOS | Ideal gas (irrelevant, noHydroFeedback) |
-| Slab properties | rho=0.1 g/cm^3, T=1 keV, v=0.5994 cm/ns |
-| Vacuum properties | rho~0, T~0, v=0 |
-| Energy groups | 124 (aluminum table, 1 eV to 30 keV) |
-| Time stepping | Adaptive, dt from 1e-3 ns to 0.1 ns, ramp 1.1x |
-| End time | t_O = 10 ns |
-| Mesh motion | Manual Lagrangian rebuild each step |
-| Radiation | IMC, withHydro=true, MMC=false, noHydroFeedback=true |
-
-**Source:** `regression_tests/cases/moving_slab_mc/test.cpp`
-
-### Output
-
-`moving_slab_mc_spectrum.txt` -- per-group raw weight sums from transparent boundary tally
-
-### Validation
-
-Compared against the semi-analytic solution computed by `regression_tests/moving_slab_benchmark.py` (original_vacuum variant). The Python checker `regression_tests/lib/check_moving_slab_mc.py` converts raw tally data to E_rad (GJ/cm^3/keV) and computes the energy-weighted fractional error (Eq. 20 of the 2026 paper).
-
-### Pass Criteria
-
-| Metric | Threshold | Environment Variable |
-|--------|-----------|---------------------|
-| Energy-weighted f-error | <= 0.30 | `MOVING_SLAB_MC_MAX_FERROR` |
-
-### References
-
-- McClarren, R. G. & Gentile, N. A. (2021). "Frequency-Dependent Material Motion Benchmarks for Radiative Transfer."
-- Gentile, N. A. & McClarren, R. G. (2026). "A Modified Frequency-Dependent Material Motion Benchmark for Thermal Radiative Transfer."
-
----
-
-## 20. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
+## 19. moving_slab_mc_32 -- Moving Slab MC Benchmark (32-Group Collapsed, Original Vacuum)
 
 **Tags:** `serial`
 
@@ -996,7 +946,6 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
 | `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
-| `moving_slab_mc` | serial | Freq-dependent moving slab (original vacuum, 124-group) | Semi-analytic solution | f-error <= 0.30 |
 | `moving_slab_mc_32` | serial | Freq-dependent moving slab (original vacuum, 32-group collapsed) | Semi-analytic solution (collapsed) | f-error <= 0.30 |
 | `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
 | `yee_vortex_128` | mpi | Isentropic vortex (128x128) | IC density comparison | L1 <= 0.05 |
