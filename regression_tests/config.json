@@ -34,9 +34,11 @@
   },
   "runs": {
     "rich": {
-      "mode": "direct",
+      "mode": "slurm",
+      "force_slurm": true,
       "binary_environment": "RICH_BIN",
-      "timeout": 7200
+      "timeout": 7200,
+      "tasks": 1
     }
   },
   "checks": {
