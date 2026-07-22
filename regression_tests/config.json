@@ -9,13 +9,15 @@
       {
         "path": "regression_tests/cases",
         "namespace": "rich"
-      },
-      {
-        "path": "source/monte/examples",
-        "namespace": "storm"
       }
     ]
   },
+  "subprojects": [
+    {
+      "name": "storm",
+      "config": "source/monte/regression_tests/config.json"
+    }
+  ],
   "builds": {
     "rich": {
       "mode": "per_test",
@@ -28,28 +30,6 @@
         "--jobs={nproc}"
       ],
       "binary": "{project_root}/build/{profile}/{build_id}/rich"
-    },
-    "storm": {
-      "mode": "grouped",
-      "build_dir": "source/monte/build_regression",
-      "configure_command": [
-        "cmake",
-        "-S",
-        "{project_root}/source/monte",
-        "-B",
-        "{build_dir}"
-      ],
-      "configure_args": [
-        "-DSTORM_BUILD_EXAMPLES=ON"
-      ],
-      "build_command": [
-        "cmake",
-        "--build",
-        "{build_dir}",
-        "-j",
-        "{nproc}"
-      ],
-      "binary": "{test_dir}/{build_target}"
     }
   },
   "runs": {
@@ -57,18 +37,10 @@
       "mode": "direct",
       "binary_environment": "RICH_BIN",
       "timeout": 7200
-    },
-    "storm": {
-      "mode": "slurm",
-      "binary_environment": "STORM_BIN",
-      "timeout": 7200
     }
   },
   "checks": {
-    "libraries": {
-      "rich": "regression_tests/lib/regression_checks.sh",
-      "storm": "source/monte/regression_tests/lib/regression_checks.sh"
-    }
+    "library": "regression_tests/lib/regression_checks.sh"
   },
   "defaults": {
     "mode": "serial"
@@ -99,37 +71,6 @@
       ],
       "default": null,
       "help": "RICH build profile used by build_rich.sh"
-    },
-    {
-      "flags": [
-        "--with-mpi"
-      ],
-      "dest": "with_mpi",
-      "type": "bool",
-      "default": false,
-      "mode_when_true": "all",
-      "help": "Include MPI-tagged tests",
-      "cmake": {
-        "STORM_WITH_MPI": "ON"
-      },
-      "mode_cmake": {
-        "mpi": "STORM_WITH_MPI=ON",
-        "all": "STORM_WITH_MPI=ON"
-      }
-    },
-    {
-      "flags": [
-        "--build-type"
-      ],
-      "dest": "build_type",
-      "type": "enum",
-      "choices": [
-        "Release",
-        "Debug",
-        "RelWithDebInfo"
-      ],
-      "default": "Release",
-      "help": "Reserved for project-specific CMake builds"
     }
   ],
   "environment": {
