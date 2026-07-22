@@ -48,31 +48,30 @@
     "mode": "serial"
   },
   "mode_profiles": {
-    "serial": "gnuRelease",
-    "mpi": "gnuReleaseMPI",
-    "all": "gnuReleaseMPI"
+    "serial": "{compiler}{build_type}",
+    "mpi": "{compiler}{build_type}MPI",
+    "all": "{compiler}{build_type}MPI"
   },
   "options": [
     {
       "flags": [
-        "--config"
+        "--compiler"
       ],
-      "dest": "config",
+      "dest": "compiler",
       "type": "enum",
-      "choices": [
-        "gnuRelease",
-        "gnuDebug",
-        "gnuReleaseMPI",
-        "gnuDebugMPI",
-        "intelRelease",
-        "intelDebug",
-        "intelReleaseMPI",
-        "intelDebugMPI",
-        "gnuMixedMPI",
-        "intelMixedMPI"
+      "choices": ["gnu", "intel"],
+      "default": "gnu",
+      "help": "Compiler family"
+    },
+    {
+      "flags": [
+        "--build-type"
       ],
-      "default": null,
-      "help": "RICH build profile used by build_rich.sh"
+      "dest": "build_type",
+      "type": "enum",
+      "choices": ["Release", "Debug", "Mixed"],
+      "default": "Release",
+      "help": "Build type (Release, Debug, or Mixed)"
     }
   ],
   "environment": {
