@@ -15,7 +15,10 @@
   "subprojects": [
     {
       "name": "storm",
-      "config": "source/monte/regression_tests/config.json"
+      "config": "source/monte/regression_tests/config.json",
+      "option_overrides": {
+        "deps_dir": "{project_root}/source/utils"
+      }
     }
   ],
   "builds": {
