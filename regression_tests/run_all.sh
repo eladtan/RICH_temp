@@ -5,4 +5,4 @@ set -euo pipefail
 RICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 THUNDER_ROOT="${RICH_ROOT}/regression_tests/THUNDER"
 exec "${THUNDER_ROOT}/run_all.sh" \
-  --config "${RICH_ROOT}/regression_tests/config.json" "$@"
+  --thunder-config "${RICH_ROOT}/regression_tests/config.json" "$@"

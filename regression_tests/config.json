@@ -24,12 +24,12 @@
       "build_dir": "build",
       "command": [
         "{project_root}/build_rich.sh",
-        "{profile}",
+        "{config}",
         "--test_name={build_test_name}",
         "--build-subdir={build_id}",
         "--jobs={nproc}"
       ],
-      "binary": "{project_root}/build/{profile}/{build_id}/rich"
+      "binary": "{project_root}/build/{config}/{build_id}/rich"
     }
   },
   "runs": {
@@ -55,9 +55,9 @@
   "options": [
     {
       "flags": [
-        "--profile"
+        "--config"
       ],
-      "dest": "profile",
+      "dest": "config",
       "type": "enum",
       "choices": [
         "gnuRelease",
@@ -77,6 +77,6 @@
   ],
   "environment": {
     "ROOT_DIR": "{project_root}",
-    "CONFIG": "{profile}"
+    "CONFIG": "{config}"
   }
 }
